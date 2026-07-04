@@ -50,11 +50,30 @@ class CorpusSourceKind(str, Enum):
 DEMO_CORPUS_SEED = 1843
 DEMO_CHATGPT_SESSION_ID = "chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5"
 DEMO_CLAUDE_CODE_SESSION_ID = "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6"
+DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID = "claude-ai-export:demo-temporary-claude-ai"
 DEMO_CODEX_SESSION_ID = "codex-session:demo-00"
+DEMO_GEMINI_SESSION_ID = "aistudio-drive:demo-00"
+DEMO_CODEX_LINEAGE_PARENT_SESSION_ID = "codex-session:demo-lineage-parent"
+DEMO_CODEX_LINEAGE_FORK_SESSION_ID = "codex-session:demo-lineage-fork"
+DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID = "codex-session:demo-lineage-subagent"
+DEMO_CODEX_TERMINAL_ERROR_SESSION_ID = "codex-session:demo-terminal-error"
+DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID = (
+    "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo"
+)
+DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID = "claude-code-session:demo-lineage-sidechain"
+DEMO_EMBEDDING_PROSE_SESSION_ID = DEMO_CLAUDE_CODE_SESSION_ID
 DEMO_SESSION_IDS = (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
     DEMO_CODEX_SESSION_ID,
+    DEMO_GEMINI_SESSION_ID,
+    DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
+    DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
+    DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
+    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
 )
 
 
@@ -68,6 +87,183 @@ class DemoUserOverlayResult:
     note_id: str
     saved_view_id: str
     assertion_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class DemoCorpusFamily:
+    """Declared reason one deterministic demo source family exists."""
+
+    family_id: str
+    label: str
+    provider: str
+    construct_ids: tuple[str, ...]
+    description: str
+    source_paths: tuple[str, ...]
+    count: int = 1
+    messages_min: int = 1
+    messages_max: int = 1
+    seed_offset: int = 0
+    style: str = "default"
+    synthetic: bool = True
+
+    def to_spec(
+        self,
+        *,
+        seed: int,
+        origin: str,
+        tags: tuple[str, ...],
+    ) -> CorpusSpec | None:
+        if not self.synthetic:
+            return None
+        return CorpusSpec.for_provider(
+            self.provider,
+            count=self.count,
+            messages_min=self.messages_min,
+            messages_max=self.messages_max,
+            seed=seed + self.seed_offset,
+            style=self.style,
+            origin=origin,
+            tags=tags,
+        )
+
+
+DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
+    DemoCorpusFamily(
+        family_id="chatgpt-dialogue",
+        label="ChatGPT dialogue",
+        provider="chatgpt",
+        construct_ids=("multi_origin_sessions", "session_profiles"),
+        description="Minimal ChatGPT dialogue coverage for multi-origin read/search examples.",
+        source_paths=("chatgpt/demo-00.json",),
+        count=1,
+        messages_min=2,
+        messages_max=3,
+        seed_offset=0,
+        style="demo",
+    ),
+    DemoCorpusFamily(
+        family_id="claude-code-tools",
+        label="Claude Code tool outcomes",
+        provider="claude-code",
+        construct_ids=(
+            "tool_use_blocks",
+            "tool_result_blocks",
+            "failed_tool_results",
+            "provider_usage_messages",
+            "run_projection_rows",
+            "observed_event_rows",
+            "context_snapshot_rows",
+        ),
+        description="Claude Code tool-heavy session used by pytest triage and cost demos.",
+        source_paths=("claude-code/demo-00.jsonl",),
+        count=1,
+        messages_min=6,
+        messages_max=10,
+        seed_offset=1,
+        style="demo-tool-heavy",
+    ),
+    DemoCorpusFamily(
+        family_id="claude-ai-temporary",
+        label="Claude.ai temporary chat",
+        provider="claude-ai",
+        construct_ids=("temporary_session_rows", "token_budget_web_constructs"),
+        description="Claude.ai export payload marked temporary by source evidence.",
+        source_paths=("claude-ai/temporary-demo.json",),
+        synthetic=False,
+    ),
+    DemoCorpusFamily(
+        family_id="browser-capture-gap",
+        label="Browser-capture convergence",
+        provider="browser-capture",
+        construct_ids=(
+            "capture_gap_events",
+            "browser_capture_raw_variants",
+            "browser_capture_coalesced_session",
+        ),
+        description=(
+            "Native-payload and lower-precedence DOM browser captures for an existing ChatGPT session, "
+            "proving source evidence remains durable while the indexed session stays canonical."
+        ),
+        source_paths=(
+            "browser-capture/chatgpt-raw-provider.json",
+            "browser-capture/chatgpt-dom-fallback.json",
+        ),
+        synthetic=False,
+    ),
+    DemoCorpusFamily(
+        family_id="codex-tools",
+        label="Codex tool outcomes",
+        provider="codex",
+        construct_ids=("tool_use_blocks", "tool_result_blocks", "failed_tool_results"),
+        description="Codex tool-heavy session for cross-harness action/outcome coverage.",
+        source_paths=("codex/demo-00.jsonl",),
+        count=1,
+        messages_min=6,
+        messages_max=10,
+        seed_offset=2,
+        style="demo-tool-heavy",
+    ),
+    DemoCorpusFamily(
+        family_id="gemini-attachments",
+        label="Gemini attachment bytes",
+        provider="gemini",
+        construct_ids=("attachment_rows", "acquired_attachment_rows"),
+        description="AiStudio/Gemini inline attachment bytes stored through the normal blob path.",
+        source_paths=("gemini/demo-00.json",),
+        count=1,
+        messages_min=3,
+        messages_max=4,
+        seed_offset=3,
+        style="demo-attachments",
+    ),
+    DemoCorpusFamily(
+        family_id="agent-lineage-matrix",
+        label="Agent lineage matrix",
+        provider="mixed-agent",
+        construct_ids=(
+            "session_link_rows",
+            "generic_branch_links",
+            "prefix_sharing_links",
+            "continuation_links",
+            "subagent_links",
+            "sidechain_sessions",
+            "compaction_events",
+            "subagent_context_snapshots",
+            "subagent_run_rows",
+            "unfinished_terminal_state_rows",
+            "error_terminal_state_rows",
+        ),
+        description=(
+            "Explicit parent, prefix-sharing branch, spawned subagent, sidechain, compaction, and "
+            "structural unfinished/error terminal-state source files."
+        ),
+        source_paths=(
+            "codex/lineage-parent.jsonl",
+            "codex/lineage-fork.jsonl",
+            "codex/lineage-subagent.jsonl",
+            "codex/terminal-error.jsonl",
+            "claude-code/agent-acompact-demo.jsonl",
+            "claude-code/lineage-sidechain.jsonl",
+        ),
+        synthetic=False,
+    ),
+    DemoCorpusFamily(
+        family_id="embedding-lane-prose",
+        label="Embedding lane prose",
+        provider="derived-embedding",
+        construct_ids=(
+            "embedding_candidate_prose_messages",
+            "synthetic_message_embedding_rows",
+            "embedding_status_rows",
+        ),
+        description=(
+            "Derived embedding-tier coverage over authored prose. The demo seeds deterministic synthetic vectors "
+            "so embedding status/search surfaces are non-empty without contacting a provider."
+        ),
+        source_paths=("claude-code/demo-00.jsonl", "embeddings.db"),
+        synthetic=False,
+    ),
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -549,37 +745,10 @@ def build_demo_corpus_specs(
     a separate demo-data path.
     """
 
-    return (
-        CorpusSpec.for_provider(
-            "chatgpt",
-            count=1,
-            messages_min=2,
-            messages_max=3,
-            seed=seed,
-            style="demo",
-            origin=origin,
-            tags=tags,
-        ),
-        CorpusSpec.for_provider(
-            "claude-code",
-            count=1,
-            messages_min=6,
-            messages_max=10,
-            seed=seed + 1,
-            style="demo-tool-heavy",
-            origin=origin,
-            tags=tags,
-        ),
-        CorpusSpec.for_provider(
-            "codex",
-            count=1,
-            messages_min=6,
-            messages_max=10,
-            seed=seed + 2,
-            style="demo-tool-heavy",
-            origin=origin,
-            tags=tags,
-        ),
+    return tuple(
+        spec
+        for family in DEMO_CORPUS_FAMILIES
+        if (spec := family.to_spec(seed=seed, origin=origin, tags=tags)) is not None
     )
 
 

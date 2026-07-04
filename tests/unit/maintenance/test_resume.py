@@ -70,7 +70,7 @@ def patched_dispatch() -> Iterator[dict[str, list[str]]]:
     calls: dict[str, list[str]] = {
         "session_insights": [],
         "message_type_backfill": [],
-        "dangling_fts": [],
+        "orphaned_messages": [],
     }
 
     def stub(name: str):  # type: ignore[no-untyped-def]
@@ -92,7 +92,7 @@ def test_clean_run_persists_done_and_clears_state(tmp_path: Path, patched_dispat
     config = _make_config(tmp_path)
     op = execute_replay(
         config,
-        targets=("session_insights", "dangling_fts"),
+        targets=("session_insights", "message_type_backfill"),
         operation_id="op-clean",
     )
 
@@ -101,7 +101,7 @@ def test_clean_run_persists_done_and_clears_state(tmp_path: Path, patched_dispat
     # State file is removed after successful completion.
     assert not state_path_for(config, "op-clean").exists()
     assert patched_dispatch["session_insights"] == ["live"]
-    assert patched_dispatch["dangling_fts"] == ["live"]
+    assert patched_dispatch["message_type_backfill"] == ["live"]
 
 
 def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_dispatch: dict[str, list[str]]) -> None:
@@ -120,19 +120,19 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     fake_dispatch = {
         "session_insights": patched_dispatch_callable(patched_dispatch, "session_insights"),
         "message_type_backfill": boom,
-        "dangling_fts": patched_dispatch_callable(patched_dispatch, "dangling_fts"),
+        "orphaned_messages": patched_dispatch_callable(patched_dispatch, "orphaned_messages"),
     }
 
     with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", fake_dispatch):
         first = execute_replay(
             config,
-            targets=("session_insights", "message_type_backfill", "dangling_fts"),
+            targets=("session_insights", "message_type_backfill", "orphaned_messages"),
             operation_id="op-resume",
         )
 
     assert first.status is BackfillStatus.FAILED
     assert patched_dispatch["session_insights"] == ["live"]
-    assert patched_dispatch["dangling_fts"] == ["live"]
+    assert patched_dispatch["orphaned_messages"] == ["live"]
     assert len(boom_calls) == 1
     # State persists because run did not converge cleanly.
     assert state_path_for(config, "op-resume").exists()
@@ -150,7 +150,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", patched_dispatch_table(patched_dispatch)):
         second = execute_replay(
             config,
-            targets=("session_insights", "message_type_backfill", "dangling_fts"),
+            targets=("session_insights", "message_type_backfill", "orphaned_messages"),
             operation_id="op-resume",
         )
 
@@ -160,7 +160,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     assert patched_dispatch["session_insights"] == ["live"]
     # The remaining two targets were executed exactly once on resume.
     assert patched_dispatch["message_type_backfill"] == ["live"]
-    assert patched_dispatch["dangling_fts"] == ["live", "live"]
+    assert patched_dispatch["orphaned_messages"] == ["live", "live"]
     # State cleared after successful resume.
     assert not state_path_for(config, "op-resume").exists()
 
@@ -175,7 +175,7 @@ def test_explicit_resume_cursor_overrides_persisted_state(
 
     op = execute_replay(
         config,
-        targets=("session_insights", "dangling_fts"),
+        targets=("session_insights", "message_type_backfill"),
         operation_id="op-explicit",
         resume_cursor="target:1",
     )
@@ -183,7 +183,7 @@ def test_explicit_resume_cursor_overrides_persisted_state(
     assert op.status is BackfillStatus.COMPLETED
     # Only the second target was executed (skipped session_insights).
     assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["dangling_fts"] == ["live"]
+    assert patched_dispatch["message_type_backfill"] == ["live"]
 
 
 def test_progress_callback_fires_per_target(tmp_path: Path, patched_dispatch: dict[str, list[str]]) -> None:
@@ -192,13 +192,13 @@ def test_progress_callback_fires_per_target(tmp_path: Path, patched_dispatch: di
 
     op = execute_replay(
         config,
-        targets=("session_insights", "dangling_fts"),
+        targets=("session_insights", "message_type_backfill"),
         operation_id="op-progress",
         progress_callback=snapshots.append,
     )
 
     assert op.status is BackfillStatus.COMPLETED
-    assert [s.target for s in snapshots] == ["session_insights", "dangling_fts"]
+    assert [s.target for s in snapshots] == ["session_insights", "message_type_backfill"]
     assert snapshots[0].processed == 1 and snapshots[0].total == 2
     assert snapshots[-1].cursor == CURSOR_DONE
     assert snapshots[-1].in_flight_failures == 0
@@ -249,58 +249,6 @@ def test_session_insight_progress_is_forwarded_within_target(
     assert snapshots[-1].processed == 1
 
 
-def test_raw_materialization_progress_is_forwarded_within_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = _make_config(tmp_path)
-    snapshots: list[ReplayProgress] = []
-
-    def repair_with_progress(
-        _config: Config,
-        _dry_run: bool,
-        *,
-        raw_artifact_id: str | None = None,
-        provider: str | None = None,
-        source_family: str | None = None,
-        source_root: Path | None = None,
-        progress_callback: Any = None,
-    ) -> RepairResult:
-        assert raw_artifact_id is None
-        assert provider is None
-        assert source_family is None
-        assert source_root is None
-        assert callable(progress_callback)
-        progress_callback(1, desc="raw_materialization: parsed raw 1/2")
-        progress_callback(2, desc="raw_materialization: parsed raw 2/2")
-        return _ok_result("raw_materialization", repaired=2)
-
-    monkeypatch.setattr("polylogue.maintenance.replay.repair_raw_materialization", repair_with_progress)
-    monkeypatch.setitem(
-        replay_module._REPLAY_DISPATCH,
-        "raw_materialization",
-        repair_with_progress,
-    )
-
-    op = execute_replay(
-        config,
-        targets=("raw_materialization",),
-        operation_id="op-raw-progress-inner",
-        progress_callback=snapshots.append,
-    )
-
-    assert op.status is BackfillStatus.COMPLETED
-    assert [snapshot.progress_desc for snapshot in snapshots] == [
-        "raw_materialization: parsed raw 1/2",
-        "raw_materialization: parsed raw 2/2",
-        None,
-    ]
-    assert [snapshot.progress_amount for snapshot in snapshots] == [1, 2, None]
-    assert snapshots[0].processed == 0
-    assert snapshots[-1].processed == 1
-    assert snapshots[-1].cursor == CURSOR_DONE
-
-
 def test_replay_operation_metrics_include_result_metrics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -310,45 +258,35 @@ def test_replay_operation_metrics_include_result_metrics(
     def repair_with_metrics(
         _config: Config,
         _dry_run: bool,
-        *,
-        raw_artifact_id: str | None = None,
-        provider: str | None = None,
-        source_family: str | None = None,
-        source_root: Path | None = None,
-        progress_callback: Any = None,
     ) -> RepairResult:
         return _ok_result(
-            "raw_materialization",
+            "session_insights",
             repaired=2,
             metrics={
-                "raw_materialization_candidate_count": 1.0,
-                "raw_materialization_total_blob_bytes": 1_609_582_167.0,
-                "raw_materialization_max_blob_bytes": 1_609_582_167.0,
+                "rebuilt_profiles": 100.0,
+                "source_sessions": 1_609_582_167.0,
             },
         )
 
-    monkeypatch.setattr("polylogue.maintenance.replay.repair_raw_materialization", repair_with_metrics)
     monkeypatch.setitem(
         replay_module._REPLAY_DISPATCH,
-        "raw_materialization",
+        "session_insights",
         repair_with_metrics,
     )
 
     op = execute_replay(
         config,
-        targets=("raw_materialization",),
-        operation_id="op-raw-metrics",
+        targets=("session_insights",),
+        operation_id="op-metrics",
     )
 
     assert op.status is BackfillStatus.COMPLETED
     assert op.metrics["repaired_count"] == 2.0
-    assert op.metrics["raw_materialization_candidate_count"] == 1.0
-    assert op.metrics["raw_materialization_total_blob_bytes"] == 1_609_582_167.0
-    assert op.metrics["raw_materialization_max_blob_bytes"] == 1_609_582_167.0
+    assert op.metrics["rebuilt_profiles"] == 100.0
+    assert op.metrics["source_sessions"] == 1_609_582_167.0
     assert op.results[0]["metrics"] == {
-        "raw_materialization_candidate_count": 1.0,
-        "raw_materialization_total_blob_bytes": 1_609_582_167.0,
-        "raw_materialization_max_blob_bytes": 1_609_582_167.0,
+        "rebuilt_profiles": 100.0,
+        "source_sessions": 1_609_582_167.0,
     }
 
 

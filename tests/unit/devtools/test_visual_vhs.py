@@ -71,6 +71,24 @@ class TestGenerateTape:
         assert "Set FontSize 22" in tape
         assert "Set Padding 30" in tape
 
+    def test_spec_dimensions_are_used_by_default(self) -> None:
+        spec = VHSTapeSpec(
+            name="spec-dim",
+            description="Dimensions",
+            display_command=("polylogue", "--help"),
+            output_width=90,
+            output_height=20,
+            font_size=18,
+            padding=12,
+        )
+
+        tape = generate_tape(spec)
+
+        assert "Set FontSize 18" in tape
+        assert "Set Width 990" in tape
+        assert "Set Height 440" in tape
+        assert "Set Padding 12" in tape
+
     def test_tape_has_spec_description_comment(self) -> None:
         spec = VHSTapeSpec(name="desc", description="My cool tape", display_command=("polylogue", "--help"))
 
@@ -126,23 +144,47 @@ class TestDefaultTapeContent:
 
     def test_default_tape_names(self) -> None:
         assert [spec.name for spec in default_tape_specs()] == [
-            "help-main",
-            "stats-default",
-            "query-list",
-            "doctor-readiness",
-            "query-latest-md",
+            "demo-tour",
+            "query-tour",
+            "reader-evidence-tour",
+            "browser-capture-tour",
         ]
 
-    def test_help_main_tape(self) -> None:
-        spec = next(spec for spec in default_tape_specs() if spec.name == "help-main")
+    def test_demo_tour_tape(self) -> None:
+        spec = next(spec for spec in default_tape_specs() if spec.name == "demo-tour")
 
         tape = generate_tape(spec)
 
-        assert 'Type "polylogue --help"' in tape
+        assert 'Type "polylogue demo tour --out-dir demo-tour --force"' in tape
+        assert 'Type "cat demo-tour/report.md"' in tape
 
-    def test_stats_default_tape(self) -> None:
-        spec = next(spec for spec in default_tape_specs() if spec.name == "stats-default")
+    def test_query_tour_uses_demo_archive_not_live_archive(self) -> None:
+        spec = next(spec for spec in default_tape_specs() if spec.name == "query-tour")
 
         tape = generate_tape(spec)
 
-        assert 'Type "polylogue"' in tape
+        assert "POLYLOGUE_ARCHIVE_ROOT=query-tour/archive" in tape
+        assert 'Type "polylogue read --all -n 1"' not in tape
+        assert 'Type "polylogue --latest -f markdown"' not in tape
+
+    def test_reader_evidence_tour_uses_visual_smoke_lane(self) -> None:
+        spec = next(spec for spec in default_tape_specs() if spec.name == "reader-evidence-tour")
+
+        tape = generate_tape(spec)
+
+        assert "devtools lab smoke run reader-visual-smoke" in tape
+        assert "reader-visual-smoke.json" in tape
+
+    def test_browser_capture_tour_uses_deterministic_live_follow(self) -> None:
+        spec = next(spec for spec in default_tape_specs() if spec.name == "browser-capture-tour")
+
+        tape = generate_tape(spec)
+
+        assert "devtools workspace dev-loop --isolated-ports --browser-provider-live-follow --json" in tape
+        assert "browser_provider_live_follow" in tape
+        assert "provider_statuses" in tape
+        assert "archive_ok" in tape
+        assert "api_ok" in tape
+        assert "reader_ok" in tape
+        assert "reader_rows" in tape
+        assert "POLYLOGUE_ARCHIVE_ROOT" not in tape

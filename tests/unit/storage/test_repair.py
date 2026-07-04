@@ -13,7 +13,6 @@ from polylogue.config import Config
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.fts.dangling_repair import DanglingFtsRepairOutcome
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -80,14 +79,6 @@ def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only()
             detail="ready",
             maintenance_target="session_insights",
         ),
-        "dangling_fts": repair_mod.ArchiveDebtStatus(
-            name="dangling_fts",
-            category=repair_mod._maintenance_target_spec("dangling_fts").category,
-            destructive=False,
-            issue_count=0,
-            detail="ready",
-            maintenance_target="dangling_fts",
-        ),
         "orphaned_messages": repair_mod.ArchiveDebtStatus(
             name="orphaned_messages",
             category=repair_mod._maintenance_target_spec("orphaned_messages").category,
@@ -108,7 +99,6 @@ def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only()
 
     assert repair_mod.preview_counts_from_archive_debt(statuses) == {
         "session_insights": 0,
-        "dangling_fts": 0,
         "empty_sessions": 4,
     }
 
@@ -137,6 +127,38 @@ def test_probe_only_archive_debt_skips_large_message_scans(monkeypatch: pytest.M
     assert debt["empty_sessions"].skipped is True
     assert debt["message_type_backfill"].skipped is True
     assert debt["orphaned_attachments"].skipped is False
+
+
+def test_archive_debt_collection_honors_target_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    statuses = {
+        "session_profile_rows": _status(pending_rows=3),
+        "session_work_events": _status(),
+        "session_work_events_fts": _status(),
+        "session_phases": _status(),
+        "threads": _status(),
+        "threads_fts": _status(),
+        "session_tag_rollups": _status(),
+    }
+
+    def fail_unrelated(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("target-scoped session_insights preview must not scan unrelated maintenance debt")
+
+    monkeypatch.setattr(repair_mod, "count_orphaned_messages_sync", fail_unrelated)
+    monkeypatch.setattr(repair_mod, "count_empty_sessions_sync", fail_unrelated)
+    monkeypatch.setattr(repair_mod, "count_orphaned_attachments_sync", fail_unrelated)
+    monkeypatch.setattr(repair_mod, "count_unclassified_message_type_sync", fail_unrelated)
+    monkeypatch.setattr(repair_mod, "count_orphaned_blobs_sync", fail_unrelated)
+    monkeypatch.setattr(repair_mod, "count_superseded_raw_snapshots_sync", fail_unrelated)
+
+    with sqlite3.connect(":memory:") as conn:
+        debt = repair_mod.collect_archive_debt_statuses_sync(
+            conn,
+            derived_statuses=statuses,
+            target_names=("session_insights",),
+        )
+
+    assert tuple(debt) == ("session_insights",)
+    assert debt["session_insights"].issue_count == 3
 
 
 def test_raw_materialization_preview_counts_replayable_rows_without_erasing_missing_blobs(tmp_path: Path) -> None:
@@ -217,14 +239,169 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
     assert result.success is True
     assert result.metrics == {
         "raw_materialization_candidate_count": 1.0,
+        "raw_materialization_selected_count": 1.0,
         "raw_materialization_missing_blob_count": 1.0,
         "raw_materialization_already_parsed_count": 0.0,
         "raw_materialization_total_blob_bytes": float(replayable_size),
         "raw_materialization_max_blob_bytes": float(replayable_size),
+        "raw_materialization_selected_total_blob_bytes": float(replayable_size),
+        "raw_materialization_selected_max_blob_bytes": float(replayable_size),
     }
-    assert "queued raw payload bytes total=" in result.detail
+    assert "selected raw payload bytes total=" in result.detail
     assert "largest=" in result.detail
     assert "1 raw rows blocked by missing blobs" in result.detail
+
+
+def test_raw_materialization_replays_same_native_when_index_raw_link_is_dangling(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    replacement_raw_id, replacement_size = blob_store.write_from_bytes(b'{"mapping":{"replacement":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                replacement_raw_id,
+                "chatgpt-export",
+                "native-dangling",
+                "replacement.json",
+                0,
+                bytes.fromhex(replacement_raw_id),
+                replacement_size,
+                10,
+            ),
+        )
+        source_conn.commit()
+
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("native-dangling", "chatgpt-export", "old-missing-raw", "dangling", bytes(32)),
+        )
+        index_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    assert result.metrics["raw_materialization_candidate_count"] == 1.0
+
+
+def test_superseded_raw_cleanup_protects_split_index_referenced_raw_ids(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    source_file = tmp_path / "source.jsonl"
+    source_file.write_text("{}", encoding="utf-8")
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    "raw-referenced-old",
+                    "chatgpt-export",
+                    "native-old",
+                    str(source_file),
+                    0,
+                    bytes.fromhex("11" * 32),
+                    10,
+                    1,
+                ),
+                (
+                    "raw-newer",
+                    "chatgpt-export",
+                    "native-newer",
+                    str(source_file),
+                    0,
+                    bytes.fromhex("22" * 32),
+                    11,
+                    2,
+                ),
+            ),
+        )
+        source_conn.commit()
+
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("native-old", "chatgpt-export", "raw-referenced-old", "old", bytes(32)),
+        )
+        index_conn.commit()
+
+    result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=True)
+
+    assert result.repaired_count == 0
+    assert "skipped 1 index-referenced raw rows" in result.detail
+
+
+def test_raw_materialization_retries_restored_missing_blob_parse_errors(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    replayable_raw_id, replayable_size = blob_store.write_from_bytes(b'{"mapping":{}}')
+    bad_raw_id, bad_size = blob_store.write_from_bytes(b'{"mapping":{"bad":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    replayable_raw_id,
+                    "chatgpt-export",
+                    "native-retry",
+                    "retry.json",
+                    0,
+                    bytes.fromhex(replayable_raw_id),
+                    replayable_size,
+                    2,
+                    3,
+                    "decode: [Errno 2] No such file or directory: '/old/blob/path'",
+                ),
+                (
+                    bad_raw_id,
+                    "chatgpt-export",
+                    "native-bad",
+                    "bad.json",
+                    0,
+                    bytes.fromhex(bad_raw_id),
+                    bad_size,
+                    1,
+                    4,
+                    "parse: malformed provider payload",
+                ),
+            ],
+        )
+        source_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+
+    assert result.repaired_count == 1
+    assert result.metrics["raw_materialization_candidate_count"] == 1.0
+    assert result.metrics["raw_materialization_missing_blob_count"] == 0.0
+    assert result.metrics["raw_materialization_total_blob_bytes"] == float(replayable_size)
 
 
 def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: Path) -> None:
@@ -370,14 +547,14 @@ def test_raw_materialization_replay_uses_batch_parse_call(
         )
         source_conn.commit()
 
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], bool | None]] = []
 
     class FakeParsingService:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        async def parse_from_raw(self, *, raw_ids: list[str], **_kwargs: object) -> object:
-            calls.append(list(raw_ids))
+        async def parse_from_raw(self, *, raw_ids: list[str], **kwargs: object) -> object:
+            calls.append((list(raw_ids), cast(bool | None, kwargs.get("force_write"))))
             return SimpleNamespace(processed_ids=set(raw_ids), parse_failures=0)
 
     import polylogue.pipeline.services.parsing as parsing_module
@@ -388,7 +565,112 @@ def test_raw_materialization_replay_uses_batch_parse_call(
 
     assert result.success is True
     assert result.repaired_count == 2
-    assert calls == [[second_raw_id, first_raw_id]]
+    assert calls == [([second_raw_id, first_raw_id], True)]
+
+
+def test_raw_materialization_dry_run_reports_limited_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
+            ["raw-slow", "raw-2", "raw-3", "raw-4"],
+            0,
+            4,
+            {
+                "raw-slow": 512,
+                "raw-2": 1024,
+                "raw-3": 2048,
+                "raw-4": 4096,
+            },
+        ),
+    )
+
+    result = repair_mod.repair_raw_materialization(
+        config,
+        dry_run=True,
+        raw_artifact_limit=2,
+    )
+
+    assert result.success is True
+    assert result.repaired_count == 2
+    assert "Would: replay 2 of 4 raw rows into index.db" in result.detail
+    assert result.metrics["raw_materialization_candidate_count"] == 4.0
+    assert result.metrics["raw_materialization_selected_count"] == 2.0
+    assert result.metrics["raw_materialization_limit"] == 2.0
+    assert result.metrics["raw_materialization_total_blob_bytes"] == 7680.0
+    assert result.metrics["raw_materialization_selected_total_blob_bytes"] == 1536.0
+    assert result.metrics["raw_materialization_selected_max_blob_bytes"] == 1024.0
+
+
+def test_raw_materialization_execute_replays_only_limited_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    calls: dict[str, object] = {}
+
+    class FakeBackend:
+        def __init__(self, *, db_path: Path) -> None:
+            calls["db_path"] = db_path
+
+    class FakeRepository:
+        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
+            calls["archive_root"] = archive_root
+
+        async def close(self) -> None:
+            calls["closed"] = True
+
+    class FakeParseResult:
+        processed_ids = {"session-2", "session-3"}
+        parse_failures = 0
+
+    class FakeParsingService:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def parse_from_raw(self, **kwargs: object) -> FakeParseResult:
+            calls["parse_kwargs"] = kwargs
+            return FakeParseResult()
+
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
+            ["raw-slow", "raw-2", "raw-3", "raw-4"],
+            0,
+            4,
+            {
+                "raw-slow": 512,
+                "raw-2": 1024,
+                "raw-3": 2048,
+                "raw-4": 4096,
+            },
+        ),
+    )
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
+    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
+    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+
+    result = repair_mod.repair_raw_materialization(
+        config,
+        raw_artifact_limit=2,
+    )
+
+    assert result.success is True
+    assert result.repaired_count == 2
+    assert calls["parse_kwargs"] == {
+        "raw_ids": ["raw-slow", "raw-2"],
+        "progress_callback": None,
+        "force_write": False,
+        "repair_message_fts": False,
+    }
+    assert result.metrics["raw_materialization_candidate_count"] == 4.0
+    assert result.metrics["raw_materialization_selected_count"] == 2.0
+    assert "Replayed 2 of 4 raw rows" in result.detail
 
 
 def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Path) -> None:
@@ -436,7 +718,7 @@ def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Pa
 
     assert broad.repaired_count == 2
     assert scoped.repaired_count == 1
-    assert f"replay {1:,} acquired-but-unparsed raw rows" in scoped.detail
+    assert f"replay {1:,} of {1:,} acquired-but-unparsed raw rows" in scoped.detail
 
 
 def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_path: Path) -> None:
@@ -688,7 +970,7 @@ def test_raw_materialization_leaves_fts_to_ingest_or_fts_stage(
 
     assert result.success is True
     assert result.repaired_count == 2
-    assert "message FTS left to ingest triggers or the FTS maintenance stage" in result.detail
+    assert "message FTS left to ingest triggers or daemon convergence" in result.detail
     assert calls["parse_kwargs"] == {
         "raw_ids": ["raw-1"],
         "progress_callback": None,
@@ -1439,98 +1721,3 @@ def test_offline_maintenance_preview_allowed_with_live_daemon(monkeypatch: pytes
     assert len(results) == 1
     assert results[0].success is True
     assert results[0].repaired_count == 2
-
-
-def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    calls: list[tuple[str, object]] = []
-
-    class _Cursor:
-        def __init__(self, value: object) -> None:
-            self.value = value
-
-        def fetchone(self) -> tuple[object, ...]:
-            return (self.value,)
-
-    class FakeConn:
-        def execute(self, sql: str, params: object = ()) -> _Cursor:
-            if sql.startswith("PRAGMA "):
-                return _Cursor(None)
-            if "sqlite_master" in sql and "messages_fts" in sql:
-                return _Cursor("messages_fts")
-            raise AssertionError(f"unexpected SQL: {sql}")
-
-        def commit(self) -> None:
-            calls.append(("commit", ()))
-
-    @contextmanager
-    def fake_connection_context() -> Iterator[FakeConn]:
-        yield FakeConn()
-
-    ops_db = tmp_path / "ops.db"
-    with sqlite3.connect(ops_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE convergence_debt (
-                debt_id TEXT PRIMARY KEY,
-                stage TEXT NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'failed' CHECK(status IN ('failed', 'deferred')),
-                priority INTEGER NOT NULL DEFAULT 0,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                next_retry_at TEXT,
-                materializer_version TEXT,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL,
-                UNIQUE(stage, target_type, target_id)
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO convergence_debt (
-                debt_id, stage, target_type, target_id, status, priority,
-                attempts, last_error, next_retry_at, materializer_version,
-                created_at_ms, updated_at_ms
-            )
-            VALUES (
-                'debt-1', 'fts', 'fts_surface', 'messages_fts', 'failed', 0,
-                1, 'stale ledger', '1970-01-01T00:00:00+00:00', NULL, 1, 1
-            )
-            """
-        )
-
-    monkeypatch.setattr(repair_mod, "_open_archive_index_connection", fake_connection_context)
-
-    def fail_full_rebuild(_conn: FakeConn) -> None:
-        raise AssertionError("repair_dangling_fts must not run the full FTS rebuild path")
-
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
-        fail_full_rebuild,
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.repair_missing_fts_rows",
-        lambda _conn: DanglingFtsRepairOutcome(
-            repaired_count=2,
-            success=True,
-            detail="FTS sync: repaired index",
-        ),
-    )
-
-    result = repair_mod.repair_dangling_fts(_config(tmp_path), dry_run=False)
-
-    assert result.success is True
-    assert result.repaired_count == 2
-    assert result.detail == "FTS sync: repaired index"
-    assert ("commit", ()) in calls
-    with sqlite3.connect(ops_db) as conn:
-        row = conn.execute(
-            """
-            SELECT status, last_error, next_retry_at, updated_at_ms
-            FROM convergence_debt
-            WHERE stage = 'fts' AND target_type = 'fts_surface' AND target_id = 'messages_fts'
-            """
-        ).fetchone()
-    assert row is None

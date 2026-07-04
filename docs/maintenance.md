@@ -27,30 +27,33 @@ the archive depends on but does not own as primary data:
   classifier existed);
 - archive-cleanup scopes (orphaned messages, orphaned content blocks,
   empty sessions, orphaned attachments, orphaned blobs);
-- SQLite housekeeping (WAL checkpoint).
+A WAL checkpoint is not a maintenance operation. Ingest runs bounded passive
+checkpoints after commits, the daemon runs periodic truncate checkpoints, and
+status/metrics report WAL pressure. If WAL stays large after those automatic
+paths have had a chance to run, treat that as a daemon/storage bug rather than a
+user-facing repair verb.
 
 A maintenance operation is distinguished from three adjacent things:
 
 | Surface | What it does | When you reach for it |
 | --- | --- | --- |
 | **Import** (`polylogued`, `polylogue import PATH`) | Daemon acquires source payloads, parses provider records, writes archive rows, and advances derived models *for the new rows*. `polylogue import PATH` asks the running daemon to schedule an explicit file or directory. | You have new exports/sessions to import. |
-| **Daemon convergence** (`polylogued` inline loops) | Performs the same operations as ingest plus the lightweight maintenance loop (WAL checkpoint every 5 min, FTS convergence every 10 min, heartbeat, health checks). | The daemon is running. You do nothing. |
+| **Daemon convergence** (`polylogued` inline loops) | Performs the same operations as ingest plus automatic WAL checkpointing, FTS convergence, heartbeat, health checks, and embedding/profile catch-up. | The daemon is running. You do nothing. |
 | **Maintenance** (`polylogue ops maintenance ...`) | Rebuilds derived state and prunes archive debt over already-ingested rows. Read-only by default; mutations are explicit. | A derived model is stale or missing for old rows that the daemon's small inline windows will not pick up. |
 | **Reset** (`polylogue ops reset`) | Deletes data: the SQLite database, the blob store, attachments, cache, OAuth tokens, or named sessions (soft-delete via tombstones). | The data itself is wrong or unwanted, not just a derived projection of it. |
 
 The order of preference is: **do nothing → daemon → maintenance →
 reset**. Reset is the only one that destroys primary data.
 
-## The four typed scopes
+## Typed scopes
 
 Maintenance targets are grouped into four scopes:
 
 | Scope | Mode | Destructive | Targets |
 | --- | --- | --- | --- |
-| `derived` (derived_repair) | repair | no | `session_insights`, `action_read_model`, `dangling_fts`, `message_type_backfill`, `message_embeddings` |
-| `retrieval` (database_maintenance) | repair | no | `wal_checkpoint` |
+| `derived` (derived_repair) | repair | no | `session_insights`, `message_type_backfill` |
 | `archive_cleanup` | cleanup | **yes** | `orphaned_messages`, `orphaned_content_blocks`, `empty_sessions`, `orphaned_attachments`, `orphaned_blobs` |
-| `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`). Re-acquiring raw artifacts from source is not a maintenance target: index-tier re-ingest (`polylogue ops reset --index && polylogued run`) rebuilds from preserved source evidence. |
+| `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`). Re-acquiring raw artifacts from source, WAL checkpointing, and repairing FTS coherence are daemon/ingest convergence responsibilities, not maintenance targets. |
 
 The canonical target list is enforced by
 `polylogue/maintenance/targets.py`. The CLI `--target` option's
@@ -135,7 +138,7 @@ sanity-check what the next `run` will do.
 
 ```bash
 polylogue ops maintenance plan
-polylogue ops maintenance plan --target session_insights --target dangling_fts
+polylogue ops maintenance plan --target session_insights --target message_type_backfill
 polylogue ops maintenance plan --output-format json | jq .
 ```
 
@@ -153,7 +156,6 @@ execution-path code, or pass `--operation-id <uuid>` together with
 
 ```bash
 polylogue ops maintenance run --dry-run
-polylogue ops maintenance run --target wal_checkpoint
 polylogue ops maintenance run --target session_insights --output-format json
 ```
 
@@ -169,8 +171,7 @@ terminates successfully. The cursor is an opaque string
 # Start an operation, capture its id.
 op=$(polylogue ops maintenance run --output-format json \
        --target session_insights \
-       --target action_read_model \
-       --target dangling_fts \
+       --target message_type_backfill \
      | jq -r .operation_id)
 
 # ... operation is killed mid-run (Ctrl-C, OOM, oncall reboot) ...
@@ -178,14 +179,12 @@ op=$(polylogue ops maintenance run --output-format json \
 # Resume from the persisted cursor — same id, same target set, no flag needed.
 polylogue ops maintenance run --operation-id "$op" \
        --target session_insights \
-       --target action_read_model \
-       --target dangling_fts
+       --target message_type_backfill
 
 # Explicit cursor override (rare — for surgical replays).
 polylogue ops maintenance run --operation-id "$op" --resume target:2 \
        --target session_insights \
-       --target action_read_model \
-       --target dangling_fts
+       --target message_type_backfill
 ```
 
 Two correctness guarantees the executor provides:
@@ -202,21 +201,17 @@ If the state file is missing and `--operation-id` is supplied without
 
 ## Scope filters
 
-The current shipping surface accepts `--target` and `--scope` only.
-The typed scope filters tracked in
-[#1196](https://github.com/Sinity/polylogue/issues/1196) — repeatable
-`--session-id`, `--provider`, `--source-family`, `--source-root`,
-`--raw-artifact`, `--since`/`--until`, `--failure-kind` — will be
-plumbed through CLI, HTTP, and MCP in a follow-up PR. Once landed,
-this section will gain one worked example per flag:
+The current shipping surface accepts repeatable `--session-id`, `--origin`,
+`--source-family`, `--source-root`, `--since`/`--until`, `--failure-kind`,
+and `--parser-version` filters. Each target decides which dimensions it can
+honestly narrow; unsupported dimensions are preserved in the envelope but do
+not pretend to reduce the affected-row count.
 
 ```bash
-# Planned (#1196):
 polylogue ops maintenance run --session-id abc123 --target session_insights
 polylogue ops maintenance run --origin claude          --target session_insights
-polylogue ops maintenance run --source-root ~/.claude/projects --target dangling_fts
 polylogue ops maintenance run --since 2026-04-01 --until 2026-05-01 \
-                          --target action_read_model
+                          --target session_insights
 polylogue ops maintenance run --failure-kind parse_error --target message_type_backfill
 ```
 
@@ -322,21 +317,18 @@ index stale across daemon restarts.
 polylogue ops diagnostics workload --json | jq .fts_trigger_state
 # Expect all_present=true. If `missing` is non-empty, continue.
 
-# 2. Preview the dangling FTS scope.
-polylogue ops maintenance preview --scope derived | grep -A2 messages_fts
+# 2. Start daemon convergence. Startup/read paths restore the FTS invariant.
+polylogued run
 
-# 3. Repair. The dangling_fts target restores triggers and rebuilds
-#    the index via `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`.
-polylogue ops maintenance run --target dangling_fts
-
-# 4. Verify.
+# 3. Verify.
 polylogue ops diagnostics workload --json | jq .fts_trigger_state.all_present
 # Expect: true.
 ```
 
-If `dangling_fts` reports failures, the underlying issue is structural
-(missing columns, corrupted index file). Stop the daemon, restore from
-backup, and open an issue with the probe output attached.
+If FTS remains non-ready after daemon convergence, the underlying issue is
+structural (missing columns, corrupted index file, or a broken write path).
+Stop the daemon, restore from backup or rebuild the affected index tier, and
+open an issue with the probe output attached.
 
 ### Draining the convergence-debt queue
 
@@ -356,19 +348,11 @@ remaining backlog will not drain inside one cycle.
 # 1. Snapshot the workload before.
 polylogue ops diagnostics workload --json > /tmp/before.json
 
-# 2. Preview to see which derived models are behind.
-polylogue ops maintenance preview --scope derived
+# 2. Run daemon convergence. It drains raw materialization, FTS, embeddings,
+#    and ordinary derived read models in bounded batches.
+polylogued run
 
-# 3. Drive the rebuilds explicitly. Use --operation-id so that an OOM
-#    or oncall reboot does not lose progress.
-op=$(uuidgen)
-polylogue ops maintenance run --operation-id "$op" \
-  --target session_insights \
-  --target action_read_model \
-  --target dangling_fts \
-  --target message_type_backfill
-
-# 4. Snapshot after and diff.
+# 3. Snapshot after and diff.
 polylogue ops diagnostics workload --json > /tmp/after.json
 polylogue ops diagnostics workload --compare /tmp/before.json /tmp/after.json
 ```

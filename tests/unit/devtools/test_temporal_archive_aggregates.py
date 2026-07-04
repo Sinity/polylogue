@@ -17,7 +17,8 @@ def _make_index_db(root: Path) -> Path:
         conn.executescript(
             """
             PRAGMA user_version = 18;
-            CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, root_session_id TEXT);
+            CREATE TABLE session_profiles (session_id TEXT PRIMARY KEY);
             CREATE TABLE session_runs (
                 source_updated_at TEXT,
                 harness TEXT,
@@ -34,7 +35,8 @@ def _make_index_db(root: Path) -> Path:
                 boundary TEXT,
                 inheritance_mode TEXT
             );
-            INSERT INTO sessions VALUES ('s1'), ('s2');
+            INSERT INTO sessions VALUES ('s1', 's1'), ('s2', 's1');
+            INSERT INTO session_profiles VALUES ('s1');
             INSERT INTO session_runs VALUES
                 ('2026-06-01T10:00:00Z', 'codex', 'main', 'completed'),
                 ('2026-06-02T10:00:00Z', 'codex', 'main', 'completed'),
@@ -66,6 +68,10 @@ def test_temporal_archive_aggregates_report_and_files(tmp_path: Path) -> None:
     assert report["index_schema_version"] == 18
     assert report["cardinality"] == {
         "sessions": 2,
+        "physical_sessions": 2,
+        "logical_root_sessions": 1,
+        "session_profiles": 1,
+        "session_profile_coverage_exact": True,
         "runs": 3,
         "observed_events": 3,
         "context_snapshots": 2,

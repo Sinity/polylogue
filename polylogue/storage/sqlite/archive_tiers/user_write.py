@@ -449,6 +449,8 @@ def upsert_session_tag_assertion(
     tag: str,
     tag_source: str,
     method: str | None = None,
+    author_ref: str | None = None,
+    author_kind: str | None = None,
     confidence: float | None = None,
     evidence: dict[str, object] | None = None,
     now_ms: int | None = None,
@@ -475,7 +477,8 @@ def upsert_session_tag_assertion(
         key=normalized_tag,
         value=value,
         body_text=normalized_tag,
-        author_kind="user",
+        author_ref=author_ref,
+        author_kind=author_kind,
         confidence=confidence,
         now_ms=timestamp,
     )
@@ -539,6 +542,8 @@ def upsert_correction(
     correction_type: str,
     payload: dict[str, object],
     *,
+    author_ref: str | None = None,
+    author_kind: str | None = None,
     now_ms: int | None = None,
 ) -> ArchiveCorrectionEnvelope:
     """Insert-or-update one correction assertion with deterministic id."""
@@ -552,7 +557,8 @@ def upsert_correction(
         kind=AssertionKind.CORRECTION,
         key=correction_type,
         value=payload,
-        author_kind="user",
+        author_ref=author_ref,
+        author_kind=author_kind,
         now_ms=timestamp,
     )
     return read_archive_correction_envelope(conn, correction_id)

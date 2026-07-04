@@ -44,7 +44,8 @@ _PARSER_FINGERPRINT = "live-batched-v2"
 _CATCH_UP_MAX_BATCH_FILES = 50
 _CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
-INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson")
+_PERIODIC_CATCH_UP_INTERVAL_S = 15.0
+INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
 
 
 def _stage_timing_summary(stage_timings_s: dict[str, float], *, limit: int = 8) -> str:
@@ -152,6 +153,7 @@ class LiveWatcher:
         self._pending_scheduled = False
         self._drain_task: asyncio.Task[None] | None = None
         self._failed_retry_task: asyncio.Task[None] | None = None
+        self._periodic_catch_up_task: asyncio.Task[None] | None = None
         self._failed_retry_deadline: float | None = None
         self._last_enqueue_at = 0.0
         self._last_batch_at: float = 0.0
@@ -183,25 +185,30 @@ class LiveWatcher:
             return
 
         try:
-            await self._catch_up(roots)
-        finally:
-            self._catch_up_complete.set()
-        self._schedule_failed_retry_scan()
-        self._ensure_pending_scheduled()
+            try:
+                await self._catch_up(roots)
+            finally:
+                self._catch_up_complete.set()
+            self._schedule_failed_retry_scan()
+            self._ensure_pending_scheduled()
+            self._periodic_catch_up_task = asyncio.create_task(self._periodic_catch_up(roots))
 
-        logger.info("live.watcher: watching %s", ", ".join(str(r) for r in roots))
-        async for changes in awatch(*roots, stop_event=self._stop, recursive=True):
-            for change, raw_path in changes:
-                if change is Change.deleted:
-                    continue
-                path = Path(raw_path)
-                if not self._source_accepts(path):
-                    continue
-                self._enqueue(path)
+            logger.info("live.watcher: watching %s", ", ".join(str(r) for r in roots))
+            async for changes in awatch(*roots, watch_filter=self._watch_filter, stop_event=self._stop, recursive=True):
+                for change, raw_path in changes:
+                    if change is Change.deleted:
+                        continue
+                    path = Path(raw_path)
+                    if not self._source_accepts(path):
+                        continue
+                    self._enqueue(path)
+        finally:
+            self._cancel_periodic_catch_up()
 
     def stop(self) -> None:
         self._stop.set()
         self._cancel_failed_retry_task()
+        self._cancel_periodic_catch_up()
 
     def cancel_pending(self) -> None:
         task = self._drain_task
@@ -210,6 +217,25 @@ class LiveWatcher:
         self._drain_task = None
         self._pending_scheduled = False
         self._cancel_failed_retry_task()
+        self._cancel_periodic_catch_up()
+
+    async def _periodic_catch_up(self, roots: list[Path]) -> None:
+        while not self._stop.is_set():
+            await asyncio.sleep(_PERIODIC_CATCH_UP_INTERVAL_S)
+            if self._stop.is_set():
+                return
+            try:
+                await self._catch_up(roots)
+            except sqlite3.OperationalError as exc:
+                if not _is_database_locked(exc):
+                    raise
+                logger.warning("live.watcher: archive busy during periodic catch-up; will retry")
+
+    def _cancel_periodic_catch_up(self) -> None:
+        task = self._periodic_catch_up_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._periodic_catch_up_task = None
 
     # ------------------------------------------------------------------
     # Catch-up: batch all changed files
@@ -702,6 +728,17 @@ class LiveWatcher:
                 continue
         return path.suffix == ".jsonl"
 
+    def _watch_filter(self, _change: object, path: str) -> bool:
+        """Accept configured source files under hidden canonical roots.
+
+        watchfiles' default filter ignores hidden directories. Polylogue's
+        normal roots live under paths such as ~/.claude, ~/.codex, ~/.local,
+        and repo-local .cache, so the generic filter silently drops real source
+        writes. This filter keeps the project's own source/suffix predicate as
+        the gate instead.
+        """
+        return self._source_accepts(Path(path))
+
 
 def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[CandidateSourceFile]:
     """Round-robin candidates across source families (#1616).
@@ -752,7 +789,7 @@ def default_sources() -> tuple[WatchSource, ...]:
         WatchSource(name="claude-code", root=claude_code_path()),
         WatchSource(name="codex", root=codex_path()),
         WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
-        WatchSource(name="hermes", root=hermes_sessions_path(), suffixes=(".json",)),
+        WatchSource(name="hermes", root=hermes_sessions_path(), suffixes=(".json", ".db", ".sqlite", ".sqlite3")),
         WatchSource(name="antigravity", root=antigravity_path(), suffixes=(".metadata.json",)),
         WatchSource(name="browser-capture", root=browser_capture_spool_root(), suffixes=(".json",)),
         # #1683: inbox accepts archive, zip, and json-line formats so that

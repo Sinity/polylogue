@@ -5,7 +5,8 @@ Each stage has a ``check`` that inspects current archive state and an
 ingestion through daemon-side raw-record ingest; daemon convergence stages only
 repair and refresh post-ingest archive state.
 
-- fts: rebuild FTS if messages > indexed count
+- fts: retry explicit session/global FTS debt; source-path foreground checks
+  stay cheap because archive writes already repair newly changed rows
 - embed: optional vectorization for changed sessions
 - insights: refresh session profiles
 """
@@ -984,11 +985,12 @@ def _archive_repair_sessions_fts(conn: sqlite3.Connection, session_ids: Sequence
     ~14 MiB of writes regardless of payload size. When the source path resolves
     to known session ids we instead delete+reinsert only those sessions' FTS
     rows (the same targeted primitive the legacy monolith path used), and mark
-    the surface ready. Full rebuild remains the fallback when scope is unknown.
+    the surface ready. Unknown path scope is intentionally a no-op here:
+    whole-archive FTS repair is a dedicated surface-debt operation, not a side
+    effect of live path convergence.
     """
     ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not ids:
-        _archive_rebuild_messages_fts(conn)
         return
     if not _table_exists(conn, "messages_fts"):
         return
@@ -999,66 +1001,26 @@ def _archive_repair_sessions_fts(conn: sqlite3.Connection, session_ids: Sequence
 
 
 def _archive_fts_check(db_path: Path, path: Path) -> bool:
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-        try:
-            session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            return _archive_fts_needs_repair(conn, session_ids or None)
-        finally:
-            conn.close()
-    except Exception:
-        return False
+    del db_path, path
+    return False
 
 
 def _archive_fts_execute(db_path: Path, path: Path) -> bool:
-    try:
-        conn = sqlite3.connect(db_path, timeout=30.0)
-        try:
-            session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            _archive_repair_sessions_fts(conn, session_ids)
-            conn.commit()
-            logger.info("fts: archive repaired messages_fts sessions=%d", len(session_ids))
-            return not _archive_fts_needs_repair(conn, session_ids or None)
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning("fts: archive repair failed", exc_info=True)
-        return False
+    del db_path
+    logger.info("fts: archive source-path foreground repair skipped path=%s", path)
+    return True
 
 
 def _archive_fts_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-        try:
-            by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
-            return {
-                path
-                for path, session_ids in by_path.items()
-                if session_ids and _archive_fts_needs_repair(conn, session_ids)
-            }
-        finally:
-            conn.close()
-    except Exception:
-        return set()
+    del db_path, paths
+    return set()
 
 
 def _archive_fts_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
-    if not paths:
-        return False
-    try:
-        conn = sqlite3.connect(db_path, timeout=30.0)
-        try:
-            by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
-            session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
-            _archive_repair_sessions_fts(conn, session_ids)
-            conn.commit()
-            logger.info("fts: archive batch repaired messages_fts paths=%d sessions=%d", len(paths), len(session_ids))
-            return not _archive_fts_needs_repair(conn, session_ids or None)
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning("fts: archive batch repair failed", exc_info=True)
-        return False
+    del db_path
+    if paths:
+        logger.info("fts: archive batch source-path foreground repair skipped paths=%d", len(paths))
+    return True
 
 
 def _archive_fts_check_sessions(db_path: Path, session_ids: Sequence[str]) -> set[str]:
@@ -1075,7 +1037,7 @@ def _archive_fts_check_sessions(db_path: Path, session_ids: Sequence[str]) -> se
 
 def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> bool:
     try:
-        conn = sqlite3.connect(db_path, timeout=30.0)
+        conn = _open_archive_insight_write_connection(db_path)
         try:
             ids = _archive_existing_session_ids(conn, session_ids)
             if not ids:
@@ -1086,7 +1048,10 @@ def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> 
             return not _archive_fts_needs_repair(conn, ids)
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info("fts: archive session repair deferred because sqlite is busy: %s", exc)
+            return False
         logger.warning("fts: archive session repair failed", exc_info=True)
         return False
 
@@ -1097,13 +1062,119 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
     try:
         conn = _open_archive_insight_write_connection(archive_db)
         try:
-            _archive_rebuild_messages_fts(conn)
+            from polylogue.daemon.fts_status import BOUNDED_MESSAGE_FTS_REPAIR_DETAIL
+            from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
+            from polylogue.storage.fts.freshness import READY, record_fts_surface_state_sync
+            from polylogue.storage.fts.fts_lifecycle import (
+                delete_excess_message_rows_batched_sync,
+                insert_missing_message_rows_batched_sync,
+            )
+
+            configure_bounded_repair_connection(conn)
+            progress_windows = 0
+            inserted_total = 0
+
+            def progress(lower: int, upper: int, inserted: int) -> None:
+                nonlocal inserted_total, progress_windows
+                progress_windows += 1
+                inserted_total += inserted
+                if inserted or progress_windows % 20 == 0:
+                    logger.info(
+                        "fts: archive messages_fts repair window rowid=(%d,%d] inserted=%d total_inserted=%d",
+                        lower,
+                        upper,
+                        inserted,
+                        inserted_total,
+                    )
+
+            deleted_total = 0
+
+            def excess_progress(deleted: int) -> None:
+                nonlocal deleted_total
+                deleted_total += deleted
+                if deleted:
+                    logger.info(
+                        "fts: archive messages_fts deleted excess rows deleted=%d total_deleted=%d",
+                        deleted,
+                        deleted_total,
+                    )
+
+            delete_excess_message_rows_batched_sync(conn, progress_callback=excess_progress)
+            insert_missing_message_rows_batched_sync(
+                conn,
+                measure_counts=False,
+                progress_callback=progress,
+            )
+            record_fts_surface_state_sync(
+                conn,
+                surface="messages_fts",
+                state=READY,
+                # The bounded repair has just deleted excess shadow rows until
+                # none remain and inserted missing rows across every indexable
+                # block rowid window. Avoid turning daemon convergence into a
+                # full-surface diagnostic count on large live archives; status
+                # treats this detail as ready with exact cardinalities omitted.
+                source_rows=1,
+                indexed_rows=1,
+                missing_rows=0,
+                excess_rows=0,
+                duplicate_rows=0,
+                detail=BOUNDED_MESSAGE_FTS_REPAIR_DETAIL,
+            )
             conn.commit()
-            return not _archive_fts_needs_repair(conn)
+            logger.info(
+                "fts: archive messages_fts surface repair marked ready inserted=%d deleted=%d exact_counts=false",
+                inserted_total,
+                deleted_total,
+            )
+            return True
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info("fts: archive global messages_fts repair deferred because sqlite is busy: %s", exc)
+            return False
         logger.warning("fts: archive global messages_fts repair failed", exc_info=True)
+        return False
+
+
+def repair_fts_surface(db_path: Path, surface: str) -> bool:
+    """Repair a named archive FTS surface from daemon convergence debt."""
+    if surface == "messages_fts":
+        return repair_messages_fts_surface(db_path)
+    if surface not in {"session_work_events_fts", "threads_fts"}:
+        logger.warning("fts: unsupported archive FTS surface debt surface=%s", surface)
+        return False
+    archive_db = _active_archive_index_path(db_path) or db_path
+    try:
+        conn = _open_archive_insight_write_connection(archive_db)
+        try:
+            from polylogue.storage.fts.dangling_repair import (
+                configure_bounded_repair_connection,
+                repair_stale_fts_rows,
+            )
+
+            configure_bounded_repair_connection(conn)
+            outcome = repair_stale_fts_rows(conn)
+            conn.commit()
+            if outcome.success:
+                logger.info(
+                    "fts: archive derived FTS surface repair completed surface=%s detail=%s", surface, outcome.detail
+                )
+                return True
+            logger.warning(
+                "fts: archive derived FTS surface repair incomplete surface=%s detail=%s", surface, outcome.detail
+            )
+            return False
+        finally:
+            conn.close()
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info(
+                "fts: archive derived FTS surface repair deferred surface=%s because sqlite is busy: %s", surface, exc
+            )
+            return False
+        logger.warning("fts: archive derived FTS surface repair failed surface=%s", surface, exc_info=True)
         return False
 
 
@@ -1113,10 +1184,21 @@ def _archive_pending_embedding_session_ids(conn: sqlite3.Connection, session_ids
     ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not ids:
         return []
+    db_row = conn.execute("PRAGMA database_list").fetchone()
+    index_db = Path(str(db_row[2])) if db_row is not None and db_row[2] else None
+    status_table = None
+    if index_db is not None:
+        embeddings_db = index_db.with_name("embeddings.db")
+        if embeddings_db.exists():
+            attached = {str(row[1]) for row in conn.execute("PRAGMA database_list").fetchall() if len(row) > 1}
+            if "embeddings" not in attached:
+                conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+            status_table = "embeddings.embedding_status"
     return [
         item.session_id
         for item in select_pending_archive_session_window(
             conn,
+            status_table=status_table,
             session_ids=ids,
             max_sessions=_DAEMON_EMBED_MAX_SESSIONS,
             max_messages=_DAEMON_EMBED_MAX_MESSAGES,
@@ -1338,11 +1420,36 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
     return [str(row[0]) for row in rows]
 
 
-def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
-    if not _table_exists(conn, "sessions"):
+def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, limit: int | None = None) -> list[str]:
+    if not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
-    rows = conn.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall()
-    return _archive_stale_session_profile_ids(conn, [str(row[0]) for row in rows])
+    sql = """
+        SELECT s.session_id
+        FROM sessions AS s
+        LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
+        LEFT JOIN insight_materialization AS im
+          ON im.session_id = s.session_id AND im.insight_type = 'session_profile'
+        WHERE
+          sp.session_id IS NULL
+          OR sp.materializer_version != ?
+          OR im.materializer_version != ?
+          OR (
+              s.sort_key_ms IS NOT NULL
+              AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(s.sort_key_ms AS REAL) / 1000.0)) > 0.000001
+          )
+          OR (
+              s.sort_key_ms IS NULL
+              AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
+                  COALESCE(CAST(s.updated_at_ms / 1000 AS TEXT), '')
+          )
+        ORDER BY s.session_id
+    """
+    params: tuple[object, ...] = (SESSION_INSIGHT_MATERIALIZER_VERSION, SESSION_INSIGHT_MATERIALIZER_VERSION)
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = params + (max(0, int(limit)),)
+    rows = conn.execute(sql, params).fetchall()
+    return [str(row[0]) for row in rows]
 
 
 def _archive_insights_check(db_path: Path, path: Path) -> bool:
@@ -1350,9 +1457,7 @@ def _archive_insights_check(db_path: Path, path: Path) -> bool:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            if session_ids:
-                return bool(_archive_stale_session_profile_ids(conn, session_ids))
-            return bool(_schema_archive_session_ids_missing_profiles(conn))
+            return bool(session_ids) and bool(_archive_stale_session_profile_ids(conn, session_ids))
         finally:
             conn.close()
     except Exception:
@@ -1363,9 +1468,10 @@ def _archive_insights_execute(db_path: Path, path: Path) -> StageExecuteReturn:
     try:
         conn = _open_archive_insight_write_connection(db_path)
         try:
-            session_ids = _schema_archive_session_ids_for_source_path(
-                conn, path
-            ) or _schema_archive_session_ids_missing_profiles(conn)
+            session_ids = _schema_archive_session_ids_for_source_path(conn, path)
+            if not session_ids:
+                logger.info("insights: archive skipped path refresh with no resolved sessions path=%s", path)
+                return True
             return _archive_insights_execute_ids(conn, session_ids)
         finally:
             conn.close()
@@ -1389,9 +1495,7 @@ def _archive_insights_check_many(db_path: Path, paths: Sequence[Path]) -> set[Pa
                 for path, session_ids in by_path.items()
                 if session_ids and _archive_stale_session_profile_ids(conn, session_ids)
             }
-            if result:
-                return result
-            return {Path(paths[0])} if _schema_archive_session_ids_missing_profiles(conn) else set()
+            return result
         finally:
             conn.close()
     except Exception:
@@ -1405,7 +1509,10 @@ def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path]) -> Stag
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
             session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
             if not session_ids:
-                session_ids = _schema_archive_session_ids_missing_profiles(conn)
+                logger.info(
+                    "insights: archive skipped batch path refresh with no resolved sessions paths=%d", len(paths)
+                )
+                return True
             return _archive_insights_execute_ids(conn, session_ids)
         finally:
             conn.close()

@@ -30,7 +30,6 @@ from polylogue.protocols import ProgressCallback
 from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_integrity import (
     BlobReferenceDebtClassificationReport,
-    BlobReferenceDebtRestoreReport,
     BlobReferenceOrphanPruneReport,
     BlobReferenceRecoveryPlanReport,
     BlobReferenceSourceReplaceReport,
@@ -38,7 +37,6 @@ from polylogue.storage.blob_integrity import (
     plan_raw_backed_blob_reference_recovery,
     prune_orphan_blob_reference_debt,
     replace_raw_backed_blob_reference_debt_from_source,
-    restore_direct_blob_reference_debt,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
@@ -55,6 +53,11 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     AssertionKind,
     assertion_envelope_to_payload,
     list_assertions_for_export,
+)
+from polylogue.storage.sqlite.migration_runner import (
+    DURABLE_MIGRATION_TIERS,
+    MigrationError,
+    migrate_archive_tier,
 )
 
 _BACKUP_POLICIES: dict[ArchiveTier, dict[str, object]] = {
@@ -119,7 +122,6 @@ def _build_scope_filter(
     origin: str | None,
     source_family: str | None,
     source_root: str | None,
-    raw_artifact_id: str | None,
     since: str | None,
     until: str | None,
     failure_kind: str | None,
@@ -149,7 +151,6 @@ def _build_scope_filter(
         provider=provider_from_origin(Origin(origin)).value if origin is not None else None,
         source_family=source_family,
         source_root=Path(source_root) if source_root else None,
-        raw_artifact_id=raw_artifact_id,
         time_range=time_range,
         failure_kind=failure_kind,
         parser_version=parser_version,
@@ -175,13 +176,6 @@ _SCOPE_FILTER_OPTIONS = [
         type=str,
         default=None,
         help="Restrict scope to one source runtime root (e.g. ~/.claude/projects).",
-    ),
-    click.option(
-        "--raw-artifact",
-        "raw_artifact_id",
-        type=str,
-        default=None,
-        help="Restrict scope to one raw artifact id.",
     ),
     click.option("--since", type=str, default=None, help="Inclusive ISO-8601 lower bound of the time range."),
     click.option("--until", type=str, default=None, help="Inclusive ISO-8601 upper bound of the time range."),
@@ -348,7 +342,6 @@ def plan_command(
     origin: str | None,
     source_family: str | None,
     source_root: str | None,
-    raw_artifact_id: str | None,
     since: str | None,
     until: str | None,
     failure_kind: str | None,
@@ -370,7 +363,6 @@ def plan_command(
         origin=origin,
         source_family=source_family,
         source_root=source_root,
-        raw_artifact_id=raw_artifact_id,
         since=since,
         until=until,
         failure_kind=failure_kind,
@@ -840,6 +832,63 @@ def _archive_init_payload(result: ArchiveInitResult) -> dict[str, object]:
     }
 
 
+@maintenance_group.command("migrate-tier")
+@click.argument("tier", type=click.Choice(tuple(sorted(tier.value for tier in DURABLE_MIGRATION_TIERS))))
+@click.option(
+    "--backup-manifest",
+    required=True,
+    type=click.Path(path_type=Path, exists=True),
+    help="Verified polylogue ops backup manifest or backup directory containing manifest.json.",
+)
+@click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
+def migrate_tier_command(tier: str, backup_manifest: Path, output_format: str) -> None:
+    """Apply additive migrations for one durable archive tier.
+
+    Derived tiers are intentionally excluded from this command; rebuild or
+    blue-green replace those from source evidence instead.
+    """
+    archive_tier = ArchiveTier(tier)
+    spec = ARCHIVE_TIER_SPECS[archive_tier]
+    path = archive_root() / spec.filename
+    try:
+        with sqlite3.connect(path) as conn:
+            result = migrate_archive_tier(conn, archive_tier, backup_manifest=backup_manifest)
+    except (sqlite3.Error, MigrationError) as exc:
+        if output_format == "json":
+            click.echo(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "tier": tier,
+                        "path": str(path),
+                        "backup_manifest": str(backup_manifest),
+                        "error": str(exc),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            click.echo(f"Migration blocked for {tier}: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+    payload = {
+        "ok": True,
+        "tier": tier,
+        "path": str(path),
+        "backup_manifest": str(backup_manifest),
+        "from_version": result.from_version,
+        "to_version": result.to_version,
+        "applied_versions": list(result.applied_versions),
+    }
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    applied = ", ".join(str(version) for version in result.applied_versions) or "none"
+    click.echo(f"Migrated {tier}: {result.from_version} -> {result.to_version} (applied: {applied})")
+
+
 @maintenance_group.command("run")
 @click.option(
     "--target",
@@ -892,7 +941,6 @@ def run_command(
     origin: str | None,
     source_family: str | None,
     source_root: str | None,
-    raw_artifact_id: str | None,
     since: str | None,
     until: str | None,
     failure_kind: str | None,
@@ -926,7 +974,6 @@ def run_command(
         origin=origin,
         source_family=source_family,
         source_root=source_root,
-        raw_artifact_id=raw_artifact_id,
         since=since,
         until=until,
         failure_kind=failure_kind,
@@ -1925,89 +1972,6 @@ def _render_blob_reference_debt_plain(report: BlobReferenceDebtClassificationRep
             )
 
 
-@maintenance_group.command("blob-reference-restore-direct")
-@click.option(
-    "--max-count",
-    type=int,
-    default=None,
-    help="Maximum number of direct-file candidates to restore or preview.",
-)
-@click.option(
-    "--sample-limit",
-    type=int,
-    default=30,
-    show_default=True,
-    help="Maximum number of representative samples to include.",
-)
-@click.option(
-    "--yes",
-    is_flag=True,
-    help="Write missing blob files. Without this flag the command is a dry-run preview.",
-)
-@click.option(
-    "--output-format",
-    "output_format",
-    type=click.Choice(["plain", "json"]),
-    default="plain",
-    show_default=True,
-    help="Output format.",
-)
-def blob_reference_restore_direct_command(
-    max_count: int | None,
-    sample_limit: int,
-    yes: bool,
-    output_format: str,
-) -> None:
-    """Restore direct-file missing blobs after exact hash verification."""
-    report = restore_direct_blob_reference_debt(
-        archive_root() / "source.db",
-        dry_run=not yes,
-        max_count=max_count,
-        sample_size=sample_limit,
-    )
-    payload = {
-        "mode": "blob_reference_restore_direct",
-        "mutates": bool(yes),
-        **report.to_dict(),
-    }
-
-    if output_format == "json":
-        click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-
-    _render_blob_reference_restore_plain(report)
-
-
-def _render_blob_reference_restore_plain(report: BlobReferenceDebtRestoreReport) -> None:
-    click.echo("Blob reference direct-file restore")
-    click.echo(f"Source DB:    {report.source_db}")
-    click.echo(f"Blob root:    {report.blob_root}")
-    click.echo(f"Mode:         {'dry-run' if report.dry_run else 'apply'}")
-    click.echo(f"Missing:      {report.missing_distinct_blobs:,} distinct blob(s)")
-    click.echo(f"Candidates:   {report.candidate_count:,}")
-    action = "would restore" if report.dry_run else "restored"
-    affected = report.candidate_count if report.dry_run else report.restored_count
-    click.echo(f"Result:       {action} {affected:,} blob(s)")
-    if not report.dry_run:
-        click.echo(f"Bytes:        {report.restored_bytes:,}")
-    click.echo(
-        "Skipped:      "
-        f"existing={report.skipped_existing:,} "
-        f"no_source={report.skipped_no_source_path:,} "
-        f"container_member={report.skipped_container_member:,} "
-        f"source_missing={report.skipped_source_missing:,} "
-        f"size_mismatch={report.skipped_size_mismatch:,} "
-        f"hash_mismatch={report.skipped_hash_mismatch:,} "
-        f"error={report.skipped_error:,}"
-    )
-    if report.samples:
-        click.echo("Samples:")
-        for sample in report.samples[:5]:
-            detail = f" reason={sample.reason}" if sample.reason else ""
-            source = sample.source_path or "(none)"
-            click.echo(f"  {sample.action} {sample.blob_hash}{detail} {source}")
-
-
 @maintenance_group.command("blob-reference-recovery-plan")
 @click.option(
     "--sample-limit",
@@ -2480,7 +2444,6 @@ __all__ = [
     "blob_reference_prune_orphans_command",
     "blob_reference_recovery_plan_command",
     "blob_reference_replace_from_source_command",
-    "blob_reference_restore_direct_command",
     "gc_history_command",
     "maintenance_group",
     "plan_command",

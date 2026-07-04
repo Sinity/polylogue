@@ -231,15 +231,13 @@ class TestInvalidationKeysOnTargets:
         catalog = build_maintenance_target_catalog()
         by_name = catalog.by_name()
 
-        assert "messages_fts" in by_name["dangling_fts"].invalidation_keys
         assert "session.profile" in by_name["session_insights"].invalidation_keys
-        embeddings = by_name["message_embeddings"]
-        assert "message_embeddings" in embeddings.invalidation_keys
 
     def test_invalidation_keys_surface_through_to_dict(self) -> None:
-        spec = build_maintenance_target_catalog().by_name()["dangling_fts"]
+        spec = build_maintenance_target_catalog().by_name()["session_insights"]
         payload = spec.to_dict()
-        assert payload["invalidation_keys"] == ["messages_fts"]
+        invalidation_keys = cast(list[str], payload["invalidation_keys"])
+        assert "session.profile" in invalidation_keys
 
 
 class TestDeriveInvalidationReason:

@@ -20,7 +20,7 @@ def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None
             "path_targets": ["session-insight-repair-loop"],
             "artifact_targets": ["doctor_runtime", "message_fts"],
             "operation_targets": ("cli.doctor",),
-            "maintenance_targets": ["dangling_fts"],
+            "maintenance_targets": ["session_insights"],
             "tags": ["generated", "json-contract"],
             "docs_role": "quickstart",
             "caption": "Doctor detects repairable session-insight gaps.",
@@ -37,7 +37,7 @@ def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None
     assert metadata.path_targets == ("session-insight-repair-loop",)
     assert metadata.artifact_targets == ("doctor_runtime", "message_fts")
     assert metadata.operation_targets == ("cli.doctor",)
-    assert metadata.maintenance_targets == ("dangling_fts",)
+    assert metadata.maintenance_targets == ("session_insights",)
     assert metadata.tags == ("generated", "json-contract")
     assert metadata.docs_role == "quickstart"
     assert metadata.caption == "Doctor detects repairable session-insight gaps."

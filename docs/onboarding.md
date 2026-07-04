@@ -38,7 +38,7 @@ The canonical roots it looks for:
 | `claude-code` | `~/.claude/projects/` | Claude Code session JSONL |
 | `codex` | `~/.codex/sessions/` | Codex session JSONL |
 | `gemini-cli` | `~/.gemini/tmp/` | Gemini CLI workspace exports |
-| `hermes` | `~/.hermes/sessions/` | Hermes agent sessions |
+| `hermes` | `~/.hermes/` | Hermes `state.db` plus fallback session exports |
 | `antigravity` | `~/.gemini/antigravity/` | Antigravity brain artifacts |
 | `hooks` | `$XDG_DATA_HOME/polylogue/hooks/` | Agent hook sidecar spool |
 

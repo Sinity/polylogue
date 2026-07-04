@@ -45,18 +45,18 @@ def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_met
         "doctor",
         "--repair",
         "--target",
-        "dangling_fts",
+        "message_type_backfill",
         "--target",
         "session_insights",
     )
 
     assert execution.metadata.operation_targets == (
-        "index-message-fts",
+        "backfill-message-type",
         "materialize-session-insights",
         "project-session-insight-readiness",
     )
     assert execution.metadata.maintenance_targets == (
-        "dangling_fts",
+        "message_type_backfill",
         "session_insights",
     )
 

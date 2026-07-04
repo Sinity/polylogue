@@ -29,6 +29,7 @@ EXPECTED_TOOL_NAMES = {
     "embedding_status",
     "embedding_preflight",
     "facets",
+    "agent_coordination",
     "add_tag",
     "remove_tag",
     "bulk_tag_sessions",
@@ -127,6 +128,7 @@ EXPECTED_PROMPT_NAMES = {
     "extract_code",
     "compare_sessions",
     "extract_patterns",
+    "agent_coordination_brief",
 }
 
 SurfaceResult = TypeVar("SurfaceResult")

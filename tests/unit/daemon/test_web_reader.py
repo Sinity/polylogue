@@ -31,7 +31,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import HTTPServer
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import quote
@@ -638,6 +638,7 @@ class TestReaderSearchState:
             "renderStackWorkspace",
             "renderCompareWorkspace",
             "renderInspector",
+            "renderInspectorMission",
             "renderInspectorEvidence",
             "renderBrowserCaptureChip",
             "renderReadViewExecution",
@@ -655,13 +656,27 @@ class TestReaderSearchState:
             "budget_exceeded",
             "applyReadViewSelection",
             "/api/read-view-profiles",
+            "/api/agents/coordination",
             "/read?view=",
             "/api/assertions",
             "Load artifact list",
             "Load raw preview",
             'data-tab="evidence"',
+            'data-tab="mission"',
         ):
             assert region in body, f"web shell missing region hook {region!r}"
+
+    def test_agent_coordination_endpoint_uses_shared_payload(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(dict[str, Any], _get_json(base_url, "/api/agents/coordination?view=status&limit=3"))
+
+        assert payload["view"] == "status"
+        repo = cast(dict[str, Any], payload["repo"])
+        work_item = cast(dict[str, Any], payload["work_item"])
+        assert repo["root"]
+        assert work_item["source"] in {"beads", "git", "inferred", "none"}
+        assert "peers" in payload
+        assert "resource_episodes" in payload
 
     def test_raw_tab_uses_bounded_provenance_preview_not_broad_raw_fetch(self, workspace_env: dict[str, Path]) -> None:
         """The shell must not fetch the broad /raw route when opening Raw.

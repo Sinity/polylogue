@@ -17,6 +17,10 @@ Use `.agent/scripts/devloop-status --focus` for a very fast context refresh
 when only the active slice, focus, next action, git state, and packet size are
 needed. Use `--quick` when host pressure is high and slower detailed
 ops/worktree probes would add friction.
+Use `devtools workspace frontier` during Direction or wait-ahead windows to
+classify the current Beads frontier by subsystem, proof cost, live-runtime
+risk, schema-lane conflict, and subagent suitability before claiming or
+dispatching work.
 
 Then run `bd prime` (Beads workflow context) and read, in order:
 
@@ -65,11 +69,32 @@ instruction. After compaction or resume:
 
 ## Process
 
-Use the shared focus modes exactly:
+Use the executable focus modes exactly:
 
 ```text
 Direction, Evidence, Construction, Proof, Artifact, Velocity, Meta
 ```
+
+The conceptual loop state machine is:
+
+```text
+Direction -> Evidence -> Construction -> Proof -> Artifact -> Integration -> Velocity/Meta
+```
+
+Treat `Integration` as the required PR/Beads/state handoff step before the loop
+closes. Treat `Velocity/Meta` as mandatory closure for every loop: record either
+a no-op reason, a new batch grouping, a delegation, a removed friction point, or
+a follow-up Bead.
+
+Default to greedy batching. The normal development unit is the whole bead:
+finish the capability claim total, then publish it. A coherent bead phase is a
+fallback only when the bead is genuinely too large or risky to close in one PR
+and the phase has its own honest acceptance/residual matrix. Do not publish each
+green helper, renderer field, construct declaration, or proof artifact as its
+own PR when the rest of the bead can be finished with the same evidence,
+substrate, and verification pass. Split only for real reviewability, risk,
+unblocking, or materially different verification boundaries; otherwise keep
+working until the bead closes.
 
 Record material transitions with:
 
@@ -187,6 +212,12 @@ Execution-grade beads (the specification contract):
 
 Throughput discipline (operator directive 2026-07-03):
 
+- **Finish the bead by default.** Before choosing a PR boundary, audit the full
+  bead acceptance criteria and assume the PR should close the bead. If the
+  remaining criteria touch the same subsystem and can share one focused proof
+  plus one artifact, keep batching on the same branch instead of shipping a
+  phase slice. Treat a partial PR as exceptional, not as the normal way to make
+  progress.
 - **Batch verification.** One testmon pass per coherent change-set, not per
   edit; the broad gate (`devtools verify`) runs once when the batch is ready
   to publish and after failure fixes — never as inner-loop ritual.

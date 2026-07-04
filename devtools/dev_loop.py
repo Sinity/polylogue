@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
 import socket
 import sqlite3
@@ -22,10 +23,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
 from typing import Any, TextIO, cast
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from devtools import repo_root as _repo_root
 from polylogue.browser_capture.server import make_server
+from polylogue.storage.sqlite.archive_tiers.archive_init import (
+    ArchiveInitBlockedError,
+    initialize_archive_tier_files,
+)
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
 DEFAULT_API_PORT = 8766
 DEFAULT_BROWSER_CAPTURE_PORT = 8765
@@ -92,6 +98,15 @@ _DEV_LOOP_AUTHORITIES: dict[str, dict[str, object]] = {
     "browser_provider_smoke": {
         "label": "local-browser-deterministic-provider-smoke",
         "description": "Load deterministic ChatGPT/Claude fixture pages in headless Chrome/Chromium and verify content-script capture without live cookies.",
+        "source_safe": True,
+        "cloud_safe": False,
+        "requires_browser": True,
+        "requires_copied_profile": False,
+        "local_only": True,
+    },
+    "browser_provider_live_follow": {
+        "label": "local-browser-deterministic-live-follow-proof",
+        "description": "Launch branch-local daemon, capture deterministic provider pages through the extension, and prove receiver output reaches archive/API reads.",
         "source_safe": True,
         "cloud_safe": False,
         "requires_browser": True,
@@ -177,6 +192,53 @@ def _terminate_process_tree(process: subprocess.Popen[str], sig: int) -> None:
                 process.terminate()
         except OSError:
             return
+
+
+def _terminate_pid_tree(pid: int, *, grace_s: float = 3.0) -> dict[str, object]:
+    def _reaped_or_exited() -> bool:
+        try:
+            waited_pid, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        else:
+            if waited_pid == pid:
+                return True
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except OSError:
+            return True
+        parts = stat.split()
+        return len(parts) > 2 and parts[2] == "Z"
+
+    signals_sent: list[str] = []
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if _reaped_or_exited():
+            return {"ok": True, "pid": pid, "signals_sent": signals_sent, "state": "exited"}
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            return {"ok": True, "pid": pid, "signals_sent": signals_sent, "state": "exited"}
+        except (PermissionError, OSError) as exc:
+            return {
+                "ok": False,
+                "pid": pid,
+                "signals_sent": signals_sent,
+                "state": "signal_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        signals_sent.append(signal.Signals(sig).name)
+        deadline = time.monotonic() + grace_s
+        while time.monotonic() <= deadline:
+            if _reaped_or_exited():
+                return {"ok": True, "pid": pid, "signals_sent": signals_sent, "state": "exited"}
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return {"ok": True, "pid": pid, "signals_sent": signals_sent, "state": "exited"}
+            except PermissionError:
+                break
+            time.sleep(0.05)
+    return {"ok": False, "pid": pid, "signals_sent": signals_sent, "state": "still_running"}
 
 
 def _run_process_tree(
@@ -510,6 +572,100 @@ def _receiver_post(
         conn.close()
 
 
+def _http_get_json_url(url: str, *, timeout_s: float = 5.0) -> tuple[int, dict[str, object]]:
+    parts = urlsplit(url)
+    if parts.scheme != "http":
+        raise ValueError(f"unsupported dev-loop URL scheme: {parts.scheme or '<missing>'}")
+    host = parts.hostname or "127.0.0.1"
+    port = parts.port or 80
+    path = urlunsplit(("", "", parts.path or "/", parts.query, ""))
+    conn = HTTPConnection(host, port, timeout=timeout_s)
+    try:
+        conn.request("GET", path)
+        response = conn.getresponse()
+        raw = response.read().decode("utf-8")
+        try:
+            body = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            body = {"error": raw}
+        return response.status, dict(body) if isinstance(body, dict) else {"body": body}
+    finally:
+        conn.close()
+
+
+def _poll_archive_state(
+    *,
+    receiver_url: str,
+    provider: str,
+    provider_session_id: str,
+    timeout_s: float,
+    interval_s: float,
+) -> dict[str, object]:
+    query = urlencode({"provider": provider, "provider_session_id": provider_session_id})
+    url = f"{receiver_url.rstrip('/')}/v1/archive-state?{query}"
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    attempts = 0
+    last_status = 0
+    last_payload: dict[str, object] = {}
+    while time.monotonic() <= deadline:
+        attempts += 1
+        try:
+            last_status, last_payload = _http_get_json_url(url, timeout_s=5.0)
+        except OSError as exc:
+            last_status = 0
+            last_payload = {"error": f"{type(exc).__name__}: {exc}"}
+        if (
+            last_status == 200
+            and last_payload.get("raw_row_exists") is True
+            and last_payload.get("indexed_session_exists") is True
+        ):
+            break
+        time.sleep(max(0.05, interval_s))
+    return {
+        "ok": last_status == 200
+        and last_payload.get("raw_row_exists") is True
+        and last_payload.get("indexed_session_exists") is True,
+        "status": last_status,
+        "attempts": attempts,
+        "url": url,
+        "provider": provider,
+        "provider_session_id": provider_session_id,
+        "state": last_payload,
+    }
+
+
+def _session_id_for_provider(provider: str, provider_session_id: str) -> str:
+    origin = {
+        "chatgpt": "chatgpt-export",
+        "claude-ai": "claude-ai-export",
+    }.get(provider, provider)
+    return f"{origin}:{provider_session_id}"
+
+
+def _fetch_api_messages(
+    *,
+    api_url: str,
+    session_id: str,
+    limit: int = 5,
+) -> dict[str, object]:
+    path_session_id = quote(session_id, safe="")
+    url = f"{api_url.rstrip('/')}/api/sessions/{path_session_id}/messages?{urlencode({'limit': limit})}"
+    try:
+        status, payload = _http_get_json_url(url, timeout_s=5.0)
+    except OSError as exc:
+        return {"ok": False, "status": 0, "url": url, "error": f"{type(exc).__name__}: {exc}"}
+    messages = payload.get("messages")
+    count = len(messages) if isinstance(messages, list) else 0
+    return {
+        "ok": status == 200 and count > 0,
+        "status": status,
+        "url": url,
+        "session_id": session_id,
+        "message_count": count,
+        "payload_keys": sorted(payload.keys()),
+    }
+
+
 def run_receiver_smoke(*, spool_path: Path) -> dict[str, object]:
     spool_path.mkdir(parents=True, exist_ok=True)
     server = make_server(
@@ -561,10 +717,12 @@ def run_extension_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
     artifacts = preflight.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("preflight payload is missing artifact paths")
-    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir = Path(str(artifacts["browser_dir"])).resolve()
     browser_dir.mkdir(parents=True, exist_ok=True)
-    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
-    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
+    event_path = Path(
+        str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl"))
+    ).resolve()
+    extension_root = (Path(str(preflight["repo_root"])) / "browser-extension").resolve()
     spool_path = browser_dir / "extension-smoke-spool"
     summary_path = browser_dir / "extension-smoke.json"
     result_path = browser_dir / "extension-smoke-result.json"
@@ -697,10 +855,12 @@ def run_browser_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
     artifacts = preflight.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("preflight payload is missing artifact paths")
-    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir = Path(str(artifacts["browser_dir"])).resolve()
     browser_dir.mkdir(parents=True, exist_ok=True)
-    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
-    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
+    event_path = Path(
+        str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl"))
+    ).resolve()
+    extension_root = (Path(str(preflight["repo_root"])) / "browser-extension").resolve()
     spool_path = browser_dir / "browser-smoke-spool"
     profile_dir = browser_dir / "browser-smoke-profile"
     summary_path = browser_dir / "browser-smoke.json"
@@ -886,23 +1046,47 @@ def _default_live_provider_urls() -> dict[str, str]:
     }
 
 
-def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
+def run_browser_provider_smoke(
+    *,
+    preflight: dict[str, Any],
+    receiver_url_override: str | None = None,
+    spool_path_override: Path | None = None,
+    session_id: str | None = None,
+    reader_base_url: str | None = None,
+    reader_session_id: str | None = None,
+) -> dict[str, object]:
     """Run real Chrome content scripts against deterministic provider fixture pages."""
 
     artifacts = preflight.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("preflight payload is missing artifact paths")
-    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir = Path(str(artifacts["browser_dir"])).resolve()
     browser_dir.mkdir(parents=True, exist_ok=True)
-    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
-    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
-    spool_path = browser_dir / "browser-provider-smoke-spool"
+    event_path = Path(
+        str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl"))
+    ).resolve()
+    extension_root = (Path(str(preflight["repo_root"])) / "browser-extension").resolve()
+    spool_path = (
+        spool_path_override if spool_path_override is not None else browser_dir / "browser-provider-smoke-spool"
+    )
     profile_dir = browser_dir / "browser-provider-smoke-profile"
     summary_path = browser_dir / "browser-provider-smoke.json"
     result_path = browser_dir / "browser-provider-smoke-result.json"
+    popup_screenshot_path = browser_dir / "browser-provider-smoke-popup.png"
     stdout_path = browser_dir / "browser-provider-smoke.stdout"
     stderr_path = browser_dir / "browser-provider-smoke.stderr"
     env_path = browser_dir / "browser-provider-smoke.env.json"
+    generated_paths: tuple[Path, ...]
+    if spool_path_override is None:
+        generated_paths = (spool_path, profile_dir, result_path, popup_screenshot_path)
+    else:
+        generated_paths = (profile_dir, result_path, popup_screenshot_path)
+    for generated_path in generated_paths:
+        if generated_path.exists():
+            if generated_path.is_dir():
+                shutil.rmtree(generated_path)
+            else:
+                generated_path.unlink()
 
     _write_dev_loop_event(
         event_path,
@@ -920,31 +1104,43 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
 
     spool_path.mkdir(parents=True, exist_ok=True)
     profile_dir.mkdir(parents=True, exist_ok=True)
-    server = make_server(
-        "127.0.0.1",
-        0,
-        spool_path=spool_path,
-        auth_token=_RECEIVER_SMOKE_TOKEN,
-    )
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    host, port = server.server_address[:2]
-    if isinstance(host, bytes):
-        host = host.decode("ascii")
-    receiver_url = f"http://{host}:{port}"
+    server = None
+    thread: Thread | None = None
+    receiver_url = receiver_url_override
+    if receiver_url is None:
+        server = make_server(
+            "127.0.0.1",
+            0,
+            spool_path=spool_path,
+            auth_token=_RECEIVER_SMOKE_TOKEN,
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        if isinstance(host, bytes):
+            host = host.decode("ascii")
+        receiver_url = f"http://{host}:{port}"
     env = os.environ.copy()
     env.update(
         {
             "POLYLOGUE_PROVIDER_SMOKE_EXTENSION_ROOT": str(extension_root),
             "POLYLOGUE_PROVIDER_SMOKE_KEEP_PROFILE": "1",
             "POLYLOGUE_PROVIDER_SMOKE_OUT": str(result_path),
-            "POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS": os.environ.get("POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS", "10000"),
+            "POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS": os.environ.get(
+                "POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS",
+                "25000" if reader_base_url is not None and reader_session_id is not None else "10000",
+            ),
             "POLYLOGUE_PROVIDER_SMOKE_PROFILE_DIR": str(profile_dir),
             "POLYLOGUE_PROVIDER_SMOKE_RECEIVER_TOKEN": _RECEIVER_SMOKE_TOKEN,
             "POLYLOGUE_PROVIDER_SMOKE_RECEIVER_URL": receiver_url,
             "POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR": str(spool_path),
         }
     )
+    if session_id is not None:
+        env["POLYLOGUE_PROVIDER_SMOKE_SESSION_ID"] = session_id
+    if reader_base_url is not None and reader_session_id is not None:
+        env["POLYLOGUE_PROVIDER_SMOKE_READER_BASE_URL"] = reader_base_url
+        env["POLYLOGUE_PROVIDER_SMOKE_READER_SESSION_ID"] = reader_session_id
     env_path.write_text(json.dumps(_dev_loop_env_snapshot(env), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     started = time.monotonic()
     try:
@@ -963,9 +1159,11 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
         elif result_path.exists():
             result_payload = json.loads(result_path.read_text(encoding="utf-8"))
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        if thread is not None:
+            thread.join(timeout=5)
 
     duration_ms = int((time.monotonic() - started) * 1000)
     stdout_path.write_text(stdout, encoding="utf-8")
@@ -977,18 +1175,56 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
     extension_id = None
     manifest = None
     privacy_posture = None
+    popup_status = None
+    reader_status = None
     if isinstance(result_payload, dict):
         extension_id = result_payload.get("extension_id")
         raw_manifest = result_payload.get("manifest")
         manifest = raw_manifest if isinstance(raw_manifest, dict) else None
         raw_privacy_posture = result_payload.get("privacy_posture")
         privacy_posture = raw_privacy_posture if isinstance(raw_privacy_posture, str) else None
+        raw_popup = result_payload.get("popup")
+        if isinstance(raw_popup, dict):
+            inspection = raw_popup.get("inspection")
+            if isinstance(inspection, dict):
+                popup_status = {
+                    "ok": bool(inspection.get("ok")),
+                    "debug_log_count": inspection.get("debugLogCount"),
+                    "receiver_event_count": inspection.get("receiverEventCount"),
+                    "capture_log_count": inspection.get("captureLogCount"),
+                    "has_raw_payload_leak": bool(inspection.get("hasRawPayloadLeak")),
+                }
+        raw_reader = result_payload.get("reader")
+        if isinstance(raw_reader, dict):
+            raw_inspection = raw_reader.get("inspection")
+            inspection = raw_inspection if isinstance(raw_inspection, dict) else {}
+            reader_status = {
+                "ok": bool(raw_reader.get("ok")),
+                "url": raw_reader.get("url"),
+                "selected_session_id": inspection.get("selectedConvId"),
+                "message_row_count": inspection.get("messageRowCount"),
+                "has_user_turn": bool(inspection.get("hasUserTurn")),
+                "has_assistant_turn": bool(inspection.get("hasAssistantTurn")),
+                "has_live_chip": bool(inspection.get("hasLiveChip")),
+                "has_raw_private_paths": bool(inspection.get("hasRawPrivatePaths")),
+            }
     ok = (
         exit_code == 0
         and bool(provider_statuses)
         and all(provider_statuses.values())
         and bool(artifact_paths)
         and all(Path(path).exists() for path in artifact_paths.values())
+        and (popup_status is None or (popup_status["ok"] is True and popup_status["has_raw_payload_leak"] is False))
+        and (
+            reader_status is None
+            or (
+                reader_status["ok"] is True
+                and reader_status["has_user_turn"] is True
+                and reader_status["has_assistant_turn"] is True
+                and reader_status["has_live_chip"] is True
+                and reader_status["has_raw_private_paths"] is False
+            )
+        )
     )
     payload: dict[str, object] = {
         "ok": ok,
@@ -999,6 +1235,8 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
         "extension_root": str(extension_root),
         "manifest": manifest,
         "privacy_posture": privacy_posture,
+        "popup_status": popup_status,
+        "reader_status": reader_status,
         "profile_dir": str(profile_dir),
         "receiver_url": receiver_url,
         "spool_path": str(spool_path),
@@ -1011,6 +1249,7 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
             "stderr": str(stderr_path),
             "summary": str(summary_path),
             "result": str(result_path),
+            "popup_screenshot": str(popup_screenshot_path) if popup_screenshot_path.exists() else None,
             "env": str(env_path),
             "profile": str(profile_dir),
             "spool": str(spool_path),
@@ -1028,6 +1267,8 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
             "duration_ms": duration_ms,
             "extension_id": extension_id,
             "provider_statuses": provider_statuses,
+            "popup_status": popup_status,
+            "reader_status": reader_status,
             "artifact_refs": artifact_refs,
             "artifact_paths": artifact_paths,
             "artifacts": payload["artifacts"],
@@ -1752,6 +1993,7 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
         "browser_plan": run_dir / "browser" / "browser-plan.json",
         "browser_smoke": run_dir / "browser" / "browser-smoke.json",
         "browser_provider_smoke": run_dir / "browser" / "browser-provider-smoke.json",
+        "browser_provider_live_follow": run_dir / "browser" / "browser-provider-live-follow.json",
         "browser_live_proof": run_dir / "browser" / "browser-live-proof.json",
         "extension_smoke": run_dir / "browser" / "extension-smoke.json",
         "tui_plan": run_dir / "tui" / "tui-plan.json",
@@ -1974,6 +2216,7 @@ def launch_branch_daemon(
     *,
     preflight: dict[str, Any],
     readiness_timeout_s: float,
+    full_source_catchup: bool = False,
 ) -> dict[str, object]:
     """Launch a branch-local polylogued and persist process/debug artifacts."""
 
@@ -2019,6 +2262,7 @@ def launch_branch_daemon(
     env.setdefault("POLYLOGUE_FORCE_PLAIN", "1")
     repo_root = Path(str(preflight["repo_root"]))
     _prepend_pythonpath(env, repo_root)
+    archive_preparation = _prepare_archive_for_daemon_launch(preflight)
 
     api_status = ports["api"]
     receiver_status = ports["browser_capture"]
@@ -2026,22 +2270,25 @@ def launch_branch_daemon(
     assert isinstance(receiver_status, dict)
     api_port = int(api_status["port"])
     receiver_port = int(receiver_status["port"])
-    spool_path = run_log_dir / "browser-capture-spool"
+    data_home = Path(
+        str(env.get("XDG_DATA_HOME", repo_root / ".cache" / "dev-loop" / str(preflight["run_id"]) / "xdg-data"))
+    )
+    spool_path = data_home / "polylogue" / "browser-capture"
     spool_path.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
         "-c",
         "from polylogue.daemon.cli import main; main()",
         "run",
-        "--no-watch",
-        "--no-source-catchup",
+        "--spool",
+        str(spool_path),
         "--api-port",
         str(api_port),
         "--port",
         str(receiver_port),
-        "--spool",
-        str(spool_path),
     ]
+    if not full_source_catchup:
+        command.extend(["--root", str(spool_path), "--no-source-catchup"])
 
     env_snapshot = _dev_loop_env_snapshot(env)
     env_path.write_text(json.dumps(env_snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -2060,6 +2307,8 @@ def launch_branch_daemon(
             "browser_capture_port": receiver_port,
             "spool_path": str(spool_path),
             "log_path": str(daemon_log),
+            "archive_preparation": archive_preparation,
+            "full_source_catchup": full_source_catchup,
         },
     )
     with daemon_log.open("a", encoding="utf-8") as log_file:
@@ -2126,9 +2375,11 @@ def launch_branch_daemon(
         "ended_at": ended_at.isoformat(),
         "duration_ms": duration_ms,
         "exit_code": exit_code,
+        "archive_preparation": archive_preparation,
         "api_ready": api_ready,
         "browser_capture_ready": receiver_ready,
         "readiness_timeout_s": readiness_timeout_s,
+        "full_source_catchup": full_source_catchup,
         "spool_path": str(spool_path),
         "artifacts": {
             "log": str(daemon_log),
@@ -2139,6 +2390,165 @@ def launch_branch_daemon(
         },
     }
     summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
+def run_browser_provider_live_follow(
+    *,
+    preflight: dict[str, Any],
+    readiness_timeout_s: float,
+    archive_timeout_s: float,
+    full_source_catchup: bool = False,
+) -> dict[str, object]:
+    """Prove deterministic browser captures flow through a branch daemon into reads."""
+
+    artifacts = preflight.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("preflight payload is missing artifact paths")
+    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir.mkdir(parents=True, exist_ok=True)
+    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
+    summary_path = browser_dir / "browser-provider-live-follow.json"
+    session_id = f"polylogue-dev-loop-live-follow-{preflight['run_id']}"
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser_provider_live_follow",
+        event_type="browser_provider_live_follow_requested",
+        status="starting",
+        payload={
+            "session_id": session_id,
+            "readiness_timeout_s": readiness_timeout_s,
+            "archive_timeout_s": archive_timeout_s,
+            "full_source_catchup": full_source_catchup,
+        },
+    )
+
+    started = time.monotonic()
+    launch_payload: dict[str, object] | None = None
+    smoke_payload: dict[str, object] | None = None
+    archive_states: dict[str, object] = {}
+    api_messages: dict[str, object] = {}
+    stop_payload: dict[str, object] | None = None
+    error_payload: dict[str, object] = {}
+    try:
+        launch_payload = launch_branch_daemon(
+            preflight=preflight,
+            readiness_timeout_s=readiness_timeout_s,
+            full_source_catchup=full_source_catchup,
+        )
+        if launch_payload.get("ok") is not True:
+            raise RuntimeError("branch daemon did not become ready")
+        ports = preflight.get("ports")
+        if not isinstance(ports, dict):
+            raise RuntimeError("preflight payload is missing ports")
+        api_status = ports.get("api")
+        receiver_status = ports.get("browser_capture")
+        if not isinstance(api_status, dict) or not isinstance(receiver_status, dict):
+            raise RuntimeError("preflight payload has malformed ports")
+        receiver_url = f"http://127.0.0.1:{int(receiver_status['port'])}"
+        api_url = f"http://127.0.0.1:{int(api_status['port'])}"
+        smoke_payload = run_browser_provider_smoke(
+            preflight=preflight,
+            receiver_url_override=receiver_url,
+            spool_path_override=Path(str(launch_payload["spool_path"])),
+            session_id=session_id,
+            reader_base_url=api_url,
+            reader_session_id=_session_id_for_provider("chatgpt", session_id),
+        )
+        result_payload = smoke_payload.get("result")
+        provider_rows = result_payload.get("providers") if isinstance(result_payload, dict) else None
+        if isinstance(provider_rows, dict):
+            for provider_key, provider_payload in provider_rows.items():
+                if not isinstance(provider_payload, dict):
+                    continue
+                provider = provider_payload.get("provider")
+                provider_session_id = provider_payload.get("provider_session_id")
+                if not isinstance(provider, str) or not isinstance(provider_session_id, str):
+                    continue
+                archive_states[str(provider_key)] = _poll_archive_state(
+                    receiver_url=receiver_url,
+                    provider=provider,
+                    provider_session_id=provider_session_id,
+                    timeout_s=archive_timeout_s,
+                    interval_s=0.25,
+                )
+                api_messages[str(provider_key)] = _fetch_api_messages(
+                    api_url=api_url,
+                    session_id=_session_id_for_provider(provider, provider_session_id),
+                    limit=5,
+                )
+    except Exception as exc:
+        error_payload = {"type": type(exc).__name__, "message": str(exc)}
+    finally:
+        if isinstance(launch_payload, dict):
+            pid = launch_payload.get("pid")
+            if isinstance(pid, int):
+                stop_payload = _terminate_pid_tree(pid)
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    provider_statuses: dict[str, bool] = {}
+    if isinstance(smoke_payload, dict):
+        raw_provider_statuses = smoke_payload.get("provider_statuses")
+        if isinstance(raw_provider_statuses, dict):
+            provider_statuses = {str(key): value is True for key, value in raw_provider_statuses.items()}
+    archive_ok = bool(archive_states) and all(
+        isinstance(state, dict) and state.get("ok") is True for state in archive_states.values()
+    )
+    api_ok = bool(api_messages) and all(
+        isinstance(state, dict) and state.get("ok") is True for state in api_messages.values()
+    )
+    reader_status = smoke_payload.get("reader_status") if isinstance(smoke_payload, dict) else None
+    reader_ok = isinstance(reader_status, dict) and reader_status.get("ok") is True
+    ok = (
+        not error_payload
+        and isinstance(launch_payload, dict)
+        and launch_payload.get("ok") is True
+        and isinstance(smoke_payload, dict)
+        and smoke_payload.get("ok") is True
+        and archive_ok
+        and api_ok
+        and reader_ok
+    )
+    payload: dict[str, object] = {
+        "ok": ok,
+        "authority": _authority("browser_provider_live_follow"),
+        "session_id": session_id,
+        "duration_ms": duration_ms,
+        "provider_statuses": provider_statuses,
+        "archive_ok": archive_ok,
+        "api_ok": api_ok,
+        "reader_ok": reader_ok,
+        "error": error_payload or None,
+        "daemon_launch": launch_payload,
+        "browser_provider_smoke": smoke_payload,
+        "archive_states": archive_states,
+        "api_messages": api_messages,
+        "reader": reader_status,
+        "daemon_stop": stop_payload,
+        "artifacts": {
+            "summary": str(summary_path),
+            "events": str(event_path),
+        },
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser_provider_live_follow",
+        event_type="browser_provider_live_follow_finished",
+        status="ok" if ok else "failed",
+        payload={
+            "duration_ms": duration_ms,
+            "session_id": session_id,
+            "provider_statuses": provider_statuses,
+            "archive_ok": archive_ok,
+            "api_ok": api_ok,
+            "reader_ok": reader_ok,
+            "error": error_payload or None,
+            "artifacts": payload["artifacts"],
+        },
+    )
     return payload
 
 
@@ -2197,6 +2607,21 @@ def _artifact_state(
 
 def _archive_status(archive: Path) -> dict[str, object]:
     index_db = archive / "index.db"
+    tier_statuses: dict[str, dict[str, object]] = {}
+    all_tiers_ready = True
+    for tier, spec in ARCHIVE_TIER_SPECS.items():
+        tier_path = archive / spec.filename
+        user_version = _read_sqlite_user_version(tier_path) if tier_path.exists() else None
+        ready = user_version == spec.version
+        all_tiers_ready = all_tiers_ready and ready
+        tier_statuses[tier.value] = {
+            "path": str(tier_path),
+            "exists": tier_path.exists(),
+            "user_version": user_version,
+            "expected_user_version": spec.version,
+            "ready": ready,
+            "durability": spec.durability,
+        }
     status: dict[str, object] = {
         "archive_root": str(archive),
         "archive_root_exists": archive.exists(),
@@ -2207,6 +2632,7 @@ def _archive_status(archive: Path) -> dict[str, object]:
         "session_count": None,
         "message_count": None,
         "user_version": None,
+        "tiers": tier_statuses,
         "error": None,
     }
     if not index_db.exists():
@@ -2221,7 +2647,7 @@ def _archive_status(archive: Path) -> dict[str, object]:
                 is not None
             )
             status["sessions_table_exists"] = sessions_exists
-            status["schema_ready"] = user_version > 0 and sessions_exists
+            status["schema_ready"] = all_tiers_ready and user_version > 0 and sessions_exists
             if sessions_exists:
                 status["session_count"] = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
             messages_exists = (
@@ -2233,6 +2659,72 @@ def _archive_status(archive: Path) -> dict[str, object]:
     except sqlite3.Error as exc:
         status["error"] = f"{type(exc).__name__}: {exc}"
     return status
+
+
+def _read_sqlite_user_version(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+    except sqlite3.Error:
+        return None
+
+
+def _default_dev_archive_root(repo_root: Path) -> Path:
+    return repo_root / ".local" / "dev-archive"
+
+
+def _is_default_dev_archive(repo_root: Path, archive_root: Path) -> bool:
+    try:
+        return archive_root.expanduser().resolve() == _default_dev_archive_root(repo_root).expanduser().resolve()
+    except OSError:
+        return archive_root.expanduser().absolute() == _default_dev_archive_root(repo_root).expanduser().absolute()
+
+
+def _prepare_archive_for_daemon_launch(preflight: dict[str, Any]) -> dict[str, object]:
+    """Ensure the branch-local daemon archive is usable before launch.
+
+    The repo-default ``.local/dev-archive`` is disposable dev-loop state, so the
+    launcher may replace stale tier files there. Custom archive roots are not
+    implicitly replaced; those may point at operator data and must be repaired by
+    an explicit archive command.
+    """
+    archive_root = Path(str(preflight["dev_archive_root"]))
+    repo_root = Path(str(preflight["repo_root"]))
+    before = _archive_status(archive_root)
+    if before.get("schema_ready") is True:
+        return {"action": "unchanged", "archive_status": before}
+    if not _is_default_dev_archive(repo_root, archive_root):
+        not_ready = [
+            name
+            for name, tier in cast(dict[str, dict[str, object]], before.get("tiers", {})).items()
+            if tier.get("ready") is not True
+        ]
+        raise ValueError(
+            "branch-local daemon archive is not schema-ready for custom archive root "
+            f"{archive_root}; not-ready tiers: {', '.join(not_ready) or 'unknown'}"
+        )
+    try:
+        result = initialize_archive_tier_files(archive_root=archive_root, replace_existing=True)
+    except ArchiveInitBlockedError as exc:
+        raise ValueError(f"branch-local dev archive initialization blocked: {exc}") from exc
+    after = _archive_status(archive_root)
+    initialized = [
+        {
+            "tier": tier.tier,
+            "action": tier.action.value,
+            "path": str(tier.path),
+            "backup_path": str(tier.backup_path) if tier.backup_path is not None else None,
+        }
+        for tier in result.tier_results
+    ]
+    preflight["archive_status"] = after
+    return {
+        "action": "initialized_default_dev_archive",
+        "archive_status": after,
+        "initialized": initialized,
+    }
 
 
 def _dev_loop_artifact_status(
@@ -2378,6 +2870,13 @@ def _build_operator_plan(
         logs=logs,
         extra_args=["--browser-provider-smoke", "--json"],
     )
+    browser_provider_live_follow_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=["--browser-provider-live-follow", "--json"],
+    )
     browser_plan_command = _dev_loop_cli_args(
         api_port=api_port,
         browser_capture_port=browser_capture_port,
@@ -2466,6 +2965,18 @@ def _build_operator_plan(
             writes=[browser_artifact_dir / "browser-provider-smoke.json", dev_events],
         ),
         _dev_loop_action(
+            name="browser_provider_live_follow",
+            purpose="launch branch daemon, capture deterministic provider fixture pages, and prove archive/API live-follow convergence",
+            command=browser_provider_live_follow_command,
+            artifact_dir=browser_artifact_dir,
+            authority_name="browser_provider_live_follow",
+            writes=[
+                run_log_dir / "polylogued.launch.json",
+                browser_artifact_dir / "browser-provider-live-follow.json",
+                dev_events,
+            ],
+        ),
+        _dev_loop_action(
             name="browser_plan",
             purpose="write local browser-control handoff commands, profile dirs, and copied-profile checklist",
             command=browser_plan_command,
@@ -2514,6 +3025,7 @@ def _build_operator_plan(
             "extension_smoke",
             "browser_smoke",
             "browser_provider_smoke",
+            "browser_provider_live_follow",
             "browser_live_proof",
         }
     }
@@ -2643,7 +3155,6 @@ def build_dev_loop_status(
     plan_actions = {str(action["name"]): action for action in cast(list[dict[str, object]], operator_plan["actions"])}
     plan_checks = cast(dict[str, dict[str, object]], operator_plan["checks"])
     shell_env_prefix = f"{_shell_env_prefix(suggested_env)} PYTHONPATH={root}${{PYTHONPATH:+:${{PYTHONPATH}}}}"
-    daemon_spool = run_log_dir / "browser-capture-spool"
     commands = {
         "stop_system_service": "systemctl --user stop polylogued.service",
         "prepare": str(plan_actions["prepare"]["command_text"]),
@@ -2658,6 +3169,7 @@ def build_dev_loop_status(
         "extension_smoke": str(plan_checks["extension_smoke"]["command_text"]),
         "browser_smoke": str(plan_checks["browser_smoke"]["command_text"]),
         "browser_provider_smoke": str(plan_checks["browser_provider_smoke"]["command_text"]),
+        "browser_provider_live_follow": str(plan_checks["browser_provider_live_follow"]["command_text"]),
         "browser_plan": str(plan_actions["browser_plan"]["command_text"]),
         "browser_live_proof": str(plan_checks["browser_live_proof"]["command_text"]),
         "tui_plan": str(plan_actions["tui_plan"]["command_text"]),
@@ -2665,8 +3177,7 @@ def build_dev_loop_status(
         "run_daemon": (
             f"{shell_env_prefix} "
             f"{shlex.quote(sys.executable)} -c 'from polylogue.daemon.cli import main; main()' "
-            f"run --no-watch --no-source-catchup --api-port {api_port} --port {browser_capture_port} "
-            f"--spool {daemon_spool} 2>&1 | tee {daemon_log}"
+            f"run --api-port {api_port} --port {browser_capture_port} 2>&1 | tee {daemon_log}"
         ),
         "open_web_shell": web_url,
         "receiver_status": f"curl -sf {receiver_url}/v1/status",
@@ -2779,6 +3290,7 @@ def _print_human(payload: dict[str, Any]) -> None:
                 "extension_smoke",
                 "browser_smoke",
                 "browser_provider_smoke",
+                "browser_provider_live_follow",
                 "browser_live_proof",
             ):
                 check = checks.get(name)
@@ -2891,6 +3403,28 @@ def _print_browser_provider_smoke(payload: dict[str, Any]) -> None:
     print(f"  providers: {providers}")
     print(f"  profile:   {artifacts['profile']}")
     print(f"  summary:   {artifacts['summary']}")
+
+
+def _print_browser_provider_live_follow(payload: dict[str, Any]) -> None:
+    preflight = payload["preflight"]
+    proof = payload["browser_provider_live_follow"]
+    assert isinstance(preflight, dict)
+    assert isinstance(proof, dict)
+    artifacts = proof["artifacts"]
+    assert isinstance(artifacts, dict)
+    provider_statuses = proof.get("provider_statuses")
+    if not isinstance(provider_statuses, dict):
+        provider_statuses = {}
+    providers = ", ".join(f"{name}={status}" for name, status in sorted(provider_statuses.items())) or "none"
+    print("Polylogue dev-loop provider live-follow proof")
+    print(f"  run id:      {preflight['run_id']}")
+    print(f"  ok:          {proof['ok']}")
+    print(f"  providers:   {providers}")
+    print(f"  archive ok:  {proof.get('archive_ok')}")
+    print(f"  api ok:      {proof.get('api_ok')}")
+    print(f"  reader ok:   {proof.get('reader_ok')}")
+    print(f"  session id:  {proof.get('session_id')}")
+    print(f"  summary:     {artifacts['summary']}")
 
 
 def _print_browser_live_proof(payload: dict[str, Any]) -> None:
@@ -3019,7 +3553,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--launch-daemon",
         action="store_true",
-        help="Launch branch-local polylogued with watch/source catch-up disabled and write PID/log/summary artifacts.",
+        help="Launch branch-local polylogued for browser-capture/API proof and write PID/log/summary artifacts.",
+    )
+    parser.add_argument(
+        "--full-source-catchup",
+        action="store_true",
+        help="With --launch-daemon, watch configured sources instead of constraining the proof to browser-capture spool.",
     )
     parser.add_argument(
         "--extension-smoke",
@@ -3035,6 +3574,11 @@ def main(argv: list[str] | None = None) -> int:
         "--browser-provider-smoke",
         action="store_true",
         help="Launch real Chrome headless against deterministic ChatGPT/Claude fixture pages and verify content-script capture.",
+    )
+    parser.add_argument(
+        "--browser-provider-live-follow",
+        action="store_true",
+        help="Launch branch-local daemon, capture deterministic provider fixture pages, and verify archive/API live-follow.",
     )
     parser.add_argument(
         "--browser-plan",
@@ -3119,6 +3663,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.extension_smoke
         or args.browser_smoke
         or args.browser_provider_smoke
+        or args.browser_provider_live_follow
         or args.browser_live_proof
         or args.browser_plan
         or args.tui_plan,
@@ -3151,6 +3696,7 @@ def main(argv: list[str] | None = None) -> int:
             launch_payload = launch_branch_daemon(
                 preflight=payload,
                 readiness_timeout_s=args.daemon_ready_timeout_s,
+                full_source_catchup=args.full_source_catchup,
             )
         except ValueError as exc:
             parser.error(str(exc))
@@ -3183,6 +3729,18 @@ def main(argv: list[str] | None = None) -> int:
         provider_smoke_payload = run_browser_provider_smoke(preflight=payload)
         combined_payload["browser_provider_smoke"] = provider_smoke_payload
         combined_ok = combined_ok and provider_smoke_payload.get("ok") is True
+    if args.browser_provider_live_follow:
+        try:
+            live_follow_payload = run_browser_provider_live_follow(
+                preflight=payload,
+                readiness_timeout_s=args.daemon_ready_timeout_s,
+                archive_timeout_s=30.0,
+                full_source_catchup=args.full_source_catchup,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        combined_payload["browser_provider_live_follow"] = live_follow_payload
+        combined_ok = combined_ok and live_follow_payload.get("ok") is True
     if args.browser_live_proof:
         if args.browser_live_profile_dir is None:
             parser.error(
@@ -3229,6 +3787,8 @@ def main(argv: list[str] | None = None) -> int:
                 _print_browser_smoke(combined_payload)
             if "browser_provider_smoke" in combined_payload:
                 _print_browser_provider_smoke(combined_payload)
+            if "browser_provider_live_follow" in combined_payload:
+                _print_browser_provider_live_follow(combined_payload)
             if "browser_live_proof" in combined_payload:
                 _print_browser_live_proof(combined_payload)
             if "browser_plan" in combined_payload:

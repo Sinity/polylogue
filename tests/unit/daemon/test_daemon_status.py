@@ -184,7 +184,7 @@ def test_status_snapshot_refresh_default_builds_rich_payload(monkeypatch: pytest
                 "summary": "raw evidence pending materialization",
                 "counts": {"total": 2},
                 "caveats": [],
-                "repair_hint": "polylogue ops debt list --kind raw-materialization",
+                "repair_hint": "polylogued run",
                 "evidence_refs": [],
             }
         },
@@ -395,6 +395,23 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
             "source_family_counts": {"aistudio-drive": 238},
         },
     )
+    monkeypatch.setattr(
+        "polylogue.daemon.status._raw_replay_backlog_info",
+        lambda: {
+            "available": True,
+            "candidate_count": 3,
+            "missing_blob_count": 0,
+            "already_parsed_count": 0,
+            "total_blob_bytes": 15_000_000,
+            "max_blob_bytes": 10_000_000,
+            "execute_blob_limit_bytes": 1_000_000_000,
+            "oversized_count": 0,
+            "oversized_stream_safe_count": 0,
+            "top_raw_rows": [{"raw_id": "raw-a", "blob_size": 10_000_000}],
+            "origin_summary": [{"origin": "aistudio-drive", "raw_count": 3, "total_blob_bytes": 15_000_000}],
+            "source_path_summary": [],
+        },
+    )
 
     with (
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
@@ -405,6 +422,7 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
         status_payload = daemon_status_payload(sources=())
 
     materialization = cast(dict[str, object], status_payload["raw_materialization_readiness"])
+    raw_replay = cast(dict[str, object], status_payload["raw_replay_backlog"])
     assert materialization["total"] == 238
     assert materialization["raw_artifact_count"] == 300
     assert materialization["materialized_raw_artifact_count"] == 62
@@ -420,7 +438,7 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     raw_component = cast(dict[str, object], readiness["raw_materialization"])
     assert raw_component["state"] == "degraded"
     assert raw_component["summary"] == "raw/index join gaps need classification"
-    assert raw_component["repair_hint"] == "polylogue ops debt list --kind raw-materialization"
+    assert raw_component["repair_hint"] == "polylogued run"
     counts = cast(dict[str, object], raw_component["counts"])
     assert counts["total"] == 238
     assert counts["affected_total"] == 238
@@ -430,6 +448,47 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
 
     lines = format_daemon_status_lines(status_payload)
     assert "Raw materialization: 62/300 materialized; 238 raw/index join gap(s) need classification" in lines
+    assert raw_replay["candidate_count"] == 3
+    assert "Raw replay backlog: 3 raw row(s), 15.0 MB pending; largest 10.0 MB" in lines
+    assert "  weighted by origin: aistudio-drive=3/15.0 MB" in lines
+
+
+def test_daemon_status_preserves_lost_source_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    sample = {
+        "session_id": "codex-session:native-1",
+        "origin": "codex-session",
+        "native_id": "native-1",
+        "missing_raw_id": "raw-missing",
+        "evidence_status": "lost_source_evidence",
+    }
+    monkeypatch.setattr("polylogue.daemon.status.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.daemon.status.raw_materialization_readiness_snapshot",
+        lambda _root: {
+            "available": True,
+            "classification": "cheap_projection",
+            "precision": "raw_id_join_gap",
+            "total": 0,
+            "lost_source_evidence_count": 1,
+            "lost_source_evidence_samples": [sample],
+        },
+    )
+
+    with (
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={"messages_ready": True}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        status_payload = daemon_status_payload(sources=())
+
+    materialization = cast(dict[str, object], status_payload["raw_materialization_readiness"])
+    assert materialization["lost_source_evidence_count"] == 1
+    assert materialization["lost_source_evidence_samples"] == [sample]
+    raw_component = cast(dict[str, Any], status_payload["component_readiness"])["raw_materialization"]
+    assert raw_component["state"] == "blocked"
+    assert raw_component["summary"] == "source evidence missing"
+    assert raw_component["repair_hint"] == "restore exact raw artifact"
 
 
 def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
@@ -490,13 +549,13 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     search_counts = cast(dict[str, object], search["counts"])
     assert search["state"] == "stale"
     assert search_counts["message_indexed_count"] == 4
-    assert search["repair_hint"] == "polylogue ops maintenance run --target dangling_fts"
+    assert search["repair_hint"] == "polylogued run"
     profile_counts = cast(dict[str, object], session_profiles["counts"])
     assert session_profiles["state"] == "degraded"
     assert session_profiles["scope"] == "insights"
     assert profile_counts["sessions_with_profiles"] == 7
     assert profile_counts["missing_profiles"] == 3
-    assert session_profiles["repair_hint"] == "polylogue ops maintenance preview --scope derived"
+    assert session_profiles["repair_hint"] == "polylogued run"
     assert embeddings["state"] == "stale"
     assert embeddings["scope"] == "semantic"
     embedding_counts = cast(dict[str, object], embeddings["counts"])
@@ -937,6 +996,10 @@ def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_de
     assert status.archive_storage.archive_schema_ready is True
     assert status.archive_storage.archive_materialization_ready is False
     assert status.archive_storage.archive_ready is False
+    storage_component = cast(dict[str, object], status.component_readiness["archive_storage"])
+    assert storage_component["state"] == "stale"
+    assert storage_component["repair_hint"] == "polylogued run"
+    assert storage_component["caveats"] == ["materialization_pending"]
     raw_component = cast(dict[str, object], status.component_readiness["raw_materialization"])
     assert raw_component["state"] == "stale"
 
@@ -1092,8 +1155,8 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is True
-    assert readiness["invariant_ready"] is True
+    assert readiness["messages_ready"] is False
+    assert readiness["invariant_ready"] is False
     assert readiness["coverage_exact"] is False
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
@@ -1102,7 +1165,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
     assert blocks["source_exists"] is True
     assert blocks["exists"] is True
     assert blocks["triggers_present"] is True
-    assert blocks["ready"] is True
+    assert blocks["ready"] is False
 
 
 def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path) -> None:
@@ -1124,8 +1187,8 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is True
-    assert readiness["invariant_ready"] is True
+    assert readiness["messages_ready"] is False
+    assert readiness["invariant_ready"] is False
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
     assert set(surfaces) == {"messages_fts"}
@@ -1206,7 +1269,7 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
     structural = fts_readiness_info(db_path)
     exact = fts_readiness_info(db_path, exact=True)
 
-    assert structural["messages_ready"] is True
+    assert structural["messages_ready"] is False
     assert exact["messages_ready"] is False
     surfaces = exact["surfaces"]
     assert isinstance(surfaces, dict)

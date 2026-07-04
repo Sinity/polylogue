@@ -103,45 +103,45 @@ def test_resolve_maintenance_failures_removes_matching_target_and_kind(tmp_path:
     route_failure_sample(
         FailureSample(
             kind="UnsupportedReplayTargetError",
-            locator="target:message_embeddings",
+            locator="target:message_type_backfill",
             message="not wired",
         ),
         operation_id="op-old",
         archive_root=root,
-        target="message_embeddings",
+        target="message_type_backfill",
     )
     route_failure_sample(
         FailureSample(
             kind="RepairReportedFailure",
-            locator="target:message_embeddings",
+            locator="target:message_type_backfill",
             message="provider call failed",
         ),
         operation_id="op-real",
         archive_root=root,
-        target="message_embeddings",
+        target="message_type_backfill",
     )
     route_failure_sample(
         FailureSample(
             kind="UnsupportedReplayTargetError",
-            locator="target:raw_materialization",
+            locator="target:orphaned_messages",
             message="not wired",
         ),
         operation_id="op-other",
         archive_root=root,
-        target="raw_materialization",
+        target="orphaned_messages",
     )
 
     removed = resolve_maintenance_failures(
         root,
-        target="message_embeddings",
+        target="message_type_backfill",
         kinds=("UnsupportedReplayTargetError",),
     )
 
     assert removed == 1
     remaining = read_maintenance_failures(root)
     assert [(r.target, r.kind) for r in remaining] == [
-        ("message_embeddings", "RepairReportedFailure"),
-        ("raw_materialization", "UnsupportedReplayTargetError"),
+        ("message_type_backfill", "RepairReportedFailure"),
+        ("orphaned_messages", "UnsupportedReplayTargetError"),
     ]
 
 
@@ -149,7 +149,7 @@ def test_route_failure_sample_redacts_absolute_paths_in_message(tmp_path: Path) 
     config = _make_config(tmp_path)
     sample = FailureSample(
         kind="OSError",
-        locator="target:dangling_fts",
+        locator="target:orphaned_messages",
         message="Failed to read /home/operator/data/secret.json: permission denied",
     )
     record = route_failure_sample(

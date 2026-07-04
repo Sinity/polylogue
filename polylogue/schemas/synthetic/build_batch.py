@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import random
 from typing import Protocol
 
@@ -68,6 +69,8 @@ def _resolve_style(style: str) -> SyntheticStyle:
         return "tool-heavy"
     if style == "demo-tool-heavy":
         return "demo-tool-heavy"
+    if style == "demo-attachments":
+        return "demo-attachments"
     raise ValueError(f"Unknown synthetic style: {style}")
 
 
@@ -100,6 +103,8 @@ def generate_batch(
                 data,
                 include_failure_followups=resolved_style == "demo-tool-heavy",
             )
+        if resolved_style == "demo-attachments":
+            data = _add_demo_attachment_blocks(self.provider, data)
         artifacts.append(
             SyntheticArtifact(
                 raw_bytes=self._serialize(data),
@@ -185,6 +190,30 @@ def _add_tool_heavy_blocks(
             followups.append((index + 1, _demo_failure_followup(provider, record, index)))
     for insert_at, followup in reversed(followups):
         data.insert(insert_at, followup)
+    return data
+
+
+def _add_demo_attachment_blocks(provider: str, data: JSONValue) -> JSONValue:
+    """Add one inline attachment family to demo Gemini chunks."""
+
+    if provider != "gemini" or not isinstance(data, dict):
+        return data
+    chunked_prompt = data.get("chunkedPrompt")
+    if not isinstance(chunked_prompt, dict):
+        return data
+    chunks = chunked_prompt.get("chunks")
+    if not isinstance(chunks, list):
+        return data
+    for chunk in chunks:
+        if not isinstance(chunk, dict) or chunk.get("role") != "user":
+            continue
+        payload = b"demo attachment bytes for Polylogue fixture coverage\n"
+        chunk["inlineFile"] = {
+            "mimeType": "text/plain",
+            "data": base64.b64encode(payload).decode("ascii"),
+        }
+        chunk["text"] = "Please inspect the attached fixture note."
+        return data
     return data
 
 

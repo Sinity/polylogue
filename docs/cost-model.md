@@ -50,7 +50,7 @@ provider-reported zero.
 | `claude-ai-export` | `claude-ai` | estimate-only | transcript text | exports preserve conversation text, not exact provider usage counters |
 | `aistudio-drive` | `gemini` | partial | message token fields | some records may carry output `tokenCount`; input/cache/cumulative semantics are unavailable |
 | `gemini-cli-session` | `gemini-cli` | partial | message token fields | generic usage dictionaries may be materialized but provider-specific cumulative semantics are not declared |
-| `hermes-session` | `hermes` | partial | message token fields | generic usage dictionaries may be materialized but provider-specific cumulative semantics are not declared |
+| `hermes-session` | `hermes` | exact where `state.db` counters exist | `token_count` | cumulative session counters; cache read/write and reasoning lanes stay separate |
 | `antigravity-session` | `antigravity` | unsupported | transcript text | no exact provider usage parser is declared |
 | `unknown-export` | `unknown` | unsupported | transcript text | no exact provider usage parser is declared |
 

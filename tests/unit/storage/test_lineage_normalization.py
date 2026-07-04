@@ -26,6 +26,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     _provider_usage_cumulative_baseline,
     read_archive_session_envelope,
+    repair_stale_prefix_branch_points,
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.queries.message_query_reads import (
@@ -373,6 +374,145 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
     conn.close()
     composed = asyncio.run(_read_texts(db, child_id))
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
+
+
+def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    ancestor = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="ancestor",
+        title="ancestor",
+        messages=[
+            _msg("a0", Role.USER, "hello", 0),
+            _msg("a1", Role.ASSISTANT, "hi there", 1),
+        ],
+    )
+    ancestor_id = write_parsed_session_to_archive(conn, ancestor)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        parent_session_provider_id="ancestor",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (parent_id,)).fetchone()[0] == 0
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+            _msg("c2", Role.USER, "child tail", 2),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    stale_branch_point = f"{parent_id}:a1"
+    conn.execute(
+        """
+        UPDATE session_links
+        SET branch_point_message_id = ?
+        WHERE src_session_id = ?
+        """,
+        (stale_branch_point, child_id),
+    )
+    conn.commit()
+    assert [message.blocks[0].text for message in read_archive_session_envelope(conn, child_id).messages] == [
+        "child tail"
+    ]
+
+    repaired = repair_stale_prefix_branch_points(conn)
+    conn.commit()
+
+    assert repaired == 1
+    branch_point = conn.execute(
+        "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()[0]
+    assert branch_point == f"{ancestor_id}:a1"
+    assert [message.blocks[0].text for message in read_archive_session_envelope(conn, child_id).messages] == [
+        "hello",
+        "hi there",
+        "child tail",
+    ]
+    conn.close()
+
+
+def test_stale_non_materialized_msg_branch_point_repairs_to_predecessor(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    ancestor = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="ancestor",
+        title="ancestor",
+        messages=[
+            _msg("msg-10", Role.USER, "inherited prompt", 0),
+        ],
+    )
+    ancestor_id = write_parsed_session_to_archive(conn, ancestor)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        parent_session_provider_id="ancestor",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("msg-10", Role.USER, "inherited prompt", 0),
+            _msg("msg-20", Role.USER, "parent tail", 1),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("msg-10", Role.USER, "inherited prompt", 0),
+            _msg("msg-21", Role.USER, "child tail", 1),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+
+    conn.execute(
+        """
+        UPDATE session_links
+        SET branch_point_message_id = ?
+        WHERE src_session_id = ?
+        """,
+        (f"{parent_id}:msg-12", child_id),
+    )
+    conn.commit()
+    assert [message.blocks[0].text for message in read_archive_session_envelope(conn, child_id).messages] == [
+        "child tail"
+    ]
+
+    repaired = repair_stale_prefix_branch_points(conn)
+    conn.commit()
+
+    assert repaired == 1
+    branch_point = conn.execute(
+        "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()[0]
+    assert branch_point == f"{ancestor_id}:msg-10"
+    assert [message.blocks[0].text for message in read_archive_session_envelope(conn, child_id).messages] == [
+        "inherited prompt",
+        "child tail",
+    ]
+    conn.close()
 
 
 def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_path: Path) -> None:

@@ -13,28 +13,47 @@ function installDom() {
       <span id="badge"></span>
       <span id="state"></span>
       <span id="receiver-request"></span>
+      <span id="updated"></span>
       <span id="receiver"></span>
       <span id="page"></span>
       <span id="archive"></span>
       <input id="receiver-url" />
       <input id="receiver-token" />
-      <button id="check"></button>
-      <button id="save"></button>
-      <button id="capture"></button>
-      <button id="sync-open-tabs"></button>
-      <button id="copy-ref"></button>
-      <button id="open-polylogue"></button>
+      <p id="state-detail"></p>
+      <button id="check"><span class="button-status"></span></button>
+      <button id="save"><span class="button-status"></span></button>
+      <button id="capture"><span class="button-status"></span></button>
+      <button id="sync-open-tabs"><span class="button-status"></span></button>
+      <button id="copy-ref"><span class="button-status"></span></button>
+      <button id="open-polylogue"><span class="button-status"></span></button>
+      <button id="debug-toggle"><span class="button-status"></span></button>
+      <button id="debug-export"><span class="button-status"></span></button>
       <span id="mode"></span>
       <span id="turns"></span>
       <span id="log-count"></span>
+      <span id="debug-count"></span>
       <div id="log"></div>
+      <div id="debug-panel" hidden><div id="debug-log"></div></div>
     </body>`);
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
+  globalThis.Blob = dom.window.Blob;
+  globalThis.URL = dom.window.URL;
+  globalThis.URL.createObjectURL = vi.fn(() => "blob:debug");
+  globalThis.URL.revokeObjectURL = vi.fn();
+  dom.window.HTMLAnchorElement.prototype.click = vi.fn();
 }
 
-function installChromeMock() {
+function installChromeMock(storagePatch = {}) {
   let captureAttempts = 0;
+  const defaults = {
+    polylogueCaptureLog: [],
+    polylogueDebugLog: [],
+    polylogueState: null,
+    receiverAuthToken: "",
+    receiverBaseUrl: "http://127.0.0.1:8765",
+    ...storagePatch,
+  };
   globalThis.chrome = {
     runtime: {
       sendMessage: vi.fn(async () => ({ ok: true })),
@@ -44,7 +63,7 @@ function installChromeMock() {
     },
     storage: {
       local: {
-        get: vi.fn(async (defaults) => ({ ...defaults })),
+        get: vi.fn(async (requestedDefaults) => ({ ...requestedDefaults, ...defaults })),
         set: vi.fn(async () => undefined),
       },
     },
@@ -65,10 +84,10 @@ function installChromeMock() {
   };
 }
 
-async function loadPopup() {
+async function loadPopup(storagePatch = {}) {
   vi.resetModules();
   installDom();
-  installChromeMock();
+  installChromeMock(storagePatch);
   await import("../src/popup.js");
   await vi.waitFor(() => expect(globalThis.document.getElementById("page").textContent).toContain("ChatGPT"));
 }
@@ -98,5 +117,114 @@ describe("popup capture", () => {
         polylogueState: expect.objectContaining({ online: false }),
       }),
     );
+  });
+
+  it("refreshes receiver status automatically on popup open", async () => {
+    await loadPopup();
+
+    await vi.waitFor(() => expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "polylogue.status",
+      reason: "popup_open",
+    }));
+  });
+
+  it("renders stale archive state with operator-facing explanation", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: false,
+        archive_state: { state: "stale", indexed_message_count: 12 },
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(globalThis.document.getElementById("badge").textContent).toBe("stale");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Stale");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("daemon has not caught up");
+  });
+
+  it("renders DOM fallback with concrete next action", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: false,
+        capture_mode: "dom_degraded",
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(globalThis.document.getElementById("badge").textContent).toBe("dom");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("provider-native app data");
+  });
+
+  it("renders missing archive state as a capture prompt, not a receiver failure", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: false,
+        active_page_state: "conversation",
+        archive_state: { state: "missing", indexed_message_count: 0 },
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(globalThis.document.getElementById("badge").textContent).toBe("missing");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Not archived");
+    expect(globalThis.document.getElementById("state").textContent).toContain("No capture exists");
+  });
+
+  it("renders supported pages without a conversation id without implying capture happened", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: false,
+        active_page_state: "supported_no_session",
+        provider: "chatgpt",
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(globalThis.document.getElementById("badge").textContent).toBe("ready");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Ready");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("does not read page content");
+  });
+
+  it("renders unsupported pages with a concrete next action", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: false,
+        active_page_state: "unsupported",
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(globalThis.document.getElementById("badge").textContent).toBe("idle");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Unsupported");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("ChatGPT, Claude.ai, or Grok/X");
+  });
+
+  it("renders redacted debug log entries and export control", async () => {
+    await loadPopup({
+      polylogueDebugLog: [
+        {
+          at: new Date().toISOString(),
+          stage: "receiver_response",
+          method: "POST",
+          path: "/v1/browser-captures",
+          ok: true,
+          status: 202,
+          provider: "chatgpt",
+          provider_session_id: "conv-123",
+          receiver_request_id: "req-1",
+        },
+      ],
+    });
+
+    expect(globalThis.document.getElementById("debug-count").textContent).toBe("1");
+    expect(globalThis.document.getElementById("debug-log").textContent).toContain("receiver_response POST /v1/browser-captures");
+
+    globalThis.document.getElementById("debug-export").click();
+    await vi.waitFor(() => expect(globalThis.URL.createObjectURL).toHaveBeenCalled());
   });
 });

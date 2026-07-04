@@ -53,6 +53,7 @@ import pytest
 
 from polylogue.daemon import (
     web_shell_lineage,
+    web_shell_realtime,
     web_shell_selection,
     web_shell_workspace,
     workspace_routes,
@@ -245,6 +246,22 @@ class TestWebShellSelectionAssetContract:
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.CREATED
         assert payload["mark_type"] == mark_type
+
+
+# ---------------------------------------------------------------------------
+# 1b. web_shell_realtime — selected-session live-tail contract
+# ---------------------------------------------------------------------------
+
+
+class TestWebShellRealtimeAssetContract:
+    """Realtime reader JS must target the selected session actually in state."""
+
+    def test_live_tail_uses_current_selected_session_helper(self) -> None:
+        js = web_shell_realtime.REALTIME_JS
+
+        assert "function currentSelectedSessionId()" in js
+        assert "state.selected && state.selected.id" in js
+        assert "selectSession(selectedId, false, {liveTail: true})" in js
 
 
 # ---------------------------------------------------------------------------

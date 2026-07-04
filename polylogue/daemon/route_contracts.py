@@ -157,6 +157,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     RouteContract("GET", "/api/events", "operational", "stable", "bearer_if_configured", "SSE or JSON event poll"),
     RouteContract(
         "GET",
+        "/api/agents/coordination",
+        "operational",
+        "stable",
+        "bearer_if_configured",
+        "AgentCoordinationPayload",
+        "Shared coordination envelope used by CLI, MCP, and the web mission-control projection.",
+    ),
+    RouteContract(
+        "GET",
         "/api/sessions",
         "read_query",
         "stable",

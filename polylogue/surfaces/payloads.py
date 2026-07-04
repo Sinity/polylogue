@@ -2731,6 +2731,8 @@ class MutationResultPayload(SurfacePayloadModel):
     affected_count: int | None = None
     skipped_count: int | None = None
     tag: str | None = None
+    author_ref: str | None = None
+    author_kind: str | None = None
     key: str | None = None
     target_type: str | None = None
     target_id: str | None = None

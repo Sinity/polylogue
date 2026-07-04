@@ -113,6 +113,18 @@ def insert_missing_message_rows_range_sql() -> str:
     """
 
 
+def excess_message_rows_sql(limit: int) -> str:
+    return f"""
+        SELECT d.id
+        FROM messages_fts_docsize AS d
+        LEFT JOIN blocks AS b
+          ON b.rowid = d.id
+         AND b.search_text != ''
+        WHERE b.rowid IS NULL
+        LIMIT {max(1, int(limit))}
+    """
+
+
 __all__ = [
     "FTS_INDEXABLE_MESSAGE_COUNT_SQL",
     "FTS_INDEX_DOC_COUNT_SQL",
@@ -126,4 +138,5 @@ __all__ = [
     "insert_session_rows_sql",
     "insert_missing_message_rows_sql",
     "insert_missing_message_rows_range_sql",
+    "excess_message_rows_sql",
 ]

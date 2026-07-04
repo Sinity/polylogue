@@ -20,6 +20,8 @@ from polylogue.sources.source_parsing import (
 )
 from polylogue.sources.source_walk import _setup_source_walk
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
+from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
 
 logger = get_logger(__name__)
 
@@ -32,6 +34,7 @@ logger = get_logger(__name__)
 # (slower + large WAL). Override with POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES;
 # a value <= 0 restores per-session commit (escape hatch).
 COMMIT_BATCH_MESSAGE_THRESHOLD = 8000
+POST_COMMIT_UPKEEP_REASON = "archive_ingest_commit"
 
 
 def _commit_batch_message_threshold() -> int:
@@ -68,6 +71,7 @@ def _parse_source_path_worker(
     source_name: str,
     sidecar_data: Any,
     capture_raw: bool,
+    blob_root_str: str,
 ) -> list[tuple[RawSessionData | None, ParsedSession]]:
     """ProcessPool worker: parse one file and return materialized tuples.
 
@@ -84,6 +88,7 @@ def _parse_source_path_worker(
             sidecar_data=sidecar_data,
             capture_raw=capture_raw,
             cursor_state=None,
+            blob_root=Path(blob_root_str),
         )
     )
 
@@ -102,6 +107,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
     threshold = _commit_batch_message_threshold()
     batched = threshold > 0
     workers = _parse_worker_count()
+    blob_root = archive_root / "blob"
     counters = {"raw_rows": 0, "index_rows": 0, "pending_messages": 0}
 
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
@@ -111,11 +117,11 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
             raw_data: RawSessionData | None,
             session: ParsedSession,
         ) -> None:
-            payload = _archive_raw_payload(raw_data, session)
+            payload = _archive_raw_payload(raw_data, session, blob_root=blob_root)
             source_path = _archive_raw_source_path(raw_data, source)
             source_index = _archive_raw_source_index(raw_data)
             try:
-                _raw_id, session_id = archive.write_raw_and_parsed(
+                write_result = archive.write_raw_and_parsed_result(
                     session,
                     payload=payload,
                     source_path=source_path,
@@ -132,29 +138,36 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                     archive.rollback()
                 raise
             counters["raw_rows"] += 1
-            counters["index_rows"] += 1
+            index_changed = (
+                write_result.counts.get("sessions", 0)
+                + write_result.counts.get("messages", 0)
+                + write_result.counts.get("attachments", 0)
+                + write_result.counts.get("session_events", 0)
+                + write_result.counts.get("raw_links", 0)
+            ) > 0
+            counters["index_rows"] += int(index_changed)
             await result.merge_result(
-                session_id,
-                {
-                    "sessions": 1,
-                    "messages": len(session.messages),
-                    "attachments": len(session.attachments),
-                    "skipped_sessions": 0,
-                    "skipped_messages": 0,
-                    "skipped_attachments": 0,
-                },
-                content_changed=True,
+                write_result.session_id,
+                write_result.counts,
+                content_changed=write_result.content_changed,
             )
             if batched:
                 counters["pending_messages"] += len(session.messages)
                 if counters["pending_messages"] >= threshold:
                     archive.commit()
+                    _record_post_commit_upkeep(archive_root, result, reason=POST_COMMIT_UPKEEP_REASON)
                     counters["pending_messages"] = 0
+            else:
+                _record_post_commit_upkeep(archive_root, result, reason=POST_COMMIT_UPKEEP_REASON)
 
         if workers <= 1:
             # Escape hatch: exact sequential behavior, no pool.
             for source in sources:
-                for raw_data, session in iter_source_sessions_with_raw(source, capture_raw=True):
+                for raw_data, session in iter_source_sessions_with_raw(
+                    source,
+                    capture_raw=True,
+                    blob_root=blob_root,
+                ):
                     await write_pair(source, raw_data, session)
         else:
             # Antigravity language-server export stays sequential (it drives a
@@ -185,6 +198,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                             source.name,
                             walk.sidecar_data,
                             True,
+                            str(blob_root),
                         )
                         future_to_source[future] = (source, path)
                         total_paths += 1
@@ -212,6 +226,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
 
         if batched and counters["pending_messages"] > 0:
             archive.commit()
+            _record_post_commit_upkeep(archive_root, result, reason=POST_COMMIT_UPKEEP_REASON)
 
     raw_rows_written = counters["raw_rows"]
     index_rows_written = counters["index_rows"]
@@ -233,15 +248,43 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
     return result
 
 
-def _archive_raw_payload(raw_data: object, session: Any) -> bytes:
-    from polylogue.storage.blob_store import get_blob_store
+def _record_post_commit_upkeep(archive_root: Path, result: ParseResult, *, reason: str) -> None:
+    """Run bounded archive-tier upkeep after a direct archive ingest commit.
+
+    Direct re-ingest writes through ``ArchiveStore`` instead of the daemon's
+    ingest-batch core.  The upkeep still belongs on the ingest path: WAL
+    checkpointing and planner statistics are rebuildable archive invariants, not
+    operator maintenance chores that only happen when the daemon has been up for
+    a full periodic cycle.
+    """
+
+    wal_observations = maybe_checkpoint_archive_wals(archive_root, reason=reason, allow_truncate=False)
+    optimize_observations = maybe_optimize_archive_tiers(archive_root, reason=reason)
+    result.batch_observations.append(
+        {
+            "archive_post_commit_upkeep": True,
+            "reason": reason,
+            "archive_root": str(archive_root),
+            "wal_checkpoint_modes": [observation.mode for observation in wal_observations if observation.ran],
+            "wal_checkpoint_errors": [observation.error for observation in wal_observations if observation.error],
+            "wal_checkpoint_blocked_count": sum(
+                1 for observation in wal_observations if observation.busy_pages > 0 or observation.blocking_processes
+            ),
+            "sqlite_optimize_ran": sum(1 for observation in optimize_observations if observation.ran),
+            "sqlite_optimize_errors": [observation.error for observation in optimize_observations if observation.error],
+        }
+    )
+
+
+def _archive_raw_payload(raw_data: object, session: Any, *, blob_root: Path) -> bytes:
+    from polylogue.storage.blob_store import BlobStore
 
     raw_bytes = getattr(raw_data, "raw_bytes", None)
     if isinstance(raw_bytes, bytes) and raw_bytes:
         return raw_bytes
     blob_hash = getattr(raw_data, "blob_hash", None)
     if isinstance(blob_hash, str) and blob_hash:
-        return get_blob_store().read_all(blob_hash)
+        return BlobStore(blob_root).read_all(blob_hash)
     if callable(getattr(session, "model_dump_json", None)):
         return str(session.model_dump_json()).encode("utf-8")
     return json.dumps(str(session), sort_keys=True).encode("utf-8")

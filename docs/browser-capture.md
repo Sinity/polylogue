@@ -27,6 +27,7 @@ presence. Its `state`/`lifecycle` field is one of:
 | `spooled_only` | The receiver has a local artifact, but live ingest has not acquired it into `source.db`. |
 | `ingest_pending` | `source.db.raw_sessions` has the capture, but `index.db.sessions` is missing it or has no messages yet. |
 | `archived` | The capture has raw evidence, an indexed session, and at least one indexed message. Only this state sets `captured: true`. |
+| `stale` | The receiver spool artifact is newer than the indexed archive row for the same provider session. Keep the daemon running; convergence should advance this without a manual repair command. |
 | `failed` | The receiver artifact is unreadable or raw validation/parsing recorded a failure. |
 
 The payload includes bounded archive evidence (`raw_row_exists`, `raw_id`,
@@ -77,6 +78,19 @@ origin rejection, token rejection, malformed payloads, write failures, accepted
 captures, and request timing. During branch-local extension work, copy that id
 from the browser network panel or curl output into the run-local daemon log to
 connect UI action, receiver decision, artifact ref, and duration.
+
+The extension popup records a redacted debug log for the same lifecycle. Each
+entry is timestamped and carries stage, method/path, request id, receiver
+request id, provider/session identity, archive state, and error metadata where
+available. It does not retain transcript text, raw provider payloads, message
+bodies, or turn arrays. Operators should export this packet when debugging
+capture behavior; it is the intended bridge between visible popup state,
+service-worker requests, receiver responses, and daemon convergence evidence.
+
+The popup refreshes status automatically on open and while it remains open.
+Manual **Check status** is only an explicit refresh. Button controls expose
+busy/success/failure states so a click has visible feedback even when archive
+convergence takes several seconds.
 
 The extension lives in `browser-extension/` and can be loaded unpacked in
 Chrome. It includes ChatGPT and Claude.ai provider adapters, a popup control

@@ -34,7 +34,7 @@ separate states.
 | `claude-ai-export` | Estimate-only transcript text | No provider cache token lanes in the export |
 | `aistudio-drive` | Partial message token fields | No cache token lanes in Drive prompt exports |
 | `gemini-cli-session` | Partial generic usage dictionaries | Generic cache fields are preserved when present, but provider semantics are not independently declared |
-| `hermes-session` | Partial generic usage dictionaries | Generic cache fields are preserved when present, but provider semantics are not independently declared |
+| `hermes-session` | Exact when `state.db` session counters are present | `cache_read_tokens`, `cache_write_tokens`, and reasoning tokens stay in separate lanes |
 | `antigravity-session` | Unsupported | No provider cache token lanes |
 | `unknown-export` | Unsupported | No provider cache token lanes |
 

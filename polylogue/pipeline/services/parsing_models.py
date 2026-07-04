@@ -96,14 +96,18 @@ class ParseResult:
             "sessions": 0,
             "messages": 0,
             "attachments": 0,
+            "session_events": 0,
             "skipped_sessions": 0,
             "skipped_messages": 0,
             "skipped_attachments": 0,
+            "skipped_session_events": 0,
+            "raw_links": 0,
         }
         self.changed_counts: dict[str, int] = {
             "sessions": 0,
             "messages": 0,
             "attachments": 0,
+            "session_events": 0,
         }
         self.processed_ids: set[str] = set()
         self.parse_failures: int = 0
@@ -132,7 +136,13 @@ class ParseResult:
         content_changed: bool,
     ) -> None:
         """Merge a single session's result into the aggregate."""
-        ingest_changed = (result_counts["sessions"] + result_counts["messages"] + result_counts["attachments"]) > 0
+        ingest_changed = (
+            result_counts.get("sessions", 0)
+            + result_counts.get("messages", 0)
+            + result_counts.get("attachments", 0)
+            + result_counts.get("session_events", 0)
+            + result_counts.get("raw_links", 0)
+        ) > 0
 
         async with self._lock:
             if ingest_changed or content_changed:
@@ -143,6 +153,8 @@ class ParseResult:
                 self.changed_counts["messages"] += result_counts["messages"]
             if result_counts["attachments"]:
                 self.changed_counts["attachments"] += result_counts["attachments"]
+            if result_counts.get("session_events"):
+                self.changed_counts["session_events"] += result_counts["session_events"]
             for key, value in result_counts.items():
                 if key in self.counts:
                     self.counts[key] += value

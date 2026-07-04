@@ -42,7 +42,7 @@ Read only as deep as you need:
 | **Convergence** | The daemon's process of bringing the archive up to date with its sources: acquire raw rows, parse, materialize index rows, refresh insights, keep FTS in sync. |
 | **Readiness** | Whether a tier is trustworthy *right now* — e.g. all raw rows materialized, FTS index current. Stale or unverified state makes a surface report not-ready rather than silently wrong. |
 | **Archive debt** | Acquired-but-not-materialized state: a raw row with no matching parsed session, or a referenced blob with no file. Surfaced by `ops diagnostics workload`, not hidden. |
-| **Demo archive** | A deterministic, private-data-free fixture archive (`polylogue demo seed/verify`) used for examples, screenshots, and CI without touching your real corpus. |
+| **Demo archive** | A deterministic, private-data-free fixture archive (`polylogue demo tour`, with lower-level `seed`/`verify` checks) used for examples, screenshots, and CI without touching your real corpus. |
 | **Retrieval lane** | Which search engine answers a query: `dialogue` (FTS5 lexical), vector (semantic), or `hybrid` (both fused via Reciprocal Rank Fusion). `--lexical` and `--semantic` force a lane. |
 | **MCP bridge** | The Model Context Protocol server (`polylogue-mcp`) that lets an AI assistant search and read your archive from inside its own session. |
 | **Verb** | A query-first action applied to a matched set: `read`, `select`, `analyze`, `mark`, `delete`, `continue`. Spelled `find QUERY then VERB`. |

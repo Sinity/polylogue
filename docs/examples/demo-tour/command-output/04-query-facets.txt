@@ -1,0 +1,26 @@
+Facets (scoped) — matched result set:
+  sessions: 2  messages: 20
+  Family states:
+    total_counts: Total counts — complete
+    origins: Provider origins — complete
+    tags: User tags — complete
+    repos: Canonical repositories — deferred (deferred_by_default; use --include-deferred); prefer repo_name or origin_url; omit archive/path tokens that are not product repo identities
+    role_counts: Provider-role counts — deferred (deferred_by_default; use --include-deferred); provider-reported message role; not authoredness
+    material_origins: Material origins — deferred (deferred_by_default; use --include-deferred); authoredness/protocol provenance; separates human text from runtime or assistant material
+    message_types: Message content types — deferred (deferred_by_default; use --include-deferred)
+    action_types: Action types — deferred (deferred_by_default; use --include-deferred)
+    has_flags: Content flags — deferred (deferred_by_default; use --include-deferred)
+  Provider origins:
+    claude-code-session: 1
+    codex-session: 1
+  User tags:
+    pytest-triage: 1
+  IDF (higher = rarer, partitions more strongly):
+    [origins]
+      aistudio-drive: 2.398
+      chatgpt-export: 2.398
+      claude-ai-export: 2.398
+      claude-code-session: 1.299
+      codex-session: 0.788
+    [tags]
+      pytest-triage: 2.398

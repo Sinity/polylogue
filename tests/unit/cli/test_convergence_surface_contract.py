@@ -80,8 +80,7 @@ def test_converging_archive_surfaces_share_materialization_counts(tmp_path: Path
     }
     expected_warning = (
         "Archive materialization needs classification: 1/2 raw artifact(s) materialized; "
-        "1 raw/index join gap(s) found; results may be partial until "
-        "`polylogue ops debt list --kind raw-materialization` explains them."
+        "1 raw/index join gap(s) found; results may be partial until daemon convergence classifies them."
     )
 
     status = run_cli(["--plain", "status", "--format", "json"], env=env, timeout=30)

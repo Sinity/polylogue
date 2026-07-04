@@ -7,6 +7,7 @@
   const nativeCaptureMessage = "polylogue.claude.nativeCapture";
   const nativeFetchRequestMessage = "polylogue.claude.nativeFetchRequest";
   const nativeFetchResponseMessage = "polylogue.claude.nativeFetchResponse";
+  const nativeFetchTimeoutMs = 8000;
   const nativeCaptures = [];
   const nativeFetchResponses = new Map();
   const nativeAttemptDiagnostics = [];
@@ -142,7 +143,7 @@
       const timeout = window.setTimeout(() => {
         nativeFetchResponses.delete(requestId);
         resolve({ capture: null, error: "timeout" });
-      }, 10000);
+      }, nativeFetchTimeoutMs);
       nativeFetchResponses.set(requestId, {
         resolve(value) {
           window.clearTimeout(timeout);
@@ -165,8 +166,8 @@
     const conversationId = conversationIdFromUrl();
     if (!conversationId) return null;
     const pageResult = await requestNativeCaptureFromPage(conversationId);
-    const pageCapture = pageResult && pageResult.capture;
-    const pagePayload = parseNativeCapture(pageCapture);
+      const pageCapture = pageResult && pageResult.capture;
+      const pagePayload = parseNativeCapture(pageCapture);
     rememberNativeAttempt({
       stage: "page_bridge_fetch",
       ok: pageCapture?.ok ?? null,

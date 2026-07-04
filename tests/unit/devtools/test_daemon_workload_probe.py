@@ -19,6 +19,7 @@ from devtools.daemon_workload_probe import (
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_integrity import BlobReferenceDebtReport
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     add_convergence_debt,
@@ -59,8 +60,8 @@ def _seed_minimal_archive(db: Path, source: Path) -> str:
         conn.execute(
             """
             INSERT INTO sessions (
-                native_id, origin, raw_id, content_hash, created_at_ms, updated_at_ms
-            ) VALUES ('provider-1', 'codex-session', 'raw-1', ?, 1770000000000, 1770000000000)
+                native_id, origin, raw_id, content_hash, created_at_ms, updated_at_ms, message_count
+            ) VALUES ('provider-1', 'codex-session', 'raw-1', ?, 1770000000000, 1770000000000, 1)
             """,
             (b"s" * 32,),
         )
@@ -173,23 +174,56 @@ def test_daemon_workload_probe_reports_blob_reference_debt(
     }
 
 
-def test_daemon_workload_probe_defaults_to_estimated_table_counts(tmp_path: Path) -> None:
+def test_daemon_workload_probe_defaults_to_mixed_table_counts(tmp_path: Path) -> None:
     db = tmp_path / "archive.sqlite"
     _seed_minimal_archive(db, tmp_path / "session.jsonl")
 
     default_payload = probe(db)
     exact_payload = probe(db, exact_table_counts=True)
 
-    assert default_payload["boundary_table_count_mode"] == "estimated"
-    assert default_payload["archive_tiers"]["table_count_mode"] == "estimated"
-    assert default_payload["boundary_table_counts"]["sessions"] == UNKNOWN_TABLE_COUNT
+    assert default_payload["boundary_table_count_mode"] == "mixed"
+    assert default_payload["archive_tiers"]["table_count_mode"] == "mixed"
+    assert default_payload["boundary_table_counts"]["raw_sessions"] == 1
+    assert default_payload["boundary_table_counts"]["sessions"] == 1
+    assert default_payload["boundary_table_counts"]["messages"] == 1
+    assert default_payload["boundary_table_counts"]["blocks"] == UNKNOWN_TABLE_COUNT
+    assert default_payload["boundary_table_count_precision"]["raw_sessions"] == "exact"
+    assert default_payload["boundary_table_count_precision"]["sessions"] == "exact"
+    assert default_payload["boundary_table_count_precision"]["messages"] == "exact"
+    assert default_payload["boundary_table_count_precision"]["blocks"] == "unavailable"
+    assert default_payload["archive_tiers"]["tiers"]["index"]["table_count_precision"]["sessions"] == "exact"
     assert exact_payload["boundary_table_count_mode"] == "exact"
     assert exact_payload["archive_tiers"]["table_count_mode"] == "exact"
     assert exact_payload["boundary_table_counts"]["raw_sessions"] == 1
     assert exact_payload["boundary_table_counts"]["sessions"] == 1
+    assert exact_payload["boundary_table_count_precision"]["blocks"] == "exact"
 
 
-def test_daemon_workload_probe_table_count_uses_sqlite_stats_for_estimates(
+def test_daemon_workload_probe_separates_automatic_backlog_from_retry_debt(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    source = tmp_path / "session.jsonl"
+    _seed_minimal_archive(db, source)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, content_hash
+            ) VALUES ('provider-2', 'codex-session', 'raw-2', ?)
+            """,
+            (b"z" * 32,),
+        )
+    payload = probe(db, exact_table_counts=True)
+
+    assert payload["convergence_debt"]["unresolved_count"] == 0
+    backlog = payload["automatic_convergence_backlog"]
+    assert backlog["checked"] is True
+    assert backlog["state"] == "catching_up"
+    assert backlog["counts"]["missing_profile_rows"] == 2
+    assert backlog["counts"]["missing_session_profile_materialization"] == 2
+    assert backlog["counts"]["automatic_backlog_total"] > backlog["counts"]["retry_debt_unresolved"]
+
+
+def test_daemon_workload_probe_table_count_uses_sqlite_stats_after_cheap_counts(
     tmp_path: Path,
 ) -> None:
     db = tmp_path / "stats.sqlite"
@@ -199,6 +233,16 @@ def test_daemon_workload_probe_table_count_uses_sqlite_stats_for_estimates(
 
         assert _table_count(conn, "sample", exact=False) == UNKNOWN_TABLE_COUNT
         assert _table_count(conn, "sample", exact=True) == 3
+
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY)")
+        conn.executemany(
+            "INSERT INTO sessions(session_id, message_count) VALUES (?, ?)",
+            [("s1", 2), ("s2", 1)],
+        )
+        conn.executemany("INSERT INTO messages(message_id) VALUES (?)", [("m1",), ("m2",), ("m3",)])
+        assert _table_count(conn, "sessions", exact=False) == 2
+        assert _table_count(conn, "messages", exact=False) == 3
 
         conn.execute("ANALYZE")
 
@@ -345,8 +389,8 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
         conn.execute(
             """
             INSERT INTO sessions (
-                native_id, origin, raw_id, content_hash
-            ) VALUES ('native-1', 'codex-session', 'raw-1', ?)
+                native_id, origin, raw_id, content_hash, message_count
+            ) VALUES ('native-1', 'codex-session', 'raw-1', ?, 1)
             """,
             (b"y" * 32,),
         )
@@ -450,14 +494,30 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     readiness = tiers["derived_readiness"]
     assert readiness["checked"] is True
     assert readiness["source_check_available"] is True
-    assert readiness["counts"]["session_count"] == UNKNOWN_TABLE_COUNT
+    assert readiness["counts"]["session_count"] == 2
     assert readiness["counts"]["raw_link_count"] == 2
     assert readiness["counts"]["missing_raw_session_count"] == 1
+    assert readiness["counts"]["missing_raw_session_samples"] == [
+        {
+            "session_id": "codex-session:native-2",
+            "origin": "codex-session",
+            "native_id": "native-2",
+            "missing_raw_id": "raw-missing",
+            "message_count": 0,
+            "updated_at_ms": None,
+            "evidence_status": "lost_source_evidence",
+            "loss_reason": "index_raw_id_missing_from_source_tier",
+            "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
+        }
+    ]
+    assert readiness["counts"]["lost_source_evidence_count"] == 1
+    assert readiness["counts"]["lost_source_evidence_samples"] == readiness["counts"]["missing_raw_session_samples"]
     assert readiness["counts"]["raw_materialization_debt_count"] == 0
+    assert readiness["counts"]["message_count"] == 1
     assert readiness["counts"]["text_block_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["messages_fts_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["messages_fts_exact_counts"] is False
-    assert readiness["counts"]["profile_row_count"] == UNKNOWN_TABLE_COUNT
+    assert readiness["counts"]["profile_row_count"] == 1
     assert readiness["counts"]["missing_profile_row_count"] == 1
     assert readiness["counts"]["work_event_row_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["session_tag_count"] == UNKNOWN_TABLE_COUNT
@@ -471,9 +531,28 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert readiness["ready"]["profile_rows_ready"] is False
     surfaces = readiness["surface_readiness"]
     assert surfaces["archive_sessions"]["ready"] is True
-    assert surfaces["archive_sessions"]["evidence"]["session_count"] == UNKNOWN_TABLE_COUNT
+    assert surfaces["archive_sessions"]["evidence"]["session_count"] == 2
+    assert surfaces["archive_sessions"]["evidence"]["message_count"] == 1
     assert surfaces["raw_artifacts"]["ready"] is False
     assert surfaces["raw_artifacts"]["blockers"] == ["missing_source_raw_sessions"]
+    assert surfaces["raw_artifacts"]["evidence"]["missing_raw_session_samples"] == [
+        {
+            "session_id": "codex-session:native-2",
+            "origin": "codex-session",
+            "native_id": "native-2",
+            "missing_raw_id": "raw-missing",
+            "message_count": 0,
+            "updated_at_ms": None,
+            "evidence_status": "lost_source_evidence",
+            "loss_reason": "index_raw_id_missing_from_source_tier",
+            "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
+        }
+    ]
+    assert surfaces["raw_artifacts"]["evidence"]["lost_source_evidence_count"] == 1
+    assert (
+        surfaces["raw_artifacts"]["evidence"]["lost_source_evidence_samples"]
+        == surfaces["raw_artifacts"]["evidence"]["missing_raw_session_samples"]
+    )
     assert surfaces["raw_artifacts"]["evidence"]["raw_materialization_debt_count"] == 0
     assert surfaces["search"]["ready"] is True
     assert surfaces["search"]["evidence"]["messages_fts_exact_counts"] is False
@@ -669,11 +748,69 @@ def test_daemon_workload_probe_reports_raw_materialization_debt(tmp_path: Path) 
     payload = probe(db)
 
     readiness = payload["archive_tiers"]["derived_readiness"]
-    assert readiness["counts"]["raw_materialization_debt_count"] == 0
+    assert readiness["counts"]["raw_materialization_debt_count"] == 1
     assert readiness["counts"]["raw_materialization_debt_group_count"] == 1
-    assert readiness["ready"]["raw_materialization_ready"] is True
-    assert readiness["surface_readiness"]["raw_artifacts"]["ready"] is True
-    assert readiness["surface_readiness"]["raw_artifacts"]["blockers"] == []
+    assert readiness["ready"]["raw_materialization_ready"] is False
+    assert readiness["surface_readiness"]["raw_artifacts"]["ready"] is False
+    assert readiness["surface_readiness"]["raw_artifacts"]["blockers"] == ["unmaterialized_raw_sessions"]
+
+
+def test_daemon_workload_probe_reports_weighted_raw_replay_backlog(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX):
+        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+    blob_store = BlobStore(tmp_path / "blob")
+    small_hash, small_size = blob_store.write_from_bytes(b"small")
+    large_hash, large_size = blob_store.write_from_bytes(b"L" * 4096)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                parsed_at_ms, validation_status, acquired_at_ms
+            ) VALUES ('raw-small', 'codex-session', 'native-small', '/src/small.jsonl', ?, ?, 1, 'passed', 1)
+            """,
+            (bytes.fromhex(small_hash), small_size),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                parsed_at_ms, validation_status, acquired_at_ms
+            ) VALUES ('raw-large', 'codex-session', 'native-large', '/src/large.jsonl', ?, ?, 1, 'passed', 2)
+            """,
+            (bytes.fromhex(large_hash), large_size),
+        )
+
+    payload = probe(db, limit=2)
+
+    backlog = payload["raw_replay_backlog"]
+    assert backlog["available"] is True
+    assert backlog["candidate_count"] == 2
+    assert backlog["total_blob_bytes"] == small_size + large_size
+    assert backlog["max_blob_bytes"] == large_size
+    assert backlog["top_raw_rows"][0] == {
+        "raw_id": "raw-large",
+        "origin": "codex-session",
+        "source_path": "/src/large.jsonl",
+        "blob_size": large_size,
+        "oversized": False,
+        "stream_safe": True,
+    }
+    assert backlog["origin_summary"] == [
+        {
+            "origin": "codex-session",
+            "raw_count": 2,
+            "total_blob_bytes": small_size + large_size,
+            "max_blob_bytes": large_size,
+        }
+    ]
+    assert backlog["source_path_summary"][0] == {
+        "source_path": "/src/large.jsonl",
+        "raw_count": 1,
+        "total_blob_bytes": large_size,
+        "max_blob_bytes": large_size,
+    }
 
 
 def test_daemon_workload_probe_does_not_block_on_informational_raw_debt(
@@ -717,12 +854,14 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
         "convergence_stage_timings",
         "boundary_table_count_mode",
         "boundary_table_counts",
+        "boundary_table_count_precision",
         "archive_tiers",
         "blob_lease_state",
         "gc_state",
         "fts_trigger_state",
         "daemon_resource_signal",
         "source_path_churn",
+        "raw_replay_backlog",
         "convergence_debt",
         "query_plans",
     }

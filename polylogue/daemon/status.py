@@ -60,6 +60,7 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
+from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -145,6 +146,8 @@ class RawMaterializationReadiness(BaseModel):
     affected_open: int = 0
     affected_classified: int = 0
     affected_unchecked: int = 0
+    lost_source_evidence_count: int = 0
+    lost_source_evidence_samples: list[dict[str, object]] = Field(default_factory=list)
     category_counts: dict[str, int] = Field(default_factory=dict)
     source_family_counts: dict[str, int] = Field(default_factory=dict)
     sampled_rows: list[dict[str, object]] = Field(default_factory=list)
@@ -291,6 +294,7 @@ class DaemonStatus(BaseModel):
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
     embedding_readiness: EmbeddingReadiness = Field(default_factory=EmbeddingReadiness)
     raw_materialization_readiness: RawMaterializationReadiness = Field(default_factory=RawMaterializationReadiness)
+    raw_replay_backlog: dict[str, object] = Field(default_factory=dict)
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
     component_readiness: dict[str, object] = Field(default_factory=dict)
     browser_capture_active: bool = False
@@ -872,6 +876,16 @@ def _safe_float(value: object, *, default: float = 0.0) -> float:
         except ValueError:
             return default
     return default
+
+
+def _fmt_bytes(value: int) -> str:
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.1f} GB"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f} MB"
+    if value > 0:
+        return f"{value / 1_000:.0f} KB"
+    return "0 KB"
 
 
 def _failing_files_info() -> list[str]:
@@ -1646,8 +1660,9 @@ def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness
             "message_indexed_count": readiness.message_indexed_count,
             "message_indexable_count": readiness.message_indexable_count,
             "coverage_pct": readiness.coverage_pct,
+            "coverage_exact": readiness.coverage_exact,
         },
-        repair_hint=None if readiness.messages_ready else "polylogue ops maintenance run --target dangling_fts",
+        repair_hint=None if readiness.messages_ready else "polylogued run",
     )
 
 
@@ -1684,9 +1699,7 @@ def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentR
             "total_sessions": total,
             "missing_profiles": max(0, total - with_profiles),
         },
-        repair_hint=None
-        if state is CapabilityReadinessState.READY
-        else "polylogue ops maintenance preview --scope derived",
+        repair_hint=None if state is CapabilityReadinessState.READY else "polylogued run",
     )
 
 
@@ -1744,6 +1757,10 @@ def _daemon_embedding_repair_hint(
 def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentReadiness:
     if storage.archive_ready:
         state = CapabilityReadinessState.READY
+    elif storage.active_rebuild_index_attempts:
+        state = CapabilityReadinessState.REBUILDING
+    elif storage.final_shape_ready and storage.archive_schema_ready and not storage.archive_materialization_ready:
+        state = CapabilityReadinessState.STALE
     elif storage.final_shape_ready or storage.schema_mismatches:
         state = CapabilityReadinessState.BLOCKED
     elif "source" in storage.present_tiers and "index" in storage.present_tiers:
@@ -1757,13 +1774,16 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
         caveats += (f"missing_tiers:{','.join(storage.missing_tiers)}",)
     if storage.schema_mismatches:
         caveats += (f"schema_mismatch:{','.join(storage.schema_mismatches)}",)
+    if storage.final_shape_ready and storage.archive_schema_ready and not storage.archive_materialization_ready:
+        caveats += ("materialization_pending",)
     repair_hint = None
     if state is not CapabilityReadinessState.READY:
-        repair_hint = (
-            "polylogue ops reset --index && polylogued run"
-            if storage.schema_mismatches == ["index"]
-            else "polylogue ops maintenance archive-init --yes"
-        )
+        if storage.schema_mismatches == ["index"]:
+            repair_hint = "polylogue ops reset --index && polylogued run"
+        elif storage.missing_tiers:
+            repair_hint = "polylogue ops maintenance archive-init --yes"
+        else:
+            repair_hint = "polylogued run"
     return ComponentReadiness(
         component="archive_storage",
         scope="archive",
@@ -1776,6 +1796,7 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
             "final_shape_ready": storage.final_shape_ready,
             "archive_schema_ready": storage.archive_schema_ready,
             "schema_mismatch_count": len(storage.schema_mismatches),
+            "active_rebuild_index_attempt_count": len(storage.active_rebuild_index_attempts),
         },
         caveats=caveats,
         repair_hint=repair_hint,
@@ -1821,6 +1842,28 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
     return RawMaterializationReadiness.model_validate(payload)
 
 
+def _raw_replay_backlog_info() -> dict[str, object]:
+    """Return weighted raw source-to-index replay backlog for daemon status."""
+    try:
+        from polylogue.config import Config
+        from polylogue.paths import render_root
+
+        return raw_materialization_replay_backlog(
+            Config(archive_root=archive_root(), render_root=render_root(), sources=[]),
+            limit=5,
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "candidate_count": 0,
+            "total_blob_bytes": 0,
+            "top_raw_rows": [],
+            "origin_summary": [],
+            "source_path_summary": [],
+        }
+
+
 def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
@@ -1845,6 +1888,7 @@ def build_daemon_status(
     fts = _fts_readiness_info()
     freshness = _insight_freshness_info()
     raw_materialization_readiness = _raw_materialization_readiness_info()
+    raw_replay_backlog = _raw_replay_backlog_info()
     materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
         raw_materialization_readiness
     )
@@ -1908,9 +1952,14 @@ def build_daemon_status(
         session_work_events_ready=bool(fts.get("session_work_events_ready", False)),
         threads_ready=bool(fts.get("threads_ready", False)),
         invariant_ready=bool(fts.get("invariant_ready", False)),
-        message_indexed_count=_safe_int(fts.get("message_indexed_count", 0)),
-        message_indexable_count=_safe_int(fts.get("message_indexable_count", 0)),
-        coverage_pct=_safe_float(fts.get("coverage_pct")),
+        message_indexed_count=None
+        if fts.get("message_indexed_count") is None
+        else _safe_int(fts.get("message_indexed_count", 0)),
+        message_indexable_count=None
+        if fts.get("message_indexable_count") is None
+        else _safe_int(fts.get("message_indexable_count", 0)),
+        coverage_pct=None if fts.get("coverage_pct") is None else _safe_float(fts.get("coverage_pct")),
+        coverage_exact=bool(fts.get("coverage_exact", True)),
         surfaces=cast(dict[str, dict[str, int | bool | str | None]], fts.get("surfaces", {})),
     )
     embedding_readiness = EmbeddingReadiness(
@@ -1970,6 +2019,7 @@ def build_daemon_status(
         insight_freshness=insight_freshness,
         embedding_readiness=embedding_readiness,
         raw_materialization_readiness=raw_materialization_readiness,
+        raw_replay_backlog=raw_replay_backlog,
         archive_storage=storage_info,
         component_readiness=_daemon_component_readiness(
             component_state=component_state,
@@ -2052,6 +2102,7 @@ def daemon_status_payload(
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": status.fts_readiness.model_dump(),
             "raw_materialization_readiness": status.raw_materialization_readiness.model_dump(),
+            "raw_replay_backlog": status.raw_replay_backlog,
             "embedding_readiness": status.embedding_readiness.model_dump(),
             "memory": {
                 "rss_current_mb": status.rss_current_mb,
@@ -2313,6 +2364,35 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     f"{_safe_int(materialization.get('warning'))} warning, "
                     f"{_safe_int(materialization.get('blocked'))} blocked"
                 )
+    backlog = payload.get("raw_replay_backlog")
+    if isinstance(backlog, dict) and backlog.get("available"):
+        candidates = _safe_int(backlog.get("candidate_count"))
+        missing = _safe_int(backlog.get("missing_blob_count"))
+        if candidates > 0 or missing > 0:
+            total_bytes = _safe_int(backlog.get("total_blob_bytes"))
+            max_bytes = _safe_int(backlog.get("max_blob_bytes"))
+            oversized = _safe_int(backlog.get("oversized_count"))
+            line = f"Raw replay backlog: {candidates:,} raw row(s), {_fmt_bytes(total_bytes)} pending"
+            if max_bytes:
+                line += f"; largest {_fmt_bytes(max_bytes)}"
+            if missing:
+                line += f"; {missing:,} missing blob(s)"
+            if oversized:
+                line += f"; {oversized:,} oversized"
+            lines.append(line)
+
+            origins = backlog.get("origin_summary")
+            if isinstance(origins, list) and origins:
+                parts: list[str] = []
+                for item in origins[:3]:
+                    if not isinstance(item, dict):
+                        continue
+                    origin = item.get("origin") or "unknown"
+                    raw_count = _safe_int(item.get("raw_count"))
+                    blob_bytes = _safe_int(item.get("total_blob_bytes"))
+                    parts.append(f"{origin}={raw_count:,}/{_fmt_bytes(blob_bytes)}")
+                if parts:
+                    lines.append(f"  weighted by origin: {', '.join(parts)}")
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):

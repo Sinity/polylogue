@@ -167,6 +167,7 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     affected_classified = int(payload.get("affected_classified") or 0)
     unchecked = int(payload.get("unchecked") or 0)
     affected_unchecked = int(payload.get("affected_unchecked") or 0)
+    lost_source_evidence_count = int(payload.get("lost_source_evidence_count") or 0)
     raw_artifact_count = int(payload.get("raw_artifact_count") or 0)
     materialized_raw_artifact_count = int(payload.get("materialized_raw_artifact_count") or 0)
     archive_session_count = int(payload.get("archive_session_count") or 0)
@@ -174,6 +175,9 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     if not available:
         state = CapabilityReadinessState.UNKNOWN
         summary = "unknown"
+    elif lost_source_evidence_count > 0:
+        state = CapabilityReadinessState.BLOCKED
+        summary = "source evidence missing"
     elif total == 0:
         state = CapabilityReadinessState.READY
         summary = "ready"
@@ -203,7 +207,7 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     elif state is CapabilityReadinessState.DEGRADED:
         caveats = ("raw_index_join_gaps_classified_not_replayable",)
     elif state is CapabilityReadinessState.BLOCKED:
-        caveats = ("raw_materialization_blocked",)
+        caveats = ("lost_source_evidence",) if lost_source_evidence_count > 0 else ("raw_materialization_blocked",)
     elif state is CapabilityReadinessState.POISONED:
         caveats = ("raw_materialization_critical_debt",)
     else:
@@ -226,6 +230,7 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
             "affected_classified": affected_classified,
             "unchecked": unchecked,
             "affected_unchecked": affected_unchecked,
+            "lost_source_evidence_count": lost_source_evidence_count,
             "raw_artifact_count": raw_artifact_count,
             "materialized_raw_artifact_count": materialized_raw_artifact_count,
             "archive_session_count": archive_session_count,
@@ -235,10 +240,15 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
         metadata={
             "category_counts": dict(payload.get("category_counts") or {}),
             "source_family_counts": dict(payload.get("source_family_counts") or {}),
+            "lost_source_evidence_samples": list(payload.get("lost_source_evidence_samples") or []),
         },
-        repair_hint=None
-        if state == CapabilityReadinessState.READY
-        else "polylogue ops debt list --kind raw-materialization",
+        repair_hint=(
+            None
+            if state == CapabilityReadinessState.READY
+            else "restore exact raw artifact"
+            if lost_source_evidence_count > 0
+            else "polylogued run"
+        ),
     )
 
 

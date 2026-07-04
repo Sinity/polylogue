@@ -63,7 +63,6 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "materialize-session-insights" in coverage.operations
     assert "project-archive-readiness" in coverage.operations
     assert "session_insights" in coverage.maintenance_targets
-    assert "dangling_fts" in coverage.maintenance_targets
     assert "compile-inferred-corpus-specs" in coverage.operations
     assert "compile-inferred-corpus-scenarios" in coverage.operations
     assert "query-schema-catalog" in coverage.operations
@@ -83,12 +82,9 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     )
     assert coverage.uncovered_maintenance_targets == (
         "empty_sessions",
-        "message_embeddings",
         "message_type_backfill",
         "orphaned_attachments",
         "orphaned_messages",
-        "raw_materialization",
         "superseded_raw_snapshots",
-        "wal_checkpoint",
     )
     assert coverage.uncovered_declared_operations == coverage.uncovered_operations

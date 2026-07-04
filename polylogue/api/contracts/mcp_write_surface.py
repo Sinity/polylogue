@@ -115,8 +115,20 @@ class MCPWriteSurface:
             )
         return self._polylogue
 
-    async def add_tag(self, session_id: str, tag: str) -> TagMutationResult:
-        return await self._require_polylogue().add_tag(session_id, tag)
+    async def add_tag(
+        self,
+        session_id: str,
+        tag: str,
+        *,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
+    ) -> TagMutationResult:
+        return await self._require_polylogue().add_tag(
+            session_id,
+            tag,
+            author_ref=author_ref,
+            author_kind=author_kind,
+        )
 
     async def remove_tag(self, session_id: str, tag: str) -> TagMutationResult:
         return await self._require_polylogue().remove_tag(session_id, tag)

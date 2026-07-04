@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from polylogue.config import Source, get_config
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.browser_capture import DOM_FALLBACK_INGEST_FLAG, TEMPORARY_CHAT_INGEST_FLAG
+from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_scenarios import open_index_db
 
 
@@ -76,6 +78,49 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert session.attachments[0].message_provider_id == "a1"
     assert session.attachments[0].source_url == "https://chatgpt.com/attachment/1"
     assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
+
+
+def test_browser_capture_embedded_attachment_payloads_become_inline_bytes() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    turns = session_payload["turns"]
+    assert isinstance(turns, list)
+    assistant_turn = turns[1]
+    assert isinstance(assistant_turn, dict)
+    assistant_turn["attachments"] = [
+        {
+            "provider_attachment_id": "att-text",
+            "name": "notes.md",
+            "mime_type": "text/markdown",
+            "extracted_content": "hello notes",
+        },
+        {
+            "provider_attachment_id": "att-b64",
+            "name": "payload.bin",
+            "mime_type": "application/octet-stream",
+            "provider_meta": {"base64_data": "AAECAw=="},
+        },
+        {
+            "provider_attachment_id": "att-remote",
+            "name": "remote.pdf",
+            "mime_type": "application/pdf",
+            "url": "https://chatgpt.com/attachment/remote",
+        },
+    ]
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    by_name = {attachment.name: attachment for attachment in parsed[0].attachments}
+    assert by_name["notes.md"].inline_bytes == b"hello notes"
+    assert by_name["notes.md"].size_bytes == len(b"hello notes")
+    assert by_name["notes.md"].upload_origin == "paste"
+    assert by_name["payload.bin"].inline_bytes == b"\x00\x01\x02\x03"
+    assert by_name["payload.bin"].size_bytes == 4
+    assert by_name["payload.bin"].upload_origin == "paste"
+    assert by_name["remote.pdf"].inline_bytes is None
+    assert by_name["remote.pdf"].source_url == "https://chatgpt.com/attachment/remote"
+    assert by_name["remote.pdf"].upload_origin == "url"
 
 
 def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
@@ -237,7 +282,7 @@ def test_browser_capture_non_native_raw_payload_keeps_envelope_turns() -> None:
     assert session.provider_session_id == "temporary:abc123"
     assert [message.provider_message_id for message in session.messages] == ["u1", "a1"]
     assert [message.text for message in session.messages] == ["Draft the plan", "Here is the plan"]
-    assert session.ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG]
+    assert session.ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG, DOM_FALLBACK_INGEST_FLAG]
 
 
 def test_browser_capture_session_kind_marks_temporary_chat() -> None:
@@ -250,7 +295,7 @@ def test_browser_capture_session_kind_marks_temporary_chat() -> None:
 
     assert parsed[0].provider_session_id == "conv-123"
     assert parsed[0].session_kind == "temporary"
-    assert parsed[0].ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG]
+    assert parsed[0].ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG, DOM_FALLBACK_INGEST_FLAG]
 
 
 def test_browser_capture_typed_session_kind_marks_temporary_chat() -> None:
@@ -265,7 +310,7 @@ def test_browser_capture_typed_session_kind_marks_temporary_chat() -> None:
     assert envelope.session.session_kind == "temporary"
     assert parsed[0].provider_session_id == "conv-123"
     assert parsed[0].session_kind == "temporary"
-    assert parsed[0].ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG]
+    assert parsed[0].ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG, DOM_FALLBACK_INGEST_FLAG]
 
 
 def test_browser_capture_session_kind_defaults_to_standard() -> None:
@@ -381,6 +426,46 @@ def test_browser_capture_raw_claude_ai_uses_content_when_text_empty() -> None:
         "Native Claude user from content",
         "Native Claude answer from content",
     ]
+
+
+def test_browser_capture_raw_claude_ai_attachment_content_stays_acquirable() -> None:
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["provider"] = "claude-ai"
+    session["provider_session_id"] = "claude-conv-123"
+    payload["raw_provider_payload"] = {
+        "uuid": "claude-native-conv",
+        "name": "Native Claude title",
+        "chat_messages": [
+            {
+                "uuid": "claude-u1",
+                "sender": "human",
+                "text": "Native Claude user",
+                "attachments": [
+                    {
+                        "file_name": "embedded.md",
+                        "file_type": "text/markdown",
+                        "extracted_content": "embedded notes",
+                    }
+                ],
+                "files": [
+                    {
+                        "file_uuid": "remote-file-1",
+                        "file_name": "remote.tar.gz",
+                        "size_bytes": 1024,
+                    }
+                ],
+            },
+        ],
+    }
+
+    parsed = parse_payload(Provider.CLAUDE_AI, payload, "fallback")
+
+    by_name = {attachment.name: attachment for attachment in parsed[0].attachments}
+    assert by_name["embedded.md"].inline_bytes == b"embedded notes"
+    assert by_name["embedded.md"].size_bytes == len(b"embedded notes")
+    assert by_name["remote.tar.gz"].inline_bytes is None
 
 
 def test_browser_capture_raw_claude_ai_without_id_uses_envelope_session_id() -> None:
@@ -509,6 +594,68 @@ async def test_browser_capture_receiver_artifact_lands_in_archive(
     assert row["origin"] == "chatgpt-export"
     assert row["native_id"] == "conv-123"
     assert row["title"] == "Work plan"
+
+
+@pytest.mark.asyncio
+async def test_browser_capture_embedded_attachments_are_acquired_in_archive(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del workspace_env
+    blob_store = BlobStore(tmp_path / "blob")
+    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: blob_store)
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    turns = session_payload["turns"]
+    assert isinstance(turns, list)
+    assistant_turn = turns[1]
+    assert isinstance(assistant_turn, dict)
+    assistant_turn["attachments"] = [
+        {
+            "provider_attachment_id": "att-embedded",
+            "name": "embedded.md",
+            "mime_type": "text/markdown",
+            "extracted_content": "archive notes",
+        },
+        {
+            "provider_attachment_id": "att-remote",
+            "name": "remote.pdf",
+            "mime_type": "application/pdf",
+            "size_bytes": 4096,
+            "url": "https://chatgpt.com/attachment/remote",
+        },
+    ]
+    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    artifact = write_capture_envelope(envelope, spool_path=tmp_path / "browser-capture").path
+    config = get_config()
+    config.sources = [Source(name="browser-capture", path=artifact)]
+
+    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+        await polylogue.parse_sources(config.sources)
+
+    with open_index_db(config.archive_root / "index.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT display_name, blob_hash, byte_count, acquisition_status
+            FROM attachments
+            ORDER BY display_name
+            """
+        ).fetchall()
+
+    by_name = {str(row["display_name"]): row for row in rows}
+    acquired = by_name["embedded.md"]
+    expected_hash = hashlib.sha256(b"archive notes").digest()
+    assert acquired["acquisition_status"] == "acquired"
+    assert acquired["byte_count"] == len(b"archive notes")
+    assert bytes(acquired["blob_hash"]) == expected_hash
+    assert blob_store.read_all(expected_hash.hex()) == b"archive notes"
+
+    remote = by_name["remote.pdf"]
+    assert remote["acquisition_status"] == "unfetched"
+    assert remote["blob_hash"] is None
+    assert remote["byte_count"] == 4096
 
 
 @pytest.mark.asyncio

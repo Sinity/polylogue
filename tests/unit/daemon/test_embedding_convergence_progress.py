@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -9,6 +10,35 @@ import pytest
 from polylogue.daemon import convergence_stages, embedding_backlog
 from polylogue.daemon.status import format_daemon_status_lines
 from polylogue.storage.embeddings.materialization import EmbedSessionOutcome, PendingSession
+
+
+def test_periodic_embedding_backlog_waits_for_catch_up_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+        calls.append("drain")
+        raise asyncio.CancelledError
+
+    async def exercise() -> None:
+        catch_up_complete = asyncio.Event()
+        monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: tmp_path / "index.db")
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(embedding_backlog, "EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS", 0)
+        task = asyncio.create_task(
+            embedding_backlog.periodic_embedding_backlog_check(catch_up_complete=catch_up_complete)
+        )
+        await asyncio.sleep(0)
+        assert calls == []
+        catch_up_complete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert calls == ["drain"]
 
 
 class _EmbeddingConfig:
@@ -237,6 +267,53 @@ def test_archive_convergence_embedding_uses_embeddings_tier(
     assert ok is True
     assert observed_vector_db_paths == [embeddings_db]
     assert embedded_calls == [(index_db, "codex-session:v1-a")]
+
+
+def test_archive_convergence_pending_check_reads_embeddings_tier(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    index_db = tmp_path / "index.db"
+    embeddings_db = tmp_path / "embeddings.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                title TEXT,
+                message_count INTEGER NOT NULL,
+                sort_key_ms INTEGER
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                variant_index INTEGER NOT NULL DEFAULT 0,
+                message_type TEXT NOT NULL DEFAULT 'message',
+                role TEXT NOT NULL,
+                material_origin TEXT NOT NULL,
+                word_count INTEGER NOT NULL DEFAULT 1,
+                content_hash BLOB
+            );
+            INSERT INTO sessions VALUES ('codex-session:v1-a', 'Archive A', 1, 1);
+            INSERT INTO messages (
+                message_id, session_id, position, role, material_origin, word_count, content_hash
+            ) VALUES ('m1', 'codex-session:v1-a', 0, 'user', 'human_authored', 8, x'01');
+            """
+        )
+    with sqlite3.connect(embeddings_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, needs_reindex, error_message
+            ) VALUES ('codex-session:v1-a', 'codex-session', 1, 0, NULL)
+            """
+        )
+        conn.commit()
+
+    with sqlite3.connect(index_db) as conn:
+        assert convergence_stages._archive_pending_embedding_session_ids(conn, ["codex-session:v1-a"]) == []
 
 
 def test_daemon_embedding_backlog_drain_is_noop_when_disabled(

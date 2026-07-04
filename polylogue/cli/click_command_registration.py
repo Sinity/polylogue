@@ -85,6 +85,7 @@ class _LazyGroup(_LazyCommand, click.Group):
 
 
 _SHORT_HELP: dict[str, str] = {
+    "agents": "Inspect agent coordination state.",
     "auth": "Authenticate optional external services.",
     "backup": "Create a timestamped durability-tier backup.",
     "check": "Run archive health checks and repairs.",
@@ -113,6 +114,7 @@ _COMMAND_NAMES: dict[str, str] = {
 }
 
 _GROUP_ATTRS: dict[str, str] = {
+    "agents": "agents_command",
     "config": "config_command",
     "debt": "debt_command",
     "demo": "demo_command",
@@ -144,6 +146,7 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
 # ── command list ───────────────────────────────────────────────────
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
+    _L("agents"),
     _L("config"),
     _L("dashboard"),
     _L("demo"),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias, cast
@@ -16,6 +17,10 @@ from polylogue.archive.raw_payload.streams import raw_line_stream
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, loads
 from polylogue.sources.dispatch import detect_provider
+
+_HERMES_STATE_DB_MARKER = "hermes_state_db"
+_HERMES_SESSION_COLUMNS = frozenset({"id", "model", "model_config", "started_at", "title"})
+_HERMES_MESSAGE_COLUMNS = frozenset({"id", "session_id", "role", "content", "timestamp", "tool_calls"})
 
 WireFormat = Literal["json", "jsonl"]
 JSONRecord: TypeAlias = JSONDocument
@@ -258,6 +263,15 @@ def build_raw_payload_envelope(
     Python list. This avoids reading the whole file into one byte string,
     but grouped-provider parses still hold the decoded records in memory.
     """
+    if isinstance(raw_content, Path) and _looks_like_hermes_state_db(raw_content):
+        marker: JSONDocument = {"polylogue_artifact": _HERMES_STATE_DB_MARKER, "state_db_path": str(raw_content)}
+        provider = Provider.HERMES
+        return RawPayloadEnvelope(
+            payload=marker,
+            provider=provider,
+            wire_format="json",
+            artifact=classify_artifact(marker, provider=provider, source_path=source_path),
+        )
     normalized_path = str(source_path or "").lower()
     prefer_jsonl = normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
     preferred_provider = payload_provider or fallback_provider
@@ -288,6 +302,26 @@ def build_raw_payload_envelope(
         malformed_jsonl_lines=malformed_jsonl_lines,
         malformed_jsonl_detail=malformed_jsonl_detail,
     )
+
+
+def _looks_like_hermes_state_db(path: Path) -> bool:
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sessions', 'messages')"
+                ).fetchall()
+            }
+            if tables != {"sessions", "messages"}:
+                return False
+            session_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+            message_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+            return _HERMES_SESSION_COLUMNS.issubset(session_columns) and _HERMES_MESSAGE_COLUMNS.issubset(
+                message_columns
+            )
+    except sqlite3.Error:
+        return False
 
 
 __all__ = [

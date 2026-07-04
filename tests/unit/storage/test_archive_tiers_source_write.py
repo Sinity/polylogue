@@ -196,6 +196,45 @@ def test_archive_tiers_source_writer_replays_hook_events_idempotently(tmp_path: 
     )
 
 
+def test_archive_tiers_source_writer_keeps_multiple_raw_captures_for_one_native_id(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+
+    first_raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.CHATGPT_EXPORT,
+        source_path="/captures/direct.json",
+        source_index=0,
+        native_id="conversation-1",
+        payload=b'{"title":"direct"}',
+        acquired_at_ms=1_767_000_000_000,
+    )
+    second_raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.CHATGPT_EXPORT,
+        source_path="/captures/browser.json",
+        source_index=0,
+        native_id="conversation-1",
+        payload=b'{"title":"browser"}',
+        acquired_at_ms=1_767_000_000_100,
+    )
+
+    rows = conn.execute(
+        """
+        SELECT raw_id, source_path
+        FROM raw_sessions
+        WHERE origin = ? AND native_id = ?
+        ORDER BY source_path
+        """,
+        (Origin.CHATGPT_EXPORT.value, "conversation-1"),
+    ).fetchall()
+
+    assert first_raw_id != second_raw_id
+    assert [(row["raw_id"], row["source_path"]) for row in rows] == [
+        (second_raw_id, "/captures/browser.json"),
+        (first_raw_id, "/captures/direct.json"),
+    ]
+
+
 def test_archive_tiers_source_writer_deterministic_ids() -> None:
     payload = b"stable"
     blob_hash = deterministic_blob_hash(payload)

@@ -151,6 +151,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_devtools_reference",
     ),
     CommandSpec(
+        "render demo-corpus-datasheet",
+        "generated surfaces",
+        "Render docs/plans/demo-corpus-construct-audit.md from the demo family registry and a measured seed archive.",
+        "devtools.render_demo_corpus_datasheet",
+        use_when="Refresh or verify the deterministic demo corpus construct datasheet after changing demo families, constructs, or seed semantics.",
+        examples=(
+            "devtools render demo-corpus-datasheet",
+            "devtools render demo-corpus-datasheet --check",
+        ),
+    ),
+    CommandSpec(
         "render docs-surface",
         "generated surfaces",
         "Render docs/README.md and the README documentation table.",
@@ -380,6 +391,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace frontier",
+        "workspace",
+        "Classify ready and in-progress Beads into devloop batches.",
+        "devtools.frontier_report",
+        use_when=(
+            "During Direction, Velocity, or wait-ahead windows, group the Beads frontier by subsystem, "
+            "proof cost, live-runtime risk, schema-lane conflict, and subagent suitability before claiming "
+            "or dispatching work."
+        ),
+        examples=(
+            "devtools workspace frontier",
+            "devtools workspace frontier --json",
+            "devtools workspace frontier --limit 80 --out .agent/task-history/frontier-latest.md",
+        ),
+    ),
+    CommandSpec(
         "workspace deployment-smoke",
         "workspace",
         "Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow.",
@@ -442,6 +469,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace lineage-validation",
+        "workspace",
+        "Validate lineage-count evidence before citing archive counts externally.",
+        "devtools.lineage_validation",
+        use_when=(
+            "Before publishing archive session/message/cardinality numbers, emit exact physical/logical counts, "
+            "session-link inheritance rollups, branch-point integrity checks, and sampled composed-read proof "
+            "from the active archive instead of relying on scratch SQL or planner-estimated diagnostics."
+        ),
+        examples=(
+            "devtools workspace lineage-validation --json",
+            "devtools workspace lineage-validation --sample-prefix-sharing 100 --json",
+            "devtools workspace lineage-validation --out-dir .agent/demos/lineage-validation/current",
+        ),
+    ),
+    CommandSpec(
         "workspace affordance-usage",
         "workspace",
         "Analyze agent affordance/tool usage from archive tool-use rows.",
@@ -471,6 +514,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace demo-shelf",
             "devtools workspace demo-shelf --check",
             "devtools workspace demo-shelf --root /realm/project/sinex/.agent/demos --json",
+        ),
+    ),
+    CommandSpec(
+        "workspace degraded-archive-proof",
+        "workspace",
+        "Build a degraded archive self-healing proof artifact.",
+        "devtools.degraded_archive_proof",
+        use_when=(
+            "Prove WAL, FTS freshness, and planner-stat upkeep on a deterministic archive copy by "
+            "deliberately degrading rebuildable state and running the same bounded repair/checkpoint/"
+            "optimize primitives used by the daemon."
+        ),
+        examples=(
+            "devtools workspace degraded-archive-proof --json",
+            "devtools workspace degraded-archive-proof --out-dir .agent/demos/degraded-archive-proof/current --json",
         ),
     ),
     CommandSpec(
@@ -645,13 +703,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "lab policy schema-versioning",
         "verification lab",
-        "Reject in-place storage schema upgrade helpers (#1302).",
+        "Verify durable-tier migration and derived-tier rebuild boundaries.",
         "devtools.verify_schema_upgrade_lane",
         use_when=(
             "Enforce the policy boundary documented in docs/internals.md § "
-            "'Schema Versioning Model'. Polylogue intentionally has no in-place "
-            "storage schema upgrade chain; archive-shape changes edit the canonical "
-            "DDL and require a fresh rebuild from source."
+            "'Schema Versioning Model'. Durable tiers use explicit additive "
+            "migrations with a backup gate; derived tiers are rebuilt or "
+            "blue-green replaced from source evidence."
         ),
         examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
     ),

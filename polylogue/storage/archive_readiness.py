@@ -88,6 +88,7 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
         "affected_actionable",
         "affected_blocked",
         "affected_open",
+        "lost_source_evidence_count",
         "unchecked",
         "affected_unchecked",
     )
@@ -100,8 +101,8 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     This function is used by status/readiness surfaces and must stay cheap on
     large archives. It classifies only cheap structural explanations for
     raw-id join gaps: rows already materialized by provider/source aliases and
-    parsed sidecar/metadata artifacts. The exact debt explainer lives in
-    ``polylogue ops debt list --kind raw-materialization``.
+    parsed sidecar/metadata artifacts. Remaining gaps are daemon convergence
+    input, not an operator maintenance workflow.
     """
     source_db = active_archive / "source.db"
     index_db = active_archive / "index.db"
@@ -199,6 +200,8 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 raw_columns=raw_columns,
                 session_columns=session_columns,
             )
+            lost_source_evidence_count = _missing_source_raw_session_count(conn)
+            lost_source_evidence_samples = _missing_source_raw_session_samples(conn)
     except Exception as exc:
         return {
             "available": False,
@@ -213,7 +216,11 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     parse_failed = int(row["parse_failed"] or 0)
     parsed_without_index_session = int(row["parsed_without_index_session"] or 0)
     classified = sum(classified_counts.values())
-    unchecked = max(total - classified, 0)
+    parse_failed_origins = {str(item["origin"] or "unknown") for item in gap_rows if item["parse_error"] is not None}
+    actionable = len(parse_failed_origins)
+    critical = actionable
+    affected_actionable = parse_failed
+    unchecked = max(total - classified - affected_actionable, 0)
     classification = "cheap_projection" if classified else "not_run"
     raw_id_join_gap_count = unchecked
     category_counts: dict[str, int] = {
@@ -232,21 +239,139 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "archive_session_count": archive_session_count,
         "join_gap_count": join_gap_count,
         "total": total,
-        "critical": 0,
+        "critical": critical,
         "warning": 0,
-        "actionable": 0,
+        "actionable": actionable,
         "blocked": 0,
         "classified": classified,
         "unchecked": unchecked,
         "affected_total": total,
-        "affected_actionable": 0,
+        "affected_actionable": affected_actionable,
         "affected_blocked": 0,
         "affected_open": 0,
         "affected_classified": classified,
         "affected_unchecked": unchecked,
+        "lost_source_evidence_count": lost_source_evidence_count,
+        "lost_source_evidence_samples": lost_source_evidence_samples,
         "category_counts": category_counts,
         "source_family_counts": {str(item["origin"]): int(item["count"] or 0) for item in family_rows},
     }
+
+
+def missing_source_raw_session_evidence(active_archive: Path, *, limit: int = 10) -> dict[str, object]:
+    """Return indexed sessions whose source raw evidence is no longer present.
+
+    This is the reverse of raw materialization debt. Raw materialization asks
+    whether source rows have reached the index. This helper asks whether an
+    indexed session still has the source row named by ``sessions.raw_id``. A
+    missing row is lost source evidence until the exact raw artifact is
+    recovered; it must not be repaired by relinking to a same-native but
+    different source row.
+    """
+
+    source_db = active_archive / "source.db"
+    index_db = active_archive / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return {
+            "available": False,
+            "reason": "source.db or index.db missing",
+            "missing_raw_session_count": 0,
+            "missing_raw_session_samples": [],
+            "lost_source_evidence_count": 0,
+            "lost_source_evidence_samples": [],
+        }
+    try:
+        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+            if not _table_columns(conn, "main", "sessions") or not _table_columns(conn, "source", "raw_sessions"):
+                return {
+                    "available": False,
+                    "reason": "sessions or raw_sessions table missing",
+                    "missing_raw_session_count": 0,
+                    "missing_raw_session_samples": [],
+                    "lost_source_evidence_count": 0,
+                    "lost_source_evidence_samples": [],
+                }
+            count = _missing_source_raw_session_count(conn)
+            samples = _missing_source_raw_session_samples(conn, limit=limit)
+    except sqlite3.Error as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "missing_raw_session_count": 0,
+            "missing_raw_session_samples": [],
+            "lost_source_evidence_count": 0,
+            "lost_source_evidence_samples": [],
+        }
+    return {
+        "available": True,
+        "reason": None,
+        "missing_raw_session_count": count,
+        "missing_raw_session_samples": samples,
+        "lost_source_evidence_count": count,
+        "lost_source_evidence_samples": samples,
+    }
+
+
+def _missing_source_raw_session_count(conn: sqlite3.Connection) -> int:
+    return _readiness_scalar_int(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM sessions AS s
+        WHERE s.raw_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM source.raw_sessions AS r WHERE r.raw_id = s.raw_id
+          )
+        """,
+    )
+
+
+def _missing_source_raw_session_samples(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, object]]:
+    session_columns = _table_columns(conn, "main", "sessions")
+    if "session_id" not in session_columns:
+        return []
+    message_count_expr = "s.message_count" if "message_count" in session_columns else "NULL"
+    updated_at_expr = "s.updated_at_ms" if "updated_at_ms" in session_columns else "NULL"
+    order_expr = "s.updated_at_ms DESC, s.session_id" if "updated_at_ms" in session_columns else "s.session_id"
+    rows = conn.execute(
+        f"""
+        SELECT s.session_id, s.origin, s.native_id, s.raw_id,
+               {message_count_expr} AS message_count,
+               {updated_at_expr} AS updated_at_ms
+        FROM sessions AS s
+        WHERE s.raw_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM source.raw_sessions AS r WHERE r.raw_id = s.raw_id
+          )
+        ORDER BY {order_expr}
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        {
+            "session_id": str(row["session_id"]),
+            "origin": str(row["origin"]),
+            "native_id": str(row["native_id"]),
+            "missing_raw_id": str(row["raw_id"]),
+            "message_count": int(row["message_count"] or 0),
+            "updated_at_ms": None if row["updated_at_ms"] is None else int(row["updated_at_ms"]),
+            "evidence_status": "lost_source_evidence",
+            "loss_reason": "index_raw_id_missing_from_source_tier",
+            "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
+        }
+        for row in rows
+    ]
+
+
+def _readiness_scalar_int(conn: sqlite3.Connection, sql: str) -> int:
+    try:
+        row = conn.execute(sql).fetchone()
+    except sqlite3.Error:
+        return 0
+    return int(row[0] or 0) if row is not None else 0
 
 
 def _table_columns(conn: sqlite3.Connection, schema: str, table: str) -> frozenset[str]:
@@ -289,6 +414,9 @@ def _classify_raw_gap_rows(
         if _raw_gap_materialized_by_alias(conn, row, session_columns=session_columns):
             counts["materialized-alias"] += 1
             continue
+        if _raw_gap_matches_missing_index_raw_link(conn, row, session_columns=session_columns):
+            counts["lost-source-evidence-alias"] += 1
+            continue
         if _raw_gap_parsed_non_session_artifact(archive_root, row, raw_columns=raw_columns):
             counts["parsed-non-session-artifact"] += 1
     return counts
@@ -320,9 +448,52 @@ def _raw_gap_materialized_by_alias(
         existing = conn.execute(
             """
             SELECT 1
-            FROM main.sessions
-            WHERE origin = ?
-              AND native_id = ?
+            FROM main.sessions AS s
+            JOIN source.raw_sessions AS existing_raw ON existing_raw.raw_id = s.raw_id
+            WHERE s.origin = ?
+              AND s.native_id = ?
+            LIMIT 1
+            """,
+            (origin, native_id),
+        ).fetchone()
+        if existing is not None:
+            return True
+    return False
+
+
+def _raw_gap_matches_missing_index_raw_link(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    session_columns: frozenset[str],
+) -> bool:
+    if not {"origin", "native_id", "raw_id"} <= session_columns:
+        return False
+    origin = str(row["origin"] or "")
+    if not origin:
+        return False
+    native_ids: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, str) and value and value not in native_ids:
+            native_ids.append(value)
+
+    add(row["native_id"])
+    for candidate in source_path_native_id_candidates(str(row["source_path"] or "")):
+        add(candidate)
+    if not native_ids:
+        return False
+    for native_id in native_ids:
+        existing = conn.execute(
+            """
+            SELECT 1
+            FROM main.sessions AS s
+            WHERE s.origin = ?
+              AND s.native_id = ?
+              AND s.raw_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM source.raw_sessions AS existing_raw WHERE existing_raw.raw_id = s.raw_id
+              )
             LIMIT 1
             """,
             (origin, native_id),
@@ -356,6 +527,7 @@ def _raw_gap_parsed_non_session_artifact(
 __all__ = [
     "ACTIVE_REBUILD_STALE_AFTER_S",
     "active_rebuild_index_attempts",
+    "missing_source_raw_session_evidence",
     "raw_materialization_readiness_snapshot",
     "raw_materialization_ready",
 ]

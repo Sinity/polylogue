@@ -234,11 +234,18 @@ serve history.
 
 ## Schema-Touching Changes
 
-Polylogue has no in-place schema upgrade chain. A PR that bumps
-`SCHEMA_VERSION` or otherwise changes the canonical SQLite shape is
-not an in-place storage upgrade — it is a deletes-then-defines edit of `SCHEMA_DDL`.
-The PR body must replace any upgrade-path section with a
-**re-ingest plan**:
+Polylogue uses two schema-evolution regimes.
+
+Durable tiers (`source.db` and `user.db`) may use explicit additive
+migrations. These migrations live under `polylogue/storage/sqlite/migrations/`,
+advance `PRAGMA user_version` one version at a time, and require a verified
+backup manifest for the affected tier before they run. Destructive durable-tier
+changes require a copy-forward design and explicit operator consent; do not
+hide them behind a routine migration.
+
+Derived tiers (`index.db`, `embeddings.db`) are rebuildable products. They do
+not get in-place migration chains. A PR that bumps their schema edits the
+canonical DDL and provides a **rebuild/blue-green plan**:
 
 - which user-visible archive operation triggers rebuild/re-acquisition from
   source (e.g. `polylogue ops reset --index && polylogued run` for index-tier
@@ -248,9 +255,16 @@ The PR body must replace any upgrade-path section with a
 - the expected end-user impact (rebuild time, disk usage, anything
   that requires action beyond the reset).
 
-There is no requirement to provide an in-place upgrade path, and PRs
-that try to add one will be rejected on policy grounds (see
-`docs/internals.md` § "Schema Versioning Model" and #1212).
+During development, classify schema changes before editing: metadata-only,
+index-only, additive-derived, additive-durable, or semantic-reparse-required.
+Batch same-tier schema changes from ready Beads before triggering a live
+rebuild. Do not repeatedly reset and re-ingest the active archive for isolated
+index additions that can be grouped into one schema bump, and do not call a
+full reingest necessary unless the changed semantics actually require replaying
+source rows.
+
+The policy lint (`devtools lab policy schema-versioning`) rejects derived-tier
+upgrade helpers while allowing numbered durable-tier SQL migrations.
 
 ## Versioning and Releases
 
@@ -357,7 +371,10 @@ The repository should stay aligned with the workflow above:
 
 ## Git Hooks
 
-The devshell installs git hooks automatically (`core.hooksPath .githooks`):
+The devshell installs git hooks automatically. In a Beads-enabled checkout it
+sets `core.hooksPath` to `.beads-hooks`; otherwise it falls back to `.githooks`.
+The Beads composite hooks chain the ordinary Polylogue gates below and then run
+the matching `bd hooks run ...` integration.
 
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
   Also runs a worktree-escape detector (#1211): when committing from a
@@ -367,8 +384,11 @@ The devshell installs git hooks automatically (`core.hooksPath .githooks`):
   `cd`s into the main checkout from inside a worktree). Set
   `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree
   commit flows.
+- **prepare-commit-msg / post-checkout / post-merge**: Beads integration hooks
+  when `.beads-hooks` is active.
 - **pre-push**: `devtools verify --quick` (format, lint, mypy, generated
-  surfaces, and fast manifest checks).
+  surfaces, and fast manifest checks), followed by the Beads pre-push hook when
+  `.beads-hooks` is active.
 
 The pre-push hook is an early failure gate. The PR baseline is the
 `devtools verify` workflow below.
@@ -400,10 +420,10 @@ devtools verify --quick    # format + lint + mypy + render all --check (skip tes
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 
-The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,
-not a substitute for the default baseline. The default command fails fast when
-`.cache/testmon/testmondata` and `.cache/testmon/seed.json` are missing; do not
-rely on silent full-suite fallback.
+The quick gate runs on `git push` via the active pre-push hook. It's a fast
+check, not a substitute for the default baseline. The default command fails
+fast when `.cache/testmon/testmondata` and `.cache/testmon/seed.json` are
+missing; do not rely on silent full-suite fallback.
 
 `devtools verify` does not replay a prior verify result. It always runs the
 static gates and then invokes pytest-testmon for affected-test selection from
@@ -719,10 +739,13 @@ Never delete:
 # Polylogue Architecture
 
 For the target shape, guardrails, and architectural decision log, see
-[Architecture Spine](architecture-spine.md). For current sequencing and active
-workstreams, see [Execution Plan](execution-plan.md). For the vocabulary split
-between provider-wire identity, public origin, source roots, capture mode,
-parser provenance, and refs, see `docs/provider-origin-identity.md`.
+[Architecture Spine](architecture-spine.md). Current sequencing and active
+workstreams live in the Beads backlog (`bd ready`, `bd list --status open`) —
+the durable directive substrate; the former `docs/execution-plan.md` is
+superseded (its GitHub-issue map was re-encoded as Beads issues) and slated for
+retirement (Ref polylogue-3tl.13). For the vocabulary split between
+provider-wire identity, public origin, source roots, capture mode, parser
+provenance, and refs, see `docs/provider-origin-identity.md`.
 
 Polylogue is a local archive for AI sessions. The system has four rings:
 
@@ -1197,26 +1220,44 @@ and commit the updated `docs/plans/topology-target.yaml` and
 
 ## Schema Versioning Model
 
-Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
-schema shape:
+Polylogue has two schema-evolution regimes, keyed by tier durability.
 
 - Tier version constants under `storage/sqlite/archive_tiers/` are the
-  authority. The canonical schema is described directly by each tier DDL;
-  there are no upgrade plans, no `build_vN_to_vM_*` helpers, and no
-  chain-dispatch logic in `schema_bootstrap.py`.
-- On startup the on-disk `PRAGMA user_version` is compared against the
-  tier constant:
+  authority. The canonical fresh schema is described directly by each tier DDL.
+- **Durable tiers** (`source.db`, `user.db`) may use explicit additive
+  migrations. Migration SQL lives under
+  `storage/sqlite/migrations/{source,user}/NNN_name.sql`, advances
+  `PRAGMA user_version` one step at a time, and requires a verified backup
+  manifest containing the affected tier before it runs. Additive means
+  `CREATE TABLE`, `CREATE INDEX`, `ADD COLUMN`, and bounded backfills.
+  Destructive durable-tier changes require a copy-forward design and explicit
+  operator consent.
+- **Derived tiers** (`index.db`, `embeddings.db`) do not have in-place migration
+  chains. They are rebuildable products over durable source/user evidence:
+  schema mismatches are handled by rebuilding or blue-green replacing the
+  affected derived tier from source, preserving durable tiers.
+- **Disposable tiers** (`ops.db`) may keep narrow bootstrap-time `ALTER TABLE`
+  helpers for daemon telemetry because the tier is disposable.
+- On startup the on-disk `PRAGMA user_version` is compared against the tier
+  constant:
   - **Empty file** (`user_version == 0`): bootstrap fresh.
   - **Version match**: open as-is.
-  - **Anything else** (older or newer): the database is rejected.
-- **Mismatch → rebuild the affected tier from source.** Polylogue does not
-  patch an out-of-band shape into the canonical one. For index-tier schema
-  bumps, the operator moves the index database aside with
-  `polylogue ops reset --index && polylogued run`, preserving `source.db`,
-  `user.db`, and other durable tiers while rebuilding the canonical index.
-- Schema bumps are deletes-then-defines, never deltas. A schema change
-  edits the owning tier DDL/version and documents the re-ingest expectation.
-  No upgrade helpers are added for the bump.
+  - **Older durable tier**: refuse ordinary open and require explicit migration
+    with a backup manifest.
+  - **Derived mismatch or newer durable tier**: reject and require rebuild or a
+    newer runtime as appropriate.
+- During development, schema changes are triaged before reset/reingest:
+  metadata-only, index-only, additive-derived, additive-durable, or
+  semantic-reparse-required. Same-tier schema changes from ready Beads should be
+  batched before a live rebuild so the active archive is not reset repeatedly.
+- `devtools lab policy schema-versioning` enforces the boundary: durable SQL
+  migrations are allowed only under the numbered migration resource roots, while
+  derived-tier upgrade helpers remain forbidden.
+
+- User schema version 4 adds `user_settings`, a durable key/value table for
+  workspace/settings state that is not an epistemic assertion. Existing v3
+  user tiers migrate additively after a verified backup manifest; fresh user
+  tiers create the table directly.
 - Index schema version 24 admits `capture_gap` rows in `session_events`. These
   are narrow lifecycle evidence events emitted when ingest rejects a lower-
   precedence DOM browser-capture fallback because a richer source row already
@@ -1367,19 +1408,29 @@ schema shape:
   storage schema) are still regenerated fresh via
   `devtools lab schema generate` and promoted via `devtools lab schema promote`.
 
-This design intentionally rejects in-place upgrade-chain complexity (no
-Alembic, no forward/reverse upgrade scripts, no partially-applied upgrade
-states, no `_apply_version_upgrade_plan` rollback windows). If the configured
-archive path is not the current schema, the operator moves it aside and
-re-ingests from source. Files that are not configured archive paths are not
-classified or handled by the archive runtime.
+For **derived tiers** (`index.db`, `embeddings.db`) this design intentionally
+rejects in-place upgrade-chain complexity (no Alembic, no forward/reverse
+upgrade scripts, no partially-applied upgrade states, no
+`_apply_version_upgrade_plan` rollback windows): a derived-tier schema mismatch
+rebuilds or blue-green-replaces the tier from durable source/user evidence.
+Files that are not configured archive paths are not classified or handled by
+the archive runtime.
 
-The only compatibility carve-out is `ops.db`: `archive_tiers/bootstrap.py` may
-use narrowly scoped `ALTER TABLE ... ADD COLUMN` helpers for disposable daemon
-telemetry, such as ingest-cursor runtime fields and cursor-lag rollups. That
-exception is not a migration pattern for `source.db`, `index.db`,
-`embeddings.db`, or `user.db`; durable tier changes still require a version
-bump and rebuild/reset path.
+For **durable tiers** (`source.db`, `user.db`) the boundary is different, because
+`user.db` holds irreplaceable human assertions that cannot be rebuilt from
+source. These tiers use explicit *additive* numbered SQL migrations under
+`storage/sqlite/migrations/{source,user}/NNN_*.sql`, applied one `PRAGMA
+user_version` step at a time by `migration_runner.py` behind a **verified backup
+manifest** for the affected tier. Additive means `CREATE TABLE`/`CREATE INDEX`/
+`ADD COLUMN`/bounded backfill; destructive durable-tier changes require a
+copy-forward design and explicit operator consent, never a routine migration.
+
+`ops.db` (disposable daemon telemetry) may additionally use narrowly scoped
+`ALTER TABLE ... ADD COLUMN` bootstrap helpers in `archive_tiers/bootstrap.py`
+(ingest-cursor runtime fields, cursor-lag rollups). The
+`devtools lab policy schema-versioning` lint enforces the whole boundary:
+numbered durable-tier migrations are allowed; derived-tier upgrade helpers are
+forbidden.
 
 ## Archive Activation
 
@@ -1410,6 +1461,12 @@ polylogue ops maintenance archive-read --limit 20
 `archive-init` bootstraps the archive file set. The daemon and explicit
 ingest paths populate `source.db` and `index.db` directly from source
 artifacts. Root query commands use the active `index.db`.
+
+Source schema version 2 removes the old unique `(origin, native_id)` raw-row
+constraint. A native session can have multiple durable source observations
+(direct export, browser native capture, DOM fallback, historical ZIPs) while
+still coalescing to one canonical indexed session; source evidence must not be
+replaced merely because two captures describe the same provider-native id.
 
 ## Topology Edges (#1258)
 
@@ -1697,20 +1754,26 @@ The report has a stable top-level shape carrying its `report_version`,
   parse/convergence timings, and source-path bundles.
 - `convergence_stage_timings` — min/max/sum/mean parse/convergence/read-
   amplification stats over completed attempts.
-- `boundary_table_counts` — cheap planner-estimated counts for the
-  daemon-relevant tables by default
+- `boundary_table_counts` — mixed cheap evidence for the
+  daemon-relevant tables by default: exact counts for small/core archive
+  cardinality tables and maintained rollups such as `sessions`, `raw_sessions`,
+  `messages`, and `session_profiles`; planner-estimated counts only where exact
+  counting would scan large derived tables
   (`raw_sessions`, `sessions`, `messages`, `blocks`,
   `artifact_observations`, `messages_fts_docsize`, `actions`,
   `message_embeddings`, `session_profile`,
   `live_ingest_attempt`, `live_convergence_debt`, `pending_blob_refs`).
-  Missing tables surface as `-1` and tables without SQLite planner
+  Missing tables surface as `-1` and expensive tables without SQLite planner
   statistics surface as `-2` rather than crashing the probe. Pass
   `--exact-table-counts` when a before/after evidence run needs exact
-  arithmetic and the archive can afford the scans.
+  arithmetic and the archive can afford the scans. The companion
+  `boundary_table_count_precision` map labels each value as `exact`,
+  `estimate`, `unavailable`, or `missing`.
 - `archive_tiers` — archive inventory for `source.db`,
   `index.db`, `embeddings.db`, `user.db`, and `ops.db`: file presence,
   durability/backup policy, `PRAGMA user_version`, missing backup-required
-  tiers, and cheap planner-estimated table counts per tier. It does not run SQLite
+  tiers, and the same mixed cheap/exact table counts per tier with a
+  `table_count_precision` map for each tier. It does not run SQLite
   `PRAGMA quick_check` by default because that is a full-file integrity scan
   on large archives; pass `--integrity-check` when the workload snapshot should
   include that expensive evidence. It also avoids exact generated-text
@@ -1727,9 +1790,12 @@ The report has a stable top-level shape carrying its `report_version`,
   `polylogue ops maintenance blob-reference-debt --output-format json`; that
   read-only classifier groups missing blob refs by table, ref type, origin,
   raw-row joinability, validation/parse state, and source-path availability.
-  The paired `polylogue ops maintenance blob-reference-restore-direct`
-  command only restores direct-file source paths after exact SHA-256
-  verification; archive-member paths remain source re-acquisition work.
+  During daemon convergence, direct source files whose current bytes still hash
+  to a missing blob address are restored automatically before raw
+  materialization replay. Container/member paths such as
+  `export.zip:conversations.json` remain source re-acquisition work because the
+  referenced blob may be an extracted record inside the member, not the member
+  file itself.
 - `gc_state` — high-water `gc_generations` row, `last_completed_at`,
   total generation count.
 - `fts_trigger_state` — the three expected FTS sync triggers
@@ -1860,7 +1926,7 @@ They are not a proof ledger or end-user archive workflow.
 | --- | --- |
 | `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
 | `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
-| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Polylogue intentionally has no in-place storage schema upgrade chain; archive-shape changes edit the canonical DDL and require a fresh rebuild from source. |
+| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
 | `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
 | `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
@@ -1908,6 +1974,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render all` | Refresh or verify generated docs and agent files. |
 | `devtools render cli-output-schemas` | Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/. |
 | `devtools render cli-reference` | Render docs/cli-reference.md from live CLI help. |
+| `devtools render demo-corpus-datasheet` | Render docs/plans/demo-corpus-construct-audit.md from the demo family registry and a measured seed archive. |
 | `devtools render devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
@@ -1932,7 +1999,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools lab lanes` | Run named validation lanes. |
-| `devtools lab policy schema-versioning` | Reject in-place storage schema upgrade helpers (#1302). |
+| `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
 | `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
 | `devtools lab probe pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
@@ -1985,10 +2052,13 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
 | `devtools workspace claim-vs-evidence` | Build a structured failure follow-up claim-vs-evidence demo. |
 | `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
+| `devtools workspace degraded-archive-proof` | Build a degraded archive self-healing proof artifact. |
 | `devtools workspace demo-shelf` | Refresh or verify current demo shelf indexes. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
+| `devtools workspace frontier` | Classify ready and in-progress Beads into devloop batches. |
+| `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |

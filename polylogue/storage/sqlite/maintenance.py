@@ -5,8 +5,10 @@ from __future__ import annotations
 import sqlite3
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 DEFAULT_OPTIMIZE_ANALYSIS_LIMIT = 1_000
+ARCHIVE_TIER_OPTIMIZE_FILES = ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,8 +57,44 @@ def maybe_optimize_sqlite(
     )
 
 
+def maybe_optimize_archive_tiers(
+    archive_root: Path,
+    *,
+    reason: str,
+    analysis_limit: int = DEFAULT_OPTIMIZE_ANALYSIS_LIMIT,
+    timeout_s: float = 30.0,
+) -> tuple[SqliteOptimizeObservation, ...]:
+    """Run bounded planner-stat maintenance for every existing archive tier."""
+    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+    observations: list[SqliteOptimizeObservation] = []
+    for filename in ARCHIVE_TIER_OPTIMIZE_FILES:
+        db = archive_root / filename
+        if not db.exists():
+            continue
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = open_daemon_connection(db, timeout=timeout_s)
+            observations.append(maybe_optimize_sqlite(conn, reason=reason, analysis_limit=analysis_limit))
+        except sqlite3.Error as exc:
+            observations.append(
+                SqliteOptimizeObservation(
+                    reason=reason,
+                    ran=False,
+                    analysis_limit=analysis_limit,
+                    error=str(exc),
+                )
+            )
+        finally:
+            if conn is not None:
+                conn.close()
+    return tuple(observations)
+
+
 __all__ = [
+    "ARCHIVE_TIER_OPTIMIZE_FILES",
     "DEFAULT_OPTIMIZE_ANALYSIS_LIMIT",
     "SqliteOptimizeObservation",
+    "maybe_optimize_archive_tiers",
     "maybe_optimize_sqlite",
 ]

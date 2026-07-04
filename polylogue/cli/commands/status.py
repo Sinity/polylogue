@@ -45,12 +45,12 @@ _ARCHIVE_COMPONENT_SCOPES: dict[str, str] = {
 }
 
 _ARCHIVE_COMPONENT_REPAIR_HINTS: dict[str, str] = {
-    "search": "polylogue ops maintenance run --target dangling_fts",
-    "session_profiles": "polylogue ops maintenance run --target session_insights",
-    "timeline_work_events": "polylogue ops maintenance run --target session_insights",
-    "timeline_phases": "polylogue ops maintenance run --target session_insights",
-    "threads": "polylogue ops maintenance run --target session_insights",
-    "latency_profiles": "polylogue ops maintenance run --target session_insights",
+    "search": "polylogued run",
+    "session_profiles": "polylogued run",
+    "timeline_work_events": "polylogued run",
+    "timeline_phases": "polylogued run",
+    "threads": "polylogued run",
+    "latency_profiles": "polylogued run",
 }
 
 
@@ -79,6 +79,17 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def _fast_fts_doc_count(conn: Any) -> int:
     # Exact FTS coverage is no longer a direct-status fallback concern.
     # Counting the FTS shadow table can fault gigabytes of pages during
@@ -97,6 +108,74 @@ def _daemon_live(daemon_url: str, *, timeout: float) -> bool:
             return 200 <= int(resp.status) < 500
     except (OSError, ValueError):
         return False
+
+
+def _candidate_daemon_urls(primary_url: str) -> tuple[str, ...]:
+    """Return daemon URLs worth probing, with explicit config first.
+
+    Dev-loop daemons often run on an isolated API port while the invoking shell
+    lacks the launch-time ``POLYLOGUE_DAEMON_URL``. Discovering the live local
+    ``polylogued --api-port`` process keeps status truthful without requiring
+    the operator to copy transient environment variables by hand.
+    """
+    urls: list[str] = []
+
+    def add(url: str) -> None:
+        normalized = url.rstrip("/")
+        if normalized and normalized not in urls:
+            urls.append(normalized)
+
+    add(primary_url)
+    if os.environ.get("POLYLOGUE_DAEMON_URL"):
+        return tuple(urls)
+    for port in _discover_polylogued_api_ports():
+        add(f"http://127.0.0.1:{port}")
+    return tuple(urls)
+
+
+def _discover_polylogued_api_ports() -> tuple[int, ...]:
+    """Best-effort discovery of local polylogued API ports from /proc."""
+    proc = Path("/proc")
+    if not proc.exists():
+        return ()
+
+    ports: list[int] = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if not raw:
+            continue
+        parts = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+        if not parts:
+            continue
+        command_text = " ".join(parts)
+        if "polylogued" not in command_text or "run" not in parts:
+            continue
+        port = _parse_cmdline_api_port(parts)
+        if port is not None and port not in ports:
+            ports.append(port)
+    return tuple(ports)
+
+
+def _parse_cmdline_api_port(parts: Sequence[str]) -> int | None:
+    for index, part in enumerate(parts):
+        if part == "--api-port" and index + 1 < len(parts):
+            return _valid_port(parts[index + 1])
+        if part.startswith("--api-port="):
+            return _valid_port(part.split("=", 1)[1])
+    return None
+
+
+def _valid_port(value: str) -> int | None:
+    try:
+        port = int(value)
+    except ValueError:
+        return None
+    return port if 0 < port < 65536 else None
 
 
 def _table_exists(conn: Any, table_name: str) -> bool:
@@ -264,6 +343,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "list_summaries": ("archive_direct", "index", "reads session summaries from index.db without hydration"),
     "list_tags": ("archive_routed", "user", "reads user tag counts through user.db"),
     "list_tool_usage_insights": ("archive_routed", "index", "reads tool usage insights from index.db"),
+    "list_usage_timeline_insights": ("archive_routed", "index", "reads usage timeline insights from index.db"),
     "list_views": ("archive_routed", "user", "reads saved views through user.db"),
     "list_thread_insights": ("archive_routed", "index", "reads work threads from index.db"),
     "list_workspaces": ("archive_routed", "user", "reads workspaces through user.db"),
@@ -579,11 +659,14 @@ def _sqlite_maintenance_status(root: Path) -> dict[str, Any]:
 
 
 def _archive_readiness_status(root: Path) -> dict[str, Any]:
+    from polylogue.storage.archive_readiness import missing_source_raw_session_evidence
+
     index_db = root / "index.db"
     source_db = root / "source.db"
     if not index_db.exists():
         return {"checked": False, "reason": "missing_index_tier", "surfaces": {}}
 
+    missing_source_evidence = missing_source_raw_session_evidence(root)
     try:
         conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
         try:
@@ -600,6 +683,19 @@ def _archive_readiness_status(root: Path) -> dict[str, Any]:
                     source_conn=source_conn,
                     source_check_available=source_check_available,
                 )
+                if missing_source_evidence.get("available"):
+                    missing_raw_count = _safe_int(missing_source_evidence.get("missing_raw_session_count"))
+                    missing_raw_samples = _safe_list(missing_source_evidence.get("missing_raw_session_samples"))
+                    lost_source_count = _safe_int(missing_source_evidence.get("lost_source_evidence_count"))
+                    lost_source_samples = _safe_list(missing_source_evidence.get("lost_source_evidence_samples"))
+                    counts.update(
+                        {
+                            "missing_raw_session_count": missing_raw_count,
+                            "missing_raw_session_samples": missing_raw_samples,
+                            "lost_source_evidence_count": lost_source_count,
+                            "lost_source_evidence_samples": lost_source_samples,
+                        }
+                    )
             finally:
                 if source_conn is not None:
                     source_conn.close()
@@ -628,7 +724,7 @@ def _archive_readiness_counts(
     *,
     source_conn: sqlite3.Connection | None,
     source_check_available: bool,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     session_count = _fast_count(conn, "SELECT COUNT(*) FROM sessions")
     raw_link_count = (
         _fast_count(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
@@ -652,6 +748,9 @@ def _archive_readiness_counts(
         "session_count": session_count,
         "raw_link_count": raw_link_count,
         "missing_raw_session_count": missing_raw_session_count,
+        "missing_raw_session_samples": [],
+        "lost_source_evidence_count": missing_raw_session_count,
+        "lost_source_evidence_samples": [],
         "message_count": _fast_count(conn, "SELECT COUNT(*) FROM messages") if _table_exists(conn, "messages") else 0,
         "text_block_count": _fast_count(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
         if _table_exists(conn, "blocks")
@@ -684,8 +783,8 @@ def _archive_readiness_counts(
     }
 
 
-def _archive_status_surfaces(counts: dict[str, int], *, source_check_available: bool) -> dict[str, dict[str, Any]]:
-    def surface(*, ready: bool | None, blockers: list[str], evidence: dict[str, int | bool]) -> dict[str, Any]:
+def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: bool) -> dict[str, dict[str, Any]]:
+    def surface(*, ready: bool | None, blockers: list[str], evidence: dict[str, Any]) -> dict[str, Any]:
         return {"ready": ready, "blockers": blockers, "evidence": evidence}
 
     def count(key: str, default: int = 0) -> int:
@@ -761,6 +860,9 @@ def _archive_status_surfaces(counts: dict[str, int], *, source_check_available: 
                 "source_check_available": source_check_available,
                 "raw_link_count": count("raw_link_count"),
                 "missing_raw_session_count": count("missing_raw_session_count"),
+                "missing_raw_session_samples": list(counts.get("missing_raw_session_samples") or []),
+                "lost_source_evidence_count": count("lost_source_evidence_count"),
+                "lost_source_evidence_samples": list(counts.get("lost_source_evidence_samples") or []),
             },
         ),
         "search": surface(
@@ -984,6 +1086,29 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     }
 
 
+def _raw_replay_backlog_status(active_root: Path, *, limit: int = 5) -> dict[str, Any]:
+    """Return the weighted raw source-to-index replay backlog for status."""
+    try:
+        from polylogue.config import Config
+        from polylogue.paths import render_root
+        from polylogue.storage.repair import raw_materialization_replay_backlog
+
+        return raw_materialization_replay_backlog(
+            Config(archive_root=active_root, render_root=render_root(), sources=[]),
+            limit=limit,
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "candidate_count": 0,
+            "total_blob_bytes": 0,
+            "top_raw_rows": [],
+            "origin_summary": [],
+            "source_path_summary": [],
+        }
+
+
 @click.command("status")
 @click.option(
     "--daemon-url",
@@ -1038,32 +1163,36 @@ def status_command(
     """
     if json_alias and output_format is None:
         output_format = "json"
-    try:
-        req = Request(
-            f"{daemon_url}/api/status",
-            headers={"Accept": "application/json"},
-            method="GET",
-        )
-        with urlopen(req, timeout=_FULL_TIMEOUT_S) as resp:
-            result = json.loads(resp.read())
-    except (OSError, ValueError):
-        # ValueError covers malformed URLs (urllib raises before any I/O).
+    candidate_urls = _candidate_daemon_urls(daemon_url)
+    for candidate_url in candidate_urls:
+        try:
+            req = Request(
+                f"{candidate_url}/api/status",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            with urlopen(req, timeout=_FULL_TIMEOUT_S) as resp:
+                result = json.loads(resp.read())
+        except (OSError, ValueError):
+            # ValueError covers malformed URLs (urllib raises before any I/O).
+            continue
         if output_format == "json":
-            if _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S):
-                _show_daemon_status_unavailable_json(env)
-            else:
-                _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
+            _show_status_json(env, result, full=full_payload)
         else:
-            if _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S):
-                _show_daemon_status_unavailable(env)
-            else:
-                _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
+            _show_daemon_status(env, result)
         return
 
     if output_format == "json":
-        _show_status_json(env, result, full=full_payload)
+        if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
+            _show_daemon_status_unavailable_json(env)
+        else:
+            _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
     else:
-        _show_daemon_status(env, result)
+        if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
+            _show_daemon_status_unavailable(env)
+        else:
+            _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
+    return
 
 
 def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
@@ -1073,20 +1202,25 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
     and bounded SQLite queries to stay under 2 seconds.
     """
     resolved_url = daemon_url if daemon_url is not None else _default_daemon_url()
-    try:
-        req = Request(
-            f"{resolved_url}/api/status",
-            headers={"Accept": "application/json"},
-            method="GET",
-        )
-        with urlopen(req, timeout=_FAST_TIMEOUT_S) as resp:
-            result = json.loads(resp.read())
+    candidate_urls = _candidate_daemon_urls(resolved_url)
+    for candidate_url in candidate_urls:
+        try:
+            req = Request(
+                f"{candidate_url}/api/status",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            with urlopen(req, timeout=_FAST_TIMEOUT_S) as resp:
+                result = json.loads(resp.read())
+        except (OSError, ValueError):
+            continue
         _show_daemon_status(env, result, compact=True)
-    except OSError:
-        if _daemon_live(resolved_url, timeout=_FAST_TIMEOUT_S):
-            _show_daemon_status_unavailable(env, compact=True)
-        else:
-            _show_direct_status(env, compact=True)
+        return
+
+    if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
+        _show_daemon_status_unavailable(env, compact=True)
+    else:
+        _show_direct_status(env, compact=True)
 
 
 def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> None:
@@ -1136,7 +1270,7 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     # FTS
     fts = status.get("fts_readiness", {})
     if isinstance(fts, dict):
-        pct = float(fts.get("coverage_pct", 100 if fts.get("messages_ready") else 0))
+        pct = _safe_float(fts.get("coverage_pct"), default=100.0 if fts.get("messages_ready") else 0.0)
         fts_color = "green" if fts.get("messages_ready") else "yellow"
         env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
 
@@ -1145,6 +1279,10 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     disk_free = status.get("disk_free_bytes", 0)
     if db_bytes:
         env.ui.console.print(f"  DB: {_fmt_bytes(db_bytes)}  Free: {_fmt_bytes(disk_free)}")
+
+    raw_replay_backlog = status.get("raw_replay_backlog")
+    if isinstance(raw_replay_backlog, dict):
+        _render_raw_replay_backlog(env, raw_replay_backlog)
 
     # Raw failures
     raw_parse = status.get("raw_parse_failures", 0)
@@ -1229,6 +1367,13 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     )
     if raw_materialization:
         payload["raw_materialization_readiness"] = raw_materialization
+
+    raw_replay_backlog = _compact_mapping_without(
+        status.get("raw_replay_backlog"),
+        {"source_path_summary"},
+    )
+    if raw_replay_backlog:
+        payload["raw_replay_backlog"] = raw_replay_backlog
 
     embedding_readiness = _compact_mapping_without(
         status.get("embedding_readiness"),
@@ -1390,7 +1535,14 @@ def _show_direct_json(
         include_archive_readiness=include_archive_readiness,
     )
     raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
+    component_readiness = _direct_component_readiness(
+        env,
+        active_root=active_root,
+        archive_readiness=archive_readiness,
+        raw_materialization_readiness=raw_materialization_readiness,
+    )
     payload: dict[str, Any] = {
+        "ok": _direct_status_ok(component_readiness),
         "daemon_liveness": False,
         "archive_root": str(root),
         "active_archive_root": str(active_root),
@@ -1402,17 +1554,13 @@ def _show_direct_json(
         "archive_tiers": _archive_tier_status(active_root),
         "sqlite_maintenance": _sqlite_maintenance_status(active_root),
         "ingest_workload": _ops_workload_status(active_root, now_ms=int(time.time() * 1000)),
+        "raw_replay_backlog": _raw_replay_backlog_status(active_root),
         "archive_readiness": archive_readiness,
         "archive_facade_routes": _archive_facade_route_status(),
         "archive_cli_routes": _archive_cli_route_status(),
         "archive_runtime_paths": _archive_runtime_path_status(),
         "raw_materialization_readiness": raw_materialization_readiness,
-        "component_readiness": _direct_component_readiness(
-            env,
-            active_root=active_root,
-            archive_readiness=archive_readiness,
-            raw_materialization_readiness=raw_materialization_readiness,
-        ),
+        "component_readiness": component_readiness,
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
@@ -1431,6 +1579,28 @@ def _show_direct_json(
             payload["error"] = str(exc)
     output = payload if full or include_archive_readiness else _compact_status_payload(payload, source="direct")
     env.ui.console.print(json.dumps(output, indent=2, default=str))
+
+
+def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
+    """Return direct-fallback health without penalizing intentionally unknown probes."""
+
+    hard_failure_states = {"blocked", "poisoned", "stale", "degraded"}
+    required_missing_components = {
+        "archive_sessions",
+        "raw_materialization",
+        "search",
+        "transforms",
+        "assertions",
+    }
+    for component, readiness in component_readiness.items():
+        if not isinstance(readiness, dict):
+            continue
+        state = str(readiness.get("state") or "unknown")
+        if state in hard_failure_states:
+            return False
+        if state == "missing" and component in required_missing_components:
+            return False
+    return True
 
 
 def _direct_component_readiness(
@@ -1537,10 +1707,27 @@ def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
 
 def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dict[str, Any]:
     from polylogue.insights.transforms import SESSION_DIGEST_TRANSFORM_VERSION, TRANSFORM_REGISTRY
-    from polylogue.readiness.capability import component_from_transform_registry
+    from polylogue.readiness.capability import (
+        CapabilityReadinessState,
+        ComponentReadiness,
+        component_from_transform_registry,
+    )
 
     if isinstance(archive_readiness, dict) and archive_readiness.get("checked") is False:
         reason = str(archive_readiness.get("reason") or "archive_readiness_unchecked")
+        if reason == "direct_status_default_skips_exact_archive_readiness":
+            return ComponentReadiness(
+                component="transforms",
+                scope="session-analysis",
+                state=CapabilityReadinessState.UNKNOWN,
+                summary=reason,
+                counts={
+                    "transform_count": len(TRANSFORM_REGISTRY),
+                    "session_digest_transform_version": SESSION_DIGEST_TRANSFORM_VERSION,
+                },
+                caveats=(reason,),
+                evidence_refs=("transform_registry",),
+            ).to_dict()
         return component_from_transform_registry(
             transform_count=len(TRANSFORM_REGISTRY),
             session_count=None,
@@ -1605,6 +1792,41 @@ def _render_ingest_workload(env: AppEnv, workload: dict[str, Any]) -> None:
     if debt_total:
         detail = ", ".join(f"{status}={count}" for status, count in (debt.get("by_status") or {}).items())
         env.ui.console.print(f"    convergence debt: [yellow]{debt_total}[/yellow] ({detail})")
+
+
+def _render_raw_replay_backlog(env: AppEnv, backlog: dict[str, Any]) -> None:
+    """Render weighted raw materialization replay backlog."""
+    if not backlog.get("available"):
+        return
+    candidates = _safe_int(backlog.get("candidate_count"))
+    missing = _safe_int(backlog.get("missing_blob_count"))
+    if candidates <= 0 and missing <= 0:
+        return
+    total_bytes = _safe_int(backlog.get("total_blob_bytes"))
+    max_bytes = _safe_int(backlog.get("max_blob_bytes"))
+    oversized = _safe_int(backlog.get("oversized_count"))
+    line = f"  Raw replay backlog: [yellow]{candidates:,} raw row(s), {_fmt_bytes(total_bytes)} pending"
+    if max_bytes:
+        line += f"; largest {_fmt_bytes(max_bytes)}"
+    if missing:
+        line += f"; {missing:,} missing blob(s)"
+    if oversized:
+        line += f"; {oversized:,} oversized"
+    line += "[/yellow]"
+    env.ui.console.print(line)
+
+    origins = backlog.get("origin_summary")
+    if isinstance(origins, list) and origins:
+        parts: list[str] = []
+        for item in origins[:3]:
+            if not isinstance(item, dict):
+                continue
+            origin = item.get("origin") or "unknown"
+            raw_count = _safe_int(item.get("raw_count"))
+            blob_bytes = _safe_int(item.get("total_blob_bytes"))
+            parts.append(f"{origin}={raw_count:,}/{_fmt_bytes(blob_bytes)}")
+        if parts:
+            env.ui.console.print(f"    weighted by origin: {', '.join(parts)}")
 
 
 def _render_diagnostic(env: AppEnv, diag: Any) -> None:
@@ -1733,6 +1955,7 @@ def _show_direct_status(
             if tier_detail:
                 env.ui.console.print(f"  Archive tier detail: {tier_detail}")
             _render_sqlite_maintenance(env, _sqlite_maintenance_status(active_root))
+            _render_raw_replay_backlog(env, _raw_replay_backlog_status(active_root))
             _render_archive_readiness(
                 env,
                 _direct_archive_readiness_status(

@@ -207,6 +207,8 @@ def setup_isolated_workspace(tmp_path: Path) -> IsolatedWorkspace:
         "XDG_CACHE_HOME": str(fake_home / ".cache"),
         # Disable vector search in tests (no Voyage API key)
         "VOYAGE_API_KEY": "",
+        # Keep subprocess CLI fixtures isolated from any live workstation daemon.
+        "POLYLOGUE_DAEMON_URL": "http://127.0.0.1:1",
     }
 
     paths: WorkspacePaths = {

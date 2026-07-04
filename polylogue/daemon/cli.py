@@ -43,6 +43,9 @@ from polylogue.daemon.health import (
     format_health_lines,
     resolve_health_tiers,
 )
+from polylogue.daemon.lineage_startup import (
+    ensure_lineage_startup_readiness as _ensure_lineage_startup_readiness,
+)
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -52,7 +55,14 @@ from polylogue.version import POLYLOGUE_VERSION
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
+_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
+_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 25
+_SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS = 60
+_SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT = 100
+_SESSION_INSIGHT_CONVERGENCE_BURST_LIMIT = 10
+_SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS = 1
 _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
+_BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 
 # Track the pidfile path for atexit cleanup.
 _pidfile_path: Path | None = None
@@ -108,13 +118,19 @@ def _watch_sources_from_roots(roots: tuple[Path, ...]) -> tuple[WatchSource, ...
     if not roots:
         return default_sources()
 
-    from polylogue.paths import archive_root
+    from polylogue.paths import archive_root, browser_capture_spool_root
 
     inbox_root = (archive_root() / "inbox").resolve(strict=False)
+    browser_root = browser_capture_spool_root().resolve(strict=False)
     sources: list[WatchSource] = []
     for root in roots:
-        suffixes = INBOX_SOURCE_SUFFIXES if root.resolve(strict=False) == inbox_root else (".jsonl",)
-        sources.append(WatchSource(name=root.name, root=root, suffixes=suffixes))
+        resolved = root.resolve(strict=False)
+        if resolved == inbox_root:
+            sources.append(WatchSource(name="inbox", root=root, suffixes=INBOX_SOURCE_SUFFIXES))
+        elif resolved == browser_root:
+            sources.append(WatchSource(name="browser-capture", root=root, suffixes=(".json",)))
+        else:
+            sources.append(WatchSource(name=root.name, root=root, suffixes=(".jsonl",)))
     return tuple(sources)
 
 
@@ -217,21 +233,24 @@ async def _periodic_fts_merge() -> None:
 
 
 async def _periodic_wal_checkpoint() -> None:
-    """Run WAL checkpoint every 5 minutes to keep the WAL file bounded."""
-    from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
+    """Run WAL checkpoints every 5 minutes to keep tier WAL files bounded."""
+    from polylogue.paths import archive_root
+    from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
 
     while True:
         await asyncio.sleep(300)
-        db = _active_index_db_path()
-        if not db.exists():
+        root = archive_root()
+        if not root.exists():
             continue
         try:
-            observation = await asyncio.to_thread(
-                maybe_checkpoint_wal,
-                db,
+            observations = await asyncio.to_thread(
+                maybe_checkpoint_archive_wals,
+                root,
                 reason="periodic",
             )
-            if observation.ran:
+            for observation in observations:
+                if not observation.ran:
+                    continue
                 logger.info(
                     "daemon: WAL checkpoint %s before=%d after=%d busy=%d checkpointed=%d error=%s blockers=%s",
                     observation.mode,
@@ -354,20 +373,23 @@ async def _periodic_db_optimize() -> None:
     considers planner-stat maintenance; otherwise a large archive can pay
     broad read IO at the exact moment live catch-up already needs the disk.
     """
-    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+    from polylogue.paths import archive_root
+    from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
 
     while True:
         await asyncio.sleep(86_400)  # 24 hours; no startup optimize.
-        db = _active_index_db_path()
-        if not db.exists():
+        root = archive_root()
+        if not root.exists():
             continue
         try:
-            conn = open_daemon_connection(db, timeout=30.0)
-            try:
-                conn.execute("PRAGMA optimize")
-                logger.info("daemon: DB optimize completed")
-            finally:
-                conn.close()
+            observations = await asyncio.to_thread(
+                maybe_optimize_archive_tiers,
+                root,
+                reason="periodic",
+            )
+            ran = sum(1 for observation in observations if observation.ran)
+            errors = [observation.error for observation in observations if observation.error]
+            logger.info("daemon: DB optimize completed tiers=%d errors=%d", ran, len(errors))
         except Exception:
             logger.warning("daemon: DB optimize failed", exc_info=True)
 
@@ -410,20 +432,140 @@ async def _periodic_convergence_check(
     if catch_up_complete is not None:
         await catch_up_complete.wait()
     while True:
+        await _retry_convergence_debt_once(db)
         await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
-        if not db.exists():
-            continue
+
+
+async def _retry_convergence_debt_once(db: Path) -> None:
+    """Run one logged derived-debt retry pass when the archive exists."""
+    if not db.exists():
+        return
+    try:
+        repaired = await asyncio.to_thread(_drain_convergence_debt_once, db)
+        if repaired:
+            logger.info("convergence: retried %d derived debt item(s)", repaired)
+    except sqlite3.OperationalError as exc:
+        if is_transient_sqlite_lock(exc):
+            logger.info("convergence: archive busy; retrying derived debt on next tick: %s", exc)
+            return
+        logger.warning("convergence: check failed", exc_info=True)
+    except Exception:
+        logger.warning("convergence: check failed", exc_info=True)
+
+
+async def _periodic_raw_materialization_convergence() -> None:
+    """Continuously converge durable raw source rows into the index tier."""
+    await _periodic_raw_materialization_convergence_after()
+
+
+async def _periodic_raw_materialization_convergence_after(
+    catch_up_complete: asyncio.Event | None = None,
+) -> None:
+    """Continuously converge durable raw rows after initial source catch-up."""
+    if catch_up_complete is not None:
+        await catch_up_complete.wait()
+    while True:
         try:
-            repaired = await asyncio.to_thread(_drain_convergence_debt_once, db)
-            if repaired:
-                logger.info("convergence: retried %d derived debt item(s)", repaired)
+            materialized = await asyncio.to_thread(_drain_raw_materialization_once)
+            if materialized:
+                logger.info("raw materialization: converged %d session(s)", materialized)
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
-                logger.info("convergence: archive busy; retrying derived debt on next tick: %s", exc)
-                continue
-            logger.warning("convergence: check failed", exc_info=True)
+                logger.info("raw materialization: archive busy; retrying on next tick: %s", exc)
+            else:
+                logger.warning("raw materialization: convergence check failed", exc_info=True)
         except Exception:
-            logger.warning("convergence: check failed", exc_info=True)
+            logger.warning("raw materialization: convergence check failed", exc_info=True)
+        await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
+
+
+async def _periodic_session_insight_convergence_after(
+    catch_up_complete: asyncio.Event | None = None,
+) -> None:
+    """Continuously converge missing/stale session insights after catch-up."""
+    if catch_up_complete is not None:
+        await catch_up_complete.wait()
+    while True:
+        burst_count = 0
+        try:
+            while burst_count < _SESSION_INSIGHT_CONVERGENCE_BURST_LIMIT:
+                refreshed = await asyncio.to_thread(_drain_session_insights_once)
+                if not refreshed:
+                    break
+                burst_count += 1
+                logger.info("insights: converged %d session profile(s)", refreshed)
+                await asyncio.sleep(_SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS)
+        except sqlite3.OperationalError as exc:
+            if is_transient_sqlite_lock(exc):
+                logger.info("insights: archive busy; retrying profile backlog on next tick: %s", exc)
+            else:
+                logger.warning("insights: profile backlog convergence failed", exc_info=True)
+        except Exception:
+            logger.warning("insights: profile backlog convergence failed", exc_info=True)
+        await asyncio.sleep(_SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS)
+
+
+async def _bridge_catch_up_complete(
+    source: asyncio.Event,
+    target: asyncio.Event,
+) -> None:
+    """Forward watcher catch-up completion to daemon maintenance loops."""
+    await source.wait()
+    target.set()
+
+
+def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT) -> int:
+    """Run one bounded raw source→index convergence pass."""
+    from polylogue.config import Config
+    from polylogue.paths import archive_root, render_root
+    from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
+    from polylogue.storage.repair import repair_raw_materialization
+
+    archive = archive_root()
+    restored = restore_direct_blob_reference_debt(
+        archive / "source.db",
+        dry_run=False,
+        max_count=_BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT,
+        sample_size=0,
+    )
+    if restored.restored_count:
+        logger.info(
+            "blob references: restored %d direct source blob(s) before raw materialization",
+            restored.restored_count,
+        )
+
+    config = Config(
+        archive_root=archive,
+        render_root=render_root(),
+        sources=[],
+    )
+    result = repair_raw_materialization(config, dry_run=False, raw_artifact_limit=limit)
+    if not result.success:
+        logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
+    return result.repaired_count
+
+
+def _drain_session_insights_once(*, limit: int = _SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT) -> int:
+    """Run one bounded missing/stale session-profile convergence pass."""
+    from polylogue.daemon.convergence_stages import (
+        _archive_insights_execute_ids,
+        _schema_archive_session_ids_missing_profiles,
+    )
+    from polylogue.paths import active_index_db_path
+    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+    db = active_index_db_path()
+    if not db.exists():
+        return 0
+    conn = open_daemon_connection(db, timeout=30.0)
+    try:
+        ids = _schema_archive_session_ids_missing_profiles(conn, limit=limit)
+        if not ids:
+            return 0
+        result = _archive_insights_execute_ids(conn, ids)
+        return len(ids) if bool(getattr(result, "success", result)) else 0
+    finally:
+        conn.close()
 
 
 def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
@@ -446,10 +588,10 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     fts_surfaces = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "fts_surface"))
     if not paths and not session_ids and not fts_surfaces:
         return 0
+    fts_surface_results = _drain_fts_surface_debt(db, fts_surfaces)
     converger = DaemonConverger(stages=make_default_convergence_stages(db), max_workers=2)
     path_states, _path_timings = converger.converge_batch(paths)
     session_states, _session_timings = converger.converge_sessions(session_ids)
-    fts_surface_results = _drain_fts_surface_debt(db, fts_surfaces)
     retried = 0
     for debt in due_debt:
         subject_states: list[object | None]
@@ -501,14 +643,11 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
 def _drain_fts_surface_debt(db: Path, surfaces: tuple[str, ...]) -> dict[str, bool]:
     if not surfaces:
         return {}
-    from polylogue.daemon.convergence_stages import repair_messages_fts_surface
+    from polylogue.daemon.convergence_stages import repair_fts_surface
 
     results: dict[str, bool] = {}
     for surface in surfaces:
-        if surface != "messages_fts":
-            results[surface] = False
-            continue
-        results[surface] = repair_messages_fts_surface(db)
+        results[surface] = repair_fts_surface(db, surface)
     return results
 
 
@@ -808,6 +947,7 @@ async def run_daemon_services(
     watcher: LiveWatcher | None = None
     watcher_task: asyncio.Task[None] | None = None
     converger: DaemonConverger | None = None
+    catch_up_complete_gate: asyncio.Event | None = None
     tasks: list[asyncio.Task[None]] = []
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
@@ -876,6 +1016,13 @@ async def run_daemon_services(
                     archive_root_path=archive_root_path,
                     component="fts_startup",
                 )
+            await _ensure_lineage_startup_readiness()
+            if lifecycle_events_enabled:
+                _emit_daemon_lifecycle_event(
+                    "component_ready",
+                    archive_root_path=archive_root_path,
+                    component="lineage_startup",
+                )
             # Disable per-write FTS5 automerge so each small ingest batch does
             # not trigger a merge of the full (hundreds-of-MB) existing
             # segments (#1851).  A periodic merge pass amortises the cost.
@@ -886,11 +1033,15 @@ async def run_daemon_services(
                     logger.info("daemon: startup Drive catch-up refreshed %d session(s)", changed_drive_sessions)
             else:
                 logger.info("daemon: configured source catch-up disabled for this run")
+            catch_up_complete_gate = asyncio.Event() if enable_watch else None
             periodic_loops = [
+                _periodic_raw_materialization_convergence_after(catch_up_complete_gate),
+                _periodic_session_insight_convergence_after(catch_up_complete_gate),
+                _periodic_convergence_check(sources, catch_up_complete=catch_up_complete_gate),
                 _periodic_wal_checkpoint(),
                 _periodic_fts_merge(),
                 _periodic_heartbeat(),
-                periodic_embedding_backlog_check(),
+                periodic_embedding_backlog_check(catch_up_complete=catch_up_complete_gate),
                 _periodic_health_check(),
                 _periodic_db_optimize(),
                 _periodic_status_snapshot_refresh(),
@@ -898,8 +1049,6 @@ async def run_daemon_services(
             if enable_source_catchup:
                 periodic_loops.append(_periodic_drive_source_catchup())
             maintenance_tasks.extend(asyncio.create_task(loop) for loop in periodic_loops)
-            if not enable_watch:
-                maintenance_tasks.append(asyncio.create_task(_periodic_convergence_check(sources)))
             # Reclaim blob leases leaked by a previously SIGKILLed writer so a
             # later GC pass is not blocked indefinitely (#1746).
             maintenance_tasks.append(asyncio.create_task(_sweep_orphaned_blob_leases()))
@@ -928,14 +1077,15 @@ async def run_daemon_services(
                         converger=converger,
                         event_emitter=_emit_live_batch_event,
                     )
-                    maintenance_tasks.append(
-                        asyncio.create_task(
-                            _periodic_convergence_check(
-                                sources,
-                                catch_up_complete=getattr(watcher, "catch_up_complete", None),
+                    if catch_up_complete_gate is not None:
+                        maintenance_tasks.append(
+                            asyncio.create_task(
+                                _bridge_catch_up_complete(
+                                    watcher.catch_up_complete,
+                                    catch_up_complete_gate,
+                                )
                             )
                         )
-                    )
                     watcher_task = asyncio.create_task(watcher.run())
                     tasks.append(watcher_task)
                     if lifecycle_events_enabled:

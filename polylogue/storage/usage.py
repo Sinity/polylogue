@@ -355,8 +355,12 @@ class ProviderUsageReport:
     pricing_catalog_provenance: str = CATALOG_PROVENANCE
     pricing_catalog_effective_date: str = CATALOG_EFFECTIVE_DATE
     pricing_lanes: tuple[PricingLaneReport, ...] = ()
+    pricing_grain: str = "physical_session"
+    logical_pricing_lanes: tuple[PricingLaneReport, ...] = ()
+    logical_pricing_grain: str = "logical_session_model_high_water"
     stored_provider_priced_usd: float = 0.0
     catalog_api_equivalent_usd: float = 0.0
+    logical_catalog_api_equivalent_usd: float = 0.0
     caveats: tuple[str, ...] = ()
     coverage_matrix: tuple[ProviderUsageCoverage, ...] = _PROVIDER_USAGE_COVERAGE
 
@@ -372,8 +376,12 @@ class ProviderUsageReport:
             "pricing_catalog_provenance": self.pricing_catalog_provenance,
             "pricing_catalog_effective_date": self.pricing_catalog_effective_date,
             "pricing_lanes": [lane.to_dict() for lane in self.pricing_lanes],
+            "pricing_grain": self.pricing_grain,
+            "logical_pricing_lanes": [lane.to_dict() for lane in self.logical_pricing_lanes],
+            "logical_pricing_grain": self.logical_pricing_grain,
             "stored_provider_priced_usd": round(self.stored_provider_priced_usd, 6),
             "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
+            "logical_catalog_api_equivalent_usd": round(self.logical_catalog_api_equivalent_usd, 6),
             "origins": [origin.to_dict() for origin in self.origins],
             "caveats": list(self.caveats),
         }
@@ -441,6 +449,7 @@ def provider_usage_report_from_connection(
     model_counts_by_origin = _model_row_counts(conn, origin) if model_table_present else {}
     multi_model_by_origin = _multi_model_session_counts(conn, origin) if model_table_present else {}
     pricing_lanes = _pricing_lane_reports(conn, origin) if model_table_present else ()
+    logical_pricing_lanes = _pricing_lane_reports(conn, origin, logical=True) if model_table_present else ()
     raw_by_origin, raw_samples, raw_caveat = _source_raw_stats(
         conn, archive_root=Path(archive_root), origin=origin, limit=limit
     )
@@ -575,8 +584,10 @@ def provider_usage_report_from_connection(
         model_rollup_usage=_sum_usage_counters(row.model_rollup_usage for row in reports),
         logical_model_rollup_usage=_sum_usage_counters(row.logical_model_rollup_usage for row in reports),
         pricing_lanes=pricing_lanes,
+        logical_pricing_lanes=logical_pricing_lanes,
         stored_provider_priced_usd=sum(lane.stored_cost_usd for lane in pricing_lanes if lane.provenance == "priced"),
         catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in pricing_lanes),
+        logical_catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in logical_pricing_lanes),
         caveats=tuple(caveats),
     )
 
@@ -864,7 +875,7 @@ def _expected_provider_model_rollups(
             _int(row["total_reasoning_output_tokens"]),
             _int(row["total_tokens"]),
         )
-        if any(total_values):
+        if any(total_values[:4]):
             latest_total_by_session[session_id] = (model_name, total_values[:5])
             continue
         key = (session_id, model_name)
@@ -1148,39 +1159,100 @@ def _multi_model_session_counts(conn: sqlite3.Connection, origin: str | None) ->
     return {str(row["origin"]): _int(row["session_count"]) for row in rows}
 
 
-def _pricing_lane_reports(conn: sqlite3.Connection, origin: str | None) -> tuple[PricingLaneReport, ...]:
-    session_count_rows = conn.execute(
-        f"""
-        SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
-               COUNT(DISTINCT u.session_id) AS session_count
-        FROM session_model_usage u
-        JOIN sessions s ON s.session_id = u.session_id
-        {_where_origin(origin, table_alias="s")}
-        GROUP BY provenance
-        """,
-        _origin_args(origin),
-    ).fetchall()
+def _pricing_lane_reports(
+    conn: sqlite3.Connection,
+    origin: str | None,
+    *,
+    logical: bool = False,
+) -> tuple[PricingLaneReport, ...]:
+    if logical:
+        session_count_rows = conn.execute(
+            f"""
+            WITH logical_model AS (
+                SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
+                       COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
+                       COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name
+                FROM session_model_usage u
+                JOIN sessions s ON s.session_id = u.session_id
+                LEFT JOIN session_profiles p ON p.session_id = u.session_id
+                {_where_origin(origin, table_alias="s")}
+                GROUP BY provenance, logical_session_id, model_name
+            )
+            SELECT provenance,
+                   COUNT(DISTINCT logical_session_id) AS session_count
+            FROM logical_model
+            GROUP BY provenance
+            """,
+            _origin_args(origin),
+        ).fetchall()
+    else:
+        session_count_rows = conn.execute(
+            f"""
+            SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
+                   COUNT(DISTINCT u.session_id) AS session_count
+            FROM session_model_usage u
+            JOIN sessions s ON s.session_id = u.session_id
+            {_where_origin(origin, table_alias="s")}
+            GROUP BY provenance
+            """,
+            _origin_args(origin),
+        ).fetchall()
     session_counts = {str(row["provenance"] or "unknown"): _int(row["session_count"]) for row in session_count_rows}
-    rows = conn.execute(
-        f"""
-        SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
-               COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
-               COUNT(*) AS row_count,
-               COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
-               COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
-               COALESCE(SUM(u.cache_read_tokens), 0) AS cached_input_tokens,
-               COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
-               0 AS reasoning_output_tokens,
-               COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens), 0) AS total_tokens,
-               COALESCE(SUM(u.cost_usd), 0.0) AS stored_cost_usd
-        FROM session_model_usage u
-        JOIN sessions s ON s.session_id = u.session_id
-        {_where_origin(origin, table_alias="s")}
-        GROUP BY provenance, model_name
-        ORDER BY provenance, model_name
-        """,
-        _origin_args(origin),
-    ).fetchall()
+    if logical:
+        rows = conn.execute(
+            f"""
+            WITH logical_model AS (
+                SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
+                       COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
+                       COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
+                       MAX(u.input_tokens) AS input_tokens,
+                       MAX(u.output_tokens) AS output_tokens,
+                       MAX(u.cache_read_tokens) AS cached_input_tokens,
+                       MAX(u.cache_write_tokens) AS cache_write_tokens
+                FROM session_model_usage u
+                JOIN sessions s ON s.session_id = u.session_id
+                LEFT JOIN session_profiles p ON p.session_id = u.session_id
+                {_where_origin(origin, table_alias="s")}
+                GROUP BY provenance, logical_session_id, model_name
+            )
+            SELECT provenance,
+                   model_name,
+                   COUNT(*) AS row_count,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+                   COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                   0 AS reasoning_output_tokens,
+                   COALESCE(SUM(input_tokens + output_tokens + cached_input_tokens + cache_write_tokens), 0)
+                     AS total_tokens,
+                   0.0 AS stored_cost_usd
+            FROM logical_model
+            GROUP BY provenance, model_name
+            ORDER BY provenance, model_name
+            """,
+            _origin_args(origin),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
+                   COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
+                   COUNT(*) AS row_count,
+                   COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(u.cache_read_tokens), 0) AS cached_input_tokens,
+                   COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
+                   0 AS reasoning_output_tokens,
+                   COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens), 0) AS total_tokens,
+                   COALESCE(SUM(u.cost_usd), 0.0) AS stored_cost_usd
+            FROM session_model_usage u
+            JOIN sessions s ON s.session_id = u.session_id
+            {_where_origin(origin, table_alias="s")}
+            GROUP BY provenance, model_name
+            ORDER BY provenance, model_name
+            """,
+            _origin_args(origin),
+        ).fetchall()
     by_provenance: dict[str, _PricingLaneAccumulator] = {}
     caveats_by_provenance: dict[str, set[str]] = defaultdict(set)
     for row in rows:
@@ -1203,7 +1275,7 @@ def _pricing_lane_reports(conn: sqlite3.Connection, origin: str | None) -> tuple
         stored_cost = float(row["stored_cost_usd"] or 0.0)
         bucket.stored_cost_usd += stored_cost
         catalog_cost = 0.0
-        if provenance == "priced" and stored_cost > 0:
+        if provenance == "priced" and stored_cost > 0 and not logical:
             catalog_cost = stored_cost
             bucket.matched_model_row_count += row_count
         elif model_name:

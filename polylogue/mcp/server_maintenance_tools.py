@@ -23,7 +23,6 @@ def _build_mcp_scope_filter(
     origin: str | None,
     source_family: str | None,
     source_root: str | None,
-    raw_artifact_id: str | None,
     since: str | None,
     until: str | None,
     failure_kind: str | None,
@@ -49,7 +48,6 @@ def _build_mcp_scope_filter(
         provider=provider_from_origin(Origin(origin)).value if origin is not None else None,
         source_family=source_family,
         source_root=Path(source_root) if source_root else None,
-        raw_artifact_id=raw_artifact_id,
         time_range=time_range,
         failure_kind=failure_kind,
         parser_version=parser_version,
@@ -64,7 +62,6 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         origin: str | None = None,
         source_family: str | None = None,
         source_root: str | None = None,
-        raw_artifact_id: str | None = None,
         since: str | None = None,
         until: str | None = None,
         failure_kind: str | None = None,
@@ -77,9 +74,8 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         maintenance plan --output-format json`` and the daemon HTTP
         ``POST /api/maintenance/plan`` responses. The scope-filter
         parameters mirror the CLI ``--session-id``, ``--origin``,
-        ``--source-family``, ``--source-root``, ``--raw-artifact``,
-        ``--since``/``--until``, ``--failure-kind``, and
-        ``--parser-version`` flags.
+        ``--source-family``, ``--source-root``, ``--since``/``--until``,
+        ``--failure-kind``, and ``--parser-version`` flags.
         """
 
         async def run() -> str:
@@ -99,7 +95,6 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 origin=origin,
                 source_family=source_family,
                 source_root=source_root,
-                raw_artifact_id=raw_artifact_id,
                 since=since,
                 until=until,
                 failure_kind=failure_kind,
@@ -119,7 +114,6 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         origin: str | None = None,
         source_family: str | None = None,
         source_root: str | None = None,
-        raw_artifact_id: str | None = None,
         since: str | None = None,
         until: str | None = None,
         failure_kind: str | None = None,
@@ -151,7 +145,6 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 origin=origin,
                 source_family=source_family,
                 source_root=source_root,
-                raw_artifact_id=raw_artifact_id,
                 since=since,
                 until=until,
                 failure_kind=failure_kind,

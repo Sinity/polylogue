@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-USER_SCHEMA_VERSION = 3
+USER_SCHEMA_VERSION = 4
 
 USER_DDL = """
 -- Unified evidence-linked user assertion. Marks, annotations,
@@ -38,6 +38,15 @@ ON assertions(kind, status, updated_at_ms);
 
 CREATE INDEX IF NOT EXISTS idx_assertions_target_kind_status_visibility
 ON assertions(target_ref, kind, status, visibility);
+
+-- Durable user/workspace settings. These are intentionally separate from
+-- assertions: settings are state, not epistemic claims.
+CREATE TABLE IF NOT EXISTS user_settings (
+    setting_key    TEXT PRIMARY KEY,
+    value_json     TEXT NOT NULL,
+    updated_at_ms  INTEGER NOT NULL,
+    author_ref     TEXT NOT NULL DEFAULT 'user:local'
+) STRICT;
 """
 
 __all__ = ["USER_DDL", "USER_SCHEMA_VERSION"]

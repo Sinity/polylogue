@@ -209,7 +209,21 @@ def _seed_minimal_archive(db_path: Path, source_path: Path, *, session_id: str =
         conn.commit()
 
 
-def test_fts_stage_repairs_archive_when_db_anchor_exists(tmp_path: Path) -> None:
+def test_archive_missing_profile_selector_limits_after_stale_filter(tmp_path: Path) -> None:
+    archive_db = tmp_path / "index.db"
+    with sqlite3.connect(archive_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        session_ids = [
+            _seed_index_session(conn, session_id="codex-session:s1", text="profiled"),
+            _seed_index_session(conn, session_id="codex-session:s2", text="missing two"),
+            _seed_index_session(conn, session_id="codex-session:s3", text="missing three"),
+        ]
+        stages._archive_insights_execute_ids(conn, [session_ids[0]])
+
+        assert stages._schema_archive_session_ids_missing_profiles(conn, limit=2) == session_ids[1:]
+
+
+def test_fts_stage_skips_archive_source_path_backlog_repair(tmp_path: Path) -> None:
     archive_db = tmp_path / "index.db"
     (tmp_path / "index.db").touch()
     source_path = tmp_path / "codex.jsonl"
@@ -217,20 +231,20 @@ def test_fts_stage_repairs_archive_when_db_anchor_exists(tmp_path: Path) -> None
 
     stage = make_fts_stage(tmp_path / "index.db")
 
-    assert stage.check(source_path) is True
+    assert stage.check(source_path) is False
     assert stage.execute(source_path) is True
     with sqlite3.connect(archive_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
 
 
-def test_fts_stage_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None:
-    """#1851: an archive FTS batch repairs only the changed sessions.
+def test_fts_session_debt_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None:
+    """Session-scoped FTS debt repairs only named sessions.
 
-    The convergence FTS stage previously called the full corpus rebuild
-    (delete-all + re-insert every message row) on every batch, so a single
-    small append re-indexed everything (~14 MiB regardless of payload). With a
-    known source-path → session mapping it must take the targeted delete+insert
-    path instead, while leaving ``messages_fts`` complete.
+    Foreground source-path convergence deliberately does not repair historical
+    FTS backlog: archive writes already repair newly changed session rows, and
+    old debt is handled by bounded session/debt convergence. When a concrete
+    session-id debt item is retried, it still takes the targeted delete+insert
+    path rather than rebuilding the whole FTS surface.
     """
     from unittest import mock
 
@@ -249,7 +263,8 @@ def test_fts_stage_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None
         ) as targeted,
         mock.patch.object(fts_lc, "rebuild_fts_index_sync", wraps=fts_lc.rebuild_fts_index_sync) as full_rebuild,
     ):
-        assert stage.execute(source_path) is True
+        assert stage.execute_sessions is not None
+        assert stage.execute_sessions(["codex-session:s1"]) is True
 
     targeted.assert_called_once()
     full_rebuild.assert_not_called()
@@ -257,8 +272,169 @@ def test_fts_stage_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
 
 
-def test_archive_repair_sessions_fts_resets_message_surface_without_ids(tmp_path: Path) -> None:
-    """When scope is unknown (no session ids), reset the global message surface."""
+def test_archive_fts_session_repair_defers_sqlite_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+
+    def locked(_db_path: Path) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", locked)
+
+    assert stages._archive_fts_execute_sessions(archive_db, ["codex-session:s1"]) is False
+
+
+def test_archive_fts_global_repair_defers_sqlite_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+
+    def locked(_db_path: Path) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", locked)
+
+    assert stages.repair_messages_fts_surface(archive_db) is False
+
+
+def test_archive_fts_optional_surface_repair_uses_stale_surface_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.committed = False
+            self.closed = False
+
+        def execute(self, _sql: str) -> object:
+            return object()
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = FakeConnection()
+    configured: list[FakeConnection] = []
+    repairs: list[FakeConnection] = []
+
+    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", lambda _db: conn)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection",
+        lambda c: configured.append(c),
+    )
+
+    def fake_repair_stale_fts_rows(c: FakeConnection) -> SimpleNamespace:
+        repairs.append(c)
+        return SimpleNamespace(success=True, repaired_count=0, detail="derived ready")
+
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
+        fake_repair_stale_fts_rows,
+    )
+
+    assert stages.repair_fts_surface(archive_db, "threads_fts") is True
+    assert configured == [conn]
+    assert repairs == [conn]
+    assert conn.committed is True
+    assert conn.closed is True
+
+
+def test_archive_fts_global_repair_inserts_missing_rows_without_reset(tmp_path: Path) -> None:
+    """Global surface debt should converge with bounded missing-row repair."""
+    from unittest import mock
+
+    import polylogue.storage.fts.fts_lifecycle as fts_lc
+
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+    source_path = tmp_path / "codex.jsonl"
+    _seed_minimal_archive(archive_db, source_path)
+
+    with mock.patch.object(
+        fts_lc,
+        "reset_message_fts_index_sync",
+        wraps=fts_lc.reset_message_fts_index_sync,
+    ) as reset_surface:
+        assert stages.repair_messages_fts_surface(archive_db) is True
+
+    reset_surface.assert_not_called()
+    with sqlite3.connect(archive_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+
+
+def test_archive_fts_global_repair_does_not_run_full_exact_snapshot(tmp_path: Path) -> None:
+    """Daemon global FTS convergence should not end with a full exact scan."""
+    from unittest import mock
+
+    import polylogue.storage.fts.fts_lifecycle as fts_lc
+
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+    source_path = tmp_path / "codex.jsonl"
+    _seed_minimal_archive(archive_db, source_path)
+
+    with mock.patch.object(
+        fts_lc,
+        "fts_invariant_snapshot_sync",
+        side_effect=AssertionError("full exact FTS snapshot should stay out of daemon convergence"),
+    ):
+        assert stages.repair_messages_fts_surface(archive_db) is True
+
+    with sqlite3.connect(archive_db) as conn:
+        row = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows
+            FROM fts_freshness_state
+            WHERE surface = 'messages_fts'
+            """
+        ).fetchone()
+        assert row == ("ready", 1, 1, 0, 0)
+
+
+def test_archive_fts_global_repair_deletes_excess_rows_without_reset(tmp_path: Path) -> None:
+    """Global surface debt should remove excess rows without a full rebuild."""
+    from unittest import mock
+
+    import polylogue.storage.fts.fts_lifecycle as fts_lc
+
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+    source_path = tmp_path / "codex.jsonl"
+    _seed_minimal_archive(archive_db, source_path)
+
+    with sqlite3.connect(archive_db) as conn:
+        fts_lc.rebuild_fts_index_sync(conn)
+        row = conn.execute("SELECT rowid FROM blocks LIMIT 1").fetchone()
+        assert row is not None
+        conn.execute("DROP TRIGGER messages_fts_ad")
+        conn.execute("DELETE FROM blocks WHERE rowid = ?", (row[0],))
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+
+    with mock.patch.object(
+        fts_lc,
+        "reset_message_fts_index_sync",
+        wraps=fts_lc.reset_message_fts_index_sync,
+    ) as reset_surface:
+        assert stages.repair_messages_fts_surface(archive_db) is True
+
+    reset_surface.assert_not_called()
+    with sqlite3.connect(archive_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
+
+
+def test_archive_repair_sessions_fts_skips_unknown_scope(tmp_path: Path) -> None:
+    """Path-scoped convergence must not become a whole-archive FTS rebuild."""
     from unittest import mock
 
     import polylogue.storage.fts.fts_lifecycle as fts_lc
@@ -276,7 +452,27 @@ def test_archive_repair_sessions_fts_resets_message_surface_without_ids(tmp_path
     ):
         stages._archive_repair_sessions_fts(conn, [])
 
-    reset_surface.assert_called_once()
+    reset_surface.assert_not_called()
+
+
+def test_archive_insights_path_batch_does_not_fallback_to_global_missing_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+    source_path = tmp_path / "codex.jsonl"
+
+    monkeypatch.setattr(stages, "_schema_archive_session_ids_for_source_paths", lambda _conn, _paths: {source_path: []})
+
+    def fail_global_missing_profiles(_conn: sqlite3.Connection) -> list[str]:
+        raise AssertionError("path-scoped insight convergence must not scan global missing profiles")
+
+    monkeypatch.setattr(stages, "_schema_archive_session_ids_missing_profiles", fail_global_missing_profiles)
+
+    assert stages._archive_insights_check_many(archive_db, [source_path]) == set()
+    result = stages._archive_insights_execute_many(archive_db, [source_path])
+    assert result is True
 
 
 def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import islice
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from typing_extensions import TypedDict
 
@@ -218,6 +218,27 @@ def _prompt_session_by_id_from_config(hooks: Any, token: str) -> PromptSession |
 
 def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     """Register MCP prompts on the given server."""
+
+    @mcp.prompt()
+    async def agent_coordination_brief(view: str = "status", limit: int = 10) -> str:
+        from polylogue.coordination import CoordinationView, build_coordination_envelope
+
+        normalized_view: CoordinationView
+        if view in {"status", "self", "work-item", "conflicts", "handoff"}:
+            normalized_view = cast(CoordinationView, view)
+        else:
+            normalized_view = "status"
+        payload = build_coordination_envelope(view=normalized_view, limit=hooks.clamp_limit(limit))
+        return f"""Use this bounded coordination envelope to decide the next agent action.
+
+Rules:
+1. Treat overlaps as awareness unless the payload marks them blocking.
+2. Prefer the work_item source with the highest confidence.
+3. Use handoff refs and advisories as navigation, not as a separate source of truth.
+
+Envelope:
+{payload.to_json(exclude_none=True)}
+"""
 
     @mcp.prompt()
     async def analyze_errors(

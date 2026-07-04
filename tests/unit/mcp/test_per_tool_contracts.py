@@ -124,7 +124,12 @@ _MCP_MUTATION_OPERATION_SPECS = tuple(
 TOOL_MATRIX: dict[str, dict[str, Any]] = {
     "add_tag": {
         "required": {"session_id", "tag"},
-        "happy": {"session_id": _CONV_ID, "tag": "review"},
+        "happy": {
+            "session_id": _CONV_ID,
+            "tag": "review",
+            "author_ref": "agent:codex-session:tool-contract",
+            "author_kind": "agent",
+        },
     },
     "remove_tag": {
         "required": {"session_id", "tag"},
@@ -229,6 +234,8 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
             "session_id": _CONV_ID,
             "kind": "summary_override",
             "payload": {"summary": "Operator-authored summary."},
+            "author_ref": "agent:codex-session:correction",
+            "author_kind": "agent",
         },
         "invalid_value": {
             "session_id": _CONV_ID,

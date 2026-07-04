@@ -4344,7 +4344,14 @@ class PolylogueArchiveMixin:
             detail=None if deleted else "session_not_found",
         )
 
-    async def add_tag(self, session_id: str, tag: str) -> TagMutationResult:
+    async def add_tag(
+        self,
+        session_id: str,
+        tag: str,
+        *,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
+    ) -> TagMutationResult:
         """Add a tag to a session.
 
         Returns a ``TagMutationResult`` with:
@@ -4357,7 +4364,12 @@ class PolylogueArchiveMixin:
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
             try:
                 resolved_v1 = archive.resolve_session_id(session_id)
-                changed = archive.add_user_tags((resolved_v1,), (tag,))
+                changed = archive.add_user_tags(
+                    (resolved_v1,),
+                    (tag,),
+                    author_ref=author_ref,
+                    author_kind=author_kind,
+                )
             except KeyError:
                 raise SessionNotFoundError(session_id) from None
         return TagMutationResult(
@@ -4470,7 +4482,14 @@ class PolylogueArchiveMixin:
             detail=None if changed else "key_not_found",
         )
 
-    async def bulk_tag_sessions(self, session_ids: list[str], tags: list[str]) -> BulkTagMutationResult:
+    async def bulk_tag_sessions(
+        self,
+        session_ids: list[str],
+        tags: list[str],
+        *,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
+    ) -> BulkTagMutationResult:
         """Apply a bulk-tag operation across many sessions (#862).
 
         Validation (empty inputs and size limits) is enforced inside the
@@ -4497,7 +4516,15 @@ class PolylogueArchiveMixin:
                     resolved = archive.resolve_session_id(session_id)
                 except KeyError:
                     continue
-                if archive.add_user_tags((resolved,), tuple(tags)) > 0:
+                if (
+                    archive.add_user_tags(
+                        (resolved,),
+                        tuple(tags),
+                        author_ref=author_ref,
+                        author_kind=author_kind,
+                    )
+                    > 0
+                ):
                     affected_count += 1
         return BulkTagMutationResult(
             session_count=len(session_ids),
@@ -5182,6 +5209,8 @@ class PolylogueArchiveMixin:
         payload: dict[str, str],
         *,
         note: str | None = None,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
     ) -> LearningCorrection:
         """Record a typed user correction for a session.
 
@@ -5200,7 +5229,14 @@ class PolylogueArchiveMixin:
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
             try:
-                return archive.record_correction(session_id, kind, normalized_payload, note=note)
+                return archive.record_correction(
+                    session_id,
+                    kind,
+                    normalized_payload,
+                    note=note,
+                    author_ref=author_ref,
+                    author_kind=author_kind,
+                )
             except KeyError as exc:
                 raise SessionNotFoundError(session_id) from exc
 

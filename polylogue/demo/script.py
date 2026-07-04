@@ -17,10 +17,11 @@ def render_demo_script(root: Path, *, shell: str = "bash") -> str:
                 "set -euo pipefail",
                 f"export POLYLOGUE_ARCHIVE_ROOT={root_text!r}",
                 "export POLYLOGUE_FORCE_PLAIN=1",
+                "polylogue demo tour --out-dir polylogue-demo-tour --force",
                 'polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json',
                 'polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json',
-                "polylogue find pytest then read --view summary --limit 1",
-                "polylogue find assertions where kind:decision then read --format json --limit 5",
+                "polylogue find pytest then read --view messages --limit 3",
+                "polylogue find pytest then analyze --facets",
             ]
         )
         + "\n"

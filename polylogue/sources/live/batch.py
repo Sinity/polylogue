@@ -92,8 +92,8 @@ from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_structural_database_error
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
-from polylogue.sources.live.session_convergence import converge_known_sessions
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
+from polylogue.sources.parsers import hermes_state
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
@@ -727,16 +727,6 @@ class LiveBatchProcessor:
 
         started = time.perf_counter()
         try:
-            session_result = converge_known_sessions(
-                cursor=self._cursor,
-                converger=self._converger,
-                paths=unique_paths,
-                started=started,
-                archive_root=Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent)),
-            )
-            if session_result is not None:
-                return session_result
-
             converge_batch = getattr(self._converger, "converge_batch", None)
             if callable(converge_batch):
                 states, timings = converge_batch(unique_paths)
@@ -928,8 +918,35 @@ class LiveBatchProcessor:
                 ingested.append(path)
                 raw_byte_sizes[path] = stat.st_size
                 continue
-            jsonl_like = path.suffix.lower() == ".jsonl"
-            if jsonl_like:
+            if hermes_state.looks_like_state_db_path(path):
+                provider = Provider.HERMES
+                source_name = provider.value
+                try:
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy",
+                            current_path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        )
+                    raw_id, blob_size = blob_store.write_from_path(
+                        path,
+                        heartbeat=_blob_copy_heartbeat(
+                            heartbeat,
+                            path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        ),
+                    )
+                except OSError:
+                    failed.append(path)
+                    continue
+                source_payload_read_bytes += blob_size
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
+            elif path.suffix.lower() == ".jsonl":
                 provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
                 source_name = provider.value
                 if not parse_as_session:
@@ -1183,7 +1200,14 @@ class LiveBatchProcessor:
                     payload = raw_payloads.get(record.raw_id)
                     source_name = Path(record.source_path).name
                     fallback_id = Path(record.source_path).stem
-                    if is_stream_record_provider(record.source_path, str(provider)):
+                    if provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
+                        blob_store.blob_path(record.raw_id)
+                    ):
+                        sessions = hermes_state.parse_state_db(
+                            blob_store.blob_path(record.raw_id),
+                            fallback_id=fallback_id,
+                        )
+                    elif is_stream_record_provider(record.source_path, str(provider)):
                         if payload is None:
                             with blob_store.open(record.raw_id) as payload_handle:
                                 sessions = parse_stream_payload(

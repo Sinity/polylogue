@@ -223,8 +223,36 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
+def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table: str) -> bool:
+    if not schema_name.replace("_", "").isalnum() or not table.replace("_", "").isalnum():
+        return False
+    try:
+        row = conn.execute(
+            f"SELECT 1 FROM {schema_name}.sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
+
+
+def _attached_table_name(conn: sqlite3.Connection, schema_name: str, table: str) -> str:
+    if _attached_table_exists(conn, schema_name, table):
+        return f"{schema_name}.{table}"
+    return ""
+
+
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _qualified_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if "." not in table:
+        return _columns(conn, table)
+    schema, _, name = table.rpartition(".")
+    if not schema.replace("_", "").isalnum() or not name.replace("_", "").isalnum():
+        return set()
+    return {row[1] for row in conn.execute(f"PRAGMA {schema}.table_info({name})")}
 
 
 def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
@@ -408,16 +436,20 @@ def _fts_trigger_presence(conn: sqlite3.Connection) -> dict[str, bool]:
 
 
 def _fts_freshness_ready(conn: sqlite3.Connection) -> list[tuple[str, int]]:
-    if not _table_exists(conn, "fts_freshness_state"):
+    from polylogue.daemon.fts_status import fts_readiness_info
+
+    database_row = conn.execute("PRAGMA database_list").fetchone()
+    if database_row is None:
         return []
-    rows = conn.execute(
-        """
-        SELECT surface, state
-        FROM fts_freshness_state
-        ORDER BY surface
-        """
-    ).fetchall()
-    return [(str(row[0]), 1 if str(row[1]) == "ready" else 0) for row in rows]
+    readiness = fts_readiness_info(Path(str(database_row[2])), exact=False)
+    surfaces = readiness.get("surfaces")
+    if not isinstance(surfaces, dict):
+        return []
+    samples: list[tuple[str, int]] = []
+    for surface, payload in sorted(surfaces.items()):
+        ready = bool(payload.get("ready")) if isinstance(payload, dict) else False
+        samples.append((str(surface), 1 if ready else 0))
+    return samples
 
 
 def _latest_ingest_memory(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> list[tuple[str, float]]:
@@ -619,11 +651,15 @@ def _emit_storage_route_metrics(lines: list[str], counts: dict[str, int]) -> Non
     )
 
 
-def _embedding_message_count(conn: sqlite3.Connection) -> int:
+def _embedding_message_count(conn: sqlite3.Connection, *, status_table: str = "", meta_table: str = "") -> int:
     if _table_exists(conn, "message_embeddings_rowids"):
         return _scalar_int(conn, "SELECT COUNT(*) FROM message_embeddings_rowids")
     if _table_exists(conn, "message_embeddings"):
         return _scalar_int(conn, "SELECT COUNT(*) FROM message_embeddings")
+    if status_table and "message_count_embedded" in _qualified_columns(conn, status_table):
+        return _scalar_int(conn, f"SELECT COALESCE(SUM(message_count_embedded), 0) FROM {status_table}")
+    if meta_table:
+        return _scalar_int(conn, f"SELECT COUNT(*) FROM {meta_table}")
     return 0
 
 
@@ -686,25 +722,40 @@ def _embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) ->
 
 
 def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> EmbeddingMetricState:
-    from polylogue.storage.embeddings.materialization import count_archive_embedding_session_state
-
     total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
     embedded_sessions = 0
     pending_sessions = 0
     failed_sessions = 0
-    if _table_exists(conn, "embedding_status"):
-        session_state = count_archive_embedding_session_state(conn, status_table="embedding_status", rebuild=False)
-        embedded_sessions = session_state.embedded_sessions
-        pending_sessions = session_state.pending_sessions
+    status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
+    meta_table = "message_embeddings_meta" if _table_exists(conn, "message_embeddings_meta") else ""
+    embeddings_db = Path(conn.execute("PRAGMA database_list").fetchone()[2]).with_name("embeddings.db")
+    if not status_table and embeddings_db.exists():
+        conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        status_table = _attached_table_name(conn, "embeddings", "embedding_status")
+        meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
+
+    if status_table:
+        embedded_sessions = _scalar_int(
+            conn,
+            f"""
+            SELECT COUNT(*)
+            FROM {status_table}
+            WHERE COALESCE(needs_reindex, 0) = 0
+              AND error_message IS NULL
+            """,
+        )
+        pending_sessions = max(total_sessions - embedded_sessions, 0)
         failed_sessions = _scalar_int(
             conn,
-            "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL",
+            f"SELECT COUNT(*) FROM {status_table} WHERE error_message IS NOT NULL",
         )
     elif _table_exists(conn, "messages"):
+        from polylogue.storage.embeddings.materialization import count_archive_embedding_session_state
+
         session_state = count_archive_embedding_session_state(conn, status_table="", rebuild=False)
         pending_sessions = session_state.pending_sessions
 
-    embedded_messages = _embedding_message_count(conn)
+    embedded_messages = _embedding_message_count(conn, status_table=status_table, meta_table=meta_table)
     eligible_sessions = embedded_sessions + pending_sessions
     coverage_percent = (
         embedded_sessions / eligible_sessions * 100 if eligible_sessions > 0 else (100.0 if total_sessions > 0 else 0.0)
@@ -1091,7 +1142,7 @@ def format_metrics(
         _emit_metric(
             lines,
             name="polylogue_fts_freshness_ready",
-            help_text="1 when the daemon freshness ledger marks an FTS surface ready.",
+            help_text="1 when the bounded FTS readiness contract marks a surface ready.",
             metric_type="gauge",
             samples=[({"surface": surface}, ready) for surface, ready in freshness],
         )

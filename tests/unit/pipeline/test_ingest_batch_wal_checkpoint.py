@@ -14,7 +14,11 @@ from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation, maybe_checkpoint_wal
+from polylogue.storage.sqlite.wal_checkpoint import (
+    WalCheckpointObservation,
+    maybe_checkpoint_archive_wals,
+    maybe_checkpoint_wal,
+)
 
 
 def test_format_foreign_key_violations_renders_tuple_rows() -> None:
@@ -213,6 +217,82 @@ def test_maybe_optimize_sqlite_runs_bounded_pragma(tmp_path: Path) -> None:
     assert observation.reason == "test"
     assert observation.analysis_limit == 17
     assert observation.error is None
+
+
+def test_maybe_optimize_archive_tiers_covers_existing_split_tiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    for filename in ("source.db", "index.db", "ops.db"):
+        (archive_root / filename).write_bytes(b"sqlite placeholder")
+
+    class FakeConnection:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.closed = False
+
+        def execute(self, _sql: str) -> object:
+            return object()
+
+        def close(self) -> None:
+            self.closed = True
+
+    opened: list[FakeConnection] = []
+
+    def fake_open(path: Path, *, timeout: float) -> FakeConnection:
+        assert timeout == 11.0
+        conn = FakeConnection(path)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_daemon_connection", fake_open)
+
+    observations = maybe_optimize_archive_tiers(archive_root, reason="test", analysis_limit=19, timeout_s=11.0)
+
+    assert [conn.path.name for conn in opened] == ["source.db", "index.db", "ops.db"]
+    assert [observation.ran for observation in observations] == [True, True, True]
+    assert {observation.analysis_limit for observation in observations} == {19}
+    assert all(conn.closed for conn in opened)
+
+
+def test_maybe_checkpoint_archive_wals_covers_existing_split_tiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    for filename in ("source.db", "index.db", "user.db"):
+        (archive_root / filename).write_bytes(b"sqlite placeholder")
+
+    calls: list[tuple[Path, str, bool]] = []
+
+    def fake_checkpoint(
+        db: Path,
+        *,
+        reason: str,
+        allow_truncate: bool = True,
+        **_: object,
+    ) -> WalCheckpointObservation:
+        calls.append((db, reason, allow_truncate))
+        return WalCheckpointObservation(
+            reason=reason,
+            mode="passive",
+            wal_bytes_before=100,
+            wal_bytes_after=0,
+        )
+
+    monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.maybe_checkpoint_wal", fake_checkpoint)
+
+    observations = maybe_checkpoint_archive_wals(archive_root, reason="periodic", allow_truncate=True)
+
+    assert [path.name for path, _reason, _allow in calls] == ["source.db", "index.db", "user.db"]
+    assert {reason for _path, reason, _allow in calls} == {"periodic"}
+    assert {allow for _path, _reason, allow in calls} == {True}
+    assert [observation.mode for observation in observations] == ["passive", "passive", "passive"]
 
 
 def test_process_ingest_batch_sync_does_not_force_memory_release_before_returning(

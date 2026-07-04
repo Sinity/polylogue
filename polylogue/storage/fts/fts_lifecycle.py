@@ -19,6 +19,7 @@ from polylogue.storage.fts.sql import (
     IndexedMessage,
     chunked,
     delete_session_rows_sql,
+    excess_message_rows_sql,
     insert_all_message_rows_sql,
     insert_missing_message_rows_range_sql,
     insert_session_rows_sql,
@@ -99,6 +100,9 @@ FTS_TRIGGER_NAMES = _FTS_TRIGGER_NAMES
 
 DEFAULT_MISSING_MESSAGE_FTS_BATCH_ROWS = 50_000
 """Rowid window size for archive-wide missing message FTS repair."""
+
+DEFAULT_EXCESS_MESSAGE_FTS_BATCH_ROWS = 5_000
+"""Batch size for archive-wide excess message FTS row deletion."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,13 +415,15 @@ def insert_missing_message_rows_batched_sync(
     conn: sqlite3.Connection,
     *,
     batch_rows: int = DEFAULT_MISSING_MESSAGE_FTS_BATCH_ROWS,
+    measure_counts: bool = True,
+    progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> int:
     """Insert missing block-backed FTS rows in committed rowid windows."""
     if batch_rows <= 0:
         raise ValueError("batch_rows must be positive")
 
     ensure_fts_index_sync(conn)
-    before = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
+    before = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0) if measure_counts else 0
     max_rowid = _row_int(
         conn.execute(
             """
@@ -434,13 +440,50 @@ def insert_missing_message_rows_batched_sync(
         upper = min(lower + batch_rows, max_rowid)
         changes_before = conn.total_changes
         conn.execute(sql, (lower, upper))
-        if conn.total_changes != changes_before:
+        inserted = conn.total_changes - changes_before
+        if inserted:
             conn.commit()
             _passive_wal_checkpoint_sync(conn)
+        if progress_callback is not None:
+            progress_callback(lower, upper, max(0, inserted))
         lower = upper
 
+    if not measure_counts:
+        return 0
     after = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
     return max(0, after - before)
+
+
+def delete_excess_message_rows_batched_sync(
+    conn: sqlite3.Connection,
+    *,
+    batch_rows: int = DEFAULT_EXCESS_MESSAGE_FTS_BATCH_ROWS,
+    progress_callback: Callable[[int], None] | None = None,
+) -> int:
+    """Delete FTS rows whose canonical ``blocks`` row is no longer indexable."""
+    if batch_rows <= 0:
+        raise ValueError("batch_rows must be positive")
+
+    ensure_fts_index_sync(conn)
+    deleted_total = 0
+    while True:
+        rows = conn.execute(excess_message_rows_sql(batch_rows)).fetchall()
+        rowids = [int(row[0]) for row in rows]
+        if not rowids:
+            break
+        placeholders = ", ".join("?" for _ in rowids)
+        changes_before = conn.total_changes
+        conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({placeholders})", tuple(rowids))
+        deleted = max(0, conn.total_changes - changes_before)
+        deleted_total += deleted
+        if deleted:
+            conn.commit()
+            _passive_wal_checkpoint_sync(conn)
+        if progress_callback is not None:
+            progress_callback(deleted)
+        if len(rowids) < batch_rows:
+            break
+    return deleted_total
 
 
 def rebuild_session_insight_fts_sync(conn: sqlite3.Connection) -> None:
@@ -1016,6 +1059,7 @@ __all__ = [
     "message_fts_search_readiness_async",
     "message_fts_search_readiness_sync",
     "message_fts_triggers_present_sync",
+    "delete_excess_message_rows_batched_sync",
     "insert_missing_message_rows_batched_sync",
     "rebuild_fts_index_async",
     "rebuild_fts_index_sync",

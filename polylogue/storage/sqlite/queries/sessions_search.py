@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.search.models import SessionSearchEvidenceRow, SessionSearchResult
 
-_MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
-_MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
+_MESSAGE_SEARCH_REPAIR_HINT = "Run `polylogued run`."
 
 
 async def search_session_hits(

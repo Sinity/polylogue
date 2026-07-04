@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.daemon.web_shell_attachments import ATTACHMENT_CSS, ATTACHMENT_JS
+from polylogue.daemon.web_shell_coordination import COORDINATION_CSS, COORDINATION_JS
 from polylogue.daemon.web_shell_lineage import LINEAGE_JS
 from polylogue.daemon.web_shell_paste import PASTE_CSS, PASTE_JS
 from polylogue.daemon.web_shell_provenance import PROVENANCE_JS
@@ -180,6 +181,7 @@ __WORKSPACE_CSS__
 __READER_CSS__
 __PASTE_CSS__
 __ATTACHMENT_CSS__
+__COORDINATION_CSS__
 .tool-block { border-left: 2px solid var(--role-tool); padding-left: 12px; margin: 2px 0; }
 .tool-block .tool-summary { font-size: var(--small); color: var(--text-muted); cursor: pointer; padding: 3px 0; }
 .tool-block .tool-summary:hover { color: var(--text); }
@@ -307,6 +309,7 @@ __WORKSPACE_HTML__
       <button data-tab="raw">Raw</button>
       <button data-tab="similar">Similar</button>
       <button data-tab="attachments">Attachments</button>
+      <button data-tab="mission">Mission</button>
       <button data-tab="notes">Notes</button>
     </div>
     <div id="inspector-content"><div class="inspector-empty">Select a session to inspect</div></div>
@@ -398,6 +401,7 @@ var state = {
   // tab is opened. ``undefined`` means "not loaded yet"; the envelope
   // carries the explicit pipeline state under ``status``.
   similarPanels: {},
+  coordinationPayload: null,
   // Latest web-shell API request metadata. This is a UI/debug aid only: it
   // records route, status, duration, request id, and a bounded response summary
   // without storing raw archive payloads.
@@ -1573,6 +1577,11 @@ function markButtonHtml(sessionId, markType, label, title) {
 
 function renderInspector() {
   var el = document.getElementById('inspector-content');
+  var tab = state.inspectorTab || 'info';
+  if (tab === 'mission') {
+    renderInspectorMission(el);
+    return;
+  }
   if (!state.selected) {
     if (state.selectedLoadError) {
       el.innerHTML = renderInlineRouteFailure('Session detail unavailable', state.selectedLoadError, 'loadSessionFromError()');
@@ -1582,7 +1591,6 @@ function renderInspector() {
     return;
   }
   var c = state.selected;
-  var tab = state.inspectorTab || 'info';
   if (tab === 'info') renderInspectorInfo(el, c);
   else if (tab === 'cost') renderInspectorCost(el, c);
   else if (tab === 'lineage') renderInspectorLineage(el, c);
@@ -2344,6 +2352,8 @@ document.getElementById('facet-bar').addEventListener('click', function(e) {
 
 attachSelectionHandlers();
 
+__COORDINATION_JS__
+
 document.getElementById('inspector-tabs').addEventListener('click', function(e) {
   if (e.target.tagName !== 'BUTTON') return;
   state.inspectorTab = e.target.dataset.tab;
@@ -2362,6 +2372,7 @@ loadFacets();
 loadReadViewProfiles();
 loadUserState();
 loadStatus();
+loadCoordinationPanel();
 
 __REALTIME_JS__
 __READER_JS__
@@ -2387,4 +2398,6 @@ __ATTACHMENT_JS__
     .replace("__PASTE_JS__", PASTE_JS)
     .replace("__ATTACHMENT_CSS__", ATTACHMENT_CSS)
     .replace("__ATTACHMENT_JS__", ATTACHMENT_JS)
+    .replace("__COORDINATION_CSS__", COORDINATION_CSS)
+    .replace("__COORDINATION_JS__", COORDINATION_JS)
 )

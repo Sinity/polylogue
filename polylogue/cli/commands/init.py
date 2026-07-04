@@ -59,7 +59,7 @@ def detect_chat_sources() -> tuple[DetectedSource, ...]:
         ("claude-code", claude_code_path(), "Claude Code session JSONL"),
         ("codex", codex_path(), "Codex session JSONL"),
         ("gemini-cli", gemini_cli_path(), "Gemini CLI workspace exports"),
-        ("hermes", hermes_sessions_path(), "Hermes agent session exports"),
+        ("hermes", hermes_sessions_path(), "Hermes agent state.db and fallback session exports"),
         ("antigravity", antigravity_path(), "Antigravity brain artifacts"),
         ("hooks", hooks_sidecar_dir(), "Agent hook sidecar spool"),
     )

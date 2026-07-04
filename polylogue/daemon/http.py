@@ -261,6 +261,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/status", "_handle_status", passes_params=True),
         _static_get_route("/api/dev-loop", "_handle_dev_loop"),
         _static_get_route("/api/events", "_handle_events", passes_params=True),
+        _static_get_route("/api/agents/coordination", "_handle_agent_coordination", passes_params=True),
         _static_get_route("/api/sessions", "_handle_list_sessions", passes_params=True),
         _static_get_route("/api/facets", "_handle_facets", passes_params=True),
         _static_get_route("/api/provider-usage", "_handle_provider_usage", passes_params=True),
@@ -547,7 +548,6 @@ _SCOPE_FILTER_KEYS = frozenset(
         "provider",
         "source_family",
         "source_root",
-        "raw_artifact_id",
         "time_range",
         "failure_kind",
         "parser_version",
@@ -1472,6 +1472,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     def _serve_attachment_library_page(self) -> None:
         self._send_html(HTTPStatus.OK, render_attachment_library_page())
+
+    def _handle_agent_coordination(self, params: dict[str, list[str]]) -> None:
+        from polylogue.coordination import build_coordination_envelope
+
+        raw_view = self._get_param(params, "view", "status") or "status"
+        view = raw_view if raw_view in {"status", "self", "work-item", "conflicts", "handoff"} else "status"
+        limit = self._get_int(params, "limit", 10)
+        payload = build_coordination_envelope(view=cast(Any, view), limit=max(1, min(limit, 50)))
+        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
 
     @daemon_safe_handler
     def _handle_paste_browser(self, params: dict[str, list[str]]) -> None:

@@ -90,6 +90,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "docs/product/workflows.md",
         "Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths.",
     ),
+    DocsEntry(
+        "Proof Artifacts",
+        "docs/proof-artifacts.md",
+        "Claim-to-proof map for public-facing demo, cost, failure-follow-up, and affordance-analysis claims.",
+    ),
     DocsEntry("Internals", "docs/internals.md", "Working implementation reference and debugging landmarks."),
     DocsEntry("MCP Integration", "docs/mcp-integration.md", "Model Context Protocol server setup and usage."),
     DocsEntry(
@@ -135,6 +140,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Execution Plan",
     "Design Direction",
     "Query-Action Workflows",
+    "Proof Artifacts",
     "CLI Reference",
     "Search & Query",
     "Browser Capture",

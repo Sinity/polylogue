@@ -670,6 +670,125 @@ def test_async_execute_query_archive_uses_daemon_for_supported_session_pages(
     assert payload["items"][0]["id"] == "codex-session:native-1"
 
 
+def test_async_execute_query_archive_preserves_daemon_degraded_search_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    config = MagicMock()
+    config.archive_root = archive_root
+    config.db_path = archive_root / "index.db"
+    config.daemon_url = "http://127.0.0.1:9876"
+    config.api_auth_token = None
+    env = _make_env(repo=MagicMock(), config=config)
+
+    def fake_fetch(config_arg: object, query_params: dict[str, object]) -> dict[str, object]:
+        assert config_arg is config
+        assert query_params["query"] == "search needle"
+        return {
+            "query": "search needle",
+            "retrieval_lane": "dialogue",
+            "hits": [],
+            "total": None,
+            "route_state": {
+                "state": "degraded",
+                "route": "/api/sessions",
+                "reason": "Search index unavailable: message FTS table is missing or degraded.",
+                "component": "message_fts",
+                "stale_available": False,
+            },
+            "diagnostics": {
+                "message": "Search index unavailable: message FTS table is missing or degraded.",
+                "reasons": [{"code": "search_index_degraded", "severity": "warning"}],
+            },
+        }
+
+    monkeypatch.setattr("polylogue.cli.archive_query._fetch_daemon_sessions_payload", fake_fetch)
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        MagicMock(side_effect=AssertionError("degraded daemon search must not open SQLite as no-results fallback")),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        asyncio.run(
+            async_execute_query(
+                env,
+                {
+                    "archive": True,
+                    "query": ("search", "needle"),
+                    "limit": 2,
+                    "output_format": "json",
+                },
+            )
+        )
+
+    assert exc_info.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["source"] == "daemon"
+    assert payload["mode"] == "search"
+    assert payload["total"] is None
+    assert payload["items"] == []
+    assert payload["route_state"]["state"] == "degraded"
+    assert payload["route_state"]["component"] == "message_fts"
+    assert payload["diagnostics"]["reasons"][0]["code"] == "search_index_degraded"
+
+
+def test_async_execute_query_archive_preserves_daemon_degraded_search_plain(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    config = MagicMock()
+    config.archive_root = archive_root
+    config.db_path = archive_root / "index.db"
+    config.daemon_url = "http://127.0.0.1:9876"
+    config.api_auth_token = None
+    env = _make_env(repo=MagicMock(), config=config)
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query._fetch_daemon_sessions_payload",
+        lambda *_args: {
+            "query": "search needle",
+            "retrieval_lane": "dialogue",
+            "hits": [],
+            "total": None,
+            "route_state": {
+                "state": "degraded",
+                "route": "/api/sessions",
+                "reason": "Search index unavailable: message FTS table is missing or degraded.",
+                "component": "message_fts",
+                "stale_available": False,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        MagicMock(side_effect=AssertionError("degraded daemon search must not open SQLite as no-results fallback")),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        asyncio.run(
+            async_execute_query(
+                env,
+                {
+                    "archive": True,
+                    "query": ("search", "needle"),
+                    "limit": 2,
+                    "output_format": "markdown",
+                },
+            )
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "Search index unavailable" in captured.err
+    assert "No sessions matched" not in captured.out
+
+
 def test_async_execute_query_archive_falls_back_when_daemon_unavailable(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

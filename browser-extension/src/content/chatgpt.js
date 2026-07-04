@@ -7,6 +7,7 @@
   const nativeCaptureMessage = "polylogue.chatgpt.nativeCapture";
   const nativeFetchRequestMessage = "polylogue.chatgpt.nativeFetchRequest";
   const nativeFetchResponseMessage = "polylogue.chatgpt.nativeFetchResponse";
+  const nativeFetchTimeoutMs = 8000;
   const nativeCaptures = [];
   const nativeFetchResponses = new Map();
   const nativeAttemptDiagnostics = [];
@@ -148,6 +149,22 @@
     return new Date(value * 1000).toISOString();
   }
 
+  function timeoutError(label) {
+    const error = new Error(`${label}_timeout_after_${nativeFetchTimeoutMs}ms`);
+    error.name = "PolylogueTimeoutError";
+    return error;
+  }
+
+  function withTimeout(promise, label) {
+    let timer = 0;
+    const timeout = new Promise((_resolve, reject) => {
+      timer = window.setTimeout(() => reject(timeoutError(label)), nativeFetchTimeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => {
+      if (timer) window.clearTimeout(timer);
+    });
+  }
+
   function roleFromRaw(raw) {
     if (raw === "user" || raw === "assistant" || raw === "system" || raw === "tool") return raw;
     if (raw === "function" || raw === "tool_use" || raw === "tool_result") return "tool";
@@ -213,7 +230,7 @@
       const timeout = window.setTimeout(() => {
         nativeFetchResponses.delete(requestId);
         resolve({ capture: null, error: "timeout" });
-      }, 10000);
+      }, nativeFetchTimeoutMs);
       nativeFetchResponses.set(requestId, {
         resolve(value) {
           window.clearTimeout(timeout);
@@ -234,10 +251,18 @@
 
   async function fetchNativePayloadFromContentScript(conversationId) {
     try {
-      const response = await fetch(`/backend-api/conversation/${encodeURIComponent(conversationId)}`, {
-        credentials: "include",
-        cache: "no-store"
-      });
+      const controller = new globalThis.AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(timeoutError("content_script_fetch")), nativeFetchTimeoutMs);
+      let response;
+      try {
+        response = await fetch(`/backend-api/conversation/${encodeURIComponent(conversationId)}`, {
+          credentials: "include",
+          cache: "no-store",
+          signal: controller.signal
+        });
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
       const contentType = response.headers.get("content-type") || "";
       if (!response.ok || !contentType.includes("application/json")) {
         rememberNativeAttempt({
@@ -249,7 +274,7 @@
         });
         return null;
       }
-      const payload = await response.clone().json();
+      const payload = await withTimeout(response.clone().json(), "content_script_json");
       if (!payload || typeof payload !== "object" || !payload.mapping) {
         rememberNativeAttempt({
           stage: "content_script_fetch",

@@ -61,7 +61,7 @@ def _raw_materialization_warning(readiness: dict[str, object]) -> str | None:
                 prefix = f"{materialized_count:,}/{raw_count:,} raw artifact(s) materialized; "
             return (
                 f"Archive materialization needs classification: {prefix}{unchecked:,} raw/index join gap(s) found; "
-                "results may be partial until `polylogue ops debt list --kind raw-materialization` explains them."
+                "results may be partial until daemon convergence classifies them."
             )
         return None
     return f"Archive is converging: {count:,} raw artifact(s) are not materialized; results may be partial."

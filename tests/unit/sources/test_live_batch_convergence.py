@@ -31,7 +31,7 @@ class _SessionFirstConverger:
         return ({path: SimpleNamespace(converged=True) for path in paths}, {"batch": 1.0})
 
 
-def test_live_batch_converges_known_paths_by_session_id(tmp_path: Path) -> None:
+def test_live_batch_converges_known_paths_by_source_path(tmp_path: Path) -> None:
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     source = tmp_path / "session.jsonl"
@@ -80,7 +80,7 @@ def test_live_batch_converges_known_paths_by_session_id(tmp_path: Path) -> None:
 
     assert completed == {source}
     assert elapsed >= 0.0
-    assert timings == {"fts": 0.5}
+    assert timings == {"batch": 1.0}
     assert debts == []
-    assert converger.session_calls == [("codex-session:provider-1",)]
-    assert converger.batch_calls == []
+    assert converger.session_calls == []
+    assert converger.batch_calls == [(source,)]

@@ -464,6 +464,16 @@ class DaemonConverger:
 
             elapsed = time.perf_counter() - t_stage
             success, extra_stage_timings_s = _coerce_execute_result(execute_result)
+            remaining_needs_work: set[str] | None = None
+            if not success and stage.false_means_pending:
+                try:
+                    remaining_needs_work = set(stage.check_sessions(tuple(batch_needs_work)))
+                except Exception:
+                    logger.warning(
+                        "converger: session batch recheck failed stage=%s",
+                        stage_name,
+                        exc_info=True,
+                    )
             _record_stage_times(batch_stage_times, stage_name, elapsed, extra_stage_timings_s)
             for session_id in batch_needs_work:
                 state = self._session_states[session_id]
@@ -472,11 +482,14 @@ class DaemonConverger:
                 for name, value in extra_stage_timings_s.items():
                     state.stage_times[name] = value
                     state.last_stage_times[name] = value
+                session_success = success
+                if remaining_needs_work is not None:
+                    session_success = session_id not in remaining_needs_work
                 _record_execute_result(
                     state,
                     stage_name=stage_name,
                     stage=stage,
-                    success=success,
+                    success=session_success,
                     scope="session",
                 )
 

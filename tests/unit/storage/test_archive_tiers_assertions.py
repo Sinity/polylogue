@@ -126,6 +126,7 @@ def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
         assert _table_exists(conn, "assertions")
+        assert _table_exists(conn, "user_settings")
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
     finally:
         conn.close()
@@ -147,8 +148,17 @@ def test_fresh_user_tier_has_no_legacy_overlay_tables(tmp_path: Path) -> None:
             "corrections",
             "suppressions",
         }
-        assert tables == {"assertions"}
+        assert tables == {"assertions", "user_settings"}
         assert tables.isdisjoint(obsolete_overlay_tables)
+    finally:
+        conn.close()
+
+
+def test_fresh_user_tier_has_settings_table_for_non_assertion_state(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(user_settings)")}
+        assert columns == {"setting_key", "value_json", "updated_at_ms", "author_ref"}
     finally:
         conn.close()
 

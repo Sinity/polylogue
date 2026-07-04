@@ -6,103 +6,118 @@
   <a href="https://github.com/sinity/polylogue/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/ci.yml?branch=master&label=ci" alt="CI status"></a>
 </p>
 
-**Polylogue is a local archive and cockpit for your AI sessions and agent
-work.**
+**Polylogue is the system of record for AI work.** It keeps ChatGPT, Claude,
+Codex, Gemini, Antigravity, Hermes, and coding-agent sessions in one local
+archive, then lets you search, analyze, audit, and remember what actually
+happened.
 
-> **Skim this in 7 minutes.** Every AI tool you use scatters its transcripts —
-> one JSON dump per vendor, one log stream per coding agent, one half-broken
-> export per browser plugin. Polylogue pulls all of them into a single
-> searchable archive on your own machine, then lets you ask what an agent did
-> yesterday: what it cost, what it touched, what it tested, and what to resume
-> next.
+> **Skim this in 7 minutes.** Polylogue is not a chat export viewer. It is
+> closer to git for the work around your code: prompts, tool calls, test runs,
+> costs, dead ends, and resume points that otherwise disappear into vendor
+> silos. It reads the files your tools already write, adds a browser-capture
+> path for web chats, and keeps raw evidence next to every derived claim.
 >
-> - **30 seconds** — the bold line above: local, source-agnostic, idempotent.
-> - **3 minutes** — this section, the [one-command demo](#try-it-in-one-command),
->   and the [architecture diagram](docs/architecture.md).
-> - **30 minutes** — [architecture.md](docs/architecture.md),
->   [internals.md](docs/internals.md), and [search.md](docs/search.md). New
->   vocabulary is translated in the [glossary](docs/glossary.md).
+> - **30 seconds** — read the headline and the five questions below.
+> - **3 minutes** — run the [demo](#try-it-without-private-data) and read
+>   [Why you can trust it](#why-you-can-trust-it).
+> - **30 minutes** — use [proof artifacts](docs/proof-artifacts.md),
+>   [search](docs/search.md), [architecture](docs/architecture.md), and
+>   [internals](docs/internals.md) to inspect the claims.
 
-It ingests the session files that ChatGPT, Claude (web and Claude Code),
-Codex, Gemini (Gemini CLI and Google Drive exports), Antigravity, and Hermes
-agents already leave on disk,
-normalizes them into a content-addressed SQLite archive, and gives you
-full-text and semantic search, materialized session insights, cost rollups,
-git-correlation, a daemon HTTP reader, and an MCP bridge — all running on your
-machine, against your data.
+Polylogue answers questions ordinary transcript folders cannot:
 
-- **Local-first.** The archive lives under your XDG data directory. No cloud,
-  no upload, and no API key unless you opt into semantic embeddings.
-- **Source-agnostic.** Providers are detected by file shape, not filename or
-  vendor SDK. The same archive holds web exports, IDE agents, and CLI agents
-  side by side.
-- **Idempotent.** Re-ingesting the same data is a no-op; content hashes
-  prevent duplication, and editable metadata (tags, summaries) does not
-  trigger re-import.
+- **What did the agent do?** Search sessions, messages, tool calls, files,
+  observed events, costs, and outcomes with one query surface.
+- **What failed?** Audit claims against structured evidence such as exit codes
+  and tool-result metadata, not assistant prose saying "done".
+- **What did it cost?** Keep provider-reported usage, catalog estimates, cache
+  lanes, subscription-credit views, and coverage caveats separate.
+- **What should resume?** Find interrupted work and assemble evidence-backed
+  context bundles for the next agent.
+- **Where is the raw evidence?** Keep parsed sessions, generated analytics,
+  user notes, embeddings, daemon telemetry, and source bytes in inspectable
+  local evidence stores.
 
-## Try it in one command
+The archive is local-first. It lives under your XDG data directory. There is no
+upload and no API key unless you opt into semantic embeddings. Lexical search
+and the core archive stay fully local; semantic search currently uses Voyage AI
+when enabled. Re-ingesting the same source is idempotent by content hash, so
+repeated imports coalesce instead of duplicating your history.
 
-No real data and no API key required. This seeds a throwaway, deterministic
-demo archive (three sessions — one each from ChatGPT, Claude Code, and Codex)
-and shows them coexisting in a single queryable substrate:
+## Try it without private data
+
+No real data and no API key required. This runs a one-command tour against a
+throwaway deterministic archive, prints the first result, and writes a report,
+transcript, and recording tape:
 
 ```bash
-export POLYLOGUE_ARCHIVE_ROOT="$(mktemp -d)/archive"
-polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays
+polylogue demo tour
+```
+
+The current demo corpus has 11 sessions, 43 indexed messages, five origins,
+attachments with acquired bytes, browser-capture coalescing, lineage links,
+subagent runs, terminal-state examples, synthetic embeddings, and user overlays.
+The generated construct datasheet is tracked at
+[docs/plans/demo-corpus-construct-audit.md](docs/plans/demo-corpus-construct-audit.md).
+
+The tour seeds and verifies the same semantic facts used by CI. It then runs
+the canonical query/read path:
+
+```bash
 polylogue analyze --facets
+polylogue find "pytest" then read --view messages
+polylogue find "pytest" then analyze --facets
 ```
 
-```text
-Facets (global) — matched result set:
-  sessions: 3  messages: 19
-  Provider origins:
-    chatgpt-export: 1
-    claude-code-session: 1
-    codex-session: 1
-  User tags:
-    pytest-triage: 1
-```
-
-From here, `polylogue find "pytest" then read --view messages` renders the
-matched transcript, and `polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT"`
-checks the same semantic facts CI does. The screencast media for these flows is
-regenerable from committed tape specs with a single command —
-`devtools render visual-tapes --capture` (writes `.tape` files, and `.gif`s when
-the `vhs` binary is present).
+Screencast media for public flows is regenerable from committed tape specs with
+`devtools render visual-tapes --capture` (writes `.tape` files, and `.gif`s
+when `vhs` is present). The default inventory records the one-command demo
+tour, a query/read drilldown against the deterministic demo archive, the
+browserless reader evidence lane, and a browser-backed extension capture proof
+against deterministic ChatGPT/Claude fixture pages; none of these tapes read
+your live archive.
 
 ## Why this exists
 
-AI sessions are scattered across one JSON dump per vendor, one JSONL stream
-per agent, and one half-broken export per browser plugin. The transcripts are
-valuable — running notes, debugging history, design rationale — but they only
-become a corpus when something pulls them into a single, queryable substrate.
+AI work is valuable but poorly instrumented. The transcript is the running
+notebook, the debug log, the design record, and often the only proof of what an
+agent actually did before it claimed success. Vendor memory is per-vendor,
+opaque, and non-portable by design. Polylogue makes that work cross-vendor,
+local, queryable, and auditable.
 
-Polylogue is that substrate, and a cockpit over it:
+The product is organized around four verbs:
 
-- **Search across origins.** One query covers every captured session, with
-  composable filters for origin, repo, date, tag, tool use, thinking blocks,
-  paste detection, and semantic actions. FTS5 lexical search is always on;
-  Voyage embeddings and hybrid (RRF) retrieval are opt-in.
-- **Read agent work, not just chats.** `read` routes a matched session to a
-  view: `summary`, `transcript`, `messages`, `raw`, `context`, `neighbors`
-  (sessions around it in time), or `correlation` (the git commits a session
-  produced).
-- **Insights computed once, read many.** Session profiles, work events,
-  phases, threads, tag rollups, and cost rollups are materialized into the
-  archive so the CLI, the HTTP reader, the MCP bridge, and the Python API all
-  see the same numbers.
-- **Lineage & topology.** Continuations, forks, sidechains, and subagent runs
-  are linked by typed topology edges and rolled up to one *logical session*, so
-  you can ask which branch burned the time and which session is the real root
-  worth turning into a skill. Exposed through `get_session_topology`,
-  `get_logical_session`, and `get_session_tree`.
-- **Resume context.** Polylogue assembles evidence-backed context for successor
-  agents — what an interrupted session was doing, what it touched, and what to
-  pick up next — and surfaces abandoned or resumable sessions through
-  `find_resume_candidates`, `find_abandoned_sessions`, and `get_resume_brief`.
-- **Built to be inspected.** Schema is fresh-first (no in-place upgrade chain
-  to guess at), blob storage is content-addressed, and the daemon exposes
-  health checks and Prometheus metrics.
+- **Search** every captured source with lexical FTS, optional semantic search,
+  and a query language that understands sessions, messages, tool calls,
+  actions, files, observed events, context snapshots, and reviewed notes.
+- **Analyze** costs, source coverage, model usage, work phases, tool families,
+  claim-vs-evidence gaps, and temporal patterns across the archive.
+- **Audit** every derived number back to source rows and blob-addressed raw
+  bytes where possible; unavailable evidence is reported as unavailable rather
+  than guessed.
+- **Remember** by turning reviewed findings and notes into context bundles that
+  future agents can read. Memory-benefit claims stay capability-phrased until
+  measured uplift experiments prove the effect.
+
+## Why you can trust it
+
+Polylogue is built for evidence over plausible prose:
+
+- Provider files are detected by shape, not by filenames or SDK wrappers.
+- FTS is an invariant, not a best-effort cache; stale search readiness blocks
+  user search until the index is demonstrably current.
+- Tool outcomes are read from provider structure, such as `is_error` and exit
+  codes, instead of regexing assistant text.
+- Source evidence and user-authored notes are durable; indexes, analytics,
+  embeddings, and daemon telemetry are rebuildable.
+- The project deletes features that guess too much. When an inference cannot be
+  supported by structure or review, the right output is a caveat, candidate, or
+  unavailable field.
+
+See [proof artifacts](docs/proof-artifacts.md) for the current claim-to-proof
+map. The short version: the demo corpus proves private-data-free coverage, the
+cost example proves disjoint token accounting, and the claim-vs-evidence packet
+shows structured failure follow-up without exposing private transcripts.
 
 ## Archive model
 
@@ -307,6 +322,7 @@ For source-only or CI/cloud verification without a daemon, use the direct demo
 fixture commands:
 
 ```bash
+polylogue demo tour --out-dir polylogue-demo-tour --force
 polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
 polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
 polylogue demo script --shell bash
@@ -394,6 +410,7 @@ Start with the generated command and architecture references; use [docs/README.m
 | [Execution Plan](docs/execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
 | [Design Direction](docs/design/README.md) | Historical design inputs and current guidance for using them without treating them as parallel roadmaps. |
 | [Query-Action Workflows](docs/product/workflows.md) | Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths. |
+| [Proof Artifacts](docs/proof-artifacts.md) | Claim-to-proof map for public-facing demo, cost, failure-follow-up, and affordance-analysis claims. |
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
 | [Search & Query](docs/search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
 | [Browser Capture](docs/browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |

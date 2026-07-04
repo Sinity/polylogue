@@ -28,6 +28,10 @@ class BrowserCaptureAttachment(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     url: str | None = None
+    extracted_content: str | None = None
+    inline_base64: str | None = None
+    content_base64: str | None = None
+    data: str | None = None
     provider_meta: dict[str, object] = Field(default_factory=dict)
 
     @field_validator("provider_meta", mode="before")

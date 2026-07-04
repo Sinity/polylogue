@@ -292,8 +292,12 @@ def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tm
     report = provider_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
 
     lanes = {lane.provenance: lane for lane in report.pricing_lanes}
+    logical_lanes = {lane.provenance: lane for lane in report.logical_pricing_lanes}
     assert report.stored_provider_priced_usd == pytest.approx(1.25)
     assert report.catalog_api_equivalent_usd == pytest.approx(4.9)
+    assert report.pricing_grain == "physical_session"
+    assert report.logical_pricing_grain == "logical_session_model_high_water"
+    assert report.logical_catalog_api_equivalent_usd == pytest.approx(3.6551)
     assert lanes["priced"].stored_cost_usd == pytest.approx(1.25)
     assert lanes["priced"].catalog_api_equivalent_usd == pytest.approx(1.25)
     assert lanes["origin_reported"].stored_cost_usd == 0
@@ -303,9 +307,16 @@ def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tm
     assert lanes["origin_reported"].matched_model_row_count == 2
     assert lanes["origin_reported"].unmatched_model_row_count == 1
     assert lanes["origin_reported"].caveats == ("missing_price",)
+    assert logical_lanes["priced"].stored_cost_usd == 0
+    assert logical_lanes["priced"].catalog_api_equivalent_usd == pytest.approx(0.0051)
+    assert logical_lanes["origin_reported"].catalog_api_equivalent_usd == pytest.approx(3.65)
+    assert logical_lanes["origin_reported"].session_count == 2
     payload = report.to_dict()
     assert payload["pricing_catalog_provenance"] == "litellm-model-prices-vendored+polylogue-curated-overrides"
     assert payload["stored_provider_priced_usd"] == pytest.approx(1.25)
+    assert payload["pricing_grain"] == "physical_session"
+    assert payload["logical_pricing_grain"] == "logical_session_model_high_water"
+    assert payload["logical_catalog_api_equivalent_usd"] == pytest.approx(3.6551)
 
 
 def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None:
@@ -431,6 +442,54 @@ def test_provider_usage_report_treats_codex_cumulative_as_session_global(tmp_pat
         "cache_write_tokens": 0,
         "reasoning_output_tokens": 0,
         "total_tokens": 60,
+    }
+
+
+def test_provider_usage_report_ignores_reasoning_only_cumulative_rows(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="provider-usage-reasoning-only-tail",
+        title="provider usage reasoning-only tail",
+        models_used=["gpt-5-codex"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "cached_input_tokens": 80,
+                        "reasoning_output_tokens": 10,
+                    },
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {"reasoning_output_tokens": 30},
+                },
+            ),
+        ],
+    )
+
+    write_parsed_session_to_archive(conn, session)
+    report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
+
+    row = report.origins[0]
+    assert row.stale_rollup_session_count == 0
+    assert row.model_rollup_usage.to_dict() == {
+        "input_tokens": 20,
+        "output_tokens": 20,
+        "cached_input_tokens": 80,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 120,
     }
 
 

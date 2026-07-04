@@ -21,15 +21,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.config import Config
 from polylogue.paths import active_index_db_path
 from polylogue.storage.blob_integrity import scan_blob_reference_debt
+from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 14  # v14 adds SQLite WAL/stat maintenance visibility.
+REPORT_VERSION = 18  # v18 adds weighted raw replay backlog diagnostics.
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -161,13 +163,45 @@ def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] =
     return int(row[0] or 0) if row is not None else 0
 
 
-def _table_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
-    """Return an exact or cheap estimated table count."""
+def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> int | None:
+    """Return an exact count when the archive can answer it cheaply.
+
+    The workload probe is an evidence artifact, not a query planner report.  It
+    should not present stale ``sqlite_stat1`` estimates for the archive's core
+    cardinality surfaces when exact answers are available from small tables or
+    maintained rollup columns.
+    """
+
+    if table == "messages" and _table_exists(conn, "sessions") and "message_count" in _columns(conn, "sessions"):
+        return _scalar_int(conn, "SELECT COALESCE(SUM(message_count), 0) FROM sessions")
+    if table in {
+        "sessions",
+        "raw_sessions",
+        "session_profiles",
+        "insight_materialization",
+        "ingest_attempts",
+        "convergence_debt",
+        "cursor_lag_samples",
+        "daemon_stage_events",
+        "daemon_events",
+        "embedding_status",
+        "pending_blob_refs",
+        "gc_generations",
+    }:
+        return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}")
+    return None
+
+
+def _table_count_with_precision(conn: sqlite3.Connection, table: str, *, exact: bool) -> tuple[int, str]:
+    """Return an exact, cheap exact, or planner-estimated table count."""
 
     if not _table_exists(conn, table):
-        return -1
+        return -1, "missing"
     if exact:
-        return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}")
+        return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}"), "exact"
+    cheap_count = _cheap_archive_table_count(conn, table)
+    if cheap_count is not None:
+        return cheap_count, "exact"
     with suppress(sqlite3.Error, ValueError, IndexError):
         row = conn.execute(
             """
@@ -180,8 +214,12 @@ def _table_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
             (table,),
         ).fetchone()
         if row is not None and row[0] is not None:
-            return max(0, int(str(row[0]).split()[0]))
-    return UNKNOWN_TABLE_COUNT
+            return max(0, int(str(row[0]).split()[0])), "estimate"
+    return UNKNOWN_TABLE_COUNT, "unavailable"
+
+
+def _table_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
+    return _table_count_with_precision(conn, table, exact=exact)[0]
 
 
 def _presence_count(conn: sqlite3.Connection, table: str) -> int:
@@ -246,6 +284,10 @@ def _readiness_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> in
     """Return a readiness display count without scanning large tables by default."""
 
     return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}") if exact else _table_count(conn, table, exact=False)
+
+
+def _count_mode(exact: bool) -> str:
+    return "exact" if exact else "mixed"
 
 
 def _recent_attempts(conn: sqlite3.Connection, *, limit: int, ops_db: Path | None = None) -> list[dict[str, Any]]:
@@ -702,6 +744,17 @@ def _archive_source_path_churn(
     return items
 
 
+def _raw_replay_backlog(root: Path, *, limit: int) -> dict[str, object]:
+    return raw_materialization_replay_backlog(
+        Config(
+            archive_root=root,
+            render_root=root / "render",
+            sources=[],
+        ),
+        limit=limit,
+    )
+
+
 def _cursor_lag_baselines(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:
     """Rolling-window cursor-lag baseline state per source family.
 
@@ -938,31 +991,44 @@ def _boundary_table_counts(
     source_db: Path | None = None,
     exact: bool = False,
 ) -> dict[str, int]:
+    return _boundary_table_counts_and_precision(conn, ops_db=ops_db, source_db=source_db, exact=exact)[0]
+
+
+def _boundary_table_counts_and_precision(
+    conn: sqlite3.Connection,
+    *,
+    ops_db: Path | None = None,
+    source_db: Path | None = None,
+    exact: bool = False,
+) -> tuple[dict[str, int], dict[str, str]]:
     counts: dict[str, int] = {}
+    precision: dict[str, str] = {}
     for table in _BOUNDARY_TABLES:
-        counts[table] = _table_count(conn, table, exact=exact)
+        counts[table], precision[table] = _table_count_with_precision(conn, table, exact=exact)
     if source_db is not None and source_db.exists():
         try:
             source_conn = open_readonly_connection(source_db)
             try:
                 for table in ("raw_sessions",):
-                    counts[table] = _table_count(source_conn, table, exact=exact)
+                    counts[table], precision[table] = _table_count_with_precision(source_conn, table, exact=exact)
             finally:
                 source_conn.close()
         except sqlite3.Error:
             counts.setdefault("raw_sessions", -1)
+            precision.setdefault("raw_sessions", "missing")
     if ops_db is not None and ops_db.exists():
         try:
             ops_conn = open_readonly_connection(ops_db)
             try:
                 for table in _OPS_BOUNDARY_TABLES:
-                    counts[table] = _table_count(ops_conn, table, exact=exact)
+                    counts[table], precision[table] = _table_count_with_precision(ops_conn, table, exact=exact)
             finally:
                 ops_conn.close()
         except sqlite3.Error:
             for table in _OPS_BOUNDARY_TABLES:
                 counts.setdefault(table, -1)
-    return counts
+                precision.setdefault(table, "missing")
+    return counts, precision
 
 
 def _location_entry(
@@ -1117,13 +1183,66 @@ def _archive_tier_state(
         "present_count": present_count,
         "expected_count": len(ARCHIVE_TIER_SPECS),
         "observed_tier": observed_tier,
-        "table_count_mode": "exact" if exact_table_counts else "estimated",
+        "table_count_mode": _count_mode(exact_table_counts),
         "schema_mismatches": schema_mismatches,
         "missing_backup_required": missing_backup_required,
         "layout_readiness": layout_readiness,
         "derived_readiness": derived_readiness,
         "user_overlay_orphans": user_overlay_orphans,
         "tiers": tiers,
+    }
+
+
+def _automatic_convergence_backlog(archive_tiers: dict[str, Any], convergence_debt: dict[str, Any]) -> dict[str, Any]:
+    """Summarize daemon-owned backlog separately from retry debt.
+
+    ``convergence_debt`` is the failed/deferred retry ledger. Ordinary missing
+    profile/materialization rows are not debt; they are automatic convergence
+    backlog that the daemon should drain without operator action. Keeping the
+    two counters distinct prevents reports from implying that a tiny debt table
+    means all derived work has converged.
+    """
+
+    derived = archive_tiers.get("derived_readiness") or {}
+    if not derived.get("checked"):
+        return {
+            "checked": False,
+            "state": "unknown",
+            "reason": derived.get("reason") or "derived_readiness_unchecked",
+            "counts": {},
+        }
+    counts = derived.get("counts") or {}
+    missing_materialization = derived.get("missing_materialization_counts") or {}
+    missing_profiles = int(counts.get("missing_profile_row_count") or 0)
+    missing_work_events = int(missing_materialization.get("work_events") or 0)
+    missing_phases = int(missing_materialization.get("phases") or 0)
+    missing_threads = int(missing_materialization.get("thread") or 0)
+    missing_latency = int(missing_materialization.get("latency") or 0)
+    missing_profile_materialization = int(missing_materialization.get("session_profile") or 0)
+    total_missing = (
+        missing_profiles
+        + missing_profile_materialization
+        + missing_work_events
+        + missing_phases
+        + missing_threads
+        + missing_latency
+    )
+    retry_debt = int(convergence_debt.get("unresolved_count") or convergence_debt.get("failed_count") or 0)
+    state = "ready" if total_missing == 0 else "catching_up"
+    return {
+        "checked": True,
+        "state": state,
+        "reason": None,
+        "counts": {
+            "missing_profile_rows": missing_profiles,
+            "missing_session_profile_materialization": missing_profile_materialization,
+            "missing_work_events_materialization": missing_work_events,
+            "missing_phases_materialization": missing_phases,
+            "missing_threads_materialization": missing_threads,
+            "missing_latency_materialization": missing_latency,
+            "automatic_backlog_total": total_missing,
+            "retry_debt_unresolved": retry_debt,
+        },
     }
 
 
@@ -1202,6 +1321,7 @@ def _archive_single_tier_state(
             "user_version": None,
             "integrity": "missing",
             "table_counts": {},
+            "table_count_precision": {},
             "error": None,
         }
     payload: dict[str, Any] = {
@@ -1211,6 +1331,7 @@ def _archive_single_tier_state(
         "user_version": None,
         "integrity": "not_checked",
         "table_counts": {},
+        "table_count_precision": {},
         "error": None,
     }
     try:
@@ -1221,10 +1342,16 @@ def _archive_single_tier_state(
             if integrity_check:
                 integrity_row = conn.execute("PRAGMA quick_check").fetchone()
                 payload["integrity"] = str(integrity_row[0]) if integrity_row is not None else "unknown"
-            payload["table_counts"] = {
-                table: _table_count(conn, table, exact=exact_table_counts)
-                for table in _ARCHIVE_OBSERVABILITY_TABLES[tier]
-            }
+            table_counts: dict[str, int] = {}
+            table_count_precision: dict[str, str] = {}
+            for table in _ARCHIVE_OBSERVABILITY_TABLES[tier]:
+                table_counts[table], table_count_precision[table] = _table_count_with_precision(
+                    conn,
+                    table,
+                    exact=exact_table_counts,
+                )
+            payload["table_counts"] = table_counts
+            payload["table_count_precision"] = table_count_precision
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -1263,6 +1390,9 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             source_attached = True
             source_check_available = _attached_table_exists(conn, "source_tier", "raw_sessions")
         counts = _archive_derived_counts(conn, source_check_available=source_check_available, exact_counts=exact_counts)
+        counts["missing_raw_session_samples"] = _missing_raw_session_samples(conn) if source_check_available else []
+        counts["lost_source_evidence_count"] = counts["missing_raw_session_count"]
+        counts["lost_source_evidence_samples"] = counts["missing_raw_session_samples"]
         counts.update(_raw_materialization_debt_counts(root))
         materialization_counts = _archive_materialization_counts(conn)
         missing_materialization_counts = _archive_missing_materialization_counts(conn)
@@ -1423,6 +1553,37 @@ def _archive_derived_counts(
     }
 
 
+def _missing_raw_session_samples(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT s.session_id, s.origin, s.native_id, s.raw_id,
+               s.message_count, s.updated_at_ms
+        FROM sessions AS s
+        WHERE s.raw_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM source_tier.raw_sessions AS r WHERE r.raw_id = s.raw_id
+          )
+        ORDER BY s.updated_at_ms DESC, s.session_id
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        {
+            "session_id": str(row[0]),
+            "origin": str(row[1]),
+            "native_id": str(row[2]),
+            "missing_raw_id": str(row[3]),
+            "message_count": int(row[4] or 0),
+            "updated_at_ms": None if row[5] is None else int(row[5]),
+            "evidence_status": "lost_source_evidence",
+            "loss_reason": "index_raw_id_missing_from_source_tier",
+            "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
+        }
+        for row in rows
+    ]
+
+
 def _raw_materialization_debt_counts(root: Path) -> dict[str, int | None]:
     try:
         from polylogue.operations.archive_debt import archive_debt_list
@@ -1456,7 +1617,7 @@ def _archive_surface_readiness(
         *,
         ready: bool | None,
         blockers: list[str],
-        evidence: dict[str, int | bool | None],
+        evidence: dict[str, Any],
     ) -> dict[str, Any]:
         return {
             "ready": ready,
@@ -1531,6 +1692,9 @@ def _archive_surface_readiness(
                 "source_check_available": source_check_available,
                 "raw_link_count": counts["raw_link_count"],
                 "missing_raw_session_count": counts["missing_raw_session_count"],
+                "missing_raw_session_samples": counts.get("missing_raw_session_samples", []),
+                "lost_source_evidence_count": counts["lost_source_evidence_count"],
+                "lost_source_evidence_samples": counts.get("lost_source_evidence_samples", []),
                 "raw_materialization_debt_count": counts["raw_materialization_debt_count"],
                 "raw_materialization_debt_group_count": counts["raw_materialization_debt_group_count"],
             },
@@ -2228,6 +2392,20 @@ def probe(
         conn = sqlite3.connect(":memory:")
     try:
         recent_attempts = _recent_attempts(conn, limit=limit, ops_db=ops_db)
+        boundary_table_counts, boundary_table_count_precision = _boundary_table_counts_and_precision(
+            conn,
+            ops_db=ops_db,
+            source_db=db.with_name("source.db"),
+            exact=exact_table_counts,
+        )
+        archive_tiers = _archive_tier_state(
+            db,
+            observed_db=observed_db,
+            integrity_check=integrity_check,
+            exact_derived_counts=exact_derived_counts,
+            exact_table_counts=exact_table_counts,
+        )
+        convergence_debt = _convergence_debt(conn, ops_db=ops_db)
         return {
             "ok": True,
             "report_version": REPORT_VERSION,
@@ -2238,20 +2416,11 @@ def probe(
             "recent_attempts": recent_attempts,
             "storage_route_counts": _storage_route_counts(conn, ops_db=ops_db),
             "convergence_stage_timings": _convergence_stage_timings(recent_attempts, conn),
-            "boundary_table_count_mode": "exact" if exact_table_counts else "estimated",
-            "boundary_table_counts": _boundary_table_counts(
-                conn,
-                ops_db=ops_db,
-                source_db=db.with_name("source.db"),
-                exact=exact_table_counts,
-            ),
-            "archive_tiers": _archive_tier_state(
-                db,
-                observed_db=observed_db,
-                integrity_check=integrity_check,
-                exact_derived_counts=exact_derived_counts,
-                exact_table_counts=exact_table_counts,
-            ),
+            "boundary_table_count_mode": _count_mode(exact_table_counts),
+            "boundary_table_counts": boundary_table_counts,
+            "boundary_table_count_precision": boundary_table_count_precision,
+            "archive_tiers": archive_tiers,
+            "automatic_convergence_backlog": _automatic_convergence_backlog(archive_tiers, convergence_debt),
             "sqlite_maintenance": _sqlite_maintenance_state(db, observed_db),
             "topology_quarantine_state": _topology_quarantine_state(conn),
             "blob_lease_state": _tier_state_or_current(conn, db.with_name("source.db"), _blob_lease_state),
@@ -2260,7 +2429,8 @@ def probe(
             "fts_trigger_state": _fts_trigger_state(conn),
             "daemon_resource_signal": _daemon_resource_signal(recent_attempts, conn, ops_db=ops_db),
             "source_path_churn": _source_path_churn(conn, attempts=recent_attempts, limit=limit, db=db),
-            "convergence_debt": _convergence_debt(conn, ops_db=ops_db),
+            "raw_replay_backlog": _raw_replay_backlog(db.parent, limit=limit),
+            "convergence_debt": convergence_debt,
             "cursor_lag_baselines": _cursor_lag_baselines(conn, ops_db=ops_db),
             "query_plans": _query_plans(conn, db=db),
         }
@@ -2390,6 +2560,9 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         },
     }
 
+    before_backlog = _coerce_int_map((before.get("automatic_convergence_backlog") or {}).get("counts") or {})
+    after_backlog = _coerce_int_map((after.get("automatic_convergence_backlog") or {}).get("counts") or {})
+
     before_timings = before.get("convergence_stage_timings") or {}
     after_timings = after.get("convergence_stage_timings") or {}
     timing_delta: dict[str, Any] = {
@@ -2427,6 +2600,11 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         "blob_lease_state": lease_delta,
         "gc_state": gc_delta,
         "fts_trigger_state": fts_delta,
+        "automatic_convergence_backlog": {
+            "state_before": (before.get("automatic_convergence_backlog") or {}).get("state"),
+            "state_after": (after.get("automatic_convergence_backlog") or {}).get("state"),
+            "counts": _int_map_delta(before_backlog, after_backlog),
+        },
         "convergence_debt": debt_delta,
         "convergence_stage_timings": timing_delta,
     }
@@ -2736,6 +2914,23 @@ def _format_compare_human(diff: dict[str, Any]) -> str:
         lines.append(f"  restored: {', '.join(fts['restored'])}")
     if not fts["regressed"] and not fts["restored"]:
         lines.append("  no trigger drift")
+    backlog = diff.get("automatic_convergence_backlog") or {}
+    backlog_counts = backlog.get("counts") or {}
+    if backlog_counts:
+        total = backlog_counts.get("automatic_backlog_total") or {}
+        profiles = backlog_counts.get("missing_profile_rows") or {}
+        retry = backlog_counts.get("retry_debt_unresolved") or {}
+        lines.append("")
+        lines.append(
+            "Automatic convergence backlog: "
+            f"{backlog.get('state_before')} -> {backlog.get('state_after')}; "
+            f"total {total.get('before', 0)} -> {total.get('after', 0)} (Δ {total.get('delta', 0):+d})"
+        )
+        lines.append(
+            "  missing profile rows: "
+            f"{profiles.get('before', 0)} -> {profiles.get('after', 0)} (Δ {profiles.get('delta', 0):+d}); "
+            f"retry debt {retry.get('before', 0)} -> {retry.get('after', 0)} (Δ {retry.get('delta', 0):+d})"
+        )
     debt = diff["convergence_debt"]
     lines.append("")
     failed_debt = debt["failed_count"]
@@ -2967,6 +3162,16 @@ def main(argv: list[str] | None = None) -> int:
         f"{debt.get('deferred_count', 0)} deferred, "
         f"{debt.get('unresolved_count', debt['failed_count'])} unresolved"
     )
+    backlog = payload.get("automatic_convergence_backlog") or {}
+    if backlog.get("checked"):
+        backlog_counts = backlog.get("counts") or {}
+        print(
+            "  automatic convergence backlog: "
+            f"{backlog.get('state')} "
+            f"total={backlog_counts.get('automatic_backlog_total', 0)} "
+            f"missing_profiles={backlog_counts.get('missing_profile_rows', 0)} "
+            f"retry_debt={backlog_counts.get('retry_debt_unresolved', 0)}"
+        )
     churn = payload.get("source_path_churn") or []
     if churn:
         worst = churn[0]

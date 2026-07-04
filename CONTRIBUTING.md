@@ -91,11 +91,18 @@ serve history.
 
 ## Schema-Touching Changes
 
-Polylogue has no in-place schema upgrade chain. A PR that bumps
-`SCHEMA_VERSION` or otherwise changes the canonical SQLite shape is
-not an in-place storage upgrade — it is a deletes-then-defines edit of `SCHEMA_DDL`.
-The PR body must replace any upgrade-path section with a
-**re-ingest plan**:
+Polylogue uses two schema-evolution regimes.
+
+Durable tiers (`source.db` and `user.db`) may use explicit additive
+migrations. These migrations live under `polylogue/storage/sqlite/migrations/`,
+advance `PRAGMA user_version` one version at a time, and require a verified
+backup manifest for the affected tier before they run. Destructive durable-tier
+changes require a copy-forward design and explicit operator consent; do not
+hide them behind a routine migration.
+
+Derived tiers (`index.db`, `embeddings.db`) are rebuildable products. They do
+not get in-place migration chains. A PR that bumps their schema edits the
+canonical DDL and provides a **rebuild/blue-green plan**:
 
 - which user-visible archive operation triggers rebuild/re-acquisition from
   source (e.g. `polylogue ops reset --index && polylogued run` for index-tier
@@ -105,9 +112,16 @@ The PR body must replace any upgrade-path section with a
 - the expected end-user impact (rebuild time, disk usage, anything
   that requires action beyond the reset).
 
-There is no requirement to provide an in-place upgrade path, and PRs
-that try to add one will be rejected on policy grounds (see
-`docs/internals.md` § "Schema Versioning Model" and #1212).
+During development, classify schema changes before editing: metadata-only,
+index-only, additive-derived, additive-durable, or semantic-reparse-required.
+Batch same-tier schema changes from ready Beads before triggering a live
+rebuild. Do not repeatedly reset and re-ingest the active archive for isolated
+index additions that can be grouped into one schema bump, and do not call a
+full reingest necessary unless the changed semantics actually require replaying
+source rows.
+
+The policy lint (`devtools lab policy schema-versioning`) rejects derived-tier
+upgrade helpers while allowing numbered durable-tier SQL migrations.
 
 ## Versioning and Releases
 
@@ -214,7 +228,10 @@ The repository should stay aligned with the workflow above:
 
 ## Git Hooks
 
-The devshell installs git hooks automatically (`core.hooksPath .githooks`):
+The devshell installs git hooks automatically. In a Beads-enabled checkout it
+sets `core.hooksPath` to `.beads-hooks`; otherwise it falls back to `.githooks`.
+The Beads composite hooks chain the ordinary Polylogue gates below and then run
+the matching `bd hooks run ...` integration.
 
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
   Also runs a worktree-escape detector (#1211): when committing from a
@@ -224,8 +241,11 @@ The devshell installs git hooks automatically (`core.hooksPath .githooks`):
   `cd`s into the main checkout from inside a worktree). Set
   `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree
   commit flows.
+- **prepare-commit-msg / post-checkout / post-merge**: Beads integration hooks
+  when `.beads-hooks` is active.
 - **pre-push**: `devtools verify --quick` (format, lint, mypy, generated
-  surfaces, and fast manifest checks).
+  surfaces, and fast manifest checks), followed by the Beads pre-push hook when
+  `.beads-hooks` is active.
 
 The pre-push hook is an early failure gate. The PR baseline is the
 `devtools verify` workflow below.
@@ -257,10 +277,10 @@ devtools verify --quick    # format + lint + mypy + render all --check (skip tes
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 
-The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,
-not a substitute for the default baseline. The default command fails fast when
-`.cache/testmon/testmondata` and `.cache/testmon/seed.json` are missing; do not
-rely on silent full-suite fallback.
+The quick gate runs on `git push` via the active pre-push hook. It's a fast
+check, not a substitute for the default baseline. The default command fails
+fast when `.cache/testmon/testmondata` and `.cache/testmon/seed.json` are
+missing; do not rely on silent full-suite fallback.
 
 `devtools verify` does not replay a prior verify result. It always runs the
 static gates and then invokes pytest-testmon for affected-test selection from

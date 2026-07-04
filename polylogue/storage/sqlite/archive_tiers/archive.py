@@ -13,6 +13,7 @@ from types import TracebackType
 from typing import Any, Literal, TypedDict, cast
 
 from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG
 from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
@@ -102,6 +103,8 @@ from polylogue.insights.readiness import (
 from polylogue.insights.rigor import list_rigor_contracts
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import (
@@ -115,6 +118,11 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     archive_tier_spec,
     initialize_active_archive_root,
     initialize_archive_database,
+)
+from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
+    record_capture_gap_event,
+    session_has_parser_ingest_flag,
+    stored_message_count,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session,
@@ -235,6 +243,16 @@ class ArchiveSessionSummary:
     git_branch: str | None = None
     git_repository_url: str | None = None
     provider_project_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveRawParsedWriteResult:
+    """Result of one raw acquisition plus parsed-session write."""
+
+    raw_id: str
+    session_id: str
+    content_changed: bool
+    counts: dict[str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1214,6 +1232,123 @@ class ArchiveStore:
         """Write a parsed session to index.db."""
         return write_parsed_session_to_archive(self._conn, session, content_hash=content_hash)
 
+    @staticmethod
+    def _write_counts(session: ParsedSession) -> dict[str, int]:
+        return {
+            "sessions": 1,
+            "messages": len(session.messages),
+            "attachments": len(session.attachments),
+            "session_events": len(session.session_events),
+            "skipped_sessions": 0,
+            "skipped_messages": 0,
+            "skipped_attachments": 0,
+            "skipped_session_events": 0,
+            "raw_links": 0,
+        }
+
+    @staticmethod
+    def _skipped_counts(session: ParsedSession, *, session_events: int = 0) -> dict[str, int]:
+        return {
+            "sessions": 0,
+            "messages": 0,
+            "attachments": 0,
+            "session_events": session_events,
+            "skipped_sessions": 1,
+            "skipped_messages": len(session.messages),
+            "skipped_attachments": len(session.attachments),
+            "skipped_session_events": len(session.session_events),
+            "raw_links": 0,
+        }
+
+    def _write_parsed_precedence_result(
+        self,
+        session: ParsedSession,
+        *,
+        raw_id: str,
+        source_index: int,
+        stage_timings_s: dict[str, float] | None,
+        stage_timing_prefix: str,
+        manage_transaction: bool,
+    ) -> ArchiveRawParsedWriteResult:
+        session_id = str(make_session_id(session.source_name, session.provider_session_id))
+        existing_row = self._conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
+        existing_is_dom_fallback = False
+        incoming_is_dom_fallback = DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
+        current_stored_message_count = 0
+
+        if existing_raw_id and raw_id and existing_raw_id != raw_id:
+            existing_is_dom_fallback = session_has_parser_ingest_flag(
+                self._conn,
+                session_id,
+                DOM_FALLBACK_INGEST_FLAG,
+            )
+            current_stored_message_count = stored_message_count(self._conn, session_id)
+            lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
+            strictly_less_complete = len(session.messages) < current_stored_message_count and not (
+                existing_is_dom_fallback and not incoming_is_dom_fallback
+            )
+            if lower_precedence_fallback or strictly_less_complete:
+                session_event_count = 0
+                if lower_precedence_fallback:
+                    record_capture_gap_event(
+                        self._conn,
+                        session_id=session_id,
+                        existing_raw_id=existing_raw_id,
+                        incoming_raw_id=raw_id,
+                        stored_message_count=current_stored_message_count,
+                        incoming_message_count=len(session.messages),
+                    )
+                    session_event_count = 1
+                if manage_transaction:
+                    self._conn.commit()
+                return ArchiveRawParsedWriteResult(
+                    raw_id=raw_id,
+                    session_id=session_id,
+                    content_changed=False,
+                    counts=self._skipped_counts(session, session_events=session_event_count),
+                )
+
+        write_parsed_session_to_archive(
+            self._conn,
+            session,
+            content_hash=str(session_content_hash(session)),
+            raw_id=raw_id,
+            merge_append=source_index < 0,
+            force_replace=existing_is_dom_fallback and not incoming_is_dom_fallback,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=manage_transaction,
+        )
+        counts = self._write_counts(session)
+        if (
+            existing_raw_id
+            and raw_id
+            and existing_raw_id != raw_id
+            and existing_is_dom_fallback
+            and not incoming_is_dom_fallback
+        ):
+            record_capture_gap_event(
+                self._conn,
+                session_id=session_id,
+                existing_raw_id=existing_raw_id,
+                incoming_raw_id=raw_id,
+                stored_message_count=current_stored_message_count,
+                incoming_message_count=len(session.messages),
+            )
+            counts["session_events"] += 1
+            if manage_transaction:
+                self._conn.commit()
+        return ArchiveRawParsedWriteResult(
+            raw_id=raw_id,
+            session_id=session_id,
+            content_changed=True,
+            counts=counts,
+        )
+
     def write_raw_and_parsed(
         self,
         session: ParsedSession,
@@ -1226,7 +1361,32 @@ class ArchiveStore:
         stage_timing_prefix: str = "append",
         manage_transaction: bool = True,
     ) -> tuple[str, str]:
-        """Write raw acquisition bytes and the parsed session they produced.
+        """Write raw acquisition bytes and the parsed session they produced."""
+        result = self.write_raw_and_parsed_result(
+            session,
+            payload=payload,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            source_index=source_index,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=manage_transaction,
+        )
+        return result.raw_id, result.session_id
+
+    def write_raw_and_parsed_result(
+        self,
+        session: ParsedSession,
+        *,
+        payload: bytes,
+        source_path: str,
+        acquired_at_ms: int,
+        source_index: int = 0,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "append",
+        manage_transaction: bool = True,
+    ) -> ArchiveRawParsedWriteResult:
+        """Write raw acquisition bytes and return write/skip counts.
 
         With the default ``manage_transaction=True`` each tier write commits on
         its own. A bulk caller passes ``manage_transaction=False`` and owns
@@ -1255,17 +1415,16 @@ class ArchiveStore:
         )
         add_timing("source_raw_write", t0)
         t0 = time.perf_counter()
-        session_id = write_parsed_session_to_archive(
-            self._conn,
+        result = self._write_parsed_precedence_result(
             session,
             raw_id=raw_id,
-            merge_append=source_index < 0,
+            source_index=source_index,
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
         )
         add_timing("index_parsed_write", t0)
-        return raw_id, session_id
+        return result
 
     def write_raw_blob_and_parsed(
         self,
@@ -1280,9 +1439,36 @@ class ArchiveStore:
         stage_timing_prefix: str = "full",
         manage_transaction: bool = True,
     ) -> tuple[str, str]:
-        """Write parsed session metadata for an already-materialized raw blob.
+        """Write parsed session metadata for an already-materialized raw blob."""
+        result = self.write_raw_blob_and_parsed_result(
+            session,
+            blob_hash_hex=blob_hash_hex,
+            blob_size=blob_size,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            source_index=source_index,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=manage_transaction,
+        )
+        return result.raw_id, result.session_id
 
-        See :meth:`write_raw_and_parsed` for the ``manage_transaction`` contract.
+    def write_raw_blob_and_parsed_result(
+        self,
+        session: ParsedSession,
+        *,
+        blob_hash_hex: str,
+        blob_size: int,
+        source_path: str,
+        acquired_at_ms: int,
+        source_index: int = 0,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "full",
+        manage_transaction: bool = True,
+    ) -> ArchiveRawParsedWriteResult:
+        """Write parsed metadata for a raw blob and return write/skip counts.
+
+        See :meth:`write_raw_and_parsed_result` for the transaction contract.
         """
 
         def add_timing(name: str, started_at: float) -> None:
@@ -1307,17 +1493,16 @@ class ArchiveStore:
         )
         add_timing("source_raw_blob_ref_write", t0)
         t0 = time.perf_counter()
-        session_id = write_parsed_session_to_archive(
-            self._conn,
+        result = self._write_parsed_precedence_result(
             session,
             raw_id=raw_id,
-            merge_append=source_index < 0,
+            source_index=source_index,
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
         )
         add_timing("index_parsed_write", t0)
-        return raw_id, session_id
+        return result
 
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
         """Read a session envelope from index.db."""
@@ -2457,7 +2642,14 @@ class ArchiveStore:
             return IndexStatus(exists=False, count=0)
         return IndexStatus(exists=True, count=_count_scalar(self._conn, "SELECT COUNT(*) FROM messages_fts"))
 
-    def add_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
+    def add_user_tags(
+        self,
+        session_ids: tuple[str, ...],
+        tags: tuple[str, ...],
+        *,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
+    ) -> int:
         """Add user tag assertions to archive user.db and return changed count."""
         user_db_path = self.user_db_path
         initialize_archive_database(user_db_path, ArchiveTier.USER)
@@ -2477,14 +2669,17 @@ class ArchiveStore:
                             user_conn,
                             assertion_id_for_session_tag(session_id, normalized_tag, "user"),
                         )
-                        if existing is None or existing.status == "deleted":
-                            changed += 1
+                        if existing is not None and existing.status != "deleted":
+                            continue
+                        changed += 1
                         upsert_session_tag_assertion(
                             user_conn,
                             session_id=session_id,
                             tag=normalized_tag,
                             tag_source="user",
                             method="cli",
+                            author_ref=author_ref,
+                            author_kind=author_kind,
                             evidence={"source": "archive_query"},
                         )
         finally:
@@ -3730,6 +3925,8 @@ class ArchiveStore:
         payload: dict[str, str],
         *,
         note: str | None = None,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
     ) -> LearningCorrection:
         """Record one learning correction in archive user.db."""
         resolved_session_id = self.resolve_session_id(session_id)
@@ -3745,6 +3942,8 @@ class ArchiveStore:
                     resolved_session_id,
                     correction_kind.value,
                     stored_payload,
+                    author_ref=author_ref,
+                    author_kind=author_kind,
                 )
         finally:
             user_conn.close()
@@ -8160,11 +8359,9 @@ def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
     "Search index" response instead of surfacing a raw ``no such table`` /
     empty-result 200.
     """
-    from polylogue.maintenance.targets import build_maintenance_target_catalog
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 
-    repair_hint = build_maintenance_target_catalog().repair_hint(("dangling_fts",), include_run_all=True)
-    check_fts_readiness(message_fts_search_readiness_sync(conn), repair_hint)
+    check_fts_readiness(message_fts_search_readiness_sync(conn), "Run `polylogued run`.")
 
 
 def _epoch_ms_from_iso(value: object) -> int | None:

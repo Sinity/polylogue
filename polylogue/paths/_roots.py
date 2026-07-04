@@ -140,8 +140,8 @@ def gemini_cli_path() -> Path:
 
 
 def hermes_sessions_path() -> Path:
-    """Hermes agent session directory."""
-    return Path.home() / ".hermes" / "sessions"
+    """Hermes agent state directory."""
+    return Path.home() / ".hermes"
 
 
 def antigravity_path() -> Path:

@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
@@ -31,7 +32,6 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.logging import get_logger
-from polylogue.paths import blob_store_root
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
 from polylogue.pipeline.services.ingest_worker import (
@@ -41,10 +41,15 @@ from polylogue.pipeline.services.ingest_worker import (
 )
 from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.sources.parsers.browser_capture import DOM_FALLBACK_INGEST_FLAG
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
+    record_capture_gap_event,
+    session_has_parser_ingest_flag,
+    stored_message_count,
+)
 from polylogue.storage.sqlite.archive_tiers.write import (
+    _timestamp_ms,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
 )
@@ -277,70 +282,8 @@ _SCOPED_FK_PARENTS = {
 }
 
 
-def _stored_message_count(conn: sqlite3.Connection, session_id: str) -> int:
-    row = conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
-    return int(row[0] or 0) if row is not None else 0
-
-
-def _session_has_parser_ingest_flag(conn: sqlite3.Connection, session_id: str, flag: str) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM session_tags
-        WHERE session_id = ?
-          AND tag = ?
-          AND tag_source = 'auto'
-          AND method = 'parser'
-        LIMIT 1
-        """,
-        (session_id, flag),
-    ).fetchone()
-    return row is not None
-
-
 def _incoming_has_ingest_flag(payload: SessionWritePayload, flag: str) -> bool:
     return flag in payload.parsed_session.ingest_flags
-
-
-def _record_capture_gap_event(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    existing_raw_id: str,
-    incoming_raw_id: str,
-    stored_message_count: int,
-    incoming_message_count: int,
-) -> None:
-    row = conn.execute(
-        """
-        SELECT MAX(position) + 1
-        FROM (
-            SELECT position FROM session_events WHERE session_id = ?
-            UNION ALL
-            SELECT position FROM session_agent_policies WHERE session_id = ?
-            UNION ALL
-            SELECT position FROM session_provider_usage_events WHERE session_id = ?
-        )
-        """,
-        (session_id, session_id, session_id),
-    ).fetchone()
-    position = int(row[0] or 0) if row is not None else 0
-    summary = (
-        "Skipped lower-precedence DOM browser-capture fallback "
-        f"{incoming_raw_id!r}; existing raw {existing_raw_id!r} has "
-        f"{stored_message_count} message(s), incoming fallback has {incoming_message_count}."
-    )
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO session_events (
-            session_id, source_message_id, position, event_type, summary, occurred_at_ms
-        ) VALUES (?, NULL, ?, 'capture_gap', ?, NULL)
-        """,
-        (session_id, position, summary),
-    )
 
 
 def _session_parent_id(payload: SessionWritePayload) -> str | None:
@@ -445,23 +388,63 @@ def _write_session(
         "skipped_messages": 0,
         "skipped_attachments": 0,
         "skipped_session_events": 0,
+        "raw_links": 0,
     }
 
     existing_row = conn.execute(
-        "SELECT content_hash, raw_id FROM sessions WHERE session_id = ?",
+        "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id = ?",
         (payload.session_id,),
     ).fetchone()
     existing_hash = existing_row["content_hash"] if existing_row is not None else None
     existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
     content_unchanged = existing_row is not None and existing_hash_hex == payload.content_hash
+    existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
     session_to_write = payload.parsed_session
     merge_append = False
+
+    incoming_freshness_ms = _timestamp_ms(session_to_write.updated_at) or _timestamp_ms(session_to_write.created_at)
+    if not force_write and not payload.append_only and existing_row is not None and incoming_freshness_ms is not None:
+        existing_updated_at_ms = existing_row["updated_at_ms"]
+        existing_updated_at_int = int(existing_updated_at_ms) if existing_updated_at_ms is not None else None
+        if existing_updated_at_int is not None and incoming_freshness_ms < existing_updated_at_int:
+            counts["skipped_sessions"] = 1
+            counts["skipped_messages"] = payload.message_count
+            counts["skipped_attachments"] = payload.attachment_count
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            return False, counts
+
+    if not force_write and existing_raw_id and payload.raw_id and existing_raw_id != payload.raw_id:
+        existing_is_dom_fallback = session_has_parser_ingest_flag(conn, payload.session_id, DOM_FALLBACK_INGEST_FLAG)
+        incoming_is_dom_fallback = _incoming_has_ingest_flag(payload, DOM_FALLBACK_INGEST_FLAG)
+        current_stored_message_count = stored_message_count(conn, payload.session_id)
+        lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
+        strictly_less_complete = payload.message_count < current_stored_message_count and not (
+            existing_is_dom_fallback and not incoming_is_dom_fallback
+        )
+        if lower_precedence_fallback or strictly_less_complete:
+            if lower_precedence_fallback:
+                record_capture_gap_event(
+                    conn,
+                    session_id=payload.session_id,
+                    existing_raw_id=existing_raw_id,
+                    incoming_raw_id=payload.raw_id,
+                    stored_message_count=current_stored_message_count,
+                    incoming_message_count=payload.message_count,
+                )
+                counts["session_events"] = 1
+            counts["skipped_sessions"] = 1
+            counts["skipped_messages"] = payload.message_count
+            counts["skipped_attachments"] = payload.attachment_count
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            return False, counts
+
     if payload.append_only and existing_row is not None:
         delta, skipped_messages = _append_delta_payload(conn, payload)
         counts["skipped_messages"] = skipped_messages
         if delta is None:
             if payload.parsed_session.ingest_flags:
                 upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
+            counts["raw_links"] = int(_refresh_session_raw_link(conn, payload.session_id, payload.raw_id))
             counts["skipped_sessions"] = 1
             counts["skipped_attachments"] = payload.attachment_count
             counts["skipped_session_events"] = len(payload.parsed_session.session_events)
@@ -474,6 +457,7 @@ def _write_session(
     if not force_write and content_unchanged:
         if payload.parsed_session.ingest_flags:
             upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
+        counts["raw_links"] = int(_refresh_session_raw_link(conn, payload.session_id, payload.raw_id))
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
         counts["skipped_attachments"] = payload.attachment_count
@@ -481,32 +465,6 @@ def _write_session(
         if _needs_session_fts_repair(conn, payload.session_id):
             counts[_FTS_REPAIR_COUNT_KEY] = 1
         return False, counts
-
-    existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
-    if not force_write and existing_raw_id and payload.raw_id and existing_raw_id != payload.raw_id:
-        existing_is_dom_fallback = _session_has_parser_ingest_flag(conn, payload.session_id, DOM_FALLBACK_INGEST_FLAG)
-        incoming_is_dom_fallback = _incoming_has_ingest_flag(payload, DOM_FALLBACK_INGEST_FLAG)
-        stored_message_count = _stored_message_count(conn, payload.session_id)
-        lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
-        strictly_less_complete = payload.message_count < stored_message_count and not (
-            existing_is_dom_fallback and not incoming_is_dom_fallback
-        )
-        if lower_precedence_fallback or strictly_less_complete:
-            if lower_precedence_fallback:
-                _record_capture_gap_event(
-                    conn,
-                    session_id=payload.session_id,
-                    existing_raw_id=existing_raw_id,
-                    incoming_raw_id=payload.raw_id,
-                    stored_message_count=stored_message_count,
-                    incoming_message_count=payload.message_count,
-                )
-                counts["session_events"] = 1
-            counts["skipped_sessions"] = 1
-            counts["skipped_messages"] = payload.message_count
-            counts["skipped_attachments"] = payload.attachment_count
-            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
-            return False, counts
 
     if existing_row is None and not payload.parsed_session.messages and not force_write:
         counts["skipped_sessions"] = 1
@@ -518,6 +476,7 @@ def _write_session(
         content_hash=payload.content_hash,
         raw_id=payload.raw_id,
         merge_append=merge_append,
+        force_replace=force_write,
         signature_cache=signature_cache,
         stage_timings_s=stage_timings_s,
     )
@@ -527,6 +486,22 @@ def _write_session(
     counts["session_events"] = len(session_to_write.session_events)
 
     return True, counts
+
+
+def _refresh_session_raw_link(conn: sqlite3.Connection, session_id: str, raw_id: str | None) -> bool:
+    """Keep accepted unchanged parses linked to their latest acquired raw row."""
+    if not raw_id:
+        return False
+    cursor = conn.execute(
+        """
+        UPDATE sessions
+        SET raw_id = ?
+        WHERE session_id = ?
+          AND (raw_id IS NULL OR raw_id != ?)
+        """,
+        (raw_id, session_id, raw_id),
+    )
+    return cursor.rowcount > 0
 
 
 def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> None:
@@ -564,7 +539,9 @@ def _record_write_result(
     summary.total_convos += 1
     summary.total_msgs += cdata.message_count
 
-    ingest_changed = (counts["sessions"] + counts["messages"] + counts["attachments"] + counts["session_events"]) > 0
+    ingest_changed = (
+        counts["sessions"] + counts["messages"] + counts["attachments"] + counts["session_events"] + counts["raw_links"]
+    ) > 0
 
     if ingest_changed or content_changed:
         summary.processed_ids.add(cdata.session_id)
@@ -1211,7 +1188,7 @@ async def process_ingest_batch(
         return None
 
     archive_root_str = str(service.archive_root)
-    blob_root_str = str(blob_store_root())
+    blob_root_str = str(service.archive_root / "blob")
     batch_started = time.perf_counter()
     rss_start_mb = read_current_rss_mb()
     peak_rss_self_start_mb = read_peak_rss_self_mb()

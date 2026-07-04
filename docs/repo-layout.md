@@ -13,7 +13,8 @@ Every top-level entry has a reason.
 | `.envrc` | direnv entry point (`nix develop`) | repo |
 | `.git/` | Git repository data | git |
 | `.gitattributes` | Git attribute overrides | repo |
-| `.githooks/` | Git hooks (format, lint, quick verify) | repo |
+| `.beads-hooks/` | Canonical Beads-enabled composite Git hooks; chains repo checks plus `bd hooks run` | repo |
+| `.githooks/` | Fallback Git hooks (format, lint, quick verify) when Beads hooks are absent | repo |
 | `.github/` | GitHub Actions workflows and templates | repo |
 | `.gitignore` | Git ignore rules | repo |
 | `.local/` | Ignored generated outputs (campaigns, demo artifacts, recovered archives, local proof material) | tools |

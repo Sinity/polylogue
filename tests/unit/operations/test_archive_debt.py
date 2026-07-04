@@ -159,14 +159,7 @@ def test_archive_debt_reports_convergence_failures(tmp_path: Path) -> None:
     assert fts_row.subject_ref == "session:sess-1"
     assert fts_row.status == "actionable"
     assert fts_row.details == "boom"
-    assert tuple(fts_row.actions[0].command) == (
-        "polylogue",
-        "ops",
-        "maintenance",
-        "run",
-        "--target",
-        "dangling_fts",
-    )
+    assert fts_row.actions == ()
     generic_row = rows_by_stage["convergence"]
     assert generic_row.subject_ref == "session:sess-2"
     assert generic_row.actions == ()
@@ -460,18 +453,7 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert parse_pending.category == "parse-pending"
     assert "max raw payload size: 2.0 KiB (2,048 bytes)" in (parse_pending.details or "")
     assert parse_pending.actions[0].command == ("polylogued", "run")
-    assert parse_pending.actions[1].label == "Preview targeted raw replay"
-    assert parse_pending.actions[1].command == (
-        "polylogue",
-        "ops",
-        "maintenance",
-        "run",
-        "--target",
-        "raw_materialization",
-        "--raw-artifact",
-        "raw-parse-pending",
-        "--dry-run",
-    )
+    assert len(parse_pending.actions) == 1
 
     parsed_gap = by_ref["debt:raw-materialization:aistudio-drive:parsed-without-session"]
     assert parsed_gap.severity == "warning"
@@ -479,19 +461,11 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert parsed_gap.category == "parsed-without-session"
     assert parsed_gap.affected_count == 1
     assert "parsed but have no materialized session" in parsed_gap.summary
-    assert "Replay these raw rows through the raw-materialization target" in (parsed_gap.details or "")
+    assert "parser/source-shape repair" in (parsed_gap.details or "")
     assert "passed=1" in (parsed_gap.details or "")
     assert "max raw payload size: 4.0 KiB (4,096 bytes)" in (parsed_gap.details or "")
     assert parsed_gap.actions[0].label == "Explain parser output"
-    assert parsed_gap.actions[1].label == "Preview targeted raw replay"
-    assert parsed_gap.actions[1].command[:6] == (
-        "polylogue",
-        "ops",
-        "maintenance",
-        "run",
-        "--target",
-        "raw_materialization",
-    )
+    assert len(parsed_gap.actions) == 1
 
     session_shaped = by_ref["debt:raw-materialization:codex-session:parsed-session-unmaterialized"]
     assert session_shaped.severity == "warning"
@@ -502,16 +476,7 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert "Sample parsed session native id(s): codex-session-shaped" in (session_shaped.details or "")
     assert "parsed-session-native-id:codex-session:codex-session-shaped" in session_shaped.evidence_refs
     assert session_shaped.actions[0].command == ("polylogue", "import", "--explain")
-    assert session_shaped.actions[1].command[:6] == (
-        "polylogue",
-        "ops",
-        "maintenance",
-        "run",
-        "--target",
-        "raw_materialization",
-    )
-    assert "--raw-artifact" in session_shaped.actions[1].command
-    assert "--dry-run" in session_shaped.actions[1].command
+    assert session_shaped.actions[1].command == ("polylogued", "run")
 
     gemini_session = by_ref["debt:raw-materialization:gemini-cli-session:parsed-session-unmaterialized"]
     assert gemini_session.severity == "warning"
@@ -521,7 +486,7 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert "Sample parsed session native id(s): gemini-session-shaped" in (gemini_session.details or "")
     assert "parsed-session-native-id:gemini-cli-session:gemini-session-shaped" in gemini_session.evidence_refs
     assert gemini_session.actions[0].label == "Explain parser output"
-    assert gemini_session.actions[1].label == "Preview targeted raw replay"
+    assert gemini_session.actions[1].label == "Run daemon convergence"
 
     sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-non-session-artifact"]
     assert sidecars.severity == "info"
@@ -576,7 +541,7 @@ def test_archive_debt_blocks_oversized_raw_materialization_replay(tmp_path: Path
     assert row.affected_count == 1
     assert "Actual replay is blocked by the 1.0 GiB" in (row.details or "")
     assert "raw-materialization execution limit" in (row.details or "")
-    assert row.actions[0].label == "Preview targeted raw replay"
+    assert row.actions[0].label == "Explain parser output"
     assert payload.totals.affected_blocked == 1
 
 
@@ -619,7 +584,7 @@ def test_archive_debt_marks_oversized_stream_raw_materialization_actionable(tmp_
     assert row.affected_count == 1
     assert "stream-record JSONL sources" in (row.details or "")
     assert "Actual replay is blocked" not in (row.details or "")
-    assert row.actions[0].label == "Run daemon ingest"
+    assert row.actions[0].label == "Run daemon convergence"
     assert payload.totals.affected_actionable >= 1
 
 

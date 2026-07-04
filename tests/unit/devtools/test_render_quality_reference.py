@@ -214,7 +214,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
         },
         uncovered_artifacts=("session_insight_fts",),
         uncovered_operations=("materialize-session-insights",),
-        uncovered_maintenance_targets=("wal_checkpoint",),
+        uncovered_maintenance_targets=("message_type_backfill",),
         uncovered_declared_operations=("benchmark.pipeline.index-and-helpers",),
     )
 
@@ -228,7 +228,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
     assert "- uncovered runtime paths: `session-insight-repair-loop`" in rendered
     assert "- uncovered runtime artifacts: `session_insight_fts`" in rendered
     assert "- uncovered runtime operations: `materialize-session-insights`" in rendered
-    assert "- uncovered maintenance targets: `wal_checkpoint`" in rendered
+    assert "- uncovered maintenance targets: `message_type_backfill`" in rendered
     assert "- uncovered declared operation targets: `benchmark.pipeline.index-and-helpers`" in rendered
     assert "devtools lab graph" in rendered
 

@@ -86,26 +86,44 @@ and commit the updated `docs/plans/topology-target.yaml` and
 
 ## Schema Versioning Model
 
-Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
-schema shape:
+Polylogue has two schema-evolution regimes, keyed by tier durability.
 
 - Tier version constants under `storage/sqlite/archive_tiers/` are the
-  authority. The canonical schema is described directly by each tier DDL;
-  there are no upgrade plans, no `build_vN_to_vM_*` helpers, and no
-  chain-dispatch logic in `schema_bootstrap.py`.
-- On startup the on-disk `PRAGMA user_version` is compared against the
-  tier constant:
+  authority. The canonical fresh schema is described directly by each tier DDL.
+- **Durable tiers** (`source.db`, `user.db`) may use explicit additive
+  migrations. Migration SQL lives under
+  `storage/sqlite/migrations/{source,user}/NNN_name.sql`, advances
+  `PRAGMA user_version` one step at a time, and requires a verified backup
+  manifest containing the affected tier before it runs. Additive means
+  `CREATE TABLE`, `CREATE INDEX`, `ADD COLUMN`, and bounded backfills.
+  Destructive durable-tier changes require a copy-forward design and explicit
+  operator consent.
+- **Derived tiers** (`index.db`, `embeddings.db`) do not have in-place migration
+  chains. They are rebuildable products over durable source/user evidence:
+  schema mismatches are handled by rebuilding or blue-green replacing the
+  affected derived tier from source, preserving durable tiers.
+- **Disposable tiers** (`ops.db`) may keep narrow bootstrap-time `ALTER TABLE`
+  helpers for daemon telemetry because the tier is disposable.
+- On startup the on-disk `PRAGMA user_version` is compared against the tier
+  constant:
   - **Empty file** (`user_version == 0`): bootstrap fresh.
   - **Version match**: open as-is.
-  - **Anything else** (older or newer): the database is rejected.
-- **Mismatch → rebuild the affected tier from source.** Polylogue does not
-  patch an out-of-band shape into the canonical one. For index-tier schema
-  bumps, the operator moves the index database aside with
-  `polylogue ops reset --index && polylogued run`, preserving `source.db`,
-  `user.db`, and other durable tiers while rebuilding the canonical index.
-- Schema bumps are deletes-then-defines, never deltas. A schema change
-  edits the owning tier DDL/version and documents the re-ingest expectation.
-  No upgrade helpers are added for the bump.
+  - **Older durable tier**: refuse ordinary open and require explicit migration
+    with a backup manifest.
+  - **Derived mismatch or newer durable tier**: reject and require rebuild or a
+    newer runtime as appropriate.
+- During development, schema changes are triaged before reset/reingest:
+  metadata-only, index-only, additive-derived, additive-durable, or
+  semantic-reparse-required. Same-tier schema changes from ready Beads should be
+  batched before a live rebuild so the active archive is not reset repeatedly.
+- `devtools lab policy schema-versioning` enforces the boundary: durable SQL
+  migrations are allowed only under the numbered migration resource roots, while
+  derived-tier upgrade helpers remain forbidden.
+
+- User schema version 4 adds `user_settings`, a durable key/value table for
+  workspace/settings state that is not an epistemic assertion. Existing v3
+  user tiers migrate additively after a verified backup manifest; fresh user
+  tiers create the table directly.
 - Index schema version 24 admits `capture_gap` rows in `session_events`. These
   are narrow lifecycle evidence events emitted when ingest rejects a lower-
   precedence DOM browser-capture fallback because a richer source row already
@@ -256,19 +274,29 @@ schema shape:
   storage schema) are still regenerated fresh via
   `devtools lab schema generate` and promoted via `devtools lab schema promote`.
 
-This design intentionally rejects in-place upgrade-chain complexity (no
-Alembic, no forward/reverse upgrade scripts, no partially-applied upgrade
-states, no `_apply_version_upgrade_plan` rollback windows). If the configured
-archive path is not the current schema, the operator moves it aside and
-re-ingests from source. Files that are not configured archive paths are not
-classified or handled by the archive runtime.
+For **derived tiers** (`index.db`, `embeddings.db`) this design intentionally
+rejects in-place upgrade-chain complexity (no Alembic, no forward/reverse
+upgrade scripts, no partially-applied upgrade states, no
+`_apply_version_upgrade_plan` rollback windows): a derived-tier schema mismatch
+rebuilds or blue-green-replaces the tier from durable source/user evidence.
+Files that are not configured archive paths are not classified or handled by
+the archive runtime.
 
-The only compatibility carve-out is `ops.db`: `archive_tiers/bootstrap.py` may
-use narrowly scoped `ALTER TABLE ... ADD COLUMN` helpers for disposable daemon
-telemetry, such as ingest-cursor runtime fields and cursor-lag rollups. That
-exception is not a migration pattern for `source.db`, `index.db`,
-`embeddings.db`, or `user.db`; durable tier changes still require a version
-bump and rebuild/reset path.
+For **durable tiers** (`source.db`, `user.db`) the boundary is different, because
+`user.db` holds irreplaceable human assertions that cannot be rebuilt from
+source. These tiers use explicit *additive* numbered SQL migrations under
+`storage/sqlite/migrations/{source,user}/NNN_*.sql`, applied one `PRAGMA
+user_version` step at a time by `migration_runner.py` behind a **verified backup
+manifest** for the affected tier. Additive means `CREATE TABLE`/`CREATE INDEX`/
+`ADD COLUMN`/bounded backfill; destructive durable-tier changes require a
+copy-forward design and explicit operator consent, never a routine migration.
+
+`ops.db` (disposable daemon telemetry) may additionally use narrowly scoped
+`ALTER TABLE ... ADD COLUMN` bootstrap helpers in `archive_tiers/bootstrap.py`
+(ingest-cursor runtime fields, cursor-lag rollups). The
+`devtools lab policy schema-versioning` lint enforces the whole boundary:
+numbered durable-tier migrations are allowed; derived-tier upgrade helpers are
+forbidden.
 
 ## Archive Activation
 
@@ -299,6 +327,12 @@ polylogue ops maintenance archive-read --limit 20
 `archive-init` bootstraps the archive file set. The daemon and explicit
 ingest paths populate `source.db` and `index.db` directly from source
 artifacts. Root query commands use the active `index.db`.
+
+Source schema version 2 removes the old unique `(origin, native_id)` raw-row
+constraint. A native session can have multiple durable source observations
+(direct export, browser native capture, DOM fallback, historical ZIPs) while
+still coalescing to one canonical indexed session; source evidence must not be
+replaced merely because two captures describe the same provider-native id.
 
 ## Topology Edges (#1258)
 
@@ -586,20 +620,26 @@ The report has a stable top-level shape carrying its `report_version`,
   parse/convergence timings, and source-path bundles.
 - `convergence_stage_timings` — min/max/sum/mean parse/convergence/read-
   amplification stats over completed attempts.
-- `boundary_table_counts` — cheap planner-estimated counts for the
-  daemon-relevant tables by default
+- `boundary_table_counts` — mixed cheap evidence for the
+  daemon-relevant tables by default: exact counts for small/core archive
+  cardinality tables and maintained rollups such as `sessions`, `raw_sessions`,
+  `messages`, and `session_profiles`; planner-estimated counts only where exact
+  counting would scan large derived tables
   (`raw_sessions`, `sessions`, `messages`, `blocks`,
   `artifact_observations`, `messages_fts_docsize`, `actions`,
   `message_embeddings`, `session_profile`,
   `live_ingest_attempt`, `live_convergence_debt`, `pending_blob_refs`).
-  Missing tables surface as `-1` and tables without SQLite planner
+  Missing tables surface as `-1` and expensive tables without SQLite planner
   statistics surface as `-2` rather than crashing the probe. Pass
   `--exact-table-counts` when a before/after evidence run needs exact
-  arithmetic and the archive can afford the scans.
+  arithmetic and the archive can afford the scans. The companion
+  `boundary_table_count_precision` map labels each value as `exact`,
+  `estimate`, `unavailable`, or `missing`.
 - `archive_tiers` — archive inventory for `source.db`,
   `index.db`, `embeddings.db`, `user.db`, and `ops.db`: file presence,
   durability/backup policy, `PRAGMA user_version`, missing backup-required
-  tiers, and cheap planner-estimated table counts per tier. It does not run SQLite
+  tiers, and the same mixed cheap/exact table counts per tier with a
+  `table_count_precision` map for each tier. It does not run SQLite
   `PRAGMA quick_check` by default because that is a full-file integrity scan
   on large archives; pass `--integrity-check` when the workload snapshot should
   include that expensive evidence. It also avoids exact generated-text
@@ -616,9 +656,12 @@ The report has a stable top-level shape carrying its `report_version`,
   `polylogue ops maintenance blob-reference-debt --output-format json`; that
   read-only classifier groups missing blob refs by table, ref type, origin,
   raw-row joinability, validation/parse state, and source-path availability.
-  The paired `polylogue ops maintenance blob-reference-restore-direct`
-  command only restores direct-file source paths after exact SHA-256
-  verification; archive-member paths remain source re-acquisition work.
+  During daemon convergence, direct source files whose current bytes still hash
+  to a missing blob address are restored automatically before raw
+  materialization replay. Container/member paths such as
+  `export.zip:conversations.json` remain source re-acquisition work because the
+  referenced blob may be an extracted record inside the member, not the member
+  file itself.
 - `gc_state` — high-water `gc_generations` row, `last_completed_at`,
   total generation count.
 - `fts_trigger_state` — the three expected FTS sync triggers

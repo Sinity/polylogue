@@ -127,7 +127,15 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     assert {row["evidence_kind"] for row in evidence_rows} == {"mcp_tool_call"}
     written_report = json.loads((out_dir / "affordance-usage.report.json").read_text(encoding="utf-8"))
     assert written_report["family_counts"] == report["family_counts"]
+    written_summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert written_summary["artifact"] == "agent-affordance-usage"
+    assert written_summary["index_schema_version"] == report["index_schema_version"]
+    assert written_summary["proof_report"]["top_families"] == report["summary"]["top_families"]
+    assert "claim" in written_summary
+    assert "non_claim" in written_summary
+    assert "caveats" in written_summary
     assert "recent" in (out_dir / "README.md").read_text(encoding="utf-8").lower()
+    assert "`summary.json`" in (out_dir / "README.md").read_text(encoding="utf-8")
 
 
 def test_affordance_usage_rejects_nonpositive_recent_window(tmp_path: Path) -> None:

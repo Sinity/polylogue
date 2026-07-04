@@ -8,8 +8,17 @@ import pytest
 from polylogue.core.json import JSONDocument
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
+    DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
+    DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
+    DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
     DEMO_CODEX_SESSION_ID,
+    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
+    DEMO_CORPUS_FAMILIES,
+    DEMO_GEMINI_SESSION_ID,
     DEMO_SESSION_IDS,
     CorpusProfile,
     CorpusRequest,
@@ -180,25 +189,82 @@ def test_build_default_corpus_specs_accepts_metadata_overrides() -> None:
 def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     specs = build_demo_corpus_specs()
 
-    assert tuple(spec.provider for spec in specs) == ("chatgpt", "claude-code", "codex")
+    assert tuple(spec.provider for spec in specs) == ("chatgpt", "claude-code", "codex", "gemini")
     assert DEMO_SESSION_IDS == (
         DEMO_CHATGPT_SESSION_ID,
         DEMO_CLAUDE_CODE_SESSION_ID,
+        DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
         DEMO_CODEX_SESSION_ID,
+        DEMO_GEMINI_SESSION_ID,
+        DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
+        DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
+        DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
+        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
+        DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
+        DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     )
+    assert tuple(family.family_id for family in DEMO_CORPUS_FAMILIES) == (
+        "chatgpt-dialogue",
+        "claude-code-tools",
+        "claude-ai-temporary",
+        "browser-capture-gap",
+        "codex-tools",
+        "gemini-attachments",
+        "agent-lineage-matrix",
+        "embedding-lane-prose",
+    )
+    temporary_family = DEMO_CORPUS_FAMILIES[2]
+    assert temporary_family.synthetic is False
+    assert temporary_family.source_paths == ("claude-ai/temporary-demo.json",)
+    assert temporary_family.construct_ids == ("temporary_session_rows", "token_budget_web_constructs")
+    capture_gap_family = DEMO_CORPUS_FAMILIES[3]
+    assert capture_gap_family.synthetic is False
+    assert capture_gap_family.source_paths == (
+        "browser-capture/chatgpt-raw-provider.json",
+        "browser-capture/chatgpt-dom-fallback.json",
+    )
+    assert capture_gap_family.construct_ids == (
+        "capture_gap_events",
+        "browser_capture_raw_variants",
+        "browser_capture_coalesced_session",
+    )
+    assert DEMO_CORPUS_FAMILIES[-1].synthetic is False
+    assert set(DEMO_CORPUS_FAMILIES[-1].construct_ids) == {
+        "embedding_candidate_prose_messages",
+        "synthetic_message_embedding_rows",
+        "embedding_status_rows",
+    }
+    lineage_family = DEMO_CORPUS_FAMILIES[-2]
+    assert lineage_family.synthetic is False
+    assert set(lineage_family.construct_ids) == {
+        "session_link_rows",
+        "generic_branch_links",
+        "prefix_sharing_links",
+        "continuation_links",
+        "subagent_links",
+        "sidechain_sessions",
+        "compaction_events",
+        "subagent_context_snapshots",
+        "subagent_run_rows",
+        "unfinished_terminal_state_rows",
+        "error_terminal_state_rows",
+    }
+    assert "codex/terminal-error.jsonl" in lineage_family.source_paths
     assert tuple(spec.style for spec in specs) == (
         "demo",
         "demo-tool-heavy",
         "demo-tool-heavy",
+        "demo-attachments",
     )
-    assert tuple(spec.seed for spec in specs) == (1843, 1844, 1845)
+    assert tuple(spec.seed for spec in specs) == (1843, 1844, 1845, 1846)
     assert all(spec.count == 1 for spec in specs)
     assert all(spec.origin == "generated.demo-fixture-world" for spec in specs)
     assert all(spec.tags == ("synthetic", "demo", "release-gate") for spec in specs)
     assert specs[0].messages_per_session == range(2, 4)
     assert specs[1].messages_per_session == range(6, 11)
     assert specs[2].messages_per_session == range(6, 11)
-    assert CorpusSpec.from_payload(specs[2].to_payload()) == specs[2]
+    assert specs[3].messages_per_session == range(3, 5)
+    assert CorpusSpec.from_payload(specs[3].to_payload()) == specs[3]
 
 
 def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path: Path) -> None:
@@ -218,6 +284,7 @@ def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path:
         "chatgpt/demo-00.json",
         "claude-code/demo-00.jsonl",
         "codex/demo-00.jsonl",
+        "gemini/demo-00.json",
     )
 
     raw_text = "\n".join(path.read_text(encoding="utf-8") for batch in written for path in batch.files)
@@ -230,7 +297,7 @@ def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path:
         for path in batch.files
         for session in iter_source_sessions(Source(name="demo", path=path))
     )
-    assert tuple(str(session.source_name) for session in parsed) == ("chatgpt", "claude-code", "codex")
+    assert tuple(str(session.source_name) for session in parsed) == ("chatgpt", "claude-code", "codex", "gemini")
     assert all(session.provider_session_id for session in parsed)
     assert all(session.messages for session in parsed)
 
@@ -255,6 +322,12 @@ def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path:
         if block.type is BlockType.TOOL_RESULT and block.is_error is True
     )
     assert len(failed_tool_results) == 4
+
+    inline_attachments = tuple(
+        attachment for session in parsed for attachment in session.attachments if attachment.inline_bytes
+    )
+    assert len(inline_attachments) == 1
+    assert inline_attachments[0].mime_type == "text/plain"
 
 
 def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> None:

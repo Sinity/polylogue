@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.fts.fts_lifecycle import (
     check_fts_readiness,
     message_fts_search_readiness_sync,
@@ -19,8 +18,7 @@ from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search.cache import invalidate_search_cache
 from polylogue.storage.sqlite.connection import connection_context, open_read_connection
 
-_MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
-_MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
+_MESSAGE_SEARCH_REPAIR_HINT = "Run `polylogued run`."
 
 
 class FTS5Provider:

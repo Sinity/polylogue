@@ -1,3 +1,0 @@
-run_id,pair_id,arm,agent_id,total_score,max_score,first_useful_evidence,reported_reads,tool_errors
-2026-07-03-polylogue-devloop-n1,polylogue-devloop-current-state-n1,raw_ref,019f278e-d974-7402-882d-ad9840b07eea,8,10,"Polylogue archive read of the root session","13 MCP/archive/profile/phase/lineage reads plus about 14 shell repo/product/Beads reads","polylogue continue hung and was killed; broad rg too noisy/truncated"
-2026-07-03-polylogue-devloop-n1,polylogue-devloop-current-state-n1,handoff_pack,019f278e-fc99-7e41-87cb-7879efa3c3e3,5,10,"chronicle.json named bounded CLI search latency","about 14 command/file reads","one harmless SQLite schema mismatch"

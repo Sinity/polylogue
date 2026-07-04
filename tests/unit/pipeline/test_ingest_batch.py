@@ -8,7 +8,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NoReturn, TypeAlias
+from typing import NoReturn, TypeAlias, cast
 from unittest.mock import AsyncMock
 
 import aiosqlite
@@ -17,6 +17,8 @@ import pytest
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.pipeline.services import ingest_worker as ingest_worker_mod
 from polylogue.pipeline.services.ingest_batch import (
     _build_batch_memory_observation,
     _drain_ready_session_entries,
@@ -38,6 +40,8 @@ from polylogue.pipeline.services.ingest_worker import (
     IngestRecordResult,
     SessionWritePayload,
 )
+from polylogue.pipeline.services.parsing import ParsingService
+from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -51,6 +55,7 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import SessionId
 
@@ -63,6 +68,26 @@ def _float_value(value: object) -> float:
     if not isinstance(value, (float, int, str)):
         raise TypeError(f"expected numeric value, got {type(value).__name__}")
     return float(value)
+
+
+def test_worker_normalization_preserves_raw_row_archive_origin() -> None:
+    parsed = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="315bcba7-700a-4c0e-b318-ab86d8636376",
+        title="Session",
+        messages=[],
+    )
+
+    normalized = ingest_worker_mod._normalized_session(
+        parsed,
+        fallback_timestamp=None,
+    )
+
+    assert str(make_session_id("claude-code-session", normalized.provider_session_id)) == (
+        "claude-code-session:315bcba7-700a-4c0e-b318-ab86d8636376"
+    )
+    assert normalized.source_name == Provider.CLAUDE_CODE
+    assert parsed.source_name == Provider.CLAUDE_CODE
 
 
 def test_parse_batch_observation_reports_unsupported_write_mode() -> None:
@@ -154,6 +179,8 @@ def _session_data(
     attachment_ref_tuples: list[AttachmentRefSpec] | None = None,
     ingest_flags: list[str] | None = None,
     append_only: bool = False,
+    created_at: str = "2026-04-02T00:00:00Z",
+    updated_at: str = "2026-04-02T00:00:00Z",
 ) -> SessionWritePayload:
     del stats_tuple
     messages = list(message_tuples or [])
@@ -176,8 +203,8 @@ def _session_data(
         source_name=Provider.CODEX,
         provider_session_id=session_id.split(":", 1)[-1],
         title="Session",
-        created_at="2026-04-02T00:00:00Z",
-        updated_at="2026-04-02T00:00:00Z",
+        created_at=created_at,
+        updated_at=updated_at,
         parent_session_provider_id=parent_session_id.split(":", 1)[-1] if parent_session_id else None,
         messages=messages,
         attachments=attachments,
@@ -540,6 +567,56 @@ def test_write_session_append_mode_preserves_existing_messages(tmp_path: Path) -
         assert (stats["message_count"], stats["word_count"]) == (2, 2)
 
 
+def test_write_session_append_no_delta_refreshes_raw_link(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "index.db") as conn:
+        initial = _session_data(
+            "codex-session:append-raw-link",
+            content_hash="hash-v1",
+            raw_id="raw-old",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:append-raw-link",
+                    role="user",
+                    text="first",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        recapture = _session_data(
+            "codex-session:append-raw-link",
+            content_hash="hash-v1",
+            raw_id="raw-new",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:append-raw-link",
+                    role="user",
+                    text="first",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                )
+            ],
+            append_only=True,
+        )
+
+        changed_initial, _initial_counts = _write_session(conn, initial)
+        changed_recapture, recapture_counts = _write_session(conn, recapture)
+        conn.commit()
+
+        raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("codex-session:append-raw-link",),
+        ).fetchone()["raw_id"]
+
+        assert changed_initial is True
+        assert changed_recapture is False
+        assert recapture_counts["skipped_sessions"] == 1
+        assert recapture_counts["raw_links"] == 1
+        assert raw_id == "raw-new"
+
+
 def test_write_session_force_write_updates_message_time(tmp_path: Path) -> None:
     """force_write with identical content updates current message time columns."""
     with open_connection(tmp_path / "index.db") as conn:
@@ -593,6 +670,73 @@ def test_write_session_force_write_updates_message_time(tmp_path: Path) -> None:
         assert rows[0]["occurred_at_ms"] == 1777636800000
 
 
+def test_write_session_force_write_replaces_older_freshness(tmp_path: Path) -> None:
+    """Raw convergence force writes may replace a newer stale index row."""
+    with open_connection(tmp_path / "index.db") as conn:
+        newer = _session_data(
+            "codex-session:force-stale",
+            content_hash="hash-newer",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:force-stale",
+                    role="user",
+                    text="stale index",
+                    content_hash="msg-hash-1",
+                    sort_key=1777636800.0,
+                )
+            ],
+            raw_id="raw-stale",
+            created_at="2026-04-02T00:00:00Z",
+            updated_at="2026-04-02T00:10:00Z",
+        )
+        changed, _ = _write_session(conn, newer)
+        assert changed is True
+
+        older = _session_data(
+            "codex-session:force-stale",
+            content_hash="hash-older",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:force-stale",
+                    role="user",
+                    text="durable source",
+                    content_hash="msg-hash-2",
+                    sort_key=1777636700.0,
+                )
+            ],
+            raw_id="raw-source",
+            created_at="2026-04-02T00:00:00Z",
+            updated_at="2026-04-02T00:05:00Z",
+        )
+        skipped, skipped_counts = _write_session(conn, older)
+        assert skipped is False
+        assert skipped_counts["messages"] == 0
+
+        forced, forced_counts = _write_session(conn, older, force_write=True)
+        assert forced is True
+        assert forced_counts["messages"] == 1
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT raw_id, message_count FROM sessions WHERE session_id = ?",
+            ("codex-session:force-stale",),
+        ).fetchone()
+        message = conn.execute(
+            "SELECT native_id, occurred_at_ms FROM messages WHERE session_id = ?",
+            ("codex-session:force-stale",),
+        ).fetchone()
+        block = conn.execute(
+            "SELECT text FROM blocks WHERE session_id = ?",
+            ("codex-session:force-stale",),
+        ).fetchone()
+        assert row["raw_id"] == "raw-source"
+        assert row["message_count"] == 1
+        assert block["text"] == "durable source"
+        assert message["occurred_at_ms"] == 1777636700000
+
+
 def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: Path) -> None:
     """Parser-owned auto-tags still converge when the content hash is unchanged."""
     with open_connection(tmp_path / "index.db") as conn:
@@ -644,6 +788,55 @@ def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: 
         assert [(row["tag"], row["tag_source"], row["method"]) for row in tags] == [
             ("capture:temporary-chat", "auto", "parser")
         ]
+
+
+def test_write_session_refreshes_raw_link_when_content_is_unchanged(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "index.db") as conn:
+        first = _session_data(
+            "codex-session:unchanged-raw-link",
+            content_hash="same-hash",
+            raw_id="raw-old",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:unchanged-raw-link",
+                    role="user",
+                    text="hello",
+                    content_hash="msg-hash",
+                    sort_key=1777636800.0,
+                )
+            ],
+        )
+        recapture = _session_data(
+            "codex-session:unchanged-raw-link",
+            content_hash="same-hash",
+            raw_id="raw-new",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:unchanged-raw-link",
+                    role="user",
+                    text="hello",
+                    content_hash="msg-hash",
+                    sort_key=1777636800.0,
+                )
+            ],
+        )
+
+        changed, _ = _write_session(conn, first)
+        unchanged, counts = _write_session(conn, recapture)
+        conn.commit()
+
+        raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("codex-session:unchanged-raw-link",),
+        ).fetchone()["raw_id"]
+
+        assert changed is True
+        assert unchanged is False
+        assert counts["skipped_sessions"] == 1
+        assert counts["raw_links"] == 1
+        assert raw_id == "raw-new"
 
 
 def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> None:
@@ -878,6 +1071,62 @@ def test_write_session_dom_fallback_does_not_replace_native_source(tmp_path: Pat
         assert "raw-dom-fallback" in event["summary"]
 
 
+def test_write_session_same_content_dom_fallback_does_not_refresh_native_raw_link(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "index.db") as conn:
+        native = _session_data(
+            "codex-session:same-content-dom-precedence",
+            content_hash="same-hash",
+            raw_id="raw-native",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:same-content-dom-precedence",
+                    role="user",
+                    text="native first",
+                    content_hash="msg-1",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        dom_fallback = _session_data(
+            "codex-session:same-content-dom-precedence",
+            content_hash="same-hash",
+            raw_id="raw-dom-fallback",
+            ingest_flags=["capture:dom-fallback"],
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:same-content-dom-precedence",
+                    role="user",
+                    text="native first",
+                    content_hash="msg-1",
+                    sort_key=1.0,
+                )
+            ],
+        )
+
+        changed_native, _counts_native = _write_session(conn, native)
+        changed_fallback, counts_fallback = _write_session(conn, dom_fallback)
+        conn.commit()
+
+        raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("codex-session:same-content-dom-precedence",),
+        ).fetchone()["raw_id"]
+        capture_gap_count = conn.execute(
+            "SELECT COUNT(*) FROM session_events WHERE session_id = ? AND event_type = 'capture_gap'",
+            ("codex-session:same-content-dom-precedence",),
+        ).fetchone()[0]
+
+        assert changed_native is True
+        assert changed_fallback is False
+        assert counts_fallback["skipped_sessions"] == 1
+        assert counts_fallback["session_events"] == 1
+        assert counts_fallback["raw_links"] == 0
+        assert raw_id == "raw-native"
+        assert capture_gap_count == 1
+
+
 def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp_path: Path) -> None:
     with open_connection(tmp_path / "index.db") as conn:
         dom_fallback = _session_data(
@@ -1058,6 +1307,80 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
 
     assert seen == ["raw-1", "raw-2"]
     assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
+
+
+async def test_process_ingest_batch_uses_archive_root_blob_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "explicit-archive"
+    ambient_blob_root = tmp_path / "ambient-xdg" / "blob"
+    expected_blob_root = archive_root / "blob"
+    raw_record = RawSessionRecord(
+        raw_id="raw-1",
+        source_name="chatgpt",
+        source_path="/sources/session.json",
+        blob_size=17,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+
+    repository = SimpleNamespace(get_raw_sessions_batch=AsyncMock(return_value=[raw_record]))
+    service = SimpleNamespace(
+        repository=repository,
+        archive_root=archive_root,
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+    )
+    backend = SimpleNamespace(db_path=archive_root / "index.db")
+    seen: dict[str, object] = {}
+
+    def fake_process_sync(
+        raw_artifacts: list[RawSessionRecord],
+        *,
+        db_path: Path,
+        archive_root_str: str,
+        blob_root_str: str,
+        validation_mode: str,
+        ingest_workers: int | None,
+        measure_ingest_result_size: bool,
+        force_write: bool,
+        repair_message_fts: bool,
+        ingest_result_chunk_size: int,
+        suspend_fts_triggers: bool,
+    ) -> _IngestBatchSummary:
+        seen.update(
+            {
+                "raw_artifacts": raw_artifacts,
+                "db_path": db_path,
+                "archive_root_str": archive_root_str,
+                "blob_root_str": blob_root_str,
+                "validation_mode": validation_mode,
+                "ingest_workers": ingest_workers,
+                "measure_ingest_result_size": measure_ingest_result_size,
+                "force_write": force_write,
+                "repair_message_fts": repair_message_fts,
+                "ingest_result_chunk_size": ingest_result_chunk_size,
+                "suspend_fts_triggers": suspend_fts_triggers,
+            }
+        )
+        return _IngestBatchSummary(raw_record_count=1)
+
+    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: ambient_blob_root)
+    monkeypatch.setattr(ingest_batch_core, "blob_store_root", lambda: ambient_blob_root, raising=False)
+    monkeypatch.setattr(ingest_batch_core, "_process_ingest_batch_sync", fake_process_sync)
+    monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", AsyncMock(return_value=0.0))
+
+    await ingest_batch_core.process_ingest_batch(
+        cast(ParsingService, service),
+        cast(SQLiteBackend, backend),
+        ["raw-1"],
+        ParseResult(),
+        progress_callback=None,
+    )
+
+    assert seen["archive_root_str"] == str(archive_root)
+    assert seen["blob_root_str"] == str(expected_blob_root)
+    assert seen["blob_root_str"] != str(ambient_blob_root)
 
 
 def test_iter_ingest_results_sync_bounds_in_flight_process_results(

@@ -47,7 +47,7 @@ They are not a proof ledger or end-user archive workflow.
 | --- | --- |
 | `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
 | `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
-| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Polylogue intentionally has no in-place storage schema upgrade chain; archive-shape changes edit the canonical DDL and require a fresh rebuild from source. |
+| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
 | `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
 | `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
@@ -95,6 +95,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render all` | Refresh or verify generated docs and agent files. |
 | `devtools render cli-output-schemas` | Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/. |
 | `devtools render cli-reference` | Render docs/cli-reference.md from live CLI help. |
+| `devtools render demo-corpus-datasheet` | Render docs/plans/demo-corpus-construct-audit.md from the demo family registry and a measured seed archive. |
 | `devtools render devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
@@ -119,7 +120,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools lab lanes` | Run named validation lanes. |
-| `devtools lab policy schema-versioning` | Reject in-place storage schema upgrade helpers (#1302). |
+| `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
 | `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
 | `devtools lab probe pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
@@ -172,10 +173,13 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
 | `devtools workspace claim-vs-evidence` | Build a structured failure follow-up claim-vs-evidence demo. |
 | `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
+| `devtools workspace degraded-archive-proof` | Build a degraded archive self-healing proof artifact. |
 | `devtools workspace demo-shelf` | Refresh or verify current demo shelf indexes. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
+| `devtools workspace frontier` | Classify ready and in-progress Beads into devloop batches. |
+| `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |

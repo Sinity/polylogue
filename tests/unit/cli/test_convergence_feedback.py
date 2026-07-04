@@ -88,5 +88,5 @@ def test_convergence_warning_line_reports_unclassified_join_gaps(monkeypatch: py
     assert warning == (
         "Archive materialization needs classification: 7/10 raw artifact(s) materialized; "
         "3 raw/index join gap(s) found; "
-        "results may be partial until `polylogue ops debt list --kind raw-materialization` explains them."
+        "results may be partial until daemon convergence classifies them."
     )

@@ -258,6 +258,60 @@ class TestNoArchiveStatus:
         assert "Archive readiness:" in combined
         assert "direct_status_default_skips_exact_archive_readiness" in combined
 
+    def test_direct_status_json_marks_skipped_transform_readiness_unknown(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "custom.sqlite"
+        index_db = tmp_path / "index.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL
+                );
+                INSERT INTO sessions VALUES ('codex-session:one', 1);
+                """
+            )
+        assertion_component = {
+            "component": "assertions",
+            "scope": "user",
+            "state": "ready",
+            "summary": "ready",
+            "counts": {"assertion_count": 0, "target_count": 0, "active_count": 0},
+            "caveats": [],
+            "repair_hint": None,
+            "evidence_refs": ["user.db:assertions"],
+        }
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.cli.commands.status._archive_readiness_status",
+                side_effect=AssertionError("direct status must not run exact readiness by default"),
+            ),
+            patch(
+                "polylogue.cli.commands.status._direct_raw_materialization_readiness",
+                return_value={"available": True, "total": 0},
+            ),
+            patch("polylogue.cli.commands.status._direct_assertion_component", return_value=assertion_component),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        transforms = payload["component_readiness"]["transforms"]
+        assert payload["ok"] is True
+        assert transforms["state"] == "unknown"
+        assert transforms["summary"] == "direct_status_default_skips_exact_archive_readiness"
+        assert transforms["caveats"] == ["direct_status_default_skips_exact_archive_readiness"]
+        assert "session_count" not in transforms["counts"]
+        assert transforms["counts"]["transform_count"] >= 1
+        assert transforms["counts"]["session_digest_transform_version"] == 1
+
     def test_direct_status_json_reads_archive_file_set_from_archive_tiers(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"
@@ -489,6 +543,21 @@ class TestNoArchiveStatus:
         assert readiness["blocked_surface_count"] > 0
         assert readiness["surfaces"]["raw_artifacts"]["ready"] is False
         assert readiness["surfaces"]["raw_artifacts"]["blockers"] == ["missing_source_raw_sessions"]
+        raw_evidence = readiness["surfaces"]["raw_artifacts"]["evidence"]
+        assert raw_evidence["lost_source_evidence_count"] == 1
+        assert raw_evidence["lost_source_evidence_samples"] == [
+            {
+                "session_id": "codex-session:native-1",
+                "origin": "codex-session",
+                "native_id": "native-1",
+                "missing_raw_id": "raw-missing",
+                "message_count": 0,
+                "updated_at_ms": None,
+                "evidence_status": "lost_source_evidence",
+                "loss_reason": "index_raw_id_missing_from_source_tier",
+                "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
+            }
+        ]
         runtime_paths = payload["archive_runtime_paths"]
         assert runtime_paths["archive_routing_ready"] is True
         assert runtime_paths["archive_runtime_ready"] is True
@@ -501,6 +570,42 @@ class TestNoArchiveStatus:
             "user.db",
             "ops.db",
         ]
+
+    def test_direct_status_json_compacts_raw_replay_backlog(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "index.db"
+        initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+        backlog = {
+            "available": True,
+            "candidate_count": 2,
+            "missing_blob_count": 0,
+            "already_parsed_count": 0,
+            "total_blob_bytes": 12_000_000,
+            "max_blob_bytes": 10_000_000,
+            "execute_blob_limit_bytes": 1_000_000_000,
+            "oversized_count": 0,
+            "oversized_stream_safe_count": 0,
+            "top_raw_rows": [{"raw_id": "raw-a", "blob_size": 10_000_000}],
+            "origin_summary": [{"origin": "codex-session", "raw_count": 2, "total_blob_bytes": 12_000_000}],
+            "source_path_summary": [{"source_path": "/large/local/path", "raw_count": 2}],
+        }
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._direct_raw_materialization_readiness", return_value={}),
+            patch("polylogue.cli.commands.status._raw_replay_backlog_status", return_value=backlog),
+            patch("polylogue.cli.commands.status._ops_workload_status", return_value={"available": False}),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        raw_replay = payload["raw_replay_backlog"]
+        assert raw_replay["candidate_count"] == 2
+        assert raw_replay["total_blob_bytes"] == 12_000_000
+        assert raw_replay["origin_summary"][0]["origin"] == "codex-session"
+        assert "source_path_summary" not in raw_replay
 
     def test_archive_tier_status_labels_large_table_estimates(
         self,
@@ -691,10 +796,10 @@ class TestNoArchiveStatus:
         assert readiness["state"] == "stale"
         assert readiness["counts"] == {"text_block_count": 10, "messages_fts_count": 8}
         assert readiness["caveats"] == ["messages_fts_row_mismatch"]
-        assert readiness["repair_hint"] == "polylogue ops maintenance run --target dangling_fts"
+        assert readiness["repair_hint"] == "polylogued run"
         assert profiles["scope"] == "insights"
         assert profiles["state"] == "stale"
-        assert profiles["repair_hint"] == "polylogue ops maintenance run --target session_insights"
+        assert profiles["repair_hint"] == "polylogued run"
         assert tool_usage["scope"] == "actions"
         assert tool_usage["counts"] == {"action_count": 4}
         assert raw_materialization["scope"] == "archive"
@@ -707,7 +812,7 @@ class TestNoArchiveStatus:
         assert raw_materialization["counts"]["materialized_raw_artifact_count"] == 6
         assert raw_materialization["metadata"]["category_counts"] == {"raw_id_join_gap": 4}
         assert raw_materialization["metadata"]["source_family_counts"] == {"chatgpt-export": 4}
-        assert raw_materialization["repair_hint"] == "polylogue ops debt list --kind raw-materialization"
+        assert raw_materialization["repair_hint"] == "polylogued run"
         assert assertions["scope"] == "user"
         assert assertions["state"] == "ready"
         assert assertions["counts"] == {"assertion_count": 1, "target_count": 1, "active_count": 1}
@@ -808,7 +913,7 @@ class TestNoArchiveStatus:
         assert components["archive_sessions"]["state"] == "ready"
         assert components["search"]["state"] == "stale"
         assert components["search"]["caveats"] == ["messages_fts_row_mismatch"]
-        assert components["search"]["repair_hint"] == "polylogue ops maintenance run --target dangling_fts"
+        assert components["search"]["repair_hint"] == "polylogued run"
         assert components["session_profiles"]["state"] == "degraded"
         assert components["session_profiles"]["counts"] == {
             "profile_row_count": 1,
@@ -839,6 +944,7 @@ class TestNoArchiveStatus:
 
         payload = json.loads(_combined_calls(env))
         transforms = payload["component_readiness"]["transforms"]
+        assert payload["ok"] is False
         assert transforms["state"] == "blocked"
         assert transforms["summary"] == "database is locked"
         assert transforms["caveats"] == ["database is locked"]
@@ -1084,6 +1190,22 @@ class TestNoArchiveStatus:
 
         assert "87.5% indexed" in _combined_calls(env)
 
+    def test_daemon_status_treats_null_fts_coverage_as_unknown_progress(self) -> None:
+        env = _make_app_env()
+
+        _show_daemon_status(
+            env,
+            {
+                "daemon_liveness": True,
+                "fts_readiness": {
+                    "messages_ready": False,
+                    "coverage_pct": None,
+                },
+            },
+        )
+
+        assert "FTS: [yellow]0.0% indexed[/yellow]" in _combined_calls(env)
+
     def test_daemon_status_archive_fts_reports_message_surface(self) -> None:
         env = _make_app_env()
 
@@ -1207,6 +1329,42 @@ class TestNoArchiveStatus:
         assert payload["source"] == "daemon"
         assert "live_cursor" not in payload
         assert "rows" not in payload["archive_debt"]
+
+    def test_status_command_uses_discovered_dev_loop_daemon_url(self) -> None:
+        env = _make_app_env()
+        full_payload = {
+            "ok": True,
+            "daemon_liveness": True,
+            "checked_at": "2026-07-04T07:20:00+02:00",
+        }
+        requested_urls: list[str] = []
+
+        def fake_urlopen(request: Any, *, timeout: float) -> _FakeDaemonResponse:
+            requested_urls.append(str(request.full_url))
+            if requested_urls[-1].startswith("http://127.0.0.1:8766/"):
+                raise TimeoutError
+            assert requested_urls[-1] == "http://127.0.0.1:8786/api/status"
+            return _FakeDaemonResponse(full_payload)
+
+        with patch(
+            "polylogue.cli.commands.status._candidate_daemon_urls",
+            return_value=("http://127.0.0.1:8766", "http://127.0.0.1:8786"),
+        ):
+            with patch("polylogue.cli.commands.status.urlopen", side_effect=fake_urlopen):
+                result = CliRunner().invoke(
+                    status_command,
+                    ["--daemon-url", "http://127.0.0.1:8766", "--json"],
+                    obj=env,
+                )
+
+        assert result.exit_code == 0
+        assert requested_urls == [
+            "http://127.0.0.1:8766/api/status",
+            "http://127.0.0.1:8786/api/status",
+        ]
+        payload = json.loads(_combined_calls(env))
+        assert payload["source"] == "daemon"
+        assert payload["daemon_liveness"] is True
 
     def test_direct_json_no_archive(self) -> None:
         """_show_direct_json when DB does not exist produces valid JSON."""

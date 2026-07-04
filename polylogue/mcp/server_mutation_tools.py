@@ -185,19 +185,26 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("blackboard_post", run)
 
     @mcp.tool()
-    async def add_tag(session_id: str, tag: str) -> str:
+    async def add_tag(
+        session_id: str,
+        tag: str,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
+    ) -> str:
         async def run() -> str:
             resolved, err = await _resolve_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None  # _resolve_or_error contract
             poly = hooks.get_polylogue()
-            result = await poly.add_tag(resolved, tag)
+            result = await poly.add_tag(resolved, tag, author_ref=author_ref, author_kind=author_kind)
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok" if result.outcome == "added" else "unchanged",
                     session_id=resolved,
                     tag=tag,
+                    author_ref=author_ref,
+                    author_kind=author_kind,
                     detail=result.detail,
                     outcome=result.outcome,
                 ),
@@ -774,6 +781,8 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         kind: str,
         payload: dict[str, str],
         note: str | None = None,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
     ) -> str:
         """Record a user correction targeting a derived insight."""
 
@@ -786,7 +795,14 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             assert resolved is not None
             poly = hooks.get_polylogue()
             try:
-                correction = await poly.record_correction(resolved, kind, payload, note=note)
+                correction = await poly.record_correction(
+                    resolved,
+                    kind,
+                    payload,
+                    note=note,
+                    author_ref=author_ref,
+                    author_kind=author_kind,
+                )
             except UnknownCorrectionKindError as exc:
                 return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
             return hooks.json_payload(
@@ -794,6 +810,8 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     status="ok",
                     session_id=correction.session_id,
                     outcome=correction.kind.value,
+                    author_ref=author_ref,
+                    author_kind=author_kind,
                     detail=correction.note,
                 ),
                 exclude_none=True,

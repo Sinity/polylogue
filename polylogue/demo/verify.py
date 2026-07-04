@@ -8,6 +8,7 @@ from pathlib import Path
 from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, DEMO_SESSION_IDS
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+from .constructs import construct_problem_messages, evaluate_demo_constructs
 from .models import DemoVerifyResult
 
 
@@ -86,16 +87,18 @@ def verify_demo_archive(
             query_hits=(),
             overlays_present=False,
             absolute_path_leaks=(),
+            construct_coverage=(),
             problems=(f"archive unreadable: {exc}",),
         )
 
     expected_ids = set(DEMO_SESSION_IDS)
     if session_ids != expected_ids:
         problems.append(f"expected demo sessions {sorted(expected_ids)}, found {sorted(session_ids)}")
-    if session_count != 3:
-        problems.append(f"expected 3 sessions, found {session_count}")
-    if message_count != 23:
-        problems.append(f"expected 23 messages, found {message_count}")
+    expected_session_count = len(DEMO_SESSION_IDS)
+    if session_count != expected_session_count:
+        problems.append(f"expected {expected_session_count} sessions, found {session_count}")
+    if message_count < 31:
+        problems.append(f"expected at least 31 messages, found {message_count}")
     if DEMO_CLAUDE_CODE_SESSION_ID not in query_hits:
         problems.append(f"expected pytest query to include {DEMO_CLAUDE_CODE_SESSION_ID}, found {list(query_hits)}")
 
@@ -103,6 +106,9 @@ def verify_demo_archive(
     overlays_present = overlay_count >= 4
     if require_overlays and not overlays_present:
         problems.append("expected demo overlays, found none")
+
+    construct_coverage = evaluate_demo_constructs(archive_root)
+    problems.extend(construct_problem_messages(construct_coverage))
 
     if check_source_path_leaks:
         for raw_path in _raw_source_paths(archive_root):
@@ -119,6 +125,7 @@ def verify_demo_archive(
         query_hits=query_hits,
         overlays_present=overlays_present,
         absolute_path_leaks=tuple(leaks),
+        construct_coverage=construct_coverage,
         problems=tuple(problems),
     )
 

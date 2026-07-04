@@ -22,6 +22,11 @@ const keepProfile = process.env.POLYLOGUE_PROVIDER_SMOKE_KEEP_PROFILE === "1";
 const timeoutMs = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS || "10000");
 const spoolDir = process.env.POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR || "";
 const headless = process.env.POLYLOGUE_PROVIDER_SMOKE_HEADLESS !== "0";
+const fixtureSessionId = process.env.POLYLOGUE_PROVIDER_SMOKE_SESSION_ID || "polylogue-dev-loop-provider-smoke";
+const readerBaseUrl = (process.env.POLYLOGUE_PROVIDER_SMOKE_READER_BASE_URL || "").replace(/\/+$/, "");
+const readerSessionId = process.env.POLYLOGUE_PROVIDER_SMOKE_READER_SESSION_ID || "";
+const stressTurnCount = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_STRESS_TURNS || "2");
+const stressTextRepeat = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_STRESS_TEXT_REPEAT || "1");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -147,25 +152,35 @@ function resolveChromeBinary() {
 }
 
 function fixtureHtml(provider) {
+  const turnCount = Math.max(2, Math.min(2000, Number.isFinite(stressTurnCount) ? stressTurnCount : 2));
+  const repeat = Math.max(1, Math.min(200, Number.isFinite(stressTextRepeat) ? stressTextRepeat : 1));
+  const longSuffix = " captured fixture text".repeat(repeat);
   if (provider === "chatgpt") {
+    const turns = Array.from({ length: turnCount }, (_item, index) => {
+      const role = index % 2 === 0 ? "user" : "assistant";
+      return `<article data-testid="conversation-turn-${role}-${index + 1}">ChatGPT fixture ${role} turn ${index + 1}${longSuffix}</article>`;
+    }).join("\n      ");
     return `<!doctype html>
 <html>
   <head><title>Polylogue ChatGPT provider smoke</title></head>
   <body>
     <main>
-      <article data-testid="conversation-turn-user-1">ChatGPT fixture user turn</article>
-      <article data-testid="conversation-turn-assistant-1">ChatGPT fixture assistant turn</article>
+      ${turns}
     </main>
   </body>
 </html>`;
   }
+  const turns = Array.from({ length: turnCount }, (_item, index) => {
+    const role = index % 2 === 0 ? "human" : "assistant";
+    const label = role === "human" ? "user" : "assistant";
+    return `<article data-message-author-role="${role}">Claude fixture ${label} turn ${index + 1}${longSuffix}</article>`;
+  }).join("\n      ");
   return `<!doctype html>
 <html>
   <head><title>Polylogue Claude provider smoke</title></head>
   <body>
     <main>
-      <article data-message-author-role="human">Claude fixture user turn</article>
-      <article data-message-author-role="assistant">Claude fixture assistant turn</article>
+      ${turns}
     </main>
   </body>
 </html>`;
@@ -224,8 +239,8 @@ async function startProviderFixtureServer(certDir) {
     port,
     server,
     urls: {
-      chatgpt: "https://chatgpt.com/c/polylogue-dev-loop-provider-smoke",
-      claude: "https://claude.ai/chat/polylogue-dev-loop-provider-smoke",
+      chatgpt: `https://chatgpt.com/c/${fixtureSessionId}`,
+      claude: `https://claude.ai/chat/${fixtureSessionId}`,
     },
   };
 }
@@ -321,7 +336,9 @@ async function waitForExtensionWorker(debuggingPort, expectedWorkerSuffix, expec
       await client.call("Runtime.enable");
       const manifestName = await evaluateJson(client, "chrome.runtime.getManifest().name").catch(() => null);
       if (manifestName === expectedManifestName) return { worker: candidate, client };
-      if (candidates.length === 1) return { worker: candidate, client };
+      if (candidates.length === 1 && candidate.url.endsWith(expectedWorkerSuffix) && manifestName) {
+        return { worker: candidate, client };
+      }
       client.close();
     }
     await sleep(250);
@@ -435,6 +452,44 @@ async function openProviderTargetFromExtension(extensionClient, debuggingPort, u
   throw new Error(`provider page target not found for ${url}`);
 }
 
+async function openReaderTargetFromExtension(extensionClient, debuggingPort, url) {
+  const createdTab = await evaluateJson(
+    extensionClient,
+    `(async () => {
+      if (!globalThis.chrome?.tabs?.create) {
+        throw new Error("extension controller CDP target does not expose chrome.tabs.create");
+      }
+      let tab;
+      try {
+        tab = await chrome.tabs.create({url: ${JSON.stringify(url)}, active: false});
+      } catch (error) {
+        const message = String(error && error.message ? error.message : error);
+        if (!message.includes("No current window") || !globalThis.chrome?.windows?.create) {
+          throw error;
+        }
+        const createdWindow = await chrome.windows.create({url: ${JSON.stringify(url)}, focused: false, type: "normal"});
+        tab = Array.isArray(createdWindow.tabs) && createdWindow.tabs.length ? createdWindow.tabs[0] : null;
+      }
+      if (!tab) throw new Error("extension API did not return a reader tab");
+      return {id: tab.id ?? null, url: tab.url ?? null, pendingUrl: tab.pendingUrl ?? null, title: tab.title ?? null};
+    })()`,
+  );
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const targets = await waitJson(`http://127.0.0.1:${debuggingPort}/json/list`, Math.min(2000, timeoutMs));
+    const target = targets.find((candidate) => candidate.url === url);
+    if (target?.webSocketDebuggerUrl) {
+      const client = await connectCdp(target.webSocketDebuggerUrl);
+      await client.call("Runtime.enable");
+      await client.call("Page.enable");
+      await client.call("Page.navigate", { url });
+      return { target, client, tab: createdTab };
+    }
+    await sleep(250);
+  }
+  throw new Error(`reader page target not found for ${url}`);
+}
+
 async function waitForReadyPage(client) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -459,6 +514,85 @@ async function providerPageDiagnostics(client) {
   );
 }
 
+async function providerPageResponsiveness(client) {
+  return evaluateJson(
+    client,
+    `(async () => {
+      const startedAt = performance.now();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const taskDelayMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      const sample = document.body?.textContent?.slice(0, 16) || "";
+      document.body?.dispatchEvent(new MouseEvent("mousemove", {bubbles: true, clientX: 4, clientY: 4}));
+      return {
+        ok: taskDelayMs < 1000 && typeof sample === "string",
+        task_delay_ms: taskDelayMs,
+        ready_state: document.readyState,
+        body_present: Boolean(document.body),
+        event_dispatch_ok: true
+      };
+    })()`,
+  );
+}
+
+async function waitForReaderLiveFollow(client, expectedSessionId) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await evaluateJson(
+      client,
+      `(() => {
+        const text = document.body?.innerText || document.body?.textContent || "";
+        const state = globalThis.state || {};
+        const messageRows = Array.from(document.querySelectorAll("#msg-list [data-msg-id]"));
+        return {
+          href: location.href,
+          readyState: document.readyState,
+          selectedConvId: state.selected?.id || state.selectedConvId || null,
+          statusLive: document.querySelector("#status-live")?.textContent?.trim() || "",
+          title: document.querySelector("#conv-header h2")?.textContent?.trim() || "",
+          messageRowCount: messageRows.length,
+          hasUserTurn: text.includes("ChatGPT fixture user turn"),
+          hasAssistantTurn: text.includes("ChatGPT fixture assistant turn"),
+          hasLiveChip: Boolean(document.querySelector("#status-live")),
+          hasRawPrivatePaths: text.includes("/home/sinity") || text.includes("/realm/data")
+        };
+      })()`,
+    ).catch((error) => ({ error: String(error.message || error) }));
+    if (
+      last?.readyState !== "loading" &&
+      last?.selectedConvId === expectedSessionId &&
+      last?.messageRowCount >= 2 &&
+      last?.hasUserTurn === true &&
+      last?.hasAssistantTurn === true &&
+      last?.hasLiveChip === true &&
+      last?.hasRawPrivatePaths !== true
+    ) {
+      return { ok: true, ...last };
+    }
+    await sleep(250);
+  }
+  return { ok: false, ...last };
+}
+
+async function waitForReaderApi(baseUrl, expectedSessionId) {
+  const url = `${baseUrl}/api/sessions/${encodeURIComponent(expectedSessionId)}/messages?limit=5`;
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      const payload = response.headers.get("content-type")?.includes("application/json") ? await response.json() : {};
+      const messages = Array.isArray(payload.messages) ? payload.messages : [];
+      last = { ok: response.ok && messages.length >= 2, status: response.status, messageCount: messages.length, url };
+      if (last.ok) return last;
+    } catch (error) {
+      last = { ok: false, status: 0, messageCount: 0, url, error: String(error && error.message ? error.message : error) };
+    }
+    await sleep(250);
+  }
+  return last || { ok: false, status: 0, messageCount: 0, url };
+}
+
 async function configureExtension(extensionClient) {
   return evaluateJson(
     extensionClient,
@@ -481,6 +615,132 @@ async function configureExtension(extensionClient) {
       return { ...(await chrome.storage.local.get(["receiverBaseUrl", "receiverAuthToken"])), storageConfigured: true };
     })()`,
   );
+}
+
+async function waitForPopupReady(extensionClient) {
+  return evaluateJson(
+    extensionClient,
+    `(async () => {
+      const deadline = Date.now() + ${JSON.stringify(timeoutMs)};
+      let last = null;
+      while (Date.now() < deadline) {
+        last = {
+          readyState: document.readyState,
+          hasStatus: Boolean(document.querySelector("#state")),
+          hasArchive: Boolean(document.querySelector("#archive")),
+          hasStateDetail: Boolean(document.querySelector("#state-detail")),
+          hasDebugToggle: Boolean(document.querySelector("#debug-toggle")),
+          hasDebugPanel: Boolean(document.querySelector("#debug-panel")),
+          hasDebugLog: Boolean(document.querySelector("#debug-log")),
+          checkButtonState: document.querySelector("#check")?.dataset?.state || null
+        };
+        if (last.readyState !== "loading" && last.hasStatus && last.hasArchive && last.hasStateDetail && last.hasDebugToggle && last.hasDebugPanel && last.hasDebugLog) {
+          return last;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return {ok: false, last};
+    })()`,
+  );
+}
+
+async function clickPopupCheck(extensionClient) {
+  return evaluateJson(
+    extensionClient,
+    `(async () => {
+      const button = document.querySelector("#check");
+      if (!button) return {ok: false, error: "missing_check_button"};
+      button.click();
+      const deadline = Date.now() + ${JSON.stringify(timeoutMs)};
+      let last = null;
+      while (Date.now() < deadline) {
+        last = {
+          state: button.dataset.state || null,
+          statusText: button.querySelector(".button-status")?.textContent?.trim() || "",
+          archiveState: document.querySelector("#archive")?.textContent?.trim() || "",
+          stateDetail: document.querySelector("#state-detail")?.textContent?.trim() || "",
+          debugCount: document.querySelector("#debug-count")?.textContent?.trim() || ""
+        };
+        if (last.state === "ok" || last.state === "failed") return {ok: last.state === "ok", ...last};
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return {ok: false, error: "timed_out", ...last};
+    })()`,
+  );
+}
+
+async function inspectPopup(extensionClient) {
+  return evaluateJson(
+    extensionClient,
+    `(async () => {
+      if (typeof render === "function") await render();
+      const storage = await chrome.storage.local.get({
+        polylogueDebugLog: [],
+        polylogueCaptureLog: [],
+        polylogueState: null
+      });
+      document.querySelector("#debug-toggle")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const debugRows = Array.from(document.querySelectorAll("#debug-log .log-item"));
+      const captureRows = Array.from(document.querySelectorAll("#log .log-item"));
+      const debugLog = Array.isArray(storage.polylogueDebugLog) ? storage.polylogueDebugLog : [];
+      const captureLog = Array.isArray(storage.polylogueCaptureLog) ? storage.polylogueCaptureLog : [];
+      const receiverEvents = debugLog
+        .filter((event) => event && typeof event.stage === "string" && event.stage.startsWith("receiver_"))
+        .map((event) => ({
+          stage: event.stage,
+          ok: event.ok ?? null,
+          status: event.status ?? null,
+          path: event.path ?? null,
+          receiver_request_id: event.receiver_request_id ?? null,
+          archive_state: event.archive_state ?? null,
+          provider: event.provider ?? null,
+          provider_session_id: event.provider_session_id ?? null
+        }));
+      return {
+        ok: Boolean(
+          document.querySelector("#state") &&
+          document.querySelector("#state-detail") &&
+          document.querySelector("#debug-toggle") &&
+          document.querySelector("#debug-export") &&
+          debugLog.length > 0 &&
+          receiverEvents.length > 0
+        ),
+        status: document.querySelector("#state")?.textContent?.trim() || "",
+        mode: document.querySelector("#mode")?.textContent?.trim() || "",
+        archiveState: document.querySelector("#archive")?.textContent?.trim() || "",
+        stateDetail: document.querySelector("#state-detail")?.textContent?.trim() || "",
+        updated: document.querySelector("#updated")?.textContent?.trim() || "",
+        debugPanelVisible: !document.querySelector("#debug-panel")?.hidden,
+        debugCountText: document.querySelector("#debug-count")?.textContent?.trim() || "",
+        debugRowCount: debugRows.length,
+        captureRowCount: captureRows.length,
+        debugLogCount: debugLog.length,
+        captureLogCount: captureLog.length,
+        receiverEventCount: receiverEvents.length,
+        receiverEvents,
+        hasRawPayloadLeak: JSON.stringify(debugLog).includes("ChatGPT fixture user turn") || JSON.stringify(debugLog).includes("Claude fixture user turn"),
+        storedState: storage.polylogueState ? {
+          online: Boolean(storage.polylogueState.online),
+          archive_state: storage.polylogueState.archive_state || null,
+          capture_mode: storage.polylogueState.capture_mode || null,
+          captured: storage.polylogueState.captured ?? null
+        } : null
+      };
+    })()`,
+  );
+}
+
+async function capturePopupScreenshot(extensionClient, screenshotPath) {
+  if (!screenshotPath) return null;
+  const result = await extensionClient.call("Page.captureScreenshot", {
+    format: "png",
+    fromSurface: true,
+    captureBeyondViewport: true,
+  });
+  if (!result?.data) return null;
+  writeFileSync(screenshotPath, Buffer.from(result.data, "base64"));
+  return screenshotPath;
 }
 
 async function captureProvider(extensionClient, providerConfig) {
@@ -525,13 +785,16 @@ async function captureProvider(extensionClient, providerConfig) {
             } catch (_error) {
               return false;
             }
-          });
+        });
         if (tab && typeof tab.id === "number") {
+          const startedAt = performance.now();
           const capture = await sendCapture(tab.id);
+          const captureDurationMs = Math.round((performance.now() - startedAt) * 10) / 10;
           last = {
             tab: {id: tab.id, url: tab.url, title: tab.title},
             tab_inventory: tabInventory,
             injection_mode: capture.injection_mode,
+            capture_duration_ms: captureDurationMs,
             result: capture.result,
             error: capture.error
           };
@@ -569,6 +832,7 @@ function safeProviderSummary(providerConfig, capturePayload) {
       artifactRef &&
       captureResult.receiver_request_id &&
       archiveState.receiver_request_id &&
+      providerConfig.pageResponsiveness?.ok === true &&
       (!artifactPath || existsSync(artifactPath)),
   );
   return {
@@ -577,10 +841,12 @@ function safeProviderSummary(providerConfig, capturePayload) {
     expected_host: providerConfig.host,
     page_target: providerConfig.pageTarget || null,
     page_diagnostics: providerConfig.pageDiagnostics || null,
+    page_responsiveness: providerConfig.pageResponsiveness || null,
     opened_tab: providerConfig.openedTab || null,
     tab: capturePayload?.tab || null,
     tab_inventory: capturePayload?.tab_inventory || null,
     injection_mode: capturePayload?.injection_mode || null,
+    capture_duration_ms: capturePayload?.capture_duration_ms ?? null,
     expected_provider: providerConfig.expectedProvider,
     provider: session.provider || null,
     provider_session_id: session.provider_session_id || null,
@@ -671,7 +937,9 @@ async function main() {
       extensionId,
     );
     extensionControllerClient = controllerClient;
+    const popupReady = await waitForPopupReady(extensionControllerClient);
     const configuredReceiver = await configureExtension(extensionControllerClient);
+    const popupStatusRefresh = await clickPopupCheck(extensionControllerClient);
 
     for (const config of providerConfigs) {
       const { client, target, tab } = await openProviderTargetFromExtension(
@@ -687,6 +955,7 @@ async function main() {
       };
       config.openedTab = tab;
       config.expectedTabId = typeof tab?.id === "number" ? tab.id : null;
+      config.pageClient = client;
       pageClients.push(client);
       await waitForReadyPage(client);
       config.pageDiagnostics = await providerPageDiagnostics(client);
@@ -695,11 +964,57 @@ async function main() {
     const providers = {};
     for (const config of providerConfigs) {
       const capturePayload = await captureProvider(extensionControllerClient, config);
+      config.pageResponsiveness = await providerPageResponsiveness(config.pageClient);
       providers[config.key] = safeProviderSummary(config, capturePayload);
+    }
+    const popup = await inspectPopup(extensionControllerClient);
+    const popupScreenshot = await capturePopupScreenshot(
+      extensionControllerClient,
+      outputPath ? path.join(path.dirname(outputPath), "browser-provider-smoke-popup.png") : "",
+    );
+    let reader = null;
+    if (readerBaseUrl && readerSessionId) {
+      const readerUrl = `${readerBaseUrl}/s/${encodeURIComponent(readerSessionId)}`;
+      const apiReadiness = await waitForReaderApi(readerBaseUrl, readerSessionId);
+      const { target, client, tab } = await openReaderTargetFromExtension(
+        extensionControllerClient,
+        debuggingPort,
+        readerUrl,
+      );
+      pageClients.push(client);
+      await waitForReadyPage(client);
+      const liveFollow = await waitForReaderLiveFollow(client, readerSessionId);
+      reader = {
+        ok: liveFollow.ok === true,
+        url: readerUrl,
+        target: {
+          id: target.id || null,
+          type: target.type || null,
+          url: target.url || null,
+          title: target.title || null,
+        },
+        apiReadiness,
+        tab,
+        inspection: {
+          selectedConvId: liveFollow.selectedConvId || null,
+          statusLive: liveFollow.statusLive || null,
+          title: liveFollow.title || null,
+          messageRowCount: liveFollow.messageRowCount || 0,
+          hasUserTurn: liveFollow.hasUserTurn === true,
+          hasAssistantTurn: liveFollow.hasAssistantTurn === true,
+          hasLiveChip: liveFollow.hasLiveChip === true,
+          hasRawPrivatePaths: liveFollow.hasRawPrivatePaths === true,
+          error: liveFollow.error || null,
+        },
+      };
     }
 
     const summary = {
-      ok: Object.values(providers).every((provider) => provider.ok === true),
+      ok:
+        Object.values(providers).every((provider) => provider.ok === true) &&
+        popup.ok === true &&
+        popup.hasRawPayloadLeak !== true &&
+        (!reader || reader.ok === true),
       chrome_binary: chromeBinary,
       chrome_args: chromeArgs,
       headless,
@@ -733,6 +1048,13 @@ async function main() {
         title: extensionController.title || null,
         tab: extensionControllerTab || null,
       },
+      popup: {
+        ready: popupReady,
+        manual_status_refresh: popupStatusRefresh,
+        inspection: popup,
+        screenshot: popupScreenshot,
+      },
+      reader,
       providers,
     };
     if (outputPath) writeFileSync(outputPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");

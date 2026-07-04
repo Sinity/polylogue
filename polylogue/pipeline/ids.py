@@ -5,7 +5,7 @@ from __future__ import annotations
 import unicodedata
 from typing import TypeAlias
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
@@ -37,7 +37,7 @@ def _normalize_for_hash(value: HashScalar) -> JSONValue:
     return value
 
 
-def session_id(source_name: str, provider_session_id: str) -> SessionId:
+def session_id(source_name: Provider | Origin | str, provider_session_id: str) -> SessionId:
     """Generate the archive session ID from source/provider input.
 
     Args:
@@ -49,11 +49,12 @@ def session_id(source_name: str, provider_session_id: str) -> SessionId:
     Raises:
         ValueError: If source_name or provider_session_id is empty.
     """
-    if not source_name or not source_name.strip():
+    source_text = str(source_name).strip()
+    if source_text == "":
         raise ValueError("source_name cannot be empty")
     if not provider_session_id or not provider_session_id.strip():
         raise ValueError("provider_session_id cannot be empty")
-    origin = origin_from_provider(Provider.from_string(source_name))
+    origin = origin_from_provider(source_name)
     return SessionId(f"{origin.value}:{provider_session_id}")
 
 

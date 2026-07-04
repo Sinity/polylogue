@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.core.sources import source_name_to_origin
+from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider, source_name_to_origin
 
 
 def test_source_name_to_origin_projects_provider_tokens_to_origin() -> None:
@@ -14,6 +15,11 @@ def test_source_name_to_origin_projects_provider_tokens_to_origin() -> None:
     # Empty input degrades to the neutral "unknown" token.
     assert source_name_to_origin("") == "unknown"
     assert source_name_to_origin(None) == "unknown"
+
+
+def test_origin_from_provider_accepts_canonical_origin_tokens() -> None:
+    assert origin_from_provider("claude-code-session") is Origin.CLAUDE_CODE_SESSION
+    assert origin_from_provider(Origin.CODEX_SESSION) is Origin.CODEX_SESSION
 
 
 def test_source_name_to_origin_maps_source_family_tokens_not_just_providers() -> None:

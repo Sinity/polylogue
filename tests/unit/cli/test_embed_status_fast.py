@@ -258,7 +258,34 @@ def test_status_json_default_does_not_exact_count_archive_session_state(
     assert payload["pending_messages_exact"] is False
 
 
-def test_status_json_uses_uniform_metadata_probe_when_grouping_times_out(
+def test_status_json_default_skips_embedding_metadata_summary_scans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+    real_rows_with_timeout = status_payload_mod._rows_with_timeout
+
+    def reject_metadata_summary_rows(
+        conn: sqlite3.Connection,
+        sql: str,
+        *,
+        timeout_ms: int,
+        params: tuple[object, ...] = (),
+    ) -> list[sqlite3.Row | tuple[object, ...]] | None:
+        if "message_embeddings_meta" in sql:
+            raise AssertionError("default embedding status must not scan metadata summaries")
+        return real_rows_with_timeout(conn, sql, timeout_ms=timeout_ms, params=params)
+
+    monkeypatch.setattr(status_payload_mod, "_rows_with_timeout", reject_metadata_summary_rows)
+
+    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["status"] == "partial"
+    assert payload["embedding_models"] == {}
+    assert payload["embedding_dimensions"] == {}
+
+
+def test_status_json_detail_uses_uniform_metadata_probe_when_grouping_times_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_anchor = tmp_path / "custom.sqlite"
@@ -278,7 +305,7 @@ def test_status_json_uses_uniform_metadata_probe_when_grouping_times_out(
 
     monkeypatch.setattr(status_payload_mod, "_rows_with_timeout", fake_rows_with_timeout)
 
-    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["embedding_models"] == {"voyage-4": 1}
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}

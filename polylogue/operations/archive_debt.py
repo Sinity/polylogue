@@ -36,7 +36,6 @@ from polylogue.surfaces.payloads import (
 )
 
 _CONVERGENCE_STAGE_MAINTENANCE_TARGETS = {
-    "fts": "dangling_fts",
     "embed": "message_embeddings",
     "insights": "session_insights",
     "session_insights": "session_insights",
@@ -643,12 +642,11 @@ def _raw_materialization_debt_row(
         severity = "warning"
         status = "actionable"
         stage = "parse"
-        sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         summary = f"{count} {origin} raw artifact(s) parsed but have no materialized session"
         details = (
             f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
-            "Replay these raw rows through the raw-materialization target. If the current parser still emits no "
-            "session, the row needs an explicit non-session classification or parser/source-shape repair."
+            "The current parser produced no materialized session; the row needs an explicit non-session "
+            "classification or parser/source-shape repair."
         )
         actions = (
             ArchiveDebtActionPayload(
@@ -656,27 +654,11 @@ def _raw_materialization_debt_row(
                 command=("polylogue", "import", "--explain"),
                 description="Pass one of the sampled source paths and compare parser output with index materialization.",
             ),
-            ArchiveDebtActionPayload(
-                label="Preview targeted raw replay",
-                command=(
-                    "polylogue",
-                    "ops",
-                    "maintenance",
-                    "run",
-                    "--target",
-                    "raw_materialization",
-                    "--raw-artifact",
-                    sample_raw_id,
-                    "--dry-run",
-                ),
-                description="Preview reparsing one sampled raw artifact before a broader raw-materialization repair.",
-            ),
         )
     elif category == "parsed-session-unmaterialized":
         severity = "warning"
         status = "actionable"
         stage = "parse"
-        sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         sample_session_ids = _sample_parsed_session_native_ids(archive_root, sample_rows)
         shape_reasons = sorted(
             {reason for row in sample_rows if (reason := _parsed_session_shape_reason(archive_root, row)) is not None}
@@ -689,8 +671,7 @@ def _raw_materialization_debt_row(
         details = (
             f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
             f"Sample source shapes: {shape_text}.{sample_session_text} "
-            "Replay these rows through the raw-materialization target so parsed sessions are written into the "
-            "current index tier."
+            "Daemon convergence should write these parsed sessions into the current index tier."
         )
         actions = (
             ArchiveDebtActionPayload(
@@ -699,22 +680,9 @@ def _raw_materialization_debt_row(
                 description="Pass one of the sampled source paths and compare produced session refs with index materialization.",
             ),
             ArchiveDebtActionPayload(
-                label="Preview targeted raw replay",
-                command=(
-                    "polylogue",
-                    "ops",
-                    "maintenance",
-                    "run",
-                    "--target",
-                    "raw_materialization",
-                    "--raw-artifact",
-                    sample_raw_id,
-                    "--dry-run",
-                ),
-                description=(
-                    "Preview reparsing one sampled session-shaped raw artifact before a broader "
-                    "raw-materialization repair."
-                ),
+                label="Run daemon convergence",
+                command=("polylogued", "run"),
+                description="Let daemon convergence drain acquired raw sessions into the index tier.",
             ),
         )
     elif category == "materialized-alias":
@@ -742,7 +710,6 @@ def _raw_materialization_debt_row(
     else:
         severity = "warning"
         stage = "parse"
-        sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         summary = f"{count} {origin} raw artifact(s) are acquired but not yet parsed"
         details = f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}."
         if blocked_oversized_count:
@@ -753,19 +720,9 @@ def _raw_materialization_debt_row(
             )
             actions = (
                 ArchiveDebtActionPayload(
-                    label="Preview targeted raw replay",
-                    command=(
-                        "polylogue",
-                        "ops",
-                        "maintenance",
-                        "run",
-                        "--target",
-                        "raw_materialization",
-                        "--raw-artifact",
-                        sample_raw_id,
-                        "--dry-run",
-                    ),
-                    description="Preview byte size and candidate count; actual replay remains blocked for non-stream-safe oversized rows.",
+                    label="Explain parser output",
+                    command=("polylogue", "import", "--explain"),
+                    description="Inspect one sampled source path; daemon convergence will retry when the source shape is stream-safe.",
                 ),
             )
         else:
@@ -776,23 +733,8 @@ def _raw_materialization_debt_row(
                 )
             actions = (
                 ArchiveDebtActionPayload(
-                    label="Run daemon ingest",
+                    label="Run daemon convergence",
                     command=("polylogued", "run"),
-                ),
-                ArchiveDebtActionPayload(
-                    label="Preview targeted raw replay",
-                    command=(
-                        "polylogue",
-                        "ops",
-                        "maintenance",
-                        "run",
-                        "--target",
-                        "raw_materialization",
-                        "--raw-artifact",
-                        sample_raw_id,
-                        "--dry-run",
-                    ),
-                    description="Preview reparsing one sampled acquired raw artifact before running a broad repair.",
                 ),
             )
 
@@ -1076,8 +1018,8 @@ def _fts_rows(index_db: Path, *, exact: bool) -> list[ArchiveDebtRowPayload]:
                 evidence_refs=(f"archive-tier:{index_db}",),
                 actions=(
                     ArchiveDebtActionPayload(
-                        label="Run FTS maintenance",
-                        command=("polylogue", "ops", "maintenance", "run", "--target", "dangling_fts"),
+                        label="Run daemon convergence",
+                        command=("polylogued", "run"),
                     ),
                 ),
             )
@@ -1123,8 +1065,8 @@ def _fts_rows(index_db: Path, *, exact: bool) -> list[ArchiveDebtRowPayload]:
                 evidence_refs=(f"archive-tier:{index_db}",),
                 actions=(
                     ArchiveDebtActionPayload(
-                        label="Run FTS maintenance",
-                        command=("polylogue", "ops", "maintenance", "run", "--target", "dangling_fts"),
+                        label="Run daemon convergence",
+                        command=("polylogued", "run"),
                     ),
                 ),
             )

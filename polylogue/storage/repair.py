@@ -132,16 +132,27 @@ def _raw_materialization_candidate_ids(
             params.extend((normalized_root, f"{normalized_root}/%"))
         rows = conn.execute(
             f"""
-            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size, r.parsed_at_ms
+            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size, r.parsed_at_ms,
+                   r.parse_error
             FROM raw_sessions AS r
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
               ON r.native_id IS NOT NULL
              AND s_by_native.origin = r.origin
              AND s_by_native.native_id = r.native_id
+            LEFT JOIN raw_sessions AS existing_native_raw
+              ON existing_native_raw.raw_id = s_by_native.raw_id
             WHERE s_by_raw.raw_id IS NULL
-              AND s_by_native.native_id IS NULL
-              AND r.parse_error IS NULL
+              AND (
+                s_by_native.native_id IS NULL
+                OR existing_native_raw.raw_id IS NULL
+              )
+              AND (
+                r.parse_error IS NULL
+                OR (
+                  r.parse_error LIKE 'decode:%No such file or directory:%'
+                )
+              )
               AND NOT (
                 COALESCE(r.validation_status, '') = 'skipped'
                 AND r.parsed_at_ms IS NOT NULL
@@ -155,6 +166,8 @@ def _raw_materialization_candidate_ids(
             params,
         ).fetchall()
         for row in rows:
+            if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(row["parse_error"]):
+                continue
             if _raw_materialized_by_source_path_native(conn, row):
                 continue
             if _raw_materialization_parsed_non_session_artifact(config.archive_root, row):
@@ -188,6 +201,113 @@ def _raw_materialization_stream_safe(candidates: RawMaterializationCandidates, r
     return is_stream_record_provider(candidates.raw_source_paths.get(raw_id), provider)
 
 
+def _raw_materialization_retryable_missing_blob_error(parse_error: object) -> bool:
+    if not isinstance(parse_error, str):
+        return False
+    return parse_error.startswith("decode:") and "No such file or directory" in parse_error
+
+
+def _raw_materialization_total_bytes(candidates: RawMaterializationCandidates, raw_ids: list[str]) -> int:
+    return sum(candidates.raw_blob_bytes.get(raw_id, 0) for raw_id in raw_ids)
+
+
+def _raw_materialization_max_bytes(candidates: RawMaterializationCandidates, raw_ids: list[str]) -> int:
+    return max((candidates.raw_blob_bytes.get(raw_id, 0) for raw_id in raw_ids), default=0)
+
+
+def _raw_materialization_bucket_summary(
+    candidates: RawMaterializationCandidates,
+    *,
+    values: dict[str, str],
+    key_name: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    buckets: dict[str, dict[str, int | str]] = {}
+    for raw_id in candidates.raw_ids:
+        key = values.get(raw_id) or "unknown"
+        size = candidates.raw_blob_bytes.get(raw_id, 0)
+        bucket = buckets.setdefault(key, {key_name: key, "raw_count": 0, "total_blob_bytes": 0, "max_blob_bytes": 0})
+        bucket["raw_count"] = int(bucket["raw_count"]) + 1
+        bucket["total_blob_bytes"] = int(bucket["total_blob_bytes"]) + size
+        bucket["max_blob_bytes"] = max(int(bucket["max_blob_bytes"]), size)
+    return [
+        dict(bucket)
+        for bucket in sorted(
+            buckets.values(),
+            key=lambda item: (-int(item["total_blob_bytes"]), -int(item["raw_count"]), str(item[key_name])),
+        )[:limit]
+    ]
+
+
+def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> dict[str, object]:
+    """Return a read-only weighted backlog for raw source-to-index replay.
+
+    The report uses the same candidate selector as ``repair_raw_materialization``
+    so diagnostics and actual replay agree about which raw rows are actionable.
+    It does not parse raw blobs or mutate the archive.
+    """
+
+    source_db = config.archive_root / "source.db"
+    index_db = config.archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return {
+            "available": False,
+            "reason": "source_or_index_tier_missing",
+            "candidate_count": 0,
+            "top_raw_rows": [],
+            "origin_summary": [],
+            "source_path_summary": [],
+        }
+    candidates = _raw_materialization_candidate_ids(config)
+    raw_ids_by_size = sorted(
+        candidates.raw_ids,
+        key=lambda raw_id: (-candidates.raw_blob_bytes.get(raw_id, 0), raw_id),
+    )
+    top_raw_rows = [
+        {
+            "raw_id": raw_id,
+            "origin": candidates.raw_origins.get(raw_id) or "unknown",
+            "source_path": candidates.raw_source_paths.get(raw_id) or "",
+            "blob_size": candidates.raw_blob_bytes.get(raw_id, 0),
+            "oversized": candidates.raw_blob_bytes.get(raw_id, 0) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+            "stream_safe": _raw_materialization_stream_safe(candidates, raw_id),
+        }
+        for raw_id in raw_ids_by_size[:limit]
+    ]
+    oversized_raw_ids = [
+        raw_id
+        for raw_id in candidates.raw_ids
+        if candidates.raw_blob_bytes.get(raw_id, 0) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+    ]
+    oversized_stream_safe = [
+        raw_id for raw_id in oversized_raw_ids if _raw_materialization_stream_safe(candidates, raw_id)
+    ]
+    return {
+        "available": True,
+        "candidate_count": len(candidates.raw_ids),
+        "missing_blob_count": candidates.missing_blobs,
+        "already_parsed_count": candidates.already_parsed,
+        "total_blob_bytes": candidates.total_blob_bytes,
+        "max_blob_bytes": candidates.max_blob_bytes,
+        "execute_blob_limit_bytes": RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+        "oversized_count": len(oversized_raw_ids),
+        "oversized_stream_safe_count": len(oversized_stream_safe),
+        "top_raw_rows": top_raw_rows,
+        "origin_summary": _raw_materialization_bucket_summary(
+            candidates,
+            values=candidates.raw_origins,
+            key_name="origin",
+            limit=limit,
+        ),
+        "source_path_summary": _raw_materialization_bucket_summary(
+            candidates,
+            values=candidates.raw_source_paths,
+            key_name="source_path",
+            limit=limit,
+        ),
+    }
+
+
 def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
     origin = str(row["origin"] or "")
     if not origin:
@@ -196,9 +316,10 @@ def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlit
         existing = conn.execute(
             """
             SELECT 1
-            FROM index_tier.sessions
-            WHERE origin = ?
-              AND native_id = ?
+            FROM index_tier.sessions AS s
+            JOIN raw_sessions AS existing_raw ON existing_raw.raw_id = s.raw_id
+            WHERE s.origin = ?
+              AND s.native_id = ?
             LIMIT 1
             """,
             (origin, native_id),
@@ -631,11 +752,6 @@ def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]
     return total
 
 
-def dangling_fts_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
-    messages_fts = derived_statuses.get("messages_fts")
-    return max(0, int(messages_fts.pending_rows or 0)) if messages_fts is not None else 0
-
-
 # ---------------------------------------------------------------------------
 # Archive debt collection (formerly archive_debt.py)
 # ---------------------------------------------------------------------------
@@ -699,6 +815,25 @@ def _repair_result(
     )
 
 
+def _internal_derived_repair_result(
+    name: str,
+    *,
+    repaired_count: int,
+    success: bool,
+    detail: str,
+    metrics: dict[str, float] | None = None,
+) -> RepairResult:
+    return RepairResult(
+        name=name,
+        category=MaintenanceCategory.DERIVED_REPAIR,
+        destructive=False,
+        repaired_count=repaired_count,
+        success=success,
+        detail=detail,
+        metrics=dict(metrics or {}),
+    )
+
+
 def _archive_debt_status(
     target_name: str,
     *,
@@ -725,25 +860,28 @@ def collect_archive_debt_statuses_sync(
     derived_statuses: dict[str, DerivedModelStatus] | None = None,
     include_expensive: bool = True,
     probe_only: bool = False,
+    target_names: tuple[str, ...] = (),
 ) -> dict[str, ArchiveDebtStatus]:
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
 
-    statuses = derived_statuses or collect_derived_model_statuses_sync(conn, verify_full=include_expensive)
+    selected = set(target_names) if target_names else set(_MAINTENANCE_TARGET_CATALOG.names())
+    needs_session_insights = "session_insights" in selected
+    statuses = (
+        derived_statuses or collect_derived_model_statuses_sync(conn, verify_full=include_expensive)
+        if needs_session_insights
+        else {}
+    )
 
     skip_large_message_scans = (
         probe_only
         and not include_expensive
         and _table_has_more_than(conn, "messages", _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT)
     )
-    orphaned_messages = 0 if skip_large_message_scans else count_orphaned_messages_sync(conn)
-    empty_sessions = 0 if skip_large_message_scans else count_empty_sessions_sync(conn)
-    orphaned_attachments = count_orphaned_attachments_sync(conn)
-    session_insights = session_insight_repair_count(statuses)
-    dangling_fts = dangling_fts_repair_count(statuses)
-    _unclassified = 0 if skip_large_message_scans else count_unclassified_message_type_sync(conn)
+    debt_statuses: dict[str, ArchiveDebtStatus] = {}
 
-    debt_statuses = {
-        "orphaned_messages": _archive_debt_status(
+    if "orphaned_messages" in selected:
+        orphaned_messages = 0 if skip_large_message_scans else count_orphaned_messages_sync(conn)
+        debt_statuses["orphaned_messages"] = _archive_debt_status(
             "orphaned_messages",
             issue_count=orphaned_messages,
             detail=(
@@ -758,8 +896,10 @@ def collect_archive_debt_statuses_sync(
                 )
             ),
             skipped=skip_large_message_scans,
-        ),
-        "empty_sessions": _archive_debt_status(
+        )
+    if "empty_sessions" in selected:
+        empty_sessions = 0 if skip_large_message_scans else count_empty_sessions_sync(conn)
+        debt_statuses["empty_sessions"] = _archive_debt_status(
             "empty_sessions",
             issue_count=empty_sessions,
             detail=(
@@ -770,46 +910,47 @@ def collect_archive_debt_statuses_sync(
                 else f"{empty_sessions:,} empty sessions"
             ),
             skipped=skip_large_message_scans,
-        ),
-        "orphaned_attachments": _archive_debt_status(
+        )
+    if "orphaned_attachments" in selected:
+        orphaned_attachments = count_orphaned_attachments_sync(conn)
+        debt_statuses["orphaned_attachments"] = _archive_debt_status(
             "orphaned_attachments",
             issue_count=orphaned_attachments,
             detail="No orphaned attachments"
             if orphaned_attachments == 0
             else f"{orphaned_attachments:,} orphaned attachment rows",
-        ),
-        "session_insights": _archive_debt_status(
+        )
+    if "session_insights" in selected:
+        session_insights = session_insight_repair_count(statuses)
+        debt_statuses["session_insights"] = _archive_debt_status(
             "session_insights",
             issue_count=session_insights,
             detail="Session insight read models ready"
             if session_insights == 0
             else f"{session_insights:,} pending/stale/orphaned session-insight rows",
-        ),
-        "dangling_fts": _archive_debt_status(
-            "dangling_fts",
-            issue_count=dangling_fts,
-            detail="FTS synchronized" if dangling_fts == 0 else f"{dangling_fts:,} dangling FTS rows",
-        ),
-        "message_type_backfill": _archive_debt_status(
+        )
+    if "message_type_backfill" in selected:
+        unclassified = 0 if skip_large_message_scans else count_unclassified_message_type_sync(conn)
+        debt_statuses["message_type_backfill"] = _archive_debt_status(
             "message_type_backfill",
-            issue_count=_unclassified,
+            issue_count=unclassified,
             detail=(
                 "Skipped exact message-type backfill scan in probe mode; use --deep for exact count"
                 if skip_large_message_scans
                 else "No messages need context/protocol classification"
-                if _unclassified == 0
-                else f"{_unclassified:,} messages would be classified as context or protocol"
+                if unclassified == 0
+                else f"{unclassified:,} messages would be classified as context or protocol"
             ),
             skipped=skip_large_message_scans,
-        ),
-    }
-    if include_expensive:
+        )
+    if include_expensive and "orphaned_blobs" in selected:
         orphaned_blobs = count_orphaned_blobs_sync(conn, db_path=db_path)
         debt_statuses["orphaned_blobs"] = _archive_debt_status(
             "orphaned_blobs",
             issue_count=orphaned_blobs,
             detail="No orphaned blobs" if orphaned_blobs == 0 else f"{orphaned_blobs:,} orphaned blob files on disk",
         )
+    if include_expensive and "superseded_raw_snapshots" in selected:
         superseded_raw_snapshots = count_superseded_raw_snapshots_sync(conn)
         debt_statuses["superseded_raw_snapshots"] = _archive_debt_status(
             "superseded_raw_snapshots",
@@ -1004,9 +1145,12 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
     from polylogue.storage.raw_retention import cleanup_superseded_raw_snapshots
     from polylogue.storage.sqlite.connection import open_connection
 
-    repair_db_path = config.db_path.with_name("source.db")
+    repair_db_path = config.archive_root / "source.db"
     if repair_db_path.exists():
-        protected_raw_ids = _index_referenced_raw_ids(config.db_path)
+        index_db_path = config.archive_root / "index.db"
+        if not index_db_path.exists():
+            index_db_path = config.db_path
+        protected_raw_ids = _index_referenced_raw_ids(index_db_path)
         with sqlite3.connect(repair_db_path) as conn:
             conn.row_factory = sqlite3.Row
             result = cleanup_superseded_raw_snapshots(
@@ -1249,70 +1393,6 @@ def preview_session_insights(*, count: int) -> RepairResult:
     )
 
 
-def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.fts.dangling_repair import (
-        configure_bounded_repair_connection,
-        dry_run_dangling_fts_repair,
-        repair_missing_fts_rows,
-        reset_and_repair_fts_rows,
-    )
-
-    try:
-        with _open_archive_index_connection() as conn:
-            configure_bounded_repair_connection(conn)
-            fts_exists = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-            ).fetchone()
-            if not fts_exists:
-                return _repair_result(
-                    "dangling_fts",
-                    repaired_count=0,
-                    success=True,
-                    detail="FTS table does not exist, skipping",
-                )
-            if dry_run:
-                outcome = dry_run_dangling_fts_repair(conn)
-                return _repair_result(
-                    "dangling_fts",
-                    repaired_count=outcome.repaired_count,
-                    success=outcome.success,
-                    detail=outcome.detail,
-                )
-            outcome = repair_missing_fts_rows(conn)
-            if not outcome.success:
-                outcome = reset_and_repair_fts_rows(conn)
-            conn.commit()
-            if outcome.success:
-                _resolve_convergence_debt(
-                    ops_db=config.archive_root / "ops.db",
-                    stage="fts",
-                    target_type="fts_surface",
-                    target_id="messages_fts",
-                )
-            return _repair_result(
-                "dangling_fts",
-                repaired_count=outcome.repaired_count,
-                success=outcome.success,
-                detail=outcome.detail,
-            )
-    except Exception as exc:
-        return _repair_result(
-            "dangling_fts",
-            repaired_count=0,
-            success=False,
-            detail=f"Failed to repair FTS index: {exc}",
-        )
-
-
-def preview_dangling_fts(*, count: int) -> RepairResult:
-    return _repair_result(
-        "dangling_fts",
-        repaired_count=count,
-        success=True,
-        detail=f"Would: FTS sync pending {count:,} rows" if count else "FTS index in sync",
-    )
-
-
 def repair_raw_materialization(
     config: Config,
     dry_run: bool = False,
@@ -1321,6 +1401,7 @@ def repair_raw_materialization(
     provider: str | None = None,
     source_family: str | None = None,
     source_root: Path | None = None,
+    raw_artifact_limit: int | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
     """Materialize replayable raw evidence into the index tier."""
@@ -1331,15 +1412,26 @@ def repair_raw_materialization(
         source_family=source_family,
         source_root=source_root,
     )
-    raw_ids = candidates.raw_ids
+    candidate_raw_ids = candidates.raw_ids
+    raw_ids = list(candidate_raw_ids)
+    if raw_artifact_limit is not None:
+        raw_ids = sorted(raw_ids, key=lambda raw_id: (candidates.raw_blob_bytes.get(raw_id, 0), raw_id))
+        raw_ids = raw_ids[:raw_artifact_limit]
     missing_blobs = candidates.missing_blobs
+    selected_total_bytes = _raw_materialization_total_bytes(candidates, raw_ids)
+    selected_max_bytes = _raw_materialization_max_bytes(candidates, raw_ids)
     metrics = {
-        "raw_materialization_candidate_count": float(len(raw_ids)),
+        "raw_materialization_candidate_count": float(len(candidate_raw_ids)),
+        "raw_materialization_selected_count": float(len(raw_ids)),
         "raw_materialization_missing_blob_count": float(missing_blobs),
         "raw_materialization_already_parsed_count": float(candidates.already_parsed),
         "raw_materialization_total_blob_bytes": float(candidates.total_blob_bytes),
         "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
+        "raw_materialization_selected_total_blob_bytes": float(selected_total_bytes),
+        "raw_materialization_selected_max_blob_bytes": float(selected_max_bytes),
     }
+    if raw_artifact_limit is not None:
+        metrics["raw_materialization_limit"] = float(raw_artifact_limit)
     oversized_candidate_raw_ids = [
         raw_id
         for raw_id in raw_ids
@@ -1364,7 +1456,7 @@ def repair_raw_materialization(
             detail = "Raw materialization ready"
             if missing_blobs:
                 detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
-            return _repair_result(
+            return _internal_derived_repair_result(
                 "raw_materialization",
                 repaired_count=0,
                 success=missing_blobs == 0,
@@ -1374,8 +1466,8 @@ def repair_raw_materialization(
         byte_detail = ""
         if raw_ids:
             byte_detail = (
-                f"; queued raw payload bytes total={_format_bytes(candidates.total_blob_bytes)}, "
-                f"largest={_format_bytes(candidates.max_blob_bytes)}"
+                f"; selected raw payload bytes total={_format_bytes(selected_total_bytes)}, "
+                f"largest={_format_bytes(selected_max_bytes)}"
             )
         oversized_detail = ""
         if oversized_raw_ids:
@@ -1389,16 +1481,19 @@ def repair_raw_materialization(
             )
         if candidates.already_parsed:
             detail = (
-                f"Would: replay {len(raw_ids):,} raw rows into index.db "
+                f"Would: replay {len(raw_ids):,} of {len(candidate_raw_ids):,} raw rows into index.db "
                 f"({candidates.already_parsed:,} already parsed but not materialized)"
             )
         else:
-            detail = f"Would: replay {len(raw_ids):,} acquired-but-unparsed raw rows into index.db"
+            detail = (
+                f"Would: replay {len(raw_ids):,} of {len(candidate_raw_ids):,} "
+                "acquired-but-unparsed raw rows into index.db"
+            )
         detail += byte_detail
         detail += oversized_detail
         if missing_blobs:
             detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
-        return _repair_result(
+        return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=len(raw_ids),
             success=True,
@@ -1409,7 +1504,7 @@ def repair_raw_materialization(
         detail = "Raw materialization ready"
         if missing_blobs:
             detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
-        return _repair_result(
+        return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
             success=missing_blobs == 0,
@@ -1417,7 +1512,7 @@ def repair_raw_materialization(
             metrics=metrics,
         )
     if not executable_raw_ids:
-        return _repair_result(
+        return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
             success=False,
@@ -1451,11 +1546,22 @@ def repair_raw_materialization(
                         desc=(f"raw_materialization: parsing raw 1/1 {raw_id} size={_format_bytes(raw_size)}"),
                     )
                 else:
-                    progress_callback(0, desc=f"raw_materialization: parsing {total:,} raw rows")
+                    progress_callback(
+                        0,
+                        desc=(
+                            f"raw_materialization: parsing {total:,} selected raw rows "
+                            f"of {len(candidate_raw_ids):,} candidates"
+                        ),
+                    )
             result = await service.parse_from_raw(
                 raw_ids=executable_raw_ids,
                 progress_callback=progress_callback,
-                force_write=False,
+                # Raw materialization is a convergence repair from durable
+                # source evidence. If the index still has an older row for the
+                # same native session whose source raw row disappeared, the
+                # normal duplicate-protection path would preserve stale
+                # unbacked content and leave readiness permanently blocked.
+                force_write=True,
                 repair_message_fts=False,
             )
             processed_total += len(result.processed_ids)
@@ -1472,7 +1578,7 @@ def repair_raw_materialization(
     try:
         processed, failures = asyncio.run(_run())
     except Exception as exc:
-        return _repair_result(
+        return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
             success=False,
@@ -1483,14 +1589,14 @@ def repair_raw_materialization(
     metrics["raw_materialization_session_change_count"] = float(processed)
     if candidates.already_parsed:
         detail = (
-            f"Replayed {len(executable_raw_ids):,} raw rows "
+            f"Replayed {len(executable_raw_ids):,} of {len(candidate_raw_ids):,} raw rows "
             f"({candidates.already_parsed:,} already parsed but not materialized); "
-            f"{processed:,} sessions changed; message FTS left to ingest triggers or the FTS maintenance stage"
+            f"{processed:,} sessions changed; message FTS left to ingest triggers or daemon convergence"
         )
     else:
         detail = (
-            f"Replayed {len(executable_raw_ids):,} acquired-but-unparsed raw rows; "
-            f"{processed:,} sessions changed; message FTS left to ingest triggers or the FTS maintenance stage"
+            f"Replayed {len(executable_raw_ids):,} of {len(candidate_raw_ids):,} acquired-but-unparsed raw rows; "
+            f"{processed:,} sessions changed; message FTS left to ingest triggers or daemon convergence"
         )
     if missing_blobs:
         detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
@@ -1503,60 +1609,13 @@ def repair_raw_materialization(
         detail += f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows used streaming replay"
     if failures:
         detail += f"; {failures:,} raw rows failed during parse/write"
-    return _repair_result(
+    return _internal_derived_repair_result(
         "raw_materialization",
         repaired_count=processed,
         success=missing_blobs == 0 and failures == 0 and not oversized_raw_ids,
         detail=detail,
         metrics=metrics,
     )
-
-
-def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.paths import active_index_db_path
-
-    try:
-        if dry_run:
-            wal_path = Path(str(active_index_db_path()) + "-wal")
-            if wal_path.exists():
-                wal_size = wal_path.stat().st_size
-                pages_estimate = wal_size // 4096
-                return _repair_result(
-                    "wal_checkpoint",
-                    repaired_count=pages_estimate,
-                    success=True,
-                    detail=f"Would: WAL checkpoint (~{pages_estimate} pages, {wal_size:,} bytes)",
-                )
-            return _repair_result(
-                "wal_checkpoint",
-                repaired_count=0,
-                success=True,
-                detail="Would: No WAL file present, nothing to checkpoint",
-            )
-
-        with _open_archive_index_connection() as conn:
-            row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-            busy, log, checkpointed = row[0], row[1], row[2]
-            if busy:
-                return _repair_result(
-                    "wal_checkpoint",
-                    repaired_count=0,
-                    success=False,
-                    detail=f"WAL checkpoint had busy pages: {busy} busy, {log} log, {checkpointed} checkpointed",
-                )
-            return _repair_result(
-                "wal_checkpoint",
-                repaired_count=checkpointed if checkpointed > 0 else 0,
-                success=True,
-                detail=f"WAL checkpoint complete: {checkpointed} pages checkpointed",
-            )
-    except Exception as exc:
-        return _repair_result(
-            "wal_checkpoint",
-            repaired_count=0,
-            success=False,
-            detail=f"WAL checkpoint failed: {exc}",
-        )
 
 
 def _to_repair_result(result: BackfillResult) -> RepairResult:
@@ -1594,27 +1653,8 @@ def repair_message_type_backfill(config: Config, dry_run: bool = False) -> Repai
     return _to_repair_result(run_backfill(config, dry_run=dry_run))
 
 
-def repair_message_embeddings(config: Config, dry_run: bool = False) -> RepairResult:
-    """No-op embedding rebuild stub.
-
-    Embeddings are materialized exclusively by the daemon's embedding stage
-    (see #828); there is no synchronous rebuild path. The maintenance target
-    is registered so planners and surfaces can name the dormant work, but
-    invoking it through ``doctor --repair`` is a no-op that records dormancy
-    rather than failing the run.
-    """
-    verb = "Would skip" if dry_run else "Skipped"
-    return _repair_result(
-        "message_embeddings",
-        repaired_count=0,
-        success=True,
-        detail=f"{verb}: embedding rebuild is daemon-owned and dormant (#828).",
-    )
-
-
 _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
-    "dangling_fts": preview_dangling_fts,
     "message_type_backfill": preview_message_type_backfill,
     "orphaned_messages": preview_orphaned_messages,
     "empty_sessions": preview_empty_sessions,
@@ -1626,11 +1666,7 @@ _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
 
 _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
-    "dangling_fts": repair_dangling_fts,
     "message_type_backfill": repair_message_type_backfill,
-    "message_embeddings": repair_message_embeddings,
-    "wal_checkpoint": repair_wal_checkpoint,
-    "raw_materialization": repair_raw_materialization,
     "orphaned_messages": repair_orphaned_messages,
     "empty_sessions": repair_empty_sessions,
     "orphaned_attachments": repair_orphaned_attachments,
@@ -1751,9 +1787,7 @@ __all__ = [
     "count_orphaned_messages_sync",
     "count_messages_by_type_sync",
     "count_unclassified_message_type_sync",
-    "dangling_fts_repair_count",
     "preview_counts_from_archive_debt",
-    "preview_dangling_fts",
     "preview_empty_sessions",
     "preview_orphaned_attachments",
     "preview_orphaned_blobs",
@@ -1761,7 +1795,7 @@ __all__ = [
     "preview_orphaned_messages",
     "preview_message_type_backfill",
     "preview_session_insights",
-    "repair_dangling_fts",
+    "raw_materialization_replay_backlog",
     "repair_empty_sessions",
     "repair_message_type_backfill",
     "repair_orphaned_attachments",
@@ -1770,7 +1804,6 @@ __all__ = [
     "repair_superseded_raw_snapshots",
     "repair_orphaned_messages",
     "repair_session_insights",
-    "repair_wal_checkpoint",
     "run_archive_cleanup",
     "run_safe_repairs",
     "run_selected_maintenance",

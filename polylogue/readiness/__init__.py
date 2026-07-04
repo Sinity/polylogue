@@ -309,7 +309,7 @@ def _message_index_check(conn: sqlite3.Connection, *, exact_counts: bool) -> Rea
         return ReadinessCheck(
             "index",
             VerifyStatus.WARNING,
-            summary="messages FTS triggers missing — index is stale; run repair dangling_fts",
+            summary="messages FTS triggers missing — index is stale; run polylogued to restore convergence",
         )
     return ReadinessCheck(
         "index",
@@ -404,13 +404,13 @@ def _fts_sync_check(conn: sqlite3.Connection) -> ReadinessCheck:
         return ReadinessCheck(
             "fts_sync",
             VerifyStatus.WARNING,
-            summary="Message FTS missing — search index unavailable; run repair dangling_fts",
+            summary="Message FTS missing — search index unavailable; run polylogued to restore convergence",
         )
     if not _message_fts_triggers_present(conn):
         return ReadinessCheck(
             "fts_sync",
             VerifyStatus.WARNING,
-            summary="Message FTS triggers missing — index is stale; run repair dangling_fts",
+            summary="Message FTS triggers missing — index is stale; run polylogued to restore convergence",
         )
     return ReadinessCheck("fts_sync", VerifyStatus.OK, summary="Messages FTS present")
 

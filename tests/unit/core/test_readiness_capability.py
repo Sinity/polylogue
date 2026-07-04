@@ -170,7 +170,7 @@ def test_raw_materialization_readiness_maps_actionable_debt_to_stale() -> None:
     assert component.summary == "raw evidence pending materialization"
     assert component.counts["affected_actionable"] == 4
     assert component.caveats == ()
-    assert component.repair_hint == "polylogue ops debt list --kind raw-materialization"
+    assert component.repair_hint == "polylogued run"
 
 
 def test_raw_materialization_readiness_maps_classified_info_debt_to_ready_with_caveat() -> None:
@@ -225,7 +225,33 @@ def test_raw_materialization_readiness_maps_unchecked_join_gaps_to_degraded() ->
     assert component.counts["archive_session_count"] == 8
     assert component.counts["join_gap_count"] == 3
     assert component.caveats == ("raw_index_join_gaps_unclassified_by_fast_readiness",)
-    assert component.repair_hint == "polylogue ops debt list --kind raw-materialization"
+    assert component.repair_hint == "polylogued run"
+
+
+def test_raw_materialization_readiness_maps_lost_source_evidence_to_blocked() -> None:
+    sample = {
+        "session_id": "codex-session:native-1",
+        "origin": "codex-session",
+        "native_id": "native-1",
+        "missing_raw_id": "raw-missing",
+        "evidence_status": "lost_source_evidence",
+    }
+
+    component = component_from_raw_materialization_readiness(
+        {
+            "available": True,
+            "total": 0,
+            "lost_source_evidence_count": 1,
+            "lost_source_evidence_samples": [sample],
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.BLOCKED
+    assert component.summary == "source evidence missing"
+    assert component.counts["lost_source_evidence_count"] == 1
+    assert component.caveats == ("lost_source_evidence",)
+    assert component.repair_hint == "restore exact raw artifact"
+    assert component.metadata["lost_source_evidence_samples"] == [sample]
 
 
 def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:
@@ -270,14 +296,14 @@ def test_archive_surface_maps_search_mismatch_to_stale_component() -> None:
             "evidence": {"text_block_count": 10, "messages_fts_count": 8},
         },
         scope="lexical",
-        repair_hint="polylogue ops maintenance run --target dangling_fts",
+        repair_hint="polylogued run",
     )
 
     assert component.state is CapabilityReadinessState.STALE
     assert component.scope == "lexical"
     assert component.counts == {"text_block_count": 10, "messages_fts_count": 8}
     assert component.caveats == ("messages_fts_row_mismatch",)
-    assert component.repair_hint == "polylogue ops maintenance run --target dangling_fts"
+    assert component.repair_hint == "polylogued run"
 
 
 def test_assertion_substrate_maps_missing_ready_and_error_states() -> None:

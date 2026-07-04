@@ -1,13 +1,33 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
+const ACTIVE_TAB_STATE_MIN_INTERVAL_MS = 4000;
 const CAPTURE_LOG_LIMIT = 80;
+const DEBUG_LOG_LIMIT = 160;
 const POST_POLL_INTERVAL_MS = 5000;
+const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
 const recentBackgroundCaptures = new Map();
+const recentActiveTabStateChecks = new Map();
 // command_id -> true once dispatched to a content script this SW lifetime, so a
 // fast poll cannot deliver the same command twice before its ack lands.
 const inFlightPostCommands = new Set();
 const pendingPostCommandAcks = new Map();
 let postPollTimer = 0;
+
+function timeoutError(label, timeoutMs) {
+  const error = new Error(`${label}_timeout_after_${timeoutMs}ms`);
+  error.name = "PolylogueTimeoutError";
+  return error;
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timer = 0;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = globalThis.setTimeout(() => reject(timeoutError(label, timeoutMs)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) globalThis.clearTimeout(timer);
+  });
+}
 
 function injectionPlanForUrl(url) {
   try {
@@ -77,6 +97,38 @@ async function appendCaptureLog(entry) {
   return next;
 }
 
+function sanitizeDebugDetails(value, depth = 0) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return { count: value.length };
+  if (typeof value !== "object" || depth > 2) return String(value);
+  const redactedKeys = new Set(["body", "envelope", "raw_provider_payload", "text", "turns", "messages", "content"]);
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (redactedKeys.has(key)) {
+      out[key] = "[redacted]";
+      continue;
+    }
+    out[key] = sanitizeDebugDetails(item, depth + 1);
+  }
+  return out;
+}
+
+async function appendDebugLog(entry) {
+  const stored = await chrome.storage.local.get({ polylogueDebugLog: [] });
+  const prior = Array.isArray(stored.polylogueDebugLog) ? stored.polylogueDebugLog : [];
+  const next = [
+    {
+      at: new Date().toISOString(),
+      ...sanitizeDebugDetails(entry),
+    },
+    ...prior,
+  ].slice(0, DEBUG_LOG_LIMIT);
+  await chrome.storage.local.set({ polylogueDebugLog: next });
+  return next;
+}
+
 async function updateSessionLedger({ provider, providerSessionId, patch }) {
   if (!provider || !providerSessionId) return null;
   const stored = await chrome.storage.local.get({ polylogueSessionLedger: {} });
@@ -131,35 +183,86 @@ async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
 async function postJson(path, payload) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
-  const response = await fetch(`${settings.baseUrl}${path}`, {
-    method: "POST",
-    headers: await requestHeaders({ hasBody: true, requestId }),
-    body: JSON.stringify(payload)
-  });
-  const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.error || `HTTP ${response.status}`);
-    error.receiverRequestId = receiverRequestId;
+  await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
+  try {
+    const response = await fetch(`${settings.baseUrl}${path}`, {
+      method: "POST",
+      headers: await requestHeaders({ hasBody: true, requestId }),
+      body: JSON.stringify(payload)
+    });
+    const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
+    const body = await response.json().catch(() => ({}));
+    await appendDebugLog({
+      stage: "receiver_response",
+      method: "POST",
+      path,
+      request_id: requestId,
+      receiver_request_id: receiverRequestId,
+      ok: response.ok,
+      status: response.status,
+      provider: body.provider || payload?.session?.provider || null,
+      provider_session_id: body.provider_session_id || payload?.session?.provider_session_id || null,
+      archive_state: body.state || null,
+      artifact_ref: body.artifact_ref || null,
+    });
+    if (!response.ok) {
+      const error = new Error(body.error || `HTTP ${response.status}`);
+      error.receiverRequestId = receiverRequestId;
+      throw error;
+    }
+    return { ...body, receiver_request_id: receiverRequestId };
+  } catch (error) {
+    await appendDebugLog({
+      stage: "receiver_error",
+      method: "POST",
+      path,
+      request_id: requestId,
+      receiver_request_id: error.receiverRequestId || null,
+      error: String(error.message || error),
+    });
     throw error;
   }
-  return { ...body, receiver_request_id: receiverRequestId };
 }
 
 async function getJson(path) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
-  const response = await fetch(`${settings.baseUrl}${path}`, {
-    headers: await requestHeaders({ requestId }),
-  });
-  const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.error || `HTTP ${response.status}`);
-    error.receiverRequestId = receiverRequestId;
+  await appendDebugLog({ stage: "receiver_request", method: "GET", path, request_id: requestId });
+  try {
+    const response = await fetch(`${settings.baseUrl}${path}`, {
+      headers: await requestHeaders({ requestId }),
+    });
+    const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
+    const body = await response.json().catch(() => ({}));
+    await appendDebugLog({
+      stage: "receiver_response",
+      method: "GET",
+      path,
+      request_id: requestId,
+      receiver_request_id: receiverRequestId,
+      ok: response.ok,
+      status: response.status,
+      provider: body.provider || null,
+      provider_session_id: body.provider_session_id || null,
+      archive_state: body.state || null,
+    });
+    if (!response.ok) {
+      const error = new Error(body.error || `HTTP ${response.status}`);
+      error.receiverRequestId = receiverRequestId;
+      throw error;
+    }
+    return { ...body, receiver_request_id: receiverRequestId };
+  } catch (error) {
+    await appendDebugLog({
+      stage: "receiver_error",
+      method: "GET",
+      path,
+      request_id: requestId,
+      receiver_request_id: error.receiverRequestId || null,
+      error: String(error.message || error),
+    });
     throw error;
   }
-  return { ...body, receiver_request_id: receiverRequestId };
 }
 
 async function refreshReceiverState() {
@@ -201,14 +304,18 @@ async function captureTab(tab, reason = "background") {
   recentBackgroundCaptures.set(tab.id, now);
   await ensureCaptureScripts(tab);
   try {
-    const result = await chrome.tabs.sendMessage(tab.id, {
-      type: "polylogue.capturePage",
-      reason
-    });
-    if (result?.ok) {
-      const envelopeSession = result.envelope?.session || {};
-      const provider = result.captureResult?.provider || envelopeSession.provider;
-      const providerSessionId = result.captureResult?.provider_session_id || envelopeSession.provider_session_id;
+    const resultWithTimeout = await withTimeout(
+      chrome.tabs.sendMessage(tab.id, {
+        type: "polylogue.capturePage",
+        reason
+      }),
+      CAPTURE_MESSAGE_TIMEOUT_MS,
+      "capture_message",
+    );
+    if (resultWithTimeout?.ok) {
+      const envelopeSession = resultWithTimeout.envelope?.session || {};
+      const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
+      const providerSessionId = resultWithTimeout.captureResult?.provider_session_id || envelopeSession.provider_session_id;
       await updateSessionLedger({
         provider,
         providerSessionId,
@@ -221,8 +328,8 @@ async function captureTab(tab, reason = "background") {
           attachment_count: Array.isArray(envelopeSession.turns)
             ? envelopeSession.turns.reduce((count, turn) => count + (Array.isArray(turn.attachments) ? turn.attachments.length : 0), 0)
             : null,
-          archive_state: result.archiveState || null,
-          receiver_request_id: result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null,
+          archive_state: resultWithTimeout.archiveState || null,
+          receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
           last_error: null,
         },
       });
@@ -232,28 +339,45 @@ async function captureTab(tab, reason = "background") {
         provider,
         provider_session_id: providerSessionId,
         tab_id: tab.id,
-        archive_state: result.archiveState?.state || null,
-        receiver_request_id: result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null,
+        archive_state: resultWithTimeout.archiveState?.state || null,
+        receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
       });
       await setState({
         online: true,
         captured: true,
-        last_capture: result.captureResult || result,
-        archive_state: result.archiveState || null,
+        last_capture: resultWithTimeout.captureResult || resultWithTimeout,
+        archive_state: resultWithTimeout.archiveState || null,
         provider,
         provider_session_id: providerSessionId,
         capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
         last_receiver_request_id:
-          result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null
+          resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null
+      });
+      await appendDebugLog({
+        stage: "capture_result",
+        ok: true,
+        reason,
+        provider,
+        provider_session_id: providerSessionId,
+        capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
+        archive_state: resultWithTimeout.archiveState?.state || null,
+        receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
       });
     }
-    return result;
+    return resultWithTimeout;
   } catch (error) {
     await appendCaptureLog({
       ok: false,
       reason,
       tab_id: tab.id,
       tab_url: tab.url || tab.pendingUrl || null,
+      error: String(error.message || error),
+    });
+    await appendDebugLog({
+      stage: "capture_result",
+      ok: false,
+      reason,
+      tab_id: tab.id,
       error: String(error.message || error),
     });
     return { ok: false, error: String(error.message || error) };
@@ -294,22 +418,116 @@ function providerTokenForUrl(url) {
   return null;
 }
 
-function conversationIdForUrl(url) {
+function archiveProviderForUrl(url) {
   try {
     const parsed = new URL(url || "");
-    const parts = parsed.pathname.split("/").filter(Boolean);
-    const provider = providerTokenForUrl(url);
-    if (provider === "chatgpt") {
-      const marker = parts.indexOf("c");
-      return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
-    }
-    if (provider === "claude") {
-      return parts[0] === "chat" && parts[1] ? parts[1] : null;
+    if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) return "chatgpt";
+    if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) return "claude-ai";
+    if (
+      parsed.hostname === "grok.com" ||
+      parsed.hostname.endsWith(".grok.com") ||
+      parsed.hostname === "x.com" ||
+      parsed.hostname.endsWith(".x.com") ||
+      parsed.hostname === "twitter.com" ||
+      parsed.hostname.endsWith(".twitter.com")
+    ) {
+      return "grok";
     }
   } catch {
     return null;
   }
   return null;
+}
+
+function conversationIdForUrl(url) {
+  try {
+    const parsed = new URL(url || "");
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const provider = archiveProviderForUrl(url);
+    if (provider === "chatgpt") {
+      const marker = parts.indexOf("c");
+      if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+      if (parsed.searchParams.get("temporary-chat") === "true") return null;
+      return null;
+    }
+    if (provider === "claude-ai") {
+      return parts[0] === "chat" && parts[1] ? parts[1] : null;
+    }
+    if (provider === "grok") {
+      return parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok") || null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
+  const url = tab?.url || tab?.pendingUrl || "";
+  const provider = archiveProviderForUrl(url);
+  const providerSessionId = conversationIdForUrl(url);
+  const throttleKey = `${tab?.id || "active"}:${provider || "unsupported"}:${providerSessionId || "none"}`;
+  const now = Date.now();
+  const lastCheckedAt = recentActiveTabStateChecks.get(throttleKey) || 0;
+  if (now - lastCheckedAt < ACTIVE_TAB_STATE_MIN_INTERVAL_MS) return;
+  recentActiveTabStateChecks.set(throttleKey, now);
+
+  try {
+    if (provider && providerSessionId) {
+      const query = new URLSearchParams({ provider, provider_session_id: providerSessionId });
+      const state = await getJson(`/v1/archive-state?${query.toString()}`);
+      await setState({
+        online: true,
+        captured: Boolean(state.captured),
+        archive_state: state,
+        provider,
+        provider_session_id: providerSessionId,
+        active_page_state: "conversation",
+        active_tab_id: tab?.id || null,
+        passive_reason: reason,
+        last_receiver_request_id: state.receiver_request_id || null,
+      });
+      return;
+    }
+
+    const status = await getJson("/v1/status");
+    await setState({
+      online: true,
+      captured: false,
+      status,
+      provider,
+      provider_session_id: null,
+      active_page_state: provider ? "supported_no_session" : "unsupported",
+      active_tab_id: tab?.id || null,
+      passive_reason: reason,
+      last_receiver_request_id: status.receiver_request_id || null,
+    });
+  } catch (error) {
+    await setState({
+      online: false,
+      captured: false,
+      provider,
+      provider_session_id: providerSessionId,
+      active_page_state: provider ? "receiver_error" : "unsupported",
+      active_tab_id: tab?.id || null,
+      passive_reason: reason,
+      error: String(error.message || error),
+      last_receiver_request_id: error.receiverRequestId || null,
+    });
+  }
+}
+
+async function refreshCurrentActiveTab(reason = "active_tab") {
+  if (!chrome.tabs?.query) {
+    await refreshReceiverState();
+    return;
+  }
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) {
+    await refreshReceiverState();
+    return;
+  }
+  await refreshActiveTabArchiveState(tab, reason);
 }
 
 async function ackPostCommand(commandId, result) {
@@ -425,11 +643,25 @@ function stopPostPolling() {
 void startPostPolling();
 
 chrome.runtime.onInstalled?.addListener(() => {
-  void refreshReceiverState();
+  void refreshCurrentActiveTab("extension_installed");
 });
 
 chrome.runtime.onStartup?.addListener(() => {
-  void refreshReceiverState();
+  void refreshCurrentActiveTab("browser_startup");
+});
+
+chrome.tabs?.onActivated?.addListener((activeInfo) => {
+  void (async () => {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    await refreshActiveTabArchiveState(tab, "tab_activated");
+  })();
+});
+
+chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo?.status !== "complete" && !changeInfo?.url) return;
+  void (async () => {
+    await refreshActiveTabArchiveState(tab?.id ? tab : await chrome.tabs.get(tabId), "tab_updated");
+  })();
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -527,6 +759,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       reason: message.type || "runtime_message",
       error: String(error.message || error),
       receiver_request_id: error.receiverRequestId || null,
+    });
+    await appendDebugLog({
+      stage: "runtime_message_error",
+      message_type: message.type || "runtime_message",
+      receiver_request_id: error.receiverRequestId || null,
+      error: String(error.message || error),
     });
     await setState({
       online: false,

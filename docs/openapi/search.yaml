@@ -2466,6 +2466,13 @@ x-polylogue-route-contracts:
   auth_policy: bearer_if_configured
   response_contract: SSE or JSON event poll
 - method: GET
+  pattern: /api/agents/coordination
+  kind: operational
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: AgentCoordinationPayload
+  notes: Shared coordination envelope used by CLI, MCP, and the web mission-control projection.
+- method: GET
   pattern: /api/sessions
   kind: read_query
   stability: stable

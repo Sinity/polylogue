@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Mapping
 from typing import TypeGuard
 
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, TEMPORARY_CHAT_INGEST_FLAG
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
-from polylogue.browser_capture.models import BrowserCaptureEnvelope, looks_like_browser_capture
+from polylogue.browser_capture.models import (
+    BrowserCaptureAttachment,
+    BrowserCaptureEnvelope,
+    looks_like_browser_capture,
+)
 from polylogue.core.enums import Provider, SessionKind
 from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage, ParsedSession
-
-TEMPORARY_CHAT_INGEST_FLAG = "capture:temporary-chat"
-DOM_FALLBACK_INGEST_FLAG = "capture:dom-fallback"
 
 
 def _legacy_native_id(provider: Provider, provider_session_id: str | None) -> str | None:
@@ -64,6 +68,70 @@ def _apply_browser_capture_session_kind(
     return session.model_copy(update={"session_kind": session_kind, "ingest_flags": ingest_flags})
 
 
+def _decode_base64_payload(value: object) -> bytes | None:
+    if not isinstance(value, str) or not value:
+        return None
+    data = value
+    if value.startswith("data:") and ";base64," in value:
+        _, data = value.split(";base64,", 1)
+    try:
+        return base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+
+
+def _browser_capture_attachment_inline_bytes(attachment: BrowserCaptureAttachment) -> bytes | None:
+    extracted_content = attachment.extracted_content
+    if isinstance(extracted_content, str):
+        return extracted_content.encode("utf-8")
+
+    provider_meta = attachment.provider_meta
+    if isinstance(provider_meta, Mapping):
+        meta_extracted = provider_meta.get("extracted_content")
+        if isinstance(meta_extracted, str):
+            return meta_extracted.encode("utf-8")
+
+    for value in (
+        attachment.inline_base64,
+        attachment.content_base64,
+        attachment.data,
+    ):
+        decoded = _decode_base64_payload(value)
+        if decoded is not None:
+            return decoded
+
+    if isinstance(provider_meta, Mapping):
+        for key in ("inline_base64", "content_base64", "base64", "base64_data", "data"):
+            decoded = _decode_base64_payload(provider_meta.get(key))
+            if decoded is not None:
+                return decoded
+
+    return None
+
+
+def _browser_capture_parsed_attachment(
+    attachment: BrowserCaptureAttachment,
+    *,
+    message_provider_id: str | None,
+) -> ParsedAttachment:
+    inline_bytes = _browser_capture_attachment_inline_bytes(attachment)
+    size_bytes = attachment.size_bytes
+    if inline_bytes is not None and size_bytes is None:
+        size_bytes = len(inline_bytes)
+    url = attachment.url
+    return ParsedAttachment(
+        provider_attachment_id=attachment.provider_attachment_id,
+        message_provider_id=message_provider_id,
+        name=attachment.name,
+        mime_type=attachment.mime_type,
+        size_bytes=size_bytes,
+        path=None,
+        source_url=url if url else None,
+        upload_origin="url" if url else "paste" if inline_bytes is not None else "oauth",
+        inline_bytes=inline_bytes,
+    )
+
+
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)
@@ -108,29 +176,17 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         message_position += 1
         for attachment in turn.attachments:
             attachments.append(
-                ParsedAttachment(
-                    provider_attachment_id=attachment.provider_attachment_id,
+                _browser_capture_parsed_attachment(
+                    attachment,
                     message_provider_id=attachment.message_provider_id or turn.provider_turn_id,
-                    name=attachment.name,
-                    mime_type=attachment.mime_type,
-                    size_bytes=attachment.size_bytes,
-                    path=None,
-                    source_url=attachment.url if attachment.url else None,
-                    upload_origin="url" if attachment.url else "oauth",
                 )
             )
 
     for attachment in envelope.session.attachments:
         attachments.append(
-            ParsedAttachment(
-                provider_attachment_id=attachment.provider_attachment_id,
+            _browser_capture_parsed_attachment(
+                attachment,
                 message_provider_id=attachment.message_provider_id,
-                name=attachment.name,
-                mime_type=attachment.mime_type,
-                size_bytes=attachment.size_bytes,
-                path=None,
-                source_url=attachment.url if attachment.url else None,
-                upload_origin="url" if attachment.url else "oauth",
             )
         )
 

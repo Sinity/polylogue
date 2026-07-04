@@ -81,6 +81,44 @@ manual transitions fail before they rewrite local state. Use `--force` only when
 a rare edge or continuity break is genuinely correct and the trigger/decision
 explains why it should not be routed through the normal state machine.
 
+## Greedy Batch / PR Cadence
+
+Default development unit: one complete bead. Finish the capability claim total
+and publish that as the normal PR boundary. A coherent phase is an exception
+that must justify itself before publication: the bead must be genuinely too
+large or risky to close as one PR, and the phase must honestly satisfy a named
+acceptance-criteria subset with a clear residual matrix. Do not open or publish
+a PR for every small projection, helper, construct declaration, or proof artifact
+merely because it is locally green.
+
+Prefer a single branch/PR for the whole bead when the work:
+
+- belongs to one bead and one capability claim;
+- touches the same shared acquisition/query/projection/rendering substrate;
+- can be verified by one focused test family plus one live/demo artifact;
+- would otherwise force reviewers and future agents to reconstruct intent
+  across several thin PRs.
+
+Split only when there is a real boundary:
+
+- the bead is too large to review safely as one phase;
+- independent parts have different risk, owners, or deployment timing;
+- one part is a prerequisite unblocking other active work;
+- verification cost or failure isolation would become materially worse;
+- a partial PR can close a named bead or named acceptance-criteria phase, not
+  just land a convenient substep.
+
+Before publishing, audit the bead acceptance criteria. The default answer should
+be "this PR closes the bead." If the PR does not close it, the body and bead
+notes must say exactly why a phase split is justified, which criteria are
+satisfied, which are deferred, and which follow-up bead owns the remainder. This
+is a velocity rule: fewer, more complete integration boundaries beat a chain of
+locally-correct but strategically thin slices.
+
+If the remaining work is within the same bead, same substrate, and same proof
+family, keep working. Do not stop merely because the current diff is already
+mergeable.
+
 ## One-Loop Protocol
 
 1. **Direction**
@@ -90,6 +128,11 @@ explains why it should not be routed through the normal state machine.
      operator tier frame — P0 campaign epics outrank everything),
      `ACTIVE-LOOP.md`, `DEMO-RADAR.md`, recent `OPERATING-LOG.md` next
      decisions, and any relevant audit note in `INDEX.md`.
+   - Run `devtools workspace frontier` when choosing from more than one
+     candidate, when a sibling agent is active, or while waiting on a long proof.
+     Use its subsystem/proof-cost/runtime-risk/subagent columns to batch
+     adjacent work, avoid schema-lane collisions, and select read-only audit
+     lanes that can update Beads without touching the current checkout.
    - Read `bd show <id>` for the chosen item — description, design notes,
      and acceptance criteria carry pre-made judgment; do not re-derive it.
    - Rank candidates by evidence urgency, user-visible truthfulness, substrate
@@ -147,6 +190,9 @@ explains why it should not be routed through the normal state machine.
      process prose.
    - Run `.agent/scripts/devloop-sync`.
    - Run `.agent/scripts/devloop-review` before claiming a clean checkpoint.
+   - Every loop must leave a Velocity/Meta record: a no-op with reason, a
+     frontier batch grouping, a delegated read-only lane, a removed friction
+     point, or a linked follow-up Bead.
 
 7. **Meta**
    - Run when the operator corrects process behavior, repeated friction appears,
@@ -165,6 +211,14 @@ explains why it should not be routed through the normal state machine.
      apology prose.
    - Ask whether demo generation lagged; if yes, run `devloop-demo` and improve
      the default next-loop check.
+
+8. **Integration**
+   - Before ending a slice, make the handoff explicit: committed files or
+     intentionally uncommitted local state, Beads updates, PR/replay status, and
+     verification. Use `.agent/scripts/devloop-integration` when branch replay
+     or PR grouping matters.
+   - Integration does not replace Velocity/Meta closure; after the handoff,
+     record the mandatory speed/process outcome described above.
 
 ## Workload Radar
 

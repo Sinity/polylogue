@@ -46,10 +46,9 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "validation-lane:live-insights-work-events" in rendered
     assert "validation-lane:live-insights-status" in rendered
     assert "validation-lane:live-insights-debt" in rendered
-    assert "maintenance dangling_fts:" in rendered
     assert "maintenance session_insights:" in rendered
     assert (
-        "uncovered maintenance targets: empty_sessions, message_embeddings, message_type_backfill, orphaned_attachments, orphaned_messages, raw_materialization, superseded_raw_snapshots, wal_checkpoint"
+        "uncovered maintenance targets: empty_sessions, message_type_backfill, orphaned_attachments, orphaned_messages, superseded_raw_snapshots"
         in rendered
     )
     assert "uncovered artifacts: thread_results, tool_usage_results" in rendered
@@ -78,7 +77,6 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert any(node["name"] == "message_fts" for node in payload["nodes"])
     assert {target["name"] for target in payload["maintenance_targets"]} >= {
         "session_insights",
-        "dangling_fts",
     }
     assert any(operation["name"] == "plan-parse-backlog" for operation in payload["operations"])
     assert any(operation["name"] == "ingest-archive-runtime" for operation in payload["operations"])
@@ -123,13 +121,6 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["index-message-fts"]
-    } >= {
-        ("synthetic-benchmark", "fts-rebuild", "authored.synthetic-benchmark"),
-        ("synthetic-benchmark", "incremental-index", "authored.synthetic-benchmark"),
-    }
-    assert {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["maintenance_targets"]["dangling_fts"]
     } >= {
         ("synthetic-benchmark", "fts-rebuild", "authored.synthetic-benchmark"),
         ("synthetic-benchmark", "incremental-index", "authored.synthetic-benchmark"),
@@ -200,13 +191,10 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["archive-coverage-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_maintenance_targets"] == [
         "empty_sessions",
-        "message_embeddings",
         "message_type_backfill",
         "orphaned_attachments",
         "orphaned_messages",
-        "raw_materialization",
         "superseded_raw_snapshots",
-        "wal_checkpoint",
     ]
     assert payload["scenario_coverage"]["paths"]["session-insight-status-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["archive-debt-query-loop"]["complete"] is True

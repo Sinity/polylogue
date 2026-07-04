@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Fast pre-commit gate: format + lint only.
+# Installed automatically by the devshell (shellHook in flake.nix).
+#
+# Worktree-escape detector (#1211):
+#   Agents working in isolated git worktrees occasionally `cd` into a
+#   different directory before committing, which can route the commit to
+#   an unintended branch and corrupt both the worktree and the target
+#   checkout. When git reports a worktree context (the per-worktree git
+#   dir differs from the shared common dir), we resolve the worktree's
+#   real root from `$GIT_DIR/gitdir` and verify that the current working
+#   directory is inside that worktree. If it isn't, we abort with a
+#   clear diagnostic before any commit lands in the wrong place.
+#
+#   Override (for legitimate cross-worktree commit flows):
+#     POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1 git commit ...
+
+set -euo pipefail
+
+# Worktree-escape detection.
+git_dir=$(git rev-parse --git-dir)
+git_common_dir=$(git rev-parse --git-common-dir)
+git_dir_abs=$(cd "$git_dir" && pwd -P)
+git_common_dir_abs=$(cd "$git_common_dir" && pwd -P)
+
+if [ "$git_dir_abs" != "$git_common_dir_abs" ]; then
+  # We are in a linked worktree. The per-worktree gitdir file points at
+  # the worktree's .git file; its parent is the worktree root.
+  if [ -f "$git_dir_abs/gitdir" ]; then
+    worktree_dotgit=$(cat "$git_dir_abs/gitdir")
+    worktree_root=$(cd "$(dirname "$worktree_dotgit")" && pwd -P)
+    pwd_real=$(pwd -P)
+    case "$pwd_real/" in
+      "$worktree_root"/*) ;;
+      *)
+        if [ "${POLYLOGUE_ALLOW_WORKTREE_ESCAPE:-0}" != "1" ]; then
+          echo "pre-commit: worktree escape detected" >&2
+          echo "  expected worktree root: $worktree_root" >&2
+          echo "  current directory:      $pwd_real" >&2
+          echo "  git common dir:         $git_common_dir_abs" >&2
+          echo "  per-worktree git dir:   $git_dir_abs" >&2
+          echo "" >&2
+          echo "  Refusing to commit. cd back into the worktree, or set" >&2
+          echo "  POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1 to override." >&2
+          exit 1
+        fi
+        echo "pre-commit: worktree escape override active (POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1)" >&2
+        ;;
+    esac
+  fi
+fi
+
+# Only check Python files staged for commit, including renames.
+mapfile -d '' staged < <(git diff --cached --name-only -z --diff-filter=ACMR -- '*.py')
+if [ "${#staged[@]}" -gt 0 ]; then
+  echo "pre-commit: checking format and lint" >&2
+
+  if ! ruff format --check "${staged[@]}" 2>/dev/null; then
+    echo "" >&2
+    echo "pre-commit: files need formatting. Run: ruff format polylogue/ tests/ devtools/" >&2
+    exit 1
+  fi
+
+  if ! ruff check --quiet "${staged[@]}" 2>/dev/null; then
+    echo "" >&2
+    echo "pre-commit: lint errors found. Run: ruff check --fix polylogue/ tests/ devtools/" >&2
+    exit 1
+  fi
+fi
+
+# --- BEGIN BEADS INTEGRATION v1.0.4 ---
+# This section is managed by beads. Do not remove these markers.
+if command -v bd >/dev/null 2>&1; then
+  export BD_GIT_HOOK=1
+  _bd_timeout=${BEADS_HOOK_TIMEOUT:-300}
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$_bd_timeout" bd hooks run pre-commit "$@"
+    _bd_exit=$?
+    if [ $_bd_exit -eq 124 ]; then
+      echo >&2 "beads: hook 'pre-commit' timed out after ${_bd_timeout}s — continuing without beads"
+      _bd_exit=0
+    fi
+  else
+    bd hooks run pre-commit "$@"
+    _bd_exit=$?
+  fi
+  if [ $_bd_exit -eq 3 ]; then
+    echo >&2 "beads: database not initialized — skipping hook 'pre-commit'"
+    _bd_exit=0
+  fi
+  if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
+fi
+# --- END BEADS INTEGRATION v1.0.4 ---

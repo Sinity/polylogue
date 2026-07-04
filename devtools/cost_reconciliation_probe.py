@@ -118,6 +118,55 @@ def _ratio_summary(
     )
 
 
+def _outside_pairs(
+    pairs: list[tuple[str, int, int, dict[str, object]]],
+    *,
+    tolerance: float,
+) -> list[tuple[str, int, int, dict[str, object]]]:
+    low = 1.0 - tolerance
+    high = 1.0 + tolerance
+    return [
+        (key, archive, external, extra)
+        for key, archive, external, extra in pairs
+        if external <= 0 or not (low <= archive / external <= high)
+    ]
+
+
+def _counter_dict(counter: Counter[Any], *, limit: int = 10) -> list[dict[str, object]]:
+    return [{"value": value, "count": count} for value, count in counter.most_common(limit)]
+
+
+def _codex_residual_classification(
+    pairs: list[tuple[str, int, int, dict[str, object]]],
+    *,
+    tolerance: float,
+) -> dict[str, object]:
+    outside = _outside_pairs(pairs, tolerance=tolerance)
+    replay_gap = Counter(
+        "positive_replay_gap" if _coerce_int(extra.get("archive_replay_gap_tokens")) > 0 else "zero_replay_gap"
+        for _, _, _, extra in outside
+    )
+    chain_size = Counter(_coerce_int(extra.get("archive_chain_session_count")) for _, _, _, extra in outside)
+    external_flags: Counter[str] = Counter()
+    for _, _, _, extra in outside:
+        external_flags[f"archived={extra.get('external_archived')}"] += 1
+        external_flags[f"has_user_event={extra.get('external_has_user_event')}"] += 1
+    return {
+        "outside_tolerance": len(outside),
+        "replay_gap_classes": _counter_dict(replay_gap),
+        "chain_session_counts": _counter_dict(chain_size),
+        "external_flag_counts": [{"flag": flag, "count": count} for flag, count in external_flags.most_common(10)],
+        "external_token_values": [
+            {"tokens_used": tokens, "count": count}
+            for tokens, count in Counter(external for _, _, external, _ in outside).most_common(10)
+        ],
+        "external_sources": _counter_dict(Counter(extra.get("external_source") for _, _, _, extra in outside)),
+        "external_cli_versions": _counter_dict(
+            Counter(extra.get("external_cli_version") for _, _, _, extra in outside)
+        ),
+    }
+
+
 def _copy_sqlite_to_scratch(source: Path, scratch_dir: Path) -> Path:
     scratch_dir.mkdir(parents=True, exist_ok=True)
     fd, dest_name = tempfile.mkstemp(prefix="codex-state-", suffix=".sqlite", dir=scratch_dir)
@@ -127,40 +176,96 @@ def _copy_sqlite_to_scratch(source: Path, scratch_dir: Path) -> Path:
     return dest
 
 
-def _codex_archive_totals(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
+def _codex_archive_totals(
+    conn: sqlite3.Connection,
+) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
     rows = conn.execute(
         """
         SELECT
           s.session_id,
           s.native_id,
+          COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
+          COALESCE(root.native_id, REPLACE(COALESCE(p.logical_session_id, u.session_id), 'codex-session:', ''))
+            AS logical_native_id,
+          u.model_name,
           SUM(COALESCE(u.input_tokens, 0)) AS input_tokens,
           SUM(COALESCE(u.output_tokens, 0)) AS output_tokens,
           SUM(COALESCE(u.cache_read_tokens, 0)) AS cached_input_tokens,
           SUM(COALESCE(u.cache_write_tokens, 0)) AS cache_write_tokens
         FROM session_model_usage AS u
         JOIN sessions AS s ON s.session_id = u.session_id
+        LEFT JOIN session_profiles AS p ON p.session_id = u.session_id
+        LEFT JOIN sessions AS root ON root.session_id = COALESCE(p.logical_session_id, u.session_id)
         WHERE s.origin = 'codex-session'
-        GROUP BY s.session_id, s.native_id
+        GROUP BY s.session_id, s.native_id, logical_session_id, logical_native_id, u.model_name
         """
     ).fetchall()
     totals: dict[str, dict[str, object]] = {}
+    logical_model_high_water: dict[tuple[str, str], list[int]] = {}
+    physical_chain_totals: Counter[str] = Counter()
+    chain_sessions: dict[str, set[str]] = {}
     for row in rows:
         native_id = str(row["native_id"])
         session_id = str(row["session_id"])
+        logical_session_id = str(row["logical_session_id"])
+        logical_native_id = str(row["logical_native_id"] or logical_session_id.removeprefix("codex-session:"))
+        model_name = str(row["model_name"] or "")
         key = native_id or session_id.removeprefix("codex-session:")
         input_tokens = int(row["input_tokens"] or 0)
         output_tokens = int(row["output_tokens"] or 0)
         cached_input_tokens = int(row["cached_input_tokens"] or 0)
         cache_write_tokens = int(row["cache_write_tokens"] or 0)
+        total_tokens = input_tokens + output_tokens + cached_input_tokens + cache_write_tokens
         totals[key] = {
             "session_id": session_id,
-            "total_tokens": input_tokens + output_tokens + cached_input_tokens + cache_write_tokens,
+            "total_tokens": total_tokens,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cached_input_tokens": cached_input_tokens,
             "cache_write_tokens": cache_write_tokens,
+            "logical_session_id": logical_session_id,
+            "logical_native_id": logical_native_id,
         }
-    return totals
+        physical_chain_totals[logical_native_id] += total_tokens
+        chain_sessions.setdefault(logical_native_id, set()).add(session_id)
+        bucket = logical_model_high_water.setdefault((logical_native_id, model_name), [0, 0, 0, 0])
+        bucket[0] = max(bucket[0], input_tokens)
+        bucket[1] = max(bucket[1], output_tokens)
+        bucket[2] = max(bucket[2], cached_input_tokens)
+        bucket[3] = max(bucket[3], cache_write_tokens)
+
+    logical_totals: dict[str, dict[str, object]] = {}
+    for (logical_native_id, _model_name), lanes in logical_model_high_water.items():
+        logical_bucket = logical_totals.setdefault(
+            logical_native_id,
+            {
+                "session_id": f"codex-session:{logical_native_id}",
+                "logical_native_id": logical_native_id,
+                "total_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached_input_tokens": 0,
+                "cache_write_tokens": 0,
+                "physical_chain_tokens": int(physical_chain_totals[logical_native_id]),
+                "chain_session_count": len(chain_sessions.get(logical_native_id, set())),
+            },
+        )
+        logical_bucket["input_tokens"] = _coerce_int(logical_bucket["input_tokens"]) + lanes[0]
+        logical_bucket["output_tokens"] = _coerce_int(logical_bucket["output_tokens"]) + lanes[1]
+        logical_bucket["cached_input_tokens"] = _coerce_int(logical_bucket["cached_input_tokens"]) + lanes[2]
+        logical_bucket["cache_write_tokens"] = _coerce_int(logical_bucket["cache_write_tokens"]) + lanes[3]
+        logical_bucket["total_tokens"] = _coerce_int(logical_bucket["total_tokens"]) + sum(lanes)
+
+    for item in logical_totals.values():
+        item["replay_gap_tokens"] = _coerce_int(item["physical_chain_tokens"]) - _coerce_int(item["total_tokens"])
+    for item in totals.values():
+        logical_native_id = str(item["logical_native_id"])
+        logical = logical_totals.get(logical_native_id, {})
+        item["logical_high_water_tokens"] = _coerce_int(logical.get("total_tokens"))
+        item["physical_chain_tokens"] = _coerce_int(logical.get("physical_chain_tokens"))
+        item["replay_gap_tokens"] = _coerce_int(logical.get("replay_gap_tokens"))
+        item["chain_session_count"] = _coerce_int(logical.get("chain_session_count"))
+    return totals, logical_totals
 
 
 def _codex_state_totals(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
@@ -228,7 +333,7 @@ def _probe_codex(
 
     copied = _copy_sqlite_to_scratch(codex_state, scratch_dir)
     try:
-        archive = _codex_archive_totals(archive_conn)
+        archive, logical_archive = _codex_archive_totals(archive_conn)
         with _open_ro(copied) as conn:
             external = _codex_state_totals(conn)
     except Exception as exc:
@@ -241,6 +346,7 @@ def _probe_codex(
         )
 
     pairs: list[tuple[str, int, int, dict[str, object]]] = []
+    logical_pairs: list[tuple[str, int, int, dict[str, object]]] = []
     for thread_id, ext in external.items():
         ext_tokens = _coerce_int(ext["tokens_used"])
         if thread_id in archive and ext_tokens > 0:
@@ -260,10 +366,42 @@ def _probe_codex(
                         "external_updated_at_ms": ext.get("updated_at_ms"),
                         "input_tokens": arch["input_tokens"],
                         "cached_input_tokens": arch["cached_input_tokens"],
+                        "archive_logical_session_id": arch.get("logical_session_id"),
+                        "archive_logical_native_id": arch.get("logical_native_id"),
+                        "archive_logical_high_water_tokens": arch.get("logical_high_water_tokens"),
+                        "archive_physical_chain_tokens": arch.get("physical_chain_tokens"),
+                        "archive_replay_gap_tokens": arch.get("replay_gap_tokens"),
+                        "archive_chain_session_count": arch.get("chain_session_count"),
+                    },
+                )
+            )
+        if thread_id in logical_archive and ext_tokens > 0:
+            logical = logical_archive[thread_id]
+            logical_pairs.append(
+                (
+                    thread_id,
+                    _coerce_int(logical["total_tokens"]),
+                    ext_tokens,
+                    {
+                        "session_id": logical["session_id"],
+                        "model": ext.get("model"),
+                        "external_source": ext.get("source"),
+                        "external_cli_version": ext.get("cli_version"),
+                        "external_archived": ext.get("archived"),
+                        "external_has_user_event": ext.get("has_user_event"),
+                        "external_updated_at_ms": ext.get("updated_at_ms"),
+                        "archive_logical_native_id": logical.get("logical_native_id"),
+                        "archive_logical_high_water_tokens": logical.get("total_tokens"),
+                        "archive_physical_chain_tokens": logical.get("physical_chain_tokens"),
+                        "archive_replay_gap_tokens": logical.get("replay_gap_tokens"),
+                        "archive_chain_session_count": logical.get("chain_session_count"),
+                        "input_tokens": logical.get("input_tokens"),
+                        "cached_input_tokens": logical.get("cached_input_tokens"),
                     },
                 )
             )
     comparison = _ratio_summary(pairs, tolerance=tolerance, max_samples=max_samples)
+    logical_comparison = _ratio_summary(logical_pairs, tolerance=tolerance, max_samples=max_samples)
     comparison = ComparisonSummary(
         compared=comparison.compared,
         missing_archive=sum(1 for thread_id in external if thread_id not in archive),
@@ -275,21 +413,39 @@ def _probe_codex(
         outside_tolerance=comparison.outside_tolerance,
         samples=comparison.samples,
     )
-    low = 1.0 - tolerance
-    high = 1.0 + tolerance
+    logical_comparison = ComparisonSummary(
+        compared=logical_comparison.compared,
+        missing_archive=sum(1 for thread_id in external if thread_id not in logical_archive),
+        missing_external=sum(1 for thread_id in logical_archive if thread_id not in external),
+        median_ratio=logical_comparison.median_ratio,
+        p90_ratio=logical_comparison.p90_ratio,
+        p99_ratio=logical_comparison.p99_ratio,
+        within_tolerance=logical_comparison.within_tolerance,
+        outside_tolerance=logical_comparison.outside_tolerance,
+        samples=logical_comparison.samples,
+    )
     outside_external_tokens = Counter(
-        external_tokens
-        for _, archive_tokens, external_tokens, _ in pairs
-        if external_tokens <= 0 or not (low <= archive_tokens / external_tokens <= high)
+        external_tokens for _, _, external_tokens, _ in _outside_pairs(pairs, tolerance=tolerance)
     )
     outside_external_flags: Counter[str] = Counter()
-    for _, archive_tokens, external_tokens, extra in pairs:
-        if external_tokens > 0 and low <= archive_tokens / external_tokens <= high:
-            continue
+    for _, _, _, extra in _outside_pairs(pairs, tolerance=tolerance):
         outside_external_flags[f"archived={extra.get('external_archived')}"] += 1
         outside_external_flags[f"has_user_event={extra.get('external_has_user_event')}"] += 1
         outside_external_flags[f"source={extra.get('external_source')}"] += 1
     status: ProbeStatus = "pass" if comparison.outside_tolerance == 0 else "fail"
+    fewest_outside_grain = (
+        "logical_session_model_high_water"
+        if logical_comparison.outside_tolerance < comparison.outside_tolerance
+        else "physical_session"
+    )
+    physical_p90_error = abs((comparison.p90_ratio or 1.0) - 1.0)
+    logical_p90_error = abs((logical_comparison.p90_ratio or 1.0) - 1.0)
+    closest_p90_grain = (
+        "logical_session_model_high_water" if logical_p90_error < physical_p90_error else "physical_session"
+    )
+    physical_total = sum(_coerce_int(item["total_tokens"]) for item in archive.values())
+    logical_total = sum(_coerce_int(item["total_tokens"]) for item in logical_archive.values())
+    external_total = sum(_coerce_int(item["tokens_used"]) for item in external.values())
     return ProbeSection(
         "codex",
         status,
@@ -299,8 +455,21 @@ def _probe_codex(
         details={
             "copied_path": str(copied),
             "archive_threads": len(archive),
+            "archive_logical_threads": len(logical_archive),
             "external_threads": len(external),
             "tolerance": tolerance,
+            "archive_grains": {
+                "comparison_grain": "physical_session",
+                "logical_available_grain": "logical_session_model_high_water",
+                "fewest_outside_tolerance_grain": fewest_outside_grain,
+                "closest_p90_ratio_grain": closest_p90_grain,
+                "physical_total_tokens": physical_total,
+                "logical_total_tokens": logical_total,
+                "external_total_tokens": external_total,
+                "replay_gap_tokens": physical_total - logical_total,
+            },
+            "logical_comparison": logical_comparison.to_dict(),
+            "logical_residual_classification": _codex_residual_classification(logical_pairs, tolerance=tolerance),
             "outside_external_token_values": [
                 {"tokens_used": tokens, "count": count} for tokens, count in outside_external_tokens.most_common(10)
             ],

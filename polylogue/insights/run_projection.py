@@ -306,8 +306,8 @@ def build_run_projection(
 
     for index, report in enumerate(subagent_reports):
         child_id = report.resolved_child_session_id or report.child_session_id or report.task_id or f"subagent-{index}"
-        child_run_ref = _run_ref(child_id)
-        child_snapshot_ref = _context_snapshot_ref(child_id, "subagent_start")
+        child_run_ref = _subagent_run_ref(session_id, child_id, report, index)
+        child_snapshot_ref = _context_snapshot_ref(child_run_ref.object_id, "subagent_start")
         evidence_refs = _to_evidence_refs(report.raw_refs)
         child_agent_ref = _agent_ref(harness, report.subagent_type)
         report_ref = _subagent_report_ref(session_id, report, index)
@@ -381,6 +381,11 @@ def _to_evidence_refs(raw_refs: Sequence[_RawRefLike]) -> tuple[EvidenceRef, ...
 
 def _run_ref(run_id: str) -> ObjectRef:
     return ObjectRef(kind="run", object_id=run_id)
+
+
+def _subagent_run_ref(session_id: str, child_id: str, report: _SubagentReportLike, index: int) -> ObjectRef:
+    stable_id = report.tool_id or report.task_id or child_id or str(index)
+    return ObjectRef(kind="run", object_id=f"{session_id}:subagent:{stable_id}")
 
 
 def _agent_ref(harness: RunHarness, role_or_type: str) -> ObjectRef:
