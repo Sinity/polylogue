@@ -547,7 +547,10 @@ python -m http.server --directory /tmp/polylogue-docs 8000
 <li>do not require an issue for every pull request</li>
 </ul>
 <h2>Git Hooks</h2>
-<p>The devshell installs git hooks automatically (<code>core.hooksPath .githooks</code>):</p>
+<p>The devshell installs git hooks automatically. In a Beads-enabled checkout it
+sets <code>core.hooksPath</code> to <code>.beads-hooks</code>; otherwise it falls back to <code>.githooks</code>.
+The Beads composite hooks chain the ordinary Polylogue gates below and then run
+the matching <code>bd hooks run ...</code> integration.</p>
 <ul>
 <li><strong>pre-commit</strong>: <code>ruff format --check</code> + <code>ruff check</code> on staged files.
 Also runs a worktree-escape detector (#1211): when committing from a
@@ -557,8 +560,11 @@ drifted outside that root (a common failure mode when an agent
 <code>cd</code>s into the main checkout from inside a worktree). Set
 <code>POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1</code> for legitimate cross-worktree
 commit flows.</li>
+<li><strong>prepare-commit-msg / post-checkout / post-merge</strong>: Beads integration hooks
+when <code>.beads-hooks</code> is active.</li>
 <li><strong>pre-push</strong>: <code>devtools verify --quick</code> (format, lint, mypy, generated
-surfaces, and fast manifest checks).</li>
+surfaces, and fast manifest checks), followed by the Beads pre-push hook when
+<code>.beads-hooks</code> is active.</li>
 </ul>
 <p>The pre-push hook is an early failure gate. The PR baseline is the
 <code>devtools verify</code> workflow below.</p>
@@ -580,10 +586,10 @@ devtools verify --all      # explicit full non-integration pytest diagnostic
 devtools verify --quick    # format + lint + mypy + render all --check (skip tests)
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 </code></pre>
-<p>The quick gate runs on <code>git push</code> via <code>.githooks/pre-push</code>. It's a fast check,
-not a substitute for the default baseline. The default command fails fast when
-<code>.cache/testmon/testmondata</code> and <code>.cache/testmon/seed.json</code> are missing; do not
-rely on silent full-suite fallback.</p>
+<p>The quick gate runs on <code>git push</code> via the active pre-push hook. It's a fast
+check, not a substitute for the default baseline. The default command fails
+fast when <code>.cache/testmon/testmondata</code> and <code>.cache/testmon/seed.json</code> are
+missing; do not rely on silent full-suite fallback.</p>
 <p><code>devtools verify</code> does not replay a prior verify result. It always runs the
 static gates and then invokes pytest-testmon for affected-test selection from
 the current source, dependency, and Python-version state. The default pytest
