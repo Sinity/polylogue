@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from polylogue.coordination import build_coordination_envelope
 from polylogue.core.enums import AssertionKind, AssertionStatus, Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.mcp.archive_support import (
@@ -1039,6 +1041,21 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(MCPRootPayload(root=cast(dict[str, object], {"query_completions": payload})))
 
         return await hooks.async_safe_call("query_completions", run)
+
+    @mcp.tool()
+    async def agent_coordination(
+        view: Literal["status", "self", "work-item", "conflicts", "handoff"] = "status",
+        cwd: str | None = None,
+        limit: MCPToolLimit = 10,
+    ) -> str:
+        """Return the bounded shared coordination envelope for agents."""
+
+        async def run() -> str:
+            path = Path(cwd).expanduser().resolve() if cwd else None
+            payload = build_coordination_envelope(view=view, cwd=path, limit=hooks.clamp_limit(limit))
+            return hooks.json_payload(payload, exclude_none=True)
+
+        return await hooks.async_safe_call("agent_coordination", run)
 
     @mcp.tool()
     async def action_affordances() -> str:

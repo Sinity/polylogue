@@ -707,7 +707,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 184
+    loc: 187
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -715,12 +715,16 @@ files:
     target: polylogue/cli/click_option_groups.py
     owner: stable
   - path: polylogue/cli/command_inventory.py
-    loc: 86
+    loc: 88
     target: polylogue/cli/command_inventory.py
     owner: stable
   - path: polylogue/cli/commands/__init__.py
     loc: 1
     target: polylogue/cli/commands/__init__.py
+    owner: stable
+  - path: polylogue/cli/commands/agents.py
+    loc: 100
+    target: polylogue/cli/commands/agents.py
     owner: stable
   - path: polylogue/cli/commands/auth.py
     loc: 124
@@ -1076,6 +1080,22 @@ files:
   - path: polylogue/context/selection.py
     loc: 288
     target: polylogue/context/selection.py
+    owner: stable
+  - path: polylogue/coordination/__init__.py
+    loc: 11
+    target: polylogue/coordination/__init__.py
+    owner: stable
+  - path: polylogue/coordination/envelope.py
+    loc: 515
+    target: polylogue/coordination/envelope.py
+    owner: stable
+  - path: polylogue/coordination/payloads.py
+    loc: 120
+    target: polylogue/coordination/payloads.py
+    owner: stable
+  - path: polylogue/coordination/rendering.py
+    loc: 52
+    target: polylogue/coordination/rendering.py
     owner: stable
   - path: polylogue/core/__init__.py
     loc: 0
@@ -1695,7 +1715,7 @@ files:
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
-    loc: 384
+    loc: 405
     target: polylogue/mcp/server_prompts.py
     owner: stable
   - path: polylogue/mcp/server_resources.py
@@ -1707,7 +1727,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 1069
+    loc: 1086
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py

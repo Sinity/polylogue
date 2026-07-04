@@ -66,6 +66,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "explain_query_expression": "single_object",
     "query_completions": "single_object",
     "action_affordances": "single_object",
+    "agent_coordination": "single_object",
     "resolve_ref": "single_object",
     "explain_import": "typed_envelope",
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
