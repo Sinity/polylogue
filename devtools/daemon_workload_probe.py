@@ -29,7 +29,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 15  # v15 adds automatic convergence backlog visibility.
+REPORT_VERSION = 16  # v16 adds missing raw-link samples to raw artifact readiness.
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -1377,6 +1377,7 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             source_attached = True
             source_check_available = _attached_table_exists(conn, "source_tier", "raw_sessions")
         counts = _archive_derived_counts(conn, source_check_available=source_check_available, exact_counts=exact_counts)
+        counts["missing_raw_session_samples"] = _missing_raw_session_samples(conn) if source_check_available else []
         counts.update(_raw_materialization_debt_counts(root))
         materialization_counts = _archive_materialization_counts(conn)
         missing_materialization_counts = _archive_missing_materialization_counts(conn)
@@ -1537,6 +1538,34 @@ def _archive_derived_counts(
     }
 
 
+def _missing_raw_session_samples(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT s.session_id, s.origin, s.native_id, s.raw_id,
+               s.message_count, s.updated_at_ms
+        FROM sessions AS s
+        WHERE s.raw_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM source_tier.raw_sessions AS r WHERE r.raw_id = s.raw_id
+          )
+        ORDER BY s.updated_at_ms DESC, s.session_id
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        {
+            "session_id": str(row[0]),
+            "origin": str(row[1]),
+            "native_id": str(row[2]),
+            "missing_raw_id": str(row[3]),
+            "message_count": int(row[4] or 0),
+            "updated_at_ms": None if row[5] is None else int(row[5]),
+        }
+        for row in rows
+    ]
+
+
 def _raw_materialization_debt_counts(root: Path) -> dict[str, int | None]:
     try:
         from polylogue.operations.archive_debt import archive_debt_list
@@ -1570,7 +1599,7 @@ def _archive_surface_readiness(
         *,
         ready: bool | None,
         blockers: list[str],
-        evidence: dict[str, int | bool | None],
+        evidence: dict[str, Any],
     ) -> dict[str, Any]:
         return {
             "ready": ready,
@@ -1645,6 +1674,7 @@ def _archive_surface_readiness(
                 "source_check_available": source_check_available,
                 "raw_link_count": counts["raw_link_count"],
                 "missing_raw_session_count": counts["missing_raw_session_count"],
+                "missing_raw_session_samples": counts.get("missing_raw_session_samples", []),
                 "raw_materialization_debt_count": counts["raw_materialization_debt_count"],
                 "raw_materialization_debt_group_count": counts["raw_materialization_debt_group_count"],
             },

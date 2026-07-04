@@ -496,6 +496,16 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert readiness["counts"]["session_count"] == 2
     assert readiness["counts"]["raw_link_count"] == 2
     assert readiness["counts"]["missing_raw_session_count"] == 1
+    assert readiness["counts"]["missing_raw_session_samples"] == [
+        {
+            "session_id": "codex-session:native-2",
+            "origin": "codex-session",
+            "native_id": "native-2",
+            "missing_raw_id": "raw-missing",
+            "message_count": 0,
+            "updated_at_ms": None,
+        }
+    ]
     assert readiness["counts"]["raw_materialization_debt_count"] == 0
     assert readiness["counts"]["message_count"] == 1
     assert readiness["counts"]["text_block_count"] == UNKNOWN_TABLE_COUNT
@@ -519,6 +529,16 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert surfaces["archive_sessions"]["evidence"]["message_count"] == 1
     assert surfaces["raw_artifacts"]["ready"] is False
     assert surfaces["raw_artifacts"]["blockers"] == ["missing_source_raw_sessions"]
+    assert surfaces["raw_artifacts"]["evidence"]["missing_raw_session_samples"] == [
+        {
+            "session_id": "codex-session:native-2",
+            "origin": "codex-session",
+            "native_id": "native-2",
+            "missing_raw_id": "raw-missing",
+            "message_count": 0,
+            "updated_at_ms": None,
+        }
+    ]
     assert surfaces["raw_artifacts"]["evidence"]["raw_materialization_debt_count"] == 0
     assert surfaces["search"]["ready"] is True
     assert surfaces["search"]["evidence"]["messages_fts_exact_counts"] is False
@@ -714,11 +734,11 @@ def test_daemon_workload_probe_reports_raw_materialization_debt(tmp_path: Path) 
     payload = probe(db)
 
     readiness = payload["archive_tiers"]["derived_readiness"]
-    assert readiness["counts"]["raw_materialization_debt_count"] == 0
+    assert readiness["counts"]["raw_materialization_debt_count"] == 1
     assert readiness["counts"]["raw_materialization_debt_group_count"] == 1
-    assert readiness["ready"]["raw_materialization_ready"] is True
-    assert readiness["surface_readiness"]["raw_artifacts"]["ready"] is True
-    assert readiness["surface_readiness"]["raw_artifacts"]["blockers"] == []
+    assert readiness["ready"]["raw_materialization_ready"] is False
+    assert readiness["surface_readiness"]["raw_artifacts"]["ready"] is False
+    assert readiness["surface_readiness"]["raw_artifacts"]["blockers"] == ["unmaterialized_raw_sessions"]
 
 
 def test_daemon_workload_probe_does_not_block_on_informational_raw_debt(
