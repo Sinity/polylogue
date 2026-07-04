@@ -1132,10 +1132,21 @@ def _archive_pending_embedding_session_ids(conn: sqlite3.Connection, session_ids
     ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not ids:
         return []
+    db_row = conn.execute("PRAGMA database_list").fetchone()
+    index_db = Path(str(db_row[2])) if db_row is not None and db_row[2] else None
+    status_table = None
+    if index_db is not None:
+        embeddings_db = index_db.with_name("embeddings.db")
+        if embeddings_db.exists():
+            attached = {str(row[1]) for row in conn.execute("PRAGMA database_list").fetchall() if len(row) > 1}
+            if "embeddings" not in attached:
+                conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+            status_table = "embeddings.embedding_status"
     return [
         item.session_id
         for item in select_pending_archive_session_window(
             conn,
+            status_table=status_table,
             session_ids=ids,
             max_sessions=_DAEMON_EMBED_MAX_SESSIONS,
             max_messages=_DAEMON_EMBED_MAX_MESSAGES,

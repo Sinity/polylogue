@@ -269,6 +269,53 @@ def test_archive_convergence_embedding_uses_embeddings_tier(
     assert embedded_calls == [(index_db, "codex-session:v1-a")]
 
 
+def test_archive_convergence_pending_check_reads_embeddings_tier(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    index_db = tmp_path / "index.db"
+    embeddings_db = tmp_path / "embeddings.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                title TEXT,
+                message_count INTEGER NOT NULL,
+                sort_key_ms INTEGER
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                variant_index INTEGER NOT NULL DEFAULT 0,
+                message_type TEXT NOT NULL DEFAULT 'message',
+                role TEXT NOT NULL,
+                material_origin TEXT NOT NULL,
+                word_count INTEGER NOT NULL DEFAULT 1,
+                content_hash BLOB
+            );
+            INSERT INTO sessions VALUES ('codex-session:v1-a', 'Archive A', 1, 1);
+            INSERT INTO messages (
+                message_id, session_id, position, role, material_origin, word_count, content_hash
+            ) VALUES ('m1', 'codex-session:v1-a', 0, 'user', 'human_authored', 8, x'01');
+            """
+        )
+    with sqlite3.connect(embeddings_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, needs_reindex, error_message
+            ) VALUES ('codex-session:v1-a', 'codex-session', 1, 0, NULL)
+            """
+        )
+        conn.commit()
+
+    with sqlite3.connect(index_db) as conn:
+        assert convergence_stages._archive_pending_embedding_session_ids(conn, ["codex-session:v1-a"]) == []
+
+
 def test_daemon_embedding_backlog_drain_is_noop_when_disabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
