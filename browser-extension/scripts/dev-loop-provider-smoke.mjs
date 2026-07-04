@@ -321,7 +321,9 @@ async function waitForExtensionWorker(debuggingPort, expectedWorkerSuffix, expec
       await client.call("Runtime.enable");
       const manifestName = await evaluateJson(client, "chrome.runtime.getManifest().name").catch(() => null);
       if (manifestName === expectedManifestName) return { worker: candidate, client };
-      if (candidates.length === 1) return { worker: candidate, client };
+      if (candidates.length === 1 && candidate.url.endsWith(expectedWorkerSuffix) && manifestName) {
+        return { worker: candidate, client };
+      }
       client.close();
     }
     await sleep(250);
@@ -456,6 +458,26 @@ async function providerPageDiagnostics(client) {
       hasPolylogueCapture: Boolean(window.polylogueCapture),
       bodyTextSample: (document.body?.innerText || document.body?.textContent || "").slice(0, 240)
     }))()`,
+  );
+}
+
+async function providerPageResponsiveness(client) {
+  return evaluateJson(
+    client,
+    `(async () => {
+      const startedAt = performance.now();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const taskDelayMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      const sample = document.body?.textContent?.slice(0, 16) || "";
+      document.body?.dispatchEvent(new MouseEvent("mousemove", {bubbles: true, clientX: 4, clientY: 4}));
+      return {
+        ok: taskDelayMs < 1000 && typeof sample === "string",
+        task_delay_ms: taskDelayMs,
+        ready_state: document.readyState,
+        body_present: Boolean(document.body),
+        event_dispatch_ok: true
+      };
+    })()`,
   );
 }
 
@@ -695,6 +717,7 @@ function safeProviderSummary(providerConfig, capturePayload) {
       artifactRef &&
       captureResult.receiver_request_id &&
       archiveState.receiver_request_id &&
+      providerConfig.pageResponsiveness?.ok === true &&
       (!artifactPath || existsSync(artifactPath)),
   );
   return {
@@ -703,6 +726,7 @@ function safeProviderSummary(providerConfig, capturePayload) {
     expected_host: providerConfig.host,
     page_target: providerConfig.pageTarget || null,
     page_diagnostics: providerConfig.pageDiagnostics || null,
+    page_responsiveness: providerConfig.pageResponsiveness || null,
     opened_tab: providerConfig.openedTab || null,
     tab: capturePayload?.tab || null,
     tab_inventory: capturePayload?.tab_inventory || null,
@@ -815,6 +839,7 @@ async function main() {
       };
       config.openedTab = tab;
       config.expectedTabId = typeof tab?.id === "number" ? tab.id : null;
+      config.pageClient = client;
       pageClients.push(client);
       await waitForReadyPage(client);
       config.pageDiagnostics = await providerPageDiagnostics(client);
@@ -823,6 +848,7 @@ async function main() {
     const providers = {};
     for (const config of providerConfigs) {
       const capturePayload = await captureProvider(extensionControllerClient, config);
+      config.pageResponsiveness = await providerPageResponsiveness(config.pageClient);
       providers[config.key] = safeProviderSummary(config, capturePayload);
     }
     const popup = await inspectPopup(extensionControllerClient);

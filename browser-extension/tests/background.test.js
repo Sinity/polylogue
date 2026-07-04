@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let messageListener;
 let installedListener;
+let activatedListener;
+let updatedListener;
 let stored;
 let fetchCalls;
 let tabs;
@@ -13,6 +15,8 @@ function installChromeMock() {
   };
   messageListener = null;
   installedListener = null;
+  activatedListener = null;
+  updatedListener = null;
   fetchCalls = [];
   tabs = [{ id: 42, url: "https://chatgpt.com/?temporary-chat=true", title: "ChatGPT" }];
   globalThis.chrome = {
@@ -49,10 +53,14 @@ function installChromeMock() {
     tabs: {
       get: vi.fn(async (tabId) => tabs.find((tab) => tab.id === tabId)),
       onActivated: {
-        addListener: vi.fn(),
+        addListener: vi.fn((fn) => {
+          activatedListener = fn;
+        }),
       },
       onUpdated: {
-        addListener: vi.fn(),
+        addListener: vi.fn((fn) => {
+          updatedListener = fn;
+        }),
       },
       query: vi.fn(async () => tabs),
       sendMessage: vi.fn(async () => ({
@@ -149,11 +157,59 @@ describe("background receiver diagnostics", () => {
 
   it("does not capture existing provider tabs on extension update", async () => {
     expect(installedListener).toBeTypeOf("function");
+    globalThis.fetch = vi.fn(async () => responseJson({ ok: true, active: true }));
 
     installedListener();
 
     await Promise.resolve();
     await Promise.resolve();
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("refreshes active conversation archive state on tab activation without capturing page content", async () => {
+    expect(activatedListener).toBeTypeOf("function");
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-123", title: "ChatGPT" }];
+    globalThis.fetch = vi.fn(async (url, options) => {
+      fetchCalls.push({ url, options });
+      return responseJson(
+        {
+          provider: "chatgpt",
+          provider_session_id: "conv-123",
+          state: "missing",
+          lifecycle: "missing",
+          captured: false,
+          spooled: false,
+          artifact_ref: "chatgpt/conv-123.json",
+        },
+        { requestId: "archive-state-1" },
+      );
+    });
+
+    activatedListener({ tabId: 42 });
+
+    await vi.waitFor(() => expect(stored.polylogueState?.active_page_state).toBe("conversation"));
+    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/archive-state?provider=chatgpt&provider_session_id=conv-123");
+    expect(stored.polylogueState.archive_state.state).toBe("missing");
+    expect(stored.polylogueState.last_receiver_request_id).toBe("archive-state-1");
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("refreshes receiver status for supported pages without a conversation id", async () => {
+    expect(updatedListener).toBeTypeOf("function");
+    tabs = [{ id: 42, url: "https://chatgpt.com/", title: "ChatGPT" }];
+    globalThis.fetch = vi.fn(async (url, options) => {
+      fetchCalls.push({ url, options });
+      return responseJson({ ok: true, active: true }, { requestId: "status-1" });
+    });
+
+    updatedListener(42, { status: "complete" }, tabs[0]);
+
+    await vi.waitFor(() => expect(stored.polylogueState?.active_page_state).toBe("supported_no_session"));
+    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/status");
+    expect(stored.polylogueState.provider).toBe("chatgpt");
+    expect(stored.polylogueState.last_receiver_request_id).toBe("status-1");
     expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });

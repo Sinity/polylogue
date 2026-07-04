@@ -1,9 +1,11 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
+const ACTIVE_TAB_STATE_MIN_INTERVAL_MS = 4000;
 const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
 const POST_POLL_INTERVAL_MS = 5000;
 const recentBackgroundCaptures = new Map();
+const recentActiveTabStateChecks = new Map();
 // command_id -> true once dispatched to a content script this SW lifetime, so a
 // fast poll cannot deliver the same command twice before its ack lands.
 const inFlightPostCommands = new Set();
@@ -395,22 +397,116 @@ function providerTokenForUrl(url) {
   return null;
 }
 
-function conversationIdForUrl(url) {
+function archiveProviderForUrl(url) {
   try {
     const parsed = new URL(url || "");
-    const parts = parsed.pathname.split("/").filter(Boolean);
-    const provider = providerTokenForUrl(url);
-    if (provider === "chatgpt") {
-      const marker = parts.indexOf("c");
-      return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
-    }
-    if (provider === "claude") {
-      return parts[0] === "chat" && parts[1] ? parts[1] : null;
+    if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) return "chatgpt";
+    if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) return "claude-ai";
+    if (
+      parsed.hostname === "grok.com" ||
+      parsed.hostname.endsWith(".grok.com") ||
+      parsed.hostname === "x.com" ||
+      parsed.hostname.endsWith(".x.com") ||
+      parsed.hostname === "twitter.com" ||
+      parsed.hostname.endsWith(".twitter.com")
+    ) {
+      return "grok";
     }
   } catch {
     return null;
   }
   return null;
+}
+
+function conversationIdForUrl(url) {
+  try {
+    const parsed = new URL(url || "");
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const provider = archiveProviderForUrl(url);
+    if (provider === "chatgpt") {
+      const marker = parts.indexOf("c");
+      if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+      if (parsed.searchParams.get("temporary-chat") === "true") return null;
+      return null;
+    }
+    if (provider === "claude-ai") {
+      return parts[0] === "chat" && parts[1] ? parts[1] : null;
+    }
+    if (provider === "grok") {
+      return parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok") || null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
+  const url = tab?.url || tab?.pendingUrl || "";
+  const provider = archiveProviderForUrl(url);
+  const providerSessionId = conversationIdForUrl(url);
+  const throttleKey = `${tab?.id || "active"}:${provider || "unsupported"}:${providerSessionId || "none"}`;
+  const now = Date.now();
+  const lastCheckedAt = recentActiveTabStateChecks.get(throttleKey) || 0;
+  if (now - lastCheckedAt < ACTIVE_TAB_STATE_MIN_INTERVAL_MS) return;
+  recentActiveTabStateChecks.set(throttleKey, now);
+
+  try {
+    if (provider && providerSessionId) {
+      const query = new URLSearchParams({ provider, provider_session_id: providerSessionId });
+      const state = await getJson(`/v1/archive-state?${query.toString()}`);
+      await setState({
+        online: true,
+        captured: Boolean(state.captured),
+        archive_state: state,
+        provider,
+        provider_session_id: providerSessionId,
+        active_page_state: "conversation",
+        active_tab_id: tab?.id || null,
+        passive_reason: reason,
+        last_receiver_request_id: state.receiver_request_id || null,
+      });
+      return;
+    }
+
+    const status = await getJson("/v1/status");
+    await setState({
+      online: true,
+      captured: false,
+      status,
+      provider,
+      provider_session_id: null,
+      active_page_state: provider ? "supported_no_session" : "unsupported",
+      active_tab_id: tab?.id || null,
+      passive_reason: reason,
+      last_receiver_request_id: status.receiver_request_id || null,
+    });
+  } catch (error) {
+    await setState({
+      online: false,
+      captured: false,
+      provider,
+      provider_session_id: providerSessionId,
+      active_page_state: provider ? "receiver_error" : "unsupported",
+      active_tab_id: tab?.id || null,
+      passive_reason: reason,
+      error: String(error.message || error),
+      last_receiver_request_id: error.receiverRequestId || null,
+    });
+  }
+}
+
+async function refreshCurrentActiveTab(reason = "active_tab") {
+  if (!chrome.tabs?.query) {
+    await refreshReceiverState();
+    return;
+  }
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) {
+    await refreshReceiverState();
+    return;
+  }
+  await refreshActiveTabArchiveState(tab, reason);
 }
 
 async function ackPostCommand(commandId, result) {
@@ -526,11 +622,25 @@ function stopPostPolling() {
 void startPostPolling();
 
 chrome.runtime.onInstalled?.addListener(() => {
-  void refreshReceiverState();
+  void refreshCurrentActiveTab("extension_installed");
 });
 
 chrome.runtime.onStartup?.addListener(() => {
-  void refreshReceiverState();
+  void refreshCurrentActiveTab("browser_startup");
+});
+
+chrome.tabs?.onActivated?.addListener((activeInfo) => {
+  void (async () => {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    await refreshActiveTabArchiveState(tab, "tab_activated");
+  })();
+});
+
+chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo?.status !== "complete" && !changeInfo?.url) return;
+  void (async () => {
+    await refreshActiveTabArchiveState(tab?.id ? tab : await chrome.tabs.get(tabId), "tab_updated");
+  })();
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

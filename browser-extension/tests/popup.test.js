@@ -157,6 +157,53 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("state-detail").textContent).toContain("provider-native app data");
   });
 
+  it("renders missing archive state as a capture prompt, not a receiver failure", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: false,
+        active_page_state: "conversation",
+        archive_state: { state: "missing", indexed_message_count: 0 },
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(globalThis.document.getElementById("badge").textContent).toBe("missing");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Not archived");
+    expect(globalThis.document.getElementById("state").textContent).toContain("No capture exists");
+  });
+
+  it("renders supported pages without a conversation id without implying capture happened", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: false,
+        active_page_state: "supported_no_session",
+        provider: "chatgpt",
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(globalThis.document.getElementById("badge").textContent).toBe("ready");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Ready");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("does not read page content");
+  });
+
+  it("renders unsupported pages with a concrete next action", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: false,
+        active_page_state: "unsupported",
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(globalThis.document.getElementById("badge").textContent).toBe("idle");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Unsupported");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("ChatGPT, Claude.ai, or Grok/X");
+  });
+
   it("renders redacted debug log entries and export control", async () => {
     await loadPopup({
       polylogueDebugLog: [

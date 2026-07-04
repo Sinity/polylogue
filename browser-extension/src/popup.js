@@ -112,6 +112,14 @@ function stateExplanation(state) {
       detail: "The popup refreshes automatically on open. If this stays idle, the service worker has not returned a status payload.",
     };
   }
+  if (state.active_page_state === "unsupported") {
+    return {
+      badge: ["warn", "idle"],
+      archive: "Unsupported",
+      headline: "This page is not a supported conversation.",
+      detail: "Open a ChatGPT, Claude.ai, or Grok/X conversation tab. The extension will update this state when the active tab changes.",
+    };
+  }
   if (!state.online) {
     return {
       badge: ["bad", "offline"],
@@ -163,12 +171,28 @@ function stateExplanation(state) {
       detail: "The daemon has not acquired the spool artifact into source.db yet.",
     };
   }
+  if (archiveState === "missing") {
+    return {
+      badge: ["warn", "missing"],
+      archive: "Not archived",
+      headline: "No capture exists for this conversation yet.",
+      detail: "Use Capture page for the active conversation. The extension checks archive state automatically when tabs activate or finish loading.",
+    };
+  }
   if (state.capture_mode === "dom_degraded") {
     return {
       badge: ["warn", "dom"],
       archive: "DOM fallback",
       headline: "Captured from visible DOM, not provider-native app data.",
       detail: "DOM fallback is useful but is not provider-native app data; it may omit branches, provider ids, timestamps, or attachments. Reload the page, wait for the conversation API response, then capture again.",
+    };
+  }
+  if (state.active_page_state === "supported_no_session") {
+    return {
+      badge: ["warn", "ready"],
+      archive: "Ready",
+      headline: "Supported site open, but no conversation id is visible.",
+      detail: "Open or select a concrete conversation. The extension does not read page content until Capture page or Sync open tabs is used.",
     };
   }
   return {
@@ -234,16 +258,19 @@ function setActionState(button, state, text = "") {
   if (status) status.textContent = text;
 }
 
-async function withAction(buttonId, fn) {
+async function withAction(buttonId, fn, labels = {}) {
   const button = document.getElementById(buttonId);
-  setActionState(button, "busy", "Working");
+  const busyText = labels.busy || "Working";
+  const okText = labels.ok || "Done";
+  const badText = labels.bad || "Failed";
+  setActionState(button, "busy", busyText);
   try {
     const result = await fn();
-    setActionState(button, "ok", "Done");
+    setActionState(button, "ok", okText);
     window.setTimeout(() => setActionState(button, "idle", ""), 1600);
     return result;
   } catch (error) {
-    setActionState(button, "bad", "Failed");
+    setActionState(button, "bad", badText);
     window.setTimeout(() => setActionState(button, "idle", ""), 3000);
     throw error;
   }
@@ -292,14 +319,14 @@ async function refreshStatus(reason = "popup_manual") {
 }
 
 document.getElementById("check").addEventListener("click", async () => {
-  await withAction("check", () => refreshStatus("popup_manual"));
+  await withAction("check", () => refreshStatus("popup_manual"), { busy: "Checking" });
 });
 
 document.getElementById("sync-open-tabs").addEventListener("click", async () => {
   await withAction("sync-open-tabs", async () => {
     await chrome.runtime.sendMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
     await render();
-  });
+  }, { busy: "Syncing" });
 });
 
 document.getElementById("copy-ref").addEventListener("click", async () => {
@@ -310,7 +337,7 @@ document.getElementById("copy-ref").addEventListener("click", async () => {
     const providerSessionId = state.provider_session_id || state.last_capture?.provider_session_id;
     const ref = provider && providerSessionId ? `${provider}:${providerSessionId}` : "";
     if (ref && window.navigator.clipboard?.writeText) await window.navigator.clipboard.writeText(ref);
-  });
+  }, { busy: "Copying", ok: "Copied" });
 });
 
 document.getElementById("open-polylogue").addEventListener("click", async () => {
@@ -319,7 +346,7 @@ document.getElementById("open-polylogue").addEventListener("click", async () => 
     const providerSessionId = stored.polylogueState?.provider_session_id || stored.polylogueState?.last_capture?.provider_session_id;
     const url = `${String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "")}/?q=${encodeURIComponent(providerSessionId || "")}`;
     await chrome.tabs.create({ url });
-  });
+  }, { busy: "Opening" });
 });
 
 document.getElementById("save").addEventListener("click", async () => {
@@ -328,7 +355,7 @@ document.getElementById("save").addEventListener("click", async () => {
     const receiverAuthToken = document.getElementById("receiver-token").value;
     await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl, receiverAuthToken });
     await refreshStatus("popup_configure_receiver");
-  });
+  }, { busy: "Saving", ok: "Saved" });
 });
 
 document.getElementById("capture").addEventListener("click", async () => {
@@ -356,7 +383,7 @@ document.getElementById("capture").addEventListener("click", async () => {
       });
     }
     await render();
-  });
+  }, { busy: "Capturing" });
 });
 
 document.getElementById("debug-toggle").addEventListener("click", () => {
@@ -379,7 +406,7 @@ document.getElementById("debug-export").addEventListener("click", async () => {
     link.download = `polylogue-browser-capture-debug-${Date.now()}.json`;
     link.click();
     globalThis.URL.revokeObjectURL(url);
-  });
+  }, { busy: "Exporting", ok: "Exported" });
 });
 
 void (async () => {
