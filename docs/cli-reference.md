@@ -631,19 +631,22 @@ Usage: polylogue ops reset [OPTIONS]
     --source PATH      Tombstone all sessions from a source path
 
 Options:
-  --index            Delete only the rebuildable index tier
-  --database         Delete the rebuildable SQLite tiers (preserves user.db)
-  --include-user-db  Also delete the irreplaceable user.db tier (tags,
-                     annotations, marks, notes). Destructive.
-  --blob             Delete the content-addressed blob store
-  --assets           Delete archived assets/attachments
-  --cache            Delete search indexes, schemas, and cache
-  --auth             Delete Google Drive OAuth tokens
-  --all              Reset everything
-  -y, --yes          Skip confirmation prompt
-  --session TEXT     Tombstone a specific session by ID
-  --source PATH      Tombstone all sessions from a source path
-  --help             Show this message and exit.
+  --index              Delete only the rebuildable index tier
+  --database           Delete derived SQLite tiers, preserving durable
+                       source.db and user.db
+  --include-user-db    Also delete the irreplaceable user.db tier (tags,
+                       annotations, marks, notes). Destructive.
+  --include-source-db  Also delete durable source.db evidence. Refuses when
+                       raw rows point at missing source files.
+  --blob               Delete the content-addressed blob store
+  --assets             Delete archived assets/attachments
+  --cache              Delete search indexes, schemas, and cache
+  --auth               Delete Google Drive OAuth tokens
+  --all                Reset everything
+  -y, --yes            Skip confirmation prompt
+  --session TEXT       Tombstone a specific session by ID
+  --source PATH        Tombstone all sessions from a source path
+  --help               Show this message and exit.
 ```
 
 ## Config

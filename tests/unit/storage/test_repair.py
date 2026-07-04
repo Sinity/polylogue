@@ -665,7 +665,7 @@ def test_raw_materialization_execute_replays_only_limited_selection(
     assert calls["parse_kwargs"] == {
         "raw_ids": ["raw-slow", "raw-2"],
         "progress_callback": None,
-        "force_write": False,
+        "force_write": True,
         "repair_message_fts": False,
     }
     assert result.metrics["raw_materialization_candidate_count"] == 4.0
@@ -974,7 +974,7 @@ def test_raw_materialization_leaves_fts_to_ingest_or_fts_stage(
     assert calls["parse_kwargs"] == {
         "raw_ids": ["raw-1"],
         "progress_callback": None,
-        "force_write": False,
+        "force_write": True,
         "repair_message_fts": False,
     }
     assert calls["raw_artifact_id"] is None
@@ -1126,7 +1126,7 @@ def test_raw_materialization_allows_oversized_stream_record_replay(
     assert calls["parse_kwargs"] == {
         "raw_ids": ["raw-1"],
         "progress_callback": None,
-        "force_write": False,
+        "force_write": True,
         "repair_message_fts": False,
     }
     assert calls["closed"] is True

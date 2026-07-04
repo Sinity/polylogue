@@ -28,10 +28,13 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
 
+# Durable acquired source evidence. Deleting it means future rebuilds can only
+# recover rows whose original source files still exist.
+_SOURCE_ARCHIVE_DATABASE = ("source database", "source.db")
+
 # Rebuildable tiers: replayed from preserved source evidence by maintenance.
-# Deleting these is the supported "move aside and re-ingest" reset path.
+# Deleting these is the supported "move aside and replay source.db" reset path.
 _REBUILDABLE_ARCHIVE_DATABASES = (
-    ("source database", "source.db"),
     ("index database", "index.db"),
     ("embeddings database", "embeddings.db"),
     ("ops database", "ops.db"),
@@ -40,7 +43,6 @@ _REBUILDABLE_ARCHIVE_DATABASES = (
 # recall packs, workspaces, blackboard notes. Nothing re-creates it, so
 # ``reset --database`` preserves it unless the operator opts in explicitly.
 _USER_ARCHIVE_DATABASE = ("user database", "user.db")
-_ARCHIVE_DATABASES = (*_REBUILDABLE_ARCHIVE_DATABASES, _USER_ARCHIVE_DATABASE)
 _INDEX_ARCHIVE_DATABASE = ("index database", "index.db")
 
 
@@ -60,15 +62,24 @@ def _user_db_path() -> Path:
     return _archive_root() / "user.db"
 
 
-def _archive_database_targets(*, include_user_db: bool = False) -> list[tuple[str, Path]]:
+def _archive_database_targets(
+    *,
+    include_source_db: bool = False,
+    include_user_db: bool = False,
+) -> list[tuple[str, Path]]:
     """Resolve archive-tier files to delete for ``reset --database``.
 
-    The irreplaceable ``user.db`` tier is excluded unless ``include_user_db``
-    is set, so the default reset path drops only rebuildable tiers and never
-    silently destroys hand-authored user state (#1883).
+    The durable ``source.db`` and irreplaceable ``user.db`` tiers are excluded
+    unless explicitly requested.  A plain ``reset --database`` drops only
+    derived/rebuildable tiers so index rebuilds can replay preserved source
+    evidence, including rows whose original source files have rotated away.
     """
     root = _archive_root()
-    databases = _ARCHIVE_DATABASES if include_user_db else _REBUILDABLE_ARCHIVE_DATABASES
+    databases = [
+        *((_SOURCE_ARCHIVE_DATABASE,) if include_source_db else ()),
+        *_REBUILDABLE_ARCHIVE_DATABASES,
+        *((_USER_ARCHIVE_DATABASE,) if include_user_db else ()),
+    ]
     targets: list[tuple[str, Path]] = []
     for name, filename in databases:
         path = root / filename
@@ -98,6 +109,36 @@ def _archive_index_targets() -> list[tuple[str, Path]]:
 
 def _user_db_present() -> bool:
     return _user_db_path().exists()
+
+
+def _source_db_present() -> bool:
+    return _source_db_path().exists()
+
+
+def _unresolvable_raw_source_count() -> int:
+    """Count raw source rows whose original source path is no longer readable."""
+
+    source_db = _source_db_path()
+    if not source_db.exists():
+        return 0
+    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(NULLIF(source_path, ''), '') AS source_path, COUNT(*)
+            FROM raw_sessions
+            WHERE source_path IS NOT NULL
+              AND source_path != ''
+            GROUP BY source_path
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    at_risk = 0
+    for source_path, count in rows:
+        if not Path(str(source_path)).exists():
+            at_risk += int(count)
+    return at_risk
 
 
 def _resolve_archive_session_ids(tokens: list[str]) -> list[str]:
@@ -207,11 +248,20 @@ def _archive_session_ids_from_source(source_path: Path) -> list[str]:
 
 @click.command("reset")
 @click.option("--index", "index", is_flag=True, help="Delete only the rebuildable index tier")
-@click.option("--database", is_flag=True, help="Delete the rebuildable SQLite tiers (preserves user.db)")
+@click.option(
+    "--database",
+    is_flag=True,
+    help="Delete derived SQLite tiers, preserving durable source.db and user.db",
+)
 @click.option(
     "--include-user-db",
     is_flag=True,
     help="Also delete the irreplaceable user.db tier (tags, annotations, marks, notes). Destructive.",
+)
+@click.option(
+    "--include-source-db",
+    is_flag=True,
+    help="Also delete durable source.db evidence. Refuses when raw rows point at missing source files.",
 )
 @click.option("--blob", is_flag=True, help="Delete the content-addressed blob store")
 @click.option("--assets", is_flag=True, help="Delete archived assets/attachments")
@@ -233,6 +283,7 @@ def reset_command(
     index: bool,
     database: bool,
     include_user_db: bool,
+    include_source_db: bool,
     blob: bool,
     assets: bool,
     cache: bool,
@@ -286,7 +337,20 @@ def reset_command(
     if index:
         targets.extend(_archive_index_targets())
     if database:
-        targets.extend(_archive_database_targets(include_user_db=include_user_db))
+        if include_source_db:
+            at_risk = _unresolvable_raw_source_count()
+            if at_risk:
+                fail(
+                    "reset",
+                    f"Refusing to delete source.db: {at_risk} raw row(s) reference source paths that no longer exist. "
+                    "Preserve source.db and rebuild index.db from it instead.",
+                )
+        targets.extend(_archive_database_targets(include_source_db=include_source_db, include_user_db=include_user_db))
+        if not include_source_db and _source_db_present():
+            env.ui.console.print(
+                "Preserving source.db (durable acquired evidence). Rebuild index.db from preserved source evidence "
+                "with `polylogue ops maintenance rebuild-index`. Pass --include-source-db to delete source.db too."
+            )
         if not include_user_db and _user_db_present():
             env.ui.console.print(
                 "Preserving user.db (irreplaceable: tags, annotations, marks, saved views, "
