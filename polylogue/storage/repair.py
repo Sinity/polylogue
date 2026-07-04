@@ -6,6 +6,7 @@ import asyncio
 import re
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -109,7 +110,7 @@ def _raw_materialization_candidate_ids(
     raw_source_paths: dict[str, str] = {}
     missing_blobs = 0
     already_parsed = 0
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
         params: list[object] = []

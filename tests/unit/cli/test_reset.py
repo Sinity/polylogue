@@ -374,7 +374,7 @@ class TestResetCommandDeletion:
 
         with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
             runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--session", session_id])
+            result = runner.invoke(cli, ["ops", "reset", "--session", session_id, "--yes"])
 
         assert result.exit_code == 0
         assert "1 suppression" in result.output
@@ -410,7 +410,7 @@ class TestResetCommandDeletion:
 
         with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
             runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--source", str(source_root)])
+            result = runner.invoke(cli, ["ops", "reset", "--source", str(source_root), "--yes"])
 
         assert result.exit_code == 0
         assert "Tombstoned 1 session" in result.output

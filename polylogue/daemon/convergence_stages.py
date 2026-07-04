@@ -103,7 +103,8 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
             finally:
                 conn.close()
         except Exception:
-            return False
+            logger.warning("convergence freshness probe %s errored; treating as needs-work", "check", exc_info=True)
+            return True
 
     def execute(path: Path) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
@@ -159,7 +160,10 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
             finally:
                 conn.close()
         except Exception:
-            return set()
+            logger.warning(
+                "convergence freshness probe %s errored; treating as needs-work", "check_many", exc_info=True
+            )
+            return set(paths)
 
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         if not paths:
@@ -209,7 +213,10 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
             finally:
                 conn.close()
         except Exception:
-            return set()
+            logger.warning(
+                "convergence freshness probe %s errored; treating as needs-work", "check_sessions", exc_info=True
+            )
+            return set(session_ids)
 
     def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
         if not session_ids:
@@ -340,7 +347,8 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             finally:
                 conn.close()
         except Exception:
-            return False
+            logger.warning("convergence freshness probe %s errored; treating as needs-work", "check", exc_info=True)
+            return True
 
     def execute(path: Path) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
@@ -410,7 +418,10 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             finally:
                 conn.close()
         except Exception:
-            return set()
+            logger.warning(
+                "convergence freshness probe %s errored; treating as needs-work", "check_many", exc_info=True
+            )
+            return set(paths)
 
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
@@ -476,7 +487,10 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             finally:
                 conn.close()
         except Exception:
-            return set()
+            logger.warning(
+                "convergence freshness probe %s errored; treating as needs-work", "check_sessions", exc_info=True
+            )
+            return set(session_ids)
 
     def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
@@ -1033,7 +1047,12 @@ def _archive_fts_check_sessions(db_path: Path, session_ids: Sequence[str]) -> se
         finally:
             conn.close()
     except Exception:
-        return set()
+        logger.warning(
+            "convergence freshness probe %s errored; treating as needs-work",
+            "_archive_fts_check_sessions",
+            exc_info=True,
+        )
+        return set(session_ids)
 
 
 def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> bool:
@@ -1218,7 +1237,10 @@ def _archive_embed_check(db_path: Path, path: Path) -> bool:
         finally:
             conn.close()
     except Exception:
-        return False
+        logger.warning(
+            "convergence freshness probe %s errored; treating as needs-work", "_archive_embed_check", exc_info=True
+        )
+        return True
 
 
 def _archive_embed_execute(db_path: Path, path: Path) -> bool:
@@ -1252,7 +1274,10 @@ def _archive_embed_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]
         finally:
             conn.close()
     except Exception:
-        return set()
+        logger.warning(
+            "convergence freshness probe %s errored; treating as needs-work", "_archive_embed_check_many", exc_info=True
+        )
+        return set(paths)
 
 
 def _archive_embed_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
@@ -1285,7 +1310,12 @@ def _archive_embed_check_sessions(db_path: Path, session_ids: Sequence[str]) -> 
         finally:
             conn.close()
     except Exception:
-        return set()
+        logger.warning(
+            "convergence freshness probe %s errored; treating as needs-work",
+            "_archive_embed_check_sessions",
+            exc_info=True,
+        )
+        return set(session_ids)
 
 
 def _archive_embed_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> bool:
@@ -1462,7 +1492,10 @@ def _archive_insights_check(db_path: Path, path: Path) -> bool:
         finally:
             conn.close()
     except Exception:
-        return False
+        logger.warning(
+            "convergence freshness probe %s errored; treating as needs-work", "_archive_insights_check", exc_info=True
+        )
+        return True
 
 
 def _archive_insights_execute(db_path: Path, path: Path) -> StageExecuteReturn:
@@ -1500,7 +1533,12 @@ def _archive_insights_check_many(db_path: Path, paths: Sequence[Path]) -> set[Pa
         finally:
             conn.close()
     except Exception:
-        return set()
+        logger.warning(
+            "convergence freshness probe %s errored; treating as needs-work",
+            "_archive_insights_check_many",
+            exc_info=True,
+        )
+        return set(paths)
 
 
 def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path]) -> StageExecuteReturn:
@@ -1534,7 +1572,12 @@ def _archive_insights_check_sessions(db_path: Path, session_ids: Sequence[str]) 
         finally:
             conn.close()
     except Exception:
-        return set()
+        logger.warning(
+            "convergence freshness probe %s errored; treating as needs-work",
+            "_archive_insights_check_sessions",
+            exc_info=True,
+        )
+        return set(session_ids)
 
 
 def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> StageExecuteReturn:

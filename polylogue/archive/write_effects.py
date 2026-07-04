@@ -122,7 +122,10 @@ def commit_archive_write_effects(
         _invalidate_search_cache()
 
     return WriteResult(
-        operation_id=str(uuid4()),
+        # Return the operation's real id (the one used for blob leases/telemetry)
+        # so callers can correlate the result; fall back to a fresh id only when
+        # the caller supplied none.
+        operation_id=operation_id or str(uuid4()),
         operation=op,
         rows_affected=len(sorted_ids),
         status="committed",
