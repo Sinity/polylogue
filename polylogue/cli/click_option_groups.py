@@ -55,7 +55,7 @@ class _LazyChoice(click.Choice):  # type: ignore[type-arg]
 
     def _resolve(self) -> None:
         if not self._resolved:
-            self.choices = self._loader()
+            self.choices = tuple(self._loader())
             self._resolved = True
 
     def convert(self, value: object, param: click.Parameter | None, ctx: click.Context | None) -> object:
