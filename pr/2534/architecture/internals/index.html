@@ -767,18 +767,26 @@ storage schema) are still regenerated fresh via
 <code>devtools lab schema generate</code> and promoted via <code>devtools lab schema promote</code>.</p>
 </li>
 </ul>
-<p>This design intentionally rejects in-place upgrade-chain complexity (no
-Alembic, no forward/reverse upgrade scripts, no partially-applied upgrade
-states, no <code>_apply_version_upgrade_plan</code> rollback windows). If the configured
-archive path is not the current schema, the operator moves it aside and
-re-ingests from source. Files that are not configured archive paths are not
-classified or handled by the archive runtime.</p>
-<p>The only compatibility carve-out is <code>ops.db</code>: <code>archive_tiers/bootstrap.py</code> may
-use narrowly scoped <code>ALTER TABLE ... ADD COLUMN</code> helpers for disposable daemon
-telemetry, such as ingest-cursor runtime fields and cursor-lag rollups. That
-exception is not a migration pattern for <code>source.db</code>, <code>index.db</code>,
-<code>embeddings.db</code>, or <code>user.db</code>; durable tier changes still require a version
-bump and rebuild/reset path.</p>
+<p>For <strong>derived tiers</strong> (<code>index.db</code>, <code>embeddings.db</code>) this design intentionally
+rejects in-place upgrade-chain complexity (no Alembic, no forward/reverse
+upgrade scripts, no partially-applied upgrade states, no
+<code>_apply_version_upgrade_plan</code> rollback windows): a derived-tier schema mismatch
+rebuilds or blue-green-replaces the tier from durable source/user evidence.
+Files that are not configured archive paths are not classified or handled by
+the archive runtime.</p>
+<p>For <strong>durable tiers</strong> (<code>source.db</code>, <code>user.db</code>) the boundary is different, because
+<code>user.db</code> holds irreplaceable human assertions that cannot be rebuilt from
+source. These tiers use explicit <em>additive</em> numbered SQL migrations under
+<code>storage/sqlite/migrations/{source,user}/NNN_*.sql</code>, applied one <code>PRAGMA user_version</code> step at a time by <code>migration_runner.py</code> behind a <strong>verified backup
+manifest</strong> for the affected tier. Additive means <code>CREATE TABLE</code>/<code>CREATE INDEX</code>/
+<code>ADD COLUMN</code>/bounded backfill; destructive durable-tier changes require a
+copy-forward design and explicit operator consent, never a routine migration.</p>
+<p><code>ops.db</code> (disposable daemon telemetry) may additionally use narrowly scoped
+<code>ALTER TABLE ... ADD COLUMN</code> bootstrap helpers in <code>archive_tiers/bootstrap.py</code>
+(ingest-cursor runtime fields, cursor-lag rollups). The
+<code>devtools lab policy schema-versioning</code> lint enforces the whole boundary:
+numbered durable-tier migrations are allowed; derived-tier upgrade helpers are
+forbidden.</p>
 <h2>Archive Activation</h2>
 <p>The archive file set is split by durability class:</p>
 <ul>
