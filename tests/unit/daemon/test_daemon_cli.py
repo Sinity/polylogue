@@ -378,22 +378,58 @@ def test_drain_convergence_debt_retries_global_messages_fts_surface(
             "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
         )
         conn.commit()
-    repairs: list[Path] = []
+    repairs: list[tuple[Path, str]] = []
 
-    def fake_repair_messages_fts_surface(path: Path) -> bool:
-        repairs.append(path)
+    def fake_repair_fts_surface(path: Path, surface: str) -> bool:
+        repairs.append((path, surface))
         return True
 
     monkeypatch.setattr(
-        "polylogue.daemon.convergence_stages.repair_messages_fts_surface",
-        fake_repair_messages_fts_surface,
+        "polylogue.daemon.convergence_stages.repair_fts_surface",
+        fake_repair_fts_surface,
     )
 
     retried = daemon_cli._drain_convergence_debt_once(db)
     debt_after = cursor.list_convergence_debt()
 
     assert retried == 1
-    assert repairs == [db]
+    assert repairs == [(db, "messages_fts")]
+    assert debt_after == []
+
+
+@pytest.mark.contract
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
+def test_drain_convergence_debt_retries_optional_fts_surface(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "index.db"
+    cursor = CursorStore(db)
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="threads_fts",
+        error="optional FTS startup repair failed",
+    )
+    repairs: list[tuple[Path, str]] = []
+
+    def fake_repair_fts_surface(path: Path, surface: str) -> bool:
+        repairs.append((path, surface))
+        return True
+
+    monkeypatch.setattr(
+        "polylogue.daemon.convergence_stages.repair_fts_surface",
+        fake_repair_fts_surface,
+    )
+
+    retried = daemon_cli._drain_convergence_debt_once(db)
+    debt_after = cursor.list_convergence_debt()
+
+    assert retried == 1
+    assert repairs == [(db, "threads_fts")]
     assert debt_after == []
 
 
@@ -1607,16 +1643,72 @@ def test_ensure_fts_startup_readiness_trusts_ready_freshness_without_counts(
 
     conn = FakeConnection()
     rebuilds: list[FakeConnection] = []
+    optional_repairs: list[FakeConnection] = []
     monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", lambda c: rebuilds.append(c))
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection",
+        lambda _conn: None,
+    )
+
+    def fake_repair_stale_fts_rows(c: FakeConnection) -> SimpleNamespace:
+        optional_repairs.append(c)
+        return SimpleNamespace(success=True, repaired_count=2, detail="repaired optional surfaces")
+
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
+        fake_repair_stale_fts_rows,
+    )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
     assert rebuilds == []
+    assert optional_repairs == [conn]
     assert conn.committed is True
     assert conn.closed is True
+
+
+def test_optional_fts_startup_failure_records_convergence_debt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import fts_startup
+
+    debts: list[dict[str, object]] = []
+
+    class FakeCursorStore:
+        def __init__(self, db_path: Path) -> None:
+            assert db_path == Path("/archive/index.db")
+
+        def record_convergence_debt(self, **kwargs: object) -> None:
+            debts.append(kwargs)
+
+    monkeypatch.setattr("polylogue.daemon.fts_startup._message_fts_freshness_ready_sync", lambda _conn: True)
+    monkeypatch.setattr("polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
+        lambda _conn: SimpleNamespace(success=False, repaired_count=0, detail="optional surfaces still stale"),
+    )
+    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursorStore)
+
+    fts_startup._repair_startup_optional_fts_surfaces_sync(
+        cast(sqlite3.Connection, object()),
+        db_path=Path("/archive/index.db"),
+    )
+
+    assert debts == [
+        {
+            "stage": "fts",
+            "subject_type": "fts_surface",
+            "subject_id": "session_work_events_fts",
+            "error": "optional surfaces still stale",
+        },
+        {
+            "stage": "fts",
+            "subject_type": "fts_surface",
+            "subject_id": "threads_fts",
+            "error": "optional surfaces still stale",
+        },
+    ]
 
 
 def test_ensure_fts_startup_readiness_skips_non_current_archive_shape(

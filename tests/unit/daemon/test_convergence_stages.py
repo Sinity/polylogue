@@ -302,6 +302,53 @@ def test_archive_fts_global_repair_defers_sqlite_lock(
     assert stages.repair_messages_fts_surface(archive_db) is False
 
 
+def test_archive_fts_optional_surface_repair_uses_stale_surface_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.committed = False
+            self.closed = False
+
+        def execute(self, _sql: str) -> object:
+            return object()
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = FakeConnection()
+    configured: list[FakeConnection] = []
+    repairs: list[FakeConnection] = []
+
+    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", lambda _db: conn)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection",
+        lambda c: configured.append(c),
+    )
+
+    def fake_repair_stale_fts_rows(c: FakeConnection) -> SimpleNamespace:
+        repairs.append(c)
+        return SimpleNamespace(success=True, repaired_count=0, detail="derived ready")
+
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
+        fake_repair_stale_fts_rows,
+    )
+
+    assert stages.repair_fts_surface(archive_db, "threads_fts") is True
+    assert configured == [conn]
+    assert repairs == [conn]
+    assert conn.committed is True
+    assert conn.closed is True
+
+
 def test_archive_fts_global_repair_inserts_missing_rows_without_reset(tmp_path: Path) -> None:
     """Global surface debt should converge with bounded missing-row repair."""
     from unittest import mock

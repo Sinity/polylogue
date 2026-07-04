@@ -120,6 +120,7 @@ def _active_fts_startup_db_path() -> Path:
 _MESSAGE_FTS_STARTUP_DEBT_DETAIL = (
     "archive message FTS drift exceeds bounded startup reconciliation; scheduled global FTS freshness debt"
 )
+_OPTIONAL_FTS_SURFACES = ("session_work_events_fts", "threads_fts")
 
 
 def _ensure_archive_messages_fts_startup_readiness_sync(
@@ -244,6 +245,10 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
 
 
 def _record_message_fts_surface_debt(db_path: Path | None, error: str) -> None:
+    _record_fts_surface_debt(db_path, "messages_fts", error)
+
+
+def _record_fts_surface_debt(db_path: Path | None, surface: str, error: str) -> None:
     if db_path is None:
         return
     try:
@@ -252,11 +257,16 @@ def _record_message_fts_surface_debt(db_path: Path | None, error: str) -> None:
         CursorStore(db_path).record_convergence_debt(
             stage="fts",
             subject_type="fts_surface",
-            subject_id="messages_fts",
+            subject_id=surface,
             error=error,
         )
     except Exception:
-        logger.warning("daemon: failed to record messages_fts convergence debt", exc_info=True)
+        logger.warning("daemon: failed to record %s convergence debt", surface, exc_info=True)
+
+
+def _record_optional_fts_surface_debt(db_path: Path | None, error: str) -> None:
+    for surface in _OPTIONAL_FTS_SURFACES:
+        _record_fts_surface_debt(db_path, surface, error)
 
 
 def _message_fts_freshness_row_sync(
@@ -353,6 +363,38 @@ def _blocks_search_text_has_rows_sync(conn: sqlite3.Connection) -> bool | None:
         return None
 
 
+def _repair_startup_optional_fts_surfaces_sync(conn: sqlite3.Connection, *, db_path: Path | None = None) -> None:
+    """Repair derived FTS surfaces after message FTS is already trusted ready.
+
+    The message surface can represent global archive-scale drift; startup
+    records that as convergence debt instead of surprising the operator with a
+    broad rebuild.  The optional derived surfaces are smaller and already have
+    bounded repair primitives, but they should only run when the message
+    surface is definitely ready so ``repair_stale_fts_rows`` cannot fall back
+    into message repair from the startup path.
+    """
+
+    if not _message_fts_freshness_ready_sync(conn):
+        return
+    try:
+        from polylogue.storage.fts.dangling_repair import (
+            configure_bounded_repair_connection,
+            repair_stale_fts_rows,
+        )
+
+        configure_bounded_repair_connection(conn)
+        outcome = repair_stale_fts_rows(conn)
+    except sqlite3.Error:
+        logger.warning("daemon: optional FTS startup repair failed", exc_info=True)
+        _record_optional_fts_surface_debt(db_path, "optional FTS startup repair failed")
+        return
+    if not outcome.success:
+        logger.warning("daemon: optional FTS startup repair incomplete: %s", outcome.detail)
+        _record_optional_fts_surface_debt(db_path, outcome.detail)
+    elif outcome.repaired_count:
+        logger.info("daemon: optional FTS startup repair completed: %s", outcome.detail)
+
+
 async def ensure_fts_startup_readiness() -> None:
     """Run daemon startup FTS maintenance without blocking the event loop."""
     await asyncio.to_thread(ensure_fts_startup_readiness_sync)
@@ -387,6 +429,7 @@ def ensure_fts_startup_readiness_sync() -> None:
     try:
         conn = _open_fts_startup_write_connection(db)
         if _ensure_archive_messages_fts_startup_readiness_sync(conn, db_path=db):
+            _repair_startup_optional_fts_surfaces_sync(conn, db_path=db)
             conn.commit()
             return
         logger.info("daemon: FTS startup check skipped — current archive blocks table absent.")

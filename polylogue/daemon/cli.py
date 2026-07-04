@@ -631,14 +631,11 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
 def _drain_fts_surface_debt(db: Path, surfaces: tuple[str, ...]) -> dict[str, bool]:
     if not surfaces:
         return {}
-    from polylogue.daemon.convergence_stages import repair_messages_fts_surface
+    from polylogue.daemon.convergence_stages import repair_fts_surface
 
     results: dict[str, bool] = {}
     for surface in surfaces:
-        if surface != "messages_fts":
-            results[surface] = False
-            continue
-        results[surface] = repair_messages_fts_surface(db)
+        results[surface] = repair_fts_surface(db, surface)
     return results
 
 

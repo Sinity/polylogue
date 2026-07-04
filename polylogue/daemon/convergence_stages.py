@@ -1138,6 +1138,46 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
         return False
 
 
+def repair_fts_surface(db_path: Path, surface: str) -> bool:
+    """Repair a named archive FTS surface from daemon convergence debt."""
+    if surface == "messages_fts":
+        return repair_messages_fts_surface(db_path)
+    if surface not in {"session_work_events_fts", "threads_fts"}:
+        logger.warning("fts: unsupported archive FTS surface debt surface=%s", surface)
+        return False
+    archive_db = _active_archive_index_path(db_path) or db_path
+    try:
+        conn = _open_archive_insight_write_connection(archive_db)
+        try:
+            from polylogue.storage.fts.dangling_repair import (
+                configure_bounded_repair_connection,
+                repair_stale_fts_rows,
+            )
+
+            configure_bounded_repair_connection(conn)
+            outcome = repair_stale_fts_rows(conn)
+            conn.commit()
+            if outcome.success:
+                logger.info(
+                    "fts: archive derived FTS surface repair completed surface=%s detail=%s", surface, outcome.detail
+                )
+                return True
+            logger.warning(
+                "fts: archive derived FTS surface repair incomplete surface=%s detail=%s", surface, outcome.detail
+            )
+            return False
+        finally:
+            conn.close()
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info(
+                "fts: archive derived FTS surface repair deferred surface=%s because sqlite is busy: %s", surface, exc
+            )
+            return False
+        logger.warning("fts: archive derived FTS surface repair failed surface=%s", surface, exc_info=True)
+        return False
+
+
 def _archive_pending_embedding_session_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
     from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
 
