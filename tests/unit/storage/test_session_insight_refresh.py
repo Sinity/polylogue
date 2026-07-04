@@ -411,7 +411,11 @@ def test_targeted_session_insight_rebuild_moves_tag_rollup_between_days(
                 source_name="chatgpt",
                 title="ChatGPT Backfill",
                 created_at="2026-04-01T08:00:00+00:00",
-                updated_at="2026-04-01T08:05:00+00:00",
+                # The source row is newly acquired even though it contains
+                # earlier transcript evidence. If updated_at moved backwards,
+                # the archive writer would correctly reject the replace as
+                # stale before the insight rebuild contract is exercised.
+                updated_at="2026-04-04T08:05:00+00:00",
             ),
             messages=[
                 make_message(
@@ -920,6 +924,77 @@ def test_full_rebuild_commits_incrementally_and_prunes_orphans(tmp_path: Path) -
     # Orphan pruned; all live profiles rebuilt to v2.
     assert set(final) == set(live_ids)
     assert all(title.startswith("v2-") for title in final.values())
+    assert counts.profiles == 3
+
+
+def test_full_rebuild_chunks_by_message_budget_before_page_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bounded-WAL sync rebuild must split by message budget, not just page size.
+
+    This guards the production failure mode from #2458: a "small" session count
+    can still represent a huge message window. The test keeps page_size larger
+    than the whole fixture so only the message-budget planner can create more
+    than one commit boundary.
+    """
+    db_path = _current_index_db(tmp_path, "bounded-wal-message-budget")
+    natives = ["conv-budget-0", "conv-budget-1", "conv-budget-2"]
+
+    with open_connection(db_path) as conn:
+        for native in natives:
+            store_records(
+                session=make_session(native, title=f"v1-{native}"),
+                messages=[make_message(f"{native}:msg-1", native, text=f"work {native}")],
+                attachments=[],
+                conn=conn,
+            )
+        conn.commit()
+        rebuild_session_insights_sync(conn)
+        conn.commit()
+
+    session_ids = [_sid(native) for native in natives]
+    with open_connection(db_path) as conn:
+        conn.executemany(
+            "UPDATE sessions SET title = ?, message_count = ? WHERE session_id = ?",
+            [
+                ("v2-conv-budget-0", 2, session_ids[0]),
+                ("v2-conv-budget-1", 2, session_ids[1]),
+                ("v2-conv-budget-2", 1, session_ids[2]),
+            ],
+        )
+        conn.commit()
+
+    monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET", 3)
+    committed_v2_counts: list[int] = []
+    visible_profile_counts: list[int] = []
+
+    def observe(amount: int, desc: str | None = None) -> None:
+        del amount
+        if desc is not None and desc.startswith("rebuild:"):
+            return
+        with sqlite3.connect(str(db_path)) as probe:
+            probe.row_factory = sqlite3.Row
+            rows = probe.execute(
+                "SELECT session_id, title FROM session_profiles WHERE session_id IN (?, ?, ?)",
+                tuple(session_ids),
+            ).fetchall()
+        visible_profile_counts.append(len({str(row["session_id"]) for row in rows}))
+        committed_v2_counts.append(sum(1 for row in rows if str(row["title"]).startswith("v2-")))
+
+    with open_connection(db_path) as conn:
+        counts = rebuild_session_insights_sync(conn, page_size=50, progress_callback=observe)
+
+    # With page_size=50, fixed-count chunking would produce one callback. The
+    # patched message budget (3) forces multiple chunks despite the small
+    # session count.
+    assert len(committed_v2_counts) == 2
+    assert visible_profile_counts == [3, 3]
+    # The callback fires before the current chunk commit, so the later callback
+    # sees a partial committed state from a prior budget chunk. A single
+    # terminal commit would leave this [0, 0].
+    assert committed_v2_counts[0] == 0
+    assert 0 < committed_v2_counts[1] < len(session_ids)
     assert counts.profiles == 3
 
 
