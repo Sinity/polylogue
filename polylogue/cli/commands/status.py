@@ -46,11 +46,11 @@ _ARCHIVE_COMPONENT_SCOPES: dict[str, str] = {
 
 _ARCHIVE_COMPONENT_REPAIR_HINTS: dict[str, str] = {
     "search": "polylogued run",
-    "session_profiles": "polylogue ops maintenance run --target session_insights",
-    "timeline_work_events": "polylogue ops maintenance run --target session_insights",
-    "timeline_phases": "polylogue ops maintenance run --target session_insights",
-    "threads": "polylogue ops maintenance run --target session_insights",
-    "latency_profiles": "polylogue ops maintenance run --target session_insights",
+    "session_profiles": "polylogued run",
+    "timeline_work_events": "polylogued run",
+    "timeline_phases": "polylogued run",
+    "threads": "polylogued run",
+    "latency_profiles": "polylogued run",
 }
 
 

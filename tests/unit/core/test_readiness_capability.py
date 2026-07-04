@@ -170,7 +170,7 @@ def test_raw_materialization_readiness_maps_actionable_debt_to_stale() -> None:
     assert component.summary == "raw evidence pending materialization"
     assert component.counts["affected_actionable"] == 4
     assert component.caveats == ()
-    assert component.repair_hint == "polylogue ops debt list --kind raw-materialization"
+    assert component.repair_hint == "polylogued run"
 
 
 def test_raw_materialization_readiness_maps_classified_info_debt_to_ready_with_caveat() -> None:
@@ -225,7 +225,7 @@ def test_raw_materialization_readiness_maps_unchecked_join_gaps_to_degraded() ->
     assert component.counts["archive_session_count"] == 8
     assert component.counts["join_gap_count"] == 3
     assert component.caveats == ("raw_index_join_gaps_unclassified_by_fast_readiness",)
-    assert component.repair_hint == "polylogue ops debt list --kind raw-materialization"
+    assert component.repair_hint == "polylogued run"
 
 
 def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:

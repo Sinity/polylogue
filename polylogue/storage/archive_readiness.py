@@ -100,8 +100,8 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     This function is used by status/readiness surfaces and must stay cheap on
     large archives. It classifies only cheap structural explanations for
     raw-id join gaps: rows already materialized by provider/source aliases and
-    parsed sidecar/metadata artifacts. The exact debt explainer lives in
-    ``polylogue ops debt list --kind raw-materialization``.
+    parsed sidecar/metadata artifacts. Remaining gaps are daemon convergence
+    input, not an operator maintenance workflow.
     """
     source_db = active_archive / "source.db"
     index_db = active_archive / "index.db"

@@ -694,7 +694,7 @@ class TestNoArchiveStatus:
         assert readiness["repair_hint"] == "polylogued run"
         assert profiles["scope"] == "insights"
         assert profiles["state"] == "stale"
-        assert profiles["repair_hint"] == "polylogue ops maintenance run --target session_insights"
+        assert profiles["repair_hint"] == "polylogued run"
         assert tool_usage["scope"] == "actions"
         assert tool_usage["counts"] == {"action_count": 4}
         assert raw_materialization["scope"] == "archive"
@@ -707,7 +707,7 @@ class TestNoArchiveStatus:
         assert raw_materialization["counts"]["materialized_raw_artifact_count"] == 6
         assert raw_materialization["metadata"]["category_counts"] == {"raw_id_join_gap": 4}
         assert raw_materialization["metadata"]["source_family_counts"] == {"chatgpt-export": 4}
-        assert raw_materialization["repair_hint"] == "polylogue ops debt list --kind raw-materialization"
+        assert raw_materialization["repair_hint"] == "polylogued run"
         assert assertions["scope"] == "user"
         assert assertions["state"] == "ready"
         assert assertions["counts"] == {"assertion_count": 1, "target_count": 1, "active_count": 1}

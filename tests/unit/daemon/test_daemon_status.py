@@ -184,7 +184,7 @@ def test_status_snapshot_refresh_default_builds_rich_payload(monkeypatch: pytest
                 "summary": "raw evidence pending materialization",
                 "counts": {"total": 2},
                 "caveats": [],
-                "repair_hint": "polylogue ops debt list --kind raw-materialization",
+                "repair_hint": "polylogued run",
                 "evidence_refs": [],
             }
         },
@@ -420,7 +420,7 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     raw_component = cast(dict[str, object], readiness["raw_materialization"])
     assert raw_component["state"] == "degraded"
     assert raw_component["summary"] == "raw/index join gaps need classification"
-    assert raw_component["repair_hint"] == "polylogue ops debt list --kind raw-materialization"
+    assert raw_component["repair_hint"] == "polylogued run"
     counts = cast(dict[str, object], raw_component["counts"])
     assert counts["total"] == 238
     assert counts["affected_total"] == 238

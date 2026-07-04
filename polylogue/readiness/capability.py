@@ -236,9 +236,7 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
             "category_counts": dict(payload.get("category_counts") or {}),
             "source_family_counts": dict(payload.get("source_family_counts") or {}),
         },
-        repair_hint=None
-        if state == CapabilityReadinessState.READY
-        else "polylogue ops debt list --kind raw-materialization",
+        repair_hint=None if state == CapabilityReadinessState.READY else "polylogued run",
     )
 
 
