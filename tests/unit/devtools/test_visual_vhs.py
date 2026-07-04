@@ -185,4 +185,6 @@ class TestDefaultTapeContent:
         assert "provider_statuses" in tape
         assert "archive_ok" in tape
         assert "api_ok" in tape
+        assert "reader_ok" in tape
+        assert "reader_rows" in tape
         assert "POLYLOGUE_ARCHIVE_ROOT" not in tape

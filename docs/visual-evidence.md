@@ -44,9 +44,10 @@ The default specs are deliberately self-contained and private-data-free:
 - `reader-evidence-tour` runs the browserless reader smoke lane and renders the
   JSON report header.
 - `browser-capture-tour` runs `devtools workspace dev-loop
-  --browser-provider-smoke --json`, which opens deterministic ChatGPT and Claude
-  fixture pages in headless Chrome, loads the unpacked extension, captures both
-  pages through the receiver, and prints the redacted provider/popup/artifact
+  --browser-provider-live-follow --json`, which opens deterministic ChatGPT and
+  Claude fixture pages in headless Chrome, loads the unpacked extension,
+  captures both pages through the receiver, waits for archive/API convergence,
+  opens the daemon web reader, and prints the redacted provider/popup/reader
   proof summary.
 
 These are product evidence specs, not ad hoc recordings. If the command flow

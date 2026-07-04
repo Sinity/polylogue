@@ -687,6 +687,8 @@ def test_browser_provider_smoke_records_content_script_artifacts(
         assert timeout_s == 45
         output_path = Path(env["POLYLOGUE_PROVIDER_SMOKE_OUT"])
         spool_path = Path(env["POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR"])
+        assert "POLYLOGUE_PROVIDER_SMOKE_READER_BASE_URL" not in env
+        assert "POLYLOGUE_PROVIDER_SMOKE_READER_SESSION_ID" not in env
         providers = {
             "chatgpt": ("chatgpt", "chatgpt-dom-v1", "chatgpt/dev-loop-provider-chatgpt.json"),
             "claude": ("claude-ai", "claude-ai-dom-v1", "claude-ai/dev-loop-provider-claude.json"),
@@ -822,14 +824,27 @@ def test_browser_provider_live_follow_composes_daemon_capture_and_api_read(
         receiver_url_override: str | None = None,
         spool_path_override: Path | None = None,
         session_id: str | None = None,
+        reader_base_url: str | None = None,
+        reader_session_id: str | None = None,
     ) -> dict[str, object]:
         smoke_inputs["receiver_url_override"] = receiver_url_override
         smoke_inputs["spool_path_override"] = str(spool_path_override)
         smoke_inputs["session_id"] = session_id
+        smoke_inputs["reader_base_url"] = reader_base_url
+        smoke_inputs["reader_session_id"] = reader_session_id
         assert session_id is not None
         return {
             "ok": True,
             "provider_statuses": {"chatgpt": True, "claude": True},
+            "reader_status": {
+                "ok": True,
+                "selected_session_id": f"chatgpt-export:{session_id}",
+                "message_row_count": 2,
+                "has_user_turn": True,
+                "has_assistant_turn": True,
+                "has_live_chip": True,
+                "has_raw_private_paths": False,
+            },
             "result": {
                 "providers": {
                     "chatgpt": {"provider": "chatgpt", "provider_session_id": session_id},
@@ -891,12 +906,16 @@ def test_browser_provider_live_follow_composes_daemon_capture_and_api_read(
     assert proof["provider_statuses"] == {"chatgpt": True, "claude": True}
     assert proof["archive_ok"] is True
     assert proof["api_ok"] is True
+    assert proof["reader_ok"] is True
+    assert proof["reader"]["message_row_count"] == 2
     assert proof["session_id"] == "polylogue-dev-loop-live-follow-feature-dev-loop-abc1234-api9876-capture9875"
     assert proof["api_messages"]["chatgpt"]["session_id"].startswith("chatgpt-export:")
     assert proof["api_messages"]["claude"]["session_id"].startswith("claude-ai-export:")
     assert launched == {"readiness_timeout_s": 10.0, "full_source_catchup": False}
     assert smoke_inputs["receiver_url_override"] == "http://127.0.0.1:9875"
     assert str(smoke_inputs["session_id"]).endswith("api9876-capture9875")
+    assert smoke_inputs["reader_base_url"] == "http://127.0.0.1:9876"
+    assert str(smoke_inputs["reader_session_id"]).startswith("chatgpt-export:")
     assert terminated == [4242]
     assert Path(proof["artifacts"]["summary"]).is_file()
     event_rows = [
@@ -909,6 +928,7 @@ def test_browser_provider_live_follow_composes_daemon_capture_and_api_read(
     ]
     assert event_rows[-1]["surface"] == "browser_provider_live_follow"
     assert event_rows[-1]["payload"]["archive_ok"] is True
+    assert event_rows[-1]["payload"]["reader_ok"] is True
 
 
 def test_browser_live_proof_records_operator_local_artifacts(

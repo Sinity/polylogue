@@ -22,4 +22,5 @@ that larger demo packet lives at `docs/examples/demo-tour/demo-tour.gif`.
   evidence lane against synthetic fixtures.
 - `browser-capture-tour.tape` / `browser-capture-tour.gif` — headless Chrome
   proof that deterministic ChatGPT and Claude fixture pages are captured through
-  the unpacked browser extension, receiver, popup/debug UI, and artifact spool.
+  the unpacked browser extension, receiver, archive/API convergence, popup/debug
+  UI, and the daemon web reader DOM.

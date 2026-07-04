@@ -23,6 +23,8 @@ const timeoutMs = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS || "100
 const spoolDir = process.env.POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR || "";
 const headless = process.env.POLYLOGUE_PROVIDER_SMOKE_HEADLESS !== "0";
 const fixtureSessionId = process.env.POLYLOGUE_PROVIDER_SMOKE_SESSION_ID || "polylogue-dev-loop-provider-smoke";
+const readerBaseUrl = (process.env.POLYLOGUE_PROVIDER_SMOKE_READER_BASE_URL || "").replace(/\/+$/, "");
+const readerSessionId = process.env.POLYLOGUE_PROVIDER_SMOKE_READER_SESSION_ID || "";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -438,6 +440,44 @@ async function openProviderTargetFromExtension(extensionClient, debuggingPort, u
   throw new Error(`provider page target not found for ${url}`);
 }
 
+async function openReaderTargetFromExtension(extensionClient, debuggingPort, url) {
+  const createdTab = await evaluateJson(
+    extensionClient,
+    `(async () => {
+      if (!globalThis.chrome?.tabs?.create) {
+        throw new Error("extension controller CDP target does not expose chrome.tabs.create");
+      }
+      let tab;
+      try {
+        tab = await chrome.tabs.create({url: ${JSON.stringify(url)}, active: false});
+      } catch (error) {
+        const message = String(error && error.message ? error.message : error);
+        if (!message.includes("No current window") || !globalThis.chrome?.windows?.create) {
+          throw error;
+        }
+        const createdWindow = await chrome.windows.create({url: ${JSON.stringify(url)}, focused: false, type: "normal"});
+        tab = Array.isArray(createdWindow.tabs) && createdWindow.tabs.length ? createdWindow.tabs[0] : null;
+      }
+      if (!tab) throw new Error("extension API did not return a reader tab");
+      return {id: tab.id ?? null, url: tab.url ?? null, pendingUrl: tab.pendingUrl ?? null, title: tab.title ?? null};
+    })()`,
+  );
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const targets = await waitJson(`http://127.0.0.1:${debuggingPort}/json/list`, Math.min(2000, timeoutMs));
+    const target = targets.find((candidate) => candidate.url === url);
+    if (target?.webSocketDebuggerUrl) {
+      const client = await connectCdp(target.webSocketDebuggerUrl);
+      await client.call("Runtime.enable");
+      await client.call("Page.enable");
+      await client.call("Page.navigate", { url });
+      return { target, client, tab: createdTab };
+    }
+    await sleep(250);
+  }
+  throw new Error(`reader page target not found for ${url}`);
+}
+
 async function waitForReadyPage(client) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -480,6 +520,65 @@ async function providerPageResponsiveness(client) {
       };
     })()`,
   );
+}
+
+async function waitForReaderLiveFollow(client, expectedSessionId) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await evaluateJson(
+      client,
+      `(() => {
+        const text = document.body?.innerText || document.body?.textContent || "";
+        const state = globalThis.state || {};
+        const messageRows = Array.from(document.querySelectorAll("#msg-list [data-msg-id]"));
+        return {
+          href: location.href,
+          readyState: document.readyState,
+          selectedConvId: state.selected?.id || state.selectedConvId || null,
+          statusLive: document.querySelector("#status-live")?.textContent?.trim() || "",
+          title: document.querySelector("#conv-header h2")?.textContent?.trim() || "",
+          messageRowCount: messageRows.length,
+          hasUserTurn: text.includes("ChatGPT fixture user turn"),
+          hasAssistantTurn: text.includes("ChatGPT fixture assistant turn"),
+          hasLiveChip: Boolean(document.querySelector("#status-live")),
+          hasRawPrivatePaths: text.includes("/home/sinity") || text.includes("/realm/data")
+        };
+      })()`,
+    ).catch((error) => ({ error: String(error.message || error) }));
+    if (
+      last?.readyState !== "loading" &&
+      last?.selectedConvId === expectedSessionId &&
+      last?.messageRowCount >= 2 &&
+      last?.hasUserTurn === true &&
+      last?.hasAssistantTurn === true &&
+      last?.hasLiveChip === true &&
+      last?.hasRawPrivatePaths !== true
+    ) {
+      return { ok: true, ...last };
+    }
+    await sleep(250);
+  }
+  return { ok: false, ...last };
+}
+
+async function waitForReaderApi(baseUrl, expectedSessionId) {
+  const url = `${baseUrl}/api/sessions/${encodeURIComponent(expectedSessionId)}/messages?limit=5`;
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      const payload = response.headers.get("content-type")?.includes("application/json") ? await response.json() : {};
+      const messages = Array.isArray(payload.messages) ? payload.messages : [];
+      last = { ok: response.ok && messages.length >= 2, status: response.status, messageCount: messages.length, url };
+      if (last.ok) return last;
+    } catch (error) {
+      last = { ok: false, status: 0, messageCount: 0, url, error: String(error && error.message ? error.message : error) };
+    }
+    await sleep(250);
+  }
+  return last || { ok: false, status: 0, messageCount: 0, url };
 }
 
 async function configureExtension(extensionClient) {
@@ -857,9 +956,49 @@ async function main() {
       extensionControllerClient,
       outputPath ? path.join(path.dirname(outputPath), "browser-provider-smoke-popup.png") : "",
     );
+    let reader = null;
+    if (readerBaseUrl && readerSessionId) {
+      const readerUrl = `${readerBaseUrl}/s/${encodeURIComponent(readerSessionId)}`;
+      const apiReadiness = await waitForReaderApi(readerBaseUrl, readerSessionId);
+      const { target, client, tab } = await openReaderTargetFromExtension(
+        extensionControllerClient,
+        debuggingPort,
+        readerUrl,
+      );
+      pageClients.push(client);
+      await waitForReadyPage(client);
+      const liveFollow = await waitForReaderLiveFollow(client, readerSessionId);
+      reader = {
+        ok: liveFollow.ok === true,
+        url: readerUrl,
+        target: {
+          id: target.id || null,
+          type: target.type || null,
+          url: target.url || null,
+          title: target.title || null,
+        },
+        apiReadiness,
+        tab,
+        inspection: {
+          selectedConvId: liveFollow.selectedConvId || null,
+          statusLive: liveFollow.statusLive || null,
+          title: liveFollow.title || null,
+          messageRowCount: liveFollow.messageRowCount || 0,
+          hasUserTurn: liveFollow.hasUserTurn === true,
+          hasAssistantTurn: liveFollow.hasAssistantTurn === true,
+          hasLiveChip: liveFollow.hasLiveChip === true,
+          hasRawPrivatePaths: liveFollow.hasRawPrivatePaths === true,
+          error: liveFollow.error || null,
+        },
+      };
+    }
 
     const summary = {
-      ok: Object.values(providers).every((provider) => provider.ok === true) && popup.ok === true && popup.hasRawPayloadLeak !== true,
+      ok:
+        Object.values(providers).every((provider) => provider.ok === true) &&
+        popup.ok === true &&
+        popup.hasRawPayloadLeak !== true &&
+        (!reader || reader.ok === true),
       chrome_binary: chromeBinary,
       chrome_args: chromeArgs,
       headless,
@@ -899,6 +1038,7 @@ async function main() {
         inspection: popup,
         screenshot: popupScreenshot,
       },
+      reader,
       providers,
     };
     if (outputPath) writeFileSync(outputPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");

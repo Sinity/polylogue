@@ -1052,6 +1052,8 @@ def run_browser_provider_smoke(
     receiver_url_override: str | None = None,
     spool_path_override: Path | None = None,
     session_id: str | None = None,
+    reader_base_url: str | None = None,
+    reader_session_id: str | None = None,
 ) -> dict[str, object]:
     """Run real Chrome content scripts against deterministic provider fixture pages."""
 
@@ -1124,7 +1126,10 @@ def run_browser_provider_smoke(
             "POLYLOGUE_PROVIDER_SMOKE_EXTENSION_ROOT": str(extension_root),
             "POLYLOGUE_PROVIDER_SMOKE_KEEP_PROFILE": "1",
             "POLYLOGUE_PROVIDER_SMOKE_OUT": str(result_path),
-            "POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS": os.environ.get("POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS", "10000"),
+            "POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS": os.environ.get(
+                "POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS",
+                "25000" if reader_base_url is not None and reader_session_id is not None else "10000",
+            ),
             "POLYLOGUE_PROVIDER_SMOKE_PROFILE_DIR": str(profile_dir),
             "POLYLOGUE_PROVIDER_SMOKE_RECEIVER_TOKEN": _RECEIVER_SMOKE_TOKEN,
             "POLYLOGUE_PROVIDER_SMOKE_RECEIVER_URL": receiver_url,
@@ -1133,6 +1138,9 @@ def run_browser_provider_smoke(
     )
     if session_id is not None:
         env["POLYLOGUE_PROVIDER_SMOKE_SESSION_ID"] = session_id
+    if reader_base_url is not None and reader_session_id is not None:
+        env["POLYLOGUE_PROVIDER_SMOKE_READER_BASE_URL"] = reader_base_url
+        env["POLYLOGUE_PROVIDER_SMOKE_READER_SESSION_ID"] = reader_session_id
     env_path.write_text(json.dumps(_dev_loop_env_snapshot(env), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     started = time.monotonic()
     try:
@@ -1168,6 +1176,7 @@ def run_browser_provider_smoke(
     manifest = None
     privacy_posture = None
     popup_status = None
+    reader_status = None
     if isinstance(result_payload, dict):
         extension_id = result_payload.get("extension_id")
         raw_manifest = result_payload.get("manifest")
@@ -1185,6 +1194,20 @@ def run_browser_provider_smoke(
                     "capture_log_count": inspection.get("captureLogCount"),
                     "has_raw_payload_leak": bool(inspection.get("hasRawPayloadLeak")),
                 }
+        raw_reader = result_payload.get("reader")
+        if isinstance(raw_reader, dict):
+            raw_inspection = raw_reader.get("inspection")
+            inspection = raw_inspection if isinstance(raw_inspection, dict) else {}
+            reader_status = {
+                "ok": bool(raw_reader.get("ok")),
+                "url": raw_reader.get("url"),
+                "selected_session_id": inspection.get("selectedConvId"),
+                "message_row_count": inspection.get("messageRowCount"),
+                "has_user_turn": bool(inspection.get("hasUserTurn")),
+                "has_assistant_turn": bool(inspection.get("hasAssistantTurn")),
+                "has_live_chip": bool(inspection.get("hasLiveChip")),
+                "has_raw_private_paths": bool(inspection.get("hasRawPrivatePaths")),
+            }
     ok = (
         exit_code == 0
         and bool(provider_statuses)
@@ -1192,6 +1215,16 @@ def run_browser_provider_smoke(
         and bool(artifact_paths)
         and all(Path(path).exists() for path in artifact_paths.values())
         and (popup_status is None or (popup_status["ok"] is True and popup_status["has_raw_payload_leak"] is False))
+        and (
+            reader_status is None
+            or (
+                reader_status["ok"] is True
+                and reader_status["has_user_turn"] is True
+                and reader_status["has_assistant_turn"] is True
+                and reader_status["has_live_chip"] is True
+                and reader_status["has_raw_private_paths"] is False
+            )
+        )
     )
     payload: dict[str, object] = {
         "ok": ok,
@@ -1203,6 +1236,7 @@ def run_browser_provider_smoke(
         "manifest": manifest,
         "privacy_posture": privacy_posture,
         "popup_status": popup_status,
+        "reader_status": reader_status,
         "profile_dir": str(profile_dir),
         "receiver_url": receiver_url,
         "spool_path": str(spool_path),
@@ -1234,6 +1268,7 @@ def run_browser_provider_smoke(
             "extension_id": extension_id,
             "provider_statuses": provider_statuses,
             "popup_status": popup_status,
+            "reader_status": reader_status,
             "artifact_refs": artifact_refs,
             "artifact_paths": artifact_paths,
             "artifacts": payload["artifacts"],
@@ -2418,6 +2453,8 @@ def run_browser_provider_live_follow(
             receiver_url_override=receiver_url,
             spool_path_override=Path(str(launch_payload["spool_path"])),
             session_id=session_id,
+            reader_base_url=api_url,
+            reader_session_id=_session_id_for_provider("chatgpt", session_id),
         )
         result_payload = smoke_payload.get("result")
         provider_rows = result_payload.get("providers") if isinstance(result_payload, dict) else None
@@ -2461,6 +2498,8 @@ def run_browser_provider_live_follow(
     api_ok = bool(api_messages) and all(
         isinstance(state, dict) and state.get("ok") is True for state in api_messages.values()
     )
+    reader_status = smoke_payload.get("reader_status") if isinstance(smoke_payload, dict) else None
+    reader_ok = isinstance(reader_status, dict) and reader_status.get("ok") is True
     ok = (
         not error_payload
         and isinstance(launch_payload, dict)
@@ -2469,6 +2508,7 @@ def run_browser_provider_live_follow(
         and smoke_payload.get("ok") is True
         and archive_ok
         and api_ok
+        and reader_ok
     )
     payload: dict[str, object] = {
         "ok": ok,
@@ -2478,11 +2518,13 @@ def run_browser_provider_live_follow(
         "provider_statuses": provider_statuses,
         "archive_ok": archive_ok,
         "api_ok": api_ok,
+        "reader_ok": reader_ok,
         "error": error_payload or None,
         "daemon_launch": launch_payload,
         "browser_provider_smoke": smoke_payload,
         "archive_states": archive_states,
         "api_messages": api_messages,
+        "reader": reader_status,
         "daemon_stop": stop_payload,
         "artifacts": {
             "summary": str(summary_path),
@@ -2502,6 +2544,7 @@ def run_browser_provider_live_follow(
             "provider_statuses": provider_statuses,
             "archive_ok": archive_ok,
             "api_ok": api_ok,
+            "reader_ok": reader_ok,
             "error": error_payload or None,
             "artifacts": payload["artifacts"],
         },
@@ -3379,6 +3422,7 @@ def _print_browser_provider_live_follow(payload: dict[str, Any]) -> None:
     print(f"  providers:   {providers}")
     print(f"  archive ok:  {proof.get('archive_ok')}")
     print(f"  api ok:      {proof.get('api_ok')}")
+    print(f"  reader ok:   {proof.get('reader_ok')}")
     print(f"  session id:  {proof.get('session_id')}")
     print(f"  summary:     {artifacts['summary']}")
 

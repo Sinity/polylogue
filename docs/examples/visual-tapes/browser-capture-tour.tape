@@ -25,9 +25,13 @@ Type "print('archive_ok', p['archive_ok'])"
 Enter
 Type "print('api_ok', p['api_ok'])"
 Enter
+Type "print('reader_ok', p['reader_ok'])"
+Enter
 Type "print('session_id', p['session_id'])"
 Enter
 Type "print('api_messages', {k: v['message_count'] for k, v in p['api_messages'].items()})"
+Enter
+Type "print('reader_rows', p['reader']['message_row_count'])"
 Enter
 Type "PY"
 Enter

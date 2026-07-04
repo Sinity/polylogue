@@ -65,11 +65,17 @@ function realtimeKindsForView() {
   kinds.push('progress.update');
   kinds.push('progress.complete');
   kinds.push('snapshot');
-  if (state && state.selectedConvId) {
+  if (currentSelectedSessionId()) {
     kinds.push('message.appended');
     kinds.push('insight.updated');
   }
   return kinds;
+}
+
+function currentSelectedSessionId() {
+  if (!state) return '';
+  if (state.selected && state.selected.id) return state.selected.id;
+  return state.selectedConvId || '';
 }
 
 function setLiveChip(status, lastSeen) {
@@ -129,11 +135,12 @@ function liveTailCurrentSession(payload) {
   // Reload messages for the current session if the event targets
   // it, or reload unconditionally when the event is unscoped. Newly
   // rendered messages get the appended animation.
-  if (!state || !state.selectedConvId) return;
+  var selectedId = currentSelectedSessionId();
+  if (!selectedId) return;
   var convId = payload && payload.payload && payload.payload.session_id;
-  if (convId && convId !== state.selectedConvId) return;
+  if (convId && convId !== selectedId) return;
   // Reuse selectSession to refresh the message list; mark new ones.
-  selectSession(state.selectedConvId, false, {liveTail: true});
+  selectSession(selectedId, false, {liveTail: true});
 }
 
 function handleRealtimeEvent(payload) {
