@@ -564,6 +564,38 @@ def test_periodic_session_insight_convergence_waits_for_catch_up_complete(
     assert calls == ["drain"]
 
 
+def test_periodic_session_insight_convergence_bursts_successful_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    drains: list[int] = []
+    sleeps: list[float] = []
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> int:
+        drains.append(len(drains))
+        return 100 if len(drains) <= 2 else 0
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if seconds == daemon_cli._SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS:
+            raise asyncio.CancelledError
+
+    with (
+        patch("asyncio.sleep", side_effect=fake_sleep),
+        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(daemon_cli._periodic_session_insight_convergence_after())
+
+    assert drains == [0, 1, 2]
+    assert sleeps == [
+        daemon_cli._SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS,
+        daemon_cli._SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS,
+        daemon_cli._SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS,
+    ]
+
+
 def test_periodic_session_insight_convergence_treats_sqlite_lock_as_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

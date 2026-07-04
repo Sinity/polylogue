@@ -56,6 +56,8 @@ _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
 _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 25
 _SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS = 60
 _SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT = 100
+_SESSION_INSIGHT_CONVERGENCE_BURST_LIMIT = 10
+_SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS = 1
 _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 
@@ -469,10 +471,15 @@ async def _periodic_session_insight_convergence_after(
     if catch_up_complete is not None:
         await catch_up_complete.wait()
     while True:
+        burst_count = 0
         try:
-            refreshed = await asyncio.to_thread(_drain_session_insights_once)
-            if refreshed:
+            while burst_count < _SESSION_INSIGHT_CONVERGENCE_BURST_LIMIT:
+                refreshed = await asyncio.to_thread(_drain_session_insights_once)
+                if not refreshed:
+                    break
+                burst_count += 1
                 logger.info("insights: converged %d session profile(s)", refreshed)
+                await asyncio.sleep(_SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS)
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
                 logger.info("insights: archive busy; retrying profile backlog on next tick: %s", exc)
