@@ -1,4 +1,4 @@
-"""Read queries over the materialized run-projection tables."""
+"""Read queries over source-derived and materialized run-projection relations."""
 
 from __future__ import annotations
 
@@ -10,10 +10,13 @@ from polylogue.storage.runtime import (
     SessionObservedEventRecord,
     SessionRunRecord,
 )
-from polylogue.storage.sqlite.queries.mappers_run_projection import (
-    _row_to_session_context_snapshot_record,
-    _row_to_session_observed_event_record,
-    _row_to_session_run_record,
+from polylogue.storage.sqlite.run_projection_relations import (
+    context_snapshot_relation_sql,
+    observed_event_relation_sql,
+    row_to_session_context_snapshot_record,
+    row_to_session_observed_event_record,
+    row_to_session_run_record,
+    run_relation_sql,
 )
 
 __all__ = [
@@ -36,6 +39,14 @@ def _apply_limit(sql: str, params: list[object], query: RunProjectionListQuery) 
         params.extend([query.limit, query.offset])
         return sql + " LIMIT ? OFFSET ?"
     return sql
+
+
+async def _table_exists(conn: aiosqlite.Connection, table_name: str) -> bool:
+    cursor = await conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table_name,),
+    )
+    return await cursor.fetchone() is not None
 
 
 async def list_runs(
@@ -62,14 +73,15 @@ async def list_runs(
     if query.query:
         where.append("r.search_text LIKE ?")
         params.append(f"%{query.query}%")
-    sql = "SELECT r.* FROM session_runs r"
+    relation_sql = run_relation_sql(include_materialized=await _table_exists(conn, "session_runs"))
+    sql = f"{relation_sql} SELECT r.* FROM runs r"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " " + _order_by(query, "r", "run_ref")
     sql = _apply_limit(sql, params, query)
     cursor = await conn.execute(sql, tuple(params))
     rows = await cursor.fetchall()
-    return [_row_to_session_run_record(row) for row in rows]
+    return [row_to_session_run_record(row) for row in rows]
 
 
 async def list_observed_events(
@@ -93,14 +105,19 @@ async def list_observed_events(
     if query.query:
         where.append("e.search_text LIKE ?")
         params.append(f"%{query.query}%")
-    sql = "SELECT e.* FROM session_observed_events e"
+    source_where = "1=1"
+    relation_sql = observed_event_relation_sql(
+        source_where=source_where,
+        include_materialized=await _table_exists(conn, "session_observed_events"),
+    )
+    sql = f"{relation_sql} SELECT e.* FROM observed_events e"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " " + _order_by(query, "e", "event_ref")
     sql = _apply_limit(sql, params, query)
     cursor = await conn.execute(sql, tuple(params))
     rows = await cursor.fetchall()
-    return [_row_to_session_observed_event_record(row) for row in rows]
+    return [row_to_session_observed_event_record(row) for row in rows]
 
 
 async def list_context_snapshots(
@@ -124,11 +141,14 @@ async def list_context_snapshots(
     if query.query:
         where.append("c.search_text LIKE ?")
         params.append(f"%{query.query}%")
-    sql = "SELECT c.* FROM session_context_snapshots c"
+    relation_sql = context_snapshot_relation_sql(
+        include_materialized=await _table_exists(conn, "session_context_snapshots")
+    )
+    sql = f"{relation_sql} SELECT c.* FROM context_snapshots c"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " " + _order_by(query, "c", "snapshot_ref")
     sql = _apply_limit(sql, params, query)
     cursor = await conn.execute(sql, tuple(params))
     rows = await cursor.fetchall()
-    return [_row_to_session_context_snapshot_record(row) for row in rows]
+    return [row_to_session_context_snapshot_record(row) for row in rows]
