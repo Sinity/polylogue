@@ -784,6 +784,133 @@ def test_browser_provider_smoke_records_content_script_artifacts(
     assert event_rows[-1]["payload"]["provider_statuses"] == {"chatgpt": True, "claude": True}
 
 
+def test_browser_provider_live_follow_composes_daemon_capture_and_api_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+    launched: dict[str, object] = {}
+    smoke_inputs: dict[str, object] = {}
+    terminated: list[int] = []
+
+    def fake_launch_branch_daemon(
+        *,
+        preflight: dict[str, object],
+        readiness_timeout_s: float,
+        full_source_catchup: bool = False,
+    ) -> dict[str, object]:
+        launched["readiness_timeout_s"] = readiness_timeout_s
+        launched["full_source_catchup"] = full_source_catchup
+        return {
+            "ok": True,
+            "pid": 4242,
+            "spool_path": str(Path(str(preflight["run_log_dir"])) / "xdg-data" / "polylogue" / "browser-capture"),
+        }
+
+    def fake_run_browser_provider_smoke(
+        *,
+        preflight: dict[str, object],
+        receiver_url_override: str | None = None,
+        spool_path_override: Path | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, object]:
+        smoke_inputs["receiver_url_override"] = receiver_url_override
+        smoke_inputs["spool_path_override"] = str(spool_path_override)
+        smoke_inputs["session_id"] = session_id
+        assert session_id is not None
+        return {
+            "ok": True,
+            "provider_statuses": {"chatgpt": True, "claude": True},
+            "result": {
+                "providers": {
+                    "chatgpt": {"provider": "chatgpt", "provider_session_id": session_id},
+                    "claude": {"provider": "claude-ai", "provider_session_id": session_id},
+                }
+            },
+        }
+
+    def fake_poll_archive_state(
+        *,
+        receiver_url: str,
+        provider: str,
+        provider_session_id: str,
+        timeout_s: float,
+        interval_s: float,
+    ) -> dict[str, object]:
+        return {
+            "ok": True,
+            "provider": provider,
+            "provider_session_id": provider_session_id,
+            "state": {"raw_row_exists": True, "indexed_session_exists": True, "indexed_message_count": 2},
+        }
+
+    def fake_fetch_api_messages(*, api_url: str, session_id: str, limit: int = 5) -> dict[str, object]:
+        return {"ok": True, "session_id": session_id, "message_count": 2, "status": 200}
+
+    monkeypatch.setattr(dev_loop, "launch_branch_daemon", fake_launch_branch_daemon)
+    monkeypatch.setattr(dev_loop, "run_browser_provider_smoke", fake_run_browser_provider_smoke)
+    monkeypatch.setattr(dev_loop, "_poll_archive_state", fake_poll_archive_state)
+    monkeypatch.setattr(dev_loop, "_fetch_api_messages", fake_fetch_api_messages)
+
+    def fake_terminate_pid_tree(pid: int) -> dict[str, object]:
+        terminated.append(pid)
+        return {"ok": True, "pid": pid, "state": "exited"}
+
+    monkeypatch.setattr(dev_loop, "_terminate_pid_tree", fake_terminate_pid_tree)
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--log-dir",
+                str(tmp_path / "dev-loop-logs"),
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--api-port",
+                "9876",
+                "--browser-capture-port",
+                "9875",
+                "--browser-provider-live-follow",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    proof = payload["browser_provider_live_follow"]
+    assert proof["ok"] is True
+    assert proof["provider_statuses"] == {"chatgpt": True, "claude": True}
+    assert proof["archive_ok"] is True
+    assert proof["api_ok"] is True
+    assert proof["session_id"] == "polylogue-dev-loop-live-follow-feature-dev-loop-abc1234-api9876-capture9875"
+    assert proof["api_messages"]["chatgpt"]["session_id"].startswith("chatgpt-export:")
+    assert proof["api_messages"]["claude"]["session_id"].startswith("claude-ai-export:")
+    assert launched == {"readiness_timeout_s": 10.0, "full_source_catchup": False}
+    assert smoke_inputs["receiver_url_override"] == "http://127.0.0.1:9875"
+    assert str(smoke_inputs["session_id"]).endswith("api9876-capture9875")
+    assert terminated == [4242]
+    assert Path(proof["artifacts"]["summary"]).is_file()
+    event_rows = [
+        json.loads(line)
+        for line in Path(payload["preflight"]["artifacts"]["dev_events"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["event_type"] for row in event_rows] == [
+        "browser_provider_live_follow_requested",
+        "browser_provider_live_follow_finished",
+    ]
+    assert event_rows[-1]["surface"] == "browser_provider_live_follow"
+    assert event_rows[-1]["payload"]["archive_ok"] is True
+
+
 def test_browser_live_proof_records_operator_local_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

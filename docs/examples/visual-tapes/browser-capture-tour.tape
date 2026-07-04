@@ -1,4 +1,4 @@
-# Browser-backed deterministic ChatGPT/Claude capture proof
+# Browser-backed deterministic ChatGPT/Claude live-follow proof
 # Auto-generated from visual evidence spec: browser-capture-tour
 
 Output browser-capture-tour.gif
@@ -8,24 +8,26 @@ Set Width 1320
 Set Height 680
 Set Padding 20
 
-Type "devtools workspace dev-loop --browser-provider-smoke --json > browser-capture-tour.json"
+Type "devtools workspace dev-loop --isolated-ports --browser-provider-live-follow --json > browser-capture-tour.json"
 Enter
-Sleep 18s
+Sleep 24s
 Type "python - <<'PY'"
 Enter
 Type "import json"
 Enter
-Type "p=json.load(open('browser-capture-tour.json'))['browser_provider_smoke']"
+Type "p=json.load(open('browser-capture-tour.json'))['browser_provider_live_follow']"
 Enter
 Type "print('ok', p['ok'])"
 Enter
 Type "print('providers', p['provider_statuses'])"
 Enter
-Type "print('popup', p['popup_status'])"
+Type "print('archive_ok', p['archive_ok'])"
 Enter
-Type "print('screenshot', p['artifacts'].get('popup_screenshot'))"
+Type "print('api_ok', p['api_ok'])"
 Enter
-Type "print('artifact_refs', p['artifact_refs'])"
+Type "print('session_id', p['session_id'])"
+Enter
+Type "print('api_messages', {k: v['message_count'] for k, v in p['api_messages'].items()})"
 Enter
 Type "PY"
 Enter

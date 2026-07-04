@@ -22,6 +22,7 @@ const keepProfile = process.env.POLYLOGUE_PROVIDER_SMOKE_KEEP_PROFILE === "1";
 const timeoutMs = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS || "10000");
 const spoolDir = process.env.POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR || "";
 const headless = process.env.POLYLOGUE_PROVIDER_SMOKE_HEADLESS !== "0";
+const fixtureSessionId = process.env.POLYLOGUE_PROVIDER_SMOKE_SESSION_ID || "polylogue-dev-loop-provider-smoke";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -224,8 +225,8 @@ async function startProviderFixtureServer(certDir) {
     port,
     server,
     urls: {
-      chatgpt: "https://chatgpt.com/c/polylogue-dev-loop-provider-smoke",
-      claude: "https://claude.ai/chat/polylogue-dev-loop-provider-smoke",
+      chatgpt: `https://chatgpt.com/c/${fixtureSessionId}`,
+      claude: `https://claude.ai/chat/${fixtureSessionId}`,
     },
   };
 }
