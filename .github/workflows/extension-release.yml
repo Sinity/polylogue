@@ -49,7 +49,7 @@ jobs:
     outputs:
       version: ${{ steps.summary.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -112,7 +112,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Download workflow artifacts
         uses: actions/download-artifact@v8
         with:

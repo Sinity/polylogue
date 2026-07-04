@@ -9,7 +9,7 @@ This reference is generated from the live `polylogue --help` surface inside the 
 ## Top-Level Command
 
 ```text
-Usage: polylogue [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue [OPTIONS] [COMMAND] [ARGS]...
 
   Polylogue - AI session archive.
 
@@ -188,7 +188,7 @@ Commands:
 ## Analyze Verb
 
 ```text
-Usage: polylogue analyze [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue analyze [OPTIONS] [COMMAND] [ARGS]...
 
   Analyze matched sessions: statistics, facets, and aggregates.
 
@@ -398,7 +398,7 @@ Options:
 ## Mark Verb
 
 ```text
-Usage: polylogue mark [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue mark [OPTIONS] [COMMAND] [ARGS]...
 
   Mark query-result sessions with tags, notes, or durable marks.
 
@@ -649,7 +649,7 @@ Options:
 ## Config
 
 ```text
-Usage: polylogue config [OPTIONS] COMMAND [ARGS]...
+Usage: polylogue config [OPTIONS] [COMMAND] [ARGS]...
 
   Show resolved Polylogue configuration with precedence sources.
 
