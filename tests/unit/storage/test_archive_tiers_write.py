@@ -2605,6 +2605,26 @@ def test_graph_resolve_records_late_parent_substage_timings(tmp_path: Path) -> N
     assert "append.index.graph_resolve" in timings
 
 
+def test_own_db_signatures_uses_session_scoped_block_lookup(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    plan_rows = conn.execute(
+        """
+        EXPLAIN QUERY PLAN
+        SELECT m.message_id, m.position, m.role,
+               b.block_type, b.text, b.tool_name, b.tool_input
+        FROM messages m
+        LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
+        WHERE m.session_id = ? AND m.variant_index = 0
+        ORDER BY m.position, b.position
+        """,
+        ("session:planner",),
+    ).fetchall()
+    plan = "\n".join(str(row[3]) for row in plan_rows)
+
+    assert "idx_blocks_session_position" in plan
+    assert "sqlite_autoindex_blocks_2" not in plan
+
+
 def test_graph_resolve_shares_projection_refresh_seen_set_for_late_children(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
