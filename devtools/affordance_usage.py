@@ -182,6 +182,48 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
+    summary = cast(dict[str, object], report["summary"])
+    return {
+        "artifact": "agent-affordance-usage",
+        "updated_at": report["captured_at"],
+        "archive_root": report["archive_root"],
+        "index_schema_version": report["index_schema_version"],
+        "claim": (
+            "Polylogue can compare agent affordance usage across normalized action evidence "
+            "without summing unlike tool-name spellings or provider-specific call shapes."
+        ),
+        "non_claim": (
+            "This is not a human-quality utility evaluation of any particular tool family. "
+            "It measures captured usage evidence, failure signals, and coverage gaps; "
+            "usefulness still requires qualitative review of session context and outcomes."
+        ),
+        "proof_report": {
+            "report_version": report["report_version"],
+            "action_scope": report["action_scope"],
+            "recent_window_days": report["recent_window_days"],
+            "patterns": report["patterns"],
+            "detail_patterns": report["detail_patterns"],
+            "top_families": summary["top_families"],
+            "recent_top_families": summary["recent_top_families"],
+        },
+        "caveats": [
+            "Counts describe captured action evidence, not independent proof of user benefit.",
+            "Failure rates are provider-reported tool-result signals where available; missing outcome structure is not success.",
+            "Recent windows are adoption-sensitive and can legitimately differ from all-time counts.",
+        ],
+        "source_files": [
+            "affordance-usage.report.json",
+            "family-counts.csv",
+            "evidence-kind-counts.csv",
+            "tool-counts.csv",
+            "tool-by-origin.csv",
+            f"recent-{report['recent_window_days']}d-tool-counts.csv",
+            "tool-samples.csv",
+        ],
+    }
+
+
 def _build_summary(
     *,
     family_counts: list[dict[str, object]],
@@ -728,6 +770,7 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
         _write_csv(out_dir / f"recent-{args.days}d-tool-counts.csv", recent_counts)
         _write_csv(out_dir / "tool-samples.csv", samples)
         _write_json(out_dir / "affordance-usage.report.json", report)
+        _write_json(out_dir / "summary.json", _demo_summary(report))
         _write_readme(out_dir / "README.md", report)
     return report
 
@@ -778,6 +821,7 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
             f"- `recent-{report['recent_window_days']}d-tool-counts.csv`",
             "- `tool-samples.csv`",
             "- `affordance-usage.report.json`",
+            "- `summary.json`",
             "",
         ]
     )
