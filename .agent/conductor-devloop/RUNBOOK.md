@@ -90,6 +90,11 @@ explains why it should not be routed through the normal state machine.
      operator tier frame — P0 campaign epics outrank everything),
      `ACTIVE-LOOP.md`, `DEMO-RADAR.md`, recent `OPERATING-LOG.md` next
      decisions, and any relevant audit note in `INDEX.md`.
+   - Run `devtools workspace frontier` when choosing from more than one
+     candidate, when a sibling agent is active, or while waiting on a long proof.
+     Use its subsystem/proof-cost/runtime-risk/subagent columns to batch
+     adjacent work, avoid schema-lane collisions, and select read-only audit
+     lanes that can update Beads without touching the current checkout.
    - Read `bd show <id>` for the chosen item — description, design notes,
      and acceptance criteria carry pre-made judgment; do not re-derive it.
    - Rank candidates by evidence urgency, user-visible truthfulness, substrate
@@ -147,6 +152,9 @@ explains why it should not be routed through the normal state machine.
      process prose.
    - Run `.agent/scripts/devloop-sync`.
    - Run `.agent/scripts/devloop-review` before claiming a clean checkpoint.
+   - Every loop must leave a Velocity/Meta record: a no-op with reason, a
+     frontier batch grouping, a delegated read-only lane, a removed friction
+     point, or a linked follow-up Bead.
 
 7. **Meta**
    - Run when the operator corrects process behavior, repeated friction appears,
@@ -165,6 +173,14 @@ explains why it should not be routed through the normal state machine.
      apology prose.
    - Ask whether demo generation lagged; if yes, run `devloop-demo` and improve
      the default next-loop check.
+
+8. **Integration**
+   - Before ending a slice, make the handoff explicit: committed files or
+     intentionally uncommitted local state, Beads updates, PR/replay status, and
+     verification. Use `.agent/scripts/devloop-integration` when branch replay
+     or PR grouping matters.
+   - Integration does not replace Velocity/Meta closure; after the handoff,
+     record the mandatory speed/process outcome described above.
 
 ## Workload Radar
 

@@ -380,6 +380,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace frontier",
+        "workspace",
+        "Classify ready and in-progress Beads into devloop batches.",
+        "devtools.frontier_report",
+        use_when=(
+            "During Direction, Velocity, or wait-ahead windows, group the Beads frontier by subsystem, "
+            "proof cost, live-runtime risk, schema-lane conflict, and subagent suitability before claiming "
+            "or dispatching work."
+        ),
+        examples=(
+            "devtools workspace frontier",
+            "devtools workspace frontier --json",
+            "devtools workspace frontier --limit 80 --out .agent/task-history/frontier-latest.md",
+        ),
+    ),
+    CommandSpec(
         "workspace deployment-smoke",
         "workspace",
         "Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow.",

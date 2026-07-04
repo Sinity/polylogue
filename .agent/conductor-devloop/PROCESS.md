@@ -22,13 +22,21 @@ whether convergence is running.
    priorities encode the operator tier frame (P0 campaigns first). Claim the
    chosen bead (`bd update <id> --claim`); if the slice is not tracked yet,
    create it first.
+   For multi-candidate or parallel-agent windows, run
+   `devtools workspace frontier` first. It is the current batching radar over
+   ready and in-progress Beads: subsystem, proof cost, runtime/live-archive
+   risk, schema-lane collision, and subagent suitability.
 2. Record a timestamped operating-log entry with `.agent/scripts/devloop-log`.
 3. Gather evidence from source, archive, daemon logs, and existing notes.
 4. Make the smallest shared-substrate change that advances the slice.
 5. Prove the exact claim with a focused command or real archive artifact.
 6. Update `.agent/demos` or the conductor packet with useful readable proof.
-7. Run `.agent/scripts/devloop-sync` after changing scaffold/current notes.
-8. During Meta/process slices, run `.agent/scripts/devloop-velocity --record`
+7. Integrate: commit or explicitly preserve local state, update Beads notes or
+   closure state, and record PR/replay status when relevant.
+8. Run `.agent/scripts/devloop-sync` after changing scaffold/current notes.
+9. Every loop closes through Velocity/Meta: record a no-op reason, batch
+   grouping, delegation, friction removed, or follow-up Bead.
+10. During Meta/process slices, run `.agent/scripts/devloop-velocity --record`
    before choosing the process change. This turns speed/focus reflection into
    an operating-log artifact instead of an unrecorded chat judgment.
 

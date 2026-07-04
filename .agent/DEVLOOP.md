@@ -17,6 +17,10 @@ Use `.agent/scripts/devloop-status --focus` for a very fast context refresh
 when only the active slice, focus, next action, git state, and packet size are
 needed. Use `--quick` when host pressure is high and slower detailed
 ops/worktree probes would add friction.
+Use `devtools workspace frontier` during Direction or wait-ahead windows to
+classify the current Beads frontier by subsystem, proof cost, live-runtime
+risk, schema-lane conflict, and subagent suitability before claiming or
+dispatching work.
 
 Then run `bd prime` (Beads workflow context) and read, in order:
 
@@ -65,11 +69,22 @@ instruction. After compaction or resume:
 
 ## Process
 
-Use the shared focus modes exactly:
+Use the executable focus modes exactly:
 
 ```text
 Direction, Evidence, Construction, Proof, Artifact, Velocity, Meta
 ```
+
+The conceptual loop state machine is:
+
+```text
+Direction -> Evidence -> Construction -> Proof -> Artifact -> Integration -> Velocity/Meta
+```
+
+Treat `Integration` as the required PR/Beads/state handoff step before the loop
+closes. Treat `Velocity/Meta` as mandatory closure for every loop: record either
+a no-op reason, a new batch grouping, a delegation, a removed friction point, or
+a follow-up Bead.
 
 Record material transitions with:
 
