@@ -1084,6 +1084,22 @@ class TestNoArchiveStatus:
 
         assert "87.5% indexed" in _combined_calls(env)
 
+    def test_daemon_status_treats_null_fts_coverage_as_unknown_progress(self) -> None:
+        env = _make_app_env()
+
+        _show_daemon_status(
+            env,
+            {
+                "daemon_liveness": True,
+                "fts_readiness": {
+                    "messages_ready": False,
+                    "coverage_pct": None,
+                },
+            },
+        )
+
+        assert "FTS: [yellow]0.0% indexed[/yellow]" in _combined_calls(env)
+
     def test_daemon_status_archive_fts_reports_message_surface(self) -> None:
         env = _make_app_env()
 

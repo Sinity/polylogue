@@ -79,6 +79,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _fast_fts_doc_count(conn: Any) -> int:
     # Exact FTS coverage is no longer a direct-status fallback concern.
     # Counting the FTS shadow table can fault gigabytes of pages during
@@ -1214,7 +1221,7 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     # FTS
     fts = status.get("fts_readiness", {})
     if isinstance(fts, dict):
-        pct = float(fts.get("coverage_pct", 100 if fts.get("messages_ready") else 0))
+        pct = _safe_float(fts.get("coverage_pct"), default=100.0 if fts.get("messages_ready") else 0.0)
         fts_color = "green" if fts.get("messages_ready") else "yellow"
         env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
 
