@@ -65,13 +65,19 @@ Then navigate to `chatgpt.com`, `claude.ai`, or a supported Grok/X route.
 Open the popup and use **Capture page** for the current page or
 **Sync open tabs** for all currently open supported tabs. The extension does
 not continuously watch page mutations or capture while you type.
+The popup refreshes receiver status automatically when opened and then on a
+short cadence while it remains open; **Check status** is a manual refresh, not
+the only way to update state.
 
 For branch-local development, point **Local receiver URL** in the popup at the
 URL printed by `devtools workspace dev-loop`, usually
 `http://127.0.0.1:8875` when the production receiver is still running on the
-default port. Each status/archive/capture request sends `X-Request-ID` and the
-popup shows the receiver's echoed request id. Use that value to correlate the
-popup/service-worker result with browser network traces and receiver logs.
+default port. Each status/archive/capture request sends `X-Request-ID`; the
+popup shows the receiver's echoed request id and records the request/response
+stage in **Debug log**. Use **Export JSON** to save the redacted debug packet
+and correlate popup action, service-worker request, receiver decision,
+artifact ref, and archive state. The debug packet intentionally records stage
+metadata rather than transcript text.
 
 Before loading a GUI browser, run the branch-local background/receiver smoke:
 
@@ -151,6 +157,13 @@ pages the badge shows grey and no data is sent.
 - **Site supported**: badge shows a document icon when the current page is a known LLM site
 - **Last capture**: popup shows the timestamp and provider of the most recent capture
 - **Offline**: badge turns red when the receiver is down
+- **DOM fallback (`dom_degraded`)**: the provider-native app payload was not
+  available, so the extension captured visible DOM text. This can be useful
+  live evidence, but may omit branches, provider ids, timestamps, or
+  attachments.
+- **Stale archive**: the receiver spool is newer than the indexed archive. Keep
+  the daemon running; live convergence should advance this to **Archived**
+  automatically.
 - **No background collection**: the extension only reads the DOM when you are actively on a supported page
 - **Local only**: content is posted to the configured `127.0.0.1` receiver and never leaves your machine
 - **Privacy diagnostics**: the popup shows capture counts and timestamps, never message content
@@ -162,6 +175,9 @@ pages the badge shows grey and no data is sent.
 | Badge is grey | Navigate to a supported page (chatgpt.com, claude.ai, or Grok/X) |
 | Badge is red | Receiver is not running — start `polylogue browser-capture serve` |
 | Captures not appearing in archive | Run `polylogue check` to verify the daemon is ingesting |
+| Popup says `stale` | The receiver has a newer spool artifact than the indexed archive. Leave the daemon running and inspect the debug log request id if it does not converge. |
+| Popup says `dom` / `dom_degraded` | Reload the provider page, wait for the conversation to load fully, then capture again so the native app payload can be observed. |
+| A button click seems ineffective | The button status line should show Working/Done/Failed. Open **Debug log** and export JSON if the state does not change. |
 | "Failed to load extension" in Chrome | Ensure you selected the `browser-extension/` directory (not `src/`) |
 | Extension not updating | Go to `chrome://extensions`, click the refresh icon on the extension card |
 

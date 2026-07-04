@@ -108,7 +108,15 @@ function copyTree(src, dst) {
   execFileSync("cp", ["-a", `${src}/.`, dst], { stdio: "inherit" });
 }
 
-const ARCHIVE_EXCLUDE_DIRS = new Set(["node_modules", "tests", "scripts", "dist", "screenshots"]);
+const ARCHIVE_EXCLUDE_DIRS = new Set([
+  ".cache",
+  ".local",
+  "node_modules",
+  "tests",
+  "scripts",
+  "dist",
+  "screenshots",
+]);
 const ARCHIVE_EXCLUDE_FILES = new Set([
   "eslint.config.js",
   "vitest.config.js",

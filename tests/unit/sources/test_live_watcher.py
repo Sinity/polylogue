@@ -4,6 +4,7 @@ debounce, bootstrap scan, and end-to-end via the watchfiles event loop."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 import time
@@ -2045,6 +2046,68 @@ def test_end_to_end_new_file_creation_triggers_ingest(tmp_path: Path) -> None:
             await asyncio.wait_for(run_task, timeout=5.0)
         except asyncio.TimeoutError:
             run_task.cancel()
+        assert parse_sources.await_count >= 1
+
+    asyncio.run(_drive())
+
+
+def test_end_to_end_hidden_root_file_creation_triggers_ingest(tmp_path: Path) -> None:
+    root = tmp_path / ".hidden" / "browser-capture"
+    root.mkdir(parents=True)
+    watcher, parse_sources = _make_watcher(
+        tmp_path,
+        root,
+        debounce_s=0.05,
+        sources=(WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+    )
+
+    async def _drive() -> None:
+        run_task = asyncio.create_task(watcher.run())
+        await asyncio.sleep(0.2)  # ensure awatch is up
+        f = root / "chatgpt" / "fresh.json"
+        f.parent.mkdir()
+        f.write_text('{"polylogue_capture_kind":"browser_llm_session"}\n')
+        for _ in range(60):
+            if parse_sources.await_count >= 1:
+                break
+            await asyncio.sleep(0.1)
+        watcher.stop()
+        try:
+            await asyncio.wait_for(run_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            run_task.cancel()
+        assert parse_sources.await_count >= 1
+
+    asyncio.run(_drive())
+
+
+def test_periodic_catch_up_drains_missed_browser_capture_event(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".hidden" / "browser-capture"
+    root.mkdir(parents=True)
+    watcher, parse_sources = _make_watcher(
+        tmp_path,
+        root,
+        debounce_s=0.05,
+        sources=(WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+    )
+    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.05)
+
+    async def _drive() -> None:
+        task = asyncio.create_task(watcher._periodic_catch_up([root]))
+        f = root / "chatgpt" / "missed.json"
+        f.parent.mkdir()
+        f.write_text('{"polylogue_capture_kind":"browser_llm_session"}\n')
+        for _ in range(60):
+            if parse_sources.await_count >= 1:
+                break
+            await asyncio.sleep(0.05)
+        watcher.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
         assert parse_sources.await_count >= 1
 
     asyncio.run(_drive())

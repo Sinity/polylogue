@@ -133,8 +133,10 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert "from polylogue.daemon.cli import main; main()" in payload["commands"]["run_daemon"]
     assert "POLYLOGUE_DAEMON_URL=http://127.0.0.1:9999" in payload["commands"]["run_daemon"]
     assert "XDG_DATA_HOME=" in payload["commands"]["run_daemon"]
-    assert "run --no-watch --no-source-catchup --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
-    assert "--spool" in payload["commands"]["run_daemon"]
+    assert "run --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
+    assert "--no-watch" not in payload["commands"]["run_daemon"]
+    assert "--no-source-catchup" not in payload["commands"]["run_daemon"]
+    assert "--spool" not in payload["commands"]["run_daemon"]
     assert "polylogue ops status" in payload["commands"]["capture_cli_status"]
     assert "POLYLOGUE_DAEMON_URL=http://127.0.0.1:9999" in payload["commands"]["capture_cli_status"]
     assert payload["commands"]["capture_cli_status"].endswith("terminal/polylogue-ops-status.typescript")
@@ -711,6 +713,15 @@ def test_browser_provider_smoke_records_content_script_artifacts(
                     "extension_id": "extension-id",
                     "manifest": {"manifest_version": 3, "name": "Polylogue Browser Capture", "version": "0.1.0"},
                     "privacy_posture": "deterministic fixture pages only; summary omits raw turn text",
+                    "popup": {
+                        "inspection": {
+                            "ok": True,
+                            "debugLogCount": 6,
+                            "receiverEventCount": 4,
+                            "captureLogCount": 2,
+                            "hasRawPayloadLeak": False,
+                        }
+                    },
                     "providers": summaries,
                 }
             ),
@@ -739,6 +750,13 @@ def test_browser_provider_smoke_records_content_script_artifacts(
     assert smoke["ok"] is True
     assert smoke["extension_id"] == "extension-id"
     assert smoke["provider_statuses"] == {"chatgpt": True, "claude": True}
+    assert smoke["popup_status"] == {
+        "ok": True,
+        "debug_log_count": 6,
+        "receiver_event_count": 4,
+        "capture_log_count": 2,
+        "has_raw_payload_leak": False,
+    }
     assert smoke["artifact_refs"] == {
         "chatgpt": "chatgpt/dev-loop-provider-chatgpt.json",
         "claude": "claude-ai/dev-loop-provider-claude.json",
@@ -1263,8 +1281,9 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
         "from polylogue.daemon.cli import main; main()",
         "run",
     ]
-    assert "--no-watch" in command
-    assert "--no-source-catchup" in command
+    assert "--no-watch" not in command
+    assert "--no-source-catchup" not in command
+    assert "--spool" not in command
     assert command[command.index("--api-port") : command.index("--api-port") + 2] == ["--api-port", "9876"]
     assert command[command.index("--port") : command.index("--port") + 2] == ["--port", "9875"]
     assert launch["pid"] == 4242

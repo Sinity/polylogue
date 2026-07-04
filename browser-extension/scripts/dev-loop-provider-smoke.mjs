@@ -483,6 +483,132 @@ async function configureExtension(extensionClient) {
   );
 }
 
+async function waitForPopupReady(extensionClient) {
+  return evaluateJson(
+    extensionClient,
+    `(async () => {
+      const deadline = Date.now() + ${JSON.stringify(timeoutMs)};
+      let last = null;
+      while (Date.now() < deadline) {
+        last = {
+          readyState: document.readyState,
+          hasStatus: Boolean(document.querySelector("#state")),
+          hasArchive: Boolean(document.querySelector("#archive")),
+          hasStateDetail: Boolean(document.querySelector("#state-detail")),
+          hasDebugToggle: Boolean(document.querySelector("#debug-toggle")),
+          hasDebugPanel: Boolean(document.querySelector("#debug-panel")),
+          hasDebugLog: Boolean(document.querySelector("#debug-log")),
+          checkButtonState: document.querySelector("#check")?.dataset?.state || null
+        };
+        if (last.readyState !== "loading" && last.hasStatus && last.hasArchive && last.hasStateDetail && last.hasDebugToggle && last.hasDebugPanel && last.hasDebugLog) {
+          return last;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return {ok: false, last};
+    })()`,
+  );
+}
+
+async function clickPopupCheck(extensionClient) {
+  return evaluateJson(
+    extensionClient,
+    `(async () => {
+      const button = document.querySelector("#check");
+      if (!button) return {ok: false, error: "missing_check_button"};
+      button.click();
+      const deadline = Date.now() + ${JSON.stringify(timeoutMs)};
+      let last = null;
+      while (Date.now() < deadline) {
+        last = {
+          state: button.dataset.state || null,
+          statusText: button.querySelector(".button-status")?.textContent?.trim() || "",
+          archiveState: document.querySelector("#archive")?.textContent?.trim() || "",
+          stateDetail: document.querySelector("#state-detail")?.textContent?.trim() || "",
+          debugCount: document.querySelector("#debug-count")?.textContent?.trim() || ""
+        };
+        if (last.state === "ok" || last.state === "failed") return {ok: last.state === "ok", ...last};
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return {ok: false, error: "timed_out", ...last};
+    })()`,
+  );
+}
+
+async function inspectPopup(extensionClient) {
+  return evaluateJson(
+    extensionClient,
+    `(async () => {
+      if (typeof render === "function") await render();
+      const storage = await chrome.storage.local.get({
+        polylogueDebugLog: [],
+        polylogueCaptureLog: [],
+        polylogueState: null
+      });
+      document.querySelector("#debug-toggle")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const debugRows = Array.from(document.querySelectorAll("#debug-log .log-item"));
+      const captureRows = Array.from(document.querySelectorAll("#log .log-item"));
+      const debugLog = Array.isArray(storage.polylogueDebugLog) ? storage.polylogueDebugLog : [];
+      const captureLog = Array.isArray(storage.polylogueCaptureLog) ? storage.polylogueCaptureLog : [];
+      const receiverEvents = debugLog
+        .filter((event) => event && typeof event.stage === "string" && event.stage.startsWith("receiver_"))
+        .map((event) => ({
+          stage: event.stage,
+          ok: event.ok ?? null,
+          status: event.status ?? null,
+          path: event.path ?? null,
+          receiver_request_id: event.receiver_request_id ?? null,
+          archive_state: event.archive_state ?? null,
+          provider: event.provider ?? null,
+          provider_session_id: event.provider_session_id ?? null
+        }));
+      return {
+        ok: Boolean(
+          document.querySelector("#state") &&
+          document.querySelector("#state-detail") &&
+          document.querySelector("#debug-toggle") &&
+          document.querySelector("#debug-export") &&
+          debugLog.length > 0 &&
+          receiverEvents.length > 0
+        ),
+        status: document.querySelector("#state")?.textContent?.trim() || "",
+        mode: document.querySelector("#mode")?.textContent?.trim() || "",
+        archiveState: document.querySelector("#archive")?.textContent?.trim() || "",
+        stateDetail: document.querySelector("#state-detail")?.textContent?.trim() || "",
+        updated: document.querySelector("#updated")?.textContent?.trim() || "",
+        debugPanelVisible: !document.querySelector("#debug-panel")?.hidden,
+        debugCountText: document.querySelector("#debug-count")?.textContent?.trim() || "",
+        debugRowCount: debugRows.length,
+        captureRowCount: captureRows.length,
+        debugLogCount: debugLog.length,
+        captureLogCount: captureLog.length,
+        receiverEventCount: receiverEvents.length,
+        receiverEvents,
+        hasRawPayloadLeak: JSON.stringify(debugLog).includes("ChatGPT fixture user turn") || JSON.stringify(debugLog).includes("Claude fixture user turn"),
+        storedState: storage.polylogueState ? {
+          online: Boolean(storage.polylogueState.online),
+          archive_state: storage.polylogueState.archive_state || null,
+          capture_mode: storage.polylogueState.capture_mode || null,
+          captured: storage.polylogueState.captured ?? null
+        } : null
+      };
+    })()`,
+  );
+}
+
+async function capturePopupScreenshot(extensionClient, screenshotPath) {
+  if (!screenshotPath) return null;
+  const result = await extensionClient.call("Page.captureScreenshot", {
+    format: "png",
+    fromSurface: true,
+    captureBeyondViewport: true,
+  });
+  if (!result?.data) return null;
+  writeFileSync(screenshotPath, Buffer.from(result.data, "base64"));
+  return screenshotPath;
+}
+
 async function captureProvider(extensionClient, providerConfig) {
   return evaluateJson(
     extensionClient,
@@ -671,7 +797,9 @@ async function main() {
       extensionId,
     );
     extensionControllerClient = controllerClient;
+    const popupReady = await waitForPopupReady(extensionControllerClient);
     const configuredReceiver = await configureExtension(extensionControllerClient);
+    const popupStatusRefresh = await clickPopupCheck(extensionControllerClient);
 
     for (const config of providerConfigs) {
       const { client, target, tab } = await openProviderTargetFromExtension(
@@ -697,9 +825,14 @@ async function main() {
       const capturePayload = await captureProvider(extensionControllerClient, config);
       providers[config.key] = safeProviderSummary(config, capturePayload);
     }
+    const popup = await inspectPopup(extensionControllerClient);
+    const popupScreenshot = await capturePopupScreenshot(
+      extensionControllerClient,
+      outputPath ? path.join(path.dirname(outputPath), "browser-provider-smoke-popup.png") : "",
+    );
 
     const summary = {
-      ok: Object.values(providers).every((provider) => provider.ok === true),
+      ok: Object.values(providers).every((provider) => provider.ok === true) && popup.ok === true && popup.hasRawPayloadLeak !== true,
       chrome_binary: chromeBinary,
       chrome_args: chromeArgs,
       headless,
@@ -732,6 +865,12 @@ async function main() {
         url: extensionController.url || null,
         title: extensionController.title || null,
         tab: extensionControllerTab || null,
+      },
+      popup: {
+        ready: popupReady,
+        manual_status_refresh: popupStatusRefresh,
+        inspection: popup,
+        screenshot: popupScreenshot,
       },
       providers,
     };

@@ -15,6 +15,7 @@
         --warn: #9a5b00;
         --bad: #ad2f2f;
         --accent: #325d8f;
+        --focus: #0f6cbd;
         --gpt: #10a37f;
         --claude: #d97745;
         --grok: #111827;
@@ -23,9 +24,9 @@
         box-sizing: border-box;
       }
       body {
-        width: 520px;
-        min-width: 420px;
-        max-width: 560px;
+        width: 620px;
+        min-width: 480px;
+        max-width: 680px;
         margin: 0;
         color: var(--ink);
         background: var(--surface);
@@ -132,6 +133,7 @@
         gap: 10px;
       }
       button {
+        position: relative;
         width: 100%;
         min-height: 42px;
         padding: 9px 12px;
@@ -140,11 +142,52 @@
         color: var(--ink);
         background: var(--panel);
         font: inherit;
+        cursor: pointer;
+        transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 80ms ease;
+      }
+      button:hover {
+        border-color: var(--accent);
+        background: #eaf1f8;
+      }
+      button:focus-visible {
+        outline: 3px solid color-mix(in srgb, var(--focus), transparent 70%);
+        outline-offset: 2px;
+      }
+      button:active {
+        transform: translateY(1px);
+      }
+      button:disabled {
+        cursor: wait;
+        opacity: 0.72;
       }
       button.primary {
         border-color: var(--accent);
         color: #fff;
         background: var(--accent);
+      }
+      button.primary:hover {
+        background: #264f7d;
+      }
+      button[data-state="ok"] {
+        border-color: var(--ok);
+        box-shadow: inset 0 -3px 0 var(--ok);
+      }
+      button[data-state="bad"] {
+        border-color: var(--bad);
+        box-shadow: inset 0 -3px 0 var(--bad);
+      }
+      .button-label,
+      .button-status {
+        display: block;
+      }
+      .button-status {
+        min-height: 15px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.1;
+      }
+      button.primary .button-status {
+        color: #d8e6f2;
       }
       input {
         width: 100%;
@@ -161,10 +204,16 @@
         margin-top: 8px;
       }
       #state {
-        min-height: 46px;
+        min-height: 28px;
         margin: 0;
-        color: var(--muted);
+        color: var(--ink);
+        font-weight: 650;
         white-space: pre-wrap;
+      }
+      #state-detail {
+        min-height: 42px;
+        margin: 6px 0 12px;
+        color: var(--muted);
       }
       .log {
         display: grid;
@@ -192,6 +241,27 @@
       .log-meta {
         color: var(--muted);
         font-size: 12px;
+      }
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .link-button {
+        width: auto;
+        min-height: 34px;
+        padding: 5px 9px;
+      }
+      #debug-panel[hidden] {
+        display: none;
+      }
+      .debug-actions {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 140px;
+        gap: 10px;
+        margin-bottom: 10px;
       }
       @media (max-width: 460px) {
         body {
@@ -227,29 +297,48 @@
         <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>
         <div class="row"><span class="label">Turns</span><span id="turns" class="value">--</span></div>
         <div class="row"><span class="label">Request</span><span id="receiver-request" class="value">--</span></div>
+        <div class="row"><span class="label">Updated</span><span id="updated" class="value">--</span></div>
       </section>
 
       <section>
         <p id="state">Checking receiver...</p>
+        <p id="state-detail"></p>
         <div class="controls">
-          <button id="capture" class="primary">Capture page</button>
-          <button id="check">Check status</button>
-          <button id="sync-open-tabs">Sync open tabs</button>
-          <button id="copy-ref">Copy ref</button>
-          <button id="open-polylogue">Open in Polylogue</button>
+          <button id="capture" class="primary"><span class="button-label">Capture page</span><span class="button-status"></span></button>
+          <button id="check"><span class="button-label">Check status</span><span class="button-status"></span></button>
+          <button id="sync-open-tabs"><span class="button-label">Sync open tabs</span><span class="button-status"></span></button>
+          <button id="copy-ref"><span class="button-label">Copy ref</span><span class="button-status"></span></button>
+          <button id="open-polylogue"><span class="button-label">Open in Polylogue</span><span class="button-status"></span></button>
         </div>
       </section>
 
       <section>
-        <div class="row"><span class="label">Recent log</span><span id="log-count" class="value">0</span></div>
+        <div class="section-head">
+          <span class="label">Recent log</span>
+          <span id="log-count" class="value">0</span>
+        </div>
         <div id="log" class="log"></div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <span class="label">Debug log</span>
+          <span id="debug-count" class="value">0</span>
+        </div>
+        <div class="debug-actions">
+          <button id="debug-toggle" class="link-button"><span class="button-label">Show details</span><span class="button-status"></span></button>
+          <button id="debug-export" class="link-button"><span class="button-label">Export JSON</span><span class="button-status"></span></button>
+        </div>
+        <div id="debug-panel" hidden>
+          <div id="debug-log" class="log"></div>
+        </div>
       </section>
 
       <section>
         <label class="label" for="receiver-url">Local receiver URL</label>
         <div class="setting-row">
           <input id="receiver-url" value="http://127.0.0.1:8765">
-          <button id="save">Save</button>
+          <button id="save"><span class="button-label">Save</span><span class="button-status"></span></button>
         </div>
         <label class="label" for="receiver-token">Bearer token (optional)</label>
         <input id="receiver-token" type="password" autocomplete="off" placeholder="Only needed when receiver auth is enabled">

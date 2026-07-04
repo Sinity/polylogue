@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
 import socket
 import sqlite3
@@ -561,10 +562,12 @@ def run_extension_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
     artifacts = preflight.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("preflight payload is missing artifact paths")
-    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir = Path(str(artifacts["browser_dir"])).resolve()
     browser_dir.mkdir(parents=True, exist_ok=True)
-    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
-    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
+    event_path = Path(
+        str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl"))
+    ).resolve()
+    extension_root = (Path(str(preflight["repo_root"])) / "browser-extension").resolve()
     spool_path = browser_dir / "extension-smoke-spool"
     summary_path = browser_dir / "extension-smoke.json"
     result_path = browser_dir / "extension-smoke-result.json"
@@ -697,10 +700,12 @@ def run_browser_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
     artifacts = preflight.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("preflight payload is missing artifact paths")
-    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir = Path(str(artifacts["browser_dir"])).resolve()
     browser_dir.mkdir(parents=True, exist_ok=True)
-    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
-    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
+    event_path = Path(
+        str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl"))
+    ).resolve()
+    extension_root = (Path(str(preflight["repo_root"])) / "browser-extension").resolve()
     spool_path = browser_dir / "browser-smoke-spool"
     profile_dir = browser_dir / "browser-smoke-profile"
     summary_path = browser_dir / "browser-smoke.json"
@@ -892,17 +897,26 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
     artifacts = preflight.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("preflight payload is missing artifact paths")
-    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir = Path(str(artifacts["browser_dir"])).resolve()
     browser_dir.mkdir(parents=True, exist_ok=True)
-    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
-    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
+    event_path = Path(
+        str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl"))
+    ).resolve()
+    extension_root = (Path(str(preflight["repo_root"])) / "browser-extension").resolve()
     spool_path = browser_dir / "browser-provider-smoke-spool"
     profile_dir = browser_dir / "browser-provider-smoke-profile"
     summary_path = browser_dir / "browser-provider-smoke.json"
     result_path = browser_dir / "browser-provider-smoke-result.json"
+    popup_screenshot_path = browser_dir / "browser-provider-smoke-popup.png"
     stdout_path = browser_dir / "browser-provider-smoke.stdout"
     stderr_path = browser_dir / "browser-provider-smoke.stderr"
     env_path = browser_dir / "browser-provider-smoke.env.json"
+    for generated_path in (spool_path, profile_dir, result_path, popup_screenshot_path):
+        if generated_path.exists():
+            if generated_path.is_dir():
+                shutil.rmtree(generated_path)
+            else:
+                generated_path.unlink()
 
     _write_dev_loop_event(
         event_path,
@@ -977,18 +991,31 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
     extension_id = None
     manifest = None
     privacy_posture = None
+    popup_status = None
     if isinstance(result_payload, dict):
         extension_id = result_payload.get("extension_id")
         raw_manifest = result_payload.get("manifest")
         manifest = raw_manifest if isinstance(raw_manifest, dict) else None
         raw_privacy_posture = result_payload.get("privacy_posture")
         privacy_posture = raw_privacy_posture if isinstance(raw_privacy_posture, str) else None
+        raw_popup = result_payload.get("popup")
+        if isinstance(raw_popup, dict):
+            inspection = raw_popup.get("inspection")
+            if isinstance(inspection, dict):
+                popup_status = {
+                    "ok": bool(inspection.get("ok")),
+                    "debug_log_count": inspection.get("debugLogCount"),
+                    "receiver_event_count": inspection.get("receiverEventCount"),
+                    "capture_log_count": inspection.get("captureLogCount"),
+                    "has_raw_payload_leak": bool(inspection.get("hasRawPayloadLeak")),
+                }
     ok = (
         exit_code == 0
         and bool(provider_statuses)
         and all(provider_statuses.values())
         and bool(artifact_paths)
         and all(Path(path).exists() for path in artifact_paths.values())
+        and (popup_status is None or (popup_status["ok"] is True and popup_status["has_raw_payload_leak"] is False))
     )
     payload: dict[str, object] = {
         "ok": ok,
@@ -999,6 +1026,7 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
         "extension_root": str(extension_root),
         "manifest": manifest,
         "privacy_posture": privacy_posture,
+        "popup_status": popup_status,
         "profile_dir": str(profile_dir),
         "receiver_url": receiver_url,
         "spool_path": str(spool_path),
@@ -1011,6 +1039,7 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
             "stderr": str(stderr_path),
             "summary": str(summary_path),
             "result": str(result_path),
+            "popup_screenshot": str(popup_screenshot_path) if popup_screenshot_path.exists() else None,
             "env": str(env_path),
             "profile": str(profile_dir),
             "spool": str(spool_path),
@@ -1028,6 +1057,7 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
             "duration_ms": duration_ms,
             "extension_id": extension_id,
             "provider_statuses": provider_statuses,
+            "popup_status": popup_status,
             "artifact_refs": artifact_refs,
             "artifact_paths": artifact_paths,
             "artifacts": payload["artifacts"],
@@ -2026,21 +2056,20 @@ def launch_branch_daemon(
     assert isinstance(receiver_status, dict)
     api_port = int(api_status["port"])
     receiver_port = int(receiver_status["port"])
-    spool_path = run_log_dir / "browser-capture-spool"
+    data_home = Path(
+        str(env.get("XDG_DATA_HOME", repo_root / ".cache" / "dev-loop" / str(preflight["run_id"]) / "xdg-data"))
+    )
+    spool_path = data_home / "polylogue" / "browser-capture"
     spool_path.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
         "-c",
         "from polylogue.daemon.cli import main; main()",
         "run",
-        "--no-watch",
-        "--no-source-catchup",
         "--api-port",
         str(api_port),
         "--port",
         str(receiver_port),
-        "--spool",
-        str(spool_path),
     ]
 
     env_snapshot = _dev_loop_env_snapshot(env)
@@ -2643,7 +2672,6 @@ def build_dev_loop_status(
     plan_actions = {str(action["name"]): action for action in cast(list[dict[str, object]], operator_plan["actions"])}
     plan_checks = cast(dict[str, dict[str, object]], operator_plan["checks"])
     shell_env_prefix = f"{_shell_env_prefix(suggested_env)} PYTHONPATH={root}${{PYTHONPATH:+:${{PYTHONPATH}}}}"
-    daemon_spool = run_log_dir / "browser-capture-spool"
     commands = {
         "stop_system_service": "systemctl --user stop polylogued.service",
         "prepare": str(plan_actions["prepare"]["command_text"]),
@@ -2665,8 +2693,7 @@ def build_dev_loop_status(
         "run_daemon": (
             f"{shell_env_prefix} "
             f"{shlex.quote(sys.executable)} -c 'from polylogue.daemon.cli import main; main()' "
-            f"run --no-watch --no-source-catchup --api-port {api_port} --port {browser_capture_port} "
-            f"--spool {daemon_spool} 2>&1 | tee {daemon_log}"
+            f"run --api-port {api_port} --port {browser_capture_port} 2>&1 | tee {daemon_log}"
         ),
         "open_web_shell": web_url,
         "receiver_status": f"curl -sf {receiver_url}/v1/status",
@@ -3019,7 +3046,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--launch-daemon",
         action="store_true",
-        help="Launch branch-local polylogued with watch/source catch-up disabled and write PID/log/summary artifacts.",
+        help="Launch branch-local polylogued with watch/source catch-up enabled and write PID/log/summary artifacts.",
     )
     parser.add_argument(
         "--extension-smoke",

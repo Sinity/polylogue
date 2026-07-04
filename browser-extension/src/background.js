@@ -1,6 +1,7 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
 const CAPTURE_LOG_LIMIT = 80;
+const DEBUG_LOG_LIMIT = 160;
 const POST_POLL_INTERVAL_MS = 5000;
 const recentBackgroundCaptures = new Map();
 // command_id -> true once dispatched to a content script this SW lifetime, so a
@@ -77,6 +78,38 @@ async function appendCaptureLog(entry) {
   return next;
 }
 
+function sanitizeDebugDetails(value, depth = 0) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return { count: value.length };
+  if (typeof value !== "object" || depth > 2) return String(value);
+  const redactedKeys = new Set(["body", "envelope", "raw_provider_payload", "text", "turns", "messages", "content"]);
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (redactedKeys.has(key)) {
+      out[key] = "[redacted]";
+      continue;
+    }
+    out[key] = sanitizeDebugDetails(item, depth + 1);
+  }
+  return out;
+}
+
+async function appendDebugLog(entry) {
+  const stored = await chrome.storage.local.get({ polylogueDebugLog: [] });
+  const prior = Array.isArray(stored.polylogueDebugLog) ? stored.polylogueDebugLog : [];
+  const next = [
+    {
+      at: new Date().toISOString(),
+      ...sanitizeDebugDetails(entry),
+    },
+    ...prior,
+  ].slice(0, DEBUG_LOG_LIMIT);
+  await chrome.storage.local.set({ polylogueDebugLog: next });
+  return next;
+}
+
 async function updateSessionLedger({ provider, providerSessionId, patch }) {
   if (!provider || !providerSessionId) return null;
   const stored = await chrome.storage.local.get({ polylogueSessionLedger: {} });
@@ -131,35 +164,86 @@ async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
 async function postJson(path, payload) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
-  const response = await fetch(`${settings.baseUrl}${path}`, {
-    method: "POST",
-    headers: await requestHeaders({ hasBody: true, requestId }),
-    body: JSON.stringify(payload)
-  });
-  const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.error || `HTTP ${response.status}`);
-    error.receiverRequestId = receiverRequestId;
+  await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
+  try {
+    const response = await fetch(`${settings.baseUrl}${path}`, {
+      method: "POST",
+      headers: await requestHeaders({ hasBody: true, requestId }),
+      body: JSON.stringify(payload)
+    });
+    const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
+    const body = await response.json().catch(() => ({}));
+    await appendDebugLog({
+      stage: "receiver_response",
+      method: "POST",
+      path,
+      request_id: requestId,
+      receiver_request_id: receiverRequestId,
+      ok: response.ok,
+      status: response.status,
+      provider: body.provider || payload?.session?.provider || null,
+      provider_session_id: body.provider_session_id || payload?.session?.provider_session_id || null,
+      archive_state: body.state || null,
+      artifact_ref: body.artifact_ref || null,
+    });
+    if (!response.ok) {
+      const error = new Error(body.error || `HTTP ${response.status}`);
+      error.receiverRequestId = receiverRequestId;
+      throw error;
+    }
+    return { ...body, receiver_request_id: receiverRequestId };
+  } catch (error) {
+    await appendDebugLog({
+      stage: "receiver_error",
+      method: "POST",
+      path,
+      request_id: requestId,
+      receiver_request_id: error.receiverRequestId || null,
+      error: String(error.message || error),
+    });
     throw error;
   }
-  return { ...body, receiver_request_id: receiverRequestId };
 }
 
 async function getJson(path) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
-  const response = await fetch(`${settings.baseUrl}${path}`, {
-    headers: await requestHeaders({ requestId }),
-  });
-  const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.error || `HTTP ${response.status}`);
-    error.receiverRequestId = receiverRequestId;
+  await appendDebugLog({ stage: "receiver_request", method: "GET", path, request_id: requestId });
+  try {
+    const response = await fetch(`${settings.baseUrl}${path}`, {
+      headers: await requestHeaders({ requestId }),
+    });
+    const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
+    const body = await response.json().catch(() => ({}));
+    await appendDebugLog({
+      stage: "receiver_response",
+      method: "GET",
+      path,
+      request_id: requestId,
+      receiver_request_id: receiverRequestId,
+      ok: response.ok,
+      status: response.status,
+      provider: body.provider || null,
+      provider_session_id: body.provider_session_id || null,
+      archive_state: body.state || null,
+    });
+    if (!response.ok) {
+      const error = new Error(body.error || `HTTP ${response.status}`);
+      error.receiverRequestId = receiverRequestId;
+      throw error;
+    }
+    return { ...body, receiver_request_id: receiverRequestId };
+  } catch (error) {
+    await appendDebugLog({
+      stage: "receiver_error",
+      method: "GET",
+      path,
+      request_id: requestId,
+      receiver_request_id: error.receiverRequestId || null,
+      error: String(error.message || error),
+    });
     throw error;
   }
-  return { ...body, receiver_request_id: receiverRequestId };
 }
 
 async function refreshReceiverState() {
@@ -246,6 +330,16 @@ async function captureTab(tab, reason = "background") {
         last_receiver_request_id:
           result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null
       });
+      await appendDebugLog({
+        stage: "capture_result",
+        ok: true,
+        reason,
+        provider,
+        provider_session_id: providerSessionId,
+        capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
+        archive_state: result.archiveState?.state || null,
+        receiver_request_id: result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null,
+      });
     }
     return result;
   } catch (error) {
@@ -254,6 +348,13 @@ async function captureTab(tab, reason = "background") {
       reason,
       tab_id: tab.id,
       tab_url: tab.url || tab.pendingUrl || null,
+      error: String(error.message || error),
+    });
+    await appendDebugLog({
+      stage: "capture_result",
+      ok: false,
+      reason,
+      tab_id: tab.id,
       error: String(error.message || error),
     });
     return { ok: false, error: String(error.message || error) };
@@ -527,6 +628,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       reason: message.type || "runtime_message",
       error: String(error.message || error),
       receiver_request_id: error.receiverRequestId || null,
+    });
+    await appendDebugLog({
+      stage: "runtime_message_error",
+      message_type: message.type || "runtime_message",
+      receiver_request_id: error.receiverRequestId || null,
+      error: String(error.message || error),
     });
     await setState({
       online: false,

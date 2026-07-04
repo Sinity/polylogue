@@ -1,4 +1,13 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
+const AUTO_REFRESH_MS = 8000;
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
 
 function hostLabel(url) {
   try {
@@ -35,7 +44,8 @@ function providerLogo(provider) {
     grok: "G",
     unknown: "?",
   };
-  return `<span class="provider-logo ${provider || "unknown"}">${labels[provider] || "?"}</span>`;
+  const safeProvider = provider || "unknown";
+  return `<span class="provider-logo ${escapeHtml(safeProvider)}">${escapeHtml(labels[safeProvider] || "?")}</span>`;
 }
 
 function contentScriptFiles(url) {
@@ -93,6 +103,82 @@ function relativeAge(iso) {
   return `${Math.round(minutes / 60)}h`;
 }
 
+function stateExplanation(state) {
+  if (!state) {
+    return {
+      badge: ["warn", "idle"],
+      archive: "Not checked",
+      headline: "No receiver state yet.",
+      detail: "The popup refreshes automatically on open. If this stays idle, the service worker has not returned a status payload.",
+    };
+  }
+  if (!state.online) {
+    return {
+      badge: ["bad", "offline"],
+      archive: "Offline",
+      headline: "Receiver offline.",
+      detail: `Start the local receiver, then refresh. ${state.error || ""}`.trim(),
+    };
+  }
+  const archiveState = state.archive_state?.state || null;
+  if (archiveState === "failed" || state.error) {
+    return {
+      badge: ["bad", "failed"],
+      archive: "Failed",
+      headline: "Capture was rejected or could not be parsed.",
+      detail: state.archive_state?.latest_failure || state.error || "Open the debug log and match the request id in the receiver log.",
+    };
+  }
+  if (archiveState === "archived" || state.captured) {
+    return {
+      badge: ["ok", "captured"],
+      archive: "Archived",
+      headline: state.last_capture
+        ? `Last capture: ${state.last_capture.provider} / ${state.last_capture.provider_session_id}`
+        : "The latest capture is visible in the archive.",
+      detail: "Archive evidence includes receiver spool, source raw row, indexed session, and indexed messages.",
+    };
+  }
+  if (archiveState === "stale") {
+    return {
+      badge: ["warn", "stale"],
+      archive: "Stale",
+      headline: "Receiver spool is newer than the indexed archive.",
+      detail: "The daemon has not caught up to the latest browser capture yet. Keep the daemon running; this should converge without a manual repair step.",
+    };
+  }
+  if (archiveState === "ingest_pending") {
+    return {
+      badge: ["warn", "pending"],
+      archive: "Ingest pending",
+      headline: "Capture reached source.db but is not queryable yet.",
+      detail: "The daemon still needs to materialize the indexed session and messages.",
+    };
+  }
+  if (archiveState === "spooled_only") {
+    return {
+      badge: ["warn", "spooled"],
+      archive: "Spooled",
+      headline: "Receiver wrote the capture artifact.",
+      detail: "The daemon has not acquired the spool artifact into source.db yet.",
+    };
+  }
+  if (state.capture_mode === "dom_degraded") {
+    return {
+      badge: ["warn", "dom"],
+      archive: "DOM fallback",
+      headline: "Captured from visible DOM, not provider-native app data.",
+      detail: "DOM fallback is useful but is not provider-native app data; it may omit branches, provider ids, timestamps, or attachments. Reload the page, wait for the conversation API response, then capture again.",
+    };
+  }
+  return {
+    badge: ["warn", "online"],
+    archive: "Receiver online",
+    headline: "Receiver online. Open a supported conversation to capture.",
+    detail: "Supported pages are ChatGPT, Claude.ai, and Grok/X conversation routes.",
+  };
+}
+
 function renderLog(items) {
   const log = document.getElementById("log");
   const safeItems = Array.isArray(items) ? items.slice(0, 8) : [];
@@ -108,116 +194,199 @@ function renderLog(items) {
         ? `${provider} ${entry.provider_session_id || ""}`.trim()
         : entry.error || "capture failed";
       const meta = [entry.archive_state, entry.capture_mode, entry.receiver_request_id].filter(Boolean).join(" · ");
-      return `<div class="log-item"><div class="log-time">${relativeAge(entry.at)}</div><div><div class="log-title">${providerLogo(provider)} ${title}</div><div class="log-meta">${meta || entry.reason || ""}</div></div></div>`;
+      return `<div class="log-item"><div class="log-time">${escapeHtml(relativeAge(entry.at))}</div><div><div class="log-title">${providerLogo(provider)} ${escapeHtml(title)}</div><div class="log-meta">${escapeHtml(meta || entry.reason || "")}</div></div></div>`;
     })
     .join("");
 }
 
+function renderDebugLog(items) {
+  const debug = document.getElementById("debug-log");
+  const safeItems = Array.isArray(items) ? items.slice(0, 24) : [];
+  document.getElementById("debug-count").textContent = String(Array.isArray(items) ? items.length : 0);
+  if (!safeItems.length) {
+    debug.innerHTML = '<div class="log-meta">No debug events yet.</div>';
+    return;
+  }
+  debug.innerHTML = safeItems
+    .map((entry) => {
+      const title = [entry.stage, entry.method, entry.path].filter(Boolean).join(" ");
+      const meta = [
+        entry.ok === false ? "error" : entry.ok === true ? "ok" : null,
+        entry.status,
+        entry.archive_state,
+        entry.capture_mode,
+        entry.provider,
+        entry.provider_session_id,
+        entry.receiver_request_id || entry.request_id,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return `<div class="log-item"><div class="log-time">${escapeHtml(relativeAge(entry.at))}</div><div><div class="log-title">${escapeHtml(title || "event")}</div><div class="log-meta">${escapeHtml(meta || entry.error || "")}</div></div></div>`;
+    })
+    .join("");
+}
+
+function setActionState(button, state, text = "") {
+  if (!button) return;
+  button.dataset.state = state;
+  button.disabled = state === "busy";
+  const status = button.querySelector(".button-status");
+  if (status) status.textContent = text;
+}
+
+async function withAction(buttonId, fn) {
+  const button = document.getElementById(buttonId);
+  setActionState(button, "busy", "Working");
+  try {
+    const result = await fn();
+    setActionState(button, "ok", "Done");
+    window.setTimeout(() => setActionState(button, "idle", ""), 1600);
+    return result;
+  } catch (error) {
+    setActionState(button, "bad", "Failed");
+    window.setTimeout(() => setActionState(button, "idle", ""), 3000);
+    throw error;
+  }
+}
+
 async function render() {
-  const stateNode = document.getElementById("state");
   const stored = await chrome.storage.local.get({
     polylogueCaptureLog: [],
+    polylogueDebugLog: [],
     polylogueState: null,
     receiverAuthToken: "",
     receiverBaseUrl: DEFAULT_RECEIVER
   });
   renderLog(stored.polylogueCaptureLog);
+  renderDebugLog(stored.polylogueDebugLog);
   document.getElementById("receiver-url").value = stored.receiverBaseUrl;
   document.getElementById("receiver-token").value = stored.receiverAuthToken || "";
   document.getElementById("receiver").textContent = stored.receiverBaseUrl;
   const tab = await activeTab();
   const currentProvider = providerFromUrl(tab?.url || "");
-  document.getElementById("page").innerHTML = `${providerLogo(currentProvider)} <span>${hostLabel(tab?.url || "")}</span>`;
+  document.getElementById("page").innerHTML = `${providerLogo(currentProvider)} <span>${escapeHtml(hostLabel(tab?.url || ""))}</span>`;
   const state = stored.polylogueState;
   const requestNode = document.getElementById("receiver-request");
   const modeNode = document.getElementById("mode");
   const turnsNode = document.getElementById("turns");
-  if (!state) {
-    stateNode.textContent = "No capture state yet.";
-    requestNode.textContent = "--";
-    modeNode.textContent = "--";
-    turnsNode.textContent = "--";
-    setBadge("warn", "idle");
-    return;
-  }
-  requestNode.textContent = state.last_receiver_request_id || "--";
-  modeNode.textContent = state.capture_mode || state.archive_state?.state || "--";
-  const lastSession = state.last_capture || {};
-  const turnCount = state.archive_state?.indexed_message_count || lastSession.turn_count || "--";
-  const attachmentCount = state.archive_state?.attachment_count || lastSession.attachment_count || null;
+  const updatedNode = document.getElementById("updated");
+  requestNode.textContent = state?.last_receiver_request_id || "--";
+  modeNode.textContent = state?.capture_mode || state?.archive_state?.state || "--";
+  const lastSession = state?.last_capture || {};
+  const turnCount = state?.archive_state?.indexed_message_count || lastSession.turn_count || "--";
+  const attachmentCount = state?.archive_state?.attachment_count || lastSession.attachment_count || null;
   turnsNode.textContent = attachmentCount === null ? String(turnCount) : `${turnCount} / ${attachmentCount} files`;
-  if (!state.online) {
-    stateNode.textContent = `Receiver offline. Start: polylogue browser-capture serve\n${state.error || ""}`.trim();
-    document.getElementById("archive").textContent = "Offline";
-    setBadge("bad", "offline");
-    return;
-  }
-  document.getElementById("archive").textContent = state.captured ? "Captured" : "Receiver online";
-  if (state.last_capture) {
-    stateNode.textContent = `Last capture: ${state.last_capture.provider} / ${state.last_capture.provider_session_id}`;
-  } else {
-    stateNode.textContent = "Receiver online. Open ChatGPT or Claude.ai to capture.";
-  }
-  setBadge(state.captured ? "ok" : "warn", state.captured ? "captured" : "online");
+  updatedNode.textContent = state?.updated_at ? `${relativeAge(state.updated_at)} ago` : "--";
+
+  const explanation = stateExplanation(state);
+  const [badgeKind, badgeText] = explanation.badge;
+  document.getElementById("archive").textContent = explanation.archive;
+  document.getElementById("state").textContent = explanation.headline;
+  document.getElementById("state-detail").textContent = explanation.detail;
+  setBadge(badgeKind, badgeText);
+}
+
+async function refreshStatus(reason = "popup_manual") {
+  await chrome.runtime.sendMessage({ type: "polylogue.status", reason });
+  await render();
 }
 
 document.getElementById("check").addEventListener("click", async () => {
-  await chrome.runtime.sendMessage({ type: "polylogue.status" });
-  await render();
+  await withAction("check", () => refreshStatus("popup_manual"));
 });
 
 document.getElementById("sync-open-tabs").addEventListener("click", async () => {
-  await chrome.runtime.sendMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
-  await render();
+  await withAction("sync-open-tabs", async () => {
+    await chrome.runtime.sendMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
+    await render();
+  });
 });
 
 document.getElementById("copy-ref").addEventListener("click", async () => {
-  const stored = await chrome.storage.local.get({ polylogueState: null });
-  const state = stored.polylogueState || {};
-  const provider = state.provider || state.last_capture?.provider;
-  const providerSessionId = state.provider_session_id || state.last_capture?.provider_session_id;
-  const ref = provider && providerSessionId ? `${provider}:${providerSessionId}` : "";
-  if (ref && window.navigator.clipboard?.writeText) await window.navigator.clipboard.writeText(ref);
+  await withAction("copy-ref", async () => {
+    const stored = await chrome.storage.local.get({ polylogueState: null });
+    const state = stored.polylogueState || {};
+    const provider = state.provider || state.last_capture?.provider;
+    const providerSessionId = state.provider_session_id || state.last_capture?.provider_session_id;
+    const ref = provider && providerSessionId ? `${provider}:${providerSessionId}` : "";
+    if (ref && window.navigator.clipboard?.writeText) await window.navigator.clipboard.writeText(ref);
+  });
 });
 
 document.getElementById("open-polylogue").addEventListener("click", async () => {
-  const stored = await chrome.storage.local.get({ polylogueState: null, receiverBaseUrl: DEFAULT_RECEIVER });
-  const providerSessionId = stored.polylogueState?.provider_session_id || stored.polylogueState?.last_capture?.provider_session_id;
-  const url = `${String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "")}/?q=${encodeURIComponent(providerSessionId || "")}`;
-  await chrome.tabs.create({ url });
+  await withAction("open-polylogue", async () => {
+    const stored = await chrome.storage.local.get({ polylogueState: null, receiverBaseUrl: DEFAULT_RECEIVER });
+    const providerSessionId = stored.polylogueState?.provider_session_id || stored.polylogueState?.last_capture?.provider_session_id;
+    const url = `${String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "")}/?q=${encodeURIComponent(providerSessionId || "")}`;
+    await chrome.tabs.create({ url });
+  });
 });
 
 document.getElementById("save").addEventListener("click", async () => {
-  const receiverBaseUrl = document.getElementById("receiver-url").value;
-  const receiverAuthToken = document.getElementById("receiver-token").value;
-  await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl, receiverAuthToken });
-  await render();
+  await withAction("save", async () => {
+    const receiverBaseUrl = document.getElementById("receiver-url").value;
+    const receiverAuthToken = document.getElementById("receiver-token").value;
+    await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl, receiverAuthToken });
+    await refreshStatus("popup_configure_receiver");
+  });
 });
 
 document.getElementById("capture").addEventListener("click", async () => {
-  const tab = await activeTab();
-  if (!tab?.id) return;
-  let result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }).catch((error) => ({
-    ok: false,
-    error: String(error.message || error)
-  }));
-  if (!result?.ok && (await ensureCaptureScripts(tab))) {
-    result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }).catch((error) => ({
+  await withAction("capture", async () => {
+    const tab = await activeTab();
+    if (!tab?.id) return;
+    let result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }).catch((error) => ({
       ok: false,
       error: String(error.message || error)
     }));
-  }
-  if (!result?.ok) {
-    await chrome.storage.local.set({
-      polylogueState: {
-        online: false,
-        captured: false,
-        error: result?.error || "This page is not supported.",
-        updated_at: new Date().toISOString()
-      }
-    });
-  }
-  await render();
+    if (!result?.ok && (await ensureCaptureScripts(tab))) {
+      result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }).catch((error) => ({
+        ok: false,
+        error: String(error.message || error)
+      }));
+    }
+    if (!result?.ok) {
+      await chrome.storage.local.set({
+        polylogueState: {
+          online: false,
+          captured: false,
+          error: result?.error || "This page is not supported.",
+          updated_at: new Date().toISOString()
+        }
+      });
+    }
+    await render();
+  });
 });
 
-render();
+document.getElementById("debug-toggle").addEventListener("click", () => {
+  document.getElementById("debug-panel").toggleAttribute("hidden");
+});
+
+document.getElementById("debug-export").addEventListener("click", async () => {
+  await withAction("debug-export", async () => {
+    const stored = await chrome.storage.local.get({ polylogueDebugLog: [], polylogueCaptureLog: [], polylogueState: null });
+    const payload = {
+      exported_at: new Date().toISOString(),
+      state: stored.polylogueState || null,
+      debug_log: Array.isArray(stored.polylogueDebugLog) ? stored.polylogueDebugLog : [],
+      capture_log: Array.isArray(stored.polylogueCaptureLog) ? stored.polylogueCaptureLog : [],
+    };
+    const blob = new globalThis.Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: "application/json" });
+    const url = globalThis.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `polylogue-browser-capture-debug-${Date.now()}.json`;
+    link.click();
+    globalThis.URL.revokeObjectURL(url);
+  });
+});
+
+void (async () => {
+  await render();
+  void refreshStatus("popup_open").catch(() => render());
+  const refreshTimer = window.setInterval(() => {
+    void refreshStatus("popup_auto").catch(() => render());
+  }, AUTO_REFRESH_MS);
+  refreshTimer.unref?.();
+})();
