@@ -20,7 +20,8 @@ pending.
 
 ## Greedy Batch Default
 
-Batch toward full bead closure by default. The normal loop is:
+Batch toward full bead closure by default. Treat "finish the bead total" as the
+normal implementation and PR unit. The normal loop is:
 
 1. audit the bead acceptance criteria;
 2. gather evidence for all remaining criteria;
@@ -31,9 +32,9 @@ Batch toward full bead closure by default. The normal loop is:
 
 Avoid turning each small helper, renderer field, construct declaration, or
 artifact refresh into its own PR. A small PR is appropriate only when it closes
-a named bead or phase, unblocks other active work, isolates genuine risk, or
-keeps a truly large bead reviewable. Otherwise, keep working on the same branch
-until the acceptance matrix is meaningful.
+a named bead, unblocks other active work, isolates genuine risk, or keeps a
+truly large bead reviewable. Otherwise, keep working on the same branch until
+the bead can close.
 
 Phase splits are a fallback, not the default. Use them only when the full bead
 would be materially harder to review, would mix different risk/deployment

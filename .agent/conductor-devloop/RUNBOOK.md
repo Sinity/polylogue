@@ -83,12 +83,13 @@ explains why it should not be routed through the normal state machine.
 
 ## Greedy Batch / PR Cadence
 
-Default development unit: one complete bead. Finish the capability claim and
-publish that as the normal PR boundary. A coherent phase is allowed only when
-the bead is genuinely too large or risky to close as one PR and the phase can
-honestly satisfy a named acceptance-criteria subset with a clear residual
-matrix. Do not open or publish a PR for every small projection, helper,
-construct declaration, or proof artifact merely because it is locally green.
+Default development unit: one complete bead. Finish the capability claim total
+and publish that as the normal PR boundary. A coherent phase is an exception
+that must justify itself before publication: the bead must be genuinely too
+large or risky to close as one PR, and the phase must honestly satisfy a named
+acceptance-criteria subset with a clear residual matrix. Do not open or publish
+a PR for every small projection, helper, construct declaration, or proof artifact
+merely because it is locally green.
 
 Prefer a single branch/PR for the whole bead when the work:
 
@@ -113,6 +114,10 @@ notes must say exactly why a phase split is justified, which criteria are
 satisfied, which are deferred, and which follow-up bead owns the remainder. This
 is a velocity rule: fewer, more complete integration boundaries beat a chain of
 locally-correct but strategically thin slices.
+
+If the remaining work is within the same bead, same substrate, and same proof
+family, keep working. Do not stop merely because the current diff is already
+mergeable.
 
 ## One-Loop Protocol
 

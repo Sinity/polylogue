@@ -87,13 +87,14 @@ a no-op reason, a new batch grouping, a delegation, a removed friction point, or
 a follow-up Bead.
 
 Default to greedy batching. The normal development unit is the whole bead:
-finish the capability claim, then publish it. A coherent bead phase is a
+finish the capability claim total, then publish it. A coherent bead phase is a
 fallback only when the bead is genuinely too large or risky to close in one PR
 and the phase has its own honest acceptance/residual matrix. Do not publish each
 green helper, renderer field, construct declaration, or proof artifact as its
 own PR when the rest of the bead can be finished with the same evidence,
 substrate, and verification pass. Split only for real reviewability, risk,
-unblocking, or materially different verification boundaries.
+unblocking, or materially different verification boundaries; otherwise keep
+working until the bead closes.
 
 Record material transitions with:
 
