@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import sqlite3
 import threading
@@ -401,25 +402,16 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
 
     db = tmp_path / "index.db"
     db.touch()
-    sleep_calls = 0
-
-    async def fake_sleep(_seconds: float) -> None:
-        nonlocal sleep_calls
-        sleep_calls += 1
-        raise asyncio.CancelledError
 
     async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
     with (
-        patch("polylogue.daemon.cli._active_index_db_path", return_value=db),
-        patch("asyncio.sleep", side_effect=fake_sleep),
         patch("asyncio.to_thread", side_effect=fake_to_thread),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
-        pytest.raises(asyncio.CancelledError),
     ):
-        asyncio.run(daemon_cli._periodic_convergence_check(()))
+        asyncio.run(daemon_cli._retry_convergence_debt_once(db))
 
     info.assert_called_once()
     assert info.call_args.args[0] == "convergence: archive busy; retrying derived debt on next tick: %s"
@@ -578,20 +570,24 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
     db = tmp_path / "index.db"
     db.touch()
     calls: list[str] = []
+    drained = asyncio.Event()
 
     async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
         calls.append("drain")
-        raise asyncio.CancelledError
+        drained.set()
+        return 0
 
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
-        monkeypatch.setattr(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 60)
         monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
         monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
         task = asyncio.create_task(daemon_cli._periodic_convergence_check((), catch_up_complete=catch_up_complete))
         await asyncio.sleep(0)
         assert calls == []
         catch_up_complete.set()
+        await asyncio.wait_for(drained.wait(), timeout=1)
+        task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
@@ -605,26 +601,16 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
 
     db = tmp_path / "index.db"
     db.touch()
-    sleep_calls = 0
-
-    async def fake_sleep(_seconds: float) -> None:
-        nonlocal sleep_calls
-        sleep_calls += 1
-        if sleep_calls > 1:
-            raise asyncio.CancelledError
 
     async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
         raise RuntimeError("unexpected convergence retry failure")
 
     with (
-        patch("polylogue.daemon.cli._active_index_db_path", return_value=db),
-        patch("asyncio.sleep", side_effect=fake_sleep),
         patch("asyncio.to_thread", side_effect=fake_to_thread),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
-        pytest.raises(asyncio.CancelledError),
     ):
-        asyncio.run(daemon_cli._periodic_convergence_check(()))
+        asyncio.run(daemon_cli._retry_convergence_debt_once(db))
 
     info.assert_not_called()
     warning.assert_called_once()
@@ -1919,9 +1905,17 @@ def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
 
 def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
     events: list[str] = []
     lifecycle_payloads: list[dict[str, object]] = []
+    ok_schema = HealthAlert(
+        check_name="schema_version",
+        tier=HealthTier.FAST,
+        severity=HealthSeverity.OK,
+        message="ok",
+        checked_at="now",
+    )
 
     class FakePolylogue:
         async def __aenter__(self) -> object:
@@ -1952,6 +1946,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         events.append("drive-once")
         return 0
 
+    async def fake_configure_fts_automerge() -> None:
+        events.append("automerge")
+
     async def fake_loop(name: str) -> None:
         events.append(name)
         await asyncio.Event().wait()
@@ -1970,38 +1967,53 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         assert kind == "daemon.lifecycle"
         lifecycle_payloads.append(cast(dict[str, object], kwargs["payload"]))
 
-    with (
-        patch.object(daemon_cli, "Polylogue", FakePolylogue),
-        patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
-        patch.object(daemon_cli, "_ensure_fts_startup_readiness", fake_fts_startup),
-        patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup),
-        patch.object(daemon_cli, "_sweep_orphaned_blob_leases", fake_sweep_orphaned_blob_leases),
-        patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")),
-        patch.object(
-            daemon_cli,
-            "_periodic_raw_materialization_convergence_after",
-            lambda _gate=None: fake_loop("raw-materialization"),
-        ),
-        patch.object(
-            daemon_cli,
-            "_periodic_session_insight_convergence_after",
-            lambda _gate=None: fake_loop("session-insights"),
-        ),
-        patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")),
-        patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: fake_loop("convergence")),
-        patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")),
-        patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")),
-        patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")),
-        patch.object(daemon_cli, "_periodic_drive_source_catchup", lambda: fake_loop("drive")),
-        patch(
-            "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
-            lambda **_kwargs: fake_loop("embedding"),
-        ),
-        patch("polylogue.daemon.convergence.DaemonConverger", FakeConverger),
-        patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
-        patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event),
-        pytest.raises(RuntimeError, match="watch stopped"),
-    ):
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
+        stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
+        stack.enter_context(patch.object(daemon_cli, "_ensure_fts_startup_readiness", fake_fts_startup))
+        stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
+        stack.enter_context(patch("polylogue.paths.archive_root", return_value=Path("/tmp/polylogue-test-archive")))
+        stack.enter_context(patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup))
+        stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", fake_configure_fts_automerge))
+        stack.enter_context(patch.object(daemon_cli, "_sweep_orphaned_blob_leases", fake_sweep_orphaned_blob_leases))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_fts_merge", lambda: fake_loop("fts-merge")))
+        stack.enter_context(
+            patch.object(
+                daemon_cli,
+                "_periodic_raw_materialization_convergence_after",
+                lambda _gate=None: fake_loop("raw-materialization"),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                daemon_cli,
+                "_periodic_session_insight_convergence_after",
+                lambda _gate=None: fake_loop("session-insights"),
+            )
+        )
+        stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")))
+        stack.enter_context(
+            patch.object(
+                daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: fake_loop("convergence")
+            )
+        )
+        stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_drive_source_catchup", lambda: fake_loop("drive")))
+        stack.enter_context(
+            patch(
+                "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
+                lambda **_kwargs: fake_loop("embedding"),
+            )
+        )
+        stack.enter_context(patch("polylogue.daemon.convergence.DaemonConverger", FakeConverger))
+        stack.enter_context(
+            patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=())
+        )
+        stack.enter_context(patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event))
+        stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),

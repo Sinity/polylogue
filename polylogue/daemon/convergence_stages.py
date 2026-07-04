@@ -1037,7 +1037,7 @@ def _archive_fts_check_sessions(db_path: Path, session_ids: Sequence[str]) -> se
 
 def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> bool:
     try:
-        conn = sqlite3.connect(db_path, timeout=30.0)
+        conn = _open_archive_insight_write_connection(db_path)
         try:
             ids = _archive_existing_session_ids(conn, session_ids)
             if not ids:
@@ -1048,7 +1048,10 @@ def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> 
             return not _archive_fts_needs_repair(conn, ids)
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info("fts: archive session repair deferred because sqlite is busy: %s", exc)
+            return False
         logger.warning("fts: archive session repair failed", exc_info=True)
         return False
 
@@ -1064,7 +1067,10 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
             return not _archive_fts_needs_repair(conn)
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        if _is_transient_sqlite_lock(exc):
+            logger.info("fts: archive global messages_fts repair deferred because sqlite is busy: %s", exc)
+            return False
         logger.warning("fts: archive global messages_fts repair failed", exc_info=True)
         return False
 

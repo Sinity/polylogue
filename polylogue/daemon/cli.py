@@ -414,20 +414,25 @@ async def _periodic_convergence_check(
     if catch_up_complete is not None:
         await catch_up_complete.wait()
     while True:
+        await _retry_convergence_debt_once(db)
         await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
-        if not db.exists():
-            continue
-        try:
-            repaired = await asyncio.to_thread(_drain_convergence_debt_once, db)
-            if repaired:
-                logger.info("convergence: retried %d derived debt item(s)", repaired)
-        except sqlite3.OperationalError as exc:
-            if is_transient_sqlite_lock(exc):
-                logger.info("convergence: archive busy; retrying derived debt on next tick: %s", exc)
-                continue
-            logger.warning("convergence: check failed", exc_info=True)
-        except Exception:
-            logger.warning("convergence: check failed", exc_info=True)
+
+
+async def _retry_convergence_debt_once(db: Path) -> None:
+    """Run one logged derived-debt retry pass when the archive exists."""
+    if not db.exists():
+        return
+    try:
+        repaired = await asyncio.to_thread(_drain_convergence_debt_once, db)
+        if repaired:
+            logger.info("convergence: retried %d derived debt item(s)", repaired)
+    except sqlite3.OperationalError as exc:
+        if is_transient_sqlite_lock(exc):
+            logger.info("convergence: archive busy; retrying derived debt on next tick: %s", exc)
+            return
+        logger.warning("convergence: check failed", exc_info=True)
+    except Exception:
+        logger.warning("convergence: check failed", exc_info=True)
 
 
 async def _periodic_raw_materialization_convergence() -> None:
@@ -991,6 +996,7 @@ async def run_daemon_services(
             periodic_loops = [
                 _periodic_raw_materialization_convergence_after(catch_up_complete_gate),
                 _periodic_session_insight_convergence_after(catch_up_complete_gate),
+                _periodic_convergence_check(sources, catch_up_complete=catch_up_complete_gate),
                 _periodic_wal_checkpoint(),
                 _periodic_fts_merge(),
                 _periodic_heartbeat(),
@@ -1002,8 +1008,6 @@ async def run_daemon_services(
             if enable_source_catchup:
                 periodic_loops.append(_periodic_drive_source_catchup())
             maintenance_tasks.extend(asyncio.create_task(loop) for loop in periodic_loops)
-            if not enable_watch:
-                maintenance_tasks.append(asyncio.create_task(_periodic_convergence_check(sources)))
             # Reclaim blob leases leaked by a previously SIGKILLed writer so a
             # later GC pass is not blocked indefinitely (#1746).
             maintenance_tasks.append(asyncio.create_task(_sweep_orphaned_blob_leases()))

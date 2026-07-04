@@ -258,6 +258,36 @@ def test_fts_session_debt_uses_targeted_repair_not_full_rebuild(tmp_path: Path) 
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
 
 
+def test_archive_fts_session_repair_defers_sqlite_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+
+    def locked(_db_path: Path) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", locked)
+
+    assert stages._archive_fts_execute_sessions(archive_db, ["codex-session:s1"]) is False
+
+
+def test_archive_fts_global_repair_defers_sqlite_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+
+    def locked(_db_path: Path) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", locked)
+
+    assert stages.repair_messages_fts_surface(archive_db) is False
+
+
 def test_archive_repair_sessions_fts_skips_unknown_scope(tmp_path: Path) -> None:
     """Path-scoped convergence must not become a whole-archive FTS rebuild."""
     from unittest import mock
