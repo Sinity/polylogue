@@ -64,6 +64,13 @@ class RenderDestination(str, Enum):
     FILE = "file"
 
 
+RENDER_FORMAT_ALIASES: dict[str, RenderFormat] = {
+    "text": RenderFormat.PLAINTEXT,
+    "plain": RenderFormat.PLAINTEXT,
+}
+"""Accepted user-facing aliases for render encodings."""
+
+
 class RenderTimestampPolicy(str, Enum):
     """How rendering should treat source timestamps when the projection carries them."""
 
@@ -231,6 +238,7 @@ def projection_from_views(
     if include_assertions and EvidenceFamily.ASSERTIONS not in families_list:
         families_list.append(EvidenceFamily.ASSERTIONS)
     render_timestamps = RenderTimestampPolicy(timestamps) if timestamps is not None else timestamp_policy
+    render_format = RENDER_FORMAT_ALIASES[format] if format in RENDER_FORMAT_ALIASES else RenderFormat(format)
     return QueryProjectionSpec(
         selection=SelectionSpec(
             query=query,
@@ -254,7 +262,7 @@ def projection_from_views(
             include_assertions=include_assertions,
         ),
         render=RenderSpec(
-            format=RenderFormat(format),
+            format=render_format,
             destination=RenderDestination(destination),
             layout=layout,
             timestamps=render_timestamps,
@@ -270,6 +278,7 @@ __all__ = [
     "ProjectionSpec",
     "QueryProjectionSpec",
     "READ_VIEW_PROJECTION_FAMILIES",
+    "RENDER_FORMAT_ALIASES",
     "RenderDestination",
     "RenderFormat",
     "RenderSpec",

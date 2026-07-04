@@ -21,7 +21,7 @@ from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 from polylogue.core.enums import Provider
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
-from polylogue.surfaces.projection_spec import projection_from_views
+from polylogue.surfaces.projection_spec import RenderFormat, projection_from_views
 from tests.infra.builders import make_conv, make_msg
 
 
@@ -252,6 +252,22 @@ def test_read_format_completion_comes_from_selected_view_profile() -> None:
 
     assert [item.value for item in items] == list(READ_VIEW_PROFILE_BY_ID["raw"].formats)
     assert items[0].help == "Supported by read --view raw"
+
+
+def test_messages_text_format_maps_to_plaintext_projection() -> None:
+    request = RootModeRequest.from_params({})
+
+    projection = query_verbs._build_read_projection_spec(
+        request,
+        views=("messages",),
+        output_format="text",
+        destination="terminal",
+        out_path=None,
+        max_tokens=None,
+        selection_limit=None,
+    )
+
+    assert projection.render.format is RenderFormat.PLAINTEXT
 
 
 def test_dialogue_read_view_renders_projected_authored_prose(capsys: pytest.CaptureFixture[str]) -> None:

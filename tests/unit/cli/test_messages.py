@@ -323,6 +323,22 @@ def test_run_messages_markdown_and_not_found_paths(tmp_path: Path) -> None:
     _ui_error(missing_env).assert_called_once_with("Session not found: missing")
 
 
+def test_run_messages_text_alias_emits_human_rows(tmp_path: Path) -> None:
+    env = _env()
+    api = _FakeApi(
+        messages_result=(
+            [{"id": "m1", "role": "user", "message_type": "message", "text": "text alias works"}],
+            1,
+        )
+    )
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="text")
+
+    printed = [call.args[0] for call in _ui_print(env).call_args_list]
+    assert printed == ["[user message] text alias works", "---"]
+
+
 def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     api = _FakeApi(
         raw_result=(
