@@ -20,20 +20,26 @@ pending.
 
 ## Greedy Batch Default
 
-Batch toward bead closure by default. The normal loop is:
+Batch toward full bead closure by default. The normal loop is:
 
 1. audit the bead acceptance criteria;
 2. gather evidence for all remaining criteria;
 3. edit the coherent shared substrate in one batch;
 4. run focused proof once for the batch;
 5. generate one live/demo artifact that exercises the whole claim;
-6. publish one PR for the complete bead or coherent phase.
+6. publish one PR for the complete bead.
 
 Avoid turning each small helper, renderer field, construct declaration, or
 artifact refresh into its own PR. A small PR is appropriate only when it closes
 a named bead or phase, unblocks other active work, isolates genuine risk, or
 keeps a truly large bead reviewable. Otherwise, keep working on the same branch
 until the acceptance matrix is meaningful.
+
+Phase splits are a fallback, not the default. Use them only when the full bead
+would be materially harder to review, would mix different risk/deployment
+timing, would block another active lane if held, or would force unrelated proof
+families into one verification pass. If the remaining work is the same substrate
+and the same proof artifact, keep batching.
 
 When tempted to publish a partial slice, ask:
 
@@ -43,6 +49,8 @@ When tempted to publish a partial slice, ask:
   same test/live-artifact pass?
 - Is the split about risk/reviewability, or just because the current diff is
   already green?
+- Would finishing the whole bead now be clearer than creating another
+  integration boundary?
 
 If the answer is "already green," keep batching.
 

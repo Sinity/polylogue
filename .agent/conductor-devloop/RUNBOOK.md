@@ -83,12 +83,14 @@ explains why it should not be routed through the normal state machine.
 
 ## Greedy Batch / PR Cadence
 
-Default development unit: one complete bead, or one coherent phase that can
-honestly satisfy a named bead acceptance-criteria subset with a clear residual
+Default development unit: one complete bead. Finish the capability claim and
+publish that as the normal PR boundary. A coherent phase is allowed only when
+the bead is genuinely too large or risky to close as one PR and the phase can
+honestly satisfy a named acceptance-criteria subset with a clear residual
 matrix. Do not open or publish a PR for every small projection, helper,
 construct declaration, or proof artifact merely because it is locally green.
 
-Prefer a single branch/PR phase when the work:
+Prefer a single branch/PR for the whole bead when the work:
 
 - belongs to one bead and one capability claim;
 - touches the same shared acquisition/query/projection/rendering substrate;
@@ -105,10 +107,11 @@ Split only when there is a real boundary:
 - a partial PR can close a named bead or named acceptance-criteria phase, not
   just land a convenient substep.
 
-Before publishing, audit the bead acceptance criteria. If the PR does not close
-the bead, the body and bead notes must say exactly which criteria are satisfied,
-which are deferred, and which follow-up bead owns the remainder. This is a
-velocity rule: fewer, more complete integration boundaries beat a chain of
+Before publishing, audit the bead acceptance criteria. The default answer should
+be "this PR closes the bead." If the PR does not close it, the body and bead
+notes must say exactly why a phase split is justified, which criteria are
+satisfied, which are deferred, and which follow-up bead owns the remainder. This
+is a velocity rule: fewer, more complete integration boundaries beat a chain of
 locally-correct but strategically thin slices.
 
 ## One-Loop Protocol

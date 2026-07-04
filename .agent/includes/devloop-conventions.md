@@ -142,13 +142,15 @@ carry a `.beads/` workspace (Polylogue since 2026-07-03). Contract:
 
 ## Greedy Batch / PR Cadence
 
-Default development unit: one complete bead, or one coherent phase that can
-honestly close a named bead acceptance-criteria subset with a clear residual
-matrix. Do not open or publish a PR for every small projection, helper,
-construct declaration, renderer field, or proof artifact merely because that
-substep is locally green.
+Default development unit: one complete bead. Finish the capability claim, then
+publish it. A coherent phase is allowed only when the full bead is genuinely too
+large, too risky, or too dependent on different proof/deployment boundaries to
+close cleanly in one PR, and the phase can honestly close a named
+acceptance-criteria subset with a clear residual matrix. Do not open or publish
+a PR for every small projection, helper, construct declaration, renderer field,
+or proof artifact merely because that substep is locally green.
 
-Prefer a single branch/PR phase when the work:
+Prefer a single branch/PR for the whole bead when the work:
 
 - belongs to one bead and one capability claim;
 - touches the same shared acquisition/query/projection/rendering substrate;
@@ -165,11 +167,12 @@ Split only when there is a real boundary:
 - a partial PR can close a named bead or named acceptance-criteria phase, not
   just land a convenient substep.
 
-Before publishing, audit the bead acceptance criteria. If the PR does not close
-the bead, the PR body and bead notes must say exactly which criteria are
-satisfied, which are deferred, and which follow-up bead owns the remainder.
-This is a velocity rule: fewer, more complete integration boundaries beat a
-chain of locally-correct but strategically thin slices.
+Before publishing, audit the bead acceptance criteria. The default answer should
+be "this PR closes the bead." If the PR does not close it, the PR body and bead
+notes must say exactly why the phase split is justified, which criteria are
+satisfied, which are deferred, and which follow-up bead owns the remainder. This
+is a velocity rule: fewer, more complete integration boundaries beat a chain of
+locally-correct but strategically thin slices.
 
 ## Boundaries
 
