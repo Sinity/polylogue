@@ -183,8 +183,19 @@ if [ "$format" = "--json" ]; then
   fi
   prod_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
   prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
-  devloop_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
-  devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
+  devloop_unit="polylogue-dev-active.service"
+  devloop_state="$(systemctl --user show "$devloop_unit" -p ActiveState --value 2>/dev/null || true)"
+  devloop_sub_state="$(systemctl --user show "$devloop_unit" -p SubState --value 2>/dev/null || true)"
+  if [ "${devloop_state:-inactive}" != "active" ]; then
+    fallback_devloop_unit="polylogued-devloop.service"
+    fallback_devloop_state="$(systemctl --user show "$fallback_devloop_unit" -p ActiveState --value 2>/dev/null || true)"
+    fallback_devloop_sub_state="$(systemctl --user show "$fallback_devloop_unit" -p SubState --value 2>/dev/null || true)"
+    if [ "${fallback_devloop_state:-inactive}" = "active" ] || [ -z "${devloop_state:-}" ]; then
+      devloop_unit="$fallback_devloop_unit"
+      devloop_state="$fallback_devloop_state"
+      devloop_sub_state="$fallback_devloop_sub_state"
+    fi
+  fi
   polylogued_rows="$(polylogued_process_rows)"
   polylogued_devloop_rows="$(polylogued_devloop_rows "$repo")"
   polylogued_non_devloop_rows="$(polylogued_non_devloop_rows "$repo")"
@@ -193,12 +204,12 @@ if [ "$format" = "--json" ]; then
   else
     worktree_gc_json='{}'
   fi
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$index_count_mode" "$source_version" "$raw_rows" "$raw_materialization_join_gaps" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" "$quick_reason" "$archive_writer_rows" "$quick" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$index_count_mode" "$source_version" "$raw_rows" "$raw_materialization_join_gaps" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_unit" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" "$quick_reason" "$archive_writer_rows" "$quick" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, index_count_mode, source_version, raw_rows, raw_materialization_join_gap_count, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes, quick_reason, archive_writer_rows, quick_mode = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, index_count_mode, source_version, raw_rows, raw_materialization_join_gap_count, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_unit, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes, quick_reason, archive_writer_rows, quick_mode = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -441,7 +452,7 @@ print(json.dumps({
                 "sub": prod_sub_state,
             },
             "devloop": {
-                "unit": "polylogued-devloop.service",
+                "unit": devloop_unit,
                 "active": devloop_state,
                 "sub": devloop_sub_state,
             },
@@ -646,8 +657,19 @@ fi
 printf '\n== daemon ==\n'
 prod_active_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
 prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
-devloop_active_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
-devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
+devloop_unit="polylogue-dev-active.service"
+devloop_active_state="$(systemctl --user show "$devloop_unit" -p ActiveState --value 2>/dev/null || true)"
+devloop_sub_state="$(systemctl --user show "$devloop_unit" -p SubState --value 2>/dev/null || true)"
+if [ "${devloop_active_state:-inactive}" != "active" ]; then
+  fallback_devloop_unit="polylogued-devloop.service"
+  fallback_devloop_active_state="$(systemctl --user show "$fallback_devloop_unit" -p ActiveState --value 2>/dev/null || true)"
+  fallback_devloop_sub_state="$(systemctl --user show "$fallback_devloop_unit" -p SubState --value 2>/dev/null || true)"
+  if [ "${fallback_devloop_active_state:-inactive}" = "active" ] || [ -z "${devloop_active_state:-}" ]; then
+    devloop_unit="$fallback_devloop_unit"
+    devloop_active_state="$fallback_devloop_active_state"
+    devloop_sub_state="$fallback_devloop_sub_state"
+  fi
+fi
 devloop_rows="$(polylogued_devloop_rows "$repo")"
 non_devloop_rows="$(polylogued_non_devloop_rows "$repo")"
 observed_rows="$(
@@ -663,7 +685,7 @@ else
   printf 'observed polylogued process: inactive (0)\n'
 fi
 printf 'prod polylogued.service: %s/%s\n' "${prod_active_state:-unknown}" "${prod_sub_state:-unknown}"
-printf 'devloop polylogued-devloop.service: %s/%s\n' "${devloop_active_state:-unknown}" "${devloop_sub_state:-unknown}"
+printf 'devloop %s: %s/%s\n' "$devloop_unit" "${devloop_active_state:-unknown}" "${devloop_sub_state:-unknown}"
 if [ -n "$devloop_rows" ]; then
   printf 'devloop polylogued process:\n%s\n' "$devloop_rows"
   python3 - "$devloop_rows" <<'PY'
