@@ -324,9 +324,10 @@ def _raw_gap_materialized_by_alias(
         existing = conn.execute(
             """
             SELECT 1
-            FROM main.sessions
-            WHERE origin = ?
-              AND native_id = ?
+            FROM main.sessions AS s
+            JOIN source.raw_sessions AS existing_raw ON existing_raw.raw_id = s.raw_id
+            WHERE s.origin = ?
+              AND s.native_id = ?
             LIMIT 1
             """,
             (origin, native_id),

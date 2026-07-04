@@ -540,6 +540,56 @@ def test_write_session_append_mode_preserves_existing_messages(tmp_path: Path) -
         assert (stats["message_count"], stats["word_count"]) == (2, 2)
 
 
+def test_write_session_append_no_delta_refreshes_raw_link(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "index.db") as conn:
+        initial = _session_data(
+            "codex-session:append-raw-link",
+            content_hash="hash-v1",
+            raw_id="raw-old",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:append-raw-link",
+                    role="user",
+                    text="first",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        recapture = _session_data(
+            "codex-session:append-raw-link",
+            content_hash="hash-v1",
+            raw_id="raw-new",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:append-raw-link",
+                    role="user",
+                    text="first",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                )
+            ],
+            append_only=True,
+        )
+
+        changed_initial, _initial_counts = _write_session(conn, initial)
+        changed_recapture, recapture_counts = _write_session(conn, recapture)
+        conn.commit()
+
+        raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("codex-session:append-raw-link",),
+        ).fetchone()["raw_id"]
+
+        assert changed_initial is True
+        assert changed_recapture is False
+        assert recapture_counts["skipped_sessions"] == 1
+        assert recapture_counts["raw_links"] == 1
+        assert raw_id == "raw-new"
+
+
 def test_write_session_force_write_updates_message_time(tmp_path: Path) -> None:
     """force_write with identical content updates current message time columns."""
     with open_connection(tmp_path / "index.db") as conn:
@@ -644,6 +694,55 @@ def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: 
         assert [(row["tag"], row["tag_source"], row["method"]) for row in tags] == [
             ("capture:temporary-chat", "auto", "parser")
         ]
+
+
+def test_write_session_refreshes_raw_link_when_content_is_unchanged(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "index.db") as conn:
+        first = _session_data(
+            "codex-session:unchanged-raw-link",
+            content_hash="same-hash",
+            raw_id="raw-old",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:unchanged-raw-link",
+                    role="user",
+                    text="hello",
+                    content_hash="msg-hash",
+                    sort_key=1777636800.0,
+                )
+            ],
+        )
+        recapture = _session_data(
+            "codex-session:unchanged-raw-link",
+            content_hash="same-hash",
+            raw_id="raw-new",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:unchanged-raw-link",
+                    role="user",
+                    text="hello",
+                    content_hash="msg-hash",
+                    sort_key=1777636800.0,
+                )
+            ],
+        )
+
+        changed, _ = _write_session(conn, first)
+        unchanged, counts = _write_session(conn, recapture)
+        conn.commit()
+
+        raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("codex-session:unchanged-raw-link",),
+        ).fetchone()["raw_id"]
+
+        assert changed is True
+        assert unchanged is False
+        assert counts["skipped_sessions"] == 1
+        assert counts["raw_links"] == 1
+        assert raw_id == "raw-new"
 
 
 def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> None:
@@ -876,6 +975,62 @@ def test_write_session_dom_fallback_does_not_replace_native_source(tmp_path: Pat
         assert event["event_type"] == "capture_gap"
         assert "DOM browser-capture fallback" in event["summary"]
         assert "raw-dom-fallback" in event["summary"]
+
+
+def test_write_session_same_content_dom_fallback_does_not_refresh_native_raw_link(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "index.db") as conn:
+        native = _session_data(
+            "codex-session:same-content-dom-precedence",
+            content_hash="same-hash",
+            raw_id="raw-native",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:same-content-dom-precedence",
+                    role="user",
+                    text="native first",
+                    content_hash="msg-1",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        dom_fallback = _session_data(
+            "codex-session:same-content-dom-precedence",
+            content_hash="same-hash",
+            raw_id="raw-dom-fallback",
+            ingest_flags=["capture:dom-fallback"],
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:same-content-dom-precedence",
+                    role="user",
+                    text="native first",
+                    content_hash="msg-1",
+                    sort_key=1.0,
+                )
+            ],
+        )
+
+        changed_native, _counts_native = _write_session(conn, native)
+        changed_fallback, counts_fallback = _write_session(conn, dom_fallback)
+        conn.commit()
+
+        raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("codex-session:same-content-dom-precedence",),
+        ).fetchone()["raw_id"]
+        capture_gap_count = conn.execute(
+            "SELECT COUNT(*) FROM session_events WHERE session_id = ? AND event_type = 'capture_gap'",
+            ("codex-session:same-content-dom-precedence",),
+        ).fetchone()[0]
+
+        assert changed_native is True
+        assert changed_fallback is False
+        assert counts_fallback["skipped_sessions"] == 1
+        assert counts_fallback["session_events"] == 1
+        assert counts_fallback["raw_links"] == 0
+        assert raw_id == "raw-native"
+        assert capture_gap_count == 1
 
 
 def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp_path: Path) -> None:

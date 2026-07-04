@@ -60,6 +60,7 @@ class _IngestBatchSummary:
             "messages": 0,
             "attachments": 0,
             "session_events": 0,
+            "raw_links": 0,
             "skipped_sessions": 0,
             "skipped_messages": 0,
             "skipped_attachments": 0,

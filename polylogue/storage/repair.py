@@ -140,8 +140,13 @@ def _raw_materialization_candidate_ids(
               ON r.native_id IS NOT NULL
              AND s_by_native.origin = r.origin
              AND s_by_native.native_id = r.native_id
+            LEFT JOIN raw_sessions AS existing_native_raw
+              ON existing_native_raw.raw_id = s_by_native.raw_id
             WHERE s_by_raw.raw_id IS NULL
-              AND s_by_native.native_id IS NULL
+              AND (
+                s_by_native.native_id IS NULL
+                OR existing_native_raw.raw_id IS NULL
+              )
               AND (
                 r.parse_error IS NULL
                 OR (
@@ -218,9 +223,10 @@ def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlit
         existing = conn.execute(
             """
             SELECT 1
-            FROM index_tier.sessions
-            WHERE origin = ?
-              AND native_id = ?
+            FROM index_tier.sessions AS s
+            JOIN raw_sessions AS existing_raw ON existing_raw.raw_id = s.raw_id
+            WHERE s.origin = ?
+              AND s.native_id = ?
             LIMIT 1
             """,
             (origin, native_id),
@@ -1046,9 +1052,12 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
     from polylogue.storage.raw_retention import cleanup_superseded_raw_snapshots
     from polylogue.storage.sqlite.connection import open_connection
 
-    repair_db_path = config.db_path.with_name("source.db")
+    repair_db_path = config.archive_root / "source.db"
     if repair_db_path.exists():
-        protected_raw_ids = _index_referenced_raw_ids(config.db_path)
+        index_db_path = config.archive_root / "index.db"
+        if not index_db_path.exists():
+            index_db_path = config.db_path
+        protected_raw_ids = _index_referenced_raw_ids(index_db_path)
         with sqlite3.connect(repair_db_path) as conn:
             conn.row_factory = sqlite3.Row
             result = cleanup_superseded_raw_snapshots(

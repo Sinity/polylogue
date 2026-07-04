@@ -445,6 +445,7 @@ def _write_session(
         "skipped_messages": 0,
         "skipped_attachments": 0,
         "skipped_session_events": 0,
+        "raw_links": 0,
     }
 
     existing_row = conn.execute(
@@ -454,35 +455,10 @@ def _write_session(
     existing_hash = existing_row["content_hash"] if existing_row is not None else None
     existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
     content_unchanged = existing_row is not None and existing_hash_hex == payload.content_hash
+    existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
     session_to_write = payload.parsed_session
     merge_append = False
-    if payload.append_only and existing_row is not None:
-        delta, skipped_messages = _append_delta_payload(conn, payload)
-        counts["skipped_messages"] = skipped_messages
-        if delta is None:
-            if payload.parsed_session.ingest_flags:
-                upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
-            counts["skipped_sessions"] = 1
-            counts["skipped_attachments"] = payload.attachment_count
-            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
-            if _needs_session_fts_repair(conn, payload.session_id):
-                counts[_FTS_REPAIR_COUNT_KEY] = 1
-            return False, counts
-        session_to_write = delta
-        merge_append = True
 
-    if not force_write and content_unchanged:
-        if payload.parsed_session.ingest_flags:
-            upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
-        counts["skipped_sessions"] = 1
-        counts["skipped_messages"] = payload.message_count
-        counts["skipped_attachments"] = payload.attachment_count
-        counts["skipped_session_events"] = len(payload.parsed_session.session_events)
-        if _needs_session_fts_repair(conn, payload.session_id):
-            counts[_FTS_REPAIR_COUNT_KEY] = 1
-        return False, counts
-
-    existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
     if not force_write and existing_raw_id and payload.raw_id and existing_raw_id != payload.raw_id:
         existing_is_dom_fallback = _session_has_parser_ingest_flag(conn, payload.session_id, DOM_FALLBACK_INGEST_FLAG)
         incoming_is_dom_fallback = _incoming_has_ingest_flag(payload, DOM_FALLBACK_INGEST_FLAG)
@@ -508,6 +484,34 @@ def _write_session(
             counts["skipped_session_events"] = len(payload.parsed_session.session_events)
             return False, counts
 
+    if payload.append_only and existing_row is not None:
+        delta, skipped_messages = _append_delta_payload(conn, payload)
+        counts["skipped_messages"] = skipped_messages
+        if delta is None:
+            if payload.parsed_session.ingest_flags:
+                upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
+            counts["raw_links"] = int(_refresh_session_raw_link(conn, payload.session_id, payload.raw_id))
+            counts["skipped_sessions"] = 1
+            counts["skipped_attachments"] = payload.attachment_count
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            if _needs_session_fts_repair(conn, payload.session_id):
+                counts[_FTS_REPAIR_COUNT_KEY] = 1
+            return False, counts
+        session_to_write = delta
+        merge_append = True
+
+    if not force_write and content_unchanged:
+        if payload.parsed_session.ingest_flags:
+            upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
+        counts["raw_links"] = int(_refresh_session_raw_link(conn, payload.session_id, payload.raw_id))
+        counts["skipped_sessions"] = 1
+        counts["skipped_messages"] = payload.message_count
+        counts["skipped_attachments"] = payload.attachment_count
+        counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+        if _needs_session_fts_repair(conn, payload.session_id):
+            counts[_FTS_REPAIR_COUNT_KEY] = 1
+        return False, counts
+
     if existing_row is None and not payload.parsed_session.messages and not force_write:
         counts["skipped_sessions"] = 1
         return False, counts
@@ -527,6 +531,22 @@ def _write_session(
     counts["session_events"] = len(session_to_write.session_events)
 
     return True, counts
+
+
+def _refresh_session_raw_link(conn: sqlite3.Connection, session_id: str, raw_id: str | None) -> bool:
+    """Keep accepted unchanged parses linked to their latest acquired raw row."""
+    if not raw_id:
+        return False
+    cursor = conn.execute(
+        """
+        UPDATE sessions
+        SET raw_id = ?
+        WHERE session_id = ?
+          AND (raw_id IS NULL OR raw_id != ?)
+        """,
+        (raw_id, session_id, raw_id),
+    )
+    return cursor.rowcount > 0
 
 
 def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> None:
@@ -564,7 +584,9 @@ def _record_write_result(
     summary.total_convos += 1
     summary.total_msgs += cdata.message_count
 
-    ingest_changed = (counts["sessions"] + counts["messages"] + counts["attachments"] + counts["session_events"]) > 0
+    ingest_changed = (
+        counts["sessions"] + counts["messages"] + counts["attachments"] + counts["session_events"] + counts["raw_links"]
+    ) > 0
 
     if ingest_changed or content_changed:
         summary.processed_ids.add(cdata.session_id)

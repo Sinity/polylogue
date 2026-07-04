@@ -252,6 +252,105 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
     assert "1 raw rows blocked by missing blobs" in result.detail
 
 
+def test_raw_materialization_replays_same_native_when_index_raw_link_is_dangling(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    replacement_raw_id, replacement_size = blob_store.write_from_bytes(b'{"mapping":{"replacement":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                replacement_raw_id,
+                "chatgpt-export",
+                "native-dangling",
+                "replacement.json",
+                0,
+                bytes.fromhex(replacement_raw_id),
+                replacement_size,
+                10,
+            ),
+        )
+        source_conn.commit()
+
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("native-dangling", "chatgpt-export", "old-missing-raw", "dangling", bytes(32)),
+        )
+        index_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    assert result.metrics["raw_materialization_candidate_count"] == 1.0
+
+
+def test_superseded_raw_cleanup_protects_split_index_referenced_raw_ids(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    source_file = tmp_path / "source.jsonl"
+    source_file.write_text("{}", encoding="utf-8")
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    "raw-referenced-old",
+                    "chatgpt-export",
+                    "native-old",
+                    str(source_file),
+                    0,
+                    bytes.fromhex("11" * 32),
+                    10,
+                    1,
+                ),
+                (
+                    "raw-newer",
+                    "chatgpt-export",
+                    "native-newer",
+                    str(source_file),
+                    0,
+                    bytes.fromhex("22" * 32),
+                    11,
+                    2,
+                ),
+            ),
+        )
+        source_conn.commit()
+
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("native-old", "chatgpt-export", "raw-referenced-old", "old", bytes(32)),
+        )
+        index_conn.commit()
+
+    result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=True)
+
+    assert result.repaired_count == 0
+    assert "skipped 1 index-referenced raw rows" in result.detail
+
+
 def test_raw_materialization_retries_restored_missing_blob_parse_errors(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
