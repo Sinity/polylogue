@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Architecture — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+        .home-hero .tagline { font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 2rem; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2rem; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="../../" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="../../docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="../../docs/search/" >
+                    Search
+                </a>
+                
+                <a href="../../docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="../../docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="../../docs/export/" >
+                    Export
+                </a>
+                
+                <a href="../../docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="../../reference/cli/" >
+                    CLI
+                </a>
+                
+                <a href="../../reference/mcp/" >
+                    MCP
+                </a>
+                
+                <a href="../../reference/api/" >
+                    API
+                </a>
+                
+                <a href="../../reference/config/" >
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="./" class="active">
+                    Rings
+                </a>
+                
+                <a href="../internals/" >
+                    Internals
+                </a>
+                
+                <a href="../schema/" >
+                    Schema
+                </a>
+                
+                <a href="../contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="../../verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="../../verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="../../verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="../../verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="../../design/second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="../../design/time-machine/" >
+                    Time Machine
+                </a>
+                
+                <a href="../../design/project-memory/" >
+                    Project Memory
+                </a>
+                
+                <a href="../../design/agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="../../design/archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="../../design/whole-product/" >
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<h1>Polylogue Architecture</h1>
+<p>For the target shape, guardrails, and architectural decision log, see
+<a href="https://github.com/Sinity/polylogue/blob/master/docs/architecture-spine.md">Architecture Spine</a>. Current sequencing and active
+workstreams live in the Beads backlog (<code>bd ready</code>, <code>bd list --status open</code>) —
+the durable directive substrate; the former <code>docs/execution-plan.md</code> is
+superseded (its GitHub-issue map was re-encoded as Beads issues) and slated for
+retirement (Ref polylogue-3tl.13). For the vocabulary split between
+provider-wire identity, public origin, source roots, capture mode, parser
+provenance, and refs, see <code>docs/provider-origin-identity.md</code>.</p>
+<p>Polylogue is a local archive for AI sessions. The system has four rings:</p>
+<ol>
+<li>archive substrate</li>
+<li>derived read models</li>
+<li>user and machine surfaces</li>
+<li>verification and maintenance</li>
+</ol>
+<pre><code class="language-mermaid">flowchart TD
+    SRC[&quot;Source files&lt;br/&gt;ChatGPT · Claude · Codex · Gemini · Drive · Antigravity&quot;]
+
+    subgraph R1[&quot;Ring 1 · Archive substrate&quot;]
+        DETECT[&quot;detect_provider()&lt;br/&gt;shape-based dispatch&quot;]
+        PARSE[&quot;provider parsers&lt;br/&gt;normalize → content hash (NFC)&quot;]
+        STORE[(&quot;split-tier SQLite&lt;br/&gt;source · index · embeddings · user · ops&lt;br/&gt;+ content-addressed blob store&quot;)]
+        DETECT --&gt; PARSE --&gt; STORE
+    end
+
+    subgraph R2[&quot;Ring 2 · Derived read models&quot;]
+        INSIGHTS[&quot;session profiles · work events&lt;br/&gt;phases · threads · cost rollups&lt;br/&gt;FTS5 + vector indexes&quot;]
+    end
+
+    subgraph R3[&quot;Ring 3 · Surfaces&quot;]
+        CLI[&quot;CLI&lt;br/&gt;find QUERY then VERB&quot;]
+        MCP[&quot;MCP bridge&quot;]
+        API[&quot;Python API&quot;]
+        DAEMON[&quot;daemon HTTP reader&lt;br/&gt;+ /metrics&quot;]
+    end
+
+    subgraph R4[&quot;Ring 4 · Verification &amp; maintenance&quot;]
+        VERIFY[&quot;schemas · demo fixtures&lt;br/&gt;devtools lanes · tests&quot;]
+    end
+
+    SRC --&gt; DETECT
+    STORE --&gt; INSIGHTS
+    INSIGHTS --&gt; R3
+    STORE --&gt; R3
+    R4 -.audits.-&gt; R1
+    R4 -.audits.-&gt; R2
+</code></pre>
+<p>Source evidence and user-authored state (rings 1 and the <code>user.db</code> tier) are
+durable; indexes, insight read models, embeddings, and daemon telemetry are
+rebuildable. Surfaces (ring 3) are leaf adapters — they read through the same
+archive/query substrate rather than owning their own stores.</p>
+<h2>Rings</h2>
+<h3>1. Archive Substrate</h3>
+<p>Owns stored meaning:</p>
+<ul>
+<li>source acquisition and provider detection</li>
+<li>provider parsing and normalization</li>
+<li>SQLite persistence and search indexes</li>
+<li>archive-level query and runtime operations</li>
+</ul>
+<p>Primary modules:</p>
+<ul>
+<li><code>polylogue/sources/</code></li>
+<li><code>polylogue/pipeline/</code></li>
+<li><code>polylogue/storage/</code></li>
+<li><code>polylogue/archive/</code></li>
+<li><code>polylogue/operations/archive.py</code></li>
+</ul>
+<h3>2. Derived Read Models</h3>
+<p>Stored insights computed over the archive:</p>
+<ul>
+<li>session profiles</li>
+<li>work events, phases, threads</li>
+<li>day and week summaries</li>
+<li>provider-level analytics and tag rollups</li>
+</ul>
+<p>Primary modules:</p>
+<ul>
+<li><code>polylogue/insights/</code></li>
+<li><code>polylogue/storage/insights/session/</code></li>
+<li><code>polylogue/storage/repository/insight/</code></li>
+</ul>
+<h3>3. Surfaces</h3>
+<p>These expose the archive and its insights:</p>
+<ul>
+<li>CLI: <code>polylogue/cli/</code></li>
+<li>Python API: <code>polylogue/api/__init__.py</code></li>
+<li>MCP server: <code>polylogue/mcp/</code> — exposes the distilled, agent-preferred
+surfaces (<code>get_postmortem_bundle</code>) alongside search/list/insight tools.</li>
+<li>daemon web reader: <code>polylogue/daemon/web_shell.py</code></li>
+<li>dashboard and TUI: <code>polylogue/ui/</code></li>
+<li>renderers: <code>polylogue/rendering/</code></li>
+</ul>
+<p>Leaf adapters over archive operations and derived insights.</p>
+<h3>4. Verification and Maintenance</h3>
+<ul>
+<li>schema inference and verification</li>
+<li>synthetic corpus generation</li>
+<li>deterministic demo fixtures and behavior-backed archive/reader smoke checks</li>
+<li>optional validation lanes, mutation campaigns, and benchmark campaigns that dispatch executable commands</li>
+</ul>
+<p>Primary modules:</p>
+<ul>
+<li><code>polylogue/schemas/</code></li>
+<li><code>polylogue/demo/</code></li>
+<li><code>devtools/</code></li>
+<li><code>tests/</code></li>
+</ul>
+<h2>Data Flow</h2>
+<pre><code>source files (JSON/JSONL/ZIP)
+  → detect_provider()          # dispatch.py — shape-based, not filename
+  → provider parser            # parsers/{chatgpt,claude,codex,drive}.py
+  → content hash (NFC)         # pipeline/ids.py — SHA-256 over normalized payload
+  → store (upsert-if-changed)  # storage/ — idempotent by content hash
+  → session insights           # storage/insights/session/ — profiles, work events, phases, threads
+  → FTS index                  # search_providers/fts5.py — unicode61 tokenizer
+
+           CLI / MCP / Python API
+                   ↑
+             filter chain → query → storage
+</code></pre>
+<p>The daemon-owned ingest path acquires source payloads, parses provider records,
+writes archive rows, and refreshes derived read models through explicit
+convergence stages.</p>
+<h2>Provider Detection</h2>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Detected by</th>
+<th>Parser</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ChatGPT</td>
+<td><code>mapping</code> dict with message graph</td>
+<td><code>parsers/chatgpt.py</code></td>
+</tr>
+<tr>
+<td>Claude web</td>
+<td><code>chat_messages</code> list</td>
+<td><code>parsers/claude.py</code></td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td><code>parentUuid</code>/<code>sessionId</code> in record array</td>
+<td><code>parsers/claude.py</code> (code path)</td>
+</tr>
+<tr>
+<td>Codex</td>
+<td>Session envelope structure</td>
+<td><code>parsers/codex.py</code></td>
+</tr>
+<tr>
+<td>Gemini</td>
+<td><code>chunkedPrompt.chunks</code> structure</td>
+<td><code>parsers/drive.py</code></td>
+</tr>
+<tr>
+<td>Drive</td>
+<td>Google Takeout format with OAuth</td>
+<td><code>parsers/drive.py</code></td>
+</tr>
+<tr>
+<td>Antigravity</td>
+<td>Brain artifact metadata (<code>*.metadata.json</code>) or language-server Markdown export envelope</td>
+<td><code>parsers/antigravity.py</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>detect_provider()</code> calls each parser's <code>looks_like()</code> in order.</p>
+<h2>Provider and Origin Vocabulary</h2>
+<p>The codebase has origin-related vocabularies with different scopes. See
+<code>docs/provider-origin-identity.md</code> for the full classification table and
+feature guidance.</p>
+<ul>
+<li><strong><code>Provider</code></strong> (<code>polylogue/core/enums.py</code>): the provider-wire enum used by
+provider-wire parsing, provider schema packages, and some internal storage
+adapters. It previously leaked into public surfaces such as the CLI
+<code>--provider</code> filter, MCP <code>provider</code> parameter, and daemon facet labels.
+Mixes lab identity (OpenAI, Anthropic, Google), product/runtime
+identity (Claude Code, Codex), and source-family identity
+(claude-code-session vs claude-ai-export) into one token. See the
+vocabulary table in <code>polylogue/core/provider_identity.py</code> for the
+detailed conflation surface.</li>
+<li><strong><code>Origin</code></strong> (<code>polylogue/core/enums.py</code>): the public source-origin token
+carried by query surfaces and archive read payloads, such as
+<code>claude-code-session</code>, <code>claude-ai-export</code>, and <code>chatgpt-export</code>.
+Public filters use <code>origin</code>; internal bridges still map origins to
+canonical provider tokens where older storage/insight contracts have not
+been renamed yet.</li>
+<li><strong><code>Source</code></strong> (<code>polylogue/core/sources.py</code>): the richer source-centered
+identity used for runtime roots and lab attribution. A <code>Source</code> is an
+immutable dataclass with <code>family</code>, <code>runtime_root</code>, and <code>originating_lab</code>.</li>
+</ul>
+<p>The primary CLI/MCP/API/daemon read surfaces use origin vocabulary. <code>Provider</code>
+remains only for raw export, schema-package, and provider-metadata boundaries.
+The remaining internal provider-token adapters are cleanup targets, not an
+alternate archive mode.</p>
+<p>Cleanup sequencing:</p>
+<ol>
+<li>Internal callers switch from provider-token filters to origin filters at
+boundaries where lab identity and runtime identity need to be distinguished
+(e.g. analytics, cost rollups, source-discovery).</li>
+<li>Storage columns that still carry provider-token names are either renamed in
+the canonical DDL or kept only where their contract is provider-wire.</li>
+<li>Provider-wire schemas under <code>schemas/providers/</code> are retained as
+lab/provider-scope artifacts — they describe raw export shapes and
+stay keyed by lab/product, not by source family.</li>
+</ol>
+<p>Anti-goal: provider wording on source-origin public filters or payloads.
+Provider remains valid only where the contract is truly provider-wire,
+schema-package, provider metadata, or embedding-provider terminology.</p>
+<h2>Antigravity Language-Server Export Path</h2>
+<p>Antigravity persists its session transcripts as opaque non-protobuf
+<code>conversations/*.pb</code> and <code>implicit/*.pb</code> blobs that cannot be statically
+decoded. The installed Antigravity language server binary
+(<code>language_server_linux_x64</code>) exposes two endpoints over a local HTTP loopback
+port that together form the supported export surface:</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/exa.language_server_pb.LanguageServerService/SearchConversations</code></td>
+<td>Returns cascade IDs, titles, workspace names, snippets, and <code>lastModifiedTime</code> for stored sessions.</td>
+</tr>
+<tr>
+<td><code>/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown</code></td>
+<td>Returns a complete Markdown export for a given cascade ID — user inputs, planner responses, tool/command events.</td>
+</tr>
+</tbody>
+</table>
+<p>The adapter lives in <code>polylogue/sources/parsers/antigravity.py</code>:</p>
+<ul>
+<li><code>AntigravityLanguageServerClient</code> spawns the binary with
+<code>-standalone -persistent_mode -http_server_port=&lt;port&gt;</code> against the user's
+Antigravity data root, waits until the search endpoint answers, and tears the
+process down on close.</li>
+<li><code>discover_language_server()</code> resolves the binary in this order:
+<code>POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER</code> env var, <code>$PATH</code>, then the highest
+matching <code>/nix/store/*-antigravity-*</code> extension bundle.</li>
+<li><code>iter_language_server_exports(root)</code> drives <code>SearchConversations</code> and
+<code>ConvertTrajectoryToMarkdown</code> and yields <code>ParsedSession</code> objects through
+<code>parse_markdown_export()</code>.</li>
+</ul>
+<p>The ingest path is layered in <code>polylogue/sources/source_parsing.py</code>: when the
+source is <code>antigravity</code> and a <code>conversations/</code> subdirectory exists, the
+language-server export runs first; any <code>AntigravityExportError</code> (binary not
+found, connection failure, malformed response) is logged and the source falls
+back to the existing brain-artifact metadata walk. Both paths emit normalized
+<code>Provider.ANTIGRAVITY</code> sessions.</p>
+<h2>Key Abstractions</h2>
+<table>
+<thead>
+<tr>
+<th>Abstraction</th>
+<th>Location</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Polylogue</code></td>
+<td><code>api/__init__.py</code></td>
+<td>Async entry point. Wraps storage + search + pipeline.</td>
+</tr>
+<tr>
+<td><code>SessionRepository</code></td>
+<td><code>storage/repository/__init__.py</code></td>
+<td>Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors).</td>
+</tr>
+<tr>
+<td><code>SearchProvider</code> protocol</td>
+<td><code>protocols.py</code></td>
+<td>FTS5 and Hybrid (RRF fusion) implementations.</td>
+</tr>
+<tr>
+<td><code>SessionFilter</code></td>
+<td><code>archive/filter/filters.py</code></td>
+<td>Fluent filter chain used by CLI, MCP, and facade.</td>
+</tr>
+<tr>
+<td><code>Session Insights</code></td>
+<td><code>storage/insights/session/</code></td>
+<td>Materialized read models: profiles, work events, phases, threads, aggregates.</td>
+</tr>
+<tr>
+<td><code>ContentHash</code></td>
+<td><code>pipeline/ids.py</code></td>
+<td>SHA-256 over NFC-normalized session payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import.</td>
+</tr>
+<tr>
+<td><code>Provider</code> enum</td>
+<td><code>types.py</code></td>
+<td>Legacy/provider-wire identifier used by parsers, schemas, provider metadata, and compatibility bridges.</td>
+</tr>
+<tr>
+<td><code>Origin</code> enum</td>
+<td><code>core/enums.py</code></td>
+<td>Public source-origin identity used by query/read surfaces and archive payloads.</td>
+</tr>
+<tr>
+<td><code>Source</code> dataclass</td>
+<td><code>core/sources.py</code></td>
+<td>Source-centered identity (<code>family</code>, <code>runtime_root</code>, <code>originating_lab</code>) used for runtime roots and lab attribution.</td>
+</tr>
+<tr>
+<td><code>TopologyEdgeRecord</code></td>
+<td><code>archive/topology/edge.py</code></td>
+<td>Typed cross-session parent reference. Persisted in <code>topology_edges</code> even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed <code>TopologyEdgeType</code> / <code>TopologyEdgeStatus</code> enums centralize the vocabulary.</td>
+</tr>
+<tr>
+<td>Logical Session ID</td>
+<td><code>session_profiles.logical_session_id</code></td>
+<td>Materialized root session for continuation/fork/subagent lineages. Rollups expose <code>logical_session_count</code> alongside physical <code>session_count</code>, and <code>get_logical_session()</code> returns the compact read-pull lineage envelope.</td>
+</tr>
+</tbody>
+</table>
+<h2>Artifact Taxonomy</h2>
+<p>Acquired files are classified by <code>ArtifactKind</code> before ingestion:</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session_document</code></td>
+<td>A single session (Claude Code JSONL, ChatGPT JSON)</td>
+</tr>
+<tr>
+<td><code>session_record_stream</code></td>
+<td>Stream of session events</td>
+</tr>
+<tr>
+<td><code>subagent_session_stream</code></td>
+<td>Sidechain sub-agent session</td>
+</tr>
+<tr>
+<td><code>agent_sidecar_meta</code></td>
+<td>Session metadata (history.jsonl, sessions-index.json)</td>
+</tr>
+<tr>
+<td><code>session_index</code></td>
+<td>Provider-level session index</td>
+</tr>
+<tr>
+<td><code>bridge_pointer</code></td>
+<td>Pointer from a parent session to a sub-agent session</td>
+</tr>
+<tr>
+<td><code>metadata_document</code></td>
+<td>Supplementary metadata</td>
+</tr>
+<tr>
+<td><code>unknown</code></td>
+<td>Unclassified artifact</td>
+</tr>
+</tbody>
+</table>
+<p><code>classify_artifact()</code> in <code>sources/artifact_taxonomy/</code> assigns each acquired file
+a kind. The daemon uses artifact classification to route files to the correct
+ingestion path.</p>
+<h2>Hook Integration</h2>
+<p>Polylogue integrates with AI coding agents via hook scripts that fire on session
+lifecycle events. See <a href="https://github.com/Sinity/polylogue/blob/master/docs/hooks.md">docs/hooks.md</a> for the full event catalog,
+per-event use cases, sidecar layout, and recommended starter set.</p>
+<ul>
+<li><strong>Claude Code</strong>: 16 hook events available (SessionStart, Setup,
+UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure,
+PermissionRequest, PermissionDenied, Notification, Elicitation,
+ElicitationResult, CwdChanged, FileChanged, WorktreeCreate, SubagentStart,
+Stop). See <a href="https://github.com/Sinity/polylogue/issues/802">#802</a> and
+<a href="https://github.com/Sinity/polylogue/issues/1213">#1213</a>.</li>
+<li><strong>Codex</strong>: 6 hook events available (SessionStart, UserPromptSubmit,
+PreToolUse, PostToolUse, PermissionRequest, Stop).</li>
+</ul>
+<p>Hook scripts call <code>polylogue-hook</code> which ingests session data at event
+granularity, providing 100% data coverage vs. ~79% from post-hoc JSONL
+discovery. Hooks are the enabling infrastructure for real-time context injection
+(SessionStart), accurate paste detection (UserPromptSubmit fires before
+clipboard expansion so <code>[Pasted text #N]</code> markers are observable), tool
+execution metadata that never lands in JSONL (PreToolUse/PostToolUse), and a
+full permission audit trail (PermissionRequest/PermissionDenied).</p>
+<h2>Embedding Pipeline</h2>
+<p>Vector embeddings for semantic search, powered by Voyage AI (<code>voyage-4</code>,
+1024 dimensions) via SQLite-vec (<code>vec0</code> virtual table):</p>
+<ul>
+<li><strong>Storage</strong>: <code>message_embeddings</code> (vec0), <code>message_embeddings_meta</code>, <code>embedding_status</code></li>
+<li><strong>Search</strong>: <code>--similar</code> flag triggers pure vector search; hybrid mode combines
+FTS5 + vector via Reciprocal Rank Fusion</li>
+<li><strong>Integration</strong>: Daemon-side post-ingest and ambient catch-up embedding is
+opt-in via <code>embedding_enabled = true</code> in <code>polylogue.toml</code> with a valid
+<code>voyage_api_key</code>. When enabled, the daemon drains pending sessions in
+bounded windows and records catch-up progress; when disabled, no embedding
+provider calls are made (<a href="https://github.com/Sinity/polylogue/issues/1503">#1503</a>).</li>
+</ul>
+<h3>Activation flow (#1217)</h3>
+<p>The <code>polylogue ops embed</code> group is the operator-facing onboarding surface:</p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>polylogue ops embed preflight</code></td>
+<td>Count pending messages + Voyage cost estimate without contacting the provider.</td>
+</tr>
+<tr>
+<td><code>polylogue ops embed enable</code></td>
+<td>Verify <code>sqlite-vec</code>, capture the Voyage key, print the cost preflight, and on confirmation persist <code>[embedding] enabled = true</code> (and the API key unless <code>--no-store-key</code>) into the user <code>polylogue.toml</code>.</td>
+</tr>
+<tr>
+<td><code>polylogue ops embed backfill</code></td>
+<td>Run a bounded, resumable embedding batch with per-session cost feedback; honours <code>embedding_max_cost_usd</code> as a soft cap and persists run progress.</td>
+</tr>
+<tr>
+<td><code>polylogue ops embed disable</code></td>
+<td>Flip <code>embedding.enabled = false</code> without dropping existing embeddings — previously-embedded messages remain queryable via <code>--similar</code>.</td>
+</tr>
+<tr>
+<td><code>polylogue ops embed status</code></td>
+<td>Coverage / freshness / configured model+cap / latest catch-up / next-action snapshot via <code>embedding_status_payload</code>. Use <code>--detail</code> for exact pending-message and retrieval-band accounting.</td>
+</tr>
+</tbody>
+</table>
+<p>The CLI orchestrates substrate primitives under
+<code>polylogue.storage.embeddings</code> (<code>iter_pending_sessions</code>,
+<code>embed_session_sync</code>, <code>embedding_catchup_runs</code>) and the cost constants
+<code>ESTIMATED_TOKENS_PER_MESSAGE</code> / <code>VOYAGE_4_COST_PER_1M_TOKENS</code> from
+<code>polylogue.storage.search_providers.sqlite_vec_support</code>.</p>
+<h3>Search defaults (#1217)</h3>
+<p>Default <code>polylogue</code> searches stay lexical: <code>retrieval_lane=auto</code> resolves to
+<code>dialogue</code> for ordinary FTS queries and does not probe <code>embeddings.db</code> before
+returning keyword results. Vector retrieval is explicit on the root query
+surface:</p>
+<ul>
+<li><code>--lexical</code> — force <code>retrieval_lane=dialogue</code> (FTS-only).</li>
+<li><code>--semantic</code> — promote the query string into <code>similar_text</code> so the
+request runs as a vector-only similarity probe (no FTS leg).</li>
+<li><code>--retrieval-lane hybrid</code> — combine FTS5 and vector similarity via RRF
+when embeddings are configured and populated.</li>
+</ul>
+<p>See <a href="../../docs/search/#retrieval-lanes">docs/search.md § Retrieval Lanes</a> for the
+full lane semantics, ranking policy, and <code>SearchEnvelope</code> contract.</p>
+<p><code>polylogue ops status</code> includes an <code>Embeddings:</code> line whenever any
+messages are embedded, so the operator can see coverage at a glance.</p>
+<h2>Blob Store</h2>
+<p>Content-addressed storage for large binary artifacts (message content,
+attachments, exports):</p>
+<ul>
+<li><strong>Addressing</strong>: SHA-256 hash over content, stored in 256 prefix-sharded
+subdirectories (<code>blob/ab/cdef...</code>)</li>
+<li><strong>Dedup</strong>: Identical content produces identical hashes — automatic
+deduplication</li>
+<li><strong>Linking</strong>: <code>artifact_observations.link_group_key</code> groups blobs by session
+for lifecycle management (there is no separate <code>blob_links</code> table; the name
+is a historical alias for this row-group view of <code>artifact_observations</code>)</li>
+<li><strong>Scale</strong>: ~24K blobs, ~42 GB in production archive</li>
+<li><strong>GC</strong>: Blob garbage collection is tracked in
+<a href="https://github.com/Sinity/polylogue/issues/818">#818</a></li>
+</ul>
+<h2>Database</h2>
+<ul>
+<li>Archive SQLite file set, WAL mode.</li>
+<li>Schema is fresh-first: version mismatches are rejected and the affected tier
+is rebuilt from source/user evidence. Tier DDL and versions live under
+<code>storage/sqlite/archive_tiers/</code>.</li>
+<li>FTS5 with <code>unicode61</code> tokenizer (no porter stemmer in this SQLite build).</li>
+</ul>
+<h2>Placement Rules</h2>
+<h3>Substrate (archive meaning)</h3>
+<ul>
+<li><code>lib/</code> — domain types, invariants, shared primitives (no I/O, no storage)</li>
+<li><code>storage/</code> — SQLite backends, repositories, FTS, search providers</li>
+<li><code>sources/</code> — provider detection, parsing, acquisition</li>
+<li><code>pipeline/</code> — stage execution, daemon ingestion, validation, and indexing</li>
+<li><code>insights/</code> — derived read models, session insights, analytics</li>
+<li><code>operations/</code> — operation specs, artifact graph, declared runtime contracts</li>
+</ul>
+<h3>Surfaces (presentation only)</h3>
+<ul>
+<li><code>cli/</code> — Click commands, shared helpers, output formatting</li>
+<li><code>mcp/</code> — MCP server tools</li>
+<li><code>api/</code> — async library API</li>
+<li><code>rendering/</code> — markdown/HTML renderers</li>
+<li><code>ui/</code> — TUI, dashboard</li>
+<li><code>daemon/</code> — daemon convergence, HTTP API, and web reader</li>
+</ul>
+<h3>Verification (repo health)</h3>
+<ul>
+<li><code>devtools/</code> — operator tooling, lints, campaigns, rendering</li>
+<li><code>demo/</code> — deterministic archive/demo workspace fixtures</li>
+<li><code>tests/</code> — pytest suite, property tests, integration tests</li>
+</ul>
+<h3>Cross-cutting</h3>
+<ul>
+<li><code>schemas/</code> — provider schemas, schema inference, validation</li>
+<li><code>scenarios/</code> — synthetic corpus, scenario families</li>
+</ul>
+<h3>Key rules</h3>
+<ul>
+<li>Surfaces may not import substrate internals directly (see layering.yaml).</li>
+<li>New semantics go into substrate or insights first, then surfaces adapt.</li>
+</ul>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="../../reference/config/">← Configuration</a>
+    <a href="../internals/">Internals →</a>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — your AI memory</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>
