@@ -21,7 +21,7 @@ from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor
 from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
 from .emitter import _SessionEmitter
-from .parsers import antigravity
+from .parsers import antigravity, hermes_state
 from .parsers.base import ParsedSession, RawSessionData
 from .source_walk import _setup_source_walk
 
@@ -118,6 +118,24 @@ def parse_one_source_path(
             capture_raw=capture_raw,
             cursor_state=cursor_state,
         )
+        return
+
+    if provider_hint is Provider.HERMES and hermes_state.looks_like_state_db_path(path):
+        raw_data = None
+        if capture_raw:
+            blob_store = BlobStore(blob_root) if blob_root is not None else get_blob_store()
+            blob_hash, blob_size = blob_store.write_from_path(path)
+            raw_data = RawSessionData(
+                raw_bytes=b"",
+                source_path=str(path),
+                source_index=None,
+                file_mtime=file_mtime,
+                provider_hint=provider_hint,
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+            )
+        for session in hermes_state.parse_state_db(path, fallback_id=path.stem):
+            yield (raw_data, session)
         return
 
     ctx = _ParseContext(

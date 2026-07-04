@@ -5,7 +5,7 @@ from __future__ import annotations
 from os import stat_result
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import polylogue.sources.live.watcher as live_watcher
 
@@ -53,3 +53,15 @@ def test_interleave_by_source_single_source_preserves_alphabetical_order() -> No
     ]
     ordered = live_watcher._interleave_by_source(candidates)
     assert [c.path.name for c in ordered] == ["aa.jsonl", "mm.jsonl", "zz.jsonl"]
+
+
+def test_default_sources_watch_hermes_state_db(monkeypatch: Any, tmp_path: Path) -> None:
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    sources = {source.name: source for source in live_watcher.default_sources()}
+
+    hermes = sources["hermes"]
+    assert hermes.root == tmp_path / ".hermes"
+    assert hermes.accepts(tmp_path / ".hermes" / "state.db")
+    assert hermes.accepts(tmp_path / ".hermes" / "sessions" / "snapshot.json")
+    assert sources["inbox"].accepts(tmp_path / "archive" / "inbox" / "state.db")

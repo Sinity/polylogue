@@ -45,7 +45,7 @@ _CATCH_UP_MAX_BATCH_FILES = 50
 _CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 _PERIODIC_CATCH_UP_INTERVAL_S = 15.0
-INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson")
+INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
 
 
 def _stage_timing_summary(stage_timings_s: dict[str, float], *, limit: int = 8) -> str:
@@ -789,7 +789,7 @@ def default_sources() -> tuple[WatchSource, ...]:
         WatchSource(name="claude-code", root=claude_code_path()),
         WatchSource(name="codex", root=codex_path()),
         WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
-        WatchSource(name="hermes", root=hermes_sessions_path(), suffixes=(".json",)),
+        WatchSource(name="hermes", root=hermes_sessions_path(), suffixes=(".json", ".db", ".sqlite", ".sqlite3")),
         WatchSource(name="antigravity", root=antigravity_path(), suffixes=(".metadata.json",)),
         WatchSource(name="browser-capture", root=browser_capture_spool_root(), suffixes=(".json",)),
         # #1683: inbox accepts archive, zip, and json-line formats so that

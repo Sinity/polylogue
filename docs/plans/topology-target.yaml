@@ -146,7 +146,7 @@ files:
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/runtime.py
-    loc: 274
+    loc: 286
     target: polylogue/archive/artifact_taxonomy/runtime.py
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
@@ -427,7 +427,7 @@ files:
     owner: archive-raw-payload
     reason: archive-domain semantics
   - path: polylogue/archive/raw_payload/decode.py
-    loc: 300
+    loc: 334
     target: polylogue/archive/raw_payload/decode.py
     owner: archive-raw-payload
     reason: archive-domain semantics
@@ -771,7 +771,7 @@ files:
     target: polylogue/cli/commands/facets.py
     owner: stable
   - path: polylogue/cli/commands/import_command.py
-    loc: 321
+    loc: 338
     target: polylogue/cli/commands/import_command.py
     owner: stable
   - path: polylogue/cli/commands/init.py
@@ -1086,15 +1086,15 @@ files:
     target: polylogue/coordination/__init__.py
     owner: stable
   - path: polylogue/coordination/envelope.py
-    loc: 642
+    loc: 1122
     target: polylogue/coordination/envelope.py
     owner: stable
   - path: polylogue/coordination/payloads.py
-    loc: 157
+    loc: 219
     target: polylogue/coordination/payloads.py
     owner: stable
   - path: polylogue/coordination/rendering.py
-    loc: 162
+    loc: 242
     target: polylogue/coordination/rendering.py
     owner: stable
   - path: polylogue/core/__init__.py
@@ -1416,7 +1416,7 @@ files:
     target: polylogue/daemon/web_shell_attachments.py
     owner: stable
   - path: polylogue/daemon/web_shell_coordination.py
-    loc: 93
+    loc: 113
     target: polylogue/daemon/web_shell_coordination.py
     owner: stable
   - path: polylogue/daemon/web_shell_lineage.py
@@ -2472,7 +2472,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 886
+    loc: 892
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -2540,7 +2540,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1549
+    loc: 1584
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2548,7 +2548,7 @@ files:
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
-    loc: 488
+    loc: 495
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
@@ -2668,12 +2668,16 @@ files:
     loc: 57
     target: polylogue/sources/parsers/drive_support_text.py
     owner: stable
+  - path: polylogue/sources/parsers/hermes_state.py
+    loc: 418
+    target: polylogue/sources/parsers/hermes_state.py
+    owner: stable
   - path: polylogue/sources/parsers/local_agent.py
     loc: 317
     target: polylogue/sources/parsers/local_agent.py
     owner: stable
   - path: polylogue/sources/provider_completeness.py
-    loc: 319
+    loc: 323
     target: polylogue/sources/provider_completeness.py
     owner: stable
   - path: polylogue/sources/providers/chatgpt.py
@@ -2733,7 +2737,7 @@ files:
     target: polylogue/sources/source_acquisition_components.py
     owner: stable
   - path: polylogue/sources/source_parsing.py
-    loc: 234
+    loc: 252
     target: polylogue/sources/source_parsing.py
     owner: stable
   - path: polylogue/sources/source_walk.py

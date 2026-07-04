@@ -20,6 +20,8 @@ from polylogue.archive.artifact_taxonomy.support import (
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 
+_HERMES_STATE_DB_MARKER = "hermes_state_db"
+
 
 def classify_artifact_path(
     source_path: str | Path | None,
@@ -194,6 +196,16 @@ def _classify_dict(
             schema_eligible=True,
             default_priority=120,
             reason="Antigravity language-server Markdown export",
+        )
+
+    if provider is Provider.HERMES and payload.get("polylogue_artifact") == _HERMES_STATE_DB_MARKER:
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
+            schema_eligible=False,
+            default_priority=120,
+            reason="Hermes state.db SQLite archive marker",
         )
 
     if provider is Provider.ANTIGRAVITY and _is_antigravity_brain_metadata(payload, source_path):

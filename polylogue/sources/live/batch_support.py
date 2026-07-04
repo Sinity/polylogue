@@ -19,6 +19,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.pipeline.services.ingest_batch._core import _select_ingest_worker_count
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider
+from polylogue.sources.parsers import hermes_state
 from polylogue.storage.runtime import RawSessionRecord
 
 _LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
@@ -401,6 +402,8 @@ def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONVa
 
 
 def _detect_provider_from_path_sample(path: Path, fallback_provider: Provider) -> Provider:
+    if hermes_state.looks_like_state_db_path(path):
+        return Provider.HERMES
     if path.suffix.lower() == ".jsonl":
         records = _jsonl_sample_from_path(path)
         if records:
@@ -431,6 +434,8 @@ def _jsonl_provider_and_session_artifact(
 
 
 def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
+    if provider is Provider.HERMES and hermes_state.looks_like_state_db_path(path):
+        return True
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_session
@@ -463,6 +468,8 @@ def _large_non_jsonl_path_can_stream(path: Path, *, provider: Provider) -> bool:
 
 
 def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:
+    if provider is Provider.HERMES and path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+        return True
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_session

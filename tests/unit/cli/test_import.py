@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
@@ -107,6 +108,81 @@ def test_import_command_stages_local_path_before_daemon_request(
     assert str(staged) in result.output
     assert "polylogued status" in result.output
     assert "polylogue status --full" in result.output
+
+
+def test_import_command_snapshots_hermes_state_db_before_daemon_request(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Hermes state.db staging uses SQLite backup instead of a raw file copy."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    source = tmp_path / "state.db"
+    with sqlite3.connect(source) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, source TEXT, user_id TEXT, session_key TEXT,
+                chat_id TEXT, chat_type TEXT, thread_id TEXT, model TEXT,
+                model_config TEXT, system_prompt TEXT, parent_session_id TEXT,
+                started_at REAL, ended_at REAL, end_reason TEXT,
+                message_count INTEGER, tool_call_count INTEGER,
+                input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+                reasoning_tokens INTEGER, cwd TEXT, git_branch TEXT,
+                git_repo_root TEXT, billing_provider TEXT, billing_base_url TEXT,
+                billing_mode TEXT, estimated_cost_usd REAL, actual_cost_usd REAL,
+                cost_status TEXT, cost_source TEXT, pricing_version TEXT,
+                title TEXT, api_call_count INTEGER, handoff_state TEXT,
+                handoff_platform TEXT, handoff_error TEXT,
+                compression_failure_cooldown_until REAL,
+                compression_failure_error TEXT, rewind_count INTEGER, archived INTEGER
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+                role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_calls TEXT,
+                tool_name TEXT, timestamp REAL NOT NULL, token_count INTEGER,
+                finish_reason TEXT, reasoning TEXT, reasoning_content TEXT,
+                reasoning_details TEXT, codex_reasoning_items TEXT,
+                codex_message_items TEXT, platform_message_id TEXT,
+                observed INTEGER, active INTEGER, compacted INTEGER
+            );
+            INSERT INTO sessions(id, started_at, title) VALUES ('h1', 1.0, 'Hermes');
+            INSERT INTO messages(session_id, role, content, timestamp) VALUES ('h1', 'user', 'hello', 1.0);
+            """
+        )
+        # Leave a committed WAL-capable database; the staging path should still
+        # create a coherent independent SQLite file.
+        conn.execute("PRAGMA journal_mode=WAL")
+
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
+        captured["request"] = req
+        captured["timeout"] = timeout
+        assert req.data is not None
+        staged_path = json.loads(cast("bytes", req.data).decode("utf-8"))["path"]
+        return _FakeDaemonResponse(
+            {
+                "ok": True,
+                "operation_id": "import-state.db",
+                "kind": "import",
+                "status": "pending",
+                "path": staged_path,
+                "message": "scheduled",
+            }
+        )
+
+    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+        result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"])
+
+    assert result.exit_code == 0, result.output
+    staged = workspace_env["archive_root"] / "inbox" / "state.db"
+    with sqlite3.connect(staged) as conn:
+        assert conn.execute("SELECT title FROM sessions WHERE id = 'h1'").fetchone()[0] == "Hermes"
+    assert json.loads(cast("bytes", cast("Request", captured["request"]).data).decode("utf-8")) == {"path": str(staged)}
 
 
 def test_import_command_uses_daemon_url_env_by_default(

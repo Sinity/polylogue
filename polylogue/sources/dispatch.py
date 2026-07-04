@@ -16,7 +16,7 @@ from polylogue.core.payload_coercion import optional_string
 from polylogue.logging import get_logger
 
 from .decoders import _decode_json_bytes, _iter_json_stream
-from .parsers import antigravity, browser_capture, chatgpt, claude, codex, drive, local_agent
+from .parsers import antigravity, browser_capture, chatgpt, claude, codex, drive, hermes_state, local_agent
 from .parsers.base import ParsedSession, extract_messages_from_list
 
 if TYPE_CHECKING:
@@ -130,6 +130,8 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
     # Claude Code that they must be recognized before broader validators.
     if local_agent.looks_like_gemini_cli(record):
         return Provider.GEMINI_CLI
+    if hermes_state.looks_like_state_db_payload(record):
+        return Provider.HERMES
     if local_agent.looks_like_hermes(record):
         return Provider.HERMES
     if antigravity.looks_like_markdown_export(record):
@@ -683,6 +685,8 @@ def _lower_payload_specs(
         )
     if runtime_provider is Provider.HERMES:
         record = _single_document_record(shaped_payload)
+        if record is not None and hermes_state.looks_like_state_db_payload(record):
+            return [_local_artifact_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
         if record is not None and local_agent.looks_like_hermes(record):
             return [_local_agent_document_spec(runtime_provider, record, fallback_id)]
         return []
@@ -760,6 +764,8 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         record = _payload_record(spec.payload)
         if record is None:
             return []
+        if spec.provider is Provider.HERMES and hermes_state.looks_like_state_db_payload(record):
+            return hermes_state.parse_state_db_payload(record, spec.fallback_id)
         if spec.provider is Provider.ANTIGRAVITY:
             if antigravity.looks_like_markdown_export(record):
                 return [antigravity.parse_markdown_export_payload(record, spec.fallback_id)]
