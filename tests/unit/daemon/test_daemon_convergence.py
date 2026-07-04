@@ -220,6 +220,39 @@ def test_converger_keeps_bounded_session_false_as_pending_debt() -> None:
     assert set(converger._session_states) == {"conv-a"}
 
 
+def test_converger_clears_session_false_items_that_recheck_clean() -> None:
+    checks: list[tuple[str, ...]] = []
+
+    def check_sessions(session_ids: Sequence[str]) -> set[str]:
+        checks.append(tuple(session_ids))
+        if len(checks) == 1:
+            return set(session_ids)
+        return {"conv-b"}
+
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="embed",
+                description="bounded embedding catch-up",
+                check=lambda _candidate: False,
+                execute=lambda _candidate: False,
+                check_sessions=check_sessions,
+                execute_sessions=lambda _session_ids: False,
+                false_means_pending=True,
+            )
+        ]
+    )
+
+    states, _stage_times = converger.converge_sessions(["conv-a", "conv-b"])
+
+    assert checks[0] == ("conv-a", "conv-b")
+    assert set(checks[1]) == {"conv-a", "conv-b"}
+    assert states["conv-a"].converged
+    assert states["conv-b"].stages["embed"] is StageState.PENDING
+    assert states["conv-b"].last_error == "session stage embed returned False"
+    assert set(converger._session_states) == {"conv-b"}
+
+
 @pytest.mark.asyncio
 async def test_converger_start_skips_process_pool_for_io_only_stages(monkeypatch: pytest.MonkeyPatch) -> None:
     factory = Mock()
