@@ -1115,6 +1115,7 @@ def _emit_daemon_search_payload(
     fields: str | None,
     typo_hint: str | None,
 ) -> None:
+    _emit_degraded_daemon_search_payload(payload, query=query, output_format=output_format, fields=fields)
     hits = [dict(item) for item in cast(list[object], payload.get("hits") or []) if isinstance(item, Mapping)]
     total = _object_int(payload.get("total") or len(hits))
     envelope: dict[str, object] = {
@@ -1133,6 +1134,38 @@ def _emit_daemon_search_payload(
     if not hits:
         _emit_no_results(envelope, output_format=output_format, typo_hint=typo_hint)
     _emit_rows(envelope, hits, output_format=output_format, text_line=_hit_line, fields=fields)
+
+
+def _emit_degraded_daemon_search_payload(
+    payload: Mapping[str, object],
+    *,
+    query: str,
+    output_format: str,
+    fields: str | None,
+) -> None:
+    route_state = payload.get("route_state")
+    if not isinstance(route_state, Mapping) or route_state.get("state") != "degraded":
+        return
+    reason = str(route_state.get("reason") or "Search index unavailable.")
+    envelope: dict[str, object] = {
+        "mode": "search",
+        "query": query,
+        "retrieval_lane": str(payload.get("retrieval_lane") or "dialogue"),
+        "items": [],
+        "total": None,
+        "source": "daemon",
+        "route_state": dict(route_state),
+    }
+    diagnostics = payload.get("diagnostics")
+    if isinstance(diagnostics, Mapping):
+        envelope["diagnostics"] = dict(diagnostics)
+    if output_format in {"json", "yaml"}:
+        _emit_rows(envelope, [], output_format=output_format, text_line=_hit_line, fields=fields)
+    elif output_format in {"ndjson", "csv"}:
+        pass
+    else:
+        click.echo(reason, err=True)
+    raise SystemExit(1)
 
 
 def _decode_cursor(token: str | None) -> SearchCursor | None:
