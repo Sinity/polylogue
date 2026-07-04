@@ -65,7 +65,6 @@ from polylogue.storage.repair import (
     RepairResult,
     offline_maintenance_blockers,
     repair_empty_sessions,
-    repair_message_embeddings,
     repair_message_type_backfill,
     repair_orphaned_attachments,
     repair_orphaned_blobs,
@@ -112,7 +111,6 @@ _RepairFn = Callable[[Config, bool], RepairResult]
 _REPLAY_DISPATCH: Final[dict[str, _RepairFn]] = {
     "session_insights": repair_session_insights,
     "message_type_backfill": repair_message_type_backfill,
-    "message_embeddings": repair_message_embeddings,
     "orphaned_messages": repair_orphaned_messages,
     "empty_sessions": repair_empty_sessions,
     "orphaned_attachments": repair_orphaned_attachments,

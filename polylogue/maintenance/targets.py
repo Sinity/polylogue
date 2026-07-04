@@ -183,14 +183,6 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         doctor_repair_operation="backfill-message-type",
     ),
     MaintenanceTargetSpec(
-        name="message_embeddings",
-        mode=MaintenanceTargetMode.REPAIR,
-        category=MaintenanceCategory.DERIVED_REPAIR,
-        destructive=False,
-        description="Rebuild message embeddings and the vector index (dormant until daemon embedding is enabled, see #828).",
-        invalidation_keys=("message_embeddings", "message_embeddings_meta", "embedding_status"),
-    ),
-    MaintenanceTargetSpec(
         name="orphaned_messages",
         mode=MaintenanceTargetMode.CLEANUP,
         category=MaintenanceCategory.ARCHIVE_CLEANUP,

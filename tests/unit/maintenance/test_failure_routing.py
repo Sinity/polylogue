@@ -103,22 +103,22 @@ def test_resolve_maintenance_failures_removes_matching_target_and_kind(tmp_path:
     route_failure_sample(
         FailureSample(
             kind="UnsupportedReplayTargetError",
-            locator="target:message_embeddings",
+            locator="target:message_type_backfill",
             message="not wired",
         ),
         operation_id="op-old",
         archive_root=root,
-        target="message_embeddings",
+        target="message_type_backfill",
     )
     route_failure_sample(
         FailureSample(
             kind="RepairReportedFailure",
-            locator="target:message_embeddings",
+            locator="target:message_type_backfill",
             message="provider call failed",
         ),
         operation_id="op-real",
         archive_root=root,
-        target="message_embeddings",
+        target="message_type_backfill",
     )
     route_failure_sample(
         FailureSample(
@@ -133,14 +133,14 @@ def test_resolve_maintenance_failures_removes_matching_target_and_kind(tmp_path:
 
     removed = resolve_maintenance_failures(
         root,
-        target="message_embeddings",
+        target="message_type_backfill",
         kinds=("UnsupportedReplayTargetError",),
     )
 
     assert removed == 1
     remaining = read_maintenance_failures(root)
     assert [(r.target, r.kind) for r in remaining] == [
-        ("message_embeddings", "RepairReportedFailure"),
+        ("message_type_backfill", "RepairReportedFailure"),
         ("orphaned_messages", "UnsupportedReplayTargetError"),
     ]
 

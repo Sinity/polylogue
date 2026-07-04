@@ -51,7 +51,7 @@ Maintenance targets are grouped into four scopes:
 
 | Scope | Mode | Destructive | Targets |
 | --- | --- | --- | --- |
-| `derived` (derived_repair) | repair | no | `session_insights`, `message_type_backfill`, `message_embeddings` |
+| `derived` (derived_repair) | repair | no | `session_insights`, `message_type_backfill` |
 | `archive_cleanup` | cleanup | **yes** | `orphaned_messages`, `orphaned_content_blocks`, `empty_sessions`, `orphaned_attachments`, `orphaned_blobs` |
 | `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`). Re-acquiring raw artifacts from source, WAL checkpointing, and repairing FTS coherence are daemon/ingest convergence responsibilities, not maintenance targets. |
 

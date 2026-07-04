@@ -625,7 +625,6 @@ class TestMaintenanceSelection:
         assert {r.name for r in results} == {
             "session_insights",
             "message_type_backfill",
-            "message_embeddings",
         }
         assert all(r.destructive is False for r in results)
         assert all(r.category.value == "derived_repair" for r in results)

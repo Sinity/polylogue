@@ -1650,24 +1650,6 @@ def repair_message_type_backfill(config: Config, dry_run: bool = False) -> Repai
     return _to_repair_result(run_backfill(config, dry_run=dry_run))
 
 
-def repair_message_embeddings(config: Config, dry_run: bool = False) -> RepairResult:
-    """No-op embedding rebuild stub.
-
-    Embeddings are materialized exclusively by the daemon's embedding stage
-    (see #828); there is no synchronous rebuild path. The maintenance target
-    is registered so planners and surfaces can name the dormant work, but
-    invoking it through ``doctor --repair`` is a no-op that records dormancy
-    rather than failing the run.
-    """
-    verb = "Would skip" if dry_run else "Skipped"
-    return _repair_result(
-        "message_embeddings",
-        repaired_count=0,
-        success=True,
-        detail=f"{verb}: embedding rebuild is daemon-owned and dormant (#828).",
-    )
-
-
 _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
     "message_type_backfill": preview_message_type_backfill,
@@ -1682,7 +1664,6 @@ _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
 _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
     "message_type_backfill": repair_message_type_backfill,
-    "message_embeddings": repair_message_embeddings,
     "orphaned_messages": repair_orphaned_messages,
     "empty_sessions": repair_empty_sessions,
     "orphaned_attachments": repair_orphaned_attachments,
