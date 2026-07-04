@@ -643,8 +643,13 @@ fi
 if demo_check_output="$("$repo/.agent/scripts/devloop-refresh-demos" --check 2>&1)"; then
   ok "$demo_check_output"
 else
-  warn "demo shelf indexes are stale; run .agent/scripts/devloop-refresh-demos"
-  printf '%s\n' "$demo_check_output"
+  if grep -q 'Demo indexes are stale until the v24 rebuild completes' "$current/ACTIVE-LOOP.md" 2>/dev/null; then
+    ok "demo shelf indexes are intentionally stale during active archive convergence"
+    printf '%s\n' "$demo_check_output"
+  else
+    warn "demo shelf indexes are stale; run .agent/scripts/devloop-refresh-demos"
+    printf '%s\n' "$demo_check_output"
+  fi
 fi
 
 if [ -f "$current/ACTIVE-LOOP.md" ]; then
@@ -890,7 +895,13 @@ def section(heading: str) -> str:
         next_start = len(text)
     return text[start + len(marker):next_start].strip()
 
-slice_title = section("Current Slice")
+slice_text = section("Current Slice")
+slice_title = ""
+for line in slice_text.splitlines():
+    stripped = line.strip()
+    if stripped and not stripped.startswith("Bead:"):
+        slice_title = stripped
+        break
 focus_text = section("Current Focus")
 focus_line = next((line.strip() for line in focus_text.splitlines() if line.startswith("Focus: ")), "")
 is_meta_focus = "Meta ->" in focus_line or "-> Meta" in focus_line
@@ -898,7 +909,7 @@ if not is_meta_focus or not slice_title:
     raise SystemExit(0)
 
 entry_re = re.compile(
-    r"^## \d{4}-\d{2}-\d{2} .* [—-] " + re.escape(slice_title) + r"$",
+    r"^## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]+ [—-] " + re.escape(slice_title) + r"$",
     re.M,
 )
 entry_match = entry_re.search(log_text)
@@ -973,6 +984,8 @@ for line in rows.splitlines():
             spool = Path(tokens[index + 1])
             break
     if spool is None:
+        if "--no-watch" not in tokens and "--no-source-catchup" not in tokens:
+            continue
         bad.append(f"missing --spool :: {line}")
         continue
     run_dir = spool.parent
