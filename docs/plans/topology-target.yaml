@@ -3235,7 +3235,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 9064
+    loc: 8625
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3476,7 +3476,7 @@ files:
     owner: stable
     cross_cut: { layer: write }
   - path: polylogue/storage/sqlite/queries/session_insight_run_projection_reads.py
-    loc: 134
+    loc: 154
     target: polylogue/storage/sqlite/queries/session_insight_run_projection_reads.py
     owner: stable
     cross_cut: { layer: read }
@@ -3565,6 +3565,10 @@ files:
   - path: polylogue/storage/sqlite/query_store_maintenance.py
     loc: 97
     target: polylogue/storage/sqlite/query_store_maintenance.py
+    owner: stable
+  - path: polylogue/storage/sqlite/run_projection_relations.py
+    loc: 556
+    target: polylogue/storage/sqlite/run_projection_relations.py
     owner: stable
   - path: polylogue/storage/sqlite/runtime_indexes.py
     loc: 59
