@@ -115,13 +115,19 @@ def _watch_sources_from_roots(roots: tuple[Path, ...]) -> tuple[WatchSource, ...
     if not roots:
         return default_sources()
 
-    from polylogue.paths import archive_root
+    from polylogue.paths import archive_root, browser_capture_spool_root
 
     inbox_root = (archive_root() / "inbox").resolve(strict=False)
+    browser_root = browser_capture_spool_root().resolve(strict=False)
     sources: list[WatchSource] = []
     for root in roots:
-        suffixes = INBOX_SOURCE_SUFFIXES if root.resolve(strict=False) == inbox_root else (".jsonl",)
-        sources.append(WatchSource(name=root.name, root=root, suffixes=suffixes))
+        resolved = root.resolve(strict=False)
+        if resolved == inbox_root:
+            sources.append(WatchSource(name="inbox", root=root, suffixes=INBOX_SOURCE_SUFFIXES))
+        elif resolved == browser_root:
+            sources.append(WatchSource(name="browser-capture", root=root, suffixes=(".json",)))
+        else:
+            sources.append(WatchSource(name=root.name, root=root, suffixes=(".jsonl",)))
     return tuple(sources)
 
 

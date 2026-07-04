@@ -22,6 +22,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from tests.infra.frozen_clock import FrozenClock
@@ -131,7 +132,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "ops"]
     tiers = cast(list[dict[str, object]], storage["tiers"])
     assert {tier["name"]: tier["user_version"] for tier in tiers} == {
-        "source": 1,
+        "source": SOURCE_SCHEMA_VERSION,
         "index": INDEX_SCHEMA_VERSION,
         "embeddings": 1,
         "user": USER_SCHEMA_VERSION,
@@ -949,6 +950,25 @@ def test_explicit_archive_inbox_root_keeps_import_suffixes(workspace_env: dict[s
 
     assert sources == (
         WatchSource(name="inbox", root=inbox, suffixes=INBOX_SOURCE_SUFFIXES),
+        WatchSource(name="ordinary-jsonl-root", root=ordinary, suffixes=(".jsonl",)),
+    )
+
+
+def test_explicit_browser_capture_root_keeps_capture_suffixes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import polylogue.paths as polylogue_paths
+    from polylogue.daemon import cli as daemon_cli
+
+    spool = tmp_path / "polylogue" / "browser-capture"
+    ordinary = tmp_path / "ordinary-jsonl-root"
+    monkeypatch.setattr(polylogue_paths, "browser_capture_spool_root", lambda: spool)
+
+    sources = daemon_cli._watch_sources_from_roots((spool, ordinary))
+
+    assert sources == (
+        WatchSource(name="browser-capture", root=spool, suffixes=(".json",)),
         WatchSource(name="ordinary-jsonl-root", root=ordinary, suffixes=(".jsonl",)),
     )
 

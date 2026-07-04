@@ -27,6 +27,11 @@ from urllib.parse import urlsplit, urlunsplit
 
 from devtools import repo_root as _repo_root
 from polylogue.browser_capture.server import make_server
+from polylogue.storage.sqlite.archive_tiers.archive_init import (
+    ArchiveInitBlockedError,
+    initialize_archive_tier_files,
+)
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
 DEFAULT_API_PORT = 8766
 DEFAULT_BROWSER_CAPTURE_PORT = 8765
@@ -2004,6 +2009,7 @@ def launch_branch_daemon(
     *,
     preflight: dict[str, Any],
     readiness_timeout_s: float,
+    full_source_catchup: bool = False,
 ) -> dict[str, object]:
     """Launch a branch-local polylogued and persist process/debug artifacts."""
 
@@ -2049,6 +2055,7 @@ def launch_branch_daemon(
     env.setdefault("POLYLOGUE_FORCE_PLAIN", "1")
     repo_root = Path(str(preflight["repo_root"]))
     _prepend_pythonpath(env, repo_root)
+    archive_preparation = _prepare_archive_for_daemon_launch(preflight)
 
     api_status = ports["api"]
     receiver_status = ports["browser_capture"]
@@ -2066,11 +2073,15 @@ def launch_branch_daemon(
         "-c",
         "from polylogue.daemon.cli import main; main()",
         "run",
+        "--spool",
+        str(spool_path),
         "--api-port",
         str(api_port),
         "--port",
         str(receiver_port),
     ]
+    if not full_source_catchup:
+        command.extend(["--root", str(spool_path), "--no-source-catchup"])
 
     env_snapshot = _dev_loop_env_snapshot(env)
     env_path.write_text(json.dumps(env_snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -2089,6 +2100,8 @@ def launch_branch_daemon(
             "browser_capture_port": receiver_port,
             "spool_path": str(spool_path),
             "log_path": str(daemon_log),
+            "archive_preparation": archive_preparation,
+            "full_source_catchup": full_source_catchup,
         },
     )
     with daemon_log.open("a", encoding="utf-8") as log_file:
@@ -2155,9 +2168,11 @@ def launch_branch_daemon(
         "ended_at": ended_at.isoformat(),
         "duration_ms": duration_ms,
         "exit_code": exit_code,
+        "archive_preparation": archive_preparation,
         "api_ready": api_ready,
         "browser_capture_ready": receiver_ready,
         "readiness_timeout_s": readiness_timeout_s,
+        "full_source_catchup": full_source_catchup,
         "spool_path": str(spool_path),
         "artifacts": {
             "log": str(daemon_log),
@@ -2226,6 +2241,21 @@ def _artifact_state(
 
 def _archive_status(archive: Path) -> dict[str, object]:
     index_db = archive / "index.db"
+    tier_statuses: dict[str, dict[str, object]] = {}
+    all_tiers_ready = True
+    for tier, spec in ARCHIVE_TIER_SPECS.items():
+        tier_path = archive / spec.filename
+        user_version = _read_sqlite_user_version(tier_path) if tier_path.exists() else None
+        ready = user_version == spec.version
+        all_tiers_ready = all_tiers_ready and ready
+        tier_statuses[tier.value] = {
+            "path": str(tier_path),
+            "exists": tier_path.exists(),
+            "user_version": user_version,
+            "expected_user_version": spec.version,
+            "ready": ready,
+            "durability": spec.durability,
+        }
     status: dict[str, object] = {
         "archive_root": str(archive),
         "archive_root_exists": archive.exists(),
@@ -2236,6 +2266,7 @@ def _archive_status(archive: Path) -> dict[str, object]:
         "session_count": None,
         "message_count": None,
         "user_version": None,
+        "tiers": tier_statuses,
         "error": None,
     }
     if not index_db.exists():
@@ -2250,7 +2281,7 @@ def _archive_status(archive: Path) -> dict[str, object]:
                 is not None
             )
             status["sessions_table_exists"] = sessions_exists
-            status["schema_ready"] = user_version > 0 and sessions_exists
+            status["schema_ready"] = all_tiers_ready and user_version > 0 and sessions_exists
             if sessions_exists:
                 status["session_count"] = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
             messages_exists = (
@@ -2262,6 +2293,72 @@ def _archive_status(archive: Path) -> dict[str, object]:
     except sqlite3.Error as exc:
         status["error"] = f"{type(exc).__name__}: {exc}"
     return status
+
+
+def _read_sqlite_user_version(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+    except sqlite3.Error:
+        return None
+
+
+def _default_dev_archive_root(repo_root: Path) -> Path:
+    return repo_root / ".local" / "dev-archive"
+
+
+def _is_default_dev_archive(repo_root: Path, archive_root: Path) -> bool:
+    try:
+        return archive_root.expanduser().resolve() == _default_dev_archive_root(repo_root).expanduser().resolve()
+    except OSError:
+        return archive_root.expanduser().absolute() == _default_dev_archive_root(repo_root).expanduser().absolute()
+
+
+def _prepare_archive_for_daemon_launch(preflight: dict[str, Any]) -> dict[str, object]:
+    """Ensure the branch-local daemon archive is usable before launch.
+
+    The repo-default ``.local/dev-archive`` is disposable dev-loop state, so the
+    launcher may replace stale tier files there. Custom archive roots are not
+    implicitly replaced; those may point at operator data and must be repaired by
+    an explicit archive command.
+    """
+    archive_root = Path(str(preflight["dev_archive_root"]))
+    repo_root = Path(str(preflight["repo_root"]))
+    before = _archive_status(archive_root)
+    if before.get("schema_ready") is True:
+        return {"action": "unchanged", "archive_status": before}
+    if not _is_default_dev_archive(repo_root, archive_root):
+        not_ready = [
+            name
+            for name, tier in cast(dict[str, dict[str, object]], before.get("tiers", {})).items()
+            if tier.get("ready") is not True
+        ]
+        raise ValueError(
+            "branch-local daemon archive is not schema-ready for custom archive root "
+            f"{archive_root}; not-ready tiers: {', '.join(not_ready) or 'unknown'}"
+        )
+    try:
+        result = initialize_archive_tier_files(archive_root=archive_root, replace_existing=True)
+    except ArchiveInitBlockedError as exc:
+        raise ValueError(f"branch-local dev archive initialization blocked: {exc}") from exc
+    after = _archive_status(archive_root)
+    initialized = [
+        {
+            "tier": tier.tier,
+            "action": tier.action.value,
+            "path": str(tier.path),
+            "backup_path": str(tier.backup_path) if tier.backup_path is not None else None,
+        }
+        for tier in result.tier_results
+    ]
+    preflight["archive_status"] = after
+    return {
+        "action": "initialized_default_dev_archive",
+        "archive_status": after,
+        "initialized": initialized,
+    }
 
 
 def _dev_loop_artifact_status(
@@ -3046,7 +3143,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--launch-daemon",
         action="store_true",
-        help="Launch branch-local polylogued with watch/source catch-up enabled and write PID/log/summary artifacts.",
+        help="Launch branch-local polylogued for browser-capture/API proof and write PID/log/summary artifacts.",
+    )
+    parser.add_argument(
+        "--full-source-catchup",
+        action="store_true",
+        help="With --launch-daemon, watch configured sources instead of constraining the proof to browser-capture spool.",
     )
     parser.add_argument(
         "--extension-smoke",
@@ -3178,6 +3280,7 @@ def main(argv: list[str] | None = None) -> int:
             launch_payload = launch_branch_daemon(
                 preflight=payload,
                 readiness_timeout_s=args.daemon_ready_timeout_s,
+                full_source_catchup=args.full_source_catchup,
             )
         except ValueError as exc:
             parser.error(str(exc))

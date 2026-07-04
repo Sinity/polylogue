@@ -10,6 +10,8 @@ from typing import cast
 import pytest
 
 from devtools import dev_loop
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _expected_daemon_url_warning(api_port: int) -> str | None:
@@ -18,6 +20,14 @@ def _expected_daemon_url_warning(api_port: int) -> str | None:
     if daemon_url and daemon_url != dev_loop_url:
         return f"current POLYLOGUE_DAEMON_URL points at {daemon_url}; dev-loop commands will use {dev_loop_url}"
     return None
+
+
+def _write_stale_sqlite(path: Path, version: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"PRAGMA user_version = {version}")
+        conn.execute("CREATE TABLE stale_marker (id TEXT PRIMARY KEY)")
+        conn.commit()
 
 
 def test_system_service_status_reports_active_unit_archive_root(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -252,14 +262,7 @@ def test_build_dev_loop_status_reports_initialized_archive_counts(
 ) -> None:
     repo = tmp_path / "repo"
     archive = repo / ".local" / "dev-archive"
-    archive.mkdir(parents=True)
-    with sqlite3.connect(archive / "index.db") as conn:
-        conn.execute("PRAGMA user_version = 18")
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
-        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY)")
-        conn.executemany("INSERT INTO sessions VALUES (?)", [("s1",), ("s2",)])
-        conn.executemany("INSERT INTO messages VALUES (?)", [("m1",), ("m2",), ("m3",)])
-        conn.commit()
+    initialize_active_archive_root(archive)
     monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
     monkeypatch.setattr(
         dev_loop,
@@ -272,18 +275,20 @@ def test_build_dev_loop_status_reports_initialized_archive_counts(
 
     payload = dev_loop.build_dev_loop_status(repo_root=repo, api_port=9911, browser_capture_port=9912)
 
-    assert payload["archive_status"] == {
-        "archive_root": str(archive),
-        "archive_root_exists": True,
-        "index_db": str(archive / "index.db"),
-        "index_db_exists": True,
-        "schema_ready": True,
-        "sessions_table_exists": True,
-        "session_count": 2,
-        "message_count": 3,
-        "user_version": 18,
-        "error": None,
-    }
+    archive_status = payload["archive_status"]
+    assert archive_status["archive_root"] == str(archive)
+    assert archive_status["archive_root_exists"] is True
+    assert archive_status["index_db"] == str(archive / "index.db")
+    assert archive_status["index_db_exists"] is True
+    assert archive_status["schema_ready"] is True
+    assert archive_status["sessions_table_exists"] is True
+    assert archive_status["session_count"] == 0
+    assert archive_status["message_count"] == 0
+    assert archive_status["user_version"] == ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].version
+    assert archive_status["error"] is None
+    tiers = cast(dict[str, dict[str, object]], archive_status["tiers"])
+    assert set(tiers) == {tier.value for tier in ArchiveTier}
+    assert all(tier["ready"] is True for tier in tiers.values())
     expected_warnings = []
     if daemon_url_warning := _expected_daemon_url_warning(9911):
         expected_warnings.append(daemon_url_warning)
@@ -1221,6 +1226,7 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
     repo = workspace_env["state_dir"] / "repo"
     repo.mkdir(parents=True)
     archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
     monkeypatch.setattr(dev_loop, "_repo_root", lambda: repo)
     monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
     monkeypatch.setattr(
@@ -1282,13 +1288,22 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
         "run",
     ]
     assert "--no-watch" not in command
-    assert "--no-source-catchup" not in command
-    assert "--spool" not in command
+    assert "--no-source-catchup" in command
+    assert command[command.index("--spool") : command.index("--spool") + 2] == [
+        "--spool",
+        launch["spool_path"],
+    ]
+    assert command[command.index("--root") : command.index("--root") + 2] == [
+        "--root",
+        launch["spool_path"],
+    ]
     assert command[command.index("--api-port") : command.index("--api-port") + 2] == ["--api-port", "9876"]
     assert command[command.index("--port") : command.index("--port") + 2] == ["--port", "9875"]
     assert launch["pid"] == 4242
     assert launch["api_ready"] is True
     assert launch["browser_capture_ready"] is True
+    assert launch["full_source_catchup"] is False
+    assert launch["archive_preparation"]["action"] == "unchanged"
 
     env = launched["env"]
     assert isinstance(env, dict)
@@ -1317,9 +1332,116 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
     assert event_rows[0]["run_id"] == payload["preflight"]["run_id"]
     assert event_rows[0]["archive_root"] == str(archive_root)
     assert event_rows[0]["payload"]["api_port"] == 9876
+    assert event_rows[0]["payload"]["full_source_catchup"] is False
     assert event_rows[1]["payload"]["pid"] == 4242
     assert event_rows[2]["status"] == "ok"
     assert event_rows[2]["payload"]["api_ready"] is True
+
+
+def test_daemon_launch_reinitializes_stale_default_dev_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "repo"
+    archive = repo / ".local" / "dev-archive"
+    _write_stale_sqlite(archive / "source.db", 1)
+    _write_stale_sqlite(archive / "user.db", 3)
+    _write_stale_sqlite(archive / "index.db", 18)
+    monkeypatch.setattr(dev_loop, "_repo_root", lambda: repo)
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+    monkeypatch.setattr(dev_loop, "_socket_connectable", lambda port: True)
+
+    class FakeProcess:
+        pid = 4243
+
+        def poll(self) -> int | None:
+            return None
+
+    monkeypatch.setattr(dev_loop, "_start_daemon_process", lambda *args, **kwargs: FakeProcess())
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--api-port",
+                "9876",
+                "--browser-capture-port",
+                "9875",
+                "--launch-daemon",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    preparation = payload["daemon_launch"]["archive_preparation"]
+    assert preparation["action"] == "initialized_default_dev_archive"
+    initialized = {item["tier"]: item for item in preparation["initialized"]}
+    assert initialized["source"]["backup_path"].endswith("source.db.pre-archive-init.bak")
+    assert initialized["user"]["backup_path"].endswith("user.db.pre-archive-init.bak")
+    assert initialized["index"]["action"] == "recreate_disposable"
+    assert preparation["archive_status"]["schema_ready"] is True
+    for tier, spec in ARCHIVE_TIER_SPECS.items():
+        with sqlite3.connect(archive / spec.filename) as conn:
+            assert int(conn.execute("PRAGMA user_version").fetchone()[0] or 0) == spec.version
+        assert preparation["archive_status"]["tiers"][tier.value]["ready"] is True
+
+
+def test_daemon_launch_refuses_stale_custom_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "repo"
+    archive = tmp_path / "custom-archive"
+    _write_stale_sqlite(archive / "source.db", 1)
+    _write_stale_sqlite(archive / "user.db", 3)
+    _write_stale_sqlite(archive / "index.db", 18)
+    monkeypatch.setattr(dev_loop, "_repo_root", lambda: repo)
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+    spawned = False
+
+    def fake_start_daemon_process(*args: object, **kwargs: object) -> object:
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("custom stale archive must fail before daemon spawn")
+
+    monkeypatch.setattr(dev_loop, "_start_daemon_process", fake_start_daemon_process)
+
+    with pytest.raises(SystemExit) as excinfo:
+        dev_loop.main(
+            [
+                "--json",
+                "--archive-root",
+                str(archive),
+                "--api-port",
+                "9876",
+                "--browser-capture-port",
+                "9875",
+                "--launch-daemon",
+            ]
+        )
+
+    assert excinfo.value.code == 2
+    assert spawned is False
+    assert "custom archive root" in capsys.readouterr().err
 
 
 def test_daemon_launch_rejects_occupied_branch_local_ports(
