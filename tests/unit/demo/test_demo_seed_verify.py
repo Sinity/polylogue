@@ -75,6 +75,10 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
         subagent_snapshots = conn.execute(
             "SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'"
         ).fetchone()[0]
+        subagent_runs = conn.execute("SELECT COUNT(*) FROM session_runs WHERE role = 'subagent'").fetchone()[0]
+        unfinished_terminal_states = conn.execute(
+            "SELECT terminal_state, COUNT(*) FROM session_profiles GROUP BY terminal_state"
+        ).fetchall()
     with sqlite3.connect(archive_root / "embeddings.db") as conn:
         embedding_rows = conn.execute(
             "SELECT COUNT(*) FROM message_embeddings_meta WHERE model = 'demo-synthetic-embedding'"
@@ -94,6 +98,10 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert len(compaction_events) >= 1
     assert sidechain_sessions == [(DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,)]
     assert subagent_snapshots >= 1
+    assert subagent_runs >= 1
+    terminal_state_counts = dict(unfinished_terminal_states)
+    assert terminal_state_counts.get("question_left", 0) + terminal_state_counts.get("tool_left", 0) >= 1
+    assert terminal_state_counts.get("error_left", 0) >= 1
     assert embedding_rows >= 1
     assert embedding_status == [(DEMO_EMBEDDING_PROSE_SESSION_ID, embedding_rows, 0, None)]
 

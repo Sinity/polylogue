@@ -15,14 +15,14 @@ This datasheet is generated from the deterministic demo family registry, the dec
 
 | Fact | Current |
 | --- | ---: |
-| Sessions | 10 |
-| Messages | 39 indexed |
-| Blocks | 83 |
-| Session profiles | 10 |
+| Sessions | 11 |
+| Messages | 43 indexed |
+| Blocks | 87 |
+| Session profiles | 11 |
 | Origins | aistudio-drive, chatgpt-export, claude-ai-export, claude-code-session, codex-session |
-| Run rows | 10 |
-| Observed-event rows | 34 |
-| Context-snapshot rows | 11 |
+| Run rows | 12 |
+| Observed-event rows | 37 |
+| Context-snapshot rows | 12 |
 
 ## Declared Source Families
 
@@ -34,7 +34,7 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | `browser-capture-gap` | `browser-capture` | `browser-capture/chatgpt-raw-provider.json`<br>`browser-capture/chatgpt-dom-fallback.json` | `capture_gap_events`<br>`browser_capture_raw_variants`<br>`browser_capture_coalesced_session` | `false` |
 | `codex-tools` | `codex` | `codex/demo-00.jsonl` | `tool_use_blocks`<br>`tool_result_blocks`<br>`failed_tool_results` | `true` |
 | `gemini-attachments` | `gemini` | `gemini/demo-00.json` | `attachment_rows`<br>`acquired_attachment_rows` | `true` |
-| `agent-lineage-matrix` | `mixed-agent` | `codex/lineage-parent.jsonl`<br>`codex/lineage-fork.jsonl`<br>`codex/lineage-subagent.jsonl`<br>`claude-code/agent-acompact-demo.jsonl`<br>`claude-code/lineage-sidechain.jsonl` | `session_link_rows`<br>`generic_branch_links`<br>`prefix_sharing_links`<br>`continuation_links`<br>`subagent_links`<br>`sidechain_sessions`<br>`compaction_events`<br>`subagent_context_snapshots` | `false` |
+| `agent-lineage-matrix` | `mixed-agent` | `codex/lineage-parent.jsonl`<br>`codex/lineage-fork.jsonl`<br>`codex/lineage-subagent.jsonl`<br>`codex/terminal-error.jsonl`<br>`claude-code/agent-acompact-demo.jsonl`<br>`claude-code/lineage-sidechain.jsonl` | `session_link_rows`<br>`generic_branch_links`<br>`prefix_sharing_links`<br>`continuation_links`<br>`subagent_links`<br>`sidechain_sessions`<br>`compaction_events`<br>`subagent_context_snapshots`<br>`subagent_run_rows`<br>`unfinished_terminal_state_rows`<br>`error_terminal_state_rows` | `false` |
 | `embedding-lane-prose` | `derived-embedding` | `claude-code/demo-00.jsonl`<br>`embeddings.db` | `embedding_candidate_prose_messages`<br>`synthetic_message_embedding_rows`<br>`embedding_status_rows` | `false` |
 
 ## Declared Construct Coverage
@@ -42,10 +42,10 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Construct | Observed | Minimum | Status |
 | --- | ---: | ---: | --- |
 | Multi-origin sessions (`multi_origin_sessions`) | 5 | 3 | `ok` |
-| Session profiles (`session_profiles`) | 10 | 3 | `ok` |
-| Tool-use blocks (`tool_use_blocks`) | 19 | 1 | `ok` |
-| Tool-result blocks (`tool_result_blocks`) | 21 | 1 | `ok` |
-| Failed tool results (`failed_tool_results`) | 4 | 1 | `ok` |
+| Session profiles (`session_profiles`) | 11 | 3 | `ok` |
+| Tool-use blocks (`tool_use_blocks`) | 20 | 1 | `ok` |
+| Tool-result blocks (`tool_result_blocks`) | 22 | 1 | `ok` |
+| Failed tool results (`failed_tool_results`) | 5 | 1 | `ok` |
 | Provider usage messages (`provider_usage_messages`) | 7 | 1 | `ok` |
 | Attachment rows (`attachment_rows`) | 1 | 1 | `ok` |
 | Acquired attachment rows (`acquired_attachment_rows`) | 1 | 1 | `ok` |
@@ -61,11 +61,14 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Subagent links (`subagent_links`) | 1 | 1 | `ok` |
 | Sidechain sessions (`sidechain_sessions`) | 1 | 1 | `ok` |
 | Compaction events (`compaction_events`) | 1 | 1 | `ok` |
-| Run projection rows (`run_projection_rows`) | 10 | 1 | `ok` |
-| Observed-event rows (`observed_event_rows`) | 34 | 1 | `ok` |
-| Context snapshot rows (`context_snapshot_rows`) | 11 | 1 | `ok` |
+| Run projection rows (`run_projection_rows`) | 12 | 1 | `ok` |
+| Observed-event rows (`observed_event_rows`) | 37 | 1 | `ok` |
+| Context snapshot rows (`context_snapshot_rows`) | 12 | 1 | `ok` |
 | Subagent context snapshots (`subagent_context_snapshots`) | 1 | 1 | `ok` |
-| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 23 | 1 | `ok` |
+| Subagent run rows (`subagent_run_rows`) | 1 | 1 | `ok` |
+| Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 3 | 1 | `ok` |
+| Error terminal-state rows (`error_terminal_state_rows`) | 1 | 1 | `ok` |
+| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 25 | 1 | `ok` |
 | Synthetic message embedding rows (`synthetic_message_embedding_rows`) | 2 | 1 | `ok` |
 | Embedding status rows (`embedding_status_rows`) | 1 | 1 | `ok` |
 
@@ -75,11 +78,12 @@ This datasheet is generated from the deterministic demo family registry, the dec
 - Codex `forked_from_id` is measured as a generic `branch` link with `prefix-sharing` inheritance because source evidence proves parentage and shared prefix, not fork-vs-resume.
 - Claude Code `agent-acompact-*` measures a continuation link and compaction event; the sidechain source measures typed sidechain session state.
 - Browser-capture convergence is measured across `source.db` and `index.db`: three raw observations for the same ChatGPT native id remain durable while the canonical indexed session stays singular and raw-linked.
+- Resume/abandonment demo coverage is grounded in structural `session_profiles.terminal_state` values (`question_left`, `tool_left`, `error_left`). The demo intentionally does not invent a source-declared `abandoned` or `censored` flag.
+- Parent-side subagent runs use distinct `run_ref` values from the child session's own main run, so both execution views can coexist.
 - Embedding coverage uses deterministic synthetic vectors over authored demo prose; it proves non-empty embedding-tier/status surfaces without contacting an external provider.
 
 ## Residual Gaps
 
 | Gap | Current evidence | Driver beads |
 | --- | --- | --- |
-| Abandoned / censored sessions | temporary-session coverage exists; no abandoned/censored variants yet | `polylogue-cfk`, temporal-analysis beads |
-| Subagent run projection collision | parent subagent run currently collides with the child main `run_ref`; tracked as `polylogue-85z0` | `polylogue-37t.11`, `polylogue-4ts.1` |
+| None | Every declared construct currently has non-empty seeded coverage. | — |

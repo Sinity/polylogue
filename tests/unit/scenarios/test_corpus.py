@@ -16,6 +16,7 @@ from polylogue.scenarios import (
     DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
     DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
     DEMO_CODEX_SESSION_ID,
+    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
     DEMO_CORPUS_FAMILIES,
     DEMO_GEMINI_SESSION_ID,
     DEMO_SESSION_IDS,
@@ -198,6 +199,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
         DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
         DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
+        DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
         DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
         DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     )
@@ -243,7 +245,11 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         "sidechain_sessions",
         "compaction_events",
         "subagent_context_snapshots",
+        "subagent_run_rows",
+        "unfinished_terminal_state_rows",
+        "error_terminal_state_rows",
     }
+    assert "codex/terminal-error.jsonl" in lineage_family.source_paths
     assert tuple(spec.style for spec in specs) == (
         "demo",
         "demo-tool-heavy",

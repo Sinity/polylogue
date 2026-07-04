@@ -213,6 +213,24 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         sql="SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'",
     ),
     DemoConstruct(
+        construct_id="subagent_run_rows",
+        label="Subagent run rows",
+        description="Parent-side subagent executions are preserved as distinct runs from child main runs.",
+        sql="SELECT COUNT(*) FROM session_runs WHERE role = 'subagent'",
+    ),
+    DemoConstruct(
+        construct_id="unfinished_terminal_state_rows",
+        label="Unfinished terminal-state rows",
+        description="At least one session profile exposes an unfinished structural terminal state for resume demos.",
+        sql="SELECT COUNT(*) FROM session_profiles WHERE terminal_state IN ('question_left', 'tool_left')",
+    ),
+    DemoConstruct(
+        construct_id="error_terminal_state_rows",
+        label="Error terminal-state rows",
+        description="At least one session profile exposes an unrecovered structural error boundary.",
+        sql="SELECT COUNT(*) FROM session_profiles WHERE terminal_state = 'error_left'",
+    ),
+    DemoConstruct(
         construct_id="embedding_candidate_prose_messages",
         label="Embedding candidate prose messages",
         description="Authored prose rows exist for the paid embedding selector without counting tool/protocol rows.",

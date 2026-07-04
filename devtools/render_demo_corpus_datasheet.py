@@ -34,16 +34,7 @@ class DemoCorpusMeasurement:
 
 
 RESIDUAL_GAPS: tuple[tuple[str, str, str], ...] = (
-    (
-        "Abandoned / censored sessions",
-        "temporary-session coverage exists; no abandoned/censored variants yet",
-        "`polylogue-cfk`, temporal-analysis beads",
-    ),
-    (
-        "Subagent run projection collision",
-        "parent subagent run currently collides with the child main `run_ref`; tracked as `polylogue-85z0`",
-        "`polylogue-37t.11`, `polylogue-4ts.1`",
-    ),
+    ("None", "Every declared construct currently has non-empty seeded coverage.", "—"),
 )
 
 
@@ -172,6 +163,12 @@ def build_document(
         "- Browser-capture convergence is measured across `source.db` and "
         "`index.db`: three raw observations for the same ChatGPT native id remain "
         "durable while the canonical indexed session stays singular and raw-linked.",
+        "- Resume/abandonment demo coverage is grounded in structural "
+        "`session_profiles.terminal_state` values (`question_left`, `tool_left`, "
+        "`error_left`). The demo intentionally does not invent a source-declared "
+        "`abandoned` or `censored` flag.",
+        "- Parent-side subagent runs use distinct `run_ref` values from the child "
+        "session's own main run, so both execution views can coexist.",
         "- Embedding coverage uses deterministic synthetic vectors over authored "
         "demo prose; it proves non-empty embedding-tier/status surfaces without "
         "contacting an external provider.",

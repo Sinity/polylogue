@@ -17,6 +17,7 @@ from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
     DEMO_EMBEDDING_PROSE_SESSION_ID,
     build_demo_corpus_specs,
     seed_demo_user_overlays,
@@ -312,6 +313,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
     parent_id = "demo-lineage-parent"
     fork_id = "demo-lineage-fork"
     subagent_id = "demo-lineage-subagent"
+    terminal_error_id = DEMO_CODEX_TERMINAL_ERROR_SESSION_ID.removeprefix("codex-session:")
     claude_parent_id = DEMO_CLAUDE_CODE_SESSION_ID.removeprefix("claude-code-session:")
     sidechain_id = DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID.removeprefix("claude-code-session:")
     base_user = "Map the demo lineage base context."
@@ -426,6 +428,48 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
                 "assistant",
                 "2026-07-04T10:02:01Z",
                 [_output_text("Subagent report: lineage fixture has a parent, a fork, and a resolved child link.")],
+            ),
+        ),
+    )
+    _write_jsonl(
+        source_root / "codex" / "terminal-error.jsonl",
+        (
+            _codex_session_meta(terminal_error_id, timestamp="2026-07-04T10:05:00Z"),
+            _codex_message(
+                "terminal-error-u0",
+                "user",
+                "2026-07-04T10:05:01Z",
+                [_input_text("Run the command and stop if it fails.")],
+            ),
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "id": "fc-terminal-error",
+                    "call_id": "call-terminal-error",
+                    "name": "exec_command",
+                    "arguments": json.dumps({"cmd": "pytest tests/missing_test.py"}, sort_keys=True),
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-terminal-error",
+                    "output": json.dumps(
+                        {
+                            "output": "ERROR: file or directory not found: tests/missing_test.py",
+                            "metadata": {"exit_code": 4},
+                        },
+                        sort_keys=True,
+                    ),
+                },
+            },
+            _codex_message(
+                "terminal-error-a1",
+                "assistant",
+                "2026-07-04T10:05:04Z",
+                [_output_text("I hit an error and need the missing test path corrected before continuing.")],
             ),
         ),
     )

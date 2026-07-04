@@ -56,6 +56,7 @@ DEMO_GEMINI_SESSION_ID = "aistudio-drive:demo-00"
 DEMO_CODEX_LINEAGE_PARENT_SESSION_ID = "codex-session:demo-lineage-parent"
 DEMO_CODEX_LINEAGE_FORK_SESSION_ID = "codex-session:demo-lineage-fork"
 DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID = "codex-session:demo-lineage-subagent"
+DEMO_CODEX_TERMINAL_ERROR_SESSION_ID = "codex-session:demo-terminal-error"
 DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID = (
     "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo"
 )
@@ -70,6 +71,7 @@ DEMO_SESSION_IDS = (
     DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
     DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
     DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
+    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
 )
@@ -227,12 +229,19 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "sidechain_sessions",
             "compaction_events",
             "subagent_context_snapshots",
+            "subagent_run_rows",
+            "unfinished_terminal_state_rows",
+            "error_terminal_state_rows",
         ),
-        description="Explicit parent, prefix-sharing branch, spawned subagent, sidechain, and compaction source files.",
+        description=(
+            "Explicit parent, prefix-sharing branch, spawned subagent, sidechain, compaction, and "
+            "structural unfinished/error terminal-state source files."
+        ),
         source_paths=(
             "codex/lineage-parent.jsonl",
             "codex/lineage-fork.jsonl",
             "codex/lineage-subagent.jsonl",
+            "codex/terminal-error.jsonl",
             "claude-code/agent-acompact-demo.jsonl",
             "claude-code/lineage-sidechain.jsonl",
         ),
