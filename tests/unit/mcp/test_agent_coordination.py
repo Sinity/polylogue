@@ -9,10 +9,15 @@ import pytest
 
 from polylogue.coordination.payloads import (
     AgentCoordinationPayload,
+    CoordinationActivityEpisodePayload,
+    CoordinationContextFlowRefPayload,
     CoordinationLimitsPayload,
+    CoordinationProofRefPayload,
     CoordinationProvenancePayload,
     CoordinationRepoPayload,
     CoordinationSelfPayload,
+    CoordinationSessionTreeNodePayload,
+    CoordinationSessionTreePayload,
     CoordinationView,
     CoordinationWorkItemPayload,
 )
@@ -30,6 +35,49 @@ def _payload(view: str = "status") -> AgentCoordinationPayload:
         ),
         work_item=CoordinationWorkItemPayload(
             source="beads", ref="polylogue-s7ae.1", confidence=0.95, provenance=provenance
+        ),
+        session_trees=(
+            CoordinationSessionTreePayload(
+                target_session_id="codex-session:thread",
+                root_session_id="codex-session:root",
+                nodes=(
+                    CoordinationSessionTreeNodePayload(
+                        session_id="codex-session:thread",
+                        source_name="codex-session",
+                        depth=1,
+                        is_target=True,
+                    ),
+                ),
+                provenance=provenance,
+            ),
+        ),
+        activity_episodes=(
+            CoordinationActivityEpisodePayload(
+                ref="run:thread",
+                session_id="codex-session:thread",
+                run_ref="run:thread",
+                kind="run",
+                status="completed",
+                provenance=provenance,
+            ),
+        ),
+        proof_refs=(
+            CoordinationProofRefPayload(
+                ref="event:tool",
+                session_id="codex-session:thread",
+                kind="tool_finished",
+                status="passed",
+                provenance=provenance,
+            ),
+        ),
+        context_flow_refs=(
+            CoordinationContextFlowRefPayload(
+                ref="context:thread:start",
+                session_id="codex-session:thread",
+                run_ref="run:thread",
+                boundary="session_start",
+                provenance=provenance,
+            ),
         ),
         limits=CoordinationLimitsPayload(peer_limit=10, resource_limit=10, changed_path_limit=40, command_chars=220),
         provenance=(provenance,),
@@ -50,6 +98,10 @@ def test_agent_coordination_tool_returns_shared_payload(
     assert body["view"] == "work-item"
     assert body["work_item"]["source"] == "beads"
     assert body["work_item"]["ref"] == "polylogue-s7ae.1"
+    assert body["session_trees"][0]["target_session_id"] == "codex-session:thread"
+    assert body["activity_episodes"][0]["kind"] == "run"
+    assert body["proof_refs"][0]["status"] == "passed"
+    assert body["context_flow_refs"][0]["boundary"] == "session_start"
 
 
 def test_agent_coordination_prompt_embeds_bounded_envelope(

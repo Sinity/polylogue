@@ -97,6 +97,64 @@ class CoordinationArchivePayload(SurfacePayloadModel):
     provenance: CoordinationProvenancePayload
 
 
+class CoordinationSessionTreeNodePayload(SurfacePayloadModel):
+    session_id: str
+    source_name: str | None = None
+    title: str | None = None
+    depth: int = 0
+    is_target: bool = False
+
+
+class CoordinationSessionTreeEdgePayload(SurfacePayloadModel):
+    child_id: str
+    parent_id: str | None = None
+    parent_native_id: str | None = None
+    kind: str
+    resolved: bool = True
+
+
+class CoordinationSessionTreePayload(SurfacePayloadModel):
+    target_session_id: str
+    root_session_id: str
+    nodes: tuple[CoordinationSessionTreeNodePayload, ...] = ()
+    edges: tuple[CoordinationSessionTreeEdgePayload, ...] = ()
+    cycle_detected: bool = False
+    provenance: CoordinationProvenancePayload
+
+
+class CoordinationActivityEpisodePayload(SurfacePayloadModel):
+    ref: str
+    session_id: str
+    run_ref: str | None = None
+    kind: str
+    status: str | None = None
+    summary: str | None = None
+    occurred_at: str | None = None
+    refs: tuple[str, ...] = ()
+    provenance: CoordinationProvenancePayload
+
+
+class CoordinationProofRefPayload(SurfacePayloadModel):
+    ref: str
+    session_id: str
+    kind: str
+    status: str | None = None
+    summary: str | None = None
+    evidence_refs: tuple[str, ...] = ()
+    provenance: CoordinationProvenancePayload
+
+
+class CoordinationContextFlowRefPayload(SurfacePayloadModel):
+    ref: str
+    session_id: str
+    run_ref: str | None = None
+    boundary: str
+    inheritance_mode: str | None = None
+    segment_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    provenance: CoordinationProvenancePayload
+
+
 class CoordinationBeadsHookPayload(SurfacePayloadModel):
     name: str
     installed: bool
@@ -151,6 +209,10 @@ class AgentCoordinationPayload(SurfacePayloadModel):
     overlaps: tuple[CoordinationOverlapPayload, ...] = ()
     handoff: tuple[CoordinationHandoffPayload, ...] = ()
     archive: CoordinationArchivePayload | None = None
+    session_trees: tuple[CoordinationSessionTreePayload, ...] = ()
+    activity_episodes: tuple[CoordinationActivityEpisodePayload, ...] = ()
+    proof_refs: tuple[CoordinationProofRefPayload, ...] = ()
+    context_flow_refs: tuple[CoordinationContextFlowRefPayload, ...] = ()
     beads: CoordinationBeadsPayload | None = None
     advisories: tuple[str, ...] = ()
     limits: CoordinationLimitsPayload

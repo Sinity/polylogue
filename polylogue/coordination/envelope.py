@@ -15,19 +15,25 @@ from typing import cast
 
 from polylogue.coordination.payloads import (
     AgentCoordinationPayload,
+    CoordinationActivityEpisodePayload,
     CoordinationArchivePayload,
     CoordinationBeadsGatePayload,
     CoordinationBeadsHookPayload,
     CoordinationBeadsMergeSlotPayload,
     CoordinationBeadsPayload,
+    CoordinationContextFlowRefPayload,
     CoordinationHandoffPayload,
     CoordinationLimitsPayload,
     CoordinationOverlapPayload,
     CoordinationPeerPayload,
+    CoordinationProofRefPayload,
     CoordinationProvenancePayload,
     CoordinationRepoPayload,
     CoordinationResourceEpisodePayload,
     CoordinationSelfPayload,
+    CoordinationSessionTreeEdgePayload,
+    CoordinationSessionTreeNodePayload,
+    CoordinationSessionTreePayload,
     CoordinationView,
     CoordinationWorkItemPayload,
 )
@@ -72,6 +78,12 @@ def build_coordination_envelope(
     peers, resources = _process_payloads(command_runner, root_cwd, peer_limit=peer_limit, resource_limit=resource_limit)
     handoff = _handoff_payloads(repo.root or str(root_cwd))
     archive = _archive_payload(resources)
+    session_trees, activity_episodes, proof_refs, context_flow_refs = _archive_evidence_payloads(
+        repo,
+        self_payload,
+        archive,
+        limit=peer_limit,
+    )
     overlaps = _overlap_payloads(repo, work_item, peers, resources)
     advisories = _advisories(repo, work_item, overlaps, archive)
     provenance = (repo.provenance, work_item.provenance, self_payload.provenance)
@@ -86,6 +98,10 @@ def build_coordination_envelope(
         overlaps=overlaps,
         handoff=handoff,
         archive=archive,
+        session_trees=session_trees,
+        activity_episodes=activity_episodes,
+        proof_refs=proof_refs,
+        context_flow_refs=context_flow_refs,
         beads=beads,
         advisories=advisories,
         limits=CoordinationLimitsPayload(
@@ -126,12 +142,11 @@ def project_coordination_envelope(
                 "resource_episodes": (),
                 "overlaps": (),
                 "handoff": (),
-                "archive": None,
                 "beads": payload.beads,
             }
         )
     if view == "conflicts":
-        return payload.model_copy(update={"view": view, "handoff": (), "archive": None})
+        return payload.model_copy(update={"view": view, "handoff": ()})
     if view == "handoff":
         return payload.model_copy(
             update={
@@ -139,7 +154,6 @@ def project_coordination_envelope(
                 "peers": (),
                 "resource_episodes": (),
                 "overlaps": (),
-                "archive": None,
                 "beads": None,
             }
         )
@@ -579,6 +593,472 @@ def _sqlite_user_version(path: Path) -> int | None:
     except sqlite3.Error:
         return None
     return int(row[0]) if row else None
+
+
+def _archive_evidence_payloads(
+    repo: CoordinationRepoPayload,
+    self_payload: CoordinationSelfPayload,
+    archive: CoordinationArchivePayload | None,
+    *,
+    limit: int,
+) -> tuple[
+    tuple[CoordinationSessionTreePayload, ...],
+    tuple[CoordinationActivityEpisodePayload, ...],
+    tuple[CoordinationProofRefPayload, ...],
+    tuple[CoordinationContextFlowRefPayload, ...],
+]:
+    if archive is None or not archive.index_exists or archive.index_user_version is None:
+        return (), (), (), ()
+    index = Path(archive.index_db)
+    try:
+        conn = sqlite3.connect(f"file:{index}?mode=ro", uri=True, timeout=0.2)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return (), (), (), ()
+    try:
+        if not _archive_tables_present(
+            conn,
+            (
+                "sessions",
+                "session_links",
+                "session_runs",
+                "session_observed_events",
+                "session_context_snapshots",
+            ),
+        ):
+            return (), (), (), ()
+        target_session_id = _resolve_coordination_session(conn, repo, self_payload)
+        session_tree: tuple[CoordinationSessionTreePayload, ...] = ()
+        if target_session_id is not None:
+            tree = _session_tree_payload(conn, target_session_id, limit=limit)
+            session_tree = (tree,) if tree is not None else ()
+        activity = _archive_activity_payloads(conn, target_session_id, repo, limit=limit)
+        proof_refs = _archive_proof_payloads(conn, target_session_id, repo, limit=limit)
+        context_refs = _archive_context_flow_payloads(conn, target_session_id, repo, limit=limit)
+        return session_tree, activity, proof_refs, context_refs
+    except sqlite3.Error:
+        return (), (), (), ()
+    finally:
+        conn.close()
+
+
+def _archive_tables_present(conn: sqlite3.Connection, names: tuple[str, ...]) -> bool:
+    placeholders = ",".join("?" for _ in names)
+    rows = conn.execute(
+        f"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ({placeholders})",
+        names,
+    ).fetchall()
+    return {str(row["name"]) for row in rows} >= set(names)
+
+
+def _resolve_coordination_session(
+    conn: sqlite3.Connection,
+    repo: CoordinationRepoPayload,
+    self_payload: CoordinationSelfPayload,
+) -> str | None:
+    tokens = _candidate_session_tokens(self_payload.session_ref)
+    for token in tokens:
+        row = conn.execute(
+            """
+            SELECT session_id
+            FROM sessions
+            WHERE session_id = ?
+               OR native_id = ?
+            ORDER BY sort_key_ms DESC
+            LIMIT 1
+            """,
+            (token, token),
+        ).fetchone()
+        if row is not None:
+            return str(row["session_id"])
+    if repo.branch:
+        row = conn.execute(
+            """
+            SELECT session_id
+            FROM sessions
+            WHERE git_branch = ?
+            ORDER BY sort_key_ms DESC
+            LIMIT 1
+            """,
+            (repo.branch,),
+        ).fetchone()
+        if row is not None:
+            return str(row["session_id"])
+    root_name = Path(repo.root).name if repo.root else None
+    if root_name:
+        row = conn.execute(
+            """
+            SELECT session_id
+            FROM sessions
+            WHERE title LIKE ?
+            ORDER BY sort_key_ms DESC
+            LIMIT 1
+            """,
+            (f"%{root_name}%",),
+        ).fetchone()
+        if row is not None:
+            return str(row["session_id"])
+    return None
+
+
+def _candidate_session_tokens(session_ref: str | None) -> tuple[str, ...]:
+    env_tokens = (
+        session_ref,
+        os.environ.get("POLYLOGUE_SESSION_REF"),
+        os.environ.get("CODEX_THREAD_ID"),
+        os.environ.get("CODEX_SESSION_ID"),
+        os.environ.get("CLAUDE_SESSION_ID"),
+    )
+    tokens: list[str] = []
+    for raw in env_tokens:
+        if not raw:
+            continue
+        raw = raw.strip()
+        if not raw:
+            continue
+        tokens.append(raw)
+        if ":" not in raw:
+            tokens.extend(
+                [
+                    f"codex-session:{raw}",
+                    f"claude-code-session:{raw}",
+                    f"gemini-cli-session:{raw}",
+                    f"antigravity-session:{raw}",
+                ]
+            )
+    deduped: list[str] = []
+    for token in tokens:
+        if token not in deduped:
+            deduped.append(token)
+    return tuple(deduped)
+
+
+def _session_tree_payload(
+    conn: sqlite3.Connection,
+    target_session_id: str,
+    *,
+    limit: int,
+) -> CoordinationSessionTreePayload | None:
+    target = conn.execute(
+        """
+        SELECT session_id, COALESCE(root_session_id, session_id) AS root_session_id
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (target_session_id,),
+    ).fetchone()
+    if target is None:
+        return None
+    root_id = str(target["root_session_id"])
+    rows = conn.execute(
+        """
+        SELECT session_id, origin, title, parent_session_id, branch_type,
+               CASE WHEN session_id = ? THEN 1 ELSE 0 END AS is_target
+        FROM sessions
+        WHERE session_id = ?
+           OR root_session_id = ?
+           OR parent_session_id = ?
+        ORDER BY
+            CASE WHEN session_id = ? THEN 0 WHEN session_id = ? THEN 1 ELSE 2 END,
+            sort_key_ms DESC
+        LIMIT ?
+        """,
+        (target_session_id, target_session_id, root_id, root_id, root_id, target_session_id, max(1, limit)),
+    ).fetchall()
+    if not rows:
+        return None
+    depth_by_id = _depths_from_rows(rows, root_id)
+    row_ids = tuple(str(row["session_id"]) for row in rows)
+    nodes = tuple(
+        CoordinationSessionTreeNodePayload(
+            session_id=str(row["session_id"]),
+            source_name=_str_or_none(row["origin"]),
+            title=_str_or_none(row["title"]),
+            depth=depth_by_id.get(str(row["session_id"]), 0),
+            is_target=bool(row["is_target"]),
+        )
+        for row in rows
+    )
+    row_id_set = set(row_ids)
+    edges: list[CoordinationSessionTreeEdgePayload] = []
+    for row in rows:
+        parent_id = _str_or_none(row["parent_session_id"])
+        if parent_id and parent_id in row_id_set:
+            edges.append(
+                CoordinationSessionTreeEdgePayload(
+                    child_id=str(row["session_id"]),
+                    parent_id=parent_id,
+                    kind=_str_or_none(row["branch_type"]) or "unknown",
+                    resolved=True,
+                )
+            )
+    if row_ids:
+        placeholders = ",".join("?" for _ in row_ids)
+        unresolved = conn.execute(
+            f"""
+            SELECT src_session_id, dst_native_id, link_type
+            FROM session_links
+            WHERE resolved_dst_session_id IS NULL
+              AND src_session_id IN ({placeholders})
+            ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_native_id, link_type
+            LIMIT ?
+            """,
+            (*row_ids, max(1, limit)),
+        ).fetchall()
+        for row in unresolved:
+            edges.append(
+                CoordinationSessionTreeEdgePayload(
+                    child_id=str(row["src_session_id"]),
+                    parent_native_id=_str_or_none(row["dst_native_id"]),
+                    kind=_str_or_none(row["link_type"]) or "unresolved_native",
+                    resolved=False,
+                )
+            )
+    return CoordinationSessionTreePayload(
+        target_session_id=target_session_id,
+        root_session_id=root_id,
+        nodes=nodes,
+        edges=tuple(edges[: max(1, limit)]),
+        cycle_detected=False,
+        provenance=_prov(
+            "archive-session-topology",
+            path="index.db:sessions,session_links",
+            confidence=0.8,
+            note="bounded topology projection; full graph may contain additional descendants",
+        ),
+    )
+
+
+def _depths_from_rows(rows: Sequence[sqlite3.Row], root_id: str) -> dict[str, int]:
+    parent_by_id = {str(row["session_id"]): _str_or_none(row["parent_session_id"]) for row in rows}
+    depths: dict[str, int] = {}
+    for session_id in parent_by_id:
+        depth = 0
+        current = session_id
+        seen: set[str] = set()
+        while current != root_id and parent_by_id.get(current) and current not in seen:
+            seen.add(current)
+            parent = parent_by_id[current]
+            if parent is None:
+                break
+            depth += 1
+            current = parent
+        depths[session_id] = depth
+    return depths
+
+
+def _archive_activity_payloads(
+    conn: sqlite3.Connection,
+    target_session_id: str | None,
+    repo: CoordinationRepoPayload,
+    *,
+    limit: int,
+) -> tuple[CoordinationActivityEpisodePayload, ...]:
+    rows = _archive_activity_rows(conn, target_session_id, repo, limit=limit)
+    if not rows and target_session_id is not None and repo.branch:
+        rows = _archive_activity_rows(conn, None, repo, limit=limit)
+    rows.sort(key=lambda row: str(row["occurred_at"] or ""), reverse=True)
+    return tuple(_activity_payload_from_row(row) for row in rows[: max(1, limit)])
+
+
+def _archive_activity_rows(
+    conn: sqlite3.Connection,
+    target_session_id: str | None,
+    repo: CoordinationRepoPayload,
+    *,
+    limit: int,
+) -> list[sqlite3.Row]:
+    params: list[object] = []
+    where = _archive_scope_where(target_session_id, repo, params, alias="r")
+    run_rows = conn.execute(
+        f"""
+        SELECT r.run_ref AS ref, r.session_id, r.run_ref, 'run' AS kind, r.status,
+               COALESCE(NULLIF(r.title, ''), r.search_text) AS summary,
+               r.source_updated_at AS occurred_at,
+               r.evidence_refs_json AS refs_json
+        FROM session_runs r
+        {where}
+        ORDER BY COALESCE(r.source_updated_at, r.materialized_at) DESC, r.position
+        LIMIT ?
+        """,
+        (*params, max(1, limit)),
+    ).fetchall()
+    params = []
+    where = _archive_scope_where(target_session_id, repo, params, alias="e")
+    event_rows = conn.execute(
+        f"""
+        SELECT e.event_ref AS ref, e.session_id, e.run_ref, e.kind, NULL AS status,
+               e.summary, e.source_updated_at AS occurred_at,
+               e.evidence_refs_json AS refs_json
+        FROM session_observed_events e
+        {where}
+        ORDER BY COALESCE(e.source_updated_at, e.materialized_at) DESC, e.position
+        LIMIT ?
+        """,
+        (*params, max(1, limit)),
+    ).fetchall()
+    return list(run_rows) + list(event_rows)
+
+
+def _archive_proof_payloads(
+    conn: sqlite3.Connection,
+    target_session_id: str | None,
+    repo: CoordinationRepoPayload,
+    *,
+    limit: int,
+) -> tuple[CoordinationProofRefPayload, ...]:
+    rows = _archive_proof_rows(conn, target_session_id, repo, limit=limit)
+    if not rows and target_session_id is not None and repo.branch:
+        rows = _archive_proof_rows(conn, None, repo, limit=limit)
+    return tuple(_proof_payload_from_row(row) for row in rows[: max(1, limit)])
+
+
+def _archive_proof_rows(
+    conn: sqlite3.Connection,
+    target_session_id: str | None,
+    repo: CoordinationRepoPayload,
+    *,
+    limit: int,
+) -> list[sqlite3.Row]:
+    params: list[object] = []
+    where = _archive_scope_where(target_session_id, repo, params, alias="e")
+    if where:
+        where += " AND "
+    else:
+        where = "WHERE "
+    where += "e.kind IN ('tool_finished', 'command_finished', 'test_finished', 'session_finished')"
+    rows = conn.execute(
+        f"""
+        SELECT e.event_ref, e.session_id, e.kind, e.summary, e.evidence_refs_json, e.payload_json
+        FROM session_observed_events e
+        {where}
+        ORDER BY COALESCE(e.source_updated_at, e.materialized_at) DESC, e.position
+        LIMIT ?
+        """,
+        (*params, max(1, limit)),
+    ).fetchall()
+    return list(rows)
+
+
+def _archive_context_flow_payloads(
+    conn: sqlite3.Connection,
+    target_session_id: str | None,
+    repo: CoordinationRepoPayload,
+    *,
+    limit: int,
+) -> tuple[CoordinationContextFlowRefPayload, ...]:
+    rows = _archive_context_flow_rows(conn, target_session_id, repo, limit=limit)
+    if not rows and target_session_id is not None and repo.branch:
+        rows = _archive_context_flow_rows(conn, None, repo, limit=limit)
+    return tuple(_context_flow_payload_from_row(row, limit=limit) for row in rows[: max(1, limit)])
+
+
+def _archive_context_flow_rows(
+    conn: sqlite3.Connection,
+    target_session_id: str | None,
+    repo: CoordinationRepoPayload,
+    *,
+    limit: int,
+) -> list[sqlite3.Row]:
+    params: list[object] = []
+    where = _archive_scope_where(target_session_id, repo, params, alias="c")
+    rows = conn.execute(
+        f"""
+        SELECT c.snapshot_ref, c.session_id, c.run_ref, c.boundary, c.inheritance_mode,
+               c.segment_refs_json, c.evidence_refs_json
+        FROM session_context_snapshots c
+        {where}
+        ORDER BY COALESCE(c.source_updated_at, c.materialized_at) DESC, c.position
+        LIMIT ?
+        """,
+        (*params, max(1, limit)),
+    ).fetchall()
+    return list(rows)
+
+
+def _context_flow_payload_from_row(row: sqlite3.Row, *, limit: int) -> CoordinationContextFlowRefPayload:
+    return CoordinationContextFlowRefPayload(
+        ref=str(row["snapshot_ref"]),
+        session_id=str(row["session_id"]),
+        run_ref=_str_or_none(row["run_ref"]),
+        boundary=str(row["boundary"]),
+        inheritance_mode=_str_or_none(row["inheritance_mode"]),
+        segment_refs=_json_str_tuple(row["segment_refs_json"], limit=limit),
+        evidence_refs=_json_str_tuple(row["evidence_refs_json"], limit=limit),
+        provenance=_prov(
+            "archive-context-flow",
+            path="index.db:session_context_snapshots",
+            confidence=0.7,
+            note="exact session first; branch fallback when exact session has no context refs",
+        ),
+    )
+
+
+def _archive_scope_where(
+    target_session_id: str | None,
+    repo: CoordinationRepoPayload,
+    params: list[object],
+    *,
+    alias: str,
+) -> str:
+    if target_session_id is not None:
+        params.append(target_session_id)
+        return f"WHERE {alias}.session_id = ?"
+    if repo.branch:
+        params.append(repo.branch)
+        return f"WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = {alias}.session_id AND s.git_branch = ?)"
+    return ""
+
+
+def _activity_payload_from_row(row: sqlite3.Row) -> CoordinationActivityEpisodePayload:
+    return CoordinationActivityEpisodePayload(
+        ref=str(row["ref"]),
+        session_id=str(row["session_id"]),
+        run_ref=_str_or_none(row["run_ref"]),
+        kind=str(row["kind"]),
+        status=_str_or_none(row["status"]),
+        summary=_str_or_none(row["summary"]),
+        occurred_at=_str_or_none(row["occurred_at"]),
+        refs=_json_str_tuple(row["refs_json"], limit=10),
+        provenance=_prov(
+            "archive-run-projection", path="index.db:session_runs,session_observed_events", confidence=0.75
+        ),
+    )
+
+
+def _proof_payload_from_row(row: sqlite3.Row) -> CoordinationProofRefPayload:
+    payload = _json_dict(row["payload_json"])
+    status = _str_or_none(payload.get("status") or payload.get("outcome") or payload.get("exit_code"))
+    return CoordinationProofRefPayload(
+        ref=str(row["event_ref"]),
+        session_id=str(row["session_id"]),
+        kind=str(row["kind"]),
+        status=status,
+        summary=_str_or_none(row["summary"]),
+        evidence_refs=_json_str_tuple(row["evidence_refs_json"], limit=10),
+        provenance=_prov("archive-proof-outcome", path="index.db:session_observed_events", confidence=0.7),
+    )
+
+
+def _json_str_tuple(raw: object, *, limit: int) -> tuple[str, ...]:
+    value = _json_value(raw)
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item) for item in value[: max(0, limit)] if item is not None)
+
+
+def _json_dict(raw: object) -> dict[str, object]:
+    value = _json_value(raw)
+    return cast(dict[str, object], value) if isinstance(value, dict) else {}
+
+
+def _json_value(raw: object) -> object:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
 
 
 def _overlap_payloads(

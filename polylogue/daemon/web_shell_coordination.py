@@ -75,6 +75,26 @@ function renderInspectorMission(el) {
     + renderMissionRow('Index schema', archive.index_user_version)
     + renderMissionRow('Archive root', archive.archive_root)
     + '</div>';
+  html += '<div class="mission-card"><h4>Archive Session Tree</h4>' + renderMissionList(payload.session_trees, function(tree) {
+    return '<div class="mission-item">target=' + esc(tree.target_session_id || 'n/a')
+      + '<br><span class="muted">root=' + esc(tree.root_session_id || 'n/a')
+      + ' · nodes=' + esc((tree.nodes || []).length) + ' · edges=' + esc((tree.edges || []).length) + '</span></div>';
+  }, 'No archive session tree in this projection.') + '</div>';
+  html += '<div class="mission-card"><h4>Archive Activity</h4>' + renderMissionList(payload.activity_episodes, function(item) {
+    return '<div class="mission-item">' + esc(item.kind || 'activity') + ' · ' + esc(item.ref || 'n/a')
+      + '<br><span class="muted">' + esc(item.summary || item.session_id || '') + '</span></div>';
+  }, 'No archive activity refs in this projection.') + '</div>';
+  html += '<div class="mission-card"><h4>Proof / Context</h4>'
+    + renderMissionList(payload.proof_refs, function(proof) {
+      return '<div class="mission-item">' + esc(proof.kind || 'proof') + ' · ' + esc(proof.status || 'n/a')
+        + '<br><span class="muted">' + esc(proof.summary || proof.ref || '') + '</span></div>';
+    }, 'No proof refs in this projection.')
+    + renderMissionList(payload.context_flow_refs, function(ref) {
+      return '<div class="mission-item">' + esc(ref.boundary || 'context') + ' · ' + esc(ref.ref || 'n/a')
+        + '<br><span class="muted">segments=' + esc((ref.segment_refs || []).length)
+        + ' evidence=' + esc((ref.evidence_refs || []).length) + '</span></div>';
+    }, 'No context-flow refs in this projection.')
+    + '</div>';
   html += '<div class="mission-card"><h4>Active Agents</h4>' + renderMissionList(payload.peers, function(peer) {
     return '<div class="mission-item">' + esc(peer.kind || 'agent') + ' pid=' + esc(peer.pid) + '<br><span class="muted">' + esc(peer.cwd || 'n/a') + '</span></div>';
   }, 'No peer agents detected.') + '</div>';
