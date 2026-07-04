@@ -42,6 +42,16 @@ def render_coordination_text(payload: AgentCoordinationPayload) -> str:
             f"{payload.archive.archive_root} index_exists={payload.archive.index_exists} "
             f"index_schema={payload.archive.index_user_version}"
         )
+    if payload.beads:
+        hook_state = (
+            "unknown"
+            if payload.beads.hooks_all_installed is None
+            else ("ok" if payload.beads.hooks_all_installed else "incomplete")
+        )
+        lines.append(
+            f"  beads: hooks={hook_state} gates={payload.beads.open_gate_count} "
+            f"merge_slot={payload.beads.merge_slot.id if payload.beads.merge_slot else 'n/a'}"
+        )
     if payload.advisories:
         lines.append("  advisories:")
         for advisory in payload.advisories:

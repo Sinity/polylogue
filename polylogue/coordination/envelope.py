@@ -16,6 +16,10 @@ from typing import cast
 from polylogue.coordination.payloads import (
     AgentCoordinationPayload,
     CoordinationArchivePayload,
+    CoordinationBeadsGatePayload,
+    CoordinationBeadsHookPayload,
+    CoordinationBeadsMergeSlotPayload,
+    CoordinationBeadsPayload,
     CoordinationHandoffPayload,
     CoordinationLimitsPayload,
     CoordinationOverlapPayload,
@@ -64,6 +68,7 @@ def build_coordination_envelope(
     repo = _repo_payload(root_cwd, command_runner)
     self_payload = _self_payload(root_cwd, repo)
     work_item = _work_item_payload(root_cwd, repo, command_runner)
+    beads = _beads_payload(root_cwd, repo, command_runner)
     peers, resources = _process_payloads(command_runner, root_cwd, peer_limit=peer_limit, resource_limit=resource_limit)
     handoff = _handoff_payloads(repo.root or str(root_cwd))
     archive = _archive_payload(resources)
@@ -81,6 +86,7 @@ def build_coordination_envelope(
         overlaps=overlaps,
         handoff=handoff,
         archive=archive,
+        beads=beads,
         advisories=advisories,
         limits=CoordinationLimitsPayload(
             peer_limit=peer_limit,
@@ -109,6 +115,7 @@ def project_coordination_envelope(
                 "resource_episodes": (),
                 "overlaps": (),
                 "handoff": (),
+                "beads": None,
             }
         )
     if view == "work-item":
@@ -120,6 +127,7 @@ def project_coordination_envelope(
                 "overlaps": (),
                 "handoff": (),
                 "archive": None,
+                "beads": payload.beads,
             }
         )
     if view == "conflicts":
@@ -132,6 +140,7 @@ def project_coordination_envelope(
                 "resource_episodes": (),
                 "overlaps": (),
                 "archive": None,
+                "beads": None,
             }
         )
     return payload
@@ -292,6 +301,120 @@ def _json_list(raw: str) -> list[dict[str, object]]:
     return [cast(dict[str, object], item) for item in value if isinstance(item, dict)]
 
 
+def _json_document(raw: str) -> dict[str, object] | None:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return cast(dict[str, object], value) if isinstance(value, dict) else None
+
+
+def _json_list_or_empty(raw: str) -> list[dict[str, object]]:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [cast(dict[str, object], item) for item in value if isinstance(item, dict)]
+    return []
+
+
+def _beads_payload(cwd: Path, repo: CoordinationRepoPayload, runner: CommandRunner) -> CoordinationBeadsPayload | None:
+    beads_root = Path(repo.root or cwd)
+    beads_dir = beads_root / ".beads"
+    if not beads_dir.exists():
+        return None
+    hooks_result = runner(("bd", "hooks", "list", "--json"), beads_root)
+    hooks = _beads_hooks(hooks_result)
+    gates_result = runner(("bd", "gate", "list", "--json"), beads_root)
+    gates = _beads_gates(gates_result)
+    merge_result = runner(("bd", "merge-slot", "check", "--json"), beads_root)
+    merge_slot = _beads_merge_slot(merge_result)
+    hooks_all_installed = all(hook.installed for hook in hooks) if hooks else None
+    hooks_outdated_count = sum(1 for hook in hooks if hook.outdated) if hooks else None
+    return CoordinationBeadsPayload(
+        root=str(beads_dir),
+        hooks=hooks,
+        hooks_all_installed=hooks_all_installed,
+        hooks_outdated_count=hooks_outdated_count,
+        gates=gates,
+        open_gate_count=len(gates),
+        merge_slot=merge_slot,
+        provenance=_prov(
+            "beads",
+            command=hooks_result.args,
+            path=str(beads_dir),
+            confidence=0.8 if hooks_result.returncode == 0 else 0.45,
+            note=None
+            if hooks_result.returncode == 0
+            else (hooks_result.stderr.strip()[:200] or "bd hooks list failed"),
+        ),
+    )
+
+
+def _beads_hooks(result: CommandResult) -> tuple[CoordinationBeadsHookPayload, ...]:
+    if result.returncode != 0:
+        return ()
+    document = _json_document(result.stdout)
+    rows = document.get("hooks") if document else None
+    if not isinstance(rows, list):
+        return ()
+    hooks: list[CoordinationBeadsHookPayload] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        hooks.append(
+            CoordinationBeadsHookPayload(
+                name=str(row.get("Name") or row.get("name") or "unknown"),
+                installed=bool(row.get("Installed") if "Installed" in row else row.get("installed")),
+                version=_str_or_none(row.get("Version") or row.get("version")),
+                is_shim=_bool_or_none(row.get("IsShim") if "IsShim" in row else row.get("is_shim")),
+                outdated=_bool_or_none(row.get("Outdated") if "Outdated" in row else row.get("outdated")),
+            )
+        )
+    return tuple(hooks)
+
+
+def _beads_gates(result: CommandResult) -> tuple[CoordinationBeadsGatePayload, ...]:
+    if result.returncode != 0:
+        return ()
+    rows = _json_list_or_empty(result.stdout)
+    gates: list[CoordinationBeadsGatePayload] = []
+    for row in rows[:20]:
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        metadata = cast(dict[str, object], metadata)
+        gates.append(
+            CoordinationBeadsGatePayload(
+                id=_str_or_none(row.get("id")),
+                title=_str_or_none(row.get("title")),
+                status=_str_or_none(row.get("status")),
+                gate_type=_str_or_none(row.get("gate_type") or metadata.get("gate_type") or metadata.get("type")),
+                await_id=_str_or_none(row.get("await_id") or metadata.get("await_id")),
+            )
+        )
+    return tuple(gates)
+
+
+def _beads_merge_slot(result: CommandResult) -> CoordinationBeadsMergeSlotPayload | None:
+    if result.returncode != 0 and not result.stdout.strip():
+        return None
+    document = _json_document(result.stdout)
+    if document is None:
+        return CoordinationBeadsMergeSlotPayload(error=(result.stderr.strip() or result.stdout.strip())[:200])
+    waiters_raw = document.get("waiters") or document.get("Waiters") or ()
+    waiters = tuple(str(waiter) for waiter in waiters_raw) if isinstance(waiters_raw, (list, tuple)) else ()
+    return CoordinationBeadsMergeSlotPayload(
+        id=_str_or_none(document.get("id")),
+        available=_bool_or_none(document.get("available")),
+        status=_str_or_none(document.get("status")),
+        holder=_str_or_none(document.get("holder")),
+        waiters=waiters,
+        error=_str_or_none(document.get("error")),
+    )
+
+
 def _str_or_none(value: object) -> str | None:
     return str(value) if value is not None else None
 
@@ -302,6 +425,10 @@ def _int_or_none(value: object) -> int | None:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     return None
+
+
+def _bool_or_none(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _process_payloads(

@@ -97,6 +97,42 @@ class CoordinationArchivePayload(SurfacePayloadModel):
     provenance: CoordinationProvenancePayload
 
 
+class CoordinationBeadsHookPayload(SurfacePayloadModel):
+    name: str
+    installed: bool
+    version: str | None = None
+    is_shim: bool | None = None
+    outdated: bool | None = None
+
+
+class CoordinationBeadsGatePayload(SurfacePayloadModel):
+    id: str | None = None
+    title: str | None = None
+    status: str | None = None
+    gate_type: str | None = None
+    await_id: str | None = None
+
+
+class CoordinationBeadsMergeSlotPayload(SurfacePayloadModel):
+    id: str | None = None
+    available: bool | None = None
+    status: str | None = None
+    holder: str | None = None
+    waiters: tuple[str, ...] = ()
+    error: str | None = None
+
+
+class CoordinationBeadsPayload(SurfacePayloadModel):
+    root: str
+    hooks: tuple[CoordinationBeadsHookPayload, ...] = ()
+    hooks_all_installed: bool | None = None
+    hooks_outdated_count: int | None = None
+    gates: tuple[CoordinationBeadsGatePayload, ...] = ()
+    open_gate_count: int | None = None
+    merge_slot: CoordinationBeadsMergeSlotPayload | None = None
+    provenance: CoordinationProvenancePayload
+
+
 class CoordinationLimitsPayload(SurfacePayloadModel):
     peer_limit: int
     resource_limit: int
@@ -115,6 +151,7 @@ class AgentCoordinationPayload(SurfacePayloadModel):
     overlaps: tuple[CoordinationOverlapPayload, ...] = ()
     handoff: tuple[CoordinationHandoffPayload, ...] = ()
     archive: CoordinationArchivePayload | None = None
+    beads: CoordinationBeadsPayload | None = None
     advisories: tuple[str, ...] = ()
     limits: CoordinationLimitsPayload
     provenance: tuple[CoordinationProvenancePayload, ...] = ()
