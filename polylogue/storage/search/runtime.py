@@ -8,7 +8,6 @@ from functools import lru_cache
 from pathlib import Path
 
 from polylogue.errors import DatabaseError
-from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 from polylogue.storage.search.cache import SearchCacheKey
 from polylogue.storage.search.models import SearchHit, SearchResult
@@ -16,8 +15,7 @@ from polylogue.storage.search.query_builders import build_ranked_session_search_
 from polylogue.storage.search.query_support import normalize_fts5_query, sort_key_to_iso
 from polylogue.storage.sqlite.connection import open_read_connection
 
-_MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
-_MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
+_MESSAGE_SEARCH_REPAIR_HINT = "Run `polylogued run`."
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:

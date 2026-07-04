@@ -217,12 +217,15 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
     assert result.success is True
     assert result.metrics == {
         "raw_materialization_candidate_count": 1.0,
+        "raw_materialization_selected_count": 1.0,
         "raw_materialization_missing_blob_count": 1.0,
         "raw_materialization_already_parsed_count": 0.0,
         "raw_materialization_total_blob_bytes": float(replayable_size),
         "raw_materialization_max_blob_bytes": float(replayable_size),
+        "raw_materialization_selected_total_blob_bytes": float(replayable_size),
+        "raw_materialization_selected_max_blob_bytes": float(replayable_size),
     }
-    assert "queued raw payload bytes total=" in result.detail
+    assert "selected raw payload bytes total=" in result.detail
     assert "largest=" in result.detail
     assert "1 raw rows blocked by missing blobs" in result.detail
 
@@ -391,6 +394,111 @@ def test_raw_materialization_replay_uses_batch_parse_call(
     assert calls == [[second_raw_id, first_raw_id]]
 
 
+def test_raw_materialization_dry_run_reports_limited_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
+            ["raw-slow", "raw-2", "raw-3", "raw-4"],
+            0,
+            4,
+            {
+                "raw-slow": 512,
+                "raw-2": 1024,
+                "raw-3": 2048,
+                "raw-4": 4096,
+            },
+        ),
+    )
+
+    result = repair_mod.repair_raw_materialization(
+        config,
+        dry_run=True,
+        raw_artifact_limit=2,
+    )
+
+    assert result.success is True
+    assert result.repaired_count == 2
+    assert "Would: replay 2 of 4 raw rows into index.db" in result.detail
+    assert result.metrics["raw_materialization_candidate_count"] == 4.0
+    assert result.metrics["raw_materialization_selected_count"] == 2.0
+    assert result.metrics["raw_materialization_limit"] == 2.0
+    assert result.metrics["raw_materialization_total_blob_bytes"] == 7680.0
+    assert result.metrics["raw_materialization_selected_total_blob_bytes"] == 1536.0
+    assert result.metrics["raw_materialization_selected_max_blob_bytes"] == 1024.0
+
+
+def test_raw_materialization_execute_replays_only_limited_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    calls: dict[str, object] = {}
+
+    class FakeBackend:
+        def __init__(self, *, db_path: Path) -> None:
+            calls["db_path"] = db_path
+
+    class FakeRepository:
+        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
+            calls["archive_root"] = archive_root
+
+        async def close(self) -> None:
+            calls["closed"] = True
+
+    class FakeParseResult:
+        processed_ids = {"session-2", "session-3"}
+        parse_failures = 0
+
+    class FakeParsingService:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def parse_from_raw(self, **kwargs: object) -> FakeParseResult:
+            calls["parse_kwargs"] = kwargs
+            return FakeParseResult()
+
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
+            ["raw-slow", "raw-2", "raw-3", "raw-4"],
+            0,
+            4,
+            {
+                "raw-slow": 512,
+                "raw-2": 1024,
+                "raw-3": 2048,
+                "raw-4": 4096,
+            },
+        ),
+    )
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
+    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
+    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+
+    result = repair_mod.repair_raw_materialization(
+        config,
+        raw_artifact_limit=2,
+    )
+
+    assert result.success is True
+    assert result.repaired_count == 2
+    assert calls["parse_kwargs"] == {
+        "raw_ids": ["raw-slow", "raw-2"],
+        "progress_callback": None,
+        "force_write": False,
+        "repair_message_fts": False,
+    }
+    assert result.metrics["raw_materialization_candidate_count"] == 4.0
+    assert result.metrics["raw_materialization_selected_count"] == 2.0
+    assert "Replayed 2 of 4 raw rows" in result.detail
+
+
 def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
@@ -436,7 +544,7 @@ def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Pa
 
     assert broad.repaired_count == 2
     assert scoped.repaired_count == 1
-    assert f"replay {1:,} acquired-but-unparsed raw rows" in scoped.detail
+    assert f"replay {1:,} of {1:,} acquired-but-unparsed raw rows" in scoped.detail
 
 
 def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_path: Path) -> None:

@@ -84,8 +84,8 @@ class MaintenanceScopePayload(SurfacePayloadModel):
     :class:`polylogue.maintenance.scope.MaintenanceScopeFilter` —
     a dict of named scope dimensions (``session_ids``,
     ``provider``, ``source_family``, ``source_root``,
-    ``raw_artifact_id``, ``time_range``, ``failure_kind``,
-    ``parser_version``). It is typed as ``dict[str, Any]`` at the
+    ``time_range``, ``failure_kind``, ``parser_version``). It is typed
+    as ``dict[str, Any]`` at the
     Pydantic boundary so the recursive ``JSONValue`` alias does not
     need a manual rebuild; the typed contract is pinned by
     :class:`MaintenanceScopeFilter` itself.

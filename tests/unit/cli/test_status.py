@@ -691,7 +691,7 @@ class TestNoArchiveStatus:
         assert readiness["state"] == "stale"
         assert readiness["counts"] == {"text_block_count": 10, "messages_fts_count": 8}
         assert readiness["caveats"] == ["messages_fts_row_mismatch"]
-        assert readiness["repair_hint"] == "polylogue ops maintenance run --target dangling_fts"
+        assert readiness["repair_hint"] == "polylogued run"
         assert profiles["scope"] == "insights"
         assert profiles["state"] == "stale"
         assert profiles["repair_hint"] == "polylogue ops maintenance run --target session_insights"
@@ -808,7 +808,7 @@ class TestNoArchiveStatus:
         assert components["archive_sessions"]["state"] == "ready"
         assert components["search"]["state"] == "stale"
         assert components["search"]["caveats"] == ["messages_fts_row_mismatch"]
-        assert components["search"]["repair_hint"] == "polylogue ops maintenance run --target dangling_fts"
+        assert components["search"]["repair_hint"] == "polylogued run"
         assert components["session_profiles"]["state"] == "degraded"
         assert components["session_profiles"]["counts"] == {
             "profile_row_count": 1,

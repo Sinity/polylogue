@@ -8160,11 +8160,9 @@ def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
     "Search index" response instead of surfacing a raw ``no such table`` /
     empty-result 200.
     """
-    from polylogue.maintenance.targets import build_maintenance_target_catalog
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 
-    repair_hint = build_maintenance_target_catalog().repair_hint(("dangling_fts",), include_run_all=True)
-    check_fts_readiness(message_fts_search_readiness_sync(conn), repair_hint)
+    check_fts_readiness(message_fts_search_readiness_sync(conn), "Run `polylogued run`.")
 
 
 def _epoch_ms_from_iso(value: object) -> int | None:

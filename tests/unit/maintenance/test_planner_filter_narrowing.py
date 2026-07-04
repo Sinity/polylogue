@@ -127,7 +127,6 @@ class TestPlannerLeavesFilterPassthroughDimensionsIntact:
         [
             MaintenanceScopeFilter(provider="claude"),
             MaintenanceScopeFilter(source_family="claude-code-session"),
-            MaintenanceScopeFilter(raw_artifact_id="raw-1"),
             MaintenanceScopeFilter(failure_kind="ValidationError"),
             MaintenanceScopeFilter(parser_version="v3"),
         ],

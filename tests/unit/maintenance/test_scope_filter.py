@@ -29,7 +29,6 @@ from pydantic import ValidationError
 
 from polylogue.cli.commands.maintenance import maintenance_group
 from polylogue.config import Config
-from polylogue.maintenance import replay as replay_mod
 from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import (
     BackfillKind,
@@ -38,9 +37,7 @@ from polylogue.maintenance.planner import (
     MaintenanceScope,
     preview_backfill,
 )
-from polylogue.maintenance.replay import execute_replay
 from polylogue.maintenance.scope import MaintenanceScopeFilter
-from polylogue.storage import repair as repair_mod
 
 
 class TestMaintenanceScopeFilterShape:
@@ -99,7 +96,6 @@ class TestMaintenanceScopeFilterRoundTrip:
             {"provider": "claude-code"},
             {"source_family": "claude-code-session"},
             {"source_root": Path("/data/claude")},
-            {"raw_artifact_id": "raw-abc"},
             {"time_range": (datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 2, 1, tzinfo=timezone.utc))},
             {"failure_kind": "ValidationError"},
             {"parser_version": "v3"},
@@ -107,7 +103,6 @@ class TestMaintenanceScopeFilterRoundTrip:
                 "session_ids": ("c1",),
                 "provider": "claude-code",
                 "source_family": "claude-code-session",
-                "raw_artifact_id": "raw-1",
             },
         ],
     )
@@ -180,65 +175,6 @@ class TestPlannerHonorsFilter:
         assert narrow.affected_rows == 1
         assert narrow.scope is not None
         assert narrow.scope.filter.session_ids == ("only-one",)
-
-    def test_execute_replay_passes_raw_artifact_id_to_raw_materialization(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        config = _make_config(tmp_path)
-        captured: dict[str, object] = {}
-
-        def fake_repair_raw_materialization(
-            _config: Config,
-            dry_run: bool = False,
-            *,
-            raw_artifact_id: str | None = None,
-            provider: str | None = None,
-            source_family: str | None = None,
-            source_root: Path | None = None,
-            progress_callback: object | None = None,
-        ) -> repair_mod.RepairResult:
-            captured["dry_run"] = dry_run
-            captured["raw_artifact_id"] = raw_artifact_id
-            captured["provider"] = provider
-            captured["source_family"] = source_family
-            captured["source_root"] = source_root
-            captured["progress_callback"] = callable(progress_callback)
-            return repair_mod._repair_result(
-                "raw_materialization",
-                repaired_count=1,
-                success=True,
-                detail="scoped replay",
-            )
-
-        monkeypatch.setattr("polylogue.maintenance.replay.repair_raw_materialization", fake_repair_raw_materialization)
-        monkeypatch.setitem(replay_mod._REPLAY_DISPATCH, "raw_materialization", fake_repair_raw_materialization)
-
-        operation = execute_replay(
-            config,
-            targets=("raw_materialization",),
-            persist_state=False,
-            scope_filter=MaintenanceScopeFilter(
-                provider="claude-code",
-                source_family="claude-code-session",
-                source_root=tmp_path / "sources",
-                raw_artifact_id="raw-1",
-            ),
-        )
-
-        assert operation.status is BackfillStatus.COMPLETED
-        assert captured == {
-            "dry_run": False,
-            "provider": "claude-code",
-            "source_family": "claude-code-session",
-            "source_root": tmp_path / "sources",
-            "raw_artifact_id": "raw-1",
-            "progress_callback": True,
-        }
-        assert operation.scope is not None
-        assert operation.scope.filter.raw_artifact_id == "raw-1"
-        assert operation.scope.filter.source_family == "claude-code-session"
 
 
 class TestCrossSurfaceFilterParity:

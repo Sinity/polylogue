@@ -123,12 +123,12 @@ def test_resolve_maintenance_failures_removes_matching_target_and_kind(tmp_path:
     route_failure_sample(
         FailureSample(
             kind="UnsupportedReplayTargetError",
-            locator="target:raw_materialization",
+            locator="target:wal_checkpoint",
             message="not wired",
         ),
         operation_id="op-other",
         archive_root=root,
-        target="raw_materialization",
+        target="wal_checkpoint",
     )
 
     removed = resolve_maintenance_failures(
@@ -141,7 +141,7 @@ def test_resolve_maintenance_failures_removes_matching_target_and_kind(tmp_path:
     remaining = read_maintenance_failures(root)
     assert [(r.target, r.kind) for r in remaining] == [
         ("message_embeddings", "RepairReportedFailure"),
-        ("raw_materialization", "UnsupportedReplayTargetError"),
+        ("wal_checkpoint", "UnsupportedReplayTargetError"),
     ]
 
 
@@ -149,7 +149,7 @@ def test_route_failure_sample_redacts_absolute_paths_in_message(tmp_path: Path) 
     config = _make_config(tmp_path)
     sample = FailureSample(
         kind="OSError",
-        locator="target:dangling_fts",
+        locator="target:wal_checkpoint",
         message="Failed to read /home/operator/data/secret.json: permission denied",
     )
     record = route_failure_sample(

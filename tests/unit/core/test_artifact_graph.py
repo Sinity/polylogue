@@ -74,7 +74,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["message_fts"].layer is ArtifactLayer.INDEX
     assert nodes["message_source_rows"].depends_on == ("archive_session_rows",)
     assert nodes["message_fts"].depends_on == ("message_source_rows",)
-    assert nodes["message_fts"].repair_targets == ("dangling_fts",)
+    assert nodes["message_fts"].repair_targets == ()
     assert nodes["embedding_metadata_rows"].depends_on == ("archive_session_rows",)
     assert nodes["embedding_status_rows"].depends_on == ("archive_session_rows",)
     assert nodes["message_embedding_vectors"].depends_on == ("archive_session_rows",)
@@ -117,10 +117,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "session_insight_readiness",
         "retrieval_band_readiness",
     )
-    assert nodes["archive_readiness"].repair_targets == (
-        "dangling_fts",
-        "session_insights",
-    )
+    assert nodes["archive_readiness"].repair_targets == ("session_insights",)
     assert operations["acquire-raw-sessions"].produces == ("raw_validation_state", "artifact_observation_rows")
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
     assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
@@ -173,9 +170,10 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "session_insight_readiness",
         "archive_readiness",
     }
-    assert tuple(
-        target.name for target in graph.maintenance_targets_for_operation_names(("index-message-fts", "missing"))
-    ) == ("dangling_fts",)
+    assert (
+        tuple(target.name for target in graph.maintenance_targets_for_operation_names(("index-message-fts", "missing")))
+        == ()
+    )
 
 
 def test_artifact_graph_operations_come_from_runtime_operation_catalog() -> None:

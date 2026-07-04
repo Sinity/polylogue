@@ -37,7 +37,6 @@ _EXPECTED_DIMENSIONS = frozenset(
         "provider",
         "source_family",
         "source_root",
-        "raw_artifact_id",
         "time_range",
         "failure_kind",
         "parser_version",
@@ -61,7 +60,6 @@ class TestScopeFilterDictShape:
             provider="claude",
             source_family="claude-code-session",
             source_root=Path("/data/claude"),
-            raw_artifact_id="raw-1",
             time_range=(
                 datetime(2026, 1, 1, tzinfo=timezone.utc),
                 datetime(2026, 2, 1, tzinfo=timezone.utc),
@@ -105,7 +103,6 @@ class TestScopeFilterRoundTrip:
             {"provider": "claude"},
             {"source_family": "claude-code-session"},
             {"source_root": Path("/data/claude")},
-            {"raw_artifact_id": "raw-abc"},
             {
                 "time_range": (
                     datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -119,7 +116,6 @@ class TestScopeFilterRoundTrip:
                 "provider": "claude",
                 "source_family": "claude-code-session",
                 "source_root": Path("/data"),
-                "raw_artifact_id": "raw-1",
                 "time_range": (
                     datetime(2026, 1, 1, tzinfo=timezone.utc),
                     datetime(2026, 2, 1, tzinfo=timezone.utc),
@@ -195,8 +191,6 @@ def _scope_filter_kwargs(draw: Any) -> dict[str, Any]:
         kwargs["source_family"] = draw(_ASCII_TEXT)
     if draw(st.booleans()):
         kwargs["source_root"] = Path(draw(_ASCII_TEXT))
-    if draw(st.booleans()):
-        kwargs["raw_artifact_id"] = draw(_ASCII_TEXT)
     if draw(st.booleans()):
         # Two distinct tz-aware datetimes so the (since, until) ordering
         # is meaningful but we never have to worry about naive timestamps.

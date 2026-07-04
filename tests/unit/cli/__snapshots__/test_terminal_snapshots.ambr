@@ -10,12 +10,11 @@
                                     maintenance repairs
     --cleanup                       Run destructive archive cleanup for orphaned
                                     or empty persisted data
-    --target [session_insights|dangling_fts|message_type_backfill|raw_materializat
-  ion|message_embeddings|wal_checkpoint|orphaned_messages|empty_sessions|orphaned_
-  attachments|orphaned_blobs|superseded_raw_snapshots]
+    --target [session_insights|message_type_backfill|message_embeddings|wal_checkp
+  oint|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|supers
+  eded_raw_snapshots]
                                     Limit maintenance to named targets such as
-                                    session_insights, dangling_fts,
-                                    message_type_backfill, raw_materialization,
+                                    session_insights, message_type_backfill,
                                     message_embeddings, wal_checkpoint,
                                     orphaned_messages, empty_sessions,
                                     orphaned_attachments, orphaned_blobs, or
@@ -133,9 +132,7 @@
     --exclude-text TEXT             Exclude FTS term
     --retrieval-lane LANE           Query lane: dialogue FTS, action text, or
                                     hybrid
-    --lexical                       Force FTS-only search (overrides hybrid
-                                    auto-elevation when embeddings are
-                                    populated).
+    --lexical                       Force FTS-only search.
     --semantic                      Treat the query as a similarity prompt
                                     (vector-only; requires embeddings).
     --origin TEXT                   Include origins (comma = OR)
@@ -328,11 +325,7 @@
     --retrieval-lane LANE           Query lane: dialogue FTS,
   action text, or
                                     hybrid
-    --lexical                       Force FTS-only search (ove
-  rrides hybrid
-                                    auto-elevation when embedd
-  ings are
-                                    populated).
+    --lexical                       Force FTS-only search.
     --semantic                      Treat the query as a simil
   arity prompt
                                     (vector-only; requires emb
@@ -556,9 +549,7 @@
     --exclude-text TEXT             Exclude FTS term
     --retrieval-lane LANE           Query lane: dialogue FTS, action text, or
                                     hybrid
-    --lexical                       Force FTS-only search (overrides hybrid
-                                    auto-elevation when embeddings are
-                                    populated).
+    --lexical                       Force FTS-only search.
     --semantic                      Treat the query as a similarity prompt
                                     (vector-only; requires embeddings).
     --origin TEXT                   Include origins (comma = OR)

@@ -14,7 +14,6 @@ The filter dimensions match the ones #996 AC #1 names explicitly:
   ``"claude-code-session"``);
 * ``source_root`` — restrict to artifacts acquired under one runtime
   root (e.g. ``~/.claude/projects``);
-* ``raw_artifact_id`` — restrict to one raw-session id;
 * ``time_range`` — inclusive ``(since, until)`` ISO-8601 window;
 * ``failure_kind`` — restrict to attempts that failed with one kind;
 * ``parser_version`` — restrict to one parser/materializer version.
@@ -22,10 +21,8 @@ The filter dimensions match the ones #996 AC #1 names explicitly:
 The filter is intentionally *target-owned* at the repair-fn boundary:
 each repair fn declares which dimensions it knows how to honor and must
 not advertise narrower operator behavior than it actually applies. For
-example, raw materialization honors ``provider``, ``source_family``,
-``source_root``, and ``raw_artifact_id`` because broadening those would
-replay unrelated source rows. Other dimensions remain advisory until a
-target pins their contract.
+example, session-insight repair honors ``session_ids``. Other dimensions
+remain advisory until a target pins their contract.
 
 The filter round-trips through :meth:`MaintenanceScopeFilter.to_dict`
 / :meth:`MaintenanceScopeFilter.from_dict` so the CLI ``--output-format
@@ -62,7 +59,6 @@ class MaintenanceScopeFilter(SurfacePayloadModel):
     provider: str | None = None
     source_family: str | None = None
     source_root: Path | None = None
-    raw_artifact_id: str | None = None
     time_range: tuple[datetime, datetime] | None = None
     failure_kind: str | None = None
     parser_version: str | None = None
@@ -104,7 +100,6 @@ class MaintenanceScopeFilter(SurfacePayloadModel):
             and self.provider is None
             and self.source_family is None
             and self.source_root is None
-            and self.raw_artifact_id is None
             and self.time_range is None
             and self.failure_kind is None
             and self.parser_version is None

@@ -270,14 +270,14 @@ def test_archive_surface_maps_search_mismatch_to_stale_component() -> None:
             "evidence": {"text_block_count": 10, "messages_fts_count": 8},
         },
         scope="lexical",
-        repair_hint="polylogue ops maintenance run --target dangling_fts",
+        repair_hint="polylogued run",
     )
 
     assert component.state is CapabilityReadinessState.STALE
     assert component.scope == "lexical"
     assert component.counts == {"text_block_count": 10, "messages_fts_count": 8}
     assert component.caveats == ("messages_fts_row_mismatch",)
-    assert component.repair_hint == "polylogue ops maintenance run --target dangling_fts"
+    assert component.repair_hint == "polylogued run"
 
 
 def test_assertion_substrate_maps_missing_ready_and_error_states() -> None:

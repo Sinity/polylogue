@@ -45,7 +45,7 @@ _ARCHIVE_COMPONENT_SCOPES: dict[str, str] = {
 }
 
 _ARCHIVE_COMPONENT_REPAIR_HINTS: dict[str, str] = {
-    "search": "polylogue ops maintenance run --target dangling_fts",
+    "search": "polylogued run",
     "session_profiles": "polylogue ops maintenance run --target session_insights",
     "timeline_work_events": "polylogue ops maintenance run --target session_insights",
     "timeline_phases": "polylogue ops maintenance run --target session_insights",
@@ -264,6 +264,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "list_summaries": ("archive_direct", "index", "reads session summaries from index.db without hydration"),
     "list_tags": ("archive_routed", "user", "reads user tag counts through user.db"),
     "list_tool_usage_insights": ("archive_routed", "index", "reads tool usage insights from index.db"),
+    "list_usage_timeline_insights": ("archive_routed", "index", "reads usage timeline insights from index.db"),
     "list_views": ("archive_routed", "user", "reads saved views through user.db"),
     "list_thread_insights": ("archive_routed", "index", "reads work threads from index.db"),
     "list_workspaces": ("archive_routed", "user", "reads workspaces through user.db"),

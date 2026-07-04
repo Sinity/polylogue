@@ -2260,18 +2260,6 @@
           "default": null,
           "title": "Provider"
         },
-        "raw_artifact_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Raw Artifact Id"
-        },
         "since": {
           "anyOf": [
             {
@@ -2402,18 +2390,6 @@
           ],
           "default": null,
           "title": "Provider"
-        },
-        "raw_artifact_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Raw Artifact Id"
         },
         "since": {
           "anyOf": [

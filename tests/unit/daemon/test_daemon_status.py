@@ -490,7 +490,7 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     search_counts = cast(dict[str, object], search["counts"])
     assert search["state"] == "stale"
     assert search_counts["message_indexed_count"] == 4
-    assert search["repair_hint"] == "polylogue ops maintenance run --target dangling_fts"
+    assert search["repair_hint"] == "polylogued run"
     profile_counts = cast(dict[str, object], session_profiles["counts"])
     assert session_profiles["state"] == "degraded"
     assert session_profiles["scope"] == "insights"
@@ -1092,8 +1092,8 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is True
-    assert readiness["invariant_ready"] is True
+    assert readiness["messages_ready"] is False
+    assert readiness["invariant_ready"] is False
     assert readiness["coverage_exact"] is False
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
@@ -1102,7 +1102,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
     assert blocks["source_exists"] is True
     assert blocks["exists"] is True
     assert blocks["triggers_present"] is True
-    assert blocks["ready"] is True
+    assert blocks["ready"] is False
 
 
 def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path) -> None:
@@ -1124,8 +1124,8 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is True
-    assert readiness["invariant_ready"] is True
+    assert readiness["messages_ready"] is False
+    assert readiness["invariant_ready"] is False
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
     assert set(surfaces) == {"messages_fts"}
@@ -1206,7 +1206,7 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
     structural = fts_readiness_info(db_path)
     exact = fts_readiness_info(db_path, exact=True)
 
-    assert structural["messages_ready"] is True
+    assert structural["messages_ready"] is False
     assert exact["messages_ready"] is False
     surfaces = exact["surfaces"]
     assert isinstance(surfaces, dict)

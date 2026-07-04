@@ -549,10 +549,9 @@ Options:
                                   maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
-  --target [session_insights|dangling_fts|message_type_backfill|raw_materialization|message_embeddings|wal_checkpoint|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
+  --target [session_insights|message_type_backfill|message_embeddings|wal_checkpoint|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
                                   Limit maintenance to named targets such as
-                                  session_insights, dangling_fts,
-                                  message_type_backfill, raw_materialization,
+                                  session_insights, message_type_backfill,
                                   message_embeddings, wal_checkpoint,
                                   orphaned_messages, empty_sessions,
                                   orphaned_attachments, orphaned_blobs, or

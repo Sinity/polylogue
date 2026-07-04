@@ -547,7 +547,6 @@ _SCOPE_FILTER_KEYS = frozenset(
         "provider",
         "source_family",
         "source_root",
-        "raw_artifact_id",
         "time_range",
         "failure_kind",
         "parser_version",

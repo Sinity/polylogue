@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
+from polylogue.config import Config
 from polylogue.core.json import JSONDocument, loads
 from polylogue.daemon.cli import main
 from polylogue.daemon.convergence import ConvergenceStage
@@ -405,8 +406,7 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     async def fake_sleep(_seconds: float) -> None:
         nonlocal sleep_calls
         sleep_calls += 1
-        if sleep_calls > 1:
-            raise asyncio.CancelledError
+        raise asyncio.CancelledError
 
     async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
@@ -423,6 +423,68 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
 
     info.assert_called_once()
     assert info.call_args.args[0] == "convergence: archive busy; retrying derived debt on next tick: %s"
+    warning.assert_not_called()
+
+
+def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    calls: dict[str, object] = {}
+
+    class FakeResult:
+        success = True
+        repaired_count = 7
+        detail = "ok"
+
+    def fake_repair_raw_materialization(config: Config, *, dry_run: bool, raw_artifact_limit: int) -> FakeResult:
+        calls["archive_root"] = config.archive_root
+        calls["render_root"] = config.render_root
+        calls["dry_run"] = dry_run
+        calls["raw_artifact_limit"] = raw_artifact_limit
+        return FakeResult()
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr("polylogue.storage.repair.repair_raw_materialization", fake_repair_raw_materialization)
+
+    assert daemon_cli._drain_raw_materialization_once(limit=11) == 7
+    assert calls == {
+        "archive_root": tmp_path / "archive",
+        "render_root": tmp_path / "render",
+        "dry_run": False,
+        "raw_artifact_limit": 11,
+    }
+
+
+def test_periodic_raw_materialization_convergence_treats_sqlite_lock_as_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    sleep_calls = 0
+
+    async def fake_sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        raise asyncio.CancelledError
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError("database is locked")
+
+    with (
+        patch("asyncio.sleep", side_effect=fake_sleep),
+        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(daemon_cli.logger, "info") as info,
+        patch.object(daemon_cli.logger, "warning") as warning,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    info.assert_called_once()
+    assert info.call_args.args[0] == "raw materialization: archive busy; retrying on next tick: %s"
     warning.assert_not_called()
 
 
@@ -1652,6 +1714,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup),
         patch.object(daemon_cli, "_sweep_orphaned_blob_leases", fake_sweep_orphaned_blob_leases),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")),
+        patch.object(daemon_cli, "_periodic_raw_materialization_convergence", lambda: fake_loop("raw-materialization")),
         patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")),
         patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: fake_loop("convergence")),
         patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")),
@@ -1680,6 +1743,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert events.index("fts") < events.index("watcher")
     assert events.index("drive-once") < events.index("watcher")
     assert events.index("fts") < events.index("convergence")
+    assert events.index("fts") < events.index("raw-materialization")
     assert events.index("fts") < events.index("drive")
     assert events.index("fts") < events.index("converger")
     lifecycle_phases = [str(payload["phase"]) for payload in lifecycle_payloads]

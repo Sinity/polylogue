@@ -27,12 +27,12 @@ Current registry snapshot:
 - covered runtime paths: `21`
 - covered runtime artifacts: `45`
 - covered runtime operations: `25`
-- covered maintenance targets: `3`
+- covered maintenance targets: `2`
 - covered declared operation targets: `46`
 - uncovered runtime paths: `thread-query-loop`, `tool-usage-query-loop`
 - uncovered runtime artifacts: `thread_results`, `tool_usage_results`
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`, `query-threads`, `query-tool-usage`
-- uncovered maintenance targets: `empty_sessions`, `message_embeddings`, `message_type_backfill`, `orphaned_attachments`, `orphaned_messages`, `raw_materialization`, `superseded_raw_snapshots`, `wal_checkpoint`
+- uncovered maintenance targets: `empty_sessions`, `message_embeddings`, `message_type_backfill`, `orphaned_attachments`, `orphaned_messages`, `superseded_raw_snapshots`, `wal_checkpoint`
 - uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`, `query-threads`, `query-tool-usage`
 
 Inspect the full authored map with:

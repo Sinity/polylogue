@@ -1647,7 +1647,7 @@ def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness
             "message_indexable_count": readiness.message_indexable_count,
             "coverage_pct": readiness.coverage_pct,
         },
-        repair_hint=None if readiness.messages_ready else "polylogue ops maintenance run --target dangling_fts",
+        repair_hint=None if readiness.messages_ready else "polylogued run",
     )
 
 

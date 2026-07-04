@@ -188,6 +188,14 @@ def _raw_materialization_stream_safe(candidates: RawMaterializationCandidates, r
     return is_stream_record_provider(candidates.raw_source_paths.get(raw_id), provider)
 
 
+def _raw_materialization_total_bytes(candidates: RawMaterializationCandidates, raw_ids: list[str]) -> int:
+    return sum(candidates.raw_blob_bytes.get(raw_id, 0) for raw_id in raw_ids)
+
+
+def _raw_materialization_max_bytes(candidates: RawMaterializationCandidates, raw_ids: list[str]) -> int:
+    return max((candidates.raw_blob_bytes.get(raw_id, 0) for raw_id in raw_ids), default=0)
+
+
 def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
     origin = str(row["origin"] or "")
     if not origin:
@@ -699,6 +707,25 @@ def _repair_result(
     )
 
 
+def _internal_derived_repair_result(
+    name: str,
+    *,
+    repaired_count: int,
+    success: bool,
+    detail: str,
+    metrics: dict[str, float] | None = None,
+) -> RepairResult:
+    return RepairResult(
+        name=name,
+        category=MaintenanceCategory.DERIVED_REPAIR,
+        destructive=False,
+        repaired_count=repaired_count,
+        success=success,
+        detail=detail,
+        metrics=dict(metrics or {}),
+    )
+
+
 def _archive_debt_status(
     target_name: str,
     *,
@@ -739,7 +766,6 @@ def collect_archive_debt_statuses_sync(
     empty_sessions = 0 if skip_large_message_scans else count_empty_sessions_sync(conn)
     orphaned_attachments = count_orphaned_attachments_sync(conn)
     session_insights = session_insight_repair_count(statuses)
-    dangling_fts = dangling_fts_repair_count(statuses)
     _unclassified = 0 if skip_large_message_scans else count_unclassified_message_type_sync(conn)
 
     debt_statuses = {
@@ -784,11 +810,6 @@ def collect_archive_debt_statuses_sync(
             detail="Session insight read models ready"
             if session_insights == 0
             else f"{session_insights:,} pending/stale/orphaned session-insight rows",
-        ),
-        "dangling_fts": _archive_debt_status(
-            "dangling_fts",
-            issue_count=dangling_fts,
-            detail="FTS synchronized" if dangling_fts == 0 else f"{dangling_fts:,} dangling FTS rows",
         ),
         "message_type_backfill": _archive_debt_status(
             "message_type_backfill",
@@ -1264,7 +1285,7 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
             ).fetchone()
             if not fts_exists:
-                return _repair_result(
+                return _internal_derived_repair_result(
                     "dangling_fts",
                     repaired_count=0,
                     success=True,
@@ -1272,7 +1293,7 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                 )
             if dry_run:
                 outcome = dry_run_dangling_fts_repair(conn)
-                return _repair_result(
+                return _internal_derived_repair_result(
                     "dangling_fts",
                     repaired_count=outcome.repaired_count,
                     success=outcome.success,
@@ -1289,14 +1310,14 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                     target_type="fts_surface",
                     target_id="messages_fts",
                 )
-            return _repair_result(
+            return _internal_derived_repair_result(
                 "dangling_fts",
                 repaired_count=outcome.repaired_count,
                 success=outcome.success,
                 detail=outcome.detail,
             )
     except Exception as exc:
-        return _repair_result(
+        return _internal_derived_repair_result(
             "dangling_fts",
             repaired_count=0,
             success=False,
@@ -1305,7 +1326,7 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
 
 
 def preview_dangling_fts(*, count: int) -> RepairResult:
-    return _repair_result(
+    return _internal_derived_repair_result(
         "dangling_fts",
         repaired_count=count,
         success=True,
@@ -1321,6 +1342,7 @@ def repair_raw_materialization(
     provider: str | None = None,
     source_family: str | None = None,
     source_root: Path | None = None,
+    raw_artifact_limit: int | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
     """Materialize replayable raw evidence into the index tier."""
@@ -1331,15 +1353,26 @@ def repair_raw_materialization(
         source_family=source_family,
         source_root=source_root,
     )
-    raw_ids = candidates.raw_ids
+    candidate_raw_ids = candidates.raw_ids
+    raw_ids = list(candidate_raw_ids)
+    if raw_artifact_limit is not None:
+        raw_ids = sorted(raw_ids, key=lambda raw_id: (candidates.raw_blob_bytes.get(raw_id, 0), raw_id))
+        raw_ids = raw_ids[:raw_artifact_limit]
     missing_blobs = candidates.missing_blobs
+    selected_total_bytes = _raw_materialization_total_bytes(candidates, raw_ids)
+    selected_max_bytes = _raw_materialization_max_bytes(candidates, raw_ids)
     metrics = {
-        "raw_materialization_candidate_count": float(len(raw_ids)),
+        "raw_materialization_candidate_count": float(len(candidate_raw_ids)),
+        "raw_materialization_selected_count": float(len(raw_ids)),
         "raw_materialization_missing_blob_count": float(missing_blobs),
         "raw_materialization_already_parsed_count": float(candidates.already_parsed),
         "raw_materialization_total_blob_bytes": float(candidates.total_blob_bytes),
         "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
+        "raw_materialization_selected_total_blob_bytes": float(selected_total_bytes),
+        "raw_materialization_selected_max_blob_bytes": float(selected_max_bytes),
     }
+    if raw_artifact_limit is not None:
+        metrics["raw_materialization_limit"] = float(raw_artifact_limit)
     oversized_candidate_raw_ids = [
         raw_id
         for raw_id in raw_ids
@@ -1364,7 +1397,7 @@ def repair_raw_materialization(
             detail = "Raw materialization ready"
             if missing_blobs:
                 detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
-            return _repair_result(
+            return _internal_derived_repair_result(
                 "raw_materialization",
                 repaired_count=0,
                 success=missing_blobs == 0,
@@ -1374,8 +1407,8 @@ def repair_raw_materialization(
         byte_detail = ""
         if raw_ids:
             byte_detail = (
-                f"; queued raw payload bytes total={_format_bytes(candidates.total_blob_bytes)}, "
-                f"largest={_format_bytes(candidates.max_blob_bytes)}"
+                f"; selected raw payload bytes total={_format_bytes(selected_total_bytes)}, "
+                f"largest={_format_bytes(selected_max_bytes)}"
             )
         oversized_detail = ""
         if oversized_raw_ids:
@@ -1389,16 +1422,19 @@ def repair_raw_materialization(
             )
         if candidates.already_parsed:
             detail = (
-                f"Would: replay {len(raw_ids):,} raw rows into index.db "
+                f"Would: replay {len(raw_ids):,} of {len(candidate_raw_ids):,} raw rows into index.db "
                 f"({candidates.already_parsed:,} already parsed but not materialized)"
             )
         else:
-            detail = f"Would: replay {len(raw_ids):,} acquired-but-unparsed raw rows into index.db"
+            detail = (
+                f"Would: replay {len(raw_ids):,} of {len(candidate_raw_ids):,} "
+                "acquired-but-unparsed raw rows into index.db"
+            )
         detail += byte_detail
         detail += oversized_detail
         if missing_blobs:
             detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
-        return _repair_result(
+        return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=len(raw_ids),
             success=True,
@@ -1409,7 +1445,7 @@ def repair_raw_materialization(
         detail = "Raw materialization ready"
         if missing_blobs:
             detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
-        return _repair_result(
+        return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
             success=missing_blobs == 0,
@@ -1417,7 +1453,7 @@ def repair_raw_materialization(
             metrics=metrics,
         )
     if not executable_raw_ids:
-        return _repair_result(
+        return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
             success=False,
@@ -1451,7 +1487,13 @@ def repair_raw_materialization(
                         desc=(f"raw_materialization: parsing raw 1/1 {raw_id} size={_format_bytes(raw_size)}"),
                     )
                 else:
-                    progress_callback(0, desc=f"raw_materialization: parsing {total:,} raw rows")
+                    progress_callback(
+                        0,
+                        desc=(
+                            f"raw_materialization: parsing {total:,} selected raw rows "
+                            f"of {len(candidate_raw_ids):,} candidates"
+                        ),
+                    )
             result = await service.parse_from_raw(
                 raw_ids=executable_raw_ids,
                 progress_callback=progress_callback,
@@ -1472,7 +1514,7 @@ def repair_raw_materialization(
     try:
         processed, failures = asyncio.run(_run())
     except Exception as exc:
-        return _repair_result(
+        return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
             success=False,
@@ -1483,14 +1525,14 @@ def repair_raw_materialization(
     metrics["raw_materialization_session_change_count"] = float(processed)
     if candidates.already_parsed:
         detail = (
-            f"Replayed {len(executable_raw_ids):,} raw rows "
+            f"Replayed {len(executable_raw_ids):,} of {len(candidate_raw_ids):,} raw rows "
             f"({candidates.already_parsed:,} already parsed but not materialized); "
-            f"{processed:,} sessions changed; message FTS left to ingest triggers or the FTS maintenance stage"
+            f"{processed:,} sessions changed; message FTS left to ingest triggers or daemon convergence"
         )
     else:
         detail = (
-            f"Replayed {len(executable_raw_ids):,} acquired-but-unparsed raw rows; "
-            f"{processed:,} sessions changed; message FTS left to ingest triggers or the FTS maintenance stage"
+            f"Replayed {len(executable_raw_ids):,} of {len(candidate_raw_ids):,} acquired-but-unparsed raw rows; "
+            f"{processed:,} sessions changed; message FTS left to ingest triggers or daemon convergence"
         )
     if missing_blobs:
         detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
@@ -1503,7 +1545,7 @@ def repair_raw_materialization(
         detail += f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows used streaming replay"
     if failures:
         detail += f"; {failures:,} raw rows failed during parse/write"
-    return _repair_result(
+    return _internal_derived_repair_result(
         "raw_materialization",
         repaired_count=processed,
         success=missing_blobs == 0 and failures == 0 and not oversized_raw_ids,
@@ -1614,7 +1656,6 @@ def repair_message_embeddings(config: Config, dry_run: bool = False) -> RepairRe
 
 _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
-    "dangling_fts": preview_dangling_fts,
     "message_type_backfill": preview_message_type_backfill,
     "orphaned_messages": preview_orphaned_messages,
     "empty_sessions": preview_empty_sessions,
@@ -1626,11 +1667,9 @@ _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
 
 _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
-    "dangling_fts": repair_dangling_fts,
     "message_type_backfill": repair_message_type_backfill,
     "message_embeddings": repair_message_embeddings,
     "wal_checkpoint": repair_wal_checkpoint,
-    "raw_materialization": repair_raw_materialization,
     "orphaned_messages": repair_orphaned_messages,
     "empty_sessions": repair_empty_sessions,
     "orphaned_attachments": repair_orphaned_attachments,

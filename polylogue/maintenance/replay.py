@@ -64,14 +64,12 @@ from polylogue.maintenance.targets import (
 from polylogue.storage.repair import (
     RepairResult,
     offline_maintenance_blockers,
-    repair_dangling_fts,
     repair_empty_sessions,
     repair_message_embeddings,
     repair_message_type_backfill,
     repair_orphaned_attachments,
     repair_orphaned_blobs,
     repair_orphaned_messages,
-    repair_raw_materialization,
     repair_session_insights,
     repair_wal_checkpoint,
 )
@@ -115,9 +113,7 @@ _RepairFn = Callable[[Config, bool], RepairResult]
 #: succeeding.
 _REPLAY_DISPATCH: Final[dict[str, _RepairFn]] = {
     "session_insights": repair_session_insights,
-    "dangling_fts": repair_dangling_fts,
     "message_type_backfill": repair_message_type_backfill,
-    "raw_materialization": repair_raw_materialization,
     "message_embeddings": repair_message_embeddings,
     "wal_checkpoint": repair_wal_checkpoint,
     "orphaned_messages": repair_orphaned_messages,
@@ -616,16 +612,6 @@ def _run_one_target(
                 config,
                 dry_run,
                 session_ids=scope_filter.session_ids,
-                progress_callback=_emit_target_progress,
-            )
-        elif target_name == "raw_materialization" and repair_fn is repair_raw_materialization:
-            result = repair_raw_materialization(
-                config,
-                dry_run,
-                raw_artifact_id=scope_filter.raw_artifact_id,
-                provider=scope_filter.provider,
-                source_family=scope_filter.source_family,
-                source_root=scope_filter.source_root,
                 progress_callback=_emit_target_progress,
             )
         else:

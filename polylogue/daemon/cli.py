@@ -52,6 +52,8 @@ from polylogue.version import POLYLOGUE_VERSION
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
+_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
+_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 25
 _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 
 # Track the pidfile path for atexit cleanup.
@@ -424,6 +426,40 @@ async def _periodic_convergence_check(
             logger.warning("convergence: check failed", exc_info=True)
         except Exception:
             logger.warning("convergence: check failed", exc_info=True)
+
+
+async def _periodic_raw_materialization_convergence() -> None:
+    """Continuously converge durable raw source rows into the index tier."""
+    while True:
+        try:
+            materialized = await asyncio.to_thread(_drain_raw_materialization_once)
+            if materialized:
+                logger.info("raw materialization: converged %d session(s)", materialized)
+        except sqlite3.OperationalError as exc:
+            if is_transient_sqlite_lock(exc):
+                logger.info("raw materialization: archive busy; retrying on next tick: %s", exc)
+            else:
+                logger.warning("raw materialization: convergence check failed", exc_info=True)
+        except Exception:
+            logger.warning("raw materialization: convergence check failed", exc_info=True)
+        await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
+
+
+def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT) -> int:
+    """Run one bounded raw source→index convergence pass."""
+    from polylogue.config import Config
+    from polylogue.paths import archive_root, render_root
+    from polylogue.storage.repair import repair_raw_materialization
+
+    config = Config(
+        archive_root=archive_root(),
+        render_root=render_root(),
+        sources=[],
+    )
+    result = repair_raw_materialization(config, dry_run=False, raw_artifact_limit=limit)
+    if not result.success:
+        logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
+    return result.repaired_count
 
 
 def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
@@ -887,6 +923,7 @@ async def run_daemon_services(
             else:
                 logger.info("daemon: configured source catch-up disabled for this run")
             periodic_loops = [
+                _periodic_raw_materialization_convergence(),
                 _periodic_wal_checkpoint(),
                 _periodic_fts_merge(),
                 _periodic_heartbeat(),
