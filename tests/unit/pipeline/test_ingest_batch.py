@@ -17,6 +17,8 @@ import pytest
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.pipeline.services import ingest_worker as ingest_worker_mod
 from polylogue.pipeline.services.ingest_batch import (
     _build_batch_memory_observation,
     _drain_ready_session_entries,
@@ -66,6 +68,26 @@ def _float_value(value: object) -> float:
     if not isinstance(value, (float, int, str)):
         raise TypeError(f"expected numeric value, got {type(value).__name__}")
     return float(value)
+
+
+def test_worker_normalization_preserves_raw_row_archive_origin() -> None:
+    parsed = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="315bcba7-700a-4c0e-b318-ab86d8636376",
+        title="Session",
+        messages=[],
+    )
+
+    normalized = ingest_worker_mod._normalized_session(
+        parsed,
+        fallback_timestamp=None,
+    )
+
+    assert str(make_session_id("claude-code-session", normalized.provider_session_id)) == (
+        "claude-code-session:315bcba7-700a-4c0e-b318-ab86d8636376"
+    )
+    assert normalized.source_name == Provider.CLAUDE_CODE
+    assert parsed.source_name == Provider.CLAUDE_CODE
 
 
 def test_parse_batch_observation_reports_unsupported_write_mode() -> None:
@@ -157,6 +179,8 @@ def _session_data(
     attachment_ref_tuples: list[AttachmentRefSpec] | None = None,
     ingest_flags: list[str] | None = None,
     append_only: bool = False,
+    created_at: str = "2026-04-02T00:00:00Z",
+    updated_at: str = "2026-04-02T00:00:00Z",
 ) -> SessionWritePayload:
     del stats_tuple
     messages = list(message_tuples or [])
@@ -179,8 +203,8 @@ def _session_data(
         source_name=Provider.CODEX,
         provider_session_id=session_id.split(":", 1)[-1],
         title="Session",
-        created_at="2026-04-02T00:00:00Z",
-        updated_at="2026-04-02T00:00:00Z",
+        created_at=created_at,
+        updated_at=updated_at,
         parent_session_provider_id=parent_session_id.split(":", 1)[-1] if parent_session_id else None,
         messages=messages,
         attachments=attachments,
@@ -644,6 +668,73 @@ def test_write_session_force_write_updates_message_time(tmp_path: Path) -> None:
         assert rows[0]["native_id"] == "msg-1"
         assert rows[0]["role"] == "user"
         assert rows[0]["occurred_at_ms"] == 1777636800000
+
+
+def test_write_session_force_write_replaces_older_freshness(tmp_path: Path) -> None:
+    """Raw convergence force writes may replace a newer stale index row."""
+    with open_connection(tmp_path / "index.db") as conn:
+        newer = _session_data(
+            "codex-session:force-stale",
+            content_hash="hash-newer",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:force-stale",
+                    role="user",
+                    text="stale index",
+                    content_hash="msg-hash-1",
+                    sort_key=1777636800.0,
+                )
+            ],
+            raw_id="raw-stale",
+            created_at="2026-04-02T00:00:00Z",
+            updated_at="2026-04-02T00:10:00Z",
+        )
+        changed, _ = _write_session(conn, newer)
+        assert changed is True
+
+        older = _session_data(
+            "codex-session:force-stale",
+            content_hash="hash-older",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:force-stale",
+                    role="user",
+                    text="durable source",
+                    content_hash="msg-hash-2",
+                    sort_key=1777636700.0,
+                )
+            ],
+            raw_id="raw-source",
+            created_at="2026-04-02T00:00:00Z",
+            updated_at="2026-04-02T00:05:00Z",
+        )
+        skipped, skipped_counts = _write_session(conn, older)
+        assert skipped is False
+        assert skipped_counts["messages"] == 0
+
+        forced, forced_counts = _write_session(conn, older, force_write=True)
+        assert forced is True
+        assert forced_counts["messages"] == 1
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT raw_id, message_count FROM sessions WHERE session_id = ?",
+            ("codex-session:force-stale",),
+        ).fetchone()
+        message = conn.execute(
+            "SELECT native_id, occurred_at_ms FROM messages WHERE session_id = ?",
+            ("codex-session:force-stale",),
+        ).fetchone()
+        block = conn.execute(
+            "SELECT text FROM blocks WHERE session_id = ?",
+            ("codex-session:force-stale",),
+        ).fetchone()
+        assert row["raw_id"] == "raw-source"
+        assert row["message_count"] == 1
+        assert block["text"] == "durable source"
+        assert message["occurred_at_ms"] == 1777636700000
 
 
 def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: Path) -> None:

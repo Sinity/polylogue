@@ -249,15 +249,22 @@ _ORIGIN_TO_LAB: Final[dict[Origin, Lab]] = {
 }
 
 
-def origin_from_provider(provider: Provider) -> Origin:
-    """Return the archive ``Origin`` for a provider-wire ``Provider`` enum value.
+def origin_from_provider(provider: Provider | Origin | str) -> Origin:
+    """Return the archive ``Origin`` for provider-wire or origin input.
 
     Total over ``Provider``. ``Provider.GEMINI`` and ``Provider.DRIVE`` both map
     to ``Origin.AISTUDIO_DRIVE`` (see module note). Use this at boundaries that
     still carry a ``Provider`` while their storage/wire side speaks
-    ``origin``; new code should take ``Origin`` directly.
+    ``origin``; callers that already carry ``Origin`` or a canonical origin
+    token pass through unchanged.
     """
 
+    if isinstance(provider, Origin):
+        return provider
+    if isinstance(provider, str):
+        if provider in _CANONICAL_ORIGIN_VALUES:
+            return Origin.from_string(provider)
+        provider = Provider.from_string(provider)
     return _PROVIDER_TO_ORIGIN[provider]
 
 

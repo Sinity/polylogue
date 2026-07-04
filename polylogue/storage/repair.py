@@ -1463,7 +1463,12 @@ def repair_raw_materialization(
             result = await service.parse_from_raw(
                 raw_ids=executable_raw_ids,
                 progress_callback=progress_callback,
-                force_write=False,
+                # Raw materialization is a convergence repair from durable
+                # source evidence. If the index still has an older row for the
+                # same native session whose source raw row disappeared, the
+                # normal duplicate-protection path would preserve stale
+                # unbacked content and leave readiness permanently blocked.
+                force_write=True,
                 repair_message_fts=False,
             )
             processed_total += len(result.processed_ids)

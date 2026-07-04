@@ -231,6 +231,7 @@ def write_parsed_session_to_archive(
     content_hash: str | None = None,
     raw_id: str | None = None,
     merge_append: bool = False,
+    force_replace: bool = False,
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     signature_cache: dict[str, list[tuple[str, str]]] | None = None,
@@ -259,7 +260,7 @@ def write_parsed_session_to_archive(
     native_id = session.provider_session_id
     session_id = archive_session_id(origin.value, native_id)
     incoming_freshness_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
-    if not merge_append and incoming_freshness_ms is not None:
+    if not force_replace and not merge_append and incoming_freshness_ms is not None:
         row = conn.execute(
             "SELECT updated_at_ms FROM sessions WHERE session_id = ?",
             (session_id,),

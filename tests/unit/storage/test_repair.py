@@ -547,14 +547,14 @@ def test_raw_materialization_replay_uses_batch_parse_call(
         )
         source_conn.commit()
 
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], bool | None]] = []
 
     class FakeParsingService:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        async def parse_from_raw(self, *, raw_ids: list[str], **_kwargs: object) -> object:
-            calls.append(list(raw_ids))
+        async def parse_from_raw(self, *, raw_ids: list[str], **kwargs: object) -> object:
+            calls.append((list(raw_ids), cast(bool | None, kwargs.get("force_write"))))
             return SimpleNamespace(processed_ids=set(raw_ids), parse_failures=0)
 
     import polylogue.pipeline.services.parsing as parsing_module
@@ -565,7 +565,7 @@ def test_raw_materialization_replay_uses_batch_parse_call(
 
     assert result.success is True
     assert result.repaired_count == 2
-    assert calls == [[second_raw_id, first_raw_id]]
+    assert calls == [([second_raw_id, first_raw_id], True)]
 
 
 def test_raw_materialization_dry_run_reports_limited_selection(

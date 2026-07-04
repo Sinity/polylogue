@@ -44,6 +44,7 @@ from polylogue.sources.parsers.browser_capture import DOM_FALLBACK_INGEST_FLAG
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.write import (
+    _timestamp_ms,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
 )
@@ -448,7 +449,7 @@ def _write_session(
     }
 
     existing_row = conn.execute(
-        "SELECT content_hash, raw_id FROM sessions WHERE session_id = ?",
+        "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id = ?",
         (payload.session_id,),
     ).fetchone()
     existing_hash = existing_row["content_hash"] if existing_row is not None else None
@@ -457,6 +458,17 @@ def _write_session(
     existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
     session_to_write = payload.parsed_session
     merge_append = False
+
+    incoming_freshness_ms = _timestamp_ms(session_to_write.updated_at) or _timestamp_ms(session_to_write.created_at)
+    if not force_write and not payload.append_only and existing_row is not None and incoming_freshness_ms is not None:
+        existing_updated_at_ms = existing_row["updated_at_ms"]
+        existing_updated_at_int = int(existing_updated_at_ms) if existing_updated_at_ms is not None else None
+        if existing_updated_at_int is not None and incoming_freshness_ms < existing_updated_at_int:
+            counts["skipped_sessions"] = 1
+            counts["skipped_messages"] = payload.message_count
+            counts["skipped_attachments"] = payload.attachment_count
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            return False, counts
 
     if not force_write and existing_raw_id and payload.raw_id and existing_raw_id != payload.raw_id:
         existing_is_dom_fallback = _session_has_parser_ingest_flag(conn, payload.session_id, DOM_FALLBACK_INGEST_FLAG)
@@ -521,6 +533,7 @@ def _write_session(
         content_hash=payload.content_hash,
         raw_id=payload.raw_id,
         merge_append=merge_append,
+        force_replace=force_write,
         signature_cache=signature_cache,
         stage_timings_s=stage_timings_s,
     )
