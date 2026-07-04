@@ -723,7 +723,7 @@ files:
     target: polylogue/cli/commands/__init__.py
     owner: stable
   - path: polylogue/cli/commands/agents.py
-    loc: 100
+    loc: 110
     target: polylogue/cli/commands/agents.py
     owner: stable
   - path: polylogue/cli/commands/auth.py
@@ -1086,15 +1086,15 @@ files:
     target: polylogue/coordination/__init__.py
     owner: stable
   - path: polylogue/coordination/envelope.py
-    loc: 515
+    loc: 642
     target: polylogue/coordination/envelope.py
     owner: stable
   - path: polylogue/coordination/payloads.py
-    loc: 120
+    loc: 157
     target: polylogue/coordination/payloads.py
     owner: stable
   - path: polylogue/coordination/rendering.py
-    loc: 52
+    loc: 162
     target: polylogue/coordination/rendering.py
     owner: stable
   - path: polylogue/core/__init__.py
@@ -1315,7 +1315,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 3877
+    loc: 3887
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/lineage_startup.py
@@ -1380,7 +1380,7 @@ files:
     target: polylogue/daemon/provenance.py
     owner: stable
   - path: polylogue/daemon/route_contracts.py
-    loc: 485
+    loc: 494
     target: polylogue/daemon/route_contracts.py
     owner: stable
   - path: polylogue/daemon/similarity.py
@@ -1408,12 +1408,16 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 2390
+    loc: 2403
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_attachments.py
     loc: 547
     target: polylogue/daemon/web_shell_attachments.py
+    owner: stable
+  - path: polylogue/daemon/web_shell_coordination.py
+    loc: 93
+    target: polylogue/daemon/web_shell_coordination.py
     owner: stable
   - path: polylogue/daemon/web_shell_lineage.py
     loc: 237

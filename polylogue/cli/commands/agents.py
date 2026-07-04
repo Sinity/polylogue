@@ -9,7 +9,11 @@ from typing import TypeVar
 import click
 
 from polylogue.coordination import CoordinationView, build_coordination_envelope
-from polylogue.coordination.rendering import render_coordination_text
+from polylogue.coordination.rendering import (
+    render_coordination_markdown,
+    render_coordination_text,
+    render_coordination_tree,
+)
 
 F = TypeVar("F", bound=Callable[..., object])
 
@@ -24,7 +28,7 @@ def _format_options(func: F) -> F:
         "--format",
         "-f",
         "output_format",
-        type=click.Choice(["text", "json"]),
+        type=click.Choice(["text", "json", "markdown", "tree"]),
         default="json",
         show_default=True,
         help="Output format.",
@@ -36,6 +40,12 @@ def _emit(view: CoordinationView, cwd: Path | None, limit: int, json_output: boo
     payload = build_coordination_envelope(view=view, cwd=cwd, limit=limit)
     if json_output or output_format == "json":
         click.echo(payload.to_json(exclude_none=True))
+        return
+    if output_format == "markdown":
+        click.echo(render_coordination_markdown(payload), nl=False)
+        return
+    if output_format == "tree":
+        click.echo(render_coordination_tree(payload))
         return
     click.echo(render_coordination_text(payload))
 

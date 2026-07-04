@@ -80,3 +80,19 @@ def test_agents_work_item_text_is_compact(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.exit_code == 0
     assert "Agent coordination (work-item)" in result.output
     assert "polylogue-s7ae.1" in result.output
+
+
+def test_agents_status_markdown_and_tree_use_shared_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "polylogue.cli.commands.agents.build_coordination_envelope", lambda **kwargs: _payload(kwargs["view"])
+    )
+
+    markdown = CliRunner().invoke(agents_command, ["status", "--format", "markdown"], catch_exceptions=False)
+    tree = CliRunner().invoke(agents_command, ["status", "--format", "tree"], catch_exceptions=False)
+
+    assert markdown.exit_code == 0
+    assert "# Agent Coordination Mission Control" in markdown.output
+    assert "polylogue-s7ae.1" in markdown.output
+    assert tree.exit_code == 0
+    assert "coordination" in tree.output
+    assert "work polylogue-s7ae.1" in tree.output
