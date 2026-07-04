@@ -43,6 +43,9 @@ from polylogue.daemon.health import (
     format_health_lines,
     resolve_health_tiers,
 )
+from polylogue.daemon.lineage_startup import (
+    ensure_lineage_startup_readiness as _ensure_lineage_startup_readiness,
+)
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -1012,6 +1015,13 @@ async def run_daemon_services(
                     "component_ready",
                     archive_root_path=archive_root_path,
                     component="fts_startup",
+                )
+            await _ensure_lineage_startup_readiness()
+            if lifecycle_events_enabled:
+                _emit_daemon_lifecycle_event(
+                    "component_ready",
+                    archive_root_path=archive_root_path,
+                    component="lineage_startup",
                 )
             # Disable per-write FTS5 automerge so each small ingest batch does
             # not trigger a merge of the full (hundreds-of-MB) existing

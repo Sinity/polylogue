@@ -2167,6 +2167,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     async def fake_fts_startup() -> None:
         events.append("fts")
 
+    async def fake_lineage_startup() -> int:
+        events.append("lineage")
+        return 0
+
     async def fake_sweep_orphaned_blob_leases() -> None:
         events.append("sweep")
 
@@ -2199,6 +2203,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
         stack.enter_context(patch.object(daemon_cli, "_ensure_fts_startup_readiness", fake_fts_startup))
+        stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness", fake_lineage_startup))
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
         stack.enter_context(patch("polylogue.paths.archive_root", return_value=Path("/tmp/polylogue-test-archive")))
         stack.enter_context(patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup))
@@ -2256,18 +2261,19 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
 
     assert "watcher" in events
     assert events.index("fts") < events.index("watcher")
+    assert events.index("fts") < events.index("lineage") < events.index("watcher")
     assert events.index("drive-once") < events.index("watcher")
-    assert events.index("fts") < events.index("convergence")
-    assert events.index("fts") < events.index("raw-materialization")
-    assert events.index("fts") < events.index("drive")
-    assert events.index("fts") < events.index("converger")
+    assert events.index("lineage") < events.index("convergence")
+    assert events.index("lineage") < events.index("raw-materialization")
+    assert events.index("lineage") < events.index("drive")
+    assert events.index("lineage") < events.index("converger")
     assert events.count("convergence") == 1
     lifecycle_phases = [str(payload["phase"]) for payload in lifecycle_payloads]
     assert lifecycle_phases[0] == "startup"
     assert "component_ready" in lifecycle_phases
     assert lifecycle_phases[-2:] == ["shutdown_started", "shutdown_complete"]
     lifecycle_components = {payload.get("component") for payload in lifecycle_payloads}
-    assert {"fts_startup", "converger", "watcher"}.issubset(lifecycle_components)
+    assert {"fts_startup", "lineage_startup", "converger", "watcher"}.issubset(lifecycle_components)
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:

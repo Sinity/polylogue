@@ -2111,6 +2111,9 @@ def _resolve_session_graph(
 
     impacted_session_ids = {session_id, *(str(row[0]) for row in inbound_rows)}
     t0 = time.perf_counter()
+    _repair_stale_prefix_branch_points_db(conn, impacted_session_ids, cache=cache, composed_cache=composed_cache)
+    record_substage("repair_stale_branch_points", t0)
+    t0 = time.perf_counter()
     old_root_ids = _root_ids(conn, impacted_session_ids)
     projection_seen: set[str] = set()
     for impacted_session_id in impacted_session_ids:
@@ -3572,6 +3575,142 @@ def _reextract_prefix_tail_db(
     t0 = time.perf_counter()
     _refresh_session_counts(conn, child_session_id)
     record_substage("count_refresh", t0)
+
+
+def _suffix_after_session_id(message_id: str, session_id: str) -> str | None:
+    prefix = f"{session_id}:"
+    if not message_id.startswith(prefix):
+        return None
+    return message_id[len(prefix) :]
+
+
+_NATIVE_MSG_SUFFIX_RE = re.compile(r"^msg-(\d+)$")
+
+
+def _native_msg_ordinal(native_id: str) -> int | None:
+    match = _NATIVE_MSG_SUFFIX_RE.match(native_id)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _replacement_for_stale_prefix_branch_point(
+    parent_composed: Sequence[tuple[str, str]],
+    stale_suffix: str,
+) -> str | None:
+    exact_candidates = [message_id for message_id, _sig in parent_composed if message_id.endswith(f":{stale_suffix}")]
+    if len(exact_candidates) == 1:
+        return exact_candidates[0]
+    if exact_candidates:
+        return None
+
+    stale_ordinal = _native_msg_ordinal(stale_suffix)
+    if stale_ordinal is None:
+        return None
+
+    predecessor: tuple[int, str] | None = None
+    ambiguous = False
+    for message_id, _sig in parent_composed:
+        native_suffix = message_id.rsplit(":", 1)[-1]
+        ordinal = _native_msg_ordinal(native_suffix)
+        if ordinal is None or ordinal >= stale_ordinal:
+            continue
+        if predecessor is None or ordinal > predecessor[0]:
+            predecessor = (ordinal, message_id)
+            ambiguous = False
+        elif ordinal == predecessor[0]:
+            ambiguous = True
+    if predecessor is None or ambiguous:
+        return None
+    return predecessor[1]
+
+
+def _repair_stale_prefix_branch_points_db(
+    conn: sqlite3.Connection,
+    session_ids: set[str] | tuple[str, ...] | list[str] | None = None,
+    *,
+    cache: dict[str, list[tuple[str, str]]] | None = None,
+    composed_cache: dict[str, list[tuple[str, str]]] | None = None,
+    limit: int | None = None,
+) -> int:
+    """Repair stale immediate-parent branch-point IDs in prefix-sharing edges.
+
+    Older lineage rows can name a branch point as ``<immediate-parent>:<suffix>``
+    even after that parent has itself been normalized to tail-only storage. The
+    composed reader can only find physical ancestor message IDs, so these stale
+    rows make the child bail to its own tail. If the suffix maps to exactly one
+    message in the resolved parent's composed transcript, update the edge to the
+    composed message id. Ambiguous or unmappable rows stay visible to validation.
+    """
+    params: list[object] = []
+    scope_clause = ""
+    if session_ids is not None:
+        scoped = sorted(session_ids)
+        if not scoped:
+            return 0
+        placeholders = ",".join("?" for _ in scoped)
+        scope_clause = f"AND l.src_session_id IN ({placeholders})"
+        params.extend(scoped)
+    limit_clause = ""
+    if limit is not None:
+        if limit < 1:
+            return 0
+        limit_clause = "LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id
+        FROM session_links l
+        WHERE l.inheritance = 'prefix-sharing'
+          AND l.resolved_dst_session_id IS NOT NULL
+          AND l.branch_point_message_id IS NOT NULL
+          {scope_clause}
+          AND NOT EXISTS (
+              SELECT 1 FROM messages m
+              WHERE m.message_id = l.branch_point_message_id
+          )
+        ORDER BY l.src_session_id
+        {limit_clause}
+        """,
+        tuple(params),
+    ).fetchall()
+    repaired = 0
+    local_composed_cache: dict[str, list[tuple[str, str]]] = composed_cache if composed_cache is not None else {}
+    for src_session_id, parent_session_id, branch_point_message_id in rows:
+        parent_id = str(parent_session_id)
+        stale_branch_point = str(branch_point_message_id)
+        suffix = _suffix_after_session_id(stale_branch_point, parent_id)
+        if suffix is None:
+            continue
+        parent_composed = _composed_db_signatures(
+            conn,
+            parent_id,
+            cache=cache,
+            composed_cache=local_composed_cache,
+        )
+        replacement = _replacement_for_stale_prefix_branch_point(parent_composed, suffix)
+        if replacement is None:
+            continue
+        if replacement == stale_branch_point:
+            continue
+        conn.execute(
+            """
+            UPDATE session_links
+            SET branch_point_message_id = ?
+            WHERE src_session_id = ?
+              AND resolved_dst_session_id = ?
+              AND branch_point_message_id = ?
+              AND inheritance = 'prefix-sharing'
+            """,
+            (replacement, str(src_session_id), parent_id, stale_branch_point),
+        )
+        repaired += 1
+    return repaired
+
+
+def repair_stale_prefix_branch_points(conn: sqlite3.Connection, *, limit: int | None = None) -> int:
+    """Repair stale prefix-sharing branch points across the current index tier."""
+    return _repair_stale_prefix_branch_points_db(conn, limit=limit)
 
 
 def _delete_all_session_message_dependents(
