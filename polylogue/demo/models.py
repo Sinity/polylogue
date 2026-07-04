@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .constructs import DemoConstructCoverage
+
 
 @dataclass(frozen=True, slots=True)
 class DemoSeedResult:
@@ -17,6 +19,7 @@ class DemoSeedResult:
     session_ids: tuple[str, ...]
     overlays_seeded: bool
     assertion_count: int
+    construct_coverage: tuple[DemoConstructCoverage, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         """Serialize the seed result for CLI JSON output and tests."""
@@ -29,6 +32,7 @@ class DemoSeedResult:
             "session_ids": list(self.session_ids),
             "overlays_seeded": self.overlays_seeded,
             "assertion_count": self.assertion_count,
+            "construct_coverage": [row.to_payload() for row in self.construct_coverage],
         }
 
 
@@ -43,6 +47,7 @@ class DemoVerifyResult:
     query_hits: tuple[str, ...]
     overlays_present: bool
     absolute_path_leaks: tuple[str, ...]
+    construct_coverage: tuple[DemoConstructCoverage, ...] = ()
     problems: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
@@ -56,6 +61,7 @@ class DemoVerifyResult:
             "query_hits": list(self.query_hits),
             "overlays_present": self.overlays_present,
             "absolute_path_leaks": list(self.absolute_path_leaks),
+            "construct_coverage": [row.to_payload() for row in self.construct_coverage],
             "problems": list(self.problems),
         }
 

@@ -24,6 +24,8 @@ def test_demo_seed_and_verify_json_roundtrip(tmp_path: Path, monkeypatch: pytest
     assert seed_payload["session_count"] == 3
     assert seed_payload["message_count"] == 23
     assert seed_payload["overlays_seeded"] is True
+    assert seed_payload["construct_coverage"]
+    assert all(row["ok"] for row in seed_payload["construct_coverage"])
 
     verify = runner.invoke(cli, ["demo", "verify", "--require-overlays", "--format", "json"])
     assert verify.exit_code == 0, verify.output
@@ -31,6 +33,8 @@ def test_demo_seed_and_verify_json_roundtrip(tmp_path: Path, monkeypatch: pytest
     assert verify_payload["ok"] is True
     assert DEMO_CLAUDE_CODE_SESSION_ID in verify_payload["query_hits"]
     assert verify_payload["absolute_path_leaks"] == []
+    assert verify_payload["construct_coverage"]
+    assert all(row["ok"] for row in verify_payload["construct_coverage"])
 
 
 def test_demo_script_prints_copy_pastable_commands(tmp_path: Path) -> None:
@@ -75,6 +79,7 @@ def test_demo_script_seed_and_verify_commands_are_executable(
     assert seed_payload["session_count"] == 3
     assert seed_payload["message_count"] == 23
     assert seed_payload["overlays_seeded"] is True
+    assert all(row["ok"] for row in seed_payload["construct_coverage"])
 
     verify = runner.invoke(cli, demo_commands[1])
     assert verify.exit_code == 0, verify.output
@@ -83,3 +88,4 @@ def test_demo_script_seed_and_verify_commands_are_executable(
     assert verify_payload["overlays_present"] is True
     assert DEMO_CLAUDE_CODE_SESSION_ID in verify_payload["query_hits"]
     assert verify_payload["absolute_path_leaks"] == []
+    assert all(row["ok"] for row in verify_payload["construct_coverage"])

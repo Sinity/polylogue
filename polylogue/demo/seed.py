@@ -15,6 +15,7 @@ from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, build_demo_corpus_s
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
+from .constructs import evaluate_demo_constructs
 from .models import DemoSeedResult
 
 DEMO_SOURCE_DIRNAME = "demo-fixture-world-source"
@@ -166,6 +167,7 @@ async def seed_demo_archive(
     _inject_demo_session_repos(archive_root)
 
     overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
+    construct_coverage = evaluate_demo_constructs(archive_root)
     return DemoSeedResult(
         archive_root=archive_root,
         source_root=source_root,
@@ -174,6 +176,7 @@ async def seed_demo_archive(
         session_ids=tuple(sorted(result.processed_ids)),
         overlays_seeded=overlay is not None,
         assertion_count=len(overlay.assertion_ids) if overlay else 0,
+        construct_coverage=construct_coverage,
     )
 
 

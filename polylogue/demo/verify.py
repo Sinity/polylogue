@@ -8,6 +8,7 @@ from pathlib import Path
 from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, DEMO_SESSION_IDS
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+from .constructs import construct_problem_messages, evaluate_demo_constructs
 from .models import DemoVerifyResult
 
 
@@ -86,6 +87,7 @@ def verify_demo_archive(
             query_hits=(),
             overlays_present=False,
             absolute_path_leaks=(),
+            construct_coverage=(),
             problems=(f"archive unreadable: {exc}",),
         )
 
@@ -104,6 +106,9 @@ def verify_demo_archive(
     if require_overlays and not overlays_present:
         problems.append("expected demo overlays, found none")
 
+    construct_coverage = evaluate_demo_constructs(archive_root)
+    problems.extend(construct_problem_messages(construct_coverage))
+
     if check_source_path_leaks:
         for raw_path in _raw_source_paths(archive_root):
             if Path(raw_path).is_absolute():
@@ -119,6 +124,7 @@ def verify_demo_archive(
         query_hits=query_hits,
         overlays_present=overlays_present,
         absolute_path_leaks=tuple(leaks),
+        construct_coverage=construct_coverage,
         problems=tuple(problems),
     )
 

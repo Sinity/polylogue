@@ -22,6 +22,8 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert seed.session_ids == tuple(sorted(DEMO_SESSION_IDS))
     assert seed.overlays_seeded is True
     assert seed.assertion_count >= 4
+    assert seed.construct_coverage
+    assert all(row.ok for row in seed.construct_coverage)
 
     assert verify.ok is True
     assert verify.session_count == 3
@@ -29,6 +31,8 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert DEMO_CLAUDE_CODE_SESSION_ID in verify.query_hits
     assert verify.overlays_present is True
     assert verify.absolute_path_leaks == ()
+    assert verify.construct_coverage
+    assert all(row.ok for row in verify.construct_coverage)
     assert verify.problems == ()
 
 
@@ -59,6 +63,7 @@ async def test_demo_verify_reports_missing_overlays(tmp_path: Path) -> None:
 
     assert verify.ok is False
     assert "expected demo overlays" in "\n".join(verify.problems)
+    assert all(row.ok for row in verify.construct_coverage)
 
 
 @pytest.mark.asyncio
