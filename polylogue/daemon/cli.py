@@ -1045,14 +1045,6 @@ async def run_daemon_services(
                                 )
                             )
                         )
-                    maintenance_tasks.append(
-                        asyncio.create_task(
-                            _periodic_convergence_check(
-                                sources,
-                                catch_up_complete=getattr(watcher, "catch_up_complete", None),
-                            )
-                        )
-                    )
                     watcher_task = asyncio.create_task(watcher.run())
                     tasks.append(watcher_task)
                     if lifecycle_events_enabled:

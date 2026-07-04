@@ -2033,6 +2033,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert events.index("fts") < events.index("raw-materialization")
     assert events.index("fts") < events.index("drive")
     assert events.index("fts") < events.index("converger")
+    assert events.count("convergence") == 1
     lifecycle_phases = [str(payload["phase"]) for payload in lifecycle_payloads]
     assert lifecycle_phases[0] == "startup"
     assert "component_ready" in lifecycle_phases
