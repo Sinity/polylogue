@@ -1369,15 +1369,35 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
 
 
 def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, limit: int | None = None) -> list[str]:
-    if not _table_exists(conn, "sessions"):
+    if not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
-    sql = "SELECT session_id FROM sessions ORDER BY session_id"
-    params: tuple[object, ...] = ()
+    sql = """
+        SELECT s.session_id
+        FROM sessions AS s
+        LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
+        LEFT JOIN insight_materialization AS im
+          ON im.session_id = s.session_id AND im.insight_type = 'session_profile'
+        WHERE
+          sp.session_id IS NULL
+          OR sp.materializer_version != ?
+          OR im.materializer_version != ?
+          OR (
+              s.sort_key_ms IS NOT NULL
+              AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(s.sort_key_ms AS REAL) / 1000.0)) > 0.000001
+          )
+          OR (
+              s.sort_key_ms IS NULL
+              AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
+                  COALESCE(CAST(s.updated_at_ms / 1000 AS TEXT), '')
+          )
+        ORDER BY s.session_id
+    """
+    params: tuple[object, ...] = (SESSION_INSIGHT_MATERIALIZER_VERSION, SESSION_INSIGHT_MATERIALIZER_VERSION)
     if limit is not None:
         sql += " LIMIT ?"
-        params = (max(0, int(limit)),)
+        params = params + (max(0, int(limit)),)
     rows = conn.execute(sql, params).fetchall()
-    return _archive_stale_session_profile_ids(conn, [str(row[0]) for row in rows])
+    return [str(row[0]) for row in rows]
 
 
 def _archive_insights_check(db_path: Path, path: Path) -> bool:

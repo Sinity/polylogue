@@ -209,6 +209,20 @@ def _seed_minimal_archive(db_path: Path, source_path: Path, *, session_id: str =
         conn.commit()
 
 
+def test_archive_missing_profile_selector_limits_after_stale_filter(tmp_path: Path) -> None:
+    archive_db = tmp_path / "index.db"
+    with sqlite3.connect(archive_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        session_ids = [
+            _seed_index_session(conn, session_id="codex-session:s1", text="profiled"),
+            _seed_index_session(conn, session_id="codex-session:s2", text="missing two"),
+            _seed_index_session(conn, session_id="codex-session:s3", text="missing three"),
+        ]
+        stages._archive_insights_execute_ids(conn, [session_ids[0]])
+
+        assert stages._schema_archive_session_ids_missing_profiles(conn, limit=2) == session_ids[1:]
+
+
 def test_fts_stage_skips_archive_source_path_backlog_repair(tmp_path: Path) -> None:
     archive_db = tmp_path / "index.db"
     (tmp_path / "index.db").touch()
