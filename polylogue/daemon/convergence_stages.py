@@ -1062,9 +1062,16 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
     try:
         conn = _open_archive_insight_write_connection(archive_db)
         try:
-            _archive_rebuild_messages_fts(conn)
+            from polylogue.storage.fts.dangling_repair import (
+                configure_bounded_repair_connection,
+                repair_missing_fts_rows,
+            )
+
+            configure_bounded_repair_connection(conn)
+            outcome = repair_missing_fts_rows(conn)
             conn.commit()
-            return not _archive_fts_needs_repair(conn)
+            logger.info("fts: archive messages_fts surface repair: %s", outcome.detail)
+            return outcome.success and not _archive_fts_needs_repair(conn)
         finally:
             conn.close()
     except Exception as exc:

@@ -288,6 +288,29 @@ def test_archive_fts_global_repair_defers_sqlite_lock(
     assert stages.repair_messages_fts_surface(archive_db) is False
 
 
+def test_archive_fts_global_repair_inserts_missing_rows_without_reset(tmp_path: Path) -> None:
+    """Global surface debt should converge with bounded missing-row repair."""
+    from unittest import mock
+
+    import polylogue.storage.fts.fts_lifecycle as fts_lc
+
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+    source_path = tmp_path / "codex.jsonl"
+    _seed_minimal_archive(archive_db, source_path)
+
+    with mock.patch.object(
+        fts_lc,
+        "reset_message_fts_index_sync",
+        wraps=fts_lc.reset_message_fts_index_sync,
+    ) as reset_surface:
+        assert stages.repair_messages_fts_surface(archive_db) is True
+
+    reset_surface.assert_not_called()
+    with sqlite3.connect(archive_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+
+
 def test_archive_repair_sessions_fts_skips_unknown_scope(tmp_path: Path) -> None:
     """Path-scoped convergence must not become a whole-archive FTS rebuild."""
     from unittest import mock
