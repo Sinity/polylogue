@@ -14,6 +14,7 @@ from polylogue.config import Source
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
     build_demo_corpus_specs,
     seed_demo_user_overlays,
@@ -197,6 +198,28 @@ def _codex_message(
     }
 
 
+def _claude_code_record(
+    *,
+    record_type: str,
+    uuid: str,
+    session_id: str,
+    timestamp: str,
+    role: str,
+    content: str,
+    is_sidechain: bool = False,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "type": record_type,
+        "uuid": uuid,
+        "sessionId": session_id,
+        "timestamp": timestamp,
+        "message": {"role": role, "content": content},
+    }
+    if is_sidechain:
+        record["isSidechain"] = True
+    return record
+
+
 def _input_text(text: str) -> dict[str, object]:
     return {"type": "input_text", "text": text}
 
@@ -206,11 +229,13 @@ def _output_text(text: str) -> dict[str, object]:
 
 
 def _write_demo_lineage_sources(source_root: Path) -> None:
-    """Write explicit Codex parent/fork/subagent fixtures for topology demos."""
+    """Write explicit agent lineage fixtures through provider parser paths."""
 
     parent_id = "demo-lineage-parent"
     fork_id = "demo-lineage-fork"
     subagent_id = "demo-lineage-subagent"
+    claude_parent_id = DEMO_CLAUDE_CODE_SESSION_ID.removeprefix("claude-code-session:")
+    sidechain_id = DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID.removeprefix("claude-code-session:")
     base_user = "Map the demo lineage base context."
     base_assistant = "I have the base context and can branch the analysis."
 
@@ -242,6 +267,50 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
                         "content": "Subagent completed. Session: codex-session:demo-lineage-subagent",
                     },
                 ],
+            ),
+        ),
+    )
+    _write_jsonl(
+        source_root / "claude-code" / "agent-acompact-demo.jsonl",
+        (
+            _claude_code_record(
+                record_type="user",
+                uuid="acompact-u0",
+                session_id=claude_parent_id,
+                timestamp="2026-07-04T10:03:01Z",
+                role="user",
+                content="Summarize the parent context before continuing the demo lineage audit.",
+            ),
+            _claude_code_record(
+                record_type="summary",
+                uuid="acompact-s1",
+                session_id=claude_parent_id,
+                timestamp="2026-07-04T10:03:02Z",
+                role="system",
+                content="Compacted demo lineage context: parent, branch, subagent, and caveats.",
+            ),
+        ),
+    )
+    _write_jsonl(
+        source_root / "claude-code" / "lineage-sidechain.jsonl",
+        (
+            _claude_code_record(
+                record_type="user",
+                uuid="sidechain-u0",
+                session_id=sidechain_id,
+                timestamp="2026-07-04T10:04:01Z",
+                role="user",
+                content="Run a sidechain check for the deterministic demo lineage matrix.",
+                is_sidechain=True,
+            ),
+            _claude_code_record(
+                record_type="assistant",
+                uuid="sidechain-a1",
+                session_id=sidechain_id,
+                timestamp="2026-07-04T10:04:02Z",
+                role="assistant",
+                content="Sidechain check complete; keep this branch typed but separate from parent links.",
+                is_sidechain=True,
             ),
         ),
     )

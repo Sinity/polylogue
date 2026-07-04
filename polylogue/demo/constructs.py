@@ -118,16 +118,40 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         sql="SELECT COUNT(*) FROM session_links",
     ),
     DemoConstruct(
+        construct_id="generic_branch_links",
+        label="Generic branch links",
+        description="Ambiguous parent links are preserved without over-claiming fork-vs-resume semantics.",
+        sql="SELECT COUNT(*) FROM session_links WHERE link_type = 'branch'",
+    ),
+    DemoConstruct(
         construct_id="prefix_sharing_links",
         label="Prefix-sharing lineage links",
         description="At least one child stores only its divergent tail and composes the inherited prefix.",
         sql="SELECT COUNT(*) FROM session_links WHERE inheritance = 'prefix-sharing'",
     ),
     DemoConstruct(
+        construct_id="continuation_links",
+        label="Continuation links",
+        description="At least one auto-compaction or continuation relationship is persisted as a typed link.",
+        sql="SELECT COUNT(*) FROM session_links WHERE link_type = 'continuation'",
+    ),
+    DemoConstruct(
         construct_id="subagent_links",
         label="Subagent links",
         description="At least one spawned subagent relationship is persisted as a typed link.",
         sql="SELECT COUNT(*) FROM session_links WHERE link_type = 'subagent'",
+    ),
+    DemoConstruct(
+        construct_id="sidechain_sessions",
+        label="Sidechain sessions",
+        description="At least one provider-declared sidechain session is preserved as typed session state.",
+        sql="SELECT COUNT(*) FROM sessions WHERE branch_type = 'sidechain'",
+    ),
+    DemoConstruct(
+        construct_id="compaction_events",
+        label="Compaction events",
+        description="At least one provider-declared compaction boundary is preserved as a session event.",
+        sql="SELECT COUNT(*) FROM session_events WHERE event_type = 'compaction'",
     ),
     DemoConstruct(
         construct_id="run_projection_rows",

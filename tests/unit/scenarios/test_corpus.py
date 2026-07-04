@@ -9,6 +9,8 @@ from polylogue.core.json import JSONDocument
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
     DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
     DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
@@ -196,6 +198,8 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
         DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
         DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
+        DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
+        DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     )
     assert tuple(family.family_id for family in DEMO_CORPUS_FAMILIES) == (
         "chatgpt-dialogue",
@@ -204,7 +208,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         "browser-capture-gap",
         "codex-tools",
         "gemini-attachments",
-        "codex-lineage-subagent",
+        "agent-lineage-matrix",
     )
     temporary_family = DEMO_CORPUS_FAMILIES[2]
     assert temporary_family.synthetic is False
@@ -217,8 +221,12 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     assert DEMO_CORPUS_FAMILIES[-1].synthetic is False
     assert set(DEMO_CORPUS_FAMILIES[-1].construct_ids) == {
         "session_link_rows",
+        "generic_branch_links",
         "prefix_sharing_links",
+        "continuation_links",
         "subagent_links",
+        "sidechain_sessions",
+        "compaction_events",
         "subagent_context_snapshots",
     }
     assert tuple(spec.style for spec in specs) == (

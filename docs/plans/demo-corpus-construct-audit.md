@@ -14,7 +14,9 @@ to exercise the thing being claimed.
 - P1 matching issues: `17`.
 - Current seed command:
   `polylogue demo seed --root /realm/tmp/polylogue-uhl-demo-current/archive --force --with-overlays --format json`.
-- Current seed wall time on this workstation: `4.838s`.
+- Current seed wall time on this workstation: `not re-timed in the lineage
+  matrix pass; focused tests and the fresh seed/verify artifact were used as
+  proof`.
 - Current verifier:
   `polylogue demo verify --root /realm/tmp/polylogue-uhl-demo-current/archive --require-overlays --format json`.
 
@@ -24,10 +26,10 @@ The current deterministic archive is intentionally tiny:
 
 | Fact | Current |
 | --- | ---: |
-| Sessions | 8 |
-| Messages | 35 indexed / 37 processed before prefix dedup |
-| Blocks | 79 |
-| Session profiles | 8 |
+| Sessions | 10 |
+| Messages | 39 indexed |
+| Blocks | 83 |
+| Session profiles | 10 |
 | Origins | chatgpt-export, claude-ai-export, claude-code-session, codex-session, aistudio-drive |
 | Tool-use blocks | 19 |
 | Tool-result blocks | 21 |
@@ -38,12 +40,16 @@ The current deterministic archive is intentionally tiny:
 | Temporary sessions | 1 |
 | Token-budget web constructs | 1 |
 | Capture-gap session events | 1 |
-| Session-link rows | 2 |
+| Session-link rows | 3 |
+| Generic branch links | 1 |
 | Prefix-sharing lineage links | 1 |
+| Continuation links | 1 |
 | Subagent links | 1 |
-| Run rows | 8 |
-| Observed-event rows | 32 |
-| Context-snapshot rows | 9 |
+| Sidechain sessions | 1 |
+| Compaction session events | 1 |
+| Run rows | 10 |
+| Observed-event rows | 34 |
+| Context-snapshot rows | 11 |
 | Subagent-start context snapshots | 1 |
 
 Those constructs are now declared in `polylogue.demo.constructs` and checked by
@@ -58,10 +64,17 @@ browser-capture gap family writes a lower-precedence ChatGPT DOM fallback for
 the same native ChatGPT session (`browser-capture/chatgpt-dom-fallback.json`);
 and the direct archive ingest path records a `capture_gap` event whether the
 DOM fallback or the richer native export is parsed first. The
-lineage/subagent family writes explicit Codex source files
+lineage-matrix family writes explicit Codex and Claude Code source files
 (`codex/lineage-parent.jsonl`, `codex/lineage-fork.jsonl`,
-`codex/lineage-subagent.jsonl`). These families go through the normal
-parser/storage path; they are not DB-side row patches.
+`codex/lineage-subagent.jsonl`,
+`claude-code/agent-acompact-demo.jsonl`,
+`claude-code/lineage-sidechain.jsonl`). These families go through the normal
+parser/storage path; they are not DB-side row patches. The Codex
+`forked_from_id` child is intentionally measured as a generic `branch` link
+with `prefix-sharing` inheritance because the source evidence distinguishes
+parentage and shared prefix but not fork-vs-resume. The Claude Code
+`agent-acompact-*` child measures a continuation link and compaction event; the
+Claude Code sidechain file measures typed sidechain session state.
 
 ## Requirements Buckets From Beads
 
@@ -87,7 +100,7 @@ claim them:
 
 | Gap | Current evidence | Driver beads |
 | --- | --- | --- |
-| Richer lineage matrix | one prefix-sharing fork only; no resume/compaction/sidechain variants | `polylogue-4ts`, `polylogue-4ts.1`, `polylogue-37t.11` |
+| Richer lineage matrix | now has generic prefix-sharing branch, typed continuation, subagent, sidechain-session, and compaction-event coverage; true resume-vs-fork remains intentionally unclaimed until source evidence can distinguish it | `polylogue-4ts`, `polylogue-4ts.1`, `polylogue-37t.11` |
 | Abandoned / censored sessions | temporary-session coverage exists; no abandoned/censored variants yet | `polylogue-cfk`, temporal-analysis beads |
 | Browser-capture convergence cases | capture-gap event coverage exists; no multi-capture convergence/debt scenario yet | `polylogue-b5l`, capture-completeness work |
 | Embedding-lane prose | no synthetic embedding coverage in the demo seed | embedding/status beads |
@@ -95,8 +108,7 @@ claim them:
 
 ## Next Implementation Order
 
-1. Add resume/compaction/sidechain variants to the lineage family.
-2. Add abandoned/censored and richer browser-capture convergence families.
-3. Add embedding-lane prose or synthetic local embedding coverage.
-4. Render this audit into a generated datasheet from the family registry,
+1. Add abandoned/censored and richer browser-capture convergence families.
+2. Add embedding-lane prose or synthetic local embedding coverage.
+3. Render this audit into a generated datasheet from the family registry,
    so the docs stop being hand-maintained.

@@ -56,6 +56,10 @@ DEMO_GEMINI_SESSION_ID = "aistudio-drive:demo-00"
 DEMO_CODEX_LINEAGE_PARENT_SESSION_ID = "codex-session:demo-lineage-parent"
 DEMO_CODEX_LINEAGE_FORK_SESSION_ID = "codex-session:demo-lineage-fork"
 DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID = "codex-session:demo-lineage-subagent"
+DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID = (
+    "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo"
+)
+DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID = "claude-code-session:demo-lineage-sidechain"
 DEMO_SESSION_IDS = (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
@@ -65,6 +69,8 @@ DEMO_SESSION_IDS = (
     DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
     DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
     DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
 )
 
 
@@ -198,20 +204,26 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
         style="demo-attachments",
     ),
     DemoCorpusFamily(
-        family_id="codex-lineage-subagent",
-        label="Codex lineage and subagent",
-        provider="codex",
+        family_id="agent-lineage-matrix",
+        label="Agent lineage matrix",
+        provider="mixed-agent",
         construct_ids=(
             "session_link_rows",
+            "generic_branch_links",
             "prefix_sharing_links",
+            "continuation_links",
             "subagent_links",
+            "sidechain_sessions",
+            "compaction_events",
             "subagent_context_snapshots",
         ),
-        description="Explicit parent, prefix-sharing fork, and spawned subagent source files.",
+        description="Explicit parent, prefix-sharing branch, spawned subagent, sidechain, and compaction source files.",
         source_paths=(
             "codex/lineage-parent.jsonl",
             "codex/lineage-fork.jsonl",
             "codex/lineage-subagent.jsonl",
+            "claude-code/agent-acompact-demo.jsonl",
+            "claude-code/lineage-sidechain.jsonl",
         ),
         synthetic=False,
     ),

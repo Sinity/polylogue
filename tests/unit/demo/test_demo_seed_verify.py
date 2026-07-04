@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from polylogue.demo import seed_demo_archive, verify_demo_archive
-from polylogue.scenarios import DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID, DEMO_CLAUDE_CODE_SESSION_ID, DEMO_SESSION_IDS
+from polylogue.scenarios import (
+    DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
+    DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
+    DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_SESSION_IDS,
+)
 
 
 @pytest.mark.asyncio
@@ -41,6 +46,10 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
         capture_gap_events = conn.execute(
             "SELECT session_id, summary FROM session_events WHERE event_type = 'capture_gap'"
         ).fetchall()
+        compaction_events = conn.execute(
+            "SELECT session_id, summary FROM session_events WHERE event_type = 'compaction'"
+        ).fetchall()
+        sidechain_sessions = conn.execute("SELECT session_id FROM sessions WHERE branch_type = 'sidechain'").fetchall()
         subagent_snapshots = conn.execute(
             "SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'"
         ).fetchone()[0]
@@ -49,7 +58,10 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert len(capture_gap_events) == 1
     assert "DOM browser-capture fallback" in capture_gap_events[0][1]
     assert ("branch", "prefix-sharing") in links
+    assert ("continuation", "spawned-fresh") in links
     assert ("subagent", "spawned-fresh") in links
+    assert len(compaction_events) >= 1
+    assert sidechain_sessions == [(DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,)]
     assert subagent_snapshots >= 1
 
 
