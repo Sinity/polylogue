@@ -804,6 +804,11 @@ polylogue ops maintenance archive-read --limit 20
 <p><code>archive-init</code> bootstraps the archive file set. The daemon and explicit
 ingest paths populate <code>source.db</code> and <code>index.db</code> directly from source
 artifacts. Root query commands use the active <code>index.db</code>.</p>
+<p>Source schema version 2 removes the old unique <code>(origin, native_id)</code> raw-row
+constraint. A native session can have multiple durable source observations
+(direct export, browser native capture, DOM fallback, historical ZIPs) while
+still coalescing to one canonical indexed session; source evidence must not be
+replaced merely because two captures describe the same provider-native id.</p>
 <h2>Topology Edges (#1258)</h2>
 <p><code>topology_edges</code> persists every parent reference asserted by a parser as a
 typed row, including references whose parent has not yet been ingested
