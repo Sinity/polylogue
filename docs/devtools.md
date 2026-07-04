@@ -181,6 +181,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace frontier` | Classify ready and in-progress Beads into devloop batches. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
+| `devtools workspace scale-regression` | Run the seeded large-archive scale-regression probe. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |
 | `devtools workspace temporal-devloop` | Compose git and operating-log events into a temporal evidence window. |

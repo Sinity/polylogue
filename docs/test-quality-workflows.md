@@ -8,19 +8,19 @@ This reference is generated from the executable validation-lane, mutation-campai
 
 Current registry snapshot:
 
-- contract lanes: `26`
+- contract lanes: `27`
 - live lanes: `19`
 - composite lanes: `24`
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `109`
+- scenario projections: `110`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
-  - validation-lane: `69`
+  - validation-lane: `70`
 
 ## Runtime Coverage
 
@@ -167,6 +167,7 @@ Use the named lanes through the runner.
 | `retrieval-band-readiness` | 420 | Transcript/evidence/inference retrieval-band readiness, embedding stats, and readiness exposure |
 | `retrieval-checks` | 480 | Action-aware query truth, grouped retrieval stats, archive readiness, and MCP retrieval payload coverage |
 | `scale-fast` | 120 | Fast storage scale budgets |
+| `scale-regression` | 240 | Seeded large-archive-shaped regression probe for real-scale archive bugs |
 | `scale-slow` | 360 | Slow local storage scale budgets |
 | `schema-explain-contract` | 120 | Devtools schema package explanation surface and runtime projection coverage |
 | `schema-list-contract` | 120 | Devtools schema package catalog list surface and runtime projection coverage |
@@ -400,6 +401,7 @@ These projections explain which executable lanes, inferred fixture scenarios, or
 | `validation-lane` | `runtime-substrate-hardening` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`session-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`session_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-sessions`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `contract`<br>`maintenance`<br>`live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`preview` | Full runtime-substrate validation lane covering local contracts plus bounded live archive checks |
 | `validation-lane` | `runtime-substrate-live` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`session-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`session_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-sessions`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`maintenance`<br>`preview` | Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets |
 | `validation-lane` | `scale-fast` | — | — | — | — | — | Fast storage scale budgets |
+| `validation-lane` | `scale-regression` | — | `session_profile`<br>`session_runs`<br>`raw_sessions`<br>`archive_tiers` | `materialize-session-insights`<br>`materialize-run-projection`<br>`project-archive-readiness` | — | `contract`<br>`scale`<br>`storage`<br>`regression` | Seeded large-archive-shaped regression probe for real-scale archive bugs |
 | `validation-lane` | `scale-slow` | — | — | — | — | — | Slow local storage scale budgets |
 | `validation-lane` | `scale-stretch` | — | — | — | — | — | Combined fast and slow storage scale budgets |
 | `validation-lane` | `schema-explain-contract` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `contract`<br>`schema`<br>`devtools` | Devtools schema package explanation surface and runtime projection coverage |

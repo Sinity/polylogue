@@ -403,6 +403,30 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
         category="contract",
         execution=pytest_execution("-v", "tests/unit/storage/test_scale.py", "-x", "--timeout=30"),
     ),
+    "scale-regression": LaneEntry(
+        name="scale-regression",
+        description="Seeded large-archive-shaped regression probe for real-scale archive bugs",
+        timeout_s=240,
+        category="contract",
+        execution=devtools_execution("workspace scale-regression", "--json"),
+        assertion=AssertionSpec(
+            stdout_is_valid_json=True,
+            classification_override=AssertionClass.SMOKE_PROCESS,
+        ),
+        path_targets=("session-insight-materialization-loop", "raw-materialization-loop"),
+        artifact_targets=(
+            "session_profile",
+            "session_runs",
+            "raw_sessions",
+            "archive_tiers",
+        ),
+        operation_targets=(
+            "materialize-session-insights",
+            "materialize-run-projection",
+            "project-archive-readiness",
+        ),
+        tags=("contract", "scale", "storage", "regression"),
+    ),
     "scale-slow": LaneEntry(
         name="scale-slow",
         description="Slow local storage scale budgets",

@@ -424,6 +424,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace scale-regression",
+        "workspace",
+        "Run the seeded large-archive scale-regression probe.",
+        "devtools.scale_regression_probe",
+        use_when=(
+            "Before closing scale-hardening work, seed a small archive with large-archive-shaped edge cases "
+            "and assert chunked insight rebuilds, bounded giant-session profiles, raw-materialization debt "
+            "visibility, reset source preservation, and run-ref no-drop invariants."
+        ),
+        examples=(
+            "devtools workspace scale-regression",
+            "devtools workspace scale-regression --json",
+            "devtools workspace scale-regression --workdir .cache/scale-regression --keep --json",
+        ),
+    ),
+    CommandSpec(
         "workspace temporal-read-profile",
         "workspace",
         "Measure read --view temporal phase timings on the active archive.",
