@@ -28,6 +28,30 @@
       "default": null,
       "title": "Applied Count"
     },
+    "author_kind": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Author Kind"
+    },
+    "author_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Author Ref"
+    },
     "detail": {
       "anyOf": [
         {

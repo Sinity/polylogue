@@ -142,7 +142,13 @@ async def test_user_state_mutations_write_archive_user_tier(
             f'[{{"target_type":"session","session_id":"{ARCHIVE_USER_STATE_SESSION_ID}"}}]',
             '{"density":"compact"}',
         )
-        correction = await poly.record_correction(ARCHIVE_USER_STATE_SESSION_ID, "tag_accept", {"tag": "archive"})
+        correction = await poly.record_correction(
+            ARCHIVE_USER_STATE_SESSION_ID,
+            "tag_accept",
+            {"tag": "archive"},
+            author_ref="agent:codex-session:correction",
+            author_kind="agent",
+        )
         assert correction.session_id == ARCHIVE_USER_STATE_SESSION_ID
 
     user_db = archive_root / "user.db"
@@ -171,7 +177,7 @@ async def test_user_state_mutations_write_archive_user_tier(
             """
         ).fetchall()
         correction_row = conn.execute(
-            "SELECT target_ref, key, value_json FROM assertions WHERE kind = 'correction'"
+            "SELECT target_ref, key, value_json, author_ref, author_kind FROM assertions WHERE kind = 'correction'"
         ).fetchone()
 
     assert mark is not None
@@ -200,6 +206,8 @@ async def test_user_state_mutations_write_archive_user_tier(
     assert correction_row is not None
     assert correction_row[0:2] == (f"insight:{ARCHIVE_USER_STATE_SESSION_ID}", "tag_accept")
     assert json.loads(correction_row[2])["payload"] == {"tag": "archive"}
+    assert correction_row[3] == "agent:codex-session:correction"
+    assert correction_row[4] == "agent"
 
 
 @pytest.mark.asyncio

@@ -332,7 +332,12 @@ def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
 
     with ArchiveStore(root) as facade:
         session_id = facade.write_parsed(session)
-        changed = facade.add_user_tags((session_id,), ("Review", "ready"))
+        changed = facade.add_user_tags(
+            (session_id,),
+            ("Review", "ready"),
+            author_ref="agent:codex-session:tagger",
+            author_kind="agent",
+        )
         duplicate_changed = facade.add_user_tags((session_id,), ("review",))
         removed = facade.remove_user_tags((session_id,), ("READY",))
         summaries = facade.list_summaries(tags=("review",), limit=5)
@@ -359,6 +364,8 @@ def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
     assert tag_counts == {"review": 1}
     assert review_assertion is not None
     assert review_assertion.status == "active"
+    assert review_assertion.author_ref == "agent:codex-session:tagger"
+    assert review_assertion.author_kind == "agent"
     assert ready_assertion is not None
     assert ready_assertion.status == "deleted"
     assert [summary.session_id for summary in summaries] == [session_id]

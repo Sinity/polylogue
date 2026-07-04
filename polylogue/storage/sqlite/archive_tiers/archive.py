@@ -2642,7 +2642,14 @@ class ArchiveStore:
             return IndexStatus(exists=False, count=0)
         return IndexStatus(exists=True, count=_count_scalar(self._conn, "SELECT COUNT(*) FROM messages_fts"))
 
-    def add_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
+    def add_user_tags(
+        self,
+        session_ids: tuple[str, ...],
+        tags: tuple[str, ...],
+        *,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
+    ) -> int:
         """Add user tag assertions to archive user.db and return changed count."""
         user_db_path = self.user_db_path
         initialize_archive_database(user_db_path, ArchiveTier.USER)
@@ -2662,14 +2669,17 @@ class ArchiveStore:
                             user_conn,
                             assertion_id_for_session_tag(session_id, normalized_tag, "user"),
                         )
-                        if existing is None or existing.status == "deleted":
-                            changed += 1
+                        if existing is not None and existing.status != "deleted":
+                            continue
+                        changed += 1
                         upsert_session_tag_assertion(
                             user_conn,
                             session_id=session_id,
                             tag=normalized_tag,
                             tag_source="user",
                             method="cli",
+                            author_ref=author_ref,
+                            author_kind=author_kind,
                             evidence={"source": "archive_query"},
                         )
         finally:
@@ -3915,6 +3925,8 @@ class ArchiveStore:
         payload: dict[str, str],
         *,
         note: str | None = None,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
     ) -> LearningCorrection:
         """Record one learning correction in archive user.db."""
         resolved_session_id = self.resolve_session_id(session_id)
@@ -3930,6 +3942,8 @@ class ArchiveStore:
                     resolved_session_id,
                     correction_kind.value,
                     stored_payload,
+                    author_ref=author_ref,
+                    author_kind=author_kind,
                 )
         finally:
             user_conn.close()

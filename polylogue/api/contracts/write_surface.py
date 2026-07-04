@@ -117,7 +117,14 @@ class TagMutationSurface(Protocol):
     sees it as part of the write contract family.
     """
 
-    async def add_tag(self, session_id: str, tag: str) -> TagMutationResult: ...
+    async def add_tag(
+        self,
+        session_id: str,
+        tag: str,
+        *,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
+    ) -> TagMutationResult: ...
 
     async def remove_tag(self, session_id: str, tag: str) -> TagMutationResult: ...
 

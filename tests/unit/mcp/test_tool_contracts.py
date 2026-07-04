@@ -1634,14 +1634,25 @@ class TestMutationTools:
             mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
-                mcp_server._tool_manager._tools["add_tag"].fn, session_id="test:conv-123", tag="important"
+                mcp_server._tool_manager._tools["add_tag"].fn,
+                session_id="test:conv-123",
+                tag="important",
+                author_ref="agent:codex-session:unit",
+                author_kind="agent",
             )
 
         parsed = json.loads(result)
         assert parsed["status"] == "ok"
         assert parsed["session_id"] == "test:conv-123"
         assert parsed["tag"] == "important"
-        mock_poly.add_tag.assert_awaited_once_with("test:conv-123", "important")
+        assert parsed["author_ref"] == "agent:codex-session:unit"
+        assert parsed["author_kind"] == "agent"
+        mock_poly.add_tag.assert_awaited_once_with(
+            "test:conv-123",
+            "important",
+            author_ref="agent:codex-session:unit",
+            author_kind="agent",
+        )
 
     def test_add_tag_error(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
@@ -1650,14 +1661,16 @@ class TestMutationTools:
             mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
-                mcp_server._tool_manager._tools["add_tag"].fn, session_id="test:conv-123", tag="invalid"
+                mcp_server._tool_manager._tools["add_tag"].fn,
+                session_id="test:conv-123",
+                tag="invalid",
             )
 
         body = json.loads(result)
         assert body["is_error"] is True
         assert body["tool"] == "add_tag"
         assert body["code"] == "internal_error"
-        mock_poly.add_tag.assert_awaited_once_with("test:conv-123", "invalid")
+        mock_poly.add_tag.assert_awaited_once_with("test:conv-123", "invalid", author_ref=None, author_kind=None)
 
     def test_remove_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:

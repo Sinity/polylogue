@@ -384,7 +384,14 @@ class TagStore(Protocol):
 
     async def delete_metadata(self, session_id: str, key: str) -> bool: ...
 
-    async def add_tag(self, session_id: str, tag: str) -> bool: ...
+    async def add_tag(
+        self,
+        session_id: str,
+        tag: str,
+        *,
+        author_ref: str | None = None,
+        author_kind: str | None = None,
+    ) -> bool: ...
 
     async def bulk_add_tags(self, session_ids: list[str], tags: list[str]) -> int: ...
 
