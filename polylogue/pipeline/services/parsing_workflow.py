@@ -59,6 +59,37 @@ def _raw_batch_bytes(headers_by_raw_id: dict[str, int], batch_ids: Iterable[str]
     return sum(max(int(headers_by_raw_id.get(raw_id, 0)), 0) for raw_id in batch_ids)
 
 
+def _emit_ingest_batch_start(
+    *,
+    batch: int,
+    batch_ids: list[str],
+    processed_raw: int,
+    total_raw: int,
+    raw_blob_sizes: dict[str, int],
+    progress_callback: ProgressCallback | None,
+) -> int:
+    batch_blob_bytes = _raw_batch_bytes(raw_blob_sizes, batch_ids)
+    batch_blob_mb = batch_blob_bytes / (1024 * 1024)
+    if progress_callback is not None:
+        progress_callback(
+            0,
+            desc=(
+                f"Ingesting batch {batch} "
+                f"({processed_raw:,}/{total_raw:,} raw, "
+                f"batch {len(batch_ids):,} raw, {batch_blob_mb:.1f} MiB)"
+            ),
+        )
+    logger.info(
+        "ingest_batch_start",
+        batch=batch,
+        size=len(batch_ids),
+        processed_raw=processed_raw,
+        total_raw=total_raw,
+        blob_mb=round(batch_blob_mb, 1),
+    )
+    return batch_blob_bytes
+
+
 def _append_unique_raw_ids(
     target: list[str],
     *,
@@ -296,6 +327,15 @@ async def parse_from_raw(
             max_records=service.raw_batch_size,
             max_blob_bytes=service.raw_batch_blob_limit_bytes,
         ):
+            next_batch = batches_processed + 1
+            batch_blob_bytes = _emit_ingest_batch_start(
+                batch=next_batch,
+                batch_ids=batch_ids,
+                processed_raw=processed_so_far,
+                total_raw=total,
+                raw_blob_sizes=raw_blob_sizes,
+                progress_callback=progress_callback,
+            )
             t_batch = time.perf_counter()
             batch_observation = await process_ingest_batch(
                 service,
@@ -305,7 +345,7 @@ async def parse_from_raw(
                 progress_callback,
                 force_write=force_write,
                 repair_message_fts=repair_message_fts,
-                suspend_fts_triggers=_raw_batch_bytes(raw_blob_sizes, batch_ids) >= _BULK_FTS_RAW_BATCH_BYTES,
+                suspend_fts_triggers=batch_blob_bytes >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
             batch_elapsed = time.perf_counter() - t_batch
@@ -339,6 +379,15 @@ async def parse_from_raw(
             max_records=service.raw_batch_size,
             max_blob_bytes=service.raw_batch_blob_limit_bytes,
         ):
+            next_batch = batches_processed + 1
+            batch_blob_bytes = _emit_ingest_batch_start(
+                batch=next_batch,
+                batch_ids=batch_ids,
+                processed_raw=processed_so_far,
+                total_raw=total,
+                raw_blob_sizes=raw_blob_sizes,
+                progress_callback=progress_callback,
+            )
             t_batch = time.perf_counter()
             batch_observation = await process_ingest_batch(
                 service,
@@ -348,7 +397,7 @@ async def parse_from_raw(
                 progress_callback,
                 force_write=force_write,
                 repair_message_fts=repair_message_fts,
-                suspend_fts_triggers=_raw_batch_bytes(raw_blob_sizes, batch_ids) >= _BULK_FTS_RAW_BATCH_BYTES,
+                suspend_fts_triggers=batch_blob_bytes >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
             processed_so_far += len(batch_ids)
