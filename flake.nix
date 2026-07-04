@@ -178,9 +178,15 @@
           fi
 
           # Install repo git hooks — skip if already set correctly.
+          # Prefer the Beads composite hook path when present; those hooks
+          # chain the ordinary Polylogue .githooks checks and the Beads hooks.
+          desired_hooks_path=".githooks"
+          if [ -d .beads-hooks ]; then
+            desired_hooks_path=".beads-hooks"
+          fi
           current_hooks_path=$(git config --local core.hooksPath 2>/dev/null || true)
-          if [ "$current_hooks_path" != ".githooks" ]; then
-            git config --local core.hooksPath .githooks 2>/dev/null || true
+          if [ "$current_hooks_path" != "$desired_hooks_path" ]; then
+            git config --local core.hooksPath "$desired_hooks_path" 2>/dev/null || true
           fi
 
           # Clean stale __pycache__ dirs under source trees — skip if stamp

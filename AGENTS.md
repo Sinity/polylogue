@@ -371,7 +371,10 @@ The repository should stay aligned with the workflow above:
 
 ## Git Hooks
 
-The devshell installs git hooks automatically (`core.hooksPath .githooks`):
+The devshell installs git hooks automatically. In a Beads-enabled checkout it
+sets `core.hooksPath` to `.beads-hooks`; otherwise it falls back to `.githooks`.
+The Beads composite hooks chain the ordinary Polylogue gates below and then run
+the matching `bd hooks run ...` integration.
 
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
   Also runs a worktree-escape detector (#1211): when committing from a
@@ -381,8 +384,11 @@ The devshell installs git hooks automatically (`core.hooksPath .githooks`):
   `cd`s into the main checkout from inside a worktree). Set
   `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree
   commit flows.
+- **prepare-commit-msg / post-checkout / post-merge**: Beads integration hooks
+  when `.beads-hooks` is active.
 - **pre-push**: `devtools verify --quick` (format, lint, mypy, generated
-  surfaces, and fast manifest checks).
+  surfaces, and fast manifest checks), followed by the Beads pre-push hook when
+  `.beads-hooks` is active.
 
 The pre-push hook is an early failure gate. The PR baseline is the
 `devtools verify` workflow below.
@@ -414,10 +420,10 @@ devtools verify --quick    # format + lint + mypy + render all --check (skip tes
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 
-The quick gate runs on `git push` via `.githooks/pre-push`. It's a fast check,
-not a substitute for the default baseline. The default command fails fast when
-`.cache/testmon/testmondata` and `.cache/testmon/seed.json` are missing; do not
-rely on silent full-suite fallback.
+The quick gate runs on `git push` via the active pre-push hook. It's a fast
+check, not a substitute for the default baseline. The default command fails
+fast when `.cache/testmon/testmondata` and `.cache/testmon/seed.json` are
+missing; do not rely on silent full-suite fallback.
 
 `devtools verify` does not replay a prior verify result. It always runs the
 static gates and then invokes pytest-testmon for affected-test selection from
