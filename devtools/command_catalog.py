@@ -469,6 +469,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace lineage-validation",
+        "workspace",
+        "Validate lineage-count evidence before citing archive counts externally.",
+        "devtools.lineage_validation",
+        use_when=(
+            "Before publishing archive session/message/cardinality numbers, emit exact physical/logical counts, "
+            "session-link inheritance rollups, branch-point integrity checks, and sampled composed-read proof "
+            "from the active archive instead of relying on scratch SQL or planner-estimated diagnostics."
+        ),
+        examples=(
+            "devtools workspace lineage-validation --json",
+            "devtools workspace lineage-validation --sample-prefix-sharing 100 --json",
+            "devtools workspace lineage-validation --out-dir .agent/demos/lineage-validation/current",
+        ),
+    ),
+    CommandSpec(
         "workspace affordance-usage",
         "workspace",
         "Analyze agent affordance/tool usage from archive tool-use rows.",
