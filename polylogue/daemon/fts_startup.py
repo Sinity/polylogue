@@ -148,6 +148,23 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
         if _message_fts_freshness_row_ready_sync(conn, freshness_row):
             logger.info("daemon: archive message FTS startup readiness trusted freshness ledger")
             return True
+        if freshness_row is not None and str(freshness_row[0]) == READY:
+            logger.warning("daemon: archive message FTS startup readiness found inconsistent ready freshness ledger")
+            _record_message_fts_surface_debt(db_path, "startup found inconsistent messages_fts ready freshness ledger")
+            recorded_source_rows = _int_or_zero(freshness_row[1])
+            recorded_indexed_rows = _int_or_zero(freshness_row[2])
+            record_fts_surface_state_sync(
+                conn,
+                surface="messages_fts",
+                state=STALE,
+                source_rows=recorded_source_rows,
+                indexed_rows=recorded_indexed_rows,
+                missing_rows=max(_int_or_zero(freshness_row[3]), recorded_source_rows - recorded_indexed_rows, 0),
+                excess_rows=max(_int_or_zero(freshness_row[4]), recorded_indexed_rows - recorded_source_rows, 0),
+                duplicate_rows=_int_or_zero(freshness_row[5]),
+                detail=_MESSAGE_FTS_STARTUP_DEBT_DETAIL,
+            )
+            return True
         if _message_fts_freshness_row_stale_sync(freshness_row):
             logger.warning("daemon: archive message FTS startup readiness found stale freshness ledger")
             _record_message_fts_surface_debt(db_path, "startup found stale messages_fts freshness ledger")
@@ -157,8 +174,20 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
             if recorded_source_rows == 0 and recorded_indexed_rows == 0 and _message_fts_docsize_has_rows_sync(conn):
                 logger.warning(
                     "daemon: archive message FTS stale freshness ledger has empty counts "
-                    "but populated docsize; recomputing startup drift"
+                    "but populated docsize; scheduling debt without global startup counts"
                 )
+                record_fts_surface_state_sync(
+                    conn,
+                    surface="messages_fts",
+                    state=STALE,
+                    source_rows=0,
+                    indexed_rows=0,
+                    missing_rows=0,
+                    excess_rows=0,
+                    duplicate_rows=_int_or_zero(freshness_row[5]),
+                    detail=_MESSAGE_FTS_STARTUP_DEBT_DETAIL,
+                )
+                return True
             else:
                 record_fts_surface_state_sync(
                     conn,
