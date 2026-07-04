@@ -23,6 +23,8 @@ from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import build_default_corpus_specs
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.maintenance import SqliteOptimizeObservation
+from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation
 
 
 def _build_sources(tmp_path: Path, *, count: int, seed: int = 7) -> list[Source]:
@@ -148,3 +150,94 @@ def test_invalid_env_falls_back_to_default_threshold(monkeypatch: pytest.MonkeyP
     assert archive_ingest._commit_batch_message_threshold() == archive_ingest.COMMIT_BATCH_MESSAGE_THRESHOLD
     monkeypatch.delenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", raising=False)
     assert archive_ingest._commit_batch_message_threshold() == archive_ingest.COMMIT_BATCH_MESSAGE_THRESHOLD
+
+
+def test_batched_archive_ingest_runs_post_commit_upkeep(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "5")
+    archive_root = workspace_env["archive_root"]
+    sources = _build_sources(tmp_path, count=4, seed=31)
+    wal_calls: list[Path] = []
+    optimize_calls: list[Path] = []
+
+    def fake_checkpoint_archive_wals(
+        root: Path,
+        *,
+        reason: str,
+        allow_truncate: bool = True,
+        **_: object,
+    ) -> tuple[WalCheckpointObservation, ...]:
+        assert root == archive_root
+        assert reason == archive_ingest.POST_COMMIT_UPKEEP_REASON
+        assert allow_truncate is False
+        wal_calls.append(root)
+        return (
+            WalCheckpointObservation(
+                reason=reason,
+                mode="passive",
+                wal_bytes_before=12,
+                wal_bytes_after=4,
+                checkpointed_pages=2,
+            ),
+        )
+
+    def fake_optimize_archive_tiers(root: Path, *, reason: str, **_: object) -> tuple[SqliteOptimizeObservation, ...]:
+        assert root == archive_root
+        assert reason == archive_ingest.POST_COMMIT_UPKEEP_REASON
+        optimize_calls.append(root)
+        return (SqliteOptimizeObservation(reason=reason, ran=True, analysis_limit=1000),)
+
+    monkeypatch.setattr(archive_ingest, "maybe_checkpoint_archive_wals", fake_checkpoint_archive_wals)
+    monkeypatch.setattr(archive_ingest, "maybe_optimize_archive_tiers", fake_optimize_archive_tiers)
+
+    result = asyncio.run(parse_sources_archive(archive_root, sources))
+
+    upkeep_observations = [item for item in result.batch_observations if item.get("archive_post_commit_upkeep")]
+    assert len(wal_calls) >= 2
+    assert len(optimize_calls) == len(wal_calls)
+    assert len(upkeep_observations) == len(wal_calls)
+    assert upkeep_observations[0]["wal_checkpoint_modes"] == ["passive"]
+    assert upkeep_observations[0]["sqlite_optimize_ran"] == 1
+    assert result.batch_observations[-1]["primary_ingest_store"] == "archive_file_set"
+
+
+def test_per_session_archive_ingest_runs_post_commit_upkeep(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
+    archive_root = workspace_env["archive_root"]
+    sources = _build_sources(tmp_path, count=2, seed=41)
+    wal_calls = 0
+
+    def fake_checkpoint_archive_wals(
+        root: Path,
+        *,
+        reason: str,
+        allow_truncate: bool = True,
+        **_: object,
+    ) -> tuple[WalCheckpointObservation, ...]:
+        nonlocal wal_calls
+        assert root == archive_root
+        assert reason == archive_ingest.POST_COMMIT_UPKEEP_REASON
+        assert allow_truncate is False
+        wal_calls += 1
+        return ()
+
+    def fake_optimize_archive_tiers(root: Path, *, reason: str, **_: object) -> tuple[SqliteOptimizeObservation, ...]:
+        assert root == archive_root
+        assert reason == archive_ingest.POST_COMMIT_UPKEEP_REASON
+        return ()
+
+    monkeypatch.setattr(archive_ingest, "maybe_checkpoint_archive_wals", fake_checkpoint_archive_wals)
+    monkeypatch.setattr(archive_ingest, "maybe_optimize_archive_tiers", fake_optimize_archive_tiers)
+
+    result = asyncio.run(parse_sources_archive(archive_root, sources))
+
+    assert wal_calls == len(sources)
+    assert sum(1 for item in result.batch_observations if item.get("archive_post_commit_upkeep")) == len(sources)
+    assert result.batch_observations[-1]["archive_write_targets"] == ["source.db", "index.db"]

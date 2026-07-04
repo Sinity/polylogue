@@ -20,6 +20,8 @@ from polylogue.sources.source_parsing import (
 )
 from polylogue.sources.source_walk import _setup_source_walk
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
+from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
 
 logger = get_logger(__name__)
 
@@ -32,6 +34,7 @@ logger = get_logger(__name__)
 # (slower + large WAL). Override with POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES;
 # a value <= 0 restores per-session commit (escape hatch).
 COMMIT_BATCH_MESSAGE_THRESHOLD = 8000
+POST_COMMIT_UPKEEP_REASON = "archive_ingest_commit"
 
 
 def _commit_batch_message_threshold() -> int:
@@ -149,7 +152,10 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                 counters["pending_messages"] += len(session.messages)
                 if counters["pending_messages"] >= threshold:
                     archive.commit()
+                    _record_post_commit_upkeep(archive_root, result, reason=POST_COMMIT_UPKEEP_REASON)
                     counters["pending_messages"] = 0
+            else:
+                _record_post_commit_upkeep(archive_root, result, reason=POST_COMMIT_UPKEEP_REASON)
 
         if workers <= 1:
             # Escape hatch: exact sequential behavior, no pool.
@@ -212,6 +218,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
 
         if batched and counters["pending_messages"] > 0:
             archive.commit()
+            _record_post_commit_upkeep(archive_root, result, reason=POST_COMMIT_UPKEEP_REASON)
 
     raw_rows_written = counters["raw_rows"]
     index_rows_written = counters["index_rows"]
@@ -231,6 +238,34 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
         }
     )
     return result
+
+
+def _record_post_commit_upkeep(archive_root: Path, result: ParseResult, *, reason: str) -> None:
+    """Run bounded archive-tier upkeep after a direct archive ingest commit.
+
+    Direct re-ingest writes through ``ArchiveStore`` instead of the daemon's
+    ingest-batch core.  The upkeep still belongs on the ingest path: WAL
+    checkpointing and planner statistics are rebuildable archive invariants, not
+    operator maintenance chores that only happen when the daemon has been up for
+    a full periodic cycle.
+    """
+
+    wal_observations = maybe_checkpoint_archive_wals(archive_root, reason=reason, allow_truncate=False)
+    optimize_observations = maybe_optimize_archive_tiers(archive_root, reason=reason)
+    result.batch_observations.append(
+        {
+            "archive_post_commit_upkeep": True,
+            "reason": reason,
+            "archive_root": str(archive_root),
+            "wal_checkpoint_modes": [observation.mode for observation in wal_observations if observation.ran],
+            "wal_checkpoint_errors": [observation.error for observation in wal_observations if observation.error],
+            "wal_checkpoint_blocked_count": sum(
+                1 for observation in wal_observations if observation.busy_pages > 0 or observation.blocking_processes
+            ),
+            "sqlite_optimize_ran": sum(1 for observation in optimize_observations if observation.ran),
+            "sqlite_optimize_errors": [observation.error for observation in optimize_observations if observation.error],
+        }
+    )
 
 
 def _archive_raw_payload(raw_data: object, session: Any) -> bytes:

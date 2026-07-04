@@ -63,6 +63,13 @@ class ParseBatchObservation(TypedDict, total=False):
     executor_teardown_elapsed_ms: float
     raw_state_update_elapsed_ms: float
     unattributed_elapsed_ms: float
+    archive_post_commit_upkeep: bool
+    reason: str
+    wal_checkpoint_modes: list[str]
+    wal_checkpoint_errors: list[str]
+    wal_checkpoint_blocked_count: int
+    sqlite_optimize_ran: int
+    sqlite_optimize_errors: list[str]
     rss_start_mb: float
     rss_end_mb: float
     rss_delta_mb: float
