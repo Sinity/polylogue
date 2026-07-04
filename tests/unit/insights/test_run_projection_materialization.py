@@ -242,30 +242,87 @@ async def test_run_projection_reads_source_rows_when_cache_tables_absent(tmp_pat
 
 
 def test_subagent_and_child_main_runs_do_not_collide(tmp_path: Path) -> None:
-    """A parent-side subagent run and the child session main run must coexist."""
-    from polylogue.core.refs import EvidenceRef, ObjectRef
-    from polylogue.insights.run_projection import ProjectedRun, RunProjection
+    """Duplicate parent-side subagent ids and a child main run must coexist."""
+    from polylogue.insights.run_projection import build_run_projection
+    from polylogue.insights.transforms import SubagentReport, TransformRawRef
     from polylogue.storage.insights.session.storage import replace_session_runs_bulk_sync
 
-    ev = (EvidenceRef.parse("codex-session:child::m1"),)
-    child_main = ObjectRef.parse("run:codex-session:child")
-    parent_subagent = ObjectRef.parse("run:codex-session:parent:subagent:task-1")
-    parent = RunProjection(
+    parent_ref = TransformRawRef(session_id="codex-session:parent")
+    report_0_ref = TransformRawRef(session_id="codex-session:parent", message_id="m1", block_index=0, ref_kind="block")
+    report_1_ref = TransformRawRef(session_id="codex-session:parent", message_id="m2", block_index=0, ref_kind="block")
+    child_ref = TransformRawRef(session_id="codex-session:child")
+    parent = build_run_projection(
         session_id="codex-session:parent",
-        runs=(
-            ProjectedRun(run_ref=ObjectRef.parse("run:codex-session:parent"), role="main", evidence_refs=ev),
-            ProjectedRun(
-                run_ref=parent_subagent,
-                role="subagent",
-                parent_run_ref=ObjectRef.parse("run:codex-session:parent"),
-                evidence_refs=ev,
+        source_origin="codex-session",
+        title="parent",
+        git_branch=None,
+        working_directories=(),
+        session_raw_refs=(parent_ref,),
+        tool_summaries=(),
+        subagent_reports=(
+            SubagentReport(
+                subagent_type="Explore",
+                tool_id="shared-tool",
+                task_id="task-a",
+                child_session_id="codex-session:child",
+                prompt="first",
+                final_report_preview="first done",
+                raw_refs=(report_0_ref,),
+            ),
+            SubagentReport(
+                subagent_type="Explore",
+                tool_id="shared-tool",
+                task_id="task-b",
+                child_session_id="codex-session:child",
+                prompt="second",
+                final_report_preview="second done",
+                raw_refs=(report_1_ref,),
             ),
         ),
+        session_digest_events=(),
     )
-    child = RunProjection(
+    parent_again = build_run_projection(
+        session_id="codex-session:parent",
+        source_origin="codex-session",
+        title="parent",
+        git_branch=None,
+        working_directories=(),
+        session_raw_refs=(parent_ref,),
+        tool_summaries=(),
+        subagent_reports=(
+            SubagentReport(
+                subagent_type="Explore",
+                tool_id="shared-tool",
+                task_id="task-a",
+                child_session_id="codex-session:child",
+                prompt="first",
+                final_report_preview="first done",
+                raw_refs=(report_0_ref,),
+            ),
+            SubagentReport(
+                subagent_type="Explore",
+                tool_id="shared-tool",
+                task_id="task-b",
+                child_session_id="codex-session:child",
+                prompt="second",
+                final_report_preview="second done",
+                raw_refs=(report_1_ref,),
+            ),
+        ),
+        session_digest_events=(),
+    )
+    child = build_run_projection(
         session_id="codex-session:child",
-        runs=(ProjectedRun(run_ref=child_main, role="main", evidence_refs=ev),),
+        source_origin="codex-session",
+        title="child",
+        git_branch=None,
+        working_directories=(),
+        session_raw_refs=(child_ref,),
+        tool_summaries=(),
+        subagent_reports=(),
+        session_digest_events=(),
     )
+    assert [run.run_ref for run in parent.runs] == [run.run_ref for run in parent_again.runs]
 
     conn = sqlite3.connect(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
@@ -289,6 +346,7 @@ def test_subagent_and_child_main_runs_do_not_collide(tmp_path: Path) -> None:
     assert [(row["run_ref"], row["session_id"], row["role"]) for row in rows] == [
         ("run:codex-session:child", "codex-session:child", "main"),
         ("run:codex-session:parent", "codex-session:parent", "main"),
-        ("run:codex-session:parent:subagent:task-1", "codex-session:parent", "subagent"),
+        ("run:codex-session:parent:subagent:0:shared-tool", "codex-session:parent", "subagent"),
+        ("run:codex-session:parent:subagent:1:shared-tool", "codex-session:parent", "subagent"),
     ]
     conn.close()
