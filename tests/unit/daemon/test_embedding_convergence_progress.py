@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -9,6 +10,35 @@ import pytest
 from polylogue.daemon import convergence_stages, embedding_backlog
 from polylogue.daemon.status import format_daemon_status_lines
 from polylogue.storage.embeddings.materialization import EmbedSessionOutcome, PendingSession
+
+
+def test_periodic_embedding_backlog_waits_for_catch_up_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+        calls.append("drain")
+        raise asyncio.CancelledError
+
+    async def exercise() -> None:
+        catch_up_complete = asyncio.Event()
+        monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: tmp_path / "index.db")
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(embedding_backlog, "EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS", 0)
+        task = asyncio.create_task(
+            embedding_backlog.periodic_embedding_backlog_check(catch_up_complete=catch_up_complete)
+        )
+        await asyncio.sleep(0)
+        assert calls == []
+        catch_up_complete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert calls == ["drain"]
 
 
 class _EmbeddingConfig:

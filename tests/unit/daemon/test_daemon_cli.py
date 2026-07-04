@@ -488,6 +488,34 @@ def test_periodic_raw_materialization_convergence_treats_sqlite_lock_as_retry(
     warning.assert_not_called()
 
 
+def test_periodic_raw_materialization_convergence_waits_for_catch_up_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    calls: list[str] = []
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+        calls.append("drain")
+        raise asyncio.CancelledError
+
+    async def exercise() -> None:
+        catch_up_complete = asyncio.Event()
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        task = asyncio.create_task(
+            daemon_cli._periodic_raw_materialization_convergence_after(catch_up_complete=catch_up_complete)
+        )
+        await asyncio.sleep(0)
+        assert calls == []
+        catch_up_complete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert calls == ["drain"]
+
+
 def test_periodic_convergence_check_waits_for_catch_up_complete(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1714,14 +1742,21 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup),
         patch.object(daemon_cli, "_sweep_orphaned_blob_leases", fake_sweep_orphaned_blob_leases),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")),
-        patch.object(daemon_cli, "_periodic_raw_materialization_convergence", lambda: fake_loop("raw-materialization")),
+        patch.object(
+            daemon_cli,
+            "_periodic_raw_materialization_convergence_after",
+            lambda _gate=None: fake_loop("raw-materialization"),
+        ),
         patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")),
         patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: fake_loop("convergence")),
         patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")),
         patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")),
         patch.object(daemon_cli, "_periodic_drive_source_catchup", lambda: fake_loop("drive")),
-        patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", lambda: fake_loop("embedding")),
+        patch(
+            "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
+            lambda **_kwargs: fake_loop("embedding"),
+        ),
         patch("polylogue.daemon.convergence.DaemonConverger", FakeConverger),
         patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
         patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event),

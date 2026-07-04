@@ -430,6 +430,15 @@ async def _periodic_convergence_check(
 
 async def _periodic_raw_materialization_convergence() -> None:
     """Continuously converge durable raw source rows into the index tier."""
+    await _periodic_raw_materialization_convergence_after()
+
+
+async def _periodic_raw_materialization_convergence_after(
+    catch_up_complete: asyncio.Event | None = None,
+) -> None:
+    """Continuously converge durable raw rows after initial source catch-up."""
+    if catch_up_complete is not None:
+        await catch_up_complete.wait()
     while True:
         try:
             materialized = await asyncio.to_thread(_drain_raw_materialization_once)
@@ -443,6 +452,15 @@ async def _periodic_raw_materialization_convergence() -> None:
         except Exception:
             logger.warning("raw materialization: convergence check failed", exc_info=True)
         await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
+
+
+async def _bridge_catch_up_complete(
+    source: asyncio.Event,
+    target: asyncio.Event,
+) -> None:
+    """Forward watcher catch-up completion to daemon maintenance loops."""
+    await source.wait()
+    target.set()
 
 
 def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT) -> int:
@@ -922,12 +940,13 @@ async def run_daemon_services(
                     logger.info("daemon: startup Drive catch-up refreshed %d session(s)", changed_drive_sessions)
             else:
                 logger.info("daemon: configured source catch-up disabled for this run")
+            catch_up_complete_gate = asyncio.Event() if enable_watch else None
             periodic_loops = [
-                _periodic_raw_materialization_convergence(),
+                _periodic_raw_materialization_convergence_after(catch_up_complete_gate),
                 _periodic_wal_checkpoint(),
                 _periodic_fts_merge(),
                 _periodic_heartbeat(),
-                periodic_embedding_backlog_check(),
+                periodic_embedding_backlog_check(catch_up_complete=catch_up_complete_gate),
                 _periodic_health_check(),
                 _periodic_db_optimize(),
                 _periodic_status_snapshot_refresh(),
@@ -965,6 +984,15 @@ async def run_daemon_services(
                         converger=converger,
                         event_emitter=_emit_live_batch_event,
                     )
+                    if catch_up_complete_gate is not None:
+                        maintenance_tasks.append(
+                            asyncio.create_task(
+                                _bridge_catch_up_complete(
+                                    watcher.catch_up_complete,
+                                    catch_up_complete_gate,
+                                )
+                            )
+                        )
                     maintenance_tasks.append(
                         asyncio.create_task(
                             _periodic_convergence_check(

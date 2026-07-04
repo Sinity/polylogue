@@ -18,11 +18,16 @@ logger = get_logger(__name__)
 EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS = 60
 
 
-async def periodic_embedding_backlog_check() -> None:
+async def periodic_embedding_backlog_check(
+    *,
+    catch_up_complete: asyncio.Event | None = None,
+) -> None:
     """Periodically drain one bounded pending-embedding window."""
     from polylogue.paths import active_index_db_path
 
     db = active_index_db_path()
+    if catch_up_complete is not None:
+        await catch_up_complete.wait()
     while True:
         await asyncio.sleep(EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS)
         try:
