@@ -46,7 +46,7 @@ def _insert_session(
     return session_id
 
 
-def _write_codex_state(path: Path, *, tokens: int = 100) -> None:
+def _write_codex_state(path: Path, *, tokens: int = 100, thread_id: str = "thread-1") -> None:
     with sqlite3.connect(path) as conn:
         conn.execute(
             """
@@ -68,9 +68,9 @@ def _write_codex_state(path: Path, *, tokens: int = 100) -> None:
             INSERT INTO threads(
                 id, tokens_used, model, source, cli_version, archived,
                 has_user_event, updated_at_ms, rollout_path
-            ) VALUES ('thread-1', ?, 'gpt-5-codex', 'cli', '0.test', 0, 0, 1234, '/x/rollout.jsonl')
+            ) VALUES (?, ?, 'gpt-5-codex', 'cli', '0.test', 0, 0, 1234, '/x/rollout.jsonl')
             """,
-            (tokens,),
+            (thread_id, tokens),
         )
 
 
@@ -124,6 +124,17 @@ def test_codex_probe_compares_copied_state_to_archive(tmp_path: Path, capsys: py
     assert codex["comparison"]["compared"] == 1
     assert codex["comparison"]["median_ratio"] == 1.0
     assert "session_model_usage disjoint lanes" in codex["details"]["lane_contract"]
+    assert codex["details"]["archive_grains"] == {
+        "comparison_grain": "physical_session",
+        "logical_available_grain": "logical_session_model_high_water",
+        "fewest_outside_tolerance_grain": "physical_session",
+        "closest_p90_ratio_grain": "physical_session",
+        "physical_total_tokens": 100,
+        "logical_total_tokens": 100,
+        "external_total_tokens": 100,
+        "replay_gap_tokens": 0,
+    }
+    assert codex["details"]["logical_comparison"]["median_ratio"] == 1.0
     assert Path(codex["details"]["copied_path"]).exists()
 
 
@@ -149,6 +160,74 @@ def test_codex_probe_check_fails_outside_tolerance(tmp_path: Path, capsys: pytes
     assert payload["sections"][0]["comparison"]["samples"][0]["external_cli_version"] == "0.test"
     assert payload["sections"][0]["details"]["outside_external_token_values"] == [{"tokens_used": 100, "count": 1}]
     assert {"flag": "archived=0", "count": 1} in payload["sections"][0]["details"]["outside_external_flag_counts"]
+
+
+def test_codex_probe_exposes_logical_chain_comparison(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    archive = _archive_root(tmp_path)
+    with sqlite3.connect(archive / "index.db") as conn:
+        root_id = _insert_session(
+            conn,
+            origin="codex-session",
+            native_id="thread-root",
+            model="gpt-5-codex",
+            input_tokens=20,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
+        child_id = _insert_session(
+            conn,
+            origin="codex-session",
+            native_id="thread-child",
+            model="gpt-5-codex",
+            input_tokens=30,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
+        conn.executemany(
+            "INSERT INTO session_profiles (session_id, logical_session_id) VALUES (?, ?)",
+            [(root_id, root_id), (child_id, root_id)],
+        )
+    codex_state = tmp_path / "state_5.sqlite"
+    _write_codex_state(codex_state, tokens=30, thread_id="thread-root")
+
+    assert (
+        main(
+            [
+                "--archive-root",
+                str(archive),
+                "--codex-state",
+                str(codex_state),
+                "--scratch-dir",
+                str(tmp_path / "scratch"),
+                "--json",
+                "--check",
+            ]
+        )
+        == 1
+    )
+    payload = json.loads(capsys.readouterr().out)
+    codex = payload["sections"][0]
+
+    assert codex["comparison"]["outside_tolerance"] == 1
+    assert codex["details"]["logical_comparison"]["outside_tolerance"] == 0
+    assert codex["details"]["archive_grains"] == {
+        "comparison_grain": "physical_session",
+        "logical_available_grain": "logical_session_model_high_water",
+        "fewest_outside_tolerance_grain": "logical_session_model_high_water",
+        "closest_p90_ratio_grain": "logical_session_model_high_water",
+        "physical_total_tokens": 50,
+        "logical_total_tokens": 30,
+        "external_total_tokens": 30,
+        "replay_gap_tokens": 20,
+    }
+    sample = codex["comparison"]["samples"][0]
+    assert sample["archive_logical_native_id"] == "thread-root"
+    assert sample["archive_logical_high_water_tokens"] == 30
+    assert sample["archive_physical_chain_tokens"] == 50
+    assert sample["archive_replay_gap_tokens"] == 20
+    assert sample["archive_chain_session_count"] == 2
 
 
 def test_claude_probe_compares_model_usage_lanes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

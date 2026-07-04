@@ -292,8 +292,12 @@ def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tm
     report = provider_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
 
     lanes = {lane.provenance: lane for lane in report.pricing_lanes}
+    logical_lanes = {lane.provenance: lane for lane in report.logical_pricing_lanes}
     assert report.stored_provider_priced_usd == pytest.approx(1.25)
     assert report.catalog_api_equivalent_usd == pytest.approx(4.9)
+    assert report.pricing_grain == "physical_session"
+    assert report.logical_pricing_grain == "logical_session_model_high_water"
+    assert report.logical_catalog_api_equivalent_usd == pytest.approx(3.6551)
     assert lanes["priced"].stored_cost_usd == pytest.approx(1.25)
     assert lanes["priced"].catalog_api_equivalent_usd == pytest.approx(1.25)
     assert lanes["origin_reported"].stored_cost_usd == 0
@@ -303,9 +307,16 @@ def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tm
     assert lanes["origin_reported"].matched_model_row_count == 2
     assert lanes["origin_reported"].unmatched_model_row_count == 1
     assert lanes["origin_reported"].caveats == ("missing_price",)
+    assert logical_lanes["priced"].stored_cost_usd == 0
+    assert logical_lanes["priced"].catalog_api_equivalent_usd == pytest.approx(0.0051)
+    assert logical_lanes["origin_reported"].catalog_api_equivalent_usd == pytest.approx(3.65)
+    assert logical_lanes["origin_reported"].session_count == 2
     payload = report.to_dict()
     assert payload["pricing_catalog_provenance"] == "litellm-model-prices-vendored+polylogue-curated-overrides"
     assert payload["stored_provider_priced_usd"] == pytest.approx(1.25)
+    assert payload["pricing_grain"] == "physical_session"
+    assert payload["logical_pricing_grain"] == "logical_session_model_high_water"
+    assert payload["logical_catalog_api_equivalent_usd"] == pytest.approx(3.6551)
 
 
 def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None:
