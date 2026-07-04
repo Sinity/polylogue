@@ -12,6 +12,7 @@ from polylogue.storage.sqlite.connection_profile import open_connection
 
 DEFAULT_WAL_WARN_BYTES = 256 * 1024 * 1024
 DEFAULT_WAL_TRUNCATE_BYTES = 512 * 1024 * 1024
+ARCHIVE_TIER_WAL_FILES = ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +105,40 @@ def maybe_checkpoint_wal(
     )
 
 
+def maybe_checkpoint_archive_wals(
+    archive_root: Path,
+    *,
+    reason: str,
+    warn_bytes: int = DEFAULT_WAL_WARN_BYTES,
+    truncate_bytes: int = DEFAULT_WAL_TRUNCATE_BYTES,
+    timeout_s: float = 1.0,
+    allow_truncate: bool = True,
+) -> tuple[WalCheckpointObservation, ...]:
+    """Checkpoint WAL files for every existing split archive tier.
+
+    The daemon is responsible for keeping all archive-tier WALs bounded, not
+    only the index tier.  Missing tiers are skipped because archive bootstrap
+    and tier readiness checks own creation/version semantics.
+    """
+
+    observations: list[WalCheckpointObservation] = []
+    for filename in ARCHIVE_TIER_WAL_FILES:
+        db = archive_root / filename
+        if not db.exists():
+            continue
+        observations.append(
+            maybe_checkpoint_wal(
+                db,
+                reason=reason,
+                warn_bytes=warn_bytes,
+                truncate_bytes=truncate_bytes,
+                timeout_s=timeout_s,
+                allow_truncate=allow_truncate,
+            )
+        )
+    return tuple(observations)
+
+
 def _sqlite_file_holders(db: Path) -> tuple[str, ...]:
     """Return processes currently holding the SQLite db/wal/shm files."""
     targets = {db.resolve(), db.with_suffix(".db-wal").resolve(), db.with_suffix(".db-shm").resolve()}
@@ -147,8 +182,10 @@ def _process_command(proc_entry: Path) -> str:
 
 
 __all__ = [
+    "ARCHIVE_TIER_WAL_FILES",
     "DEFAULT_WAL_TRUNCATE_BYTES",
     "DEFAULT_WAL_WARN_BYTES",
     "WalCheckpointObservation",
+    "maybe_checkpoint_archive_wals",
     "maybe_checkpoint_wal",
 ]

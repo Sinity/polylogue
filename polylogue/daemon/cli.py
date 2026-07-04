@@ -224,21 +224,24 @@ async def _periodic_fts_merge() -> None:
 
 
 async def _periodic_wal_checkpoint() -> None:
-    """Run WAL checkpoint every 5 minutes to keep the WAL file bounded."""
-    from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
+    """Run WAL checkpoints every 5 minutes to keep tier WAL files bounded."""
+    from polylogue.paths import archive_root
+    from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
 
     while True:
         await asyncio.sleep(300)
-        db = _active_index_db_path()
-        if not db.exists():
+        root = archive_root()
+        if not root.exists():
             continue
         try:
-            observation = await asyncio.to_thread(
-                maybe_checkpoint_wal,
-                db,
+            observations = await asyncio.to_thread(
+                maybe_checkpoint_archive_wals,
+                root,
                 reason="periodic",
             )
-            if observation.ran:
+            for observation in observations:
+                if not observation.ran:
+                    continue
                 logger.info(
                     "daemon: WAL checkpoint %s before=%d after=%d busy=%d checkpointed=%d error=%s blockers=%s",
                     observation.mode,

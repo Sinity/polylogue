@@ -14,7 +14,11 @@ from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation, maybe_checkpoint_wal
+from polylogue.storage.sqlite.wal_checkpoint import (
+    WalCheckpointObservation,
+    maybe_checkpoint_archive_wals,
+    maybe_checkpoint_wal,
+)
 
 
 def test_format_foreign_key_violations_renders_tuple_rows() -> None:
@@ -213,6 +217,42 @@ def test_maybe_optimize_sqlite_runs_bounded_pragma(tmp_path: Path) -> None:
     assert observation.reason == "test"
     assert observation.analysis_limit == 17
     assert observation.error is None
+
+
+def test_maybe_checkpoint_archive_wals_covers_existing_split_tiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    for filename in ("source.db", "index.db", "user.db"):
+        (archive_root / filename).write_bytes(b"sqlite placeholder")
+
+    calls: list[tuple[Path, str, bool]] = []
+
+    def fake_checkpoint(
+        db: Path,
+        *,
+        reason: str,
+        allow_truncate: bool = True,
+        **_: object,
+    ) -> WalCheckpointObservation:
+        calls.append((db, reason, allow_truncate))
+        return WalCheckpointObservation(
+            reason=reason,
+            mode="passive",
+            wal_bytes_before=100,
+            wal_bytes_after=0,
+        )
+
+    monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.maybe_checkpoint_wal", fake_checkpoint)
+
+    observations = maybe_checkpoint_archive_wals(archive_root, reason="periodic", allow_truncate=True)
+
+    assert [path.name for path, _reason, _allow in calls] == ["source.db", "index.db", "user.db"]
+    assert {reason for _path, reason, _allow in calls} == {"periodic"}
+    assert {allow for _path, _reason, allow in calls} == {True}
+    assert [observation.mode for observation in observations] == ["passive", "passive", "passive"]
 
 
 def test_process_ingest_batch_sync_does_not_force_memory_release_before_returning(

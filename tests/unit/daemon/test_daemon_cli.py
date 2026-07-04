@@ -621,6 +621,34 @@ def test_periodic_session_insight_convergence_treats_sqlite_lock_as_retry(
     warning.assert_not_called()
 
 
+def test_periodic_wal_checkpoint_targets_archive_root_tiers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
+
+    calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    async def fake_to_thread(func: object, *args: object, **kwargs: object) -> object:
+        calls.append((func, args, kwargs))
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+
+    with (
+        patch("asyncio.sleep", side_effect=fake_sleep),
+        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(daemon_cli._periodic_wal_checkpoint())
+
+    assert calls == [(maybe_checkpoint_archive_wals, (tmp_path,), {"reason": "periodic"})]
+
+
 def test_periodic_convergence_check_waits_for_catch_up_complete(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
