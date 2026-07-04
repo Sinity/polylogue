@@ -1338,10 +1338,15 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
     return [str(row[0]) for row in rows]
 
 
-def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
+def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, limit: int | None = None) -> list[str]:
     if not _table_exists(conn, "sessions"):
         return []
-    rows = conn.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall()
+    sql = "SELECT session_id FROM sessions ORDER BY session_id"
+    params: tuple[object, ...] = ()
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (max(0, int(limit)),)
+    rows = conn.execute(sql, params).fetchall()
     return _archive_stale_session_profile_ids(conn, [str(row[0]) for row in rows])
 
 

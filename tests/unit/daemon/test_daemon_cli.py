@@ -516,6 +516,59 @@ def test_periodic_raw_materialization_convergence_waits_for_catch_up_complete(
     assert calls == ["drain"]
 
 
+def test_periodic_session_insight_convergence_waits_for_catch_up_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    calls: list[str] = []
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+        calls.append("drain")
+        raise asyncio.CancelledError
+
+    async def exercise() -> None:
+        catch_up_complete = asyncio.Event()
+        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        task = asyncio.create_task(
+            daemon_cli._periodic_session_insight_convergence_after(catch_up_complete=catch_up_complete)
+        )
+        await asyncio.sleep(0)
+        assert calls == []
+        catch_up_complete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert calls == ["drain"]
+
+
+def test_periodic_session_insight_convergence_treats_sqlite_lock_as_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    async def fake_sleep(_seconds: float) -> None:
+        raise asyncio.CancelledError
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError("database is locked")
+
+    with (
+        patch("asyncio.sleep", side_effect=fake_sleep),
+        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(daemon_cli.logger, "info") as info,
+        patch.object(daemon_cli.logger, "warning") as warning,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(daemon_cli._periodic_session_insight_convergence_after())
+
+    info.assert_called_once()
+    assert info.call_args.args[0] == "insights: archive busy; retrying profile backlog on next tick: %s"
+    warning.assert_not_called()
+
+
 def test_periodic_convergence_check_waits_for_catch_up_complete(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1163,6 +1216,95 @@ def test_archive_message_fts_startup_records_known_stale_ledger_without_global_c
     assert "SELECT COUNT(*) FROM messages_fts_docsize" not in conn.queries
 
 
+def test_archive_message_fts_startup_recomputes_poisoned_stale_zero_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import fts_startup
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def execute(self, sql: str, params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            self.queries.append(query)
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                name = str(params[0]) if isinstance(params, tuple) and params else ""
+                return (
+                    FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
+                )
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
+                return FakeCursor(triggers[0], rows=triggers)
+            if query.startswith("SELECT state, source_rows, indexed_rows"):
+                return FakeCursor(("stale", 0, 0, 0, 0, 0))
+            if query == "SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT COUNT(*) FROM blocks WHERE search_text != ''":
+                return FakeCursor((250_000,))
+            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
+                return FakeCursor((100_000,))
+            raise AssertionError(f"unexpected query: {query}")
+
+    conn = FakeConnection()
+    records: list[dict[str, object]] = []
+    debts: list[dict[str, object]] = []
+
+    monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
+    monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.freshness.record_fts_surface_state_sync",
+        lambda _conn, **kwargs: records.append(kwargs),
+    )
+
+    class FakeCursorStore:
+        def __init__(self, db_path: Path) -> None:
+            assert db_path == Path("/archive/index.db")
+
+        def record_convergence_debt(self, **kwargs: object) -> None:
+            debts.append(kwargs)
+
+    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursorStore)
+
+    assert (
+        fts_startup._ensure_archive_messages_fts_startup_readiness_sync(
+            cast(sqlite3.Connection, conn),
+            db_path=Path("/archive/index.db"),
+        )
+        is True
+    )
+
+    assert records == [
+        {
+            "surface": "messages_fts",
+            "state": "stale",
+            "source_rows": 250_000,
+            "indexed_rows": 100_000,
+            "missing_rows": 150_000,
+            "excess_rows": 0,
+            "detail": (
+                "archive message FTS drift exceeds bounded startup reconciliation; scheduled global FTS freshness debt"
+            ),
+        }
+    ]
+    assert len(debts) == 2
+    assert "SELECT COUNT(*) FROM blocks WHERE search_text != ''" in conn.queries
+    assert "SELECT COUNT(*) FROM messages_fts_docsize" in conn.queries
+
+
 def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1746,6 +1888,11 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
             daemon_cli,
             "_periodic_raw_materialization_convergence_after",
             lambda _gate=None: fake_loop("raw-materialization"),
+        ),
+        patch.object(
+            daemon_cli,
+            "_periodic_session_insight_convergence_after",
+            lambda _gate=None: fake_loop("session-insights"),
         ),
         patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")),
         patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: fake_loop("convergence")),

@@ -54,6 +54,8 @@ logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
 _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 25
+_SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS = 60
+_SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT = 25
 _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 
 # Track the pidfile path for atexit cleanup.
@@ -454,6 +456,27 @@ async def _periodic_raw_materialization_convergence_after(
         await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
 
 
+async def _periodic_session_insight_convergence_after(
+    catch_up_complete: asyncio.Event | None = None,
+) -> None:
+    """Continuously converge missing/stale session insights after catch-up."""
+    if catch_up_complete is not None:
+        await catch_up_complete.wait()
+    while True:
+        try:
+            refreshed = await asyncio.to_thread(_drain_session_insights_once)
+            if refreshed:
+                logger.info("insights: converged %d session profile(s)", refreshed)
+        except sqlite3.OperationalError as exc:
+            if is_transient_sqlite_lock(exc):
+                logger.info("insights: archive busy; retrying profile backlog on next tick: %s", exc)
+            else:
+                logger.warning("insights: profile backlog convergence failed", exc_info=True)
+        except Exception:
+            logger.warning("insights: profile backlog convergence failed", exc_info=True)
+        await asyncio.sleep(_SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS)
+
+
 async def _bridge_catch_up_complete(
     source: asyncio.Event,
     target: asyncio.Event,
@@ -478,6 +501,29 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
     return result.repaired_count
+
+
+def _drain_session_insights_once(*, limit: int = _SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT) -> int:
+    """Run one bounded missing/stale session-profile convergence pass."""
+    from polylogue.daemon.convergence_stages import (
+        _archive_insights_execute_ids,
+        _schema_archive_session_ids_missing_profiles,
+    )
+    from polylogue.paths import active_index_db_path
+    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+    db = active_index_db_path()
+    if not db.exists():
+        return 0
+    conn = open_daemon_connection(db, timeout=30.0)
+    try:
+        ids = _schema_archive_session_ids_missing_profiles(conn, limit=limit)
+        if not ids:
+            return 0
+        result = _archive_insights_execute_ids(conn, ids)
+        return len(ids) if bool(getattr(result, "success", result)) else 0
+    finally:
+        conn.close()
 
 
 def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
@@ -944,6 +990,7 @@ async def run_daemon_services(
             catch_up_complete_gate = asyncio.Event() if enable_watch else None
             periodic_loops = [
                 _periodic_raw_materialization_convergence_after(catch_up_complete_gate),
+                _periodic_session_insight_convergence_after(catch_up_complete_gate),
                 _periodic_wal_checkpoint(),
                 _periodic_fts_merge(),
                 _periodic_heartbeat(),

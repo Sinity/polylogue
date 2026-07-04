@@ -1684,9 +1684,7 @@ def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentR
             "total_sessions": total,
             "missing_profiles": max(0, total - with_profiles),
         },
-        repair_hint=None
-        if state is CapabilityReadinessState.READY
-        else "polylogue ops maintenance preview --scope derived",
+        repair_hint=None if state is CapabilityReadinessState.READY else "polylogued run",
     )
 
 
@@ -1744,6 +1742,10 @@ def _daemon_embedding_repair_hint(
 def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentReadiness:
     if storage.archive_ready:
         state = CapabilityReadinessState.READY
+    elif storage.active_rebuild_index_attempts:
+        state = CapabilityReadinessState.REBUILDING
+    elif storage.final_shape_ready and storage.archive_schema_ready and not storage.archive_materialization_ready:
+        state = CapabilityReadinessState.STALE
     elif storage.final_shape_ready or storage.schema_mismatches:
         state = CapabilityReadinessState.BLOCKED
     elif "source" in storage.present_tiers and "index" in storage.present_tiers:
@@ -1757,13 +1759,16 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
         caveats += (f"missing_tiers:{','.join(storage.missing_tiers)}",)
     if storage.schema_mismatches:
         caveats += (f"schema_mismatch:{','.join(storage.schema_mismatches)}",)
+    if storage.final_shape_ready and storage.archive_schema_ready and not storage.archive_materialization_ready:
+        caveats += ("materialization_pending",)
     repair_hint = None
     if state is not CapabilityReadinessState.READY:
-        repair_hint = (
-            "polylogue ops reset --index && polylogued run"
-            if storage.schema_mismatches == ["index"]
-            else "polylogue ops maintenance archive-init --yes"
-        )
+        if storage.schema_mismatches == ["index"]:
+            repair_hint = "polylogue ops reset --index && polylogued run"
+        elif storage.missing_tiers:
+            repair_hint = "polylogue ops maintenance archive-init --yes"
+        else:
+            repair_hint = "polylogued run"
     return ComponentReadiness(
         component="archive_storage",
         scope="archive",
@@ -1776,6 +1781,7 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
             "final_shape_ready": storage.final_shape_ready,
             "archive_schema_ready": storage.archive_schema_ready,
             "schema_mismatch_count": len(storage.schema_mismatches),
+            "active_rebuild_index_attempt_count": len(storage.active_rebuild_index_attempts),
         },
         caveats=caveats,
         repair_hint=repair_hint,

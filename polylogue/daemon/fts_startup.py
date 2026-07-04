@@ -152,18 +152,26 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
             logger.warning("daemon: archive message FTS startup readiness found stale freshness ledger")
             _record_message_fts_surface_debt(db_path, "startup found stale messages_fts freshness ledger")
             assert freshness_row is not None
-            record_fts_surface_state_sync(
-                conn,
-                surface="messages_fts",
-                state=STALE,
-                source_rows=_int_or_zero(freshness_row[1]),
-                indexed_rows=_int_or_zero(freshness_row[2]),
-                missing_rows=_int_or_zero(freshness_row[3]),
-                excess_rows=_int_or_zero(freshness_row[4]),
-                duplicate_rows=_int_or_zero(freshness_row[5]),
-                detail=_MESSAGE_FTS_STARTUP_DEBT_DETAIL,
-            )
-            return True
+            recorded_source_rows = _int_or_zero(freshness_row[1])
+            recorded_indexed_rows = _int_or_zero(freshness_row[2])
+            if recorded_source_rows == 0 and recorded_indexed_rows == 0 and _message_fts_docsize_has_rows_sync(conn):
+                logger.warning(
+                    "daemon: archive message FTS stale freshness ledger has empty counts "
+                    "but populated docsize; recomputing startup drift"
+                )
+            else:
+                record_fts_surface_state_sync(
+                    conn,
+                    surface="messages_fts",
+                    state=STALE,
+                    source_rows=recorded_source_rows,
+                    indexed_rows=recorded_indexed_rows,
+                    missing_rows=_int_or_zero(freshness_row[3]),
+                    excess_rows=_int_or_zero(freshness_row[4]),
+                    duplicate_rows=_int_or_zero(freshness_row[5]),
+                    detail=_MESSAGE_FTS_STARTUP_DEBT_DETAIL,
+                )
+                return True
     source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
     indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM messages_fts_docsize") if docsize_exists else 0
     if fts_exists and (not triggers_present or indexed_rows != source_rows):
@@ -249,6 +257,13 @@ def _message_fts_freshness_row_sync(
 
 def _message_fts_freshness_ready_sync(conn: sqlite3.Connection) -> bool:
     return _message_fts_freshness_row_ready_sync(conn, _message_fts_freshness_row_sync(conn))
+
+
+def _message_fts_docsize_has_rows_sync(conn: sqlite3.Connection) -> bool:
+    try:
+        return conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone() is not None
+    except sqlite3.Error:
+        return False
 
 
 def _message_fts_freshness_row_ready_sync(

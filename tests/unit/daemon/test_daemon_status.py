@@ -496,7 +496,7 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     assert session_profiles["scope"] == "insights"
     assert profile_counts["sessions_with_profiles"] == 7
     assert profile_counts["missing_profiles"] == 3
-    assert session_profiles["repair_hint"] == "polylogue ops maintenance preview --scope derived"
+    assert session_profiles["repair_hint"] == "polylogued run"
     assert embeddings["state"] == "stale"
     assert embeddings["scope"] == "semantic"
     embedding_counts = cast(dict[str, object], embeddings["counts"])
@@ -937,6 +937,10 @@ def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_de
     assert status.archive_storage.archive_schema_ready is True
     assert status.archive_storage.archive_materialization_ready is False
     assert status.archive_storage.archive_ready is False
+    storage_component = cast(dict[str, object], status.component_readiness["archive_storage"])
+    assert storage_component["state"] == "stale"
+    assert storage_component["repair_hint"] == "polylogued run"
+    assert storage_component["caveats"] == ["materialization_pending"]
     raw_component = cast(dict[str, object], status.component_readiness["raw_materialization"])
     assert raw_component["state"] == "stale"
 
