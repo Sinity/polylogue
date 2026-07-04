@@ -52,11 +52,17 @@ DEMO_CHATGPT_SESSION_ID = "chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5"
 DEMO_CLAUDE_CODE_SESSION_ID = "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6"
 DEMO_CODEX_SESSION_ID = "codex-session:demo-00"
 DEMO_GEMINI_SESSION_ID = "aistudio-drive:demo-00"
+DEMO_CODEX_LINEAGE_PARENT_SESSION_ID = "codex-session:demo-lineage-parent"
+DEMO_CODEX_LINEAGE_FORK_SESSION_ID = "codex-session:demo-lineage-fork"
+DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID = "codex-session:demo-lineage-subagent"
 DEMO_SESSION_IDS = (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
     DEMO_CODEX_SESSION_ID,
     DEMO_GEMINI_SESSION_ID,
+    DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
+    DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
+    DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
 )
 
 
@@ -70,6 +76,126 @@ class DemoUserOverlayResult:
     note_id: str
     saved_view_id: str
     assertion_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class DemoCorpusFamily:
+    """Declared reason one deterministic demo source family exists."""
+
+    family_id: str
+    label: str
+    provider: str
+    construct_ids: tuple[str, ...]
+    description: str
+    source_paths: tuple[str, ...]
+    count: int = 1
+    messages_min: int = 1
+    messages_max: int = 1
+    seed_offset: int = 0
+    style: str = "default"
+    synthetic: bool = True
+
+    def to_spec(
+        self,
+        *,
+        seed: int,
+        origin: str,
+        tags: tuple[str, ...],
+    ) -> CorpusSpec | None:
+        if not self.synthetic:
+            return None
+        return CorpusSpec.for_provider(
+            self.provider,
+            count=self.count,
+            messages_min=self.messages_min,
+            messages_max=self.messages_max,
+            seed=seed + self.seed_offset,
+            style=self.style,
+            origin=origin,
+            tags=tags,
+        )
+
+
+DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
+    DemoCorpusFamily(
+        family_id="chatgpt-dialogue",
+        label="ChatGPT dialogue",
+        provider="chatgpt",
+        construct_ids=("multi_origin_sessions", "session_profiles"),
+        description="Minimal ChatGPT dialogue coverage for multi-origin read/search examples.",
+        source_paths=("chatgpt/demo-00.json",),
+        count=1,
+        messages_min=2,
+        messages_max=3,
+        seed_offset=0,
+        style="demo",
+    ),
+    DemoCorpusFamily(
+        family_id="claude-code-tools",
+        label="Claude Code tool outcomes",
+        provider="claude-code",
+        construct_ids=(
+            "tool_use_blocks",
+            "tool_result_blocks",
+            "failed_tool_results",
+            "provider_usage_messages",
+            "run_projection_rows",
+            "observed_event_rows",
+            "context_snapshot_rows",
+        ),
+        description="Claude Code tool-heavy session used by pytest triage and cost demos.",
+        source_paths=("claude-code/demo-00.jsonl",),
+        count=1,
+        messages_min=6,
+        messages_max=10,
+        seed_offset=1,
+        style="demo-tool-heavy",
+    ),
+    DemoCorpusFamily(
+        family_id="codex-tools",
+        label="Codex tool outcomes",
+        provider="codex",
+        construct_ids=("tool_use_blocks", "tool_result_blocks", "failed_tool_results"),
+        description="Codex tool-heavy session for cross-harness action/outcome coverage.",
+        source_paths=("codex/demo-00.jsonl",),
+        count=1,
+        messages_min=6,
+        messages_max=10,
+        seed_offset=2,
+        style="demo-tool-heavy",
+    ),
+    DemoCorpusFamily(
+        family_id="gemini-attachments",
+        label="Gemini attachment bytes",
+        provider="gemini",
+        construct_ids=("attachment_rows", "acquired_attachment_rows"),
+        description="AiStudio/Gemini inline attachment bytes stored through the normal blob path.",
+        source_paths=("gemini/demo-00.json",),
+        count=1,
+        messages_min=3,
+        messages_max=4,
+        seed_offset=3,
+        style="demo-attachments",
+    ),
+    DemoCorpusFamily(
+        family_id="codex-lineage-subagent",
+        label="Codex lineage and subagent",
+        provider="codex",
+        construct_ids=(
+            "session_link_rows",
+            "prefix_sharing_links",
+            "subagent_links",
+            "subagent_context_snapshots",
+        ),
+        description="Explicit parent, prefix-sharing fork, and spawned subagent source files.",
+        source_paths=(
+            "codex/lineage-parent.jsonl",
+            "codex/lineage-fork.jsonl",
+            "codex/lineage-subagent.jsonl",
+        ),
+        synthetic=False,
+    ),
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -551,47 +677,10 @@ def build_demo_corpus_specs(
     a separate demo-data path.
     """
 
-    return (
-        CorpusSpec.for_provider(
-            "chatgpt",
-            count=1,
-            messages_min=2,
-            messages_max=3,
-            seed=seed,
-            style="demo",
-            origin=origin,
-            tags=tags,
-        ),
-        CorpusSpec.for_provider(
-            "claude-code",
-            count=1,
-            messages_min=6,
-            messages_max=10,
-            seed=seed + 1,
-            style="demo-tool-heavy",
-            origin=origin,
-            tags=tags,
-        ),
-        CorpusSpec.for_provider(
-            "codex",
-            count=1,
-            messages_min=6,
-            messages_max=10,
-            seed=seed + 2,
-            style="demo-tool-heavy",
-            origin=origin,
-            tags=tags,
-        ),
-        CorpusSpec.for_provider(
-            "gemini",
-            count=1,
-            messages_min=3,
-            messages_max=4,
-            seed=seed + 3,
-            style="demo-attachments",
-            origin=origin,
-            tags=tags,
-        ),
+    return tuple(
+        spec
+        for family in DEMO_CORPUS_FAMILIES
+        if (spec := family.to_spec(seed=seed, origin=origin, tags=tags)) is not None
     )
 
 

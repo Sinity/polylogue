@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -46,7 +47,141 @@ def materialize_demo_source(root: Path, *, force: bool = False) -> Path:
         prefix="demo",
         index_width=2,
     )
+    _write_demo_lineage_sources(source_root)
     return source_root
+
+
+def _write_jsonl(path: Path, records: tuple[dict[str, object], ...]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(record, sort_keys=True) for record in records) + "\n", encoding="utf-8")
+
+
+def _codex_session_meta(
+    session_id: str,
+    *,
+    timestamp: str,
+    forked_from_id: str | None = None,
+    subagent_role: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {"id": session_id, "timestamp": timestamp}
+    if forked_from_id is not None:
+        payload["forked_from_id"] = forked_from_id
+    if subagent_role is not None and forked_from_id is not None:
+        payload["source"] = {
+            "subagent": {
+                "thread_spawn": {
+                    "parent_thread_id": forked_from_id,
+                    "depth": 1,
+                    "agent_role": subagent_role,
+                }
+            }
+        }
+    return {"type": "session_meta", "payload": payload}
+
+
+def _codex_message(
+    message_id: str,
+    role: str,
+    timestamp: str,
+    content: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "type": "response_item",
+        "payload": {
+            "id": message_id,
+            "type": "message",
+            "role": role,
+            "timestamp": timestamp,
+            "content": content,
+        },
+    }
+
+
+def _input_text(text: str) -> dict[str, object]:
+    return {"type": "input_text", "text": text}
+
+
+def _output_text(text: str) -> dict[str, object]:
+    return {"type": "output_text", "text": text}
+
+
+def _write_demo_lineage_sources(source_root: Path) -> None:
+    """Write explicit Codex parent/fork/subagent fixtures for topology demos."""
+
+    parent_id = "demo-lineage-parent"
+    fork_id = "demo-lineage-fork"
+    subagent_id = "demo-lineage-subagent"
+    base_user = "Map the demo lineage base context."
+    base_assistant = "I have the base context and can branch the analysis."
+
+    _write_jsonl(
+        source_root / "codex" / "lineage-parent.jsonl",
+        (
+            _codex_session_meta(parent_id, timestamp="2026-07-04T10:00:00Z"),
+            _codex_message("parent-u0", "user", "2026-07-04T10:00:01Z", [_input_text(base_user)]),
+            _codex_message("parent-a1", "assistant", "2026-07-04T10:00:02Z", [_output_text(base_assistant)]),
+            _codex_message(
+                "parent-a2",
+                "assistant",
+                "2026-07-04T10:00:03Z",
+                [
+                    _output_text("Delegating a topology check to a focused subagent."),
+                    {
+                        "type": "tool_use",
+                        "id": "task-demo-lineage",
+                        "name": "Task",
+                        "input": {
+                            "subagent_type": "Explore",
+                            "prompt": "Inspect the demo lineage child and report caveats.",
+                            "child_session_id": "codex-session:demo-lineage-subagent",
+                        },
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "task-demo-lineage",
+                        "content": "Subagent completed. Session: codex-session:demo-lineage-subagent",
+                    },
+                ],
+            ),
+        ),
+    )
+    _write_jsonl(
+        source_root / "codex" / "lineage-fork.jsonl",
+        (
+            _codex_session_meta(fork_id, timestamp="2026-07-04T10:01:00Z", forked_from_id=parent_id),
+            _codex_message("fork-u0", "user", "2026-07-04T10:01:01Z", [_input_text(base_user)]),
+            _codex_message("fork-a1", "assistant", "2026-07-04T10:01:02Z", [_output_text(base_assistant)]),
+            _codex_message(
+                "fork-u2",
+                "user",
+                "2026-07-04T10:01:03Z",
+                [_input_text("Now take the forked branch and audit construct validity.")],
+            ),
+            _codex_message(
+                "fork-a3",
+                "assistant",
+                "2026-07-04T10:01:04Z",
+                [_output_text("The fork diverges into demo corpus construct checks.")],
+            ),
+        ),
+    )
+    _write_jsonl(
+        source_root / "codex" / "lineage-subagent.jsonl",
+        (
+            _codex_session_meta(
+                subagent_id,
+                timestamp="2026-07-04T10:02:00Z",
+                forked_from_id=parent_id,
+                subagent_role="Explore",
+            ),
+            _codex_message(
+                "subagent-a0",
+                "assistant",
+                "2026-07-04T10:02:01Z",
+                [_output_text("Subagent report: lineage fixture has a parent, a fork, and a resolved child link.")],
+            ),
+        ),
+    )
 
 
 def _materialize_session_insights(archive_root: Path, session_ids: list[str]) -> None:

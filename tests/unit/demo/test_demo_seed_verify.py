@@ -17,8 +17,8 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     verify = verify_demo_archive(archive_root, require_overlays=True)
 
     assert seed.archive_root == archive_root
-    assert seed.session_count == 4
-    assert seed.message_count >= 26
+    assert seed.session_count == len(DEMO_SESSION_IDS)
+    assert seed.message_count >= 31
     assert seed.session_ids == tuple(sorted(DEMO_SESSION_IDS))
     assert seed.overlays_seeded is True
     assert seed.assertion_count >= 4
@@ -26,14 +26,24 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert all(row.ok for row in seed.construct_coverage)
 
     assert verify.ok is True
-    assert verify.session_count == 4
-    assert verify.message_count >= 26
+    assert verify.session_count == len(DEMO_SESSION_IDS)
+    assert verify.message_count >= 31
     assert DEMO_CLAUDE_CODE_SESSION_ID in verify.query_hits
     assert verify.overlays_present is True
     assert verify.absolute_path_leaks == ()
     assert verify.construct_coverage
     assert all(row.ok for row in verify.construct_coverage)
     assert verify.problems == ()
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        links = conn.execute("SELECT link_type, inheritance FROM session_links ORDER BY src_session_id").fetchall()
+        subagent_snapshots = conn.execute(
+            "SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'"
+        ).fetchone()[0]
+
+    assert ("branch", "prefix-sharing") in links
+    assert ("subagent", "spawned-fresh") in links
+    assert subagent_snapshots >= 1
 
 
 @pytest.mark.asyncio

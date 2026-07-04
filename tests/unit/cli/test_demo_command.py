@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID
+from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, DEMO_SESSION_IDS
 
 
 def test_demo_seed_and_verify_json_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -21,8 +21,8 @@ def test_demo_seed_and_verify_json_roundtrip(tmp_path: Path, monkeypatch: pytest
     seed = runner.invoke(cli, ["demo", "seed", "--with-overlays", "--format", "json"])
     assert seed.exit_code == 0, seed.output
     seed_payload = json.loads(seed.output)
-    assert seed_payload["session_count"] == 4
-    assert seed_payload["message_count"] >= 26
+    assert seed_payload["session_count"] == len(DEMO_SESSION_IDS)
+    assert seed_payload["message_count"] >= 31
     assert seed_payload["overlays_seeded"] is True
     assert seed_payload["construct_coverage"]
     assert all(row["ok"] for row in seed_payload["construct_coverage"])
@@ -76,8 +76,8 @@ def test_demo_script_seed_and_verify_commands_are_executable(
     seed = runner.invoke(cli, demo_commands[0])
     assert seed.exit_code == 0, seed.output
     seed_payload = json.loads(seed.output)
-    assert seed_payload["session_count"] == 4
-    assert seed_payload["message_count"] >= 26
+    assert seed_payload["session_count"] == len(DEMO_SESSION_IDS)
+    assert seed_payload["message_count"] >= 31
     assert seed_payload["overlays_seeded"] is True
     assert all(row["ok"] for row in seed_payload["construct_coverage"])
 

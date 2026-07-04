@@ -94,6 +94,24 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         sql="SELECT COUNT(*) FROM attachments WHERE acquisition_status = 'acquired' AND blob_hash IS NOT NULL",
     ),
     DemoConstruct(
+        construct_id="session_link_rows",
+        label="Session-link rows",
+        description="At least one parser-declared parent relationship is persisted.",
+        sql="SELECT COUNT(*) FROM session_links",
+    ),
+    DemoConstruct(
+        construct_id="prefix_sharing_links",
+        label="Prefix-sharing lineage links",
+        description="At least one child stores only its divergent tail and composes the inherited prefix.",
+        sql="SELECT COUNT(*) FROM session_links WHERE inheritance = 'prefix-sharing'",
+    ),
+    DemoConstruct(
+        construct_id="subagent_links",
+        label="Subagent links",
+        description="At least one spawned subagent relationship is persisted as a typed link.",
+        sql="SELECT COUNT(*) FROM session_links WHERE link_type = 'subagent'",
+    ),
+    DemoConstruct(
         construct_id="run_projection_rows",
         label="Run projection rows",
         description="Run-projection read models are populated for temporal demos.",
@@ -110,6 +128,12 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         label="Context snapshot rows",
         description="Session context snapshots are populated for resume/context demos.",
         sql="SELECT COUNT(*) FROM session_context_snapshots",
+    ),
+    DemoConstruct(
+        construct_id="subagent_context_snapshots",
+        label="Subagent context snapshots",
+        description="Context snapshots expose the subagent-start boundary.",
+        sql="SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'",
     ),
 )
 

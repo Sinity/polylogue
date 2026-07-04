@@ -9,7 +9,11 @@ from polylogue.core.json import JSONDocument
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
+    DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
+    DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
     DEMO_CODEX_SESSION_ID,
+    DEMO_CORPUS_FAMILIES,
     DEMO_GEMINI_SESSION_ID,
     DEMO_SESSION_IDS,
     CorpusProfile,
@@ -187,7 +191,24 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         DEMO_CLAUDE_CODE_SESSION_ID,
         DEMO_CODEX_SESSION_ID,
         DEMO_GEMINI_SESSION_ID,
+        DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
+        DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
+        DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
     )
+    assert tuple(family.family_id for family in DEMO_CORPUS_FAMILIES) == (
+        "chatgpt-dialogue",
+        "claude-code-tools",
+        "codex-tools",
+        "gemini-attachments",
+        "codex-lineage-subagent",
+    )
+    assert DEMO_CORPUS_FAMILIES[-1].synthetic is False
+    assert set(DEMO_CORPUS_FAMILIES[-1].construct_ids) == {
+        "session_link_rows",
+        "prefix_sharing_links",
+        "subagent_links",
+        "subagent_context_snapshots",
+    }
     assert tuple(spec.style for spec in specs) == (
         "demo",
         "demo-tool-heavy",
