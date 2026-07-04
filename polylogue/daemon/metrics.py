@@ -436,16 +436,20 @@ def _fts_trigger_presence(conn: sqlite3.Connection) -> dict[str, bool]:
 
 
 def _fts_freshness_ready(conn: sqlite3.Connection) -> list[tuple[str, int]]:
-    if not _table_exists(conn, "fts_freshness_state"):
+    from polylogue.daemon.fts_status import fts_readiness_info
+
+    database_row = conn.execute("PRAGMA database_list").fetchone()
+    if database_row is None:
         return []
-    rows = conn.execute(
-        """
-        SELECT surface, state
-        FROM fts_freshness_state
-        ORDER BY surface
-        """
-    ).fetchall()
-    return [(str(row[0]), 1 if str(row[1]) == "ready" else 0) for row in rows]
+    readiness = fts_readiness_info(Path(str(database_row[2])), exact=False)
+    surfaces = readiness.get("surfaces")
+    if not isinstance(surfaces, dict):
+        return []
+    samples: list[tuple[str, int]] = []
+    for surface, payload in sorted(surfaces.items()):
+        ready = bool(payload.get("ready")) if isinstance(payload, dict) else False
+        samples.append((str(surface), 1 if ready else 0))
+    return samples
 
 
 def _latest_ingest_memory(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> list[tuple[str, float]]:
@@ -1138,7 +1142,7 @@ def format_metrics(
         _emit_metric(
             lines,
             name="polylogue_fts_freshness_ready",
-            help_text="1 when the daemon freshness ledger marks an FTS surface ready.",
+            help_text="1 when the bounded FTS readiness contract marks a surface ready.",
             metric_type="gauge",
             samples=[({"surface": surface}, ready) for surface, ready in freshness],
         )

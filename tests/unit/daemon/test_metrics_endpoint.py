@@ -624,6 +624,37 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_live_ingest_memory_mebibytes{kind="rss_current"} 44.0' in body
         assert 'polylogue_live_ingest_memory_mebibytes{kind="cgroup_file"} 23.0' in body
 
+    def test_archive_fts_metrics_follow_bounded_readiness_not_stale_optional_ledger(self, tmp_path: Path) -> None:
+        from polylogue.storage.fts.freshness import ensure_fts_freshness_table_sync, record_fts_surface_state_sync
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        index_db = tmp_path / "index.db"
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
+        with sqlite3.connect(index_db) as conn:
+            ensure_fts_freshness_table_sync(conn)
+            record_fts_surface_state_sync(conn, surface="messages_fts", state="ready", detail="bounded startup")
+            record_fts_surface_state_sync(
+                conn,
+                surface="session_work_events_fts",
+                state="stale",
+                detail="old optional-surface ledger row",
+            )
+            record_fts_surface_state_sync(
+                conn,
+                surface="threads_fts",
+                state="stale",
+                detail="old optional-surface ledger row",
+            )
+            conn.commit()
+
+        body = format_metrics(index_db)
+
+        assert "polylogue_archive_ready 1" in body
+        assert 'polylogue_fts_freshness_ready{surface="messages_fts"} 1' in body
+        assert 'polylogue_fts_freshness_ready{surface="session_work_events_fts"}' not in body
+        assert 'polylogue_fts_freshness_ready{surface="threads_fts"}' not in body
+
     def test_embedding_backlog_and_latest_catchup_state(self, tmp_path: Path) -> None:
         db = self._make_db(tmp_path)
         self._seed_catchup_run(db.with_name("ops.db"))
