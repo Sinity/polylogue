@@ -490,6 +490,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace degraded-archive-proof",
+        "workspace",
+        "Build a degraded archive self-healing proof artifact.",
+        "devtools.degraded_archive_proof",
+        use_when=(
+            "Prove WAL, FTS freshness, and planner-stat upkeep on a deterministic archive copy by "
+            "deliberately degrading rebuildable state and running the same bounded repair/checkpoint/"
+            "optimize primitives used by the daemon."
+        ),
+        examples=(
+            "devtools workspace degraded-archive-proof --json",
+            "devtools workspace degraded-archive-proof --out-dir .agent/demos/degraded-archive-proof/current --json",
+        ),
+    ),
+    CommandSpec(
         "workspace cli-surface-audit",
         "workspace",
         "Capture a current-curated CLI surface audit demo.",
