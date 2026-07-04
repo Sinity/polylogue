@@ -1062,16 +1062,46 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
     try:
         conn = _open_archive_insight_write_connection(archive_db)
         try:
-            from polylogue.storage.fts.dangling_repair import (
-                configure_bounded_repair_connection,
-                repair_missing_fts_rows,
+            from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
+            from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+            from polylogue.storage.fts.fts_lifecycle import (
+                fts_invariant_snapshot_sync,
+                insert_missing_message_rows_batched_sync,
             )
 
             configure_bounded_repair_connection(conn)
-            outcome = repair_missing_fts_rows(conn)
+            progress_windows = 0
+            inserted_total = 0
+
+            def progress(lower: int, upper: int, inserted: int) -> None:
+                nonlocal inserted_total, progress_windows
+                progress_windows += 1
+                inserted_total += inserted
+                if inserted or progress_windows % 20 == 0:
+                    logger.info(
+                        "fts: archive messages_fts repair window rowid=(%d,%d] inserted=%d total_inserted=%d",
+                        lower,
+                        upper,
+                        inserted,
+                        inserted_total,
+                    )
+
+            insert_missing_message_rows_batched_sync(
+                conn,
+                measure_counts=False,
+                progress_callback=progress,
+            )
+            snapshot = fts_invariant_snapshot_sync(conn)
+            record_fts_invariant_snapshot_sync(conn, snapshot)
             conn.commit()
-            logger.info("fts: archive messages_fts surface repair: %s", outcome.detail)
-            return outcome.success and not _archive_fts_needs_repair(conn)
+            logger.info(
+                "fts: archive messages_fts surface repair snapshot source=%d indexed=%d missing=%d excess=%d",
+                snapshot.messages.source_rows,
+                snapshot.messages.indexed_rows,
+                snapshot.messages.missing_rows,
+                snapshot.messages.excess_rows,
+            )
+            return snapshot.messages.ready
         finally:
             conn.close()
     except Exception as exc:

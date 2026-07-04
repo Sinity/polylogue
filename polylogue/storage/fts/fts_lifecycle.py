@@ -411,13 +411,15 @@ def insert_missing_message_rows_batched_sync(
     conn: sqlite3.Connection,
     *,
     batch_rows: int = DEFAULT_MISSING_MESSAGE_FTS_BATCH_ROWS,
+    measure_counts: bool = True,
+    progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> int:
     """Insert missing block-backed FTS rows in committed rowid windows."""
     if batch_rows <= 0:
         raise ValueError("batch_rows must be positive")
 
     ensure_fts_index_sync(conn)
-    before = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
+    before = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0) if measure_counts else 0
     max_rowid = _row_int(
         conn.execute(
             """
@@ -434,11 +436,16 @@ def insert_missing_message_rows_batched_sync(
         upper = min(lower + batch_rows, max_rowid)
         changes_before = conn.total_changes
         conn.execute(sql, (lower, upper))
-        if conn.total_changes != changes_before:
+        inserted = conn.total_changes - changes_before
+        if inserted:
             conn.commit()
             _passive_wal_checkpoint_sync(conn)
+        if progress_callback is not None:
+            progress_callback(lower, upper, max(0, inserted))
         lower = upper
 
+    if not measure_counts:
+        return 0
     after = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
     return max(0, after - before)
 

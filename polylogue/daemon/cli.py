@@ -551,10 +551,10 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     fts_surfaces = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "fts_surface"))
     if not paths and not session_ids and not fts_surfaces:
         return 0
+    fts_surface_results = _drain_fts_surface_debt(db, fts_surfaces)
     converger = DaemonConverger(stages=make_default_convergence_stages(db), max_workers=2)
     path_states, _path_timings = converger.converge_batch(paths)
     session_states, _session_timings = converger.converge_sessions(session_ids)
-    fts_surface_results = _drain_fts_surface_debt(db, fts_surfaces)
     retried = 0
     for debt in due_debt:
         subject_states: list[object | None]
