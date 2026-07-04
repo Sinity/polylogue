@@ -27,6 +27,7 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
     )
     assert "### Lab Checks" in rendered
     assert "| `devtools render all` |" in rendered
+    assert "| `devtools render demo-corpus-datasheet` |" in rendered
     assert "Common forms: `devtools status`" in rendered
 
 

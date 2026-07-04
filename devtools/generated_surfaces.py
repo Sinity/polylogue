@@ -9,6 +9,7 @@ from devtools import (
     render_agents,
     render_cli_output_schemas,
     render_cli_reference,
+    render_demo_corpus_datasheet,
     render_devtools_reference,
     render_docs_surface,
     render_openapi,
@@ -129,6 +130,18 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "devtools/provider_completeness.py",
             "polylogue/sources/provider_completeness.py",
             "devtools/render_devtools_reference.py",
+        ),
+    ),
+    GeneratedSurface(
+        name="demo-corpus-datasheet",
+        label="Demo corpus datasheet",
+        description="Render docs/plans/demo-corpus-construct-audit.md from declared demo families and measured seed rows.",
+        command=control_plane_argv("render demo-corpus-datasheet"),
+        main=render_demo_corpus_datasheet.main,
+        inputs=(
+            "devtools/render_demo_corpus_datasheet.py",
+            "polylogue/demo/",
+            "polylogue/scenarios/",
         ),
     ),
     GeneratedSurface(

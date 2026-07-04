@@ -151,6 +151,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_devtools_reference",
     ),
     CommandSpec(
+        "render demo-corpus-datasheet",
+        "generated surfaces",
+        "Render docs/plans/demo-corpus-construct-audit.md from the demo family registry and a measured seed archive.",
+        "devtools.render_demo_corpus_datasheet",
+        use_when="Refresh or verify the deterministic demo corpus construct datasheet after changing demo families, constructs, or seed semantics.",
+        examples=(
+            "devtools render demo-corpus-datasheet",
+            "devtools render demo-corpus-datasheet --check",
+        ),
+    ),
+    CommandSpec(
         "render docs-surface",
         "generated surfaces",
         "Render docs/README.md and the README documentation table.",
