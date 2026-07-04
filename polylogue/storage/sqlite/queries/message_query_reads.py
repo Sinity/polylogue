@@ -56,7 +56,10 @@ async def _resolve_session_id(conn: aiosqlite.Connection, session_id: str) -> st
     return str(row["session_id"]) if row is not None else session_id
 
 
-_MAX_LINEAGE_DEPTH = 64
+# Cycle/runaway guard only. Composition is iterative (not recursive), so this is
+# NOT a Python-stack limit — a deep acompact/fork chain composes fine. Kept large
+# so realistic lineages never truncate; a `visited` set is the real cycle guard.
+_MAX_LINEAGE_DEPTH = 1024
 
 
 async def _prefix_sharing_edge(conn: aiosqlite.Connection, session_id: str) -> tuple[str, str] | None:
@@ -109,37 +112,51 @@ async def get_messages(
     conn: aiosqlite.Connection,
     session_id: str,
     *,
-    _depth: int = 0,
     _compose_in_position_order: bool = False,
 ) -> list[MessageRecord]:
     session_id = await _resolve_session_id(conn, session_id)
-    edge = None if _depth >= _MAX_LINEAGE_DEPTH else await _prefix_sharing_edge(conn, session_id)
 
     # Lineage composition (#2467): a prefix-sharing child stores only its own
-    # divergent tail; compose the parent's transcript up to and including the
-    # branch point, then append this session's own messages. The composed view is
-    # position-ordered end to end; a plain session keeps the sort-key order that
-    # the keyset streamer relies on.
-    if edge is None:
+    # divergent tail. Walk UP the parent chain collecting (child, branch_point)
+    # links to the root, then compose DOWN. This is ITERATIVE (not recursive) so
+    # deep acompact/fork chains cannot hit Python's recursion limit; the composed
+    # view is position-ordered end to end, while a plain session keeps the
+    # sort-key order the keyset streamer relies on. A `visited` set stops a cyclic
+    # session_link; _MAX_LINEAGE_DEPTH is only a runaway backstop.
+    chain: list[tuple[str, str]] = []  # (child_session_id, branch_point_message_id), leaf-first
+    visited: set[str] = {session_id}
+    cursor_session = session_id
+    for _ in range(_MAX_LINEAGE_DEPTH):
+        edge = await _prefix_sharing_edge(conn, cursor_session)
+        if edge is None:
+            break
+        parent_session_id, branch_point_message_id = edge
+        parent_session_id = await _resolve_session_id(conn, parent_session_id)
+        if parent_session_id in visited:  # cyclic lineage: stop and compose what we have
+            break
+        chain.append((cursor_session, branch_point_message_id))
+        visited.add(parent_session_id)
+        cursor_session = parent_session_id
+
+    if not chain:
         return await _own_messages(conn, session_id, position_order=_compose_in_position_order)
 
-    parent_session_id, branch_point_message_id = edge
-    parent_messages = await get_messages(conn, parent_session_id, _depth=_depth + 1, _compose_in_position_order=True)
-    own = await _own_messages(conn, session_id, position_order=True)
-    prefix: list[MessageRecord] = []
-    found = False
-    for record in parent_messages:
-        prefix.append(record)
-        if record.message_id == branch_point_message_id:
-            found = True
-            break
-    # If the branch point is not present in the parent's composed transcript (a
-    # dangling reference, e.g. the parent message was hard-deleted), do NOT splice
-    # the entire parent in — return this session's own tail rather than an
-    # over-long transcript (#2467 audit).
-    if not found:
-        return own
-    return prefix + own
+    # Compose from the root down: root's full transcript, then splice each
+    # descendant's own tail at its branch point in the running composed view.
+    composed = await _own_messages(conn, cursor_session, position_order=True)
+    for child_session_id, branch_point_message_id in reversed(chain):
+        own = await _own_messages(conn, child_session_id, position_order=True)
+        prefix: list[MessageRecord] = []
+        found = False
+        for record in composed:
+            prefix.append(record)
+            if record.message_id == branch_point_message_id:
+                found = True
+                break
+        # Dangling branch point (e.g. the parent message was hard-deleted): return
+        # this child's own tail rather than an over-long transcript (#2467 audit).
+        composed = prefix + own if found else own
+    return composed
 
 
 def _filter_composed(
