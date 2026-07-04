@@ -1,5 +1,6 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const AUTO_REFRESH_MS = 8000;
+const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -80,6 +81,30 @@ async function ensureCaptureScripts(tab) {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [file] });
   }
   return true;
+}
+
+function timeoutError(label, timeoutMs) {
+  const error = new Error(`${label}_timeout_after_${timeoutMs}ms`);
+  error.name = "PolylogueTimeoutError";
+  return error;
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timer = 0;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = window.setTimeout(() => reject(timeoutError(label, timeoutMs)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) window.clearTimeout(timer);
+  });
+}
+
+async function capturePageFromTab(tab) {
+  return withTimeout(
+    chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }),
+    CAPTURE_MESSAGE_TIMEOUT_MS,
+    "capture_message",
+  );
 }
 
 function setBadge(kind, text) {
@@ -362,12 +387,12 @@ document.getElementById("capture").addEventListener("click", async () => {
   await withAction("capture", async () => {
     const tab = await activeTab();
     if (!tab?.id) return;
-    let result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }).catch((error) => ({
+    let result = await capturePageFromTab(tab).catch((error) => ({
       ok: false,
       error: String(error.message || error)
     }));
     if (!result?.ok && (await ensureCaptureScripts(tab))) {
-      result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }).catch((error) => ({
+      result = await capturePageFromTab(tab).catch((error) => ({
         ok: false,
         error: String(error.message || error)
       }));

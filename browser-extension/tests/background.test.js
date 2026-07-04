@@ -110,6 +110,7 @@ function responseJson(body, { ok = true, status = 200, requestId = "receiver-req
 describe("background receiver diagnostics", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     await loadBackground();
   });
 
@@ -235,6 +236,27 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState.online).toBe(true);
     expect(stored.polylogueState.captured).toBe(true);
     expect(stored.polylogueState.last_receiver_request_id).toBe("capture-request-1");
+  });
+
+  it("bounds explicit sync when a provider tab never answers capture", async () => {
+    vi.useFakeTimers();
+    globalThis.chrome.tabs.sendMessage = vi.fn(() => new Promise(() => {}));
+
+    const responsePromise = sendRuntimeMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
+
+    await vi.advanceTimersByTimeAsync(15000);
+    const response = await responsePromise;
+
+    expect(response).toEqual({ ok: true });
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 42 },
+      files: ["src/content/chatgpt_bridge.js"],
+      world: "MAIN",
+    });
+    expect(stored.polylogueCaptureLog[0].ok).toBe(false);
+    expect(stored.polylogueCaptureLog[0].error).toContain("capture_message_timeout_after_15000ms");
+    expect(stored.polylogueDebugLog[0].stage).toBe("capture_result");
+    expect(stored.polylogueDebugLog[0].ok).toBe(false);
   });
 
   it("injects Grok DOM capture scripts for open Grok/X tabs", async () => {

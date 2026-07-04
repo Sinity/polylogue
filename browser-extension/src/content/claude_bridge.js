@@ -3,6 +3,7 @@
   const nativeFetchRequestMessage = "polylogue.claude.nativeFetchRequest";
   const nativeFetchResponseMessage = "polylogue.claude.nativeFetchResponse";
   const currentOrigin = window.location.origin;
+  const nativeFetchTimeoutMs = 8000;
 
   window.__polylogueClaudeCapturedFetches = Array.isArray(window.__polylogueClaudeCapturedFetches)
     ? window.__polylogueClaudeCapturedFetches
@@ -88,6 +89,12 @@
     return null;
   }
 
+  function timeoutError(label) {
+    const error = new Error(`${label}_timeout_after_${nativeFetchTimeoutMs}ms`);
+    error.name = "PolylogueTimeoutError";
+    return error;
+  }
+
   async function fetchConversation(conversationId) {
     const url = conversationApiUrlFromResources(conversationId);
     if (!url) {
@@ -101,10 +108,18 @@
         error: "conversation_api_url_not_found"
       };
     }
-    const response = await originalFetch.call(window, url, {
-      credentials: "include",
-      cache: "no-store"
-    });
+    const controller = new globalThis.AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(timeoutError("page_bridge_fetch")), nativeFetchTimeoutMs);
+    let response;
+    try {
+      response = await originalFetch.call(window, url, {
+        credentials: "include",
+        cache: "no-store",
+        signal: controller.signal
+      });
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
     const contentType = response.headers.get("content-type") || "";
     const body = contentType.includes("application/json") ? await response.clone().text() : "";
     return {

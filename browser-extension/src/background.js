@@ -4,6 +4,7 @@ const ACTIVE_TAB_STATE_MIN_INTERVAL_MS = 4000;
 const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
 const POST_POLL_INTERVAL_MS = 5000;
+const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
 const recentBackgroundCaptures = new Map();
 const recentActiveTabStateChecks = new Map();
 // command_id -> true once dispatched to a content script this SW lifetime, so a
@@ -11,6 +12,22 @@ const recentActiveTabStateChecks = new Map();
 const inFlightPostCommands = new Set();
 const pendingPostCommandAcks = new Map();
 let postPollTimer = 0;
+
+function timeoutError(label, timeoutMs) {
+  const error = new Error(`${label}_timeout_after_${timeoutMs}ms`);
+  error.name = "PolylogueTimeoutError";
+  return error;
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timer = 0;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = globalThis.setTimeout(() => reject(timeoutError(label, timeoutMs)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) globalThis.clearTimeout(timer);
+  });
+}
 
 function injectionPlanForUrl(url) {
   try {
@@ -287,14 +304,18 @@ async function captureTab(tab, reason = "background") {
   recentBackgroundCaptures.set(tab.id, now);
   await ensureCaptureScripts(tab);
   try {
-    const result = await chrome.tabs.sendMessage(tab.id, {
-      type: "polylogue.capturePage",
-      reason
-    });
-    if (result?.ok) {
-      const envelopeSession = result.envelope?.session || {};
-      const provider = result.captureResult?.provider || envelopeSession.provider;
-      const providerSessionId = result.captureResult?.provider_session_id || envelopeSession.provider_session_id;
+    const resultWithTimeout = await withTimeout(
+      chrome.tabs.sendMessage(tab.id, {
+        type: "polylogue.capturePage",
+        reason
+      }),
+      CAPTURE_MESSAGE_TIMEOUT_MS,
+      "capture_message",
+    );
+    if (resultWithTimeout?.ok) {
+      const envelopeSession = resultWithTimeout.envelope?.session || {};
+      const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
+      const providerSessionId = resultWithTimeout.captureResult?.provider_session_id || envelopeSession.provider_session_id;
       await updateSessionLedger({
         provider,
         providerSessionId,
@@ -307,8 +328,8 @@ async function captureTab(tab, reason = "background") {
           attachment_count: Array.isArray(envelopeSession.turns)
             ? envelopeSession.turns.reduce((count, turn) => count + (Array.isArray(turn.attachments) ? turn.attachments.length : 0), 0)
             : null,
-          archive_state: result.archiveState || null,
-          receiver_request_id: result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null,
+          archive_state: resultWithTimeout.archiveState || null,
+          receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
           last_error: null,
         },
       });
@@ -318,19 +339,19 @@ async function captureTab(tab, reason = "background") {
         provider,
         provider_session_id: providerSessionId,
         tab_id: tab.id,
-        archive_state: result.archiveState?.state || null,
-        receiver_request_id: result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null,
+        archive_state: resultWithTimeout.archiveState?.state || null,
+        receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
       });
       await setState({
         online: true,
         captured: true,
-        last_capture: result.captureResult || result,
-        archive_state: result.archiveState || null,
+        last_capture: resultWithTimeout.captureResult || resultWithTimeout,
+        archive_state: resultWithTimeout.archiveState || null,
         provider,
         provider_session_id: providerSessionId,
         capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
         last_receiver_request_id:
-          result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null
+          resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null
       });
       await appendDebugLog({
         stage: "capture_result",
@@ -339,11 +360,11 @@ async function captureTab(tab, reason = "background") {
         provider,
         provider_session_id: providerSessionId,
         capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
-        archive_state: result.archiveState?.state || null,
-        receiver_request_id: result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null,
+        archive_state: resultWithTimeout.archiveState?.state || null,
+        receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
       });
     }
-    return result;
+    return resultWithTimeout;
   } catch (error) {
     await appendCaptureLog({
       ok: false,

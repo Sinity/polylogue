@@ -25,6 +25,8 @@ const headless = process.env.POLYLOGUE_PROVIDER_SMOKE_HEADLESS !== "0";
 const fixtureSessionId = process.env.POLYLOGUE_PROVIDER_SMOKE_SESSION_ID || "polylogue-dev-loop-provider-smoke";
 const readerBaseUrl = (process.env.POLYLOGUE_PROVIDER_SMOKE_READER_BASE_URL || "").replace(/\/+$/, "");
 const readerSessionId = process.env.POLYLOGUE_PROVIDER_SMOKE_READER_SESSION_ID || "";
+const stressTurnCount = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_STRESS_TURNS || "2");
+const stressTextRepeat = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_STRESS_TEXT_REPEAT || "1");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -150,25 +152,35 @@ function resolveChromeBinary() {
 }
 
 function fixtureHtml(provider) {
+  const turnCount = Math.max(2, Math.min(2000, Number.isFinite(stressTurnCount) ? stressTurnCount : 2));
+  const repeat = Math.max(1, Math.min(200, Number.isFinite(stressTextRepeat) ? stressTextRepeat : 1));
+  const longSuffix = " captured fixture text".repeat(repeat);
   if (provider === "chatgpt") {
+    const turns = Array.from({ length: turnCount }, (_item, index) => {
+      const role = index % 2 === 0 ? "user" : "assistant";
+      return `<article data-testid="conversation-turn-${role}-${index + 1}">ChatGPT fixture ${role} turn ${index + 1}${longSuffix}</article>`;
+    }).join("\n      ");
     return `<!doctype html>
 <html>
   <head><title>Polylogue ChatGPT provider smoke</title></head>
   <body>
     <main>
-      <article data-testid="conversation-turn-user-1">ChatGPT fixture user turn</article>
-      <article data-testid="conversation-turn-assistant-1">ChatGPT fixture assistant turn</article>
+      ${turns}
     </main>
   </body>
 </html>`;
   }
+  const turns = Array.from({ length: turnCount }, (_item, index) => {
+    const role = index % 2 === 0 ? "human" : "assistant";
+    const label = role === "human" ? "user" : "assistant";
+    return `<article data-message-author-role="${role}">Claude fixture ${label} turn ${index + 1}${longSuffix}</article>`;
+  }).join("\n      ");
   return `<!doctype html>
 <html>
   <head><title>Polylogue Claude provider smoke</title></head>
   <body>
     <main>
-      <article data-message-author-role="human">Claude fixture user turn</article>
-      <article data-message-author-role="assistant">Claude fixture assistant turn</article>
+      ${turns}
     </main>
   </body>
 </html>`;
@@ -773,13 +785,16 @@ async function captureProvider(extensionClient, providerConfig) {
             } catch (_error) {
               return false;
             }
-          });
+        });
         if (tab && typeof tab.id === "number") {
+          const startedAt = performance.now();
           const capture = await sendCapture(tab.id);
+          const captureDurationMs = Math.round((performance.now() - startedAt) * 10) / 10;
           last = {
             tab: {id: tab.id, url: tab.url, title: tab.title},
             tab_inventory: tabInventory,
             injection_mode: capture.injection_mode,
+            capture_duration_ms: captureDurationMs,
             result: capture.result,
             error: capture.error
           };
@@ -831,6 +846,7 @@ function safeProviderSummary(providerConfig, capturePayload) {
     tab: capturePayload?.tab || null,
     tab_inventory: capturePayload?.tab_inventory || null,
     injection_mode: capturePayload?.injection_mode || null,
+    capture_duration_ms: capturePayload?.capture_duration_ms ?? null,
     expected_provider: providerConfig.expectedProvider,
     provider: session.provider || null,
     provider_session_id: session.provider_session_id || null,
