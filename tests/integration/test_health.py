@@ -307,156 +307,6 @@ class TestRepairEmptySessions:
         assert result2.repaired_count == 0
 
 
-class TestRepairDanglingFts:
-    """Tests for repair_dangling_fts function."""
-
-    def test_clean_fts_state(self, cli_workspace: CliWorkspace) -> None:
-        """repair_dangling_fts should return 0 when FTS is in sync."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_dangling_fts
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            # Create session and message (FTS auto-syncs)
-            _insert_session(conn, "conv-1")
-            _insert_message(conn, "msg-1", "conv-1", "user", "Searchable text")
-            _insert_content_block(conn, "blk-1", "msg-1", "conv-1", type="text", tool_name=None, text="Searchable text")
-            conn.commit()
-
-        # Act
-        result = repair_dangling_fts(config, dry_run=False)
-
-        # Assert
-        assert result.name == "dangling_fts"
-        assert result.repaired_count == 0
-        assert result.success is True
-
-    def test_dangling_fts_orphaned_entry(self, cli_workspace: CliWorkspace) -> None:
-        """repair_dangling_fts should find and delete FTS entries without messages."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_dangling_fts
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            # Insert a message first (creates FTS entry via trigger)
-            _insert_session(conn, "conv-1")
-            _insert_message(conn, "msg-1", "conv-1", "user", "Text")
-            _insert_content_block(conn, "blk-1", "msg-1", "conv-1", type="text", tool_name=None, text="Text")
-            conn.commit()
-
-            # Get the rowid that was assigned
-            rowid = conn.execute(
-                "SELECT rowid FROM blocks WHERE message_id = ?",
-                (_message_id("msg-1", "conv-1"),),
-            ).fetchone()[0]
-
-            # Now manually delete the message but manually insert FTS entry to simulate orphaned state
-            conn.execute("DELETE FROM messages WHERE message_id = ?", (_message_id("msg-1", "conv-1"),))
-
-            # Manually insert a dangling FTS entry (rowid won't match any message)
-            conn.execute(
-                "INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text) VALUES (?, ?, ?, ?, ?, ?)",
-                (rowid + 999, "orphan-fts", "orphan-message", _session_id("conv-1"), "text", "dangling entry"),
-            )
-            conn.commit()
-
-        # Act
-        result = repair_dangling_fts(config, dry_run=False)
-
-        # Assert
-        assert result.name == "dangling_fts"
-        assert result.repaired_count == 1
-        assert result.success is True
-
-    def test_dangling_fts_missing_entry(self, cli_workspace: CliWorkspace) -> None:
-        """repair_dangling_fts should insert missing FTS entries for messages."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_dangling_fts
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            # Insert session and message
-            _insert_session(conn, "conv-1")
-            _insert_message(conn, "msg-1", "conv-1", "user", "Text1")
-            _insert_content_block(conn, "blk-1", "msg-1", "conv-1", type="text", tool_name=None, text="Text1")
-            conn.commit()
-
-            # messages_fts is contentless (content=''); its rows are keyed by the
-            # blocks rowid, so delete the dangling entry by joining to blocks
-            # rather than the unretrievable UNINDEXED message_id column.
-            conn.execute(
-                "DELETE FROM messages_fts WHERE rowid IN (SELECT rowid FROM blocks WHERE message_id = ?)",
-                (_message_id("msg-1", "conv-1"),),
-            )
-            conn.commit()
-
-        # Act
-        result = repair_dangling_fts(config, dry_run=False)
-
-        # Assert
-        assert result.name == "dangling_fts"
-        assert result.repaired_count == 1
-        assert result.success is True
-
-    def test_dangling_fts_dry_run_counts_but_doesnt_modify(self, cli_workspace: CliWorkspace) -> None:
-        """repair_dangling_fts with dry_run=True should count but not modify."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_dangling_fts
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            _insert_session(conn, "conv-1")
-            _insert_message(conn, "msg-1", "conv-1", "user", "Text")
-            _insert_message(conn, "msg-2", "conv-1", "user", "Text2")
-            _insert_content_block(conn, "blk-1", "msg-1", "conv-1", type="text", tool_name=None, text="Text")
-            _insert_content_block(conn, "blk-2", "msg-2", "conv-1", type="text", tool_name=None, text="Text2")
-            conn.commit()
-
-            block_count = conn.execute("SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL").fetchone()[0]
-            fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
-            initial_diff = abs(block_count - fts_count)
-
-        # Act
-        result = repair_dangling_fts(config, dry_run=True)
-
-        # Assert - dry_run returns count estimate even if FTS is in sync
-        assert result.success is True
-
-        # Verify no actual change
-        with connection_context(None) as conn:
-            block_count = conn.execute("SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL").fetchone()[0]
-            fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
-            assert abs(block_count - fts_count) == initial_diff
-
-    def test_dangling_fts_ignores_null_text_messages(self, cli_workspace: CliWorkspace) -> None:
-        """Null-text messages should not count as missing FTS rows."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_dangling_fts
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            _insert_session(conn, "conv-1")
-            _insert_message(conn, "msg-1", "conv-1", "user", "Text")
-            _insert_message(conn, "msg-2", "conv-1", "assistant", "Placeholder")
-            _insert_content_block(conn, "blk-1", "msg-1", "conv-1", type="text", tool_name=None, text="Text")
-            _insert_content_block(conn, "blk-2", "msg-2", "conv-1", type="text", tool_name=None, text=None)
-            conn.commit()
-
-            indexed_rows = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
-            assert indexed_rows == 1
-
-        result = repair_dangling_fts(config, dry_run=True)
-
-        assert result.success is True
-        assert result.repaired_count == 0
-        assert result.detail == "FTS index in sync"
-
-
 class TestRepairOrphanedAttachments:
     """Tests for repair_orphaned_attachments function."""
 
@@ -575,40 +425,6 @@ class TestRepairOrphanedAttachments:
             assert remaining == 1
 
 
-class TestRepairWalCheckpoint:
-    """Tests for repair_wal_checkpoint function."""
-
-    def test_wal_checkpoint_succeeds(self, cli_workspace: CliWorkspace) -> None:
-        """repair_wal_checkpoint should execute without crashing."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_wal_checkpoint
-
-        config = get_config()
-
-        # Act
-        result = repair_wal_checkpoint(config, dry_run=False)
-
-        # Assert
-        assert result.name == "wal_checkpoint"
-        assert result.success is True
-        # repaired_count and detail depend on WAL file state; just verify no crash
-
-    def test_wal_checkpoint_dry_run(self, cli_workspace: CliWorkspace) -> None:
-        """repair_wal_checkpoint with dry_run=True should inspect WAL without modifying."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_wal_checkpoint
-
-        config = get_config()
-
-        # Act
-        result = repair_wal_checkpoint(config, dry_run=True)
-
-        # Assert
-        assert result.name == "wal_checkpoint"
-        assert result.success is True
-        assert "Would:" in result.detail or "nothing to checkpoint" in result.detail
-
-
 class TestMaintenanceSelection:
     """Tests for safe repair and archive cleanup orchestration."""
 
@@ -676,7 +492,6 @@ class TestMaintenanceSelection:
             dry_run=True,
             preview_counts={
                 "session_insights": 13,
-                "dangling_fts": 3,
                 "orphaned_messages": 2,
                 "empty_sessions": 5,
             },
@@ -684,7 +499,6 @@ class TestMaintenanceSelection:
 
         by_name = {result.name: result for result in results}
         assert by_name["session_insights"].repaired_count == 13
-        assert by_name["dangling_fts"].repaired_count == 3
         assert by_name["orphaned_messages"].repaired_count == 2
         assert by_name["empty_sessions"].repaired_count == 5
 

@@ -13,7 +13,6 @@ from polylogue.config import Config
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.fts.dangling_repair import DanglingFtsRepairOutcome
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -80,14 +79,6 @@ def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only()
             detail="ready",
             maintenance_target="session_insights",
         ),
-        "dangling_fts": repair_mod.ArchiveDebtStatus(
-            name="dangling_fts",
-            category=repair_mod._maintenance_target_spec("dangling_fts").category,
-            destructive=False,
-            issue_count=0,
-            detail="ready",
-            maintenance_target="dangling_fts",
-        ),
         "orphaned_messages": repair_mod.ArchiveDebtStatus(
             name="orphaned_messages",
             category=repair_mod._maintenance_target_spec("orphaned_messages").category,
@@ -108,7 +99,6 @@ def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only()
 
     assert repair_mod.preview_counts_from_archive_debt(statuses) == {
         "session_insights": 0,
-        "dangling_fts": 0,
         "empty_sessions": 4,
     }
 
@@ -849,7 +839,7 @@ def test_raw_materialization_leaves_fts_to_ingest_or_fts_stage(
 
     assert result.success is True
     assert result.repaired_count == 2
-    assert "message FTS left to ingest triggers or the FTS maintenance stage" in result.detail
+    assert "message FTS left to ingest triggers or daemon convergence" in result.detail
     assert calls["parse_kwargs"] == {
         "raw_ids": ["raw-1"],
         "progress_callback": None,
@@ -1600,98 +1590,3 @@ def test_offline_maintenance_preview_allowed_with_live_daemon(monkeypatch: pytes
     assert len(results) == 1
     assert results[0].success is True
     assert results[0].repaired_count == 2
-
-
-def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    calls: list[tuple[str, object]] = []
-
-    class _Cursor:
-        def __init__(self, value: object) -> None:
-            self.value = value
-
-        def fetchone(self) -> tuple[object, ...]:
-            return (self.value,)
-
-    class FakeConn:
-        def execute(self, sql: str, params: object = ()) -> _Cursor:
-            if sql.startswith("PRAGMA "):
-                return _Cursor(None)
-            if "sqlite_master" in sql and "messages_fts" in sql:
-                return _Cursor("messages_fts")
-            raise AssertionError(f"unexpected SQL: {sql}")
-
-        def commit(self) -> None:
-            calls.append(("commit", ()))
-
-    @contextmanager
-    def fake_connection_context() -> Iterator[FakeConn]:
-        yield FakeConn()
-
-    ops_db = tmp_path / "ops.db"
-    with sqlite3.connect(ops_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE convergence_debt (
-                debt_id TEXT PRIMARY KEY,
-                stage TEXT NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'failed' CHECK(status IN ('failed', 'deferred')),
-                priority INTEGER NOT NULL DEFAULT 0,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                next_retry_at TEXT,
-                materializer_version TEXT,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL,
-                UNIQUE(stage, target_type, target_id)
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO convergence_debt (
-                debt_id, stage, target_type, target_id, status, priority,
-                attempts, last_error, next_retry_at, materializer_version,
-                created_at_ms, updated_at_ms
-            )
-            VALUES (
-                'debt-1', 'fts', 'fts_surface', 'messages_fts', 'failed', 0,
-                1, 'stale ledger', '1970-01-01T00:00:00+00:00', NULL, 1, 1
-            )
-            """
-        )
-
-    monkeypatch.setattr(repair_mod, "_open_archive_index_connection", fake_connection_context)
-
-    def fail_full_rebuild(_conn: FakeConn) -> None:
-        raise AssertionError("repair_dangling_fts must not run the full FTS rebuild path")
-
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
-        fail_full_rebuild,
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.repair_missing_fts_rows",
-        lambda _conn: DanglingFtsRepairOutcome(
-            repaired_count=2,
-            success=True,
-            detail="FTS sync: repaired index",
-        ),
-    )
-
-    result = repair_mod.repair_dangling_fts(_config(tmp_path), dry_run=False)
-
-    assert result.success is True
-    assert result.repaired_count == 2
-    assert result.detail == "FTS sync: repaired index"
-    assert ("commit", ()) in calls
-    with sqlite3.connect(ops_db) as conn:
-        row = conn.execute(
-            """
-            SELECT status, last_error, next_retry_at, updated_at_ms
-            FROM convergence_debt
-            WHERE stage = 'fts' AND target_type = 'fts_surface' AND target_id = 'messages_fts'
-            """
-        ).fetchone()
-    assert row is None

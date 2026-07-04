@@ -653,11 +653,6 @@ def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]
     return total
 
 
-def dangling_fts_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
-    messages_fts = derived_statuses.get("messages_fts")
-    return max(0, int(messages_fts.pending_rows or 0)) if messages_fts is not None else 0
-
-
 # ---------------------------------------------------------------------------
 # Archive debt collection (formerly archive_debt.py)
 # ---------------------------------------------------------------------------
@@ -1284,70 +1279,6 @@ def preview_session_insights(*, count: int) -> RepairResult:
     )
 
 
-def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.fts.dangling_repair import (
-        configure_bounded_repair_connection,
-        dry_run_dangling_fts_repair,
-        repair_missing_fts_rows,
-        reset_and_repair_fts_rows,
-    )
-
-    try:
-        with _open_archive_index_connection() as conn:
-            configure_bounded_repair_connection(conn)
-            fts_exists = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-            ).fetchone()
-            if not fts_exists:
-                return _internal_derived_repair_result(
-                    "dangling_fts",
-                    repaired_count=0,
-                    success=True,
-                    detail="FTS table does not exist, skipping",
-                )
-            if dry_run:
-                outcome = dry_run_dangling_fts_repair(conn)
-                return _internal_derived_repair_result(
-                    "dangling_fts",
-                    repaired_count=outcome.repaired_count,
-                    success=outcome.success,
-                    detail=outcome.detail,
-                )
-            outcome = repair_missing_fts_rows(conn)
-            if not outcome.success:
-                outcome = reset_and_repair_fts_rows(conn)
-            conn.commit()
-            if outcome.success:
-                _resolve_convergence_debt(
-                    ops_db=config.archive_root / "ops.db",
-                    stage="fts",
-                    target_type="fts_surface",
-                    target_id="messages_fts",
-                )
-            return _internal_derived_repair_result(
-                "dangling_fts",
-                repaired_count=outcome.repaired_count,
-                success=outcome.success,
-                detail=outcome.detail,
-            )
-    except Exception as exc:
-        return _internal_derived_repair_result(
-            "dangling_fts",
-            repaired_count=0,
-            success=False,
-            detail=f"Failed to repair FTS index: {exc}",
-        )
-
-
-def preview_dangling_fts(*, count: int) -> RepairResult:
-    return _internal_derived_repair_result(
-        "dangling_fts",
-        repaired_count=count,
-        success=True,
-        detail=f"Would: FTS sync pending {count:,} rows" if count else "FTS index in sync",
-    )
-
-
 def repair_raw_materialization(
     config: Config,
     dry_run: bool = False,
@@ -1568,53 +1499,6 @@ def repair_raw_materialization(
     )
 
 
-def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.paths import active_index_db_path
-
-    try:
-        if dry_run:
-            wal_path = Path(str(active_index_db_path()) + "-wal")
-            if wal_path.exists():
-                wal_size = wal_path.stat().st_size
-                pages_estimate = wal_size // 4096
-                return _repair_result(
-                    "wal_checkpoint",
-                    repaired_count=pages_estimate,
-                    success=True,
-                    detail=f"Would: WAL checkpoint (~{pages_estimate} pages, {wal_size:,} bytes)",
-                )
-            return _repair_result(
-                "wal_checkpoint",
-                repaired_count=0,
-                success=True,
-                detail="Would: No WAL file present, nothing to checkpoint",
-            )
-
-        with _open_archive_index_connection() as conn:
-            row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-            busy, log, checkpointed = row[0], row[1], row[2]
-            if busy:
-                return _repair_result(
-                    "wal_checkpoint",
-                    repaired_count=0,
-                    success=False,
-                    detail=f"WAL checkpoint had busy pages: {busy} busy, {log} log, {checkpointed} checkpointed",
-                )
-            return _repair_result(
-                "wal_checkpoint",
-                repaired_count=checkpointed if checkpointed > 0 else 0,
-                success=True,
-                detail=f"WAL checkpoint complete: {checkpointed} pages checkpointed",
-            )
-    except Exception as exc:
-        return _repair_result(
-            "wal_checkpoint",
-            repaired_count=0,
-            success=False,
-            detail=f"WAL checkpoint failed: {exc}",
-        )
-
-
 def _to_repair_result(result: BackfillResult) -> RepairResult:
     """Adapt a ``BackfillResult`` to the shared ``RepairResult`` shape."""
     return RepairResult(
@@ -1784,9 +1668,7 @@ __all__ = [
     "count_orphaned_messages_sync",
     "count_messages_by_type_sync",
     "count_unclassified_message_type_sync",
-    "dangling_fts_repair_count",
     "preview_counts_from_archive_debt",
-    "preview_dangling_fts",
     "preview_empty_sessions",
     "preview_orphaned_attachments",
     "preview_orphaned_blobs",
@@ -1794,7 +1676,6 @@ __all__ = [
     "preview_orphaned_messages",
     "preview_message_type_backfill",
     "preview_session_insights",
-    "repair_dangling_fts",
     "repair_empty_sessions",
     "repair_message_type_backfill",
     "repair_orphaned_attachments",
@@ -1803,7 +1684,6 @@ __all__ = [
     "repair_superseded_raw_snapshots",
     "repair_orphaned_messages",
     "repair_session_insights",
-    "repair_wal_checkpoint",
     "run_archive_cleanup",
     "run_safe_repairs",
     "run_selected_maintenance",
