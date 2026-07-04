@@ -1501,7 +1501,14 @@ def _show_direct_json(
         include_archive_readiness=include_archive_readiness,
     )
     raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
+    component_readiness = _direct_component_readiness(
+        env,
+        active_root=active_root,
+        archive_readiness=archive_readiness,
+        raw_materialization_readiness=raw_materialization_readiness,
+    )
     payload: dict[str, Any] = {
+        "ok": _direct_status_ok(component_readiness),
         "daemon_liveness": False,
         "archive_root": str(root),
         "active_archive_root": str(active_root),
@@ -1518,12 +1525,7 @@ def _show_direct_json(
         "archive_cli_routes": _archive_cli_route_status(),
         "archive_runtime_paths": _archive_runtime_path_status(),
         "raw_materialization_readiness": raw_materialization_readiness,
-        "component_readiness": _direct_component_readiness(
-            env,
-            active_root=active_root,
-            archive_readiness=archive_readiness,
-            raw_materialization_readiness=raw_materialization_readiness,
-        ),
+        "component_readiness": component_readiness,
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
@@ -1542,6 +1544,28 @@ def _show_direct_json(
             payload["error"] = str(exc)
     output = payload if full or include_archive_readiness else _compact_status_payload(payload, source="direct")
     env.ui.console.print(json.dumps(output, indent=2, default=str))
+
+
+def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
+    """Return direct-fallback health without penalizing intentionally unknown probes."""
+
+    hard_failure_states = {"blocked", "poisoned", "stale", "degraded"}
+    required_missing_components = {
+        "archive_sessions",
+        "raw_materialization",
+        "search",
+        "transforms",
+        "assertions",
+    }
+    for component, readiness in component_readiness.items():
+        if not isinstance(readiness, dict):
+            continue
+        state = str(readiness.get("state") or "unknown")
+        if state in hard_failure_states:
+            return False
+        if state == "missing" and component in required_missing_components:
+            return False
+    return True
 
 
 def _direct_component_readiness(
@@ -1648,10 +1672,27 @@ def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
 
 def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dict[str, Any]:
     from polylogue.insights.transforms import SESSION_DIGEST_TRANSFORM_VERSION, TRANSFORM_REGISTRY
-    from polylogue.readiness.capability import component_from_transform_registry
+    from polylogue.readiness.capability import (
+        CapabilityReadinessState,
+        ComponentReadiness,
+        component_from_transform_registry,
+    )
 
     if isinstance(archive_readiness, dict) and archive_readiness.get("checked") is False:
         reason = str(archive_readiness.get("reason") or "archive_readiness_unchecked")
+        if reason == "direct_status_default_skips_exact_archive_readiness":
+            return ComponentReadiness(
+                component="transforms",
+                scope="session-analysis",
+                state=CapabilityReadinessState.UNKNOWN,
+                summary=reason,
+                counts={
+                    "transform_count": len(TRANSFORM_REGISTRY),
+                    "session_digest_transform_version": SESSION_DIGEST_TRANSFORM_VERSION,
+                },
+                caveats=(reason,),
+                evidence_refs=("transform_registry",),
+            ).to_dict()
         return component_from_transform_registry(
             transform_count=len(TRANSFORM_REGISTRY),
             session_count=None,

@@ -258,6 +258,60 @@ class TestNoArchiveStatus:
         assert "Archive readiness:" in combined
         assert "direct_status_default_skips_exact_archive_readiness" in combined
 
+    def test_direct_status_json_marks_skipped_transform_readiness_unknown(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "custom.sqlite"
+        index_db = tmp_path / "index.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL
+                );
+                INSERT INTO sessions VALUES ('codex-session:one', 1);
+                """
+            )
+        assertion_component = {
+            "component": "assertions",
+            "scope": "user",
+            "state": "ready",
+            "summary": "ready",
+            "counts": {"assertion_count": 0, "target_count": 0, "active_count": 0},
+            "caveats": [],
+            "repair_hint": None,
+            "evidence_refs": ["user.db:assertions"],
+        }
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.cli.commands.status._archive_readiness_status",
+                side_effect=AssertionError("direct status must not run exact readiness by default"),
+            ),
+            patch(
+                "polylogue.cli.commands.status._direct_raw_materialization_readiness",
+                return_value={"available": True, "total": 0},
+            ),
+            patch("polylogue.cli.commands.status._direct_assertion_component", return_value=assertion_component),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        transforms = payload["component_readiness"]["transforms"]
+        assert payload["ok"] is True
+        assert transforms["state"] == "unknown"
+        assert transforms["summary"] == "direct_status_default_skips_exact_archive_readiness"
+        assert transforms["caveats"] == ["direct_status_default_skips_exact_archive_readiness"]
+        assert "session_count" not in transforms["counts"]
+        assert transforms["counts"]["transform_count"] >= 1
+        assert transforms["counts"]["session_digest_transform_version"] == 1
+
     def test_direct_status_json_reads_archive_file_set_from_archive_tiers(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"
@@ -854,6 +908,7 @@ class TestNoArchiveStatus:
 
         payload = json.loads(_combined_calls(env))
         transforms = payload["component_readiness"]["transforms"]
+        assert payload["ok"] is False
         assert transforms["state"] == "blocked"
         assert transforms["summary"] == "database is locked"
         assert transforms["caveats"] == ["database is locked"]
