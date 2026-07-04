@@ -213,7 +213,11 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     parse_failed = int(row["parse_failed"] or 0)
     parsed_without_index_session = int(row["parsed_without_index_session"] or 0)
     classified = sum(classified_counts.values())
-    unchecked = max(total - classified, 0)
+    parse_failed_origins = {str(item["origin"] or "unknown") for item in gap_rows if item["parse_error"] is not None}
+    actionable = len(parse_failed_origins)
+    critical = actionable
+    affected_actionable = parse_failed
+    unchecked = max(total - classified - affected_actionable, 0)
     classification = "cheap_projection" if classified else "not_run"
     raw_id_join_gap_count = unchecked
     category_counts: dict[str, int] = {
@@ -232,14 +236,14 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "archive_session_count": archive_session_count,
         "join_gap_count": join_gap_count,
         "total": total,
-        "critical": 0,
+        "critical": critical,
         "warning": 0,
-        "actionable": 0,
+        "actionable": actionable,
         "blocked": 0,
         "classified": classified,
         "unchecked": unchecked,
         "affected_total": total,
-        "affected_actionable": 0,
+        "affected_actionable": affected_actionable,
         "affected_blocked": 0,
         "affected_open": 0,
         "affected_classified": classified,

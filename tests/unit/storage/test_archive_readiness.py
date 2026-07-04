@@ -104,6 +104,50 @@ def test_raw_materialization_snapshot_counts_raw_artifacts_once(tmp_path: Path) 
     assert snapshot["source_family_counts"] == {"codex-session": 1}
 
 
+def test_raw_materialization_snapshot_marks_parse_failures_actionable(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT,
+                validation_status TEXT,
+                parse_error TEXT,
+                parsed_at_ms INTEGER
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, validation_status, parse_error, parsed_at_ms)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("raw-failed-one", "codex-session", "failed", "bad json", None),
+                ("raw-failed-two", "aistudio-drive", "failed", "bad json", None),
+            ],
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+
+    assert snapshot["total"] == 2
+    assert snapshot["critical"] == 2
+    assert snapshot["actionable"] == 2
+    assert snapshot["affected_actionable"] == 2
+    assert snapshot["unchecked"] == 0
+    assert snapshot["affected_unchecked"] == 0
+    assert snapshot["category_counts"] == {
+        "raw_id_join_gap": 0,
+        "skipped": 0,
+        "parse_failed": 2,
+        "parsed_without_index_session": 0,
+    }
+
+
 def test_raw_materialization_snapshot_classifies_native_aliases(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
