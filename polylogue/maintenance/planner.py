@@ -388,7 +388,12 @@ class BackfillOperation:
         )
 
 
-def _collect_archive_debt_statuses(config: Config, *, include_expensive: bool) -> dict[str, ArchiveDebtStatus]:
+def _collect_archive_debt_statuses(
+    config: Config,
+    *,
+    include_expensive: bool,
+    target_names: tuple[str, ...] = (),
+) -> dict[str, ArchiveDebtStatus]:
     """Collect archive-debt statuses over ``index.db``.
 
     Returns an empty mapping when ``index.db`` does not yet exist (fresh
@@ -411,6 +416,7 @@ def _collect_archive_debt_statuses(config: Config, *, include_expensive: bool) -
             db_path=index_db,
             include_expensive=include_expensive,
             probe_only=False,
+            target_names=target_names,
         )
 
 
@@ -468,7 +474,11 @@ def preview_backfill(
     # call ignored ``config.db_path`` entirely, which made the planner
     # behave inconsistently in tests and multi-archive runtimes.
     include_expensive = any(spec.archive_readiness_requires_deep for spec in resolved)
-    debt_statuses = _collect_archive_debt_statuses(config, include_expensive=include_expensive)
+    debt_statuses = _collect_archive_debt_statuses(
+        config,
+        include_expensive=include_expensive,
+        target_names=resolved_names,
+    )
 
     preview = preview_counts_from_archive_debt(debt_statuses)
 
@@ -554,7 +564,11 @@ def execute_backfill(
 
     # Thread the caller's archive db_path through the planner instead of
     # relying on ambient defaults. See ``preview_backfill`` above.
-    debt_statuses = _collect_archive_debt_statuses(config, include_expensive=False)
+    debt_statuses = _collect_archive_debt_statuses(
+        config,
+        include_expensive=False,
+        target_names=resolved_names,
+    )
     preview = preview_counts_from_archive_debt(debt_statuses)
 
     reason: InvalidationReason | None = None

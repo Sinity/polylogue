@@ -761,24 +761,28 @@ def collect_archive_debt_statuses_sync(
     derived_statuses: dict[str, DerivedModelStatus] | None = None,
     include_expensive: bool = True,
     probe_only: bool = False,
+    target_names: tuple[str, ...] = (),
 ) -> dict[str, ArchiveDebtStatus]:
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
 
-    statuses = derived_statuses or collect_derived_model_statuses_sync(conn, verify_full=include_expensive)
+    selected = set(target_names) if target_names else set(_MAINTENANCE_TARGET_CATALOG.names())
+    needs_session_insights = "session_insights" in selected
+    statuses = (
+        derived_statuses or collect_derived_model_statuses_sync(conn, verify_full=include_expensive)
+        if needs_session_insights
+        else {}
+    )
 
     skip_large_message_scans = (
         probe_only
         and not include_expensive
         and _table_has_more_than(conn, "messages", _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT)
     )
-    orphaned_messages = 0 if skip_large_message_scans else count_orphaned_messages_sync(conn)
-    empty_sessions = 0 if skip_large_message_scans else count_empty_sessions_sync(conn)
-    orphaned_attachments = count_orphaned_attachments_sync(conn)
-    session_insights = session_insight_repair_count(statuses)
-    _unclassified = 0 if skip_large_message_scans else count_unclassified_message_type_sync(conn)
+    debt_statuses: dict[str, ArchiveDebtStatus] = {}
 
-    debt_statuses = {
-        "orphaned_messages": _archive_debt_status(
+    if "orphaned_messages" in selected:
+        orphaned_messages = 0 if skip_large_message_scans else count_orphaned_messages_sync(conn)
+        debt_statuses["orphaned_messages"] = _archive_debt_status(
             "orphaned_messages",
             issue_count=orphaned_messages,
             detail=(
@@ -793,8 +797,10 @@ def collect_archive_debt_statuses_sync(
                 )
             ),
             skipped=skip_large_message_scans,
-        ),
-        "empty_sessions": _archive_debt_status(
+        )
+    if "empty_sessions" in selected:
+        empty_sessions = 0 if skip_large_message_scans else count_empty_sessions_sync(conn)
+        debt_statuses["empty_sessions"] = _archive_debt_status(
             "empty_sessions",
             issue_count=empty_sessions,
             detail=(
@@ -805,41 +811,47 @@ def collect_archive_debt_statuses_sync(
                 else f"{empty_sessions:,} empty sessions"
             ),
             skipped=skip_large_message_scans,
-        ),
-        "orphaned_attachments": _archive_debt_status(
+        )
+    if "orphaned_attachments" in selected:
+        orphaned_attachments = count_orphaned_attachments_sync(conn)
+        debt_statuses["orphaned_attachments"] = _archive_debt_status(
             "orphaned_attachments",
             issue_count=orphaned_attachments,
             detail="No orphaned attachments"
             if orphaned_attachments == 0
             else f"{orphaned_attachments:,} orphaned attachment rows",
-        ),
-        "session_insights": _archive_debt_status(
+        )
+    if "session_insights" in selected:
+        session_insights = session_insight_repair_count(statuses)
+        debt_statuses["session_insights"] = _archive_debt_status(
             "session_insights",
             issue_count=session_insights,
             detail="Session insight read models ready"
             if session_insights == 0
             else f"{session_insights:,} pending/stale/orphaned session-insight rows",
-        ),
-        "message_type_backfill": _archive_debt_status(
+        )
+    if "message_type_backfill" in selected:
+        unclassified = 0 if skip_large_message_scans else count_unclassified_message_type_sync(conn)
+        debt_statuses["message_type_backfill"] = _archive_debt_status(
             "message_type_backfill",
-            issue_count=_unclassified,
+            issue_count=unclassified,
             detail=(
                 "Skipped exact message-type backfill scan in probe mode; use --deep for exact count"
                 if skip_large_message_scans
                 else "No messages need context/protocol classification"
-                if _unclassified == 0
-                else f"{_unclassified:,} messages would be classified as context or protocol"
+                if unclassified == 0
+                else f"{unclassified:,} messages would be classified as context or protocol"
             ),
             skipped=skip_large_message_scans,
-        ),
-    }
-    if include_expensive:
+        )
+    if include_expensive and "orphaned_blobs" in selected:
         orphaned_blobs = count_orphaned_blobs_sync(conn, db_path=db_path)
         debt_statuses["orphaned_blobs"] = _archive_debt_status(
             "orphaned_blobs",
             issue_count=orphaned_blobs,
             detail="No orphaned blobs" if orphaned_blobs == 0 else f"{orphaned_blobs:,} orphaned blob files on disk",
         )
+    if include_expensive and "superseded_raw_snapshots" in selected:
         superseded_raw_snapshots = count_superseded_raw_snapshots_sync(conn)
         debt_statuses["superseded_raw_snapshots"] = _archive_debt_status(
             "superseded_raw_snapshots",

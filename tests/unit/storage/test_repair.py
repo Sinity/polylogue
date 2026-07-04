@@ -129,6 +129,38 @@ def test_probe_only_archive_debt_skips_large_message_scans(monkeypatch: pytest.M
     assert debt["orphaned_attachments"].skipped is False
 
 
+def test_archive_debt_collection_honors_target_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    statuses = {
+        "session_profile_rows": _status(pending_rows=3),
+        "session_work_events": _status(),
+        "session_work_events_fts": _status(),
+        "session_phases": _status(),
+        "threads": _status(),
+        "threads_fts": _status(),
+        "session_tag_rollups": _status(),
+    }
+
+    def fail_unrelated(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("target-scoped session_insights preview must not scan unrelated maintenance debt")
+
+    monkeypatch.setattr(repair_mod, "count_orphaned_messages_sync", fail_unrelated)
+    monkeypatch.setattr(repair_mod, "count_empty_sessions_sync", fail_unrelated)
+    monkeypatch.setattr(repair_mod, "count_orphaned_attachments_sync", fail_unrelated)
+    monkeypatch.setattr(repair_mod, "count_unclassified_message_type_sync", fail_unrelated)
+    monkeypatch.setattr(repair_mod, "count_orphaned_blobs_sync", fail_unrelated)
+    monkeypatch.setattr(repair_mod, "count_superseded_raw_snapshots_sync", fail_unrelated)
+
+    with sqlite3.connect(":memory:") as conn:
+        debt = repair_mod.collect_archive_debt_statuses_sync(
+            conn,
+            derived_statuses=statuses,
+            target_names=("session_insights",),
+        )
+
+    assert tuple(debt) == ("session_insights",)
+    assert debt["session_insights"].issue_count == 3
+
+
 def test_raw_materialization_preview_counts_replayable_rows_without_erasing_missing_blobs(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
