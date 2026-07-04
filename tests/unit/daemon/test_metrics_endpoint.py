@@ -744,6 +744,70 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_raw_records_total{state="errors"} 1' in body
         assert 'polylogue_raw_records_by_source{source="claude-code-session"} 1' in body
 
+    def test_embedding_backlog_reads_split_embeddings_tier(self, tmp_path: Path) -> None:
+        index_db = tmp_path / "index.db"
+        embeddings_db = tmp_path / "embeddings.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    message_count INTEGER NOT NULL
+                );
+                CREATE TABLE messages (
+                    message_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user',
+                    message_type TEXT NOT NULL DEFAULT 'message',
+                    material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                    word_count INTEGER NOT NULL DEFAULT 8,
+                    content_hash TEXT
+                );
+                INSERT INTO sessions VALUES
+                    ('s-embedded', 'codex-session', 2),
+                    ('s-pending', 'codex-session', 1);
+                INSERT INTO messages (message_id, session_id, content_hash) VALUES
+                    ('s-embedded:m1', 's-embedded', 'h1'),
+                    ('s-embedded:m2', 's-embedded', 'h2'),
+                    ('s-pending:m1', 's-pending', 'h3');
+                """
+            )
+        with sqlite3.connect(embeddings_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE embedding_status (
+                    session_id TEXT PRIMARY KEY,
+                    message_count_embedded INTEGER NOT NULL,
+                    needs_reindex INTEGER NOT NULL,
+                    error_message TEXT
+                );
+                CREATE TABLE message_embeddings_meta (
+                    message_id TEXT PRIMARY KEY,
+                    content_hash TEXT,
+                    model TEXT,
+                    dimension INTEGER,
+                    embedded_at_ms INTEGER
+                );
+                INSERT INTO embedding_status VALUES
+                    ('s-embedded', 2, 0, NULL),
+                    ('s-pending', 0, 1, NULL);
+                INSERT INTO message_embeddings_meta VALUES
+                    ('s-embedded:m1', 'h1', 'voyage-4', 1024, 1),
+                    ('s-embedded:m2', 'h2', 'voyage-4', 1024, 2);
+                """
+            )
+
+        body = format_metrics(index_db)
+
+        assert 'polylogue_embedding_sessions{state="total"} 2' in body
+        assert 'polylogue_embedding_sessions{state="embedded"} 1' in body
+        assert 'polylogue_embedding_sessions{state="pending"} 1' in body
+        assert 'polylogue_embedding_messages{state="embedded"} 2' in body
+        assert "polylogue_embedding_coverage_percent 50.0" in body
+        assert 'polylogue_embedding_status_state{status="partial"} 1' in body
+        assert "polylogue_embedding_retrieval_ready 1" in body
+
     def test_raw_record_metrics_read_archive_source_tier_from_index_db(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
