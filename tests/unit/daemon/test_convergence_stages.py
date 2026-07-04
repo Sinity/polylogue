@@ -257,8 +257,8 @@ def test_fts_stage_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
 
 
-def test_archive_repair_sessions_fts_resets_message_surface_without_ids(tmp_path: Path) -> None:
-    """When scope is unknown (no session ids), reset the global message surface."""
+def test_archive_repair_sessions_fts_skips_unknown_scope(tmp_path: Path) -> None:
+    """Path-scoped convergence must not become a whole-archive FTS rebuild."""
     from unittest import mock
 
     import polylogue.storage.fts.fts_lifecycle as fts_lc
@@ -276,7 +276,27 @@ def test_archive_repair_sessions_fts_resets_message_surface_without_ids(tmp_path
     ):
         stages._archive_repair_sessions_fts(conn, [])
 
-    reset_surface.assert_called_once()
+    reset_surface.assert_not_called()
+
+
+def test_archive_insights_path_batch_does_not_fallback_to_global_missing_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+    source_path = tmp_path / "codex.jsonl"
+
+    monkeypatch.setattr(stages, "_schema_archive_session_ids_for_source_paths", lambda _conn, _paths: {source_path: []})
+
+    def fail_global_missing_profiles(_conn: sqlite3.Connection) -> list[str]:
+        raise AssertionError("path-scoped insight convergence must not scan global missing profiles")
+
+    monkeypatch.setattr(stages, "_schema_archive_session_ids_missing_profiles", fail_global_missing_profiles)
+
+    assert stages._archive_insights_check_many(archive_db, [source_path]) == set()
+    result = stages._archive_insights_execute_many(archive_db, [source_path])
+    assert result is True
 
 
 def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_path: Path) -> None:

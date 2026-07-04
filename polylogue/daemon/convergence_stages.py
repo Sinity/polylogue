@@ -984,11 +984,12 @@ def _archive_repair_sessions_fts(conn: sqlite3.Connection, session_ids: Sequence
     ~14 MiB of writes regardless of payload size. When the source path resolves
     to known session ids we instead delete+reinsert only those sessions' FTS
     rows (the same targeted primitive the legacy monolith path used), and mark
-    the surface ready. Full rebuild remains the fallback when scope is unknown.
+    the surface ready. Unknown path scope is intentionally a no-op here:
+    whole-archive FTS repair is a dedicated surface-debt operation, not a side
+    effect of live path convergence.
     """
     ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not ids:
-        _archive_rebuild_messages_fts(conn)
         return
     if not _table_exists(conn, "messages_fts"):
         return
@@ -1003,7 +1004,7 @@ def _archive_fts_check(db_path: Path, path: Path) -> bool:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            return _archive_fts_needs_repair(conn, session_ids or None)
+            return bool(session_ids) and _archive_fts_needs_repair(conn, session_ids)
         finally:
             conn.close()
     except Exception:
@@ -1015,10 +1016,13 @@ def _archive_fts_execute(db_path: Path, path: Path) -> bool:
         conn = sqlite3.connect(db_path, timeout=30.0)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path)
+            if not session_ids:
+                logger.info("fts: archive skipped path repair with no resolved sessions path=%s", path)
+                return True
             _archive_repair_sessions_fts(conn, session_ids)
             conn.commit()
             logger.info("fts: archive repaired messages_fts sessions=%d", len(session_ids))
-            return not _archive_fts_needs_repair(conn, session_ids or None)
+            return not _archive_fts_needs_repair(conn, session_ids)
         finally:
             conn.close()
     except Exception:
@@ -1050,10 +1054,13 @@ def _archive_fts_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
         try:
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
             session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
+            if not session_ids:
+                logger.info("fts: archive skipped batch path repair with no resolved sessions paths=%d", len(paths))
+                return True
             _archive_repair_sessions_fts(conn, session_ids)
             conn.commit()
             logger.info("fts: archive batch repaired messages_fts paths=%d sessions=%d", len(paths), len(session_ids))
-            return not _archive_fts_needs_repair(conn, session_ids or None)
+            return not _archive_fts_needs_repair(conn, session_ids)
         finally:
             conn.close()
     except Exception:
@@ -1355,9 +1362,7 @@ def _archive_insights_check(db_path: Path, path: Path) -> bool:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            if session_ids:
-                return bool(_archive_stale_session_profile_ids(conn, session_ids))
-            return bool(_schema_archive_session_ids_missing_profiles(conn))
+            return bool(session_ids) and bool(_archive_stale_session_profile_ids(conn, session_ids))
         finally:
             conn.close()
     except Exception:
@@ -1368,9 +1373,10 @@ def _archive_insights_execute(db_path: Path, path: Path) -> StageExecuteReturn:
     try:
         conn = _open_archive_insight_write_connection(db_path)
         try:
-            session_ids = _schema_archive_session_ids_for_source_path(
-                conn, path
-            ) or _schema_archive_session_ids_missing_profiles(conn)
+            session_ids = _schema_archive_session_ids_for_source_path(conn, path)
+            if not session_ids:
+                logger.info("insights: archive skipped path refresh with no resolved sessions path=%s", path)
+                return True
             return _archive_insights_execute_ids(conn, session_ids)
         finally:
             conn.close()
@@ -1394,9 +1400,7 @@ def _archive_insights_check_many(db_path: Path, paths: Sequence[Path]) -> set[Pa
                 for path, session_ids in by_path.items()
                 if session_ids and _archive_stale_session_profile_ids(conn, session_ids)
             }
-            if result:
-                return result
-            return {Path(paths[0])} if _schema_archive_session_ids_missing_profiles(conn) else set()
+            return result
         finally:
             conn.close()
     except Exception:
@@ -1410,7 +1414,10 @@ def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path]) -> Stag
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
             session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
             if not session_ids:
-                session_ids = _schema_archive_session_ids_missing_profiles(conn)
+                logger.info(
+                    "insights: archive skipped batch path refresh with no resolved sessions paths=%d", len(paths)
+                )
+                return True
             return _archive_insights_execute_ids(conn, session_ids)
         finally:
             conn.close()
