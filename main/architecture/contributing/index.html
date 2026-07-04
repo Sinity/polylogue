@@ -427,11 +427,16 @@ messages that leave reviewers guessing.</p>
 history line you want. Branch-local commits serve review; the PR title and body
 serve history.</p>
 <h2>Schema-Touching Changes</h2>
-<p>Polylogue has no in-place schema upgrade chain. A PR that bumps
-<code>SCHEMA_VERSION</code> or otherwise changes the canonical SQLite shape is
-not an in-place storage upgrade — it is a deletes-then-defines edit of <code>SCHEMA_DDL</code>.
-The PR body must replace any upgrade-path section with a
-<strong>re-ingest plan</strong>:</p>
+<p>Polylogue uses two schema-evolution regimes.</p>
+<p>Durable tiers (<code>source.db</code> and <code>user.db</code>) may use explicit additive
+migrations. These migrations live under <code>polylogue/storage/sqlite/migrations/</code>,
+advance <code>PRAGMA user_version</code> one version at a time, and require a verified
+backup manifest for the affected tier before they run. Destructive durable-tier
+changes require a copy-forward design and explicit operator consent; do not
+hide them behind a routine migration.</p>
+<p>Derived tiers (<code>index.db</code>, <code>embeddings.db</code>) are rebuildable products. They do
+not get in-place migration chains. A PR that bumps their schema edits the
+canonical DDL and provides a <strong>rebuild/blue-green plan</strong>:</p>
 <ul>
 <li>which user-visible archive operation triggers rebuild/re-acquisition from
 source (e.g. <code>polylogue ops reset --index &amp;&amp; polylogued run</code> for index-tier
@@ -441,9 +446,15 @@ automatically vs. needing explicit recomputation,</li>
 <li>the expected end-user impact (rebuild time, disk usage, anything
 that requires action beyond the reset).</li>
 </ul>
-<p>There is no requirement to provide an in-place upgrade path, and PRs
-that try to add one will be rejected on policy grounds (see
-<code>docs/internals.md</code> § &quot;Schema Versioning Model&quot; and #1212).</p>
+<p>During development, classify schema changes before editing: metadata-only,
+index-only, additive-derived, additive-durable, or semantic-reparse-required.
+Batch same-tier schema changes from ready Beads before triggering a live
+rebuild. Do not repeatedly reset and re-ingest the active archive for isolated
+index additions that can be grouped into one schema bump, and do not call a
+full reingest necessary unless the changed semantics actually require replaying
+source rows.</p>
+<p>The policy lint (<code>devtools lab policy schema-versioning</code>) rejects derived-tier
+upgrade helpers while allowing numbered durable-tier SQL migrations.</p>
 <h2>Versioning and Releases</h2>
 <p><code>pyproject.toml</code> records the last tagged release. Development builds are
 identified by git metadata, and <code>polylogue --version</code> must include the commit
@@ -536,7 +547,10 @@ python -m http.server --directory /tmp/polylogue-docs 8000
 <li>do not require an issue for every pull request</li>
 </ul>
 <h2>Git Hooks</h2>
-<p>The devshell installs git hooks automatically (<code>core.hooksPath .githooks</code>):</p>
+<p>The devshell installs git hooks automatically. In a Beads-enabled checkout it
+sets <code>core.hooksPath</code> to <code>.beads-hooks</code>; otherwise it falls back to <code>.githooks</code>.
+The Beads composite hooks chain the ordinary Polylogue gates below and then run
+the matching <code>bd hooks run ...</code> integration.</p>
 <ul>
 <li><strong>pre-commit</strong>: <code>ruff format --check</code> + <code>ruff check</code> on staged files.
 Also runs a worktree-escape detector (#1211): when committing from a
@@ -546,8 +560,11 @@ drifted outside that root (a common failure mode when an agent
 <code>cd</code>s into the main checkout from inside a worktree). Set
 <code>POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1</code> for legitimate cross-worktree
 commit flows.</li>
+<li><strong>prepare-commit-msg / post-checkout / post-merge</strong>: Beads integration hooks
+when <code>.beads-hooks</code> is active.</li>
 <li><strong>pre-push</strong>: <code>devtools verify --quick</code> (format, lint, mypy, generated
-surfaces, and fast manifest checks).</li>
+surfaces, and fast manifest checks), followed by the Beads pre-push hook when
+<code>.beads-hooks</code> is active.</li>
 </ul>
 <p>The pre-push hook is an early failure gate. The PR baseline is the
 <code>devtools verify</code> workflow below.</p>
@@ -569,10 +586,10 @@ devtools verify --all      # explicit full non-integration pytest diagnostic
 devtools verify --quick    # format + lint + mypy + render all --check (skip tests)
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 </code></pre>
-<p>The quick gate runs on <code>git push</code> via <code>.githooks/pre-push</code>. It's a fast check,
-not a substitute for the default baseline. The default command fails fast when
-<code>.cache/testmon/testmondata</code> and <code>.cache/testmon/seed.json</code> are missing; do not
-rely on silent full-suite fallback.</p>
+<p>The quick gate runs on <code>git push</code> via the active pre-push hook. It's a fast
+check, not a substitute for the default baseline. The default command fails
+fast when <code>.cache/testmon/testmondata</code> and <code>.cache/testmon/seed.json</code> are
+missing; do not rely on silent full-suite fallback.</p>
 <p><code>devtools verify</code> does not replay a prior verify result. It always runs the
 static gates and then invokes pytest-testmon for affected-test selection from
 the current source, dependency, and Python-version state. The default pytest

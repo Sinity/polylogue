@@ -528,50 +528,89 @@ path. Run <code>devtools render topology-projection &amp;&amp; devtools render t
 and commit the updated <code>docs/plans/topology-target.yaml</code> and
 <code>docs/topology-status.md</code> alongside the code.</p>
 <h2>Schema Versioning Model</h2>
-<p>Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
-schema shape:</p>
+<p>Polylogue has two schema-evolution regimes, keyed by tier durability.</p>
 <ul>
-<li>Tier version constants under <code>storage/sqlite/archive_tiers/</code> are the
-authority. The canonical schema is described directly by each tier DDL;
-there are no upgrade plans, no <code>build_vN_to_vM_*</code> helpers, and no
-chain-dispatch logic in <code>schema_bootstrap.py</code>.</li>
-<li>On startup the on-disk <code>PRAGMA user_version</code> is compared against the
-tier constant:
+<li>
+<p>Tier version constants under <code>storage/sqlite/archive_tiers/</code> are the
+authority. The canonical fresh schema is described directly by each tier DDL.</p>
+</li>
+<li>
+<p><strong>Durable tiers</strong> (<code>source.db</code>, <code>user.db</code>) may use explicit additive
+migrations. Migration SQL lives under
+<code>storage/sqlite/migrations/{source,user}/NNN_name.sql</code>, advances
+<code>PRAGMA user_version</code> one step at a time, and requires a verified backup
+manifest containing the affected tier before it runs. Additive means
+<code>CREATE TABLE</code>, <code>CREATE INDEX</code>, <code>ADD COLUMN</code>, and bounded backfills.
+Destructive durable-tier changes require a copy-forward design and explicit
+operator consent.</p>
+</li>
+<li>
+<p><strong>Derived tiers</strong> (<code>index.db</code>, <code>embeddings.db</code>) do not have in-place migration
+chains. They are rebuildable products over durable source/user evidence:
+schema mismatches are handled by rebuilding or blue-green replacing the
+affected derived tier from source, preserving durable tiers.</p>
+</li>
+<li>
+<p><strong>Disposable tiers</strong> (<code>ops.db</code>) may keep narrow bootstrap-time <code>ALTER TABLE</code>
+helpers for daemon telemetry because the tier is disposable.</p>
+</li>
+<li>
+<p>On startup the on-disk <code>PRAGMA user_version</code> is compared against the tier
+constant:</p>
 <ul>
 <li><strong>Empty file</strong> (<code>user_version == 0</code>): bootstrap fresh.</li>
 <li><strong>Version match</strong>: open as-is.</li>
-<li><strong>Anything else</strong> (older or newer): the database is rejected.</li>
+<li><strong>Older durable tier</strong>: refuse ordinary open and require explicit migration
+with a backup manifest.</li>
+<li><strong>Derived mismatch or newer durable tier</strong>: reject and require rebuild or a
+newer runtime as appropriate.</li>
 </ul>
 </li>
-<li><strong>Mismatch → rebuild the affected tier from source.</strong> Polylogue does not
-patch an out-of-band shape into the canonical one. For index-tier schema
-bumps, the operator moves the index database aside with
-<code>polylogue ops reset --index &amp;&amp; polylogued run</code>, preserving <code>source.db</code>,
-<code>user.db</code>, and other durable tiers while rebuilding the canonical index.</li>
-<li>Schema bumps are deletes-then-defines, never deltas. A schema change
-edits the owning tier DDL/version and documents the re-ingest expectation.
-No upgrade helpers are added for the bump.</li>
-<li>Index schema version 24 admits <code>capture_gap</code> rows in <code>session_events</code>. These
+<li>
+<p>During development, schema changes are triaged before reset/reingest:
+metadata-only, index-only, additive-derived, additive-durable, or
+semantic-reparse-required. Same-tier schema changes from ready Beads should be
+batched before a live rebuild so the active archive is not reset repeatedly.</p>
+</li>
+<li>
+<p><code>devtools lab policy schema-versioning</code> enforces the boundary: durable SQL
+migrations are allowed only under the numbered migration resource roots, while
+derived-tier upgrade helpers remain forbidden.</p>
+</li>
+<li>
+<p>User schema version 4 adds <code>user_settings</code>, a durable key/value table for
+workspace/settings state that is not an epistemic assertion. Existing v3
+user tiers migrate additively after a verified backup manifest; fresh user
+tiers create the table directly.</p>
+</li>
+<li>
+<p>Index schema version 24 admits <code>capture_gap</code> rows in <code>session_events</code>. These
 are narrow lifecycle evidence events emitted when ingest rejects a lower-
 precedence DOM browser-capture fallback because a richer source row already
 owns the session. Existing index tiers must be rebuilt from source evidence
-(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
-<li>Index schema version 23 adds <code>idx_blocks_search_text_populated</code>, a partial
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 23 adds <code>idx_blocks_search_text_populated</code>, a partial
 index over text-bearing <code>blocks</code> rows, and makes <code>fts_freshness_state</code> part of
 the canonical fresh index tier. Message search readiness compares that source
 set with <code>messages_fts_docsize</code> and consults the durable freshness marker
 before running user FTS queries; without the partial index and ledger, large
 archives can spend the query budget scanning <code>blocks</code> merely to decide whether
 <code>polylogue find hermes</code> is allowed to run. Existing index tiers must be
-rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
-<li>Index schema version 22 adds <code>idx_blocks_tool_result_outcome</code>, a partial
+rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 22 adds <code>idx_blocks_tool_result_outcome</code>, a partial
 index over structured <code>tool_result</code> outcome fields. Claim-vs-evidence and
 action-outcome reads anchor on provider-reported <code>is_error</code> / non-zero
 <code>exit_code</code> rather than assistant prose; without an outcome-leading index,
 large archives must scan the whole tool-result block set before pairing
 actions. Existing index tiers must be rebuilt from source evidence
-(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
-<li>Index schema version 21 adds <code>idx_messages_embedding_prose</code>, a partial
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 21 adds <code>idx_messages_embedding_prose</code>, a partial
 covering index for authored prose messages eligible for paid embeddings:
 standard <code>message</code> rows from <code>user</code>/<code>assistant</code> roles, with
 <code>human_authored</code>/<code>assistant_authored</code> material origin and positive word
@@ -579,15 +618,19 @@ count. Embedding preflight, status detail, and archive-session embedding
 reads use this index when present so cost windows do not scan unrelated tool,
 protocol, context-pack, or runtime rows in large archives. Existing index
 tiers must be rebuilt from source evidence
-(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
-<li>Index schema version 20 adds <code>idx_blocks_type_tool</code>, an expression index on
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 20 adds <code>idx_blocks_type_tool</code>, an expression index on
 <code>(block_type, COALESCE(NULLIF(LOWER(tool_name), ''), 'unknown'))</code>, so tool
 family rollups can resolve exact tool names and MCP-server prefixes without
 scanning every <code>tool_use</code> block in large archives. The <code>analyze tools</code>
 lowerers use range predicates for MCP prefixes to match the index expression.
 Existing index tiers must be rebuilt from source evidence
-(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
-<li>Index schema version 19 adds expression indexes for materialized
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 19 adds expression indexes for materialized
 <code>session_observed_events</code> tool outcome payload fields. The terminal query DSL
 can now ask questions such as
 <code>observed-events where kind:tool_finished | group by handler | count</code>; on
@@ -595,8 +638,10 @@ large archives the v18 shape filtered by <code>kind</code> and then built tempor
 B-trees over JSON-extracted <code>tool_name</code>, <code>handler_kind</code>, or <code>status</code> values.
 The v19 indexes key <code>(kind, COALESCE(NULLIF(json_extract(payload_json, '$.&lt;field&gt;'), ''), 'unknown'))</code> for <code>tool_name</code>, <code>handler_kind</code>, and
 <code>status</code>, matching the SQL lowerer's group expressions. Existing index tiers
-must be rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
-<li>Index schema version 16 captures structured tool-result outcomes (the
+must be rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 16 captures structured tool-result outcomes (the
 &quot;keystone&quot;). <code>blocks</code> gains <code>tool_result_is_error</code> (0/1, nullable) and
 <code>tool_result_exit_code</code> (nullable INTEGER); the <code>actions</code> view exposes them
 as <code>is_error</code> / <code>exit_code</code> alongside the paired tool_use row. Previously the
@@ -606,8 +651,10 @@ in-session outcomes (&quot;tests passed&quot;, &quot;command failed&quot;) to be
 from result text. Now they are read from structure: NULL means unknown
 (default), never a fabricated positive. This is additive — existing rows
 read NULL until rebuilt. Rebuild from source evidence
-(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
-<li>Index schema version 15 makes <code>idx_messages_session_sortkey</code> an expression
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 15 makes <code>idx_messages_session_sortkey</code> an expression
 index — <code>(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)</code>
 (#2475 perf audit). The keyset/paginated message reads order by
 <code>(occurred_at_ms IS NULL), occurred_at_ms, message_id</code> so NULL-timestamp rows
@@ -617,24 +664,30 @@ not satisfy that leading <code>IS NULL</code> expression, so the planner fell ba
 (expensive on multi-thousand-message sessions). The expression index matches
 the ORDER BY exactly and plans as a covering-index scan with no temp sort
 (verified via EXPLAIN QUERY PLAN). Rebuild from source evidence
-(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
-<li>Index schema version 14 hardens lineage normalization (#2467 audit).
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 14 hardens lineage normalization (#2467 audit).
 <code>session_links.branch_point_message_id</code> is no longer a FK with <code>ON DELETE SET NULL</code>: a parent's full-replace re-ingest (<code>DELETE FROM messages</code> then re-INSERT)
 would otherwise null the child's branch point during the DELETE step and
 permanently break the child's composition. <code>message_id</code> is deterministic, so the
 plain-TEXT reference survives the re-create; reads bail to the child's own tail
 if a branch point ever dangles. Also adds <code>idx_messages_session_sortkey</code> so the
 keyset/paginated message reads stop doing a temp B-tree sort per chunk. Rebuild
-from source evidence.</li>
-<li>Index schema version 13 makes attachment bytes honest (#2468). <code>attachments.blob_hash</code>
+from source evidence.</p>
+</li>
+<li>
+<p>Index schema version 13 makes attachment bytes honest (#2468). <code>attachments.blob_hash</code>
 is now nullable and holds the <strong>true SHA-256 of the stored bytes</strong> when acquired
 (previously a synthetic hash of the attachment id was written with no blob ever
 stored — 0 blobs for 8,425 rows). A new <code>acquisition_status</code>
 (<code>acquired</code> / <code>unavailable</code> / <code>unfetched</code>) records whether the bytes were
 fetched. Inline export bytes (e.g. Gemini base64) are written to the
 content-addressed blob store at ingest; other sources stay <code>unfetched</code> with the
-source ref preserved for later re-acquisition. Rebuild from source evidence.</li>
-<li>Index schema version 12 normalizes prefix-sharing lineage (#2467). A fork,
+source ref preserved for later re-acquisition. Rebuild from source evidence.</p>
+</li>
+<li>
+<p>Index schema version 12 normalizes prefix-sharing lineage (#2467). A fork,
 resume, spawned subagent, or auto-compaction copy physically replays the
 parent's leading context; the writer now drops that inherited prefix and keeps
 only the child's divergent tail, recording the relationship on <code>session_links</code>
@@ -646,8 +699,10 @@ once while the full logical transcript is still served. Existing index tiers
 must be rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>); <code>source.db</code> is untouched, so this is a derived-index rebuild
 with no user-data impact. (The matching parser detection of Codex
 <code>forked_from_id</code>/<code>thread_spawn</code> and Claude <code>agent-acompact-*</code> shipped
-alongside.)</li>
-<li>Index schema version 11 materializes the run projection into three derived
+alongside.)</p>
+</li>
+<li>
+<p>Index schema version 11 materializes the run projection into three derived
 read-model tables — <code>session_runs</code>, <code>session_observed_events</code>, and
 <code>session_context_snapshots</code> — recomputed by the session-insight materializer
 (<code>compile_session_digest(...).run_projection</code>) exactly like <code>session_profiles</code>.
@@ -658,55 +713,80 @@ cheap local rows directly from <code>sessions</code> and <code>blocks</code> (ma
 snapshots). The durable evidence stays <code>session_events</code> + <code>messages</code> +
 <code>topology_edges</code>, and materialized rows are retained only where they encode
 richer non-local projections that are not cheap to lower directly. Existing
-index tiers must be rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
-<li>Index schema version 10 adds a role-leading <code>idx_messages_role</code> index so
+index tiers must be rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 10 adds a role-leading <code>idx_messages_role</code> index so
 daemon <code>/api/facets</code> can compute global role counts without scanning the
 session-role compound index and spilling to a temp B-tree. Existing index
 tiers must be rebuilt from source evidence or explicitly operator-patched by
 adding the index to a backed-up archive before moving that archive to version
-10 with the matching deployed package.</li>
-<li>Index schema version 9 adds typed <code>sessions.session_kind</code> for standard vs
+10 with the matching deployed package.</p>
+</li>
+<li>
+<p>Index schema version 9 adds typed <code>sessions.session_kind</code> for standard vs
 temporary sessions. Existing index tiers must be rebuilt from source evidence
 or explicitly operator-patched so temporary ChatGPT/Claude/browser-capture
-sessions become schema state instead of only parser auto-tags.</li>
-<li>Index schema version 8 added <code>web_content_constructs</code> for provider-native
+sessions become schema state instead of only parser auto-tags.</p>
+</li>
+<li>
+<p>Index schema version 8 added <code>web_content_constructs</code> for provider-native
 web/export constructs such as citations, source references, canvas/artifact
-revisions, asset pointers, token-budget rows, and task/search records.</li>
-<li>Index schema version 7 added JSON-object checks for <code>blocks.tool_input</code>
+revisions, asset pointers, token-budget rows, and task/search records.</p>
+</li>
+<li>
+<p>Index schema version 7 added JSON-object checks for <code>blocks.tool_input</code>
 and <code>session_provider_usage_events.payload_json</code>. Existing index tiers must
 be rebuilt from source evidence so the canonical read model is recreated with
-the stricter JSON contract.</li>
-<li>Provider usage accounting is audited as a source-derived read model: exact
+the stricter JSON contract.</p>
+</li>
+<li>
+<p>Provider usage accounting is audited as a source-derived read model: exact
 event rows (<code>session_provider_usage_events</code>), text-only estimates, unsupported
 origins, source rows acquired but not materialized, and stale
 <code>session_model_usage</code> rollups are distinct diagnostic states. Cache read/write
-token lanes remain labelled and are not merged into generic input/output.</li>
-<li>Index schema version 6 added <code>session_provider_usage_events</code> for
+token lanes remain labelled and are not merged into generic input/output.</p>
+</li>
+<li>
+<p>Index schema version 6 added <code>session_provider_usage_events</code> for
 provider-reported token usage events and single-model rollup repair from
 those events. Existing index tiers must be rebuilt from source evidence so
 Codex <code>token_count</code> records materialize into durable provider usage rows
-instead of disappearing after parse.</li>
-<li>Index schema version 5 added <code>messages.material_origin</code> plus authored-user
+instead of disappearing after parse.</p>
+</li>
+<li>
+<p>Index schema version 5 added <code>messages.material_origin</code> plus authored-user
 aggregate columns on <code>sessions</code>. Existing index tiers must be rebuilt from
 source evidence so Claude Code <code>role=user</code> protocol/context/generated-pack
 rows move out of authored-user accounting while provider-role counts remain
-available.</li>
-<li>Provider schemas (the parsing/validation surface, distinct from the
+available.</p>
+</li>
+<li>
+<p>Provider schemas (the parsing/validation surface, distinct from the
 storage schema) are still regenerated fresh via
-<code>devtools lab schema generate</code> and promoted via <code>devtools lab schema promote</code>.</li>
+<code>devtools lab schema generate</code> and promoted via <code>devtools lab schema promote</code>.</p>
+</li>
 </ul>
-<p>This design intentionally rejects in-place upgrade-chain complexity (no
-Alembic, no forward/reverse upgrade scripts, no partially-applied upgrade
-states, no <code>_apply_version_upgrade_plan</code> rollback windows). If the configured
-archive path is not the current schema, the operator moves it aside and
-re-ingests from source. Files that are not configured archive paths are not
-classified or handled by the archive runtime.</p>
-<p>The only compatibility carve-out is <code>ops.db</code>: <code>archive_tiers/bootstrap.py</code> may
-use narrowly scoped <code>ALTER TABLE ... ADD COLUMN</code> helpers for disposable daemon
-telemetry, such as ingest-cursor runtime fields and cursor-lag rollups. That
-exception is not a migration pattern for <code>source.db</code>, <code>index.db</code>,
-<code>embeddings.db</code>, or <code>user.db</code>; durable tier changes still require a version
-bump and rebuild/reset path.</p>
+<p>For <strong>derived tiers</strong> (<code>index.db</code>, <code>embeddings.db</code>) this design intentionally
+rejects in-place upgrade-chain complexity (no Alembic, no forward/reverse
+upgrade scripts, no partially-applied upgrade states, no
+<code>_apply_version_upgrade_plan</code> rollback windows): a derived-tier schema mismatch
+rebuilds or blue-green-replaces the tier from durable source/user evidence.
+Files that are not configured archive paths are not classified or handled by
+the archive runtime.</p>
+<p>For <strong>durable tiers</strong> (<code>source.db</code>, <code>user.db</code>) the boundary is different, because
+<code>user.db</code> holds irreplaceable human assertions that cannot be rebuilt from
+source. These tiers use explicit <em>additive</em> numbered SQL migrations under
+<code>storage/sqlite/migrations/{source,user}/NNN_*.sql</code>, applied one <code>PRAGMA user_version</code> step at a time by <code>migration_runner.py</code> behind a <strong>verified backup
+manifest</strong> for the affected tier. Additive means <code>CREATE TABLE</code>/<code>CREATE INDEX</code>/
+<code>ADD COLUMN</code>/bounded backfill; destructive durable-tier changes require a
+copy-forward design and explicit operator consent, never a routine migration.</p>
+<p><code>ops.db</code> (disposable daemon telemetry) may additionally use narrowly scoped
+<code>ALTER TABLE ... ADD COLUMN</code> bootstrap helpers in <code>archive_tiers/bootstrap.py</code>
+(ingest-cursor runtime fields, cursor-lag rollups). The
+<code>devtools lab policy schema-versioning</code> lint enforces the whole boundary:
+numbered durable-tier migrations are allowed; derived-tier upgrade helpers are
+forbidden.</p>
 <h2>Archive Activation</h2>
 <p>The archive file set is split by durability class:</p>
 <ul>
@@ -732,6 +812,11 @@ polylogue ops maintenance archive-read --limit 20
 <p><code>archive-init</code> bootstraps the archive file set. The daemon and explicit
 ingest paths populate <code>source.db</code> and <code>index.db</code> directly from source
 artifacts. Root query commands use the active <code>index.db</code>.</p>
+<p>Source schema version 2 removes the old unique <code>(origin, native_id)</code> raw-row
+constraint. A native session can have multiple durable source observations
+(direct export, browser native capture, DOM fallback, historical ZIPs) while
+still coalescing to one canonical indexed session; source evidence must not be
+replaced merely because two captures describe the same provider-native id.</p>
 <h2>Topology Edges (#1258)</h2>
 <p><code>topology_edges</code> persists every parent reference asserted by a parser as a
 typed row, including references whose parent has not yet been ingested
@@ -1021,20 +1106,26 @@ rows plus <code>stale_cursor_writes</code> and overlapping running source paths.
 parse/convergence timings, and source-path bundles.</li>
 <li><code>convergence_stage_timings</code> — min/max/sum/mean parse/convergence/read-
 amplification stats over completed attempts.</li>
-<li><code>boundary_table_counts</code> — cheap planner-estimated counts for the
-daemon-relevant tables by default
+<li><code>boundary_table_counts</code> — mixed cheap evidence for the
+daemon-relevant tables by default: exact counts for small/core archive
+cardinality tables and maintained rollups such as <code>sessions</code>, <code>raw_sessions</code>,
+<code>messages</code>, and <code>session_profiles</code>; planner-estimated counts only where exact
+counting would scan large derived tables
 (<code>raw_sessions</code>, <code>sessions</code>, <code>messages</code>, <code>blocks</code>,
 <code>artifact_observations</code>, <code>messages_fts_docsize</code>, <code>actions</code>,
 <code>message_embeddings</code>, <code>session_profile</code>,
 <code>live_ingest_attempt</code>, <code>live_convergence_debt</code>, <code>pending_blob_refs</code>).
-Missing tables surface as <code>-1</code> and tables without SQLite planner
+Missing tables surface as <code>-1</code> and expensive tables without SQLite planner
 statistics surface as <code>-2</code> rather than crashing the probe. Pass
 <code>--exact-table-counts</code> when a before/after evidence run needs exact
-arithmetic and the archive can afford the scans.</li>
+arithmetic and the archive can afford the scans. The companion
+<code>boundary_table_count_precision</code> map labels each value as <code>exact</code>,
+<code>estimate</code>, <code>unavailable</code>, or <code>missing</code>.</li>
 <li><code>archive_tiers</code> — archive inventory for <code>source.db</code>,
 <code>index.db</code>, <code>embeddings.db</code>, <code>user.db</code>, and <code>ops.db</code>: file presence,
 durability/backup policy, <code>PRAGMA user_version</code>, missing backup-required
-tiers, and cheap planner-estimated table counts per tier. It does not run SQLite
+tiers, and the same mixed cheap/exact table counts per tier with a
+<code>table_count_precision</code> map for each tier. It does not run SQLite
 <code>PRAGMA quick_check</code> by default because that is a full-file integrity scan
 on large archives; pass <code>--integrity-check</code> when the workload snapshot should
 include that expensive evidence. It also avoids exact generated-text
@@ -1051,9 +1142,12 @@ For recovery planning, run
 <code>polylogue ops maintenance blob-reference-debt --output-format json</code>; that
 read-only classifier groups missing blob refs by table, ref type, origin,
 raw-row joinability, validation/parse state, and source-path availability.
-The paired <code>polylogue ops maintenance blob-reference-restore-direct</code>
-command only restores direct-file source paths after exact SHA-256
-verification; archive-member paths remain source re-acquisition work.</li>
+During daemon convergence, direct source files whose current bytes still hash
+to a missing blob address are restored automatically before raw
+materialization replay. Container/member paths such as
+<code>export.zip:conversations.json</code> remain source re-acquisition work because the
+referenced blob may be an extracted record inside the member, not the member
+file itself.</li>
 <li><code>gc_state</code> — high-water <code>gc_generations</code> row, <code>last_completed_at</code>,
 total generation count.</li>
 <li><code>fts_trigger_state</code> — the three expected FTS sync triggers
