@@ -43,6 +43,11 @@ The default specs are deliberately self-contained and private-data-free:
   summarizes facets for the same query.
 - `reader-evidence-tour` runs the browserless reader smoke lane and renders the
   JSON report header.
+- `browser-capture-tour` runs `devtools workspace dev-loop
+  --browser-provider-smoke --json`, which opens deterministic ChatGPT and Claude
+  fixture pages in headless Chrome, loads the unpacked extension, captures both
+  pages through the receiver, and prints the redacted provider/popup/artifact
+  proof summary.
 
 These are product evidence specs, not ad hoc recordings. If the command flow
 changes, update the spec and regenerate the media rather than editing a GIF by
@@ -53,6 +58,7 @@ Current example renders:
 - [`demo-tour.gif`](examples/demo-tour/demo-tour.gif)
 - [`query-tour.gif`](examples/visual-tapes/query-tour.gif)
 - [`reader-evidence-tour.gif`](examples/visual-tapes/reader-evidence-tour.gif)
+- [`browser-capture-tour.gif`](examples/visual-tapes/browser-capture-tour.gif)
 
 ## Running the lane
 

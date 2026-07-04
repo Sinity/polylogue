@@ -14,7 +14,12 @@ that larger demo packet lives at `docs/examples/demo-tour/demo-tour.gif`.
 
 ## Files
 
+- `demo-tour.tape` — tape spec for the one-command demo tour; its canonical GIF
+  copy lives in `docs/examples/demo-tour/demo-tour.gif`.
 - `query-tour.tape` / `query-tour.gif` — query/read drilldown against a seeded
   demo archive.
 - `reader-evidence-tour.tape` / `reader-evidence-tour.gif` — browserless reader
   evidence lane against synthetic fixtures.
+- `browser-capture-tour.tape` / `browser-capture-tour.gif` — headless Chrome
+  proof that deterministic ChatGPT and Claude fixture pages are captured through
+  the unpacked browser extension, receiver, popup/debug UI, and artifact spool.

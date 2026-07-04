@@ -72,8 +72,10 @@ polylogue find "pytest" then analyze --facets
 Screencast media for public flows is regenerable from committed tape specs with
 `devtools render visual-tapes --capture` (writes `.tape` files, and `.gif`s
 when `vhs` is present). The default inventory records the one-command demo
-tour, a query/read drilldown against the deterministic demo archive, and the
-browserless reader evidence lane; none of these tapes read your live archive.
+tour, a query/read drilldown against the deterministic demo archive, the
+browserless reader evidence lane, and a browser-backed extension capture proof
+against deterministic ChatGPT/Claude fixture pages; none of these tapes read
+your live archive.
 
 ## Why this exists
 

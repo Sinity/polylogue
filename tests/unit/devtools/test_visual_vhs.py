@@ -147,6 +147,7 @@ class TestDefaultTapeContent:
             "demo-tour",
             "query-tour",
             "reader-evidence-tour",
+            "browser-capture-tour",
         ]
 
     def test_demo_tour_tape(self) -> None:
@@ -173,3 +174,13 @@ class TestDefaultTapeContent:
 
         assert "devtools lab smoke run reader-visual-smoke" in tape
         assert "reader-visual-smoke.json" in tape
+
+    def test_browser_capture_tour_uses_deterministic_provider_smoke(self) -> None:
+        spec = next(spec for spec in default_tape_specs() if spec.name == "browser-capture-tour")
+
+        tape = generate_tape(spec)
+
+        assert "devtools workspace dev-loop --browser-provider-smoke --json" in tape
+        assert "browser_provider_smoke" in tape
+        assert "provider_statuses" in tape
+        assert "POLYLOGUE_ARCHIVE_ROOT" not in tape
