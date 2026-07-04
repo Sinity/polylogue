@@ -3355,7 +3355,7 @@ def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[
         SELECT m.message_id, m.position, m.role,
                b.block_type, b.text, b.tool_name, b.tool_input
         FROM messages m
-        LEFT JOIN blocks b ON b.message_id = m.message_id
+        LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
         WHERE m.session_id = ? AND m.variant_index = 0
         ORDER BY m.position, b.position
         """,
