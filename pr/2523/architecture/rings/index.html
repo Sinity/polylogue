@@ -357,10 +357,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             
 <h1>Polylogue Architecture</h1>
 <p>For the target shape, guardrails, and architectural decision log, see
-<a href="https://github.com/Sinity/polylogue/blob/master/docs/architecture-spine.md">Architecture Spine</a>. For current sequencing and active
-workstreams, see <a href="https://github.com/Sinity/polylogue/blob/master/docs/execution-plan.md">Execution Plan</a>. For the vocabulary split
-between provider-wire identity, public origin, source roots, capture mode,
-parser provenance, and refs, see <code>docs/provider-origin-identity.md</code>.</p>
+<a href="https://github.com/Sinity/polylogue/blob/master/docs/architecture-spine.md">Architecture Spine</a>. Current sequencing and active
+workstreams live in the Beads backlog (<code>bd ready</code>, <code>bd list --status open</code>) —
+the durable directive substrate; the former <code>docs/execution-plan.md</code> is
+superseded (its GitHub-issue map was re-encoded as Beads issues) and slated for
+retirement (Ref polylogue-3tl.13). For the vocabulary split between
+provider-wire identity, public origin, source roots, capture mode, parser
+provenance, and refs, see <code>docs/provider-origin-identity.md</code>.</p>
 <p>Polylogue is a local archive for AI sessions. The system has four rings:</p>
 <ol>
 <li>archive substrate</li>

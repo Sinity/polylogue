@@ -360,7 +360,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1>CLI Reference</h1>
 <p>This reference is generated from the live <code>polylogue --help</code> surface inside the project devshell.</p>
 <h2>Top-Level Command</h2>
-<pre><code class="language-text">Usage: polylogue [OPTIONS] COMMAND [ARGS]...
+<pre><code class="language-text">Usage: polylogue [OPTIONS] [COMMAND] [ARGS]...
 
   Polylogue - AI session archive.
 
@@ -524,9 +524,10 @@ Commands:
     onboarding checks.
 
   Reader and local UI:
+    agents     Inspect agent coordination state.
     dashboard  Launch the terminal dashboard TUI.
-    `dashboard` launches the terminal TUI; `dashboard --status` prints launch
-    evidence.
+    `agents` exposes JSON-first coordination views for agent loops;
+    `dashboard` launches the terminal TUI.
 
   Operations and maintenance:
     status  Show daemon and archive status.
@@ -535,7 +536,7 @@ Commands:
     maintenance stays under `ops`.
 </code></pre>
 <h2>Analyze Verb</h2>
-<pre><code class="language-text">Usage: polylogue analyze [OPTIONS] COMMAND [ARGS]...
+<pre><code class="language-text">Usage: polylogue analyze [OPTIONS] [COMMAND] [ARGS]...
 
   Analyze matched sessions: statistics, facets, and aggregates.
 
@@ -733,7 +734,7 @@ Options:
   --help           Show this message and exit.
 </code></pre>
 <h2>Mark Verb</h2>
-<pre><code class="language-text">Usage: polylogue mark [OPTIONS] COMMAND [ARGS]...
+<pre><code class="language-text">Usage: polylogue mark [OPTIONS] [COMMAND] [ARGS]...
 
   Mark query-result sessions with tags, notes, or durable marks.
 
@@ -866,15 +867,12 @@ Commands:
 Options:
   -f, --format [json]             Output format
   -v, --verbose                   Show breakdown by provider
-  --repair                        Run safe derived-data and database
-                                  maintenance repairs
+  --repair                        Run safe derived-data maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
-  --target [session_insights|dangling_fts|message_type_backfill|raw_materialization|message_embeddings|wal_checkpoint|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
+  --target [session_insights|message_type_backfill|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
                                   Limit maintenance to named targets such as
-                                  session_insights, dangling_fts,
-                                  message_type_backfill, raw_materialization,
-                                  message_embeddings, wal_checkpoint,
+                                  session_insights, message_type_backfill,
                                   orphaned_messages, empty_sessions,
                                   orphaned_attachments, orphaned_blobs, or
                                   superseded_raw_snapshots
@@ -963,7 +961,7 @@ Options:
   --help             Show this message and exit.
 </code></pre>
 <h2>Config</h2>
-<pre><code class="language-text">Usage: polylogue config [OPTIONS] COMMAND [ARGS]...
+<pre><code class="language-text">Usage: polylogue config [OPTIONS] [COMMAND] [ARGS]...
 
   Show resolved Polylogue configuration with precedence sources.
 
