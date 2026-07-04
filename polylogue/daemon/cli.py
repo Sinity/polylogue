@@ -57,6 +57,7 @@ _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 25
 _SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS = 60
 _SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT = 100
 _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
+_BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 
 # Track the pidfile path for atexit cleanup.
 _pidfile_path: Path | None = None
@@ -495,10 +496,24 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
     """Run one bounded raw source→index convergence pass."""
     from polylogue.config import Config
     from polylogue.paths import archive_root, render_root
+    from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
     from polylogue.storage.repair import repair_raw_materialization
 
+    archive = archive_root()
+    restored = restore_direct_blob_reference_debt(
+        archive / "source.db",
+        dry_run=False,
+        max_count=_BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT,
+        sample_size=0,
+    )
+    if restored.restored_count:
+        logger.info(
+            "blob references: restored %d direct source blob(s) before raw materialization",
+            restored.restored_count,
+        )
+
     config = Config(
-        archive_root=archive_root(),
+        archive_root=archive,
         render_root=render_root(),
         sources=[],
     )

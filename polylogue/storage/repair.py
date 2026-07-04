@@ -132,7 +132,8 @@ def _raw_materialization_candidate_ids(
             params.extend((normalized_root, f"{normalized_root}/%"))
         rows = conn.execute(
             f"""
-            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size, r.parsed_at_ms
+            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size, r.parsed_at_ms,
+                   r.parse_error
             FROM raw_sessions AS r
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
@@ -141,7 +142,12 @@ def _raw_materialization_candidate_ids(
              AND s_by_native.native_id = r.native_id
             WHERE s_by_raw.raw_id IS NULL
               AND s_by_native.native_id IS NULL
-              AND r.parse_error IS NULL
+              AND (
+                r.parse_error IS NULL
+                OR (
+                  r.parse_error LIKE 'decode:%No such file or directory:%'
+                )
+              )
               AND NOT (
                 COALESCE(r.validation_status, '') = 'skipped'
                 AND r.parsed_at_ms IS NOT NULL
@@ -155,6 +161,8 @@ def _raw_materialization_candidate_ids(
             params,
         ).fetchall()
         for row in rows:
+            if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(row["parse_error"]):
+                continue
             if _raw_materialized_by_source_path_native(conn, row):
                 continue
             if _raw_materialization_parsed_non_session_artifact(config.archive_root, row):
@@ -186,6 +194,12 @@ def _raw_materialization_stream_safe(candidates: RawMaterializationCandidates, r
     origin = Origin.from_string(candidates.raw_origins.get(raw_id))
     provider = provider_from_origin(origin)
     return is_stream_record_provider(candidates.raw_source_paths.get(raw_id), provider)
+
+
+def _raw_materialization_retryable_missing_blob_error(parse_error: object) -> bool:
+    if not isinstance(parse_error, str):
+        return False
+    return parse_error.startswith("decode:") and "No such file or directory" in parse_error
 
 
 def _raw_materialization_total_bytes(candidates: RawMaterializationCandidates, raw_ids: list[str]) -> int:

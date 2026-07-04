@@ -230,6 +230,59 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
     assert "1 raw rows blocked by missing blobs" in result.detail
 
 
+def test_raw_materialization_retries_restored_missing_blob_parse_errors(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    replayable_raw_id, replayable_size = blob_store.write_from_bytes(b'{"mapping":{}}')
+    bad_raw_id, bad_size = blob_store.write_from_bytes(b'{"mapping":{"bad":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    replayable_raw_id,
+                    "chatgpt-export",
+                    "native-retry",
+                    "retry.json",
+                    0,
+                    bytes.fromhex(replayable_raw_id),
+                    replayable_size,
+                    2,
+                    3,
+                    "decode: [Errno 2] No such file or directory: '/old/blob/path'",
+                ),
+                (
+                    bad_raw_id,
+                    "chatgpt-export",
+                    "native-bad",
+                    "bad.json",
+                    0,
+                    bytes.fromhex(bad_raw_id),
+                    bad_size,
+                    1,
+                    4,
+                    "parse: malformed provider payload",
+                ),
+            ],
+        )
+        source_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+
+    assert result.repaired_count == 1
+    assert result.metrics["raw_materialization_candidate_count"] == 1.0
+    assert result.metrics["raw_materialization_missing_blob_count"] == 0.0
+    assert result.metrics["raw_materialization_total_blob_bytes"] == float(replayable_size)
+
+
 def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)

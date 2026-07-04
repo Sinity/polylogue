@@ -425,13 +425,32 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     from polylogue.daemon import cli as daemon_cli
 
     calls: dict[str, object] = {}
+    order: list[str] = []
 
     class FakeResult:
         success = True
         repaired_count = 7
         detail = "ok"
 
+    class FakeRestoreResult:
+        restored_count = 2
+
+    def fake_restore_direct_blob_reference_debt(
+        db_path: Path,
+        *,
+        dry_run: bool,
+        max_count: int,
+        sample_size: int,
+    ) -> FakeRestoreResult:
+        order.append("restore")
+        calls["restore_db_path"] = db_path
+        calls["restore_dry_run"] = dry_run
+        calls["restore_max_count"] = max_count
+        calls["restore_sample_size"] = sample_size
+        return FakeRestoreResult()
+
     def fake_repair_raw_materialization(config: Config, *, dry_run: bool, raw_artifact_limit: int) -> FakeResult:
+        order.append("materialize")
         calls["archive_root"] = config.archive_root
         calls["render_root"] = config.render_root
         calls["dry_run"] = dry_run
@@ -440,10 +459,19 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
+        fake_restore_direct_blob_reference_debt,
+    )
     monkeypatch.setattr("polylogue.storage.repair.repair_raw_materialization", fake_repair_raw_materialization)
 
     assert daemon_cli._drain_raw_materialization_once(limit=11) == 7
+    assert order == ["restore", "materialize"]
     assert calls == {
+        "restore_db_path": tmp_path / "archive" / "source.db",
+        "restore_dry_run": False,
+        "restore_max_count": 25,
+        "restore_sample_size": 0,
         "archive_root": tmp_path / "archive",
         "render_root": tmp_path / "render",
         "dry_run": False,
