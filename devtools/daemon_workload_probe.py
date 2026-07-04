@@ -29,7 +29,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 16  # v16 adds missing raw-link samples to raw artifact readiness.
+REPORT_VERSION = 17  # v17 labels missing raw links as lost source evidence.
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -1378,6 +1378,8 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             source_check_available = _attached_table_exists(conn, "source_tier", "raw_sessions")
         counts = _archive_derived_counts(conn, source_check_available=source_check_available, exact_counts=exact_counts)
         counts["missing_raw_session_samples"] = _missing_raw_session_samples(conn) if source_check_available else []
+        counts["lost_source_evidence_count"] = counts["missing_raw_session_count"]
+        counts["lost_source_evidence_samples"] = counts["missing_raw_session_samples"]
         counts.update(_raw_materialization_debt_counts(root))
         materialization_counts = _archive_materialization_counts(conn)
         missing_materialization_counts = _archive_missing_materialization_counts(conn)
@@ -1561,6 +1563,9 @@ def _missing_raw_session_samples(conn: sqlite3.Connection, *, limit: int = 10) -
             "missing_raw_id": str(row[3]),
             "message_count": int(row[4] or 0),
             "updated_at_ms": None if row[5] is None else int(row[5]),
+            "evidence_status": "lost_source_evidence",
+            "loss_reason": "index_raw_id_missing_from_source_tier",
+            "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
         }
         for row in rows
     ]
@@ -1675,6 +1680,8 @@ def _archive_surface_readiness(
                 "raw_link_count": counts["raw_link_count"],
                 "missing_raw_session_count": counts["missing_raw_session_count"],
                 "missing_raw_session_samples": counts.get("missing_raw_session_samples", []),
+                "lost_source_evidence_count": counts["lost_source_evidence_count"],
+                "lost_source_evidence_samples": counts.get("lost_source_evidence_samples", []),
                 "raw_materialization_debt_count": counts["raw_materialization_debt_count"],
                 "raw_materialization_debt_group_count": counts["raw_materialization_debt_group_count"],
             },

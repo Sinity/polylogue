@@ -145,6 +145,8 @@ class RawMaterializationReadiness(BaseModel):
     affected_open: int = 0
     affected_classified: int = 0
     affected_unchecked: int = 0
+    lost_source_evidence_count: int = 0
+    lost_source_evidence_samples: list[dict[str, object]] = Field(default_factory=list)
     category_counts: dict[str, int] = Field(default_factory=dict)
     source_family_counts: dict[str, int] = Field(default_factory=dict)
     sampled_rows: list[dict[str, object]] = Field(default_factory=list)

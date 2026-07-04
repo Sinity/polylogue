@@ -228,6 +228,32 @@ def test_raw_materialization_readiness_maps_unchecked_join_gaps_to_degraded() ->
     assert component.repair_hint == "polylogued run"
 
 
+def test_raw_materialization_readiness_maps_lost_source_evidence_to_blocked() -> None:
+    sample = {
+        "session_id": "codex-session:native-1",
+        "origin": "codex-session",
+        "native_id": "native-1",
+        "missing_raw_id": "raw-missing",
+        "evidence_status": "lost_source_evidence",
+    }
+
+    component = component_from_raw_materialization_readiness(
+        {
+            "available": True,
+            "total": 0,
+            "lost_source_evidence_count": 1,
+            "lost_source_evidence_samples": [sample],
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.BLOCKED
+    assert component.summary == "source evidence missing"
+    assert component.counts["lost_source_evidence_count"] == 1
+    assert component.caveats == ("lost_source_evidence",)
+    assert component.repair_hint == "restore exact raw artifact"
+    assert component.metadata["lost_source_evidence_samples"] == [sample]
+
+
 def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:
     base = {
         "config_enabled": True,

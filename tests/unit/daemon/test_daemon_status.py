@@ -432,6 +432,44 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     assert "Raw materialization: 62/300 materialized; 238 raw/index join gap(s) need classification" in lines
 
 
+def test_daemon_status_preserves_lost_source_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    sample = {
+        "session_id": "codex-session:native-1",
+        "origin": "codex-session",
+        "native_id": "native-1",
+        "missing_raw_id": "raw-missing",
+        "evidence_status": "lost_source_evidence",
+    }
+    monkeypatch.setattr("polylogue.daemon.status.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.daemon.status.raw_materialization_readiness_snapshot",
+        lambda _root: {
+            "available": True,
+            "classification": "cheap_projection",
+            "precision": "raw_id_join_gap",
+            "total": 0,
+            "lost_source_evidence_count": 1,
+            "lost_source_evidence_samples": [sample],
+        },
+    )
+
+    with (
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={"messages_ready": True}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        status_payload = daemon_status_payload(sources=())
+
+    materialization = cast(dict[str, object], status_payload["raw_materialization_readiness"])
+    assert materialization["lost_source_evidence_count"] == 1
+    assert materialization["lost_source_evidence_samples"] == [sample]
+    raw_component = cast(dict[str, Any], status_payload["component_readiness"])["raw_materialization"]
+    assert raw_component["state"] == "blocked"
+    assert raw_component["summary"] == "source evidence missing"
+    assert raw_component["repair_hint"] == "restore exact raw artifact"
+
+
 def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     db.touch()

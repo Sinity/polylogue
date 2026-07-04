@@ -504,8 +504,13 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
             "missing_raw_id": "raw-missing",
             "message_count": 0,
             "updated_at_ms": None,
+            "evidence_status": "lost_source_evidence",
+            "loss_reason": "index_raw_id_missing_from_source_tier",
+            "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
         }
     ]
+    assert readiness["counts"]["lost_source_evidence_count"] == 1
+    assert readiness["counts"]["lost_source_evidence_samples"] == readiness["counts"]["missing_raw_session_samples"]
     assert readiness["counts"]["raw_materialization_debt_count"] == 0
     assert readiness["counts"]["message_count"] == 1
     assert readiness["counts"]["text_block_count"] == UNKNOWN_TABLE_COUNT
@@ -537,8 +542,16 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
             "missing_raw_id": "raw-missing",
             "message_count": 0,
             "updated_at_ms": None,
+            "evidence_status": "lost_source_evidence",
+            "loss_reason": "index_raw_id_missing_from_source_tier",
+            "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
         }
     ]
+    assert surfaces["raw_artifacts"]["evidence"]["lost_source_evidence_count"] == 1
+    assert (
+        surfaces["raw_artifacts"]["evidence"]["lost_source_evidence_samples"]
+        == surfaces["raw_artifacts"]["evidence"]["missing_raw_session_samples"]
+    )
     assert surfaces["raw_artifacts"]["evidence"]["raw_materialization_debt_count"] == 0
     assert surfaces["search"]["ready"] is True
     assert surfaces["search"]["evidence"]["messages_fts_exact_counts"] is False

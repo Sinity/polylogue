@@ -86,6 +86,10 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _safe_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def _fast_fts_doc_count(conn: Any) -> int:
     # Exact FTS coverage is no longer a direct-status fallback concern.
     # Counting the FTS shadow table can fault gigabytes of pages during
@@ -655,11 +659,14 @@ def _sqlite_maintenance_status(root: Path) -> dict[str, Any]:
 
 
 def _archive_readiness_status(root: Path) -> dict[str, Any]:
+    from polylogue.storage.archive_readiness import missing_source_raw_session_evidence
+
     index_db = root / "index.db"
     source_db = root / "source.db"
     if not index_db.exists():
         return {"checked": False, "reason": "missing_index_tier", "surfaces": {}}
 
+    missing_source_evidence = missing_source_raw_session_evidence(root)
     try:
         conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
         try:
@@ -676,6 +683,19 @@ def _archive_readiness_status(root: Path) -> dict[str, Any]:
                     source_conn=source_conn,
                     source_check_available=source_check_available,
                 )
+                if missing_source_evidence.get("available"):
+                    missing_raw_count = _safe_int(missing_source_evidence.get("missing_raw_session_count"))
+                    missing_raw_samples = _safe_list(missing_source_evidence.get("missing_raw_session_samples"))
+                    lost_source_count = _safe_int(missing_source_evidence.get("lost_source_evidence_count"))
+                    lost_source_samples = _safe_list(missing_source_evidence.get("lost_source_evidence_samples"))
+                    counts.update(
+                        {
+                            "missing_raw_session_count": missing_raw_count,
+                            "missing_raw_session_samples": missing_raw_samples,
+                            "lost_source_evidence_count": lost_source_count,
+                            "lost_source_evidence_samples": lost_source_samples,
+                        }
+                    )
             finally:
                 if source_conn is not None:
                     source_conn.close()
@@ -704,7 +724,7 @@ def _archive_readiness_counts(
     *,
     source_conn: sqlite3.Connection | None,
     source_check_available: bool,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     session_count = _fast_count(conn, "SELECT COUNT(*) FROM sessions")
     raw_link_count = (
         _fast_count(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
@@ -728,6 +748,9 @@ def _archive_readiness_counts(
         "session_count": session_count,
         "raw_link_count": raw_link_count,
         "missing_raw_session_count": missing_raw_session_count,
+        "missing_raw_session_samples": [],
+        "lost_source_evidence_count": missing_raw_session_count,
+        "lost_source_evidence_samples": [],
         "message_count": _fast_count(conn, "SELECT COUNT(*) FROM messages") if _table_exists(conn, "messages") else 0,
         "text_block_count": _fast_count(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
         if _table_exists(conn, "blocks")
@@ -760,8 +783,8 @@ def _archive_readiness_counts(
     }
 
 
-def _archive_status_surfaces(counts: dict[str, int], *, source_check_available: bool) -> dict[str, dict[str, Any]]:
-    def surface(*, ready: bool | None, blockers: list[str], evidence: dict[str, int | bool]) -> dict[str, Any]:
+def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: bool) -> dict[str, dict[str, Any]]:
+    def surface(*, ready: bool | None, blockers: list[str], evidence: dict[str, Any]) -> dict[str, Any]:
         return {"ready": ready, "blockers": blockers, "evidence": evidence}
 
     def count(key: str, default: int = 0) -> int:
@@ -837,6 +860,9 @@ def _archive_status_surfaces(counts: dict[str, int], *, source_check_available: 
                 "source_check_available": source_check_available,
                 "raw_link_count": count("raw_link_count"),
                 "missing_raw_session_count": count("missing_raw_session_count"),
+                "missing_raw_session_samples": list(counts.get("missing_raw_session_samples") or []),
+                "lost_source_evidence_count": count("lost_source_evidence_count"),
+                "lost_source_evidence_samples": list(counts.get("lost_source_evidence_samples") or []),
             },
         ),
         "search": surface(

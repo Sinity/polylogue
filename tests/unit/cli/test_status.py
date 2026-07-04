@@ -489,6 +489,21 @@ class TestNoArchiveStatus:
         assert readiness["blocked_surface_count"] > 0
         assert readiness["surfaces"]["raw_artifacts"]["ready"] is False
         assert readiness["surfaces"]["raw_artifacts"]["blockers"] == ["missing_source_raw_sessions"]
+        raw_evidence = readiness["surfaces"]["raw_artifacts"]["evidence"]
+        assert raw_evidence["lost_source_evidence_count"] == 1
+        assert raw_evidence["lost_source_evidence_samples"] == [
+            {
+                "session_id": "codex-session:native-1",
+                "origin": "codex-session",
+                "native_id": "native-1",
+                "missing_raw_id": "raw-missing",
+                "message_count": 0,
+                "updated_at_ms": None,
+                "evidence_status": "lost_source_evidence",
+                "loss_reason": "index_raw_id_missing_from_source_tier",
+                "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
+            }
+        ]
         runtime_paths = payload["archive_runtime_paths"]
         assert runtime_paths["archive_routing_ready"] is True
         assert runtime_paths["archive_runtime_ready"] is True
