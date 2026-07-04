@@ -875,7 +875,7 @@ def _expected_provider_model_rollups(
             _int(row["total_reasoning_output_tokens"]),
             _int(row["total_tokens"]),
         )
-        if any(total_values):
+        if any(total_values[:4]):
             latest_total_by_session[session_id] = (model_name, total_values[:5])
             continue
         key = (session_id, model_name)

@@ -445,6 +445,54 @@ def test_provider_usage_report_treats_codex_cumulative_as_session_global(tmp_pat
     }
 
 
+def test_provider_usage_report_ignores_reasoning_only_cumulative_rows(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="provider-usage-reasoning-only-tail",
+        title="provider usage reasoning-only tail",
+        models_used=["gpt-5-codex"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "cached_input_tokens": 80,
+                        "reasoning_output_tokens": 10,
+                    },
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {"reasoning_output_tokens": 30},
+                },
+            ),
+        ],
+    )
+
+    write_parsed_session_to_archive(conn, session)
+    report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
+
+    row = report.origins[0]
+    assert row.stale_rollup_session_count == 0
+    assert row.model_rollup_usage.to_dict() == {
+        "input_tokens": 20,
+        "output_tokens": 20,
+        "cached_input_tokens": 80,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 120,
+    }
+
+
 def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Path) -> None:
     index_conn = _connect(tmp_path / "index.db")
     source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)

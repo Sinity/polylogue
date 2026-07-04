@@ -160,6 +160,11 @@ def test_codex_probe_check_fails_outside_tolerance(tmp_path: Path, capsys: pytes
     assert payload["sections"][0]["comparison"]["samples"][0]["external_cli_version"] == "0.test"
     assert payload["sections"][0]["details"]["outside_external_token_values"] == [{"tokens_used": 100, "count": 1}]
     assert {"flag": "archived=0", "count": 1} in payload["sections"][0]["details"]["outside_external_flag_counts"]
+    residual = payload["sections"][0]["details"]["logical_residual_classification"]
+    assert residual["outside_tolerance"] == 1
+    assert {"value": "zero_replay_gap", "count": 1} in residual["replay_gap_classes"]
+    assert {"flag": "has_user_event=0", "count": 1} in residual["external_flag_counts"]
+    assert residual["external_token_values"] == [{"tokens_used": 100, "count": 1}]
 
 
 def test_codex_probe_exposes_logical_chain_comparison(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -228,6 +233,7 @@ def test_codex_probe_exposes_logical_chain_comparison(tmp_path: Path, capsys: py
     assert sample["archive_physical_chain_tokens"] == 50
     assert sample["archive_replay_gap_tokens"] == 20
     assert sample["archive_chain_session_count"] == 2
+    assert codex["details"]["logical_residual_classification"]["outside_tolerance"] == 0
 
 
 def test_claude_probe_compares_model_usage_lanes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

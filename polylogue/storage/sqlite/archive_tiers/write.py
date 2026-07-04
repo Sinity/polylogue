@@ -2640,9 +2640,15 @@ def _provider_usage_row_has_lane_totals(
     total_cache_write: int,
     total_reasoning: int,
 ) -> bool:
-    """Return true when a cumulative row can be mapped to billing lanes."""
+    """Return true when a cumulative row can be mapped to additive lanes.
 
-    return bool(total_input or total_output or total_cache_read or total_cache_write or total_reasoning)
+    Codex reports reasoning as part of output. A row that carries only
+    ``total_reasoning_output_tokens`` is useful evidence, but it cannot replace
+    the latest cumulative input/output/cache lanes without zeroing the rollup.
+    """
+
+    _ = total_reasoning
+    return bool(total_input or total_output or total_cache_read or total_cache_write)
 
 
 def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:

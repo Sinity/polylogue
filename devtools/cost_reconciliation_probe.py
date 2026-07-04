@@ -118,6 +118,55 @@ def _ratio_summary(
     )
 
 
+def _outside_pairs(
+    pairs: list[tuple[str, int, int, dict[str, object]]],
+    *,
+    tolerance: float,
+) -> list[tuple[str, int, int, dict[str, object]]]:
+    low = 1.0 - tolerance
+    high = 1.0 + tolerance
+    return [
+        (key, archive, external, extra)
+        for key, archive, external, extra in pairs
+        if external <= 0 or not (low <= archive / external <= high)
+    ]
+
+
+def _counter_dict(counter: Counter[Any], *, limit: int = 10) -> list[dict[str, object]]:
+    return [{"value": value, "count": count} for value, count in counter.most_common(limit)]
+
+
+def _codex_residual_classification(
+    pairs: list[tuple[str, int, int, dict[str, object]]],
+    *,
+    tolerance: float,
+) -> dict[str, object]:
+    outside = _outside_pairs(pairs, tolerance=tolerance)
+    replay_gap = Counter(
+        "positive_replay_gap" if _coerce_int(extra.get("archive_replay_gap_tokens")) > 0 else "zero_replay_gap"
+        for _, _, _, extra in outside
+    )
+    chain_size = Counter(_coerce_int(extra.get("archive_chain_session_count")) for _, _, _, extra in outside)
+    external_flags: Counter[str] = Counter()
+    for _, _, _, extra in outside:
+        external_flags[f"archived={extra.get('external_archived')}"] += 1
+        external_flags[f"has_user_event={extra.get('external_has_user_event')}"] += 1
+    return {
+        "outside_tolerance": len(outside),
+        "replay_gap_classes": _counter_dict(replay_gap),
+        "chain_session_counts": _counter_dict(chain_size),
+        "external_flag_counts": [{"flag": flag, "count": count} for flag, count in external_flags.most_common(10)],
+        "external_token_values": [
+            {"tokens_used": tokens, "count": count}
+            for tokens, count in Counter(external for _, _, external, _ in outside).most_common(10)
+        ],
+        "external_sources": _counter_dict(Counter(extra.get("external_source") for _, _, _, extra in outside)),
+        "external_cli_versions": _counter_dict(
+            Counter(extra.get("external_cli_version") for _, _, _, extra in outside)
+        ),
+    }
+
+
 def _copy_sqlite_to_scratch(source: Path, scratch_dir: Path) -> Path:
     scratch_dir.mkdir(parents=True, exist_ok=True)
     fd, dest_name = tempfile.mkstemp(prefix="codex-state-", suffix=".sqlite", dir=scratch_dir)
@@ -375,17 +424,11 @@ def _probe_codex(
         outside_tolerance=logical_comparison.outside_tolerance,
         samples=logical_comparison.samples,
     )
-    low = 1.0 - tolerance
-    high = 1.0 + tolerance
     outside_external_tokens = Counter(
-        external_tokens
-        for _, archive_tokens, external_tokens, _ in pairs
-        if external_tokens <= 0 or not (low <= archive_tokens / external_tokens <= high)
+        external_tokens for _, _, external_tokens, _ in _outside_pairs(pairs, tolerance=tolerance)
     )
     outside_external_flags: Counter[str] = Counter()
-    for _, archive_tokens, external_tokens, extra in pairs:
-        if external_tokens > 0 and low <= archive_tokens / external_tokens <= high:
-            continue
+    for _, _, _, extra in _outside_pairs(pairs, tolerance=tolerance):
         outside_external_flags[f"archived={extra.get('external_archived')}"] += 1
         outside_external_flags[f"has_user_event={extra.get('external_has_user_event')}"] += 1
         outside_external_flags[f"source={extra.get('external_source')}"] += 1
@@ -426,6 +469,7 @@ def _probe_codex(
                 "replay_gap_tokens": physical_total - logical_total,
             },
             "logical_comparison": logical_comparison.to_dict(),
+            "logical_residual_classification": _codex_residual_classification(logical_pairs, tolerance=tolerance),
             "outside_external_token_values": [
                 {"tokens_used": tokens, "count": count} for tokens, count in outside_external_tokens.most_common(10)
             ],
