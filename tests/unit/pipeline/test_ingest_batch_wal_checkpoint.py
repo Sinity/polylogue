@@ -219,6 +219,46 @@ def test_maybe_optimize_sqlite_runs_bounded_pragma(tmp_path: Path) -> None:
     assert observation.error is None
 
 
+def test_maybe_optimize_archive_tiers_covers_existing_split_tiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    for filename in ("source.db", "index.db", "ops.db"):
+        (archive_root / filename).write_bytes(b"sqlite placeholder")
+
+    class FakeConnection:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.closed = False
+
+        def execute(self, _sql: str) -> object:
+            return object()
+
+        def close(self) -> None:
+            self.closed = True
+
+    opened: list[FakeConnection] = []
+
+    def fake_open(path: Path, *, timeout: float) -> FakeConnection:
+        assert timeout == 11.0
+        conn = FakeConnection(path)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_daemon_connection", fake_open)
+
+    observations = maybe_optimize_archive_tiers(archive_root, reason="test", analysis_limit=19, timeout_s=11.0)
+
+    assert [conn.path.name for conn in opened] == ["source.db", "index.db", "ops.db"]
+    assert [observation.ran for observation in observations] == [True, True, True]
+    assert {observation.analysis_limit for observation in observations} == {19}
+    assert all(conn.closed for conn in opened)
+
+
 def test_maybe_checkpoint_archive_wals_covers_existing_split_tiers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

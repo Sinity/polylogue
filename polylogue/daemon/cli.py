@@ -364,20 +364,23 @@ async def _periodic_db_optimize() -> None:
     considers planner-stat maintenance; otherwise a large archive can pay
     broad read IO at the exact moment live catch-up already needs the disk.
     """
-    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+    from polylogue.paths import archive_root
+    from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
 
     while True:
         await asyncio.sleep(86_400)  # 24 hours; no startup optimize.
-        db = _active_index_db_path()
-        if not db.exists():
+        root = archive_root()
+        if not root.exists():
             continue
         try:
-            conn = open_daemon_connection(db, timeout=30.0)
-            try:
-                conn.execute("PRAGMA optimize")
-                logger.info("daemon: DB optimize completed")
-            finally:
-                conn.close()
+            observations = await asyncio.to_thread(
+                maybe_optimize_archive_tiers,
+                root,
+                reason="periodic",
+            )
+            ran = sum(1 for observation in observations if observation.ran)
+            errors = [observation.error for observation in observations if observation.error]
+            logger.info("daemon: DB optimize completed tiers=%d errors=%d", ran, len(errors))
         except Exception:
             logger.warning("daemon: DB optimize failed", exc_info=True)
 

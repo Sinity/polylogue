@@ -1816,6 +1816,34 @@ def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.Monkey
     assert opened == []
 
 
+def test_periodic_db_optimize_targets_archive_root_tiers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
+
+    calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    async def fake_to_thread(func: object, *args: object, **kwargs: object) -> object:
+        calls.append((func, args, kwargs))
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+
+    with (
+        patch("asyncio.sleep", side_effect=fake_sleep),
+        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(daemon_cli._periodic_db_optimize())
+
+    assert calls == [(maybe_optimize_archive_tiers, (tmp_path,), {"reason": "periodic"})]
+
+
 def test_daemon_cli_active_archive_uses_archive_file_set_from_archive_tiers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
