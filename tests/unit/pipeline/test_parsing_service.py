@@ -468,18 +468,24 @@ class TestParsingServiceStreaming:
         )
         config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
         service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
+        progress_events: list[str] = []
 
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
             new=AsyncMock(side_effect=[None, None]),
         ) as mock_process:
-            await service.parse_from_raw(raw_ids=["raw-1", "raw-2", "raw-3"])
+            await service.parse_from_raw(
+                raw_ids=["raw-1", "raw-2", "raw-3"],
+                progress_callback=lambda _amount, desc=None: progress_events.append(desc or ""),
+            )
 
         repository.get_raw_blob_sizes.assert_awaited_once_with(["raw-1", "raw-2", "raw-3"])
         assert mock_process.await_args_list[0].args[2] == ["raw-1"]
         assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
         assert mock_process.await_args_list[0].kwargs["suspend_fts_triggers"] is True
         assert mock_process.await_args_list[1].kwargs["suspend_fts_triggers"] is True
+        assert "Ingesting batch 1 (0/3 raw, batch 1 raw, 96.0 MiB)" in progress_events
+        assert "Ingesting batch 2 (1/3 raw, batch 2 raw, 104.0 MiB)" in progress_events
 
     async def test_parse_from_raw_splits_streamed_backlog_by_blob_budget(self, tmp_path: Path) -> None:
         backend = MagicMock()
@@ -497,16 +503,22 @@ class TestParsingServiceStreaming:
         repository.iter_raw_headers = MagicMock(return_value=raw_headers())
         config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
         service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
+        progress_events: list[str] = []
 
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
             new=AsyncMock(side_effect=[None, None]),
         ) as mock_process:
-            await service.parse_from_raw(provider="chatgpt")
+            await service.parse_from_raw(
+                provider="chatgpt",
+                progress_callback=lambda _amount, desc=None: progress_events.append(desc or ""),
+            )
 
         repository.iter_raw_headers.assert_called_once_with(source_name="chatgpt")
         assert mock_process.await_args_list[0].args[2] == ["raw-1"]
         assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
+        assert "Ingesting batch 1 (0/3 raw, batch 1 raw, 96.0 MiB)" in progress_events
+        assert "Ingesting batch 2 (1/3 raw, batch 2 raw, 104.0 MiB)" in progress_events
 
     async def test_parse_from_raw_closes_header_stream_before_writing_batches(self, tmp_path: Path) -> None:
         backend = MagicMock()
