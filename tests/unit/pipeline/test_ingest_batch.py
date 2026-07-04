@@ -8,7 +8,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NoReturn, TypeAlias
+from typing import NoReturn, TypeAlias, cast
 from unittest.mock import AsyncMock
 
 import aiosqlite
@@ -38,6 +38,8 @@ from polylogue.pipeline.services.ingest_worker import (
     IngestRecordResult,
     SessionWritePayload,
 )
+from polylogue.pipeline.services.parsing import ParsingService
+from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -51,6 +53,7 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import SessionId
 
@@ -1213,6 +1216,80 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
 
     assert seen == ["raw-1", "raw-2"]
     assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
+
+
+async def test_process_ingest_batch_uses_archive_root_blob_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "explicit-archive"
+    ambient_blob_root = tmp_path / "ambient-xdg" / "blob"
+    expected_blob_root = archive_root / "blob"
+    raw_record = RawSessionRecord(
+        raw_id="raw-1",
+        source_name="chatgpt",
+        source_path="/sources/session.json",
+        blob_size=17,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+
+    repository = SimpleNamespace(get_raw_sessions_batch=AsyncMock(return_value=[raw_record]))
+    service = SimpleNamespace(
+        repository=repository,
+        archive_root=archive_root,
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+    )
+    backend = SimpleNamespace(db_path=archive_root / "index.db")
+    seen: dict[str, object] = {}
+
+    def fake_process_sync(
+        raw_artifacts: list[RawSessionRecord],
+        *,
+        db_path: Path,
+        archive_root_str: str,
+        blob_root_str: str,
+        validation_mode: str,
+        ingest_workers: int | None,
+        measure_ingest_result_size: bool,
+        force_write: bool,
+        repair_message_fts: bool,
+        ingest_result_chunk_size: int,
+        suspend_fts_triggers: bool,
+    ) -> _IngestBatchSummary:
+        seen.update(
+            {
+                "raw_artifacts": raw_artifacts,
+                "db_path": db_path,
+                "archive_root_str": archive_root_str,
+                "blob_root_str": blob_root_str,
+                "validation_mode": validation_mode,
+                "ingest_workers": ingest_workers,
+                "measure_ingest_result_size": measure_ingest_result_size,
+                "force_write": force_write,
+                "repair_message_fts": repair_message_fts,
+                "ingest_result_chunk_size": ingest_result_chunk_size,
+                "suspend_fts_triggers": suspend_fts_triggers,
+            }
+        )
+        return _IngestBatchSummary(raw_record_count=1)
+
+    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: ambient_blob_root)
+    monkeypatch.setattr(ingest_batch_core, "blob_store_root", lambda: ambient_blob_root, raising=False)
+    monkeypatch.setattr(ingest_batch_core, "_process_ingest_batch_sync", fake_process_sync)
+    monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", AsyncMock(return_value=0.0))
+
+    await ingest_batch_core.process_ingest_batch(
+        cast(ParsingService, service),
+        cast(SQLiteBackend, backend),
+        ["raw-1"],
+        ParseResult(),
+        progress_callback=None,
+    )
+
+    assert seen["archive_root_str"] == str(archive_root)
+    assert seen["blob_root_str"] == str(expected_blob_root)
+    assert seen["blob_root_str"] != str(ambient_blob_root)
 
 
 def test_iter_ingest_results_sync_bounds_in_flight_process_results(

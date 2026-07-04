@@ -12,7 +12,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
@@ -86,6 +86,7 @@ def parse_one_source_path(
     sidecar_data: SidecarData,
     capture_raw: bool,
     cursor_state: CursorStatePayload | None = None,
+    blob_root: Path | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Parse a single source file into ``(raw, session)`` tuples.
 
@@ -131,7 +132,8 @@ def parse_one_source_path(
     emitter = _SessionEmitter(ctx)
 
     if capture_raw and should_group:
-        blob_hash, blob_size = get_blob_store().write_from_path(path)
+        blob_store = BlobStore(blob_root) if blob_root is not None else get_blob_store()
+        blob_hash, blob_size = blob_store.write_from_path(path)
         raw_data = RawSessionData(
             raw_bytes=b"",
             source_path=str(path),
@@ -168,6 +170,7 @@ def iter_source_sessions_with_raw(
     cursor_state: CursorStatePayload | None = None,
     capture_raw: bool = True,
     known_mtimes: dict[str, str] | None = None,
+    blob_root: Path | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Iterate parsed sessions with optional raw byte capture."""
     if not source.path:
@@ -195,6 +198,7 @@ def iter_source_sessions_with_raw(
                 sidecar_data=walk.sidecar_data,
                 capture_raw=capture_raw,
                 cursor_state=cursor_state,
+                blob_root=blob_root,
             )
         except FileNotFoundError as exc:
             failed_count += 1

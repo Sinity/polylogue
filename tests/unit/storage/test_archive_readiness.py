@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
+from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 
 
 def _category_counts(snapshot: Mapping[str, object]) -> Mapping[str, object]:
@@ -439,3 +439,67 @@ def test_raw_materialization_snapshot_keeps_unexplained_gaps_unchecked(tmp_path:
     counts = _category_counts(snapshot)
     assert counts["parsed-non-session-artifact"] == 1
     assert counts["raw_id_join_gap"] == 1
+
+
+def test_raw_materialization_snapshot_classifies_same_native_lost_source_evidence(
+    tmp_path: Path,
+) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                blob_hash BLOB,
+                validation_status TEXT,
+                parse_error TEXT,
+                parsed_at_ms INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "newer-raw",
+                "claude-code-session",
+                "session-native",
+                str(tmp_path / "session-native.jsonl"),
+                bytes.fromhex("aa" * 32),
+                "passed",
+                None,
+                123,
+            ),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
+        conn.execute(
+            """
+            INSERT INTO sessions(session_id, origin, native_id, raw_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "claude-code-session:session-native",
+                "claude-code-session",
+                "session-native",
+                "missing-older-raw",
+            ),
+        )
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+
+    assert snapshot["lost_source_evidence_count"] == 1
+    assert snapshot["classified"] == 1
+    assert snapshot["unchecked"] == 0
+    assert snapshot["affected_unchecked"] == 0
+    assert raw_materialization_ready(snapshot) is False
+    counts = _category_counts(snapshot)
+    assert counts["lost-source-evidence-alias"] == 1
+    assert counts["raw_id_join_gap"] == 0

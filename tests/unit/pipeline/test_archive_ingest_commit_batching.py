@@ -14,6 +14,7 @@ import asyncio
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,7 @@ from polylogue.pipeline.services import archive_ingest
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import build_default_corpus_specs
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.maintenance import SqliteOptimizeObservation
 from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation
@@ -99,6 +101,24 @@ def test_per_session_escape_hatch(
     assert sessions == _expected_session_count(sources)
     assert sessions == result.counts["sessions"]
     assert messages == result.counts["messages"]
+
+
+def test_archive_ingest_raw_payload_uses_explicit_archive_blob_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "explicit-archive"
+    ambient_blob_root = tmp_path / "ambient-xdg" / "blob"
+    blob_hash, _blob_size = BlobStore(archive_root / "blob").write_from_bytes(b'{"mapping":{"from":"archive"}}')
+    raw_data = SimpleNamespace(raw_bytes=b"", blob_hash=blob_hash)
+    session = SimpleNamespace(model_dump_json=lambda: '{"fallback": true}')
+
+    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: ambient_blob_root)
+    monkeypatch.setattr("polylogue.storage.blob_store.blob_store_root", lambda: ambient_blob_root, raising=False)
+
+    assert archive_ingest._archive_raw_payload(raw_data, session, blob_root=archive_root / "blob") == (
+        b'{"mapping":{"from":"archive"}}'
+    )
 
 
 def test_failed_write_rolls_back_uncommitted_batch(

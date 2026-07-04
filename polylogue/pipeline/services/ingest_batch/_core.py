@@ -31,7 +31,6 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.logging import get_logger
-from polylogue.paths import blob_store_root
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
 from polylogue.pipeline.services.ingest_worker import (
@@ -1233,7 +1232,7 @@ async def process_ingest_batch(
         return None
 
     archive_root_str = str(service.archive_root)
-    blob_root_str = str(blob_store_root())
+    blob_root_str = str(service.archive_root / "blob")
     batch_started = time.perf_counter()
     rss_start_mb = read_current_rss_mb()
     peak_rss_self_start_mb = read_peak_rss_self_mb()

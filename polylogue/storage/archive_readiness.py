@@ -329,16 +329,23 @@ def _missing_source_raw_session_count(conn: sqlite3.Connection) -> int:
 
 
 def _missing_source_raw_session_samples(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, object]]:
+    session_columns = _table_columns(conn, "main", "sessions")
+    if "session_id" not in session_columns:
+        return []
+    message_count_expr = "s.message_count" if "message_count" in session_columns else "NULL"
+    updated_at_expr = "s.updated_at_ms" if "updated_at_ms" in session_columns else "NULL"
+    order_expr = "s.updated_at_ms DESC, s.session_id" if "updated_at_ms" in session_columns else "s.session_id"
     rows = conn.execute(
-        """
+        f"""
         SELECT s.session_id, s.origin, s.native_id, s.raw_id,
-               s.message_count, s.updated_at_ms
+               {message_count_expr} AS message_count,
+               {updated_at_expr} AS updated_at_ms
         FROM sessions AS s
         WHERE s.raw_id IS NOT NULL
           AND NOT EXISTS (
             SELECT 1 FROM source.raw_sessions AS r WHERE r.raw_id = s.raw_id
           )
-        ORDER BY s.updated_at_ms DESC, s.session_id
+        ORDER BY {order_expr}
         LIMIT ?
         """,
         (limit,),
@@ -407,6 +414,9 @@ def _classify_raw_gap_rows(
         if _raw_gap_materialized_by_alias(conn, row, session_columns=session_columns):
             counts["materialized-alias"] += 1
             continue
+        if _raw_gap_matches_missing_index_raw_link(conn, row, session_columns=session_columns):
+            counts["lost-source-evidence-alias"] += 1
+            continue
         if _raw_gap_parsed_non_session_artifact(archive_root, row, raw_columns=raw_columns):
             counts["parsed-non-session-artifact"] += 1
     return counts
@@ -442,6 +452,48 @@ def _raw_gap_materialized_by_alias(
             JOIN source.raw_sessions AS existing_raw ON existing_raw.raw_id = s.raw_id
             WHERE s.origin = ?
               AND s.native_id = ?
+            LIMIT 1
+            """,
+            (origin, native_id),
+        ).fetchone()
+        if existing is not None:
+            return True
+    return False
+
+
+def _raw_gap_matches_missing_index_raw_link(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    session_columns: frozenset[str],
+) -> bool:
+    if not {"origin", "native_id", "raw_id"} <= session_columns:
+        return False
+    origin = str(row["origin"] or "")
+    if not origin:
+        return False
+    native_ids: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, str) and value and value not in native_ids:
+            native_ids.append(value)
+
+    add(row["native_id"])
+    for candidate in source_path_native_id_candidates(str(row["source_path"] or "")):
+        add(candidate)
+    if not native_ids:
+        return False
+    for native_id in native_ids:
+        existing = conn.execute(
+            """
+            SELECT 1
+            FROM main.sessions AS s
+            WHERE s.origin = ?
+              AND s.native_id = ?
+              AND s.raw_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM source.raw_sessions AS existing_raw WHERE existing_raw.raw_id = s.raw_id
+              )
             LIMIT 1
             """,
             (origin, native_id),
