@@ -1208,6 +1208,42 @@ class TestNoArchiveStatus:
         assert "live_cursor" not in payload
         assert "rows" not in payload["archive_debt"]
 
+    def test_status_command_uses_discovered_dev_loop_daemon_url(self) -> None:
+        env = _make_app_env()
+        full_payload = {
+            "ok": True,
+            "daemon_liveness": True,
+            "checked_at": "2026-07-04T07:20:00+02:00",
+        }
+        requested_urls: list[str] = []
+
+        def fake_urlopen(request: Any, *, timeout: float) -> _FakeDaemonResponse:
+            requested_urls.append(str(request.full_url))
+            if requested_urls[-1].startswith("http://127.0.0.1:8766/"):
+                raise TimeoutError
+            assert requested_urls[-1] == "http://127.0.0.1:8786/api/status"
+            return _FakeDaemonResponse(full_payload)
+
+        with patch(
+            "polylogue.cli.commands.status._candidate_daemon_urls",
+            return_value=("http://127.0.0.1:8766", "http://127.0.0.1:8786"),
+        ):
+            with patch("polylogue.cli.commands.status.urlopen", side_effect=fake_urlopen):
+                result = CliRunner().invoke(
+                    status_command,
+                    ["--daemon-url", "http://127.0.0.1:8766", "--json"],
+                    obj=env,
+                )
+
+        assert result.exit_code == 0
+        assert requested_urls == [
+            "http://127.0.0.1:8766/api/status",
+            "http://127.0.0.1:8786/api/status",
+        ]
+        payload = json.loads(_combined_calls(env))
+        assert payload["source"] == "daemon"
+        assert payload["daemon_liveness"] is True
+
     def test_direct_json_no_archive(self) -> None:
         """_show_direct_json when DB does not exist produces valid JSON."""
         env = _make_app_env()

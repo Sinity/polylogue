@@ -23,11 +23,13 @@ from polylogue.cli.commands.status import (
     _archive_table_counts,
     _archive_tier_files,
     _archive_tier_status,
+    _candidate_daemon_urls,
     _column_exists,
     _default_daemon_url,
     _direct_archive_counts,
     _fast_count,
     _fmt_bytes,
+    _parse_cmdline_api_port,
     _table_exists,
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -53,6 +55,23 @@ class TestDefaultDaemonUrl:
         """Empty string env var is falsy, returns built-in."""
         monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "")
         assert _default_daemon_url() == _BUILTIN_DAEMON_URL
+
+
+class TestDaemonUrlDiscovery:
+    def test_candidate_daemon_urls_respects_explicit_env_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
+        monkeypatch.setattr("polylogue.cli.commands.status._discover_polylogued_api_ports", lambda: (8786,))
+
+        assert _candidate_daemon_urls("http://127.0.0.1:1") == ("http://127.0.0.1:1",)
+
+    def test_parse_cmdline_api_port_accepts_split_flag(self) -> None:
+        assert _parse_cmdline_api_port(["/bin/polylogued", "run", "--api-port", "8786"]) == 8786
+
+    def test_parse_cmdline_api_port_accepts_equals_flag(self) -> None:
+        assert _parse_cmdline_api_port(["/bin/polylogued", "run", "--api-port=8786"]) == 8786
+
+    def test_parse_cmdline_api_port_rejects_invalid_port(self) -> None:
+        assert _parse_cmdline_api_port(["/bin/polylogued", "run", "--api-port", "99999"]) is None
 
 
 class TestFmtBytes:

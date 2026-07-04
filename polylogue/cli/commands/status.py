@@ -99,6 +99,74 @@ def _daemon_live(daemon_url: str, *, timeout: float) -> bool:
         return False
 
 
+def _candidate_daemon_urls(primary_url: str) -> tuple[str, ...]:
+    """Return daemon URLs worth probing, with explicit config first.
+
+    Dev-loop daemons often run on an isolated API port while the invoking shell
+    lacks the launch-time ``POLYLOGUE_DAEMON_URL``. Discovering the live local
+    ``polylogued --api-port`` process keeps status truthful without requiring
+    the operator to copy transient environment variables by hand.
+    """
+    urls: list[str] = []
+
+    def add(url: str) -> None:
+        normalized = url.rstrip("/")
+        if normalized and normalized not in urls:
+            urls.append(normalized)
+
+    add(primary_url)
+    if os.environ.get("POLYLOGUE_DAEMON_URL"):
+        return tuple(urls)
+    for port in _discover_polylogued_api_ports():
+        add(f"http://127.0.0.1:{port}")
+    return tuple(urls)
+
+
+def _discover_polylogued_api_ports() -> tuple[int, ...]:
+    """Best-effort discovery of local polylogued API ports from /proc."""
+    proc = Path("/proc")
+    if not proc.exists():
+        return ()
+
+    ports: list[int] = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if not raw:
+            continue
+        parts = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+        if not parts:
+            continue
+        command_text = " ".join(parts)
+        if "polylogued" not in command_text or "run" not in parts:
+            continue
+        port = _parse_cmdline_api_port(parts)
+        if port is not None and port not in ports:
+            ports.append(port)
+    return tuple(ports)
+
+
+def _parse_cmdline_api_port(parts: Sequence[str]) -> int | None:
+    for index, part in enumerate(parts):
+        if part == "--api-port" and index + 1 < len(parts):
+            return _valid_port(parts[index + 1])
+        if part.startswith("--api-port="):
+            return _valid_port(part.split("=", 1)[1])
+    return None
+
+
+def _valid_port(value: str) -> int | None:
+    try:
+        port = int(value)
+    except ValueError:
+        return None
+    return port if 0 < port < 65536 else None
+
+
 def _table_exists(conn: Any, table_name: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
@@ -1039,32 +1107,36 @@ def status_command(
     """
     if json_alias and output_format is None:
         output_format = "json"
-    try:
-        req = Request(
-            f"{daemon_url}/api/status",
-            headers={"Accept": "application/json"},
-            method="GET",
-        )
-        with urlopen(req, timeout=_FULL_TIMEOUT_S) as resp:
-            result = json.loads(resp.read())
-    except (OSError, ValueError):
-        # ValueError covers malformed URLs (urllib raises before any I/O).
+    candidate_urls = _candidate_daemon_urls(daemon_url)
+    for candidate_url in candidate_urls:
+        try:
+            req = Request(
+                f"{candidate_url}/api/status",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            with urlopen(req, timeout=_FULL_TIMEOUT_S) as resp:
+                result = json.loads(resp.read())
+        except (OSError, ValueError):
+            # ValueError covers malformed URLs (urllib raises before any I/O).
+            continue
         if output_format == "json":
-            if _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S):
-                _show_daemon_status_unavailable_json(env)
-            else:
-                _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
+            _show_status_json(env, result, full=full_payload)
         else:
-            if _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S):
-                _show_daemon_status_unavailable(env)
-            else:
-                _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
+            _show_daemon_status(env, result)
         return
 
     if output_format == "json":
-        _show_status_json(env, result, full=full_payload)
+        if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
+            _show_daemon_status_unavailable_json(env)
+        else:
+            _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
     else:
-        _show_daemon_status(env, result)
+        if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
+            _show_daemon_status_unavailable(env)
+        else:
+            _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
+    return
 
 
 def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
@@ -1074,20 +1146,25 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
     and bounded SQLite queries to stay under 2 seconds.
     """
     resolved_url = daemon_url if daemon_url is not None else _default_daemon_url()
-    try:
-        req = Request(
-            f"{resolved_url}/api/status",
-            headers={"Accept": "application/json"},
-            method="GET",
-        )
-        with urlopen(req, timeout=_FAST_TIMEOUT_S) as resp:
-            result = json.loads(resp.read())
+    candidate_urls = _candidate_daemon_urls(resolved_url)
+    for candidate_url in candidate_urls:
+        try:
+            req = Request(
+                f"{candidate_url}/api/status",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            with urlopen(req, timeout=_FAST_TIMEOUT_S) as resp:
+                result = json.loads(resp.read())
+        except (OSError, ValueError):
+            continue
         _show_daemon_status(env, result, compact=True)
-    except OSError:
-        if _daemon_live(resolved_url, timeout=_FAST_TIMEOUT_S):
-            _show_daemon_status_unavailable(env, compact=True)
-        else:
-            _show_direct_status(env, compact=True)
+        return
+
+    if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
+        _show_daemon_status_unavailable(env, compact=True)
+    else:
+        _show_direct_status(env, compact=True)
 
 
 def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> None:
