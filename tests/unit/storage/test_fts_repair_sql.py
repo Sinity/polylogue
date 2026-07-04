@@ -7,6 +7,7 @@ import sqlite3
 from polylogue.storage.fts.dangling_repair import insert_missing_message_fts_rows_sync
 from polylogue.storage.fts.freshness import record_fts_surface_state_sync
 from polylogue.storage.fts.fts_lifecycle import (
+    delete_excess_message_rows_batched_sync,
     rebuild_fts_index_sync,
     repair_message_fts_index_sync,
     reset_message_fts_index_sync,
@@ -96,6 +97,44 @@ def test_missing_fts_repair_commits_and_checkpoints_batches(test_conn: sqlite3.C
     assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 3
     checkpoints = [sql for sql in traced if "wal_checkpoint(PASSIVE)" in sql]
     assert len(checkpoints) == 3
+
+
+def test_excess_fts_repair_deletes_orphan_docsize_rows(test_conn: sqlite3.Connection) -> None:
+    restore_fts_triggers_sync(test_conn)
+    message_id = _seed_text_block(
+        test_conn,
+        native_session_id="conv-batched-excess",
+        native_message_id="msg-batched-excess",
+        text="batched excess needle",
+    )
+    block_rowid = test_conn.execute(
+        "SELECT rowid FROM blocks WHERE message_id = ?",
+        (message_id,),
+    ).fetchone()["rowid"]
+    rebuild_fts_index_sync(test_conn)
+    test_conn.execute("DROP TRIGGER messages_fts_ad")
+    test_conn.execute("DELETE FROM blocks WHERE rowid = ?", (block_rowid,))
+
+    row_before = test_conn.execute(
+        "SELECT COUNT(*) FROM messages_fts_docsize WHERE id = ?",
+        (block_rowid,),
+    ).fetchone()
+    assert row_before[0] == 1
+
+    progress: list[int] = []
+    deleted = delete_excess_message_rows_batched_sync(
+        test_conn,
+        batch_rows=1,
+        progress_callback=progress.append,
+    )
+
+    assert deleted >= 1
+    assert sum(progress) == deleted
+    row_after = test_conn.execute(
+        "SELECT COUNT(*) FROM messages_fts_docsize WHERE id = ?",
+        (block_rowid,),
+    ).fetchone()
+    assert row_after[0] == 0
 
 
 def test_message_fts_repair_dedupes_duplicate_session_ids(test_conn: sqlite3.Connection) -> None:

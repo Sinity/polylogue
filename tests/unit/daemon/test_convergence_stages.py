@@ -311,6 +311,38 @@ def test_archive_fts_global_repair_inserts_missing_rows_without_reset(tmp_path: 
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
 
 
+def test_archive_fts_global_repair_deletes_excess_rows_without_reset(tmp_path: Path) -> None:
+    """Global surface debt should remove excess rows without a full rebuild."""
+    from unittest import mock
+
+    import polylogue.storage.fts.fts_lifecycle as fts_lc
+
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+    source_path = tmp_path / "codex.jsonl"
+    _seed_minimal_archive(archive_db, source_path)
+
+    with sqlite3.connect(archive_db) as conn:
+        fts_lc.rebuild_fts_index_sync(conn)
+        row = conn.execute("SELECT rowid FROM blocks LIMIT 1").fetchone()
+        assert row is not None
+        conn.execute("DROP TRIGGER messages_fts_ad")
+        conn.execute("DELETE FROM blocks WHERE rowid = ?", (row[0],))
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+
+    with mock.patch.object(
+        fts_lc,
+        "reset_message_fts_index_sync",
+        wraps=fts_lc.reset_message_fts_index_sync,
+    ) as reset_surface:
+        assert stages.repair_messages_fts_surface(archive_db) is True
+
+    reset_surface.assert_not_called()
+    with sqlite3.connect(archive_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
+
+
 def test_archive_repair_sessions_fts_skips_unknown_scope(tmp_path: Path) -> None:
     """Path-scoped convergence must not become a whole-archive FTS rebuild."""
     from unittest import mock

@@ -1065,6 +1065,7 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
             from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
             from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
             from polylogue.storage.fts.fts_lifecycle import (
+                delete_excess_message_rows_batched_sync,
                 fts_invariant_snapshot_sync,
                 insert_missing_message_rows_batched_sync,
             )
@@ -1086,6 +1087,19 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
                         inserted_total,
                     )
 
+            deleted_total = 0
+
+            def excess_progress(deleted: int) -> None:
+                nonlocal deleted_total
+                deleted_total += deleted
+                if deleted:
+                    logger.info(
+                        "fts: archive messages_fts deleted excess rows deleted=%d total_deleted=%d",
+                        deleted,
+                        deleted_total,
+                    )
+
+            delete_excess_message_rows_batched_sync(conn, progress_callback=excess_progress)
             insert_missing_message_rows_batched_sync(
                 conn,
                 measure_counts=False,
