@@ -1123,9 +1123,12 @@ For recovery planning, run
 <code>polylogue ops maintenance blob-reference-debt --output-format json</code>; that
 read-only classifier groups missing blob refs by table, ref type, origin,
 raw-row joinability, validation/parse state, and source-path availability.
-The paired <code>polylogue ops maintenance blob-reference-restore-direct</code>
-command only restores direct-file source paths after exact SHA-256
-verification; archive-member paths remain source re-acquisition work.</li>
+During daemon convergence, direct source files whose current bytes still hash
+to a missing blob address are restored automatically before raw
+materialization replay. Container/member paths such as
+<code>export.zip:conversations.json</code> remain source re-acquisition work because the
+referenced blob may be an extracted record inside the member, not the member
+file itself.</li>
 <li><code>gc_state</code> — high-water <code>gc_generations</code> row, <code>last_completed_at</code>,
 total generation count.</li>
 <li><code>fts_trigger_state</code> — the three expected FTS sync triggers
