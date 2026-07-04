@@ -234,11 +234,18 @@ serve history.
 
 ## Schema-Touching Changes
 
-Polylogue has no in-place schema upgrade chain. A PR that bumps
-`SCHEMA_VERSION` or otherwise changes the canonical SQLite shape is
-not an in-place storage upgrade — it is a deletes-then-defines edit of `SCHEMA_DDL`.
-The PR body must replace any upgrade-path section with a
-**re-ingest plan**:
+Polylogue uses two schema-evolution regimes.
+
+Durable tiers (`source.db` and `user.db`) may use explicit additive
+migrations. These migrations live under `polylogue/storage/sqlite/migrations/`,
+advance `PRAGMA user_version` one version at a time, and require a verified
+backup manifest for the affected tier before they run. Destructive durable-tier
+changes require a copy-forward design and explicit operator consent; do not
+hide them behind a routine migration.
+
+Derived tiers (`index.db`, `embeddings.db`) are rebuildable products. They do
+not get in-place migration chains. A PR that bumps their schema edits the
+canonical DDL and provides a **rebuild/blue-green plan**:
 
 - which user-visible archive operation triggers rebuild/re-acquisition from
   source (e.g. `polylogue ops reset --index && polylogued run` for index-tier
@@ -248,9 +255,16 @@ The PR body must replace any upgrade-path section with a
 - the expected end-user impact (rebuild time, disk usage, anything
   that requires action beyond the reset).
 
-There is no requirement to provide an in-place upgrade path, and PRs
-that try to add one will be rejected on policy grounds (see
-`docs/internals.md` § "Schema Versioning Model" and #1212).
+During development, classify schema changes before editing: metadata-only,
+index-only, additive-derived, additive-durable, or semantic-reparse-required.
+Batch same-tier schema changes from ready Beads before triggering a live
+rebuild. Do not repeatedly reset and re-ingest the active archive for isolated
+index additions that can be grouped into one schema bump, and do not call a
+full reingest necessary unless the changed semantics actually require replaying
+source rows.
+
+The policy lint (`devtools lab policy schema-versioning`) rejects derived-tier
+upgrade helpers while allowing numbered durable-tier SQL migrations.
 
 ## Versioning and Releases
 
@@ -1197,26 +1211,44 @@ and commit the updated `docs/plans/topology-target.yaml` and
 
 ## Schema Versioning Model
 
-Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
-schema shape:
+Polylogue has two schema-evolution regimes, keyed by tier durability.
 
 - Tier version constants under `storage/sqlite/archive_tiers/` are the
-  authority. The canonical schema is described directly by each tier DDL;
-  there are no upgrade plans, no `build_vN_to_vM_*` helpers, and no
-  chain-dispatch logic in `schema_bootstrap.py`.
-- On startup the on-disk `PRAGMA user_version` is compared against the
-  tier constant:
+  authority. The canonical fresh schema is described directly by each tier DDL.
+- **Durable tiers** (`source.db`, `user.db`) may use explicit additive
+  migrations. Migration SQL lives under
+  `storage/sqlite/migrations/{source,user}/NNN_name.sql`, advances
+  `PRAGMA user_version` one step at a time, and requires a verified backup
+  manifest containing the affected tier before it runs. Additive means
+  `CREATE TABLE`, `CREATE INDEX`, `ADD COLUMN`, and bounded backfills.
+  Destructive durable-tier changes require a copy-forward design and explicit
+  operator consent.
+- **Derived tiers** (`index.db`, `embeddings.db`) do not have in-place migration
+  chains. They are rebuildable products over durable source/user evidence:
+  schema mismatches are handled by rebuilding or blue-green replacing the
+  affected derived tier from source, preserving durable tiers.
+- **Disposable tiers** (`ops.db`) may keep narrow bootstrap-time `ALTER TABLE`
+  helpers for daemon telemetry because the tier is disposable.
+- On startup the on-disk `PRAGMA user_version` is compared against the tier
+  constant:
   - **Empty file** (`user_version == 0`): bootstrap fresh.
   - **Version match**: open as-is.
-  - **Anything else** (older or newer): the database is rejected.
-- **Mismatch → rebuild the affected tier from source.** Polylogue does not
-  patch an out-of-band shape into the canonical one. For index-tier schema
-  bumps, the operator moves the index database aside with
-  `polylogue ops reset --index && polylogued run`, preserving `source.db`,
-  `user.db`, and other durable tiers while rebuilding the canonical index.
-- Schema bumps are deletes-then-defines, never deltas. A schema change
-  edits the owning tier DDL/version and documents the re-ingest expectation.
-  No upgrade helpers are added for the bump.
+  - **Older durable tier**: refuse ordinary open and require explicit migration
+    with a backup manifest.
+  - **Derived mismatch or newer durable tier**: reject and require rebuild or a
+    newer runtime as appropriate.
+- During development, schema changes are triaged before reset/reingest:
+  metadata-only, index-only, additive-derived, additive-durable, or
+  semantic-reparse-required. Same-tier schema changes from ready Beads should be
+  batched before a live rebuild so the active archive is not reset repeatedly.
+- `devtools lab policy schema-versioning` enforces the boundary: durable SQL
+  migrations are allowed only under the numbered migration resource roots, while
+  derived-tier upgrade helpers remain forbidden.
+
+- User schema version 4 adds `user_settings`, a durable key/value table for
+  workspace/settings state that is not an epistemic assertion. Existing v3
+  user tiers migrate additively after a verified backup manifest; fresh user
+  tiers create the table directly.
 - Index schema version 24 admits `capture_gap` rows in `session_events`. These
   are narrow lifecycle evidence events emitted when ingest rejects a lower-
   precedence DOM browser-capture fallback because a richer source row already
@@ -1860,7 +1892,7 @@ They are not a proof ledger or end-user archive workflow.
 | --- | --- |
 | `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
 | `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
-| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Polylogue intentionally has no in-place storage schema upgrade chain; archive-shape changes edit the canonical DDL and require a fresh rebuild from source. |
+| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
 | `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
 | `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
@@ -1932,7 +1964,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools lab lanes` | Run named validation lanes. |
-| `devtools lab policy schema-versioning` | Reject in-place storage schema upgrade helpers (#1302). |
+| `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
 | `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
 | `devtools lab probe pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |

@@ -86,26 +86,44 @@ and commit the updated `docs/plans/topology-target.yaml` and
 
 ## Schema Versioning Model
 
-Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
-schema shape:
+Polylogue has two schema-evolution regimes, keyed by tier durability.
 
 - Tier version constants under `storage/sqlite/archive_tiers/` are the
-  authority. The canonical schema is described directly by each tier DDL;
-  there are no upgrade plans, no `build_vN_to_vM_*` helpers, and no
-  chain-dispatch logic in `schema_bootstrap.py`.
-- On startup the on-disk `PRAGMA user_version` is compared against the
-  tier constant:
+  authority. The canonical fresh schema is described directly by each tier DDL.
+- **Durable tiers** (`source.db`, `user.db`) may use explicit additive
+  migrations. Migration SQL lives under
+  `storage/sqlite/migrations/{source,user}/NNN_name.sql`, advances
+  `PRAGMA user_version` one step at a time, and requires a verified backup
+  manifest containing the affected tier before it runs. Additive means
+  `CREATE TABLE`, `CREATE INDEX`, `ADD COLUMN`, and bounded backfills.
+  Destructive durable-tier changes require a copy-forward design and explicit
+  operator consent.
+- **Derived tiers** (`index.db`, `embeddings.db`) do not have in-place migration
+  chains. They are rebuildable products over durable source/user evidence:
+  schema mismatches are handled by rebuilding or blue-green replacing the
+  affected derived tier from source, preserving durable tiers.
+- **Disposable tiers** (`ops.db`) may keep narrow bootstrap-time `ALTER TABLE`
+  helpers for daemon telemetry because the tier is disposable.
+- On startup the on-disk `PRAGMA user_version` is compared against the tier
+  constant:
   - **Empty file** (`user_version == 0`): bootstrap fresh.
   - **Version match**: open as-is.
-  - **Anything else** (older or newer): the database is rejected.
-- **Mismatch → rebuild the affected tier from source.** Polylogue does not
-  patch an out-of-band shape into the canonical one. For index-tier schema
-  bumps, the operator moves the index database aside with
-  `polylogue ops reset --index && polylogued run`, preserving `source.db`,
-  `user.db`, and other durable tiers while rebuilding the canonical index.
-- Schema bumps are deletes-then-defines, never deltas. A schema change
-  edits the owning tier DDL/version and documents the re-ingest expectation.
-  No upgrade helpers are added for the bump.
+  - **Older durable tier**: refuse ordinary open and require explicit migration
+    with a backup manifest.
+  - **Derived mismatch or newer durable tier**: reject and require rebuild or a
+    newer runtime as appropriate.
+- During development, schema changes are triaged before reset/reingest:
+  metadata-only, index-only, additive-derived, additive-durable, or
+  semantic-reparse-required. Same-tier schema changes from ready Beads should be
+  batched before a live rebuild so the active archive is not reset repeatedly.
+- `devtools lab policy schema-versioning` enforces the boundary: durable SQL
+  migrations are allowed only under the numbered migration resource roots, while
+  derived-tier upgrade helpers remain forbidden.
+
+- User schema version 4 adds `user_settings`, a durable key/value table for
+  workspace/settings state that is not an epistemic assertion. Existing v3
+  user tiers migrate additively after a verified backup manifest; fresh user
+  tiers create the table directly.
 - Index schema version 24 admits `capture_gap` rows in `session_events`. These
   are narrow lifecycle evidence events emitted when ingest rejects a lower-
   precedence DOM browser-capture fallback because a richer source row already

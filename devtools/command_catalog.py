@@ -645,13 +645,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "lab policy schema-versioning",
         "verification lab",
-        "Reject in-place storage schema upgrade helpers (#1302).",
+        "Verify durable-tier migration and derived-tier rebuild boundaries.",
         "devtools.verify_schema_upgrade_lane",
         use_when=(
             "Enforce the policy boundary documented in docs/internals.md § "
-            "'Schema Versioning Model'. Polylogue intentionally has no in-place "
-            "storage schema upgrade chain; archive-shape changes edit the canonical "
-            "DDL and require a fresh rebuild from source."
+            "'Schema Versioning Model'. Durable tiers use explicit additive "
+            "migrations with a backup gate; derived tiers are rebuilt or "
+            "blue-green replaced from source evidence."
         ),
         examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
     ),

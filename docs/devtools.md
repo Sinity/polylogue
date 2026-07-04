@@ -47,7 +47,7 @@ They are not a proof ledger or end-user archive workflow.
 | --- | --- |
 | `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
 | `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
-| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Polylogue intentionally has no in-place storage schema upgrade chain; archive-shape changes edit the canonical DDL and require a fresh rebuild from source. |
+| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
 | `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
 | `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
@@ -119,7 +119,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools lab lanes` | Run named validation lanes. |
-| `devtools lab policy schema-versioning` | Reject in-place storage schema upgrade helpers (#1302). |
+| `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
 | `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
 | `devtools lab probe pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |

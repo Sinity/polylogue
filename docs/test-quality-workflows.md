@@ -82,19 +82,21 @@ devtools lab lanes --lane frontier-local
 devtools lab lanes --lane live-archive-smoke --dry-run
 ```
 
-### Schema upgrade lane (#1302)
+### Schema evolution policy lane
 
-Polylogue intentionally has no in-place storage schema upgrade chain:
-version mismatch is rejected and the operator rebuilds from source (see
-[Schema Versioning Model](internals.md#schema-versioning-model)).
+Polylogue uses two schema-evolution regimes (see
+[Schema Versioning Model](internals.md#schema-versioning-model)):
+durable tiers use explicit additive migrations with a backup gate, while
+derived tiers rebuild or blue-green replace from source evidence.
 `devtools lab policy schema-versioning` enforces that policy boundary:
 
-- It scans `polylogue/storage/sqlite/` for upgrade-shaped helpers
+- It scans derived-tier storage modules for upgrade-shaped helpers
   (`build_vN_to_vM`, `_apply_version_upgrade_plan`, `upgrade_vN_to_vM`,
   `migrate_vN_*`, `ensure_schema_upgrades_vN`).
-- If any are found, the lint fails; archive-shape changes edit the
-  canonical DDL and require a fresh rebuild from source.
-- In the steady state (no helpers committed), the lint passes cleanly.
+- It allows numbered SQL resources only under durable migration roots:
+  `polylogue/storage/sqlite/migrations/{source,user}/`.
+- If a derived upgrade helper or invalid migration resource is found,
+  the lint fails.
 
 The lint runs as part of `devtools verify --lab`, not the fast default path:
 the policy boundary is an architectural concern, not a per-edit gate.

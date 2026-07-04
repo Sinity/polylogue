@@ -9,6 +9,7 @@ from typing import Literal
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS, migrate_archive_tier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 DurabilityClass = Literal["irreplaceable", "rebuildable", "expensive_rebuild", "human", "disposable"]
@@ -145,7 +146,9 @@ def _ensure_ops_embedding_catchup_run_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE embedding_catchup_runs ADD COLUMN {name} {definition}")
 
 
-def initialize_archive_database(path: Path, tier: ArchiveTier) -> None:
+def initialize_archive_database(
+    path: Path, tier: ArchiveTier, *, migration_backup_manifest: Path | None = None
+) -> None:
     """Create or initialize one archive tier database file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -154,7 +157,21 @@ def initialize_archive_database(path: Path, tier: ArchiveTier) -> None:
         expected_version = archive_tier_spec(tier).version
         if current_version == expected_version:
             return
+        if (
+            current_version != 0
+            and current_version < expected_version
+            and tier in DURABLE_MIGRATION_TIERS
+            and migration_backup_manifest is not None
+        ):
+            migrate_archive_tier(conn, tier, backup_manifest=migration_backup_manifest)
+            return
         if current_version != 0:
+            if current_version < expected_version and tier in DURABLE_MIGRATION_TIERS:
+                raise RuntimeError(
+                    f"{path.name} schema version {current_version} is older than the current {tier.value} tier "
+                    f"version {expected_version}; run an explicit durable-tier migration with a verified backup "
+                    "manifest"
+                )
             raise RuntimeError(
                 f"{path.name} schema version {current_version} is not the current {tier.value} tier version "
                 f"{expected_version}; move it aside and rebuild the archive root"

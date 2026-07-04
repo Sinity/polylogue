@@ -56,6 +56,11 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_envelope_to_payload,
     list_assertions_for_export,
 )
+from polylogue.storage.sqlite.migration_runner import (
+    DURABLE_MIGRATION_TIERS,
+    MigrationError,
+    migrate_archive_tier,
+)
 
 _BACKUP_POLICIES: dict[ArchiveTier, dict[str, object]] = {
     ArchiveTier.SOURCE: {
@@ -838,6 +843,63 @@ def _archive_init_payload(result: ArchiveInitResult) -> dict[str, object]:
             for tier_result in result.tier_results
         ],
     }
+
+
+@maintenance_group.command("migrate-tier")
+@click.argument("tier", type=click.Choice(tuple(sorted(tier.value for tier in DURABLE_MIGRATION_TIERS))))
+@click.option(
+    "--backup-manifest",
+    required=True,
+    type=click.Path(path_type=Path, exists=True),
+    help="Verified polylogue ops backup manifest or backup directory containing manifest.json.",
+)
+@click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
+def migrate_tier_command(tier: str, backup_manifest: Path, output_format: str) -> None:
+    """Apply additive migrations for one durable archive tier.
+
+    Derived tiers are intentionally excluded from this command; rebuild or
+    blue-green replace those from source evidence instead.
+    """
+    archive_tier = ArchiveTier(tier)
+    spec = ARCHIVE_TIER_SPECS[archive_tier]
+    path = archive_root() / spec.filename
+    try:
+        with sqlite3.connect(path) as conn:
+            result = migrate_archive_tier(conn, archive_tier, backup_manifest=backup_manifest)
+    except (sqlite3.Error, MigrationError) as exc:
+        if output_format == "json":
+            click.echo(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "tier": tier,
+                        "path": str(path),
+                        "backup_manifest": str(backup_manifest),
+                        "error": str(exc),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            click.echo(f"Migration blocked for {tier}: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+    payload = {
+        "ok": True,
+        "tier": tier,
+        "path": str(path),
+        "backup_manifest": str(backup_manifest),
+        "from_version": result.from_version,
+        "to_version": result.to_version,
+        "applied_versions": list(result.applied_versions),
+    }
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    applied = ", ".join(str(version) for version in result.applied_versions) or "none"
+    click.echo(f"Migrated {tier}: {result.from_version} -> {result.to_version} (applied: {applied})")
 
 
 @maintenance_group.command("run")

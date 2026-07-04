@@ -1,23 +1,28 @@
-"""Reject in-place storage schema upgrade helpers.
+"""Verify schema-evolution policy boundaries.
 
 Background
 ----------
 
-Polylogue has no storage schema upgrade chain: the runtime knows one
-canonical archive shape; a database opened at any other ``user_version``
-is rejected, and the operator rebuilds from source.
+Polylogue has two schema-evolution regimes:
+
+* Durable tiers (``source.db`` and ``user.db``) may use explicit additive SQL
+  migrations with a backup gate.
+* Derived/rebuildable tiers (``index.db`` and ``embeddings.db``) do not use
+  in-place migration machinery; they are rebuilt or blue-green replaced from
+  durable source evidence.
 
 What this lint checks
 ---------------------
 
-1. Scan ``polylogue/storage/sqlite/`` for upgrade-shaped helpers
+1. Scan derived-tier storage modules for upgrade-shaped helpers
    (``build_vN_to_vM``, ``_apply_version_upgrade_plan``, ``migrate_v*``,
    etc.). The names match the historical Polylogue conventions called
    out in ``docs/internals.md`` and in the witness archive
    (``.local/witnesses/new/*schema_upgrades*``).
 
-2. Fail if any helper exists. A schema-shape change edits the canonical
-   DDL and requires a fresh archive rebuild, not an in-place patch.
+2. Fail if any helper exists for a derived tier. Durable-tier migrations must
+   live under ``polylogue/storage/sqlite/migrations/{source,user}/`` as
+   numbered SQL resources.
 
 The lint is intentionally narrow. It detects helper names associated
 with in-place upgrades; it does not try to infer arbitrary SQL patches.
@@ -41,6 +46,8 @@ from devtools import repo_root as _get_root
 
 ROOT = _get_root()
 STORAGE_SQLITE_DIR = ROOT / "polylogue" / "storage" / "sqlite"
+MIGRATIONS_DIR = STORAGE_SQLITE_DIR / "migrations"
+ALLOWED_MIGRATION_TIERS = {"source", "user"}
 
 # Upgrade-shaped helper name patterns. Matched against ``def <name>``
 # at the top level of any module under ``polylogue/storage/sqlite/``.
@@ -71,11 +78,14 @@ def _is_helper_name(name: str) -> bool:
 
 
 def _collect_upgrade_helpers() -> list[HelperHit]:
-    """Return every upgrade-shaped helper defined under storage/sqlite/."""
+    """Return upgrade-shaped helpers outside the durable migration runner."""
     hits: list[HelperHit] = []
     if not STORAGE_SQLITE_DIR.exists():
         return hits
     for path in sorted(STORAGE_SQLITE_DIR.rglob("*.py")):
+        rel_parts = path.relative_to(STORAGE_SQLITE_DIR).parts
+        if rel_parts[:1] == ("migrations",) or path.name == "migrations.py":
+            continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
@@ -86,9 +96,27 @@ def _collect_upgrade_helpers() -> list[HelperHit]:
     return hits
 
 
-def _format_report(*, helpers: list[HelperHit]) -> str:
+def _invalid_migration_paths() -> list[Path]:
+    if not MIGRATIONS_DIR.exists():
+        return []
+    invalid: list[Path] = []
+    for path in sorted(MIGRATIONS_DIR.rglob("*")):
+        if path.is_dir() or path.name == "__init__.py":
+            continue
+        rel = path.relative_to(MIGRATIONS_DIR)
+        if (
+            len(rel.parts) != 2
+            or rel.parts[0] not in ALLOWED_MIGRATION_TIERS
+            or not re.match(r"^\d{3,}_[a-z0-9_]+\.sql$", rel.parts[1])
+        ):
+            invalid.append(path)
+    return invalid
+
+
+def _format_report(*, helpers: list[HelperHit], invalid_migrations: list[Path]) -> str:
     lines = [
-        f"storage upgrade helpers found: {len(helpers)}",
+        f"derived-tier upgrade helpers found: {len(helpers)}",
+        f"invalid durable migration resources found: {len(invalid_migrations)}",
     ]
     if helpers:
         lines.append("")
@@ -97,10 +125,15 @@ def _format_report(*, helpers: list[HelperHit]) -> str:
             rel = hit.path.relative_to(ROOT)
             lines.append(f"  {rel}:{hit.lineno} def {hit.name}")
         lines.append("")
-        lines.append("Policy violation: in-place storage schema upgrades are not supported.")
-    if not helpers:
+        lines.append("Policy violation: derived tiers must rebuild or blue-green replace, not migrate in place.")
+    if invalid_migrations:
         lines.append("")
-        lines.append("Storage schema upgrade policy intact.")
+        lines.append("Invalid migration resources:")
+        for path in invalid_migrations:
+            lines.append(f"  {path.relative_to(ROOT)}")
+    if not helpers and not invalid_migrations:
+        lines.append("")
+        lines.append("Schema evolution policy intact.")
     return "\n".join(lines)
 
 
@@ -113,19 +146,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     helpers = _collect_upgrade_helpers()
+    invalid_migrations = _invalid_migration_paths()
 
     if args.json:
         payload = {
             "upgrade_helpers": [
                 {"name": hit.name, "path": str(hit.path.relative_to(ROOT)), "line": hit.lineno} for hit in helpers
             ],
-            "ok": not helpers,
+            "invalid_migration_resources": [str(path.relative_to(ROOT)) for path in invalid_migrations],
+            "ok": not helpers and not invalid_migrations,
         }
         print(json.dumps(payload, indent=2))
     else:
-        print(_format_report(helpers=helpers))
+        print(_format_report(helpers=helpers, invalid_migrations=invalid_migrations))
 
-    return 0 if not helpers else 1
+    return 0 if not helpers and not invalid_migrations else 1
 
 
 if __name__ == "__main__":
