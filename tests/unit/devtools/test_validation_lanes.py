@@ -400,6 +400,16 @@ class TestCommandConstruction:
         assert "tests/unit/storage/test_scale.py" in cmd
         assert "--timeout=30" in cmd
 
+    def test_scale_regression_lane_uses_seeded_probe(self) -> None:
+        lane = LANES["scale-regression"]
+        cmd = build_lane_command(lane)
+
+        assert cmd[:3] == ["devtools", "workspace", "scale-regression"]
+        assert "--json" in cmd
+        assert lane.timeout_s == 240
+        assert lane.assertion.stdout_is_valid_json is True
+        assert lane.tags == ("contract", "scale", "storage", "regression")
+
     def test_scale_slow_lane_uses_direct_pytest_marker_filter(self) -> None:
         cmd = build_lane_command(LANES["scale-slow"])
         assert cmd[:2] == ["pytest", "-v"]
