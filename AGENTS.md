@@ -1735,6 +1735,24 @@ healthy. FTS readiness is likewise a freshness invariant, not a best-effort
 cache: stale or untrusted recorded counts make search readiness non-ready until
 the index is demonstrably current.
 
+Session insights are the same class of daemon-enforced derived-model
+invariant, alongside FTS and embeddings. Missing or stale session profiles,
+work events, phases, threads, and run projections remain convergence debt until
+the insights stage has rebuilt them; a bounded false result is retried like the
+other derived-model stages rather than becoming an operator-maintenance task.
+The rebuild is idempotent by session id and materializer version, and the
+daemon records the stage timing and debt evidence through the normal convergence
+attempt path.
+
+Insight rebuilds deliberately stay out of the ingest write transaction even
+though they are automatic. They can hydrate and summarize large sessions, so
+the materializer commits per message-budget chunk to keep WAL and write-lock
+scope bounded. They also batch hot, still-changing source files until a quiet
+window, avoiding repeated expensive rebuilds while Codex or Claude continues to
+append to a session. Finally, the materializer has its own versioned rebuild
+contract: changing the derived insight algorithm should refresh the rebuildable
+read model without changing the durable source/index write boundary.
+
 For #845-style before/after convergence evidence snapshots:
 
 ```bash
