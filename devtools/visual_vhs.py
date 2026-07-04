@@ -17,6 +17,10 @@ class VHSTapeSpec:
     description: str
     display_command: tuple[str, ...] = ("polylogue",)
     capture_steps: tuple[str, ...] = ()
+    output_width: int = 120
+    output_height: int = 32
+    font_size: int = 16
+    padding: int = 20
 
     @property
     def display_command_text(self) -> str:
@@ -37,29 +41,54 @@ class VHSTape:
 
 DEFAULT_TAPE_SPECS: tuple[VHSTapeSpec, ...] = (
     VHSTapeSpec(
-        name="help-main",
-        description="Main help screen",
-        display_command=("polylogue", "--help"),
+        name="demo-tour",
+        description="One-command deterministic public demo tour",
+        display_command=("polylogue", "demo", "tour"),
+        capture_steps=(
+            'Type "polylogue demo tour --out-dir demo-tour --force"',
+            "Enter",
+            "Sleep 12s",
+            'Type "cat demo-tour/report.md"',
+            "Enter",
+            "Sleep 2s",
+        ),
+        output_width=116,
+        output_height=36,
+        font_size=18,
+        padding=18,
     ),
     VHSTapeSpec(
-        name="stats-default",
-        description="Default archive statistics",
-        display_command=("polylogue",),
+        name="query-tour",
+        description="Query/read drilldown against the deterministic demo archive",
+        display_command=("polylogue", "find", "pytest", "then", "read", "--view", "messages"),
+        capture_steps=(
+            'Type "polylogue demo seed --root query-tour/archive --force --with-overlays --format json"',
+            "Enter",
+            "Sleep 4s",
+            'Type "POLYLOGUE_ARCHIVE_ROOT=query-tour/archive polylogue find pytest then read --view messages --limit 3"',
+            "Enter",
+            "Sleep 3s",
+            'Type "POLYLOGUE_ARCHIVE_ROOT=query-tour/archive polylogue find pytest then analyze --facets"',
+            "Enter",
+            "Sleep 2s",
+        ),
+        output_width=132,
+        output_height=34,
     ),
     VHSTapeSpec(
-        name="query-list",
-        description="List sessions",
-        display_command=("polylogue", "read", "--all", "-n", "1"),
-    ),
-    VHSTapeSpec(
-        name="doctor-readiness",
-        description="Archive readiness doctor",
-        display_command=("polylogue", "ops", "doctor"),
-    ),
-    VHSTapeSpec(
-        name="query-latest-md",
-        description="Latest session as Markdown",
-        display_command=("polylogue", "--latest", "-f", "markdown"),
+        name="reader-evidence-tour",
+        description="Browserless local reader evidence lane against synthetic fixtures",
+        display_command=("devtools", "lab", "smoke", "run", "reader-visual-smoke"),
+        capture_steps=(
+            'Type "devtools lab smoke run reader-visual-smoke --json --report-dir reader-evidence-tour"',
+            "Enter",
+            "Sleep 5s",
+            "Type \"python -m json.tool reader-evidence-tour/reader-visual-smoke.json | sed -n '1,80p'\"",
+            "Enter",
+            "Sleep 2s",
+        ),
+        output_width=132,
+        output_height=34,
     ),
 )
 
@@ -72,10 +101,10 @@ def default_tape_specs() -> tuple[VHSTapeSpec, ...]:
 def generate_tape(
     spec: VHSTapeSpec,
     *,
-    output_width: int = 100,
-    output_height: int = 30,
-    font_size: int = 16,
-    padding: int = 20,
+    output_width: int | None = None,
+    output_height: int | None = None,
+    font_size: int | None = None,
+    padding: int | None = None,
 ) -> str:
     """Generate a VHS tape file content string from a direct tape spec.
 
@@ -83,8 +112,12 @@ def generate_tape(
     the tape auto-generates Type + Enter + Sleep from the display command.
     """
     output_file = f"{spec.name}.gif"
-    pixel_width = output_width * (font_size // 2 + 2)
-    pixel_height = output_height * (font_size + 4)
+    resolved_output_width = output_width if output_width is not None else spec.output_width
+    resolved_output_height = output_height if output_height is not None else spec.output_height
+    resolved_font_size = font_size if font_size is not None else spec.font_size
+    resolved_padding = padding if padding is not None else spec.padding
+    pixel_width = resolved_output_width * (resolved_font_size // 2 + 2)
+    pixel_height = resolved_output_height * (resolved_font_size + 4)
 
     lines: list[str] = [
         f"# {spec.description}",
@@ -92,10 +125,10 @@ def generate_tape(
         "",
         f"Output {output_file}",
         "",
-        f"Set FontSize {font_size}",
+        f"Set FontSize {resolved_font_size}",
         f"Set Width {pixel_width}",
         f"Set Height {pixel_height}",
-        f"Set Padding {padding}",
+        f"Set Padding {resolved_padding}",
         "",
     ]
 
