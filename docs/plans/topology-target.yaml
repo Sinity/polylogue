@@ -1428,7 +1428,7 @@ files:
     target: polylogue/demo/__init__.py
     owner: stable
   - path: polylogue/demo/constructs.py
-    loc: 143
+    loc: 155
     target: polylogue/demo/constructs.py
     owner: stable
   - path: polylogue/demo/models.py
@@ -1440,7 +1440,7 @@ files:
     target: polylogue/demo/script.py
     owner: stable
   - path: polylogue/demo/seed.py
-    loc: 183
+    loc: 184
     target: polylogue/demo/seed.py
     owner: stable
   - path: polylogue/demo/verify.py
@@ -1967,7 +1967,7 @@ files:
     target: polylogue/rendering/renderers/html_template.py
     owner: stable
   - path: polylogue/scenarios/__init__.py
-    loc: 151
+    loc: 153
     target: polylogue/scenarios/__init__.py
     owner: stable
   - path: polylogue/scenarios/assertions.py
@@ -1979,7 +1979,7 @@ files:
     target: polylogue/scenarios/cli_surfaces.py
     owner: stable
   - path: polylogue/scenarios/corpus.py
-    loc: 965
+    loc: 977
     target: polylogue/scenarios/corpus.py
     owner: stable
   - path: polylogue/scenarios/executable.py
@@ -2301,7 +2301,7 @@ files:
     target: polylogue/schemas/synthetic/__init__.py
     owner: stable
   - path: polylogue/schemas/synthetic/build_batch.py
-    loc: 274
+    loc: 303
     target: polylogue/schemas/synthetic/build_batch.py
     owner: stable
   - path: polylogue/schemas/synthetic/build_records.py

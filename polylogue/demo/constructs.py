@@ -82,6 +82,18 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         ),
     ),
     DemoConstruct(
+        construct_id="attachment_rows",
+        label="Attachment rows",
+        description="At least one parsed attachment exists in the demo archive.",
+        sql="SELECT COUNT(*) FROM attachments",
+    ),
+    DemoConstruct(
+        construct_id="acquired_attachment_rows",
+        label="Acquired attachment rows",
+        description="At least one attachment has source-provided bytes stored in the blob store.",
+        sql="SELECT COUNT(*) FROM attachments WHERE acquisition_status = 'acquired' AND blob_hash IS NOT NULL",
+    ),
+    DemoConstruct(
         construct_id="run_projection_rows",
         label="Run projection rows",
         description="Run-projection read models are populated for temporal demos.",

@@ -51,10 +51,12 @@ DEMO_CORPUS_SEED = 1843
 DEMO_CHATGPT_SESSION_ID = "chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5"
 DEMO_CLAUDE_CODE_SESSION_ID = "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6"
 DEMO_CODEX_SESSION_ID = "codex-session:demo-00"
+DEMO_GEMINI_SESSION_ID = "aistudio-drive:demo-00"
 DEMO_SESSION_IDS = (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
     DEMO_CODEX_SESSION_ID,
+    DEMO_GEMINI_SESSION_ID,
 )
 
 
@@ -577,6 +579,16 @@ def build_demo_corpus_specs(
             messages_max=10,
             seed=seed + 2,
             style="demo-tool-heavy",
+            origin=origin,
+            tags=tags,
+        ),
+        CorpusSpec.for_provider(
+            "gemini",
+            count=1,
+            messages_min=3,
+            messages_max=4,
+            seed=seed + 3,
+            style="demo-attachments",
             origin=origin,
             tags=tags,
         ),

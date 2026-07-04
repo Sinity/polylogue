@@ -146,6 +146,7 @@ def demo_source_specs(source_root: Path) -> list[Source]:
         Source(name="chatgpt", path=Path("chatgpt")),
         Source(name="claude-code", path=Path("claude-code")),
         Source(name="codex", path=Path("codex")),
+        Source(name="gemini", path=Path("gemini")),
     ]
 
 

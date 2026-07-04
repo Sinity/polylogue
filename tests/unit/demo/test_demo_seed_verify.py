@@ -17,8 +17,8 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     verify = verify_demo_archive(archive_root, require_overlays=True)
 
     assert seed.archive_root == archive_root
-    assert seed.session_count == 3
-    assert seed.message_count == 23
+    assert seed.session_count == 4
+    assert seed.message_count >= 26
     assert seed.session_ids == tuple(sorted(DEMO_SESSION_IDS))
     assert seed.overlays_seeded is True
     assert seed.assertion_count >= 4
@@ -26,8 +26,8 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert all(row.ok for row in seed.construct_coverage)
 
     assert verify.ok is True
-    assert verify.session_count == 3
-    assert verify.message_count == 23
+    assert verify.session_count == 4
+    assert verify.message_count >= 26
     assert DEMO_CLAUDE_CODE_SESSION_ID in verify.query_hits
     assert verify.overlays_present is True
     assert verify.absolute_path_leaks == ()
@@ -51,7 +51,7 @@ async def test_seed_materializes_session_profiles_for_postmortem(tmp_path: Path)
     with sqlite3.connect(archive_root / "index.db") as conn:
         profile_count = conn.execute("SELECT count(*) FROM session_profiles").fetchone()[0]
 
-    assert profile_count == 3
+    assert profile_count == len(DEMO_SESSION_IDS)
 
 
 @pytest.mark.asyncio

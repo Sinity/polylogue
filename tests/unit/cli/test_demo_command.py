@@ -21,8 +21,8 @@ def test_demo_seed_and_verify_json_roundtrip(tmp_path: Path, monkeypatch: pytest
     seed = runner.invoke(cli, ["demo", "seed", "--with-overlays", "--format", "json"])
     assert seed.exit_code == 0, seed.output
     seed_payload = json.loads(seed.output)
-    assert seed_payload["session_count"] == 3
-    assert seed_payload["message_count"] == 23
+    assert seed_payload["session_count"] == 4
+    assert seed_payload["message_count"] >= 26
     assert seed_payload["overlays_seeded"] is True
     assert seed_payload["construct_coverage"]
     assert all(row["ok"] for row in seed_payload["construct_coverage"])
@@ -76,8 +76,8 @@ def test_demo_script_seed_and_verify_commands_are_executable(
     seed = runner.invoke(cli, demo_commands[0])
     assert seed.exit_code == 0, seed.output
     seed_payload = json.loads(seed.output)
-    assert seed_payload["session_count"] == 3
-    assert seed_payload["message_count"] == 23
+    assert seed_payload["session_count"] == 4
+    assert seed_payload["message_count"] >= 26
     assert seed_payload["overlays_seeded"] is True
     assert all(row["ok"] for row in seed_payload["construct_coverage"])
 

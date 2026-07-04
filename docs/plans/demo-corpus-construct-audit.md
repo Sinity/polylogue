@@ -14,7 +14,7 @@ to exercise the thing being claimed.
 - P1 matching issues: `17`.
 - Current seed command:
   `polylogue demo seed --root /realm/tmp/polylogue-uhl-demo-current/archive --force --with-overlays --format json`.
-- Current seed wall time on this workstation: `39.339s`.
+- Current seed wall time on this workstation: `4.095s`.
 - Current verifier:
   `polylogue demo verify --root /realm/tmp/polylogue-uhl-demo-current/archive --require-overlays --format json`.
 
@@ -24,15 +24,17 @@ The current deterministic archive is intentionally tiny:
 
 | Fact | Current |
 | --- | ---: |
-| Sessions | 3 |
-| Messages | 23 |
+| Sessions | 4 |
+| Messages | 27 |
 | Blocks | 63 |
 | Session profiles | 3 |
-| Origins | chatgpt-export, claude-code-session, codex-session |
+| Origins | chatgpt-export, claude-code-session, codex-session, aistudio-drive |
 | Tool-use blocks | 18 |
 | Tool-result blocks | 20 |
 | Failed tool results | 4 |
 | Messages with provider usage lanes | 7 |
+| Attachment rows | 1 |
+| Acquired attachment rows | 1 (`byte_count=53`, true blob hash present) |
 | Run rows | 3 |
 | Observed-event rows | 25 |
 | Context-snapshot rows | 3 |
@@ -67,7 +69,6 @@ claim them:
 | --- | --- | --- |
 | Lineage/fork/resume/compaction | `session_links = 0` | `polylogue-4ts`, `polylogue-4ts.1`, `polylogue-37t.11` |
 | Subagent/sidechain trees | no subagent/sidechain rows in the demo seed | `polylogue-37t.11`, `polylogue-4ts.1` |
-| Attachments with acquired bytes | `attachments = 0`, `acquired_attachments = 0` | `polylogue-83u`, `polylogue-83u.1`, `polylogue-83u.4` |
 | Temporary / abandoned / censored sessions | `temporary_sessions = 0` | `polylogue-cfk`, temporal-analysis beads |
 | Browser-capture gap and convergence cases | no capture-gap scenario in the demo seed | `polylogue-b5l`, capture-completeness work |
 | Embedding-lane prose | no synthetic embedding coverage in the demo seed | embedding/status beads |
@@ -76,10 +77,8 @@ claim them:
 
 1. Add a declared corpus-family layer so each demo family names the construct it
    exists to exercise.
-2. Add the first missing family: attachment bytes, because `polylogue-83u.1` is
-   a concrete P1 bug with a narrow expected shape.
-3. Add lineage/fork/resume and subagent families together; they share topology
+2. Add lineage/fork/resume and subagent families together; they share topology
    and composed-read assertions.
-4. Add temporary/abandoned and capture-gap families.
-5. Render this audit into a generated datasheet once the family registry exists,
+3. Add temporary/abandoned and capture-gap families.
+4. Render this audit into a generated datasheet once the family registry exists,
    so the docs stop being hand-maintained.
