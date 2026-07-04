@@ -19,6 +19,7 @@ from devtools.daemon_workload_probe import (
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_integrity import BlobReferenceDebtReport
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     add_convergence_debt,
@@ -754,6 +755,64 @@ def test_daemon_workload_probe_reports_raw_materialization_debt(tmp_path: Path) 
     assert readiness["surface_readiness"]["raw_artifacts"]["blockers"] == ["unmaterialized_raw_sessions"]
 
 
+def test_daemon_workload_probe_reports_weighted_raw_replay_backlog(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX):
+        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+    blob_store = BlobStore(tmp_path / "blob")
+    small_hash, small_size = blob_store.write_from_bytes(b"small")
+    large_hash, large_size = blob_store.write_from_bytes(b"L" * 4096)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                parsed_at_ms, validation_status, acquired_at_ms
+            ) VALUES ('raw-small', 'codex-session', 'native-small', '/src/small.jsonl', ?, ?, 1, 'passed', 1)
+            """,
+            (bytes.fromhex(small_hash), small_size),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                parsed_at_ms, validation_status, acquired_at_ms
+            ) VALUES ('raw-large', 'codex-session', 'native-large', '/src/large.jsonl', ?, ?, 1, 'passed', 2)
+            """,
+            (bytes.fromhex(large_hash), large_size),
+        )
+
+    payload = probe(db, limit=2)
+
+    backlog = payload["raw_replay_backlog"]
+    assert backlog["available"] is True
+    assert backlog["candidate_count"] == 2
+    assert backlog["total_blob_bytes"] == small_size + large_size
+    assert backlog["max_blob_bytes"] == large_size
+    assert backlog["top_raw_rows"][0] == {
+        "raw_id": "raw-large",
+        "origin": "codex-session",
+        "source_path": "/src/large.jsonl",
+        "blob_size": large_size,
+        "oversized": False,
+        "stream_safe": True,
+    }
+    assert backlog["origin_summary"] == [
+        {
+            "origin": "codex-session",
+            "raw_count": 2,
+            "total_blob_bytes": small_size + large_size,
+            "max_blob_bytes": large_size,
+        }
+    ]
+    assert backlog["source_path_summary"][0] == {
+        "source_path": "/src/large.jsonl",
+        "raw_count": 1,
+        "total_blob_bytes": large_size,
+        "max_blob_bytes": large_size,
+    }
+
+
 def test_daemon_workload_probe_does_not_block_on_informational_raw_debt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -802,6 +861,7 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
         "fts_trigger_state",
         "daemon_resource_signal",
         "source_path_churn",
+        "raw_replay_backlog",
         "convergence_debt",
         "query_plans",
     }

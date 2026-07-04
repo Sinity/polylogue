@@ -215,6 +215,99 @@ def _raw_materialization_max_bytes(candidates: RawMaterializationCandidates, raw
     return max((candidates.raw_blob_bytes.get(raw_id, 0) for raw_id in raw_ids), default=0)
 
 
+def _raw_materialization_bucket_summary(
+    candidates: RawMaterializationCandidates,
+    *,
+    values: dict[str, str],
+    key_name: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    buckets: dict[str, dict[str, int | str]] = {}
+    for raw_id in candidates.raw_ids:
+        key = values.get(raw_id) or "unknown"
+        size = candidates.raw_blob_bytes.get(raw_id, 0)
+        bucket = buckets.setdefault(key, {key_name: key, "raw_count": 0, "total_blob_bytes": 0, "max_blob_bytes": 0})
+        bucket["raw_count"] = int(bucket["raw_count"]) + 1
+        bucket["total_blob_bytes"] = int(bucket["total_blob_bytes"]) + size
+        bucket["max_blob_bytes"] = max(int(bucket["max_blob_bytes"]), size)
+    return [
+        dict(bucket)
+        for bucket in sorted(
+            buckets.values(),
+            key=lambda item: (-int(item["total_blob_bytes"]), -int(item["raw_count"]), str(item[key_name])),
+        )[:limit]
+    ]
+
+
+def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> dict[str, object]:
+    """Return a read-only weighted backlog for raw source-to-index replay.
+
+    The report uses the same candidate selector as ``repair_raw_materialization``
+    so diagnostics and actual replay agree about which raw rows are actionable.
+    It does not parse raw blobs or mutate the archive.
+    """
+
+    source_db = config.archive_root / "source.db"
+    index_db = config.archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return {
+            "available": False,
+            "reason": "source_or_index_tier_missing",
+            "candidate_count": 0,
+            "top_raw_rows": [],
+            "origin_summary": [],
+            "source_path_summary": [],
+        }
+    candidates = _raw_materialization_candidate_ids(config)
+    raw_ids_by_size = sorted(
+        candidates.raw_ids,
+        key=lambda raw_id: (-candidates.raw_blob_bytes.get(raw_id, 0), raw_id),
+    )
+    top_raw_rows = [
+        {
+            "raw_id": raw_id,
+            "origin": candidates.raw_origins.get(raw_id) or "unknown",
+            "source_path": candidates.raw_source_paths.get(raw_id) or "",
+            "blob_size": candidates.raw_blob_bytes.get(raw_id, 0),
+            "oversized": candidates.raw_blob_bytes.get(raw_id, 0) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+            "stream_safe": _raw_materialization_stream_safe(candidates, raw_id),
+        }
+        for raw_id in raw_ids_by_size[:limit]
+    ]
+    oversized_raw_ids = [
+        raw_id
+        for raw_id in candidates.raw_ids
+        if candidates.raw_blob_bytes.get(raw_id, 0) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+    ]
+    oversized_stream_safe = [
+        raw_id for raw_id in oversized_raw_ids if _raw_materialization_stream_safe(candidates, raw_id)
+    ]
+    return {
+        "available": True,
+        "candidate_count": len(candidates.raw_ids),
+        "missing_blob_count": candidates.missing_blobs,
+        "already_parsed_count": candidates.already_parsed,
+        "total_blob_bytes": candidates.total_blob_bytes,
+        "max_blob_bytes": candidates.max_blob_bytes,
+        "execute_blob_limit_bytes": RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+        "oversized_count": len(oversized_raw_ids),
+        "oversized_stream_safe_count": len(oversized_stream_safe),
+        "top_raw_rows": top_raw_rows,
+        "origin_summary": _raw_materialization_bucket_summary(
+            candidates,
+            values=candidates.raw_origins,
+            key_name="origin",
+            limit=limit,
+        ),
+        "source_path_summary": _raw_materialization_bucket_summary(
+            candidates,
+            values=candidates.raw_source_paths,
+            key_name="source_path",
+            limit=limit,
+        ),
+    }
+
+
 def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
     origin = str(row["origin"] or "")
     if not origin:
@@ -1702,6 +1795,7 @@ __all__ = [
     "preview_orphaned_messages",
     "preview_message_type_backfill",
     "preview_session_insights",
+    "raw_materialization_replay_backlog",
     "repair_empty_sessions",
     "repair_message_type_backfill",
     "repair_orphaned_attachments",

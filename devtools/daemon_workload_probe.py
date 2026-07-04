@@ -21,15 +21,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.config import Config
 from polylogue.paths import active_index_db_path
 from polylogue.storage.blob_integrity import scan_blob_reference_debt
+from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 17  # v17 labels missing raw links as lost source evidence.
+REPORT_VERSION = 18  # v18 adds weighted raw replay backlog diagnostics.
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -740,6 +742,17 @@ def _archive_source_path_churn(
             }
         )
     return items
+
+
+def _raw_replay_backlog(root: Path, *, limit: int) -> dict[str, object]:
+    return raw_materialization_replay_backlog(
+        Config(
+            archive_root=root,
+            render_root=root / "render",
+            sources=[],
+        ),
+        limit=limit,
+    )
 
 
 def _cursor_lag_baselines(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:
@@ -2416,6 +2429,7 @@ def probe(
             "fts_trigger_state": _fts_trigger_state(conn),
             "daemon_resource_signal": _daemon_resource_signal(recent_attempts, conn, ops_db=ops_db),
             "source_path_churn": _source_path_churn(conn, attempts=recent_attempts, limit=limit, db=db),
+            "raw_replay_backlog": _raw_replay_backlog(db.parent, limit=limit),
             "convergence_debt": convergence_debt,
             "cursor_lag_baselines": _cursor_lag_baselines(conn, ops_db=ops_db),
             "query_plans": _query_plans(conn, db=db),
