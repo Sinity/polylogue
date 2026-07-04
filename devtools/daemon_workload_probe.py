@@ -29,7 +29,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 14  # v14 adds SQLite WAL/stat maintenance visibility.
+REPORT_VERSION = 15  # v15 adds automatic convergence backlog visibility.
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -1180,6 +1180,59 @@ def _archive_tier_state(
     }
 
 
+def _automatic_convergence_backlog(archive_tiers: dict[str, Any], convergence_debt: dict[str, Any]) -> dict[str, Any]:
+    """Summarize daemon-owned backlog separately from retry debt.
+
+    ``convergence_debt`` is the failed/deferred retry ledger. Ordinary missing
+    profile/materialization rows are not debt; they are automatic convergence
+    backlog that the daemon should drain without operator action. Keeping the
+    two counters distinct prevents reports from implying that a tiny debt table
+    means all derived work has converged.
+    """
+
+    derived = archive_tiers.get("derived_readiness") or {}
+    if not derived.get("checked"):
+        return {
+            "checked": False,
+            "state": "unknown",
+            "reason": derived.get("reason") or "derived_readiness_unchecked",
+            "counts": {},
+        }
+    counts = derived.get("counts") or {}
+    missing_materialization = derived.get("missing_materialization_counts") or {}
+    missing_profiles = int(counts.get("missing_profile_row_count") or 0)
+    missing_work_events = int(missing_materialization.get("work_events") or 0)
+    missing_phases = int(missing_materialization.get("phases") or 0)
+    missing_threads = int(missing_materialization.get("thread") or 0)
+    missing_latency = int(missing_materialization.get("latency") or 0)
+    missing_profile_materialization = int(missing_materialization.get("session_profile") or 0)
+    total_missing = (
+        missing_profiles
+        + missing_profile_materialization
+        + missing_work_events
+        + missing_phases
+        + missing_threads
+        + missing_latency
+    )
+    retry_debt = int(convergence_debt.get("unresolved_count") or convergence_debt.get("failed_count") or 0)
+    state = "ready" if total_missing == 0 else "catching_up"
+    return {
+        "checked": True,
+        "state": state,
+        "reason": None,
+        "counts": {
+            "missing_profile_rows": missing_profiles,
+            "missing_session_profile_materialization": missing_profile_materialization,
+            "missing_work_events_materialization": missing_work_events,
+            "missing_phases_materialization": missing_phases,
+            "missing_threads_materialization": missing_threads,
+            "missing_latency_materialization": missing_latency,
+            "automatic_backlog_total": total_missing,
+            "retry_debt_unresolved": retry_debt,
+        },
+    }
+
+
 def _archive_layout_readiness(
     *,
     present_count: int,
@@ -2295,6 +2348,14 @@ def probe(
             source_db=db.with_name("source.db"),
             exact=exact_table_counts,
         )
+        archive_tiers = _archive_tier_state(
+            db,
+            observed_db=observed_db,
+            integrity_check=integrity_check,
+            exact_derived_counts=exact_derived_counts,
+            exact_table_counts=exact_table_counts,
+        )
+        convergence_debt = _convergence_debt(conn, ops_db=ops_db)
         return {
             "ok": True,
             "report_version": REPORT_VERSION,
@@ -2308,13 +2369,8 @@ def probe(
             "boundary_table_count_mode": _count_mode(exact_table_counts),
             "boundary_table_counts": boundary_table_counts,
             "boundary_table_count_precision": boundary_table_count_precision,
-            "archive_tiers": _archive_tier_state(
-                db,
-                observed_db=observed_db,
-                integrity_check=integrity_check,
-                exact_derived_counts=exact_derived_counts,
-                exact_table_counts=exact_table_counts,
-            ),
+            "archive_tiers": archive_tiers,
+            "automatic_convergence_backlog": _automatic_convergence_backlog(archive_tiers, convergence_debt),
             "sqlite_maintenance": _sqlite_maintenance_state(db, observed_db),
             "topology_quarantine_state": _topology_quarantine_state(conn),
             "blob_lease_state": _tier_state_or_current(conn, db.with_name("source.db"), _blob_lease_state),
@@ -2323,7 +2379,7 @@ def probe(
             "fts_trigger_state": _fts_trigger_state(conn),
             "daemon_resource_signal": _daemon_resource_signal(recent_attempts, conn, ops_db=ops_db),
             "source_path_churn": _source_path_churn(conn, attempts=recent_attempts, limit=limit, db=db),
-            "convergence_debt": _convergence_debt(conn, ops_db=ops_db),
+            "convergence_debt": convergence_debt,
             "cursor_lag_baselines": _cursor_lag_baselines(conn, ops_db=ops_db),
             "query_plans": _query_plans(conn, db=db),
         }
@@ -2453,6 +2509,9 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         },
     }
 
+    before_backlog = _coerce_int_map((before.get("automatic_convergence_backlog") or {}).get("counts") or {})
+    after_backlog = _coerce_int_map((after.get("automatic_convergence_backlog") or {}).get("counts") or {})
+
     before_timings = before.get("convergence_stage_timings") or {}
     after_timings = after.get("convergence_stage_timings") or {}
     timing_delta: dict[str, Any] = {
@@ -2490,6 +2549,11 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         "blob_lease_state": lease_delta,
         "gc_state": gc_delta,
         "fts_trigger_state": fts_delta,
+        "automatic_convergence_backlog": {
+            "state_before": (before.get("automatic_convergence_backlog") or {}).get("state"),
+            "state_after": (after.get("automatic_convergence_backlog") or {}).get("state"),
+            "counts": _int_map_delta(before_backlog, after_backlog),
+        },
         "convergence_debt": debt_delta,
         "convergence_stage_timings": timing_delta,
     }
@@ -2799,6 +2863,23 @@ def _format_compare_human(diff: dict[str, Any]) -> str:
         lines.append(f"  restored: {', '.join(fts['restored'])}")
     if not fts["regressed"] and not fts["restored"]:
         lines.append("  no trigger drift")
+    backlog = diff.get("automatic_convergence_backlog") or {}
+    backlog_counts = backlog.get("counts") or {}
+    if backlog_counts:
+        total = backlog_counts.get("automatic_backlog_total") or {}
+        profiles = backlog_counts.get("missing_profile_rows") or {}
+        retry = backlog_counts.get("retry_debt_unresolved") or {}
+        lines.append("")
+        lines.append(
+            "Automatic convergence backlog: "
+            f"{backlog.get('state_before')} -> {backlog.get('state_after')}; "
+            f"total {total.get('before', 0)} -> {total.get('after', 0)} (Δ {total.get('delta', 0):+d})"
+        )
+        lines.append(
+            "  missing profile rows: "
+            f"{profiles.get('before', 0)} -> {profiles.get('after', 0)} (Δ {profiles.get('delta', 0):+d}); "
+            f"retry debt {retry.get('before', 0)} -> {retry.get('after', 0)} (Δ {retry.get('delta', 0):+d})"
+        )
     debt = diff["convergence_debt"]
     lines.append("")
     failed_debt = debt["failed_count"]
@@ -3030,6 +3111,16 @@ def main(argv: list[str] | None = None) -> int:
         f"{debt.get('deferred_count', 0)} deferred, "
         f"{debt.get('unresolved_count', debt['failed_count'])} unresolved"
     )
+    backlog = payload.get("automatic_convergence_backlog") or {}
+    if backlog.get("checked"):
+        backlog_counts = backlog.get("counts") or {}
+        print(
+            "  automatic convergence backlog: "
+            f"{backlog.get('state')} "
+            f"total={backlog_counts.get('automatic_backlog_total', 0)} "
+            f"missing_profiles={backlog_counts.get('missing_profile_rows', 0)} "
+            f"retry_debt={backlog_counts.get('retry_debt_unresolved', 0)}"
+        )
     churn = payload.get("source_path_churn") or []
     if churn:
         worst = churn[0]

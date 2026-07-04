@@ -198,6 +198,30 @@ def test_daemon_workload_probe_defaults_to_mixed_table_counts(tmp_path: Path) ->
     assert exact_payload["boundary_table_count_precision"]["blocks"] == "exact"
 
 
+def test_daemon_workload_probe_separates_automatic_backlog_from_retry_debt(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    source = tmp_path / "session.jsonl"
+    _seed_minimal_archive(db, source)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, content_hash
+            ) VALUES ('provider-2', 'codex-session', 'raw-2', ?)
+            """,
+            (b"z" * 32,),
+        )
+    payload = probe(db, exact_table_counts=True)
+
+    assert payload["convergence_debt"]["unresolved_count"] == 0
+    backlog = payload["automatic_convergence_backlog"]
+    assert backlog["checked"] is True
+    assert backlog["state"] == "catching_up"
+    assert backlog["counts"]["missing_profile_rows"] == 2
+    assert backlog["counts"]["missing_session_profile_materialization"] == 2
+    assert backlog["counts"]["automatic_backlog_total"] > backlog["counts"]["retry_debt_unresolved"]
+
+
 def test_daemon_workload_probe_table_count_uses_sqlite_stats_after_cheap_counts(
     tmp_path: Path,
 ) -> None:
