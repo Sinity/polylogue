@@ -8,7 +8,7 @@ import logging
 import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import closing, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -2928,7 +2928,7 @@ class PolylogueArchiveMixin:
                 PublicRefResolutionPayload,
                 _unresolved_ref_payload(ref, "assertion not found", normalized_ref=normalized_ref, kind="assertion"),
             )
-        with sqlite3.connect(user_db) as conn:
+        with closing(sqlite3.connect(user_db)) as conn:
             conn.row_factory = sqlite3.Row
             envelope = read_assertion_envelope(conn, object_ref.object_id)
         if envelope is None:
@@ -4623,7 +4623,7 @@ class PolylogueArchiveMixin:
         if not archive_db.exists():
             return None
         try:
-            with sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True) as conn:
+            with closing(sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True)) as conn:
                 row = conn.execute(
                     "SELECT 1 FROM messages WHERE session_id = ? AND message_id = ?",
                     (session_id, message_id),

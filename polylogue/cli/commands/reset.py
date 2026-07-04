@@ -309,6 +309,11 @@ def reset_command(
     # Identity-preserving soft-delete paths. Archive rows are
     # rebuildable and user suppressions as the durable tombstone.
     if conv_id:
+        if not yes and not click.confirm(
+            f"Tombstone session {conv_id}? This suppresses it and deletes its (rebuildable) archive rows"
+        ):
+            env.ui.console.print("Aborted.")
+            return
         suppressed, deleted = _tombstone_archive_sessions([conv_id], reason="reset --session")
         env.ui.console.print(
             f"Tombstoned session {conv_id}: {suppressed} suppression(s), {deleted} archive row(s) deleted."
@@ -319,6 +324,12 @@ def reset_command(
         session_ids = _archive_session_ids_from_source(source_path)
         if not session_ids:
             env.ui.console.print(f"No sessions found for source {source_path}.")
+            return
+        if not yes and not click.confirm(
+            f"Tombstone {len(session_ids)} session(s) from {source_path}? "
+            "This suppresses them and deletes their (rebuildable) archive rows"
+        ):
+            env.ui.console.print("Aborted.")
             return
         suppressed, deleted = _tombstone_archive_sessions(session_ids, reason=f"reset --source {source_path}")
         env.ui.console.print(

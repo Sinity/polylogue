@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -588,7 +589,7 @@ def _sqlite_user_version(path: Path) -> int | None:
         return None
     uri = f"file:{path}?mode=ro"
     try:
-        with sqlite3.connect(uri, uri=True, timeout=0.2) as conn:
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()
     except sqlite3.Error:
         return None

@@ -7,7 +7,7 @@ import os
 import shutil
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from hashlib import sha256
 from pathlib import Path
 
@@ -79,7 +79,7 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 
 def _demo_archive_count(archive_root: Path, table: str) -> int:
-    with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)) as conn:
         return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
 

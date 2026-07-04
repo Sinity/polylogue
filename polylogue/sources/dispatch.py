@@ -719,12 +719,22 @@ def _generic_messages_session(
     messages = extract_messages_from_list(messages_payload)
     title = optional_string(payload.get("title")) or optional_string(payload.get("name")) or fallback_id
     session_id = optional_string(payload.get("id")) or fallback_id
+    created_at = optional_string(
+        payload.get("created_at") or payload.get("create_time") or payload.get("created") or payload.get("createdAt")
+    )
+    updated_at = optional_string(
+        payload.get("updated_at")
+        or payload.get("update_time")
+        or payload.get("updated")
+        or payload.get("updatedAt")
+        or payload.get("modified")
+    )
     return ParsedSession(
         source_name=provider,
         provider_session_id=session_id,
         title=title,
-        created_at=None,
-        updated_at=None,
+        created_at=created_at,
+        updated_at=updated_at,
         messages=messages,
     )
 

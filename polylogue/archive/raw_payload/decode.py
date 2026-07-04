@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias, cast
@@ -306,7 +307,7 @@ def build_raw_payload_envelope(
 
 def _looks_like_hermes_state_db(path: Path) -> bool:
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
             tables = {
                 str(row[0])
                 for row in conn.execute(
