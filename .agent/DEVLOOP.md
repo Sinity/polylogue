@@ -86,6 +86,13 @@ closes. Treat `Velocity/Meta` as mandatory closure for every loop: record either
 a no-op reason, a new batch grouping, a delegation, a removed friction point, or
 a follow-up Bead.
 
+Default to greedy batching. The normal development unit is a complete bead, or
+one coherent bead phase with an honest acceptance/residual matrix. Do not publish
+each green helper, renderer field, construct declaration, or proof artifact as
+its own PR when the rest of the bead can be finished with the same evidence,
+substrate, and verification pass. Split only for real reviewability, risk,
+unblocking, or materially different verification boundaries.
+
 Record material transitions with:
 
 ```bash
@@ -202,6 +209,10 @@ Execution-grade beads (the specification contract):
 
 Throughput discipline (operator directive 2026-07-03):
 
+- **Finish the bead by default.** Before choosing a PR boundary, audit the full
+  bead acceptance criteria. If the remaining criteria touch the same subsystem
+  and can share one focused proof plus one artifact, keep batching on the same
+  branch instead of shipping a thin slice.
 - **Batch verification.** One testmon pass per coherent change-set, not per
   edit; the broad gate (`devtools verify`) runs once when the batch is ready
   to publish and after failure fixes — never as inner-loop ritual.
