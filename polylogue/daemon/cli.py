@@ -862,6 +862,7 @@ async def run_daemon_services(
     watcher: LiveWatcher | None = None
     watcher_task: asyncio.Task[None] | None = None
     converger: DaemonConverger | None = None
+    catch_up_complete_gate: asyncio.Event | None = None
     tasks: list[asyncio.Task[None]] = []
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
