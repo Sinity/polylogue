@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import sys
 from typing import Any, cast
 from unittest.mock import patch
@@ -178,3 +179,27 @@ def test_configure_logging_accepts_typed_force_plain_config() -> None:
         logging_mod.configure_logging(verbose=False, json_logs=False)
 
     console_renderer.assert_called_once_with(colors=False)
+
+
+def test_stdlib_bound_logger_forwards_exc_info_before_structlog_configured() -> None:
+    """Callers pass exc_info/extra structlog-style before configure_logging() runs.
+
+    Previously these kwargs were silently dropped, so a `logger.warning(...,
+    exc_info=True)` call made before structlog configuration (e.g. daemon
+    convergence probe failure paths) lost the traceback entirely.
+    """
+    captured: dict[str, object] = {}
+
+    def _record(message: str, *args: object, **kwargs: object) -> None:
+        captured["message"] = message
+        captured["kwargs"] = kwargs
+
+    stdlib_logger = logging.getLogger("polylogue.tests.exc-forwarding")
+    stdlib_logger.warning = _record  # type: ignore[assignment]
+
+    with patch("polylogue.logging.logging.getLogger", return_value=stdlib_logger):
+        bound = logging_mod.get_logger("polylogue.tests.exc-forwarding")
+
+    bound.warning("probe failed", exc_info=True, extra={"stage": "fts"}, unsupported_kw="dropped")
+
+    assert captured["kwargs"] == {"exc_info": True, "extra": {"stage": "fts"}}

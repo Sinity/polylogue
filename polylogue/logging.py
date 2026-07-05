@@ -10,7 +10,7 @@ import logging
 import sys
 from collections.abc import Iterable, Iterator
 from types import TracebackType
-from typing import TYPE_CHECKING, BinaryIO, Protocol, TextIO
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TextIO
 
 from polylogue.config import load_polylogue_config
 
@@ -151,19 +151,24 @@ class _StdlibBoundLogger:
         return self  # no-op: stdlib doesn't support structured context
 
     def debug(self, message: str, *args: object, **event_kw: object) -> None:
-        self._logger.debug(message, *args)
+        self._logger.debug(message, *args, **_stdlib_log_kwargs(event_kw))
 
     def info(self, message: str, *args: object, **event_kw: object) -> None:
-        self._logger.info(message, *args)
+        self._logger.info(message, *args, **_stdlib_log_kwargs(event_kw))
 
     def warning(self, message: str, *args: object, **event_kw: object) -> None:
-        self._logger.warning(message, *args)
+        self._logger.warning(message, *args, **_stdlib_log_kwargs(event_kw))
 
     def error(self, message: str, *args: object, **event_kw: object) -> None:
-        self._logger.error(message, *args)
+        self._logger.error(message, *args, **_stdlib_log_kwargs(event_kw))
 
     def exception(self, message: str, *args: object, **event_kw: object) -> None:
-        self._logger.exception(message, *args)
+        self._logger.exception(message, *args, **_stdlib_log_kwargs(event_kw))
+
+
+def _stdlib_log_kwargs(event_kw: dict[str, object]) -> dict[str, Any]:
+    """Forward stdlib-supported logging kwargs from structlog-style calls."""
+    return {key: value for key, value in event_kw.items() if key in {"exc_info", "stack_info", "stacklevel", "extra"}}
 
 
 def get_logger(name: str | None = None) -> BoundLoggerLike:
