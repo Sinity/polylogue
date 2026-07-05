@@ -34,12 +34,16 @@ def test_convergence_warning_line_reports_actionable_raw_debt(monkeypatch: pytes
             "affected_actionable": 4,
             "affected_blocked": 0,
             "affected_open": 0,
+            "category_counts": {"parse_failed": 4},
         },
     )
 
     warning = convergence_warning_line()
 
-    assert warning == "Archive is converging: 4 raw artifact(s) are not materialized; results may be partial."
+    assert warning == (
+        "Archive has raw materialization debt: 1 issue group(s); 4 parse-failed raw artifact(s); "
+        "results may be partial for affected source artifacts."
+    )
 
 
 def test_convergence_warning_line_omits_classified_raw_gaps(monkeypatch: pytest.MonkeyPatch) -> None:

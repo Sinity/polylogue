@@ -241,6 +241,8 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
         "raw_materialization_candidate_count": 1.0,
         "raw_materialization_selected_count": 1.0,
         "raw_materialization_missing_blob_count": 1.0,
+        "raw_materialization_missing_blob_source_available_count": 0.0,
+        "raw_materialization_missing_blob_source_missing_count": 1.0,
         "raw_materialization_already_parsed_count": 0.0,
         "raw_materialization_total_blob_bytes": float(replayable_size),
         "raw_materialization_max_blob_bytes": float(replayable_size),
@@ -249,7 +251,7 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
     }
     assert "selected raw payload bytes total=" in result.detail
     assert "largest=" in result.detail
-    assert "1 raw rows blocked by missing blobs" in result.detail
+    assert "1 raw rows blocked by missing blobs (1 with source paths missing)" in result.detail
 
 
 def test_raw_materialization_replays_same_native_when_index_raw_link_is_dangling(tmp_path: Path) -> None:

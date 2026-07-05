@@ -64,6 +64,8 @@ class RawMaterializationCandidates:
     raw_blob_bytes: dict[str, int] = field(default_factory=dict)
     raw_origins: dict[str, str] = field(default_factory=dict)
     raw_source_paths: dict[str, str] = field(default_factory=dict)
+    missing_blob_source_available: int = 0
+    missing_blob_source_missing: int = 0
 
     @property
     def total_blob_bytes(self) -> int:
@@ -78,6 +80,18 @@ def _raw_materialization_origin_from_provider(provider: str | None) -> str | Non
     if provider is None:
         return None
     return origin_from_provider(Provider.from_string(provider)).value
+
+
+def _raw_materialization_source_available(source_path: str) -> bool:
+    if not source_path:
+        return False
+    path = Path(source_path)
+    if path.exists():
+        return True
+    if ":" in source_path:
+        outer, _inner = source_path.split(":", 1)
+        return Path(outer).exists()
+    return False
 
 
 def _raw_materialization_candidate_ids(
@@ -109,6 +123,8 @@ def _raw_materialization_candidate_ids(
     raw_origins: dict[str, str] = {}
     raw_source_paths: dict[str, str] = {}
     missing_blobs = 0
+    missing_blob_source_available = 0
+    missing_blob_source_missing = 0
     already_parsed = 0
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
@@ -186,13 +202,19 @@ def _raw_materialization_candidate_ids(
                     already_parsed += 1
             else:
                 missing_blobs += 1
+                if _raw_materialization_source_available(str(row["source_path"] or "")):
+                    missing_blob_source_available += 1
+                else:
+                    missing_blob_source_missing += 1
     return RawMaterializationCandidates(
-        raw_ids,
-        missing_blobs,
-        already_parsed,
-        raw_blob_bytes,
-        raw_origins,
-        raw_source_paths,
+        raw_ids=raw_ids,
+        missing_blobs=missing_blobs,
+        already_parsed=already_parsed,
+        raw_blob_bytes=raw_blob_bytes,
+        raw_origins=raw_origins,
+        raw_source_paths=raw_source_paths,
+        missing_blob_source_available=missing_blob_source_available,
+        missing_blob_source_missing=missing_blob_source_missing,
     )
 
 
@@ -238,6 +260,19 @@ def _raw_materialization_bucket_summary(
             key=lambda item: (-int(item["total_blob_bytes"]), -int(item["raw_count"]), str(item[key_name])),
         )[:limit]
     ]
+
+
+def _raw_materialization_missing_blob_detail(candidates: RawMaterializationCandidates, *, final: bool) -> str:
+    verb = "remain blocked by" if final else "blocked by"
+    detail = f"{candidates.missing_blobs:,} raw rows {verb} missing blobs"
+    parts: list[str] = []
+    if candidates.missing_blob_source_available:
+        parts.append(f"{candidates.missing_blob_source_available:,} with source paths still present")
+    if candidates.missing_blob_source_missing:
+        parts.append(f"{candidates.missing_blob_source_missing:,} with source paths missing")
+    if parts:
+        detail += f" ({'; '.join(parts)})"
+    return detail
 
 
 def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> dict[str, object]:
@@ -287,6 +322,8 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
         "available": True,
         "candidate_count": len(candidates.raw_ids),
         "missing_blob_count": candidates.missing_blobs,
+        "missing_blob_source_available_count": candidates.missing_blob_source_available,
+        "missing_blob_source_missing_count": candidates.missing_blob_source_missing,
         "already_parsed_count": candidates.already_parsed,
         "total_blob_bytes": candidates.total_blob_bytes,
         "max_blob_bytes": candidates.max_blob_bytes,
@@ -1425,6 +1462,8 @@ def repair_raw_materialization(
         "raw_materialization_candidate_count": float(len(candidate_raw_ids)),
         "raw_materialization_selected_count": float(len(raw_ids)),
         "raw_materialization_missing_blob_count": float(missing_blobs),
+        "raw_materialization_missing_blob_source_available_count": float(candidates.missing_blob_source_available),
+        "raw_materialization_missing_blob_source_missing_count": float(candidates.missing_blob_source_missing),
         "raw_materialization_already_parsed_count": float(candidates.already_parsed),
         "raw_materialization_total_blob_bytes": float(candidates.total_blob_bytes),
         "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
@@ -1456,7 +1495,7 @@ def repair_raw_materialization(
         if not raw_ids:
             detail = "Raw materialization ready"
             if missing_blobs:
-                detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
+                detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=False)}"
             return _internal_derived_repair_result(
                 "raw_materialization",
                 repaired_count=0,
@@ -1493,7 +1532,7 @@ def repair_raw_materialization(
         detail += byte_detail
         detail += oversized_detail
         if missing_blobs:
-            detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
+            detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=False)}"
         return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=len(raw_ids),
@@ -1504,7 +1543,7 @@ def repair_raw_materialization(
     if not raw_ids:
         detail = "Raw materialization ready"
         if missing_blobs:
-            detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
+            detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=True)}"
         return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
@@ -1600,7 +1639,7 @@ def repair_raw_materialization(
             f"{processed:,} sessions changed; message FTS left to ingest triggers or daemon convergence"
         )
     if missing_blobs:
-        detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
+        detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=True)}"
     if oversized_raw_ids:
         detail += (
             f"; {len(oversized_raw_ids):,} raw rows remain blocked by replay limit "

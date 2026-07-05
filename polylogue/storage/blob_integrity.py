@@ -623,6 +623,7 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
     origin_column = "origin" if _column_exists(conn, "raw_sessions", "origin") else "NULL"
     native_id_column = "native_id" if _column_exists(conn, "raw_sessions", "native_id") else "NULL"
     source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
+    source_index_column = "source_index" if _column_exists(conn, "raw_sessions", "source_index") else "NULL"
     blob_size_column = "blob_size" if _column_exists(conn, "raw_sessions", "blob_size") else "0"
     parse_error_column = "parse_error" if _column_exists(conn, "raw_sessions", "parse_error") else "NULL"
     validation_status_column = (
@@ -637,6 +638,7 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
                {origin_column} AS origin,
                {native_id_column} AS native_id,
                {source_path_column} AS source_path,
+               {source_index_column} AS source_index,
                {blob_size_column} AS size_bytes,
                {parse_error_column} AS parse_error,
                {validation_status_column} AS validation_status,
@@ -679,6 +681,7 @@ def _blob_ref_reference_rows(
         ref["native_id"] = raw.get("native_id") if raw else None
         ref["parse_error"] = raw.get("parse_error") if raw else None
         ref["validation_status"] = raw.get("validation_status") if raw else None
+        ref["source_index"] = raw.get("source_index") if raw else None
         ref["ref_id_has_raw_session"] = raw is not None
         refs.append(ref)
     return refs
@@ -860,6 +863,115 @@ def _restore_expected_hash_from_path(blob_store: BlobStore, expected_hash: str, 
                 hasher.update(chunk)
                 os.write(fd, chunk)
                 size += len(chunk)
+        os.close(fd)
+        fd = None
+        actual_hash = hasher.hexdigest()
+        if actual_hash != expected_hash:
+            return actual_hash, size
+        destination = blob_store.blob_path(expected_hash)
+        if destination.exists():
+            return actual_hash, size
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, destination)
+        tmp_path = None
+        return actual_hash, size
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def _source_span_restore_candidate(group: list[dict[str, Any]]) -> tuple[Path, int, str] | None:
+    """Find an exact-hash span candidate inside a larger append-only source.
+
+    Live Claude/Codex session files are append-only JSONL streams. A raw row may
+    point at a historical prefix snapshot (``source_index == 0``) or append-tail
+    chunk (``source_index == -1``) whose bytes still exist inside the current
+    source file even though the full source path is now larger than the stored
+    raw blob. Only those two shapes are recovered here, and only after the
+    caller verifies the SHA-256 against the expected content address.
+    """
+
+    for row in group:
+        source_path = _optional_str(row.get("source_path"))
+        if not source_path or _path_is_container_member(source_path):
+            continue
+        expected_size_value = row.get("size_bytes")
+        if expected_size_value is None:
+            continue
+        try:
+            expected_size = int(expected_size_value)
+        except (TypeError, ValueError):
+            continue
+        if expected_size <= 0:
+            continue
+        source_index_value = row.get("source_index")
+        if source_index_value is None:
+            continue
+        try:
+            source_index = int(source_index_value)
+        except (TypeError, ValueError):
+            continue
+        if source_index not in (0, -1):
+            continue
+        path = Path(source_path)
+        try:
+            source_size = path.stat().st_size
+        except OSError:
+            continue
+        if source_size < expected_size:
+            continue
+        position = "prefix" if source_index == 0 else "suffix"
+        return path, expected_size, position
+    return None
+
+
+def _restore_expected_hash_from_source_span(
+    blob_store: BlobStore,
+    expected_hash: str,
+    source_path: Path,
+    *,
+    size_bytes: int,
+    position: str,
+    dry_run: bool,
+) -> tuple[str, int]:
+    blob_store.root.mkdir(parents=True, exist_ok=True)
+    fd: int | None = None
+    tmp_path: str | None = None
+    try:
+        if dry_run:
+            hasher = hashlib.sha256()
+            size = 0
+            with source_path.open("rb") as source:
+                if position == "suffix":
+                    source.seek(-size_bytes, os.SEEK_END)
+                remaining = size_bytes
+                while remaining > 0:
+                    chunk = source.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                    size += len(chunk)
+                    remaining -= len(chunk)
+            return hasher.hexdigest(), size
+
+        fd, tmp_path = tempfile.mkstemp(dir=blob_store.root, prefix=".restore.")
+        hasher = hashlib.sha256()
+        size = 0
+        with source_path.open("rb") as source:
+            if position == "suffix":
+                source.seek(-size_bytes, os.SEEK_END)
+            remaining = size_bytes
+            while remaining > 0:
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                os.write(fd, chunk)
+                size += len(chunk)
+                remaining -= len(chunk)
         os.close(fd)
         fd = None
         actual_hash = hasher.hexdigest()
@@ -1560,23 +1672,86 @@ def restore_direct_blob_reference_debt(
             continue
         source_path, reason = _direct_restore_candidate(group)
         if source_path is None:
-            if reason == "no_source_path":
-                skipped_no_source_path += 1
-            elif reason == "container_member":
-                skipped_container_member += 1
-            elif reason == "source_missing":
-                skipped_source_missing += 1
-            elif reason == "size_mismatch":
-                skipped_size_mismatch += 1
-            else:
-                skipped_no_source_path += 1
+            span_candidate = _source_span_restore_candidate(group) if reason == "size_mismatch" else None
+            if span_candidate is None:
+                if reason == "no_source_path":
+                    skipped_no_source_path += 1
+                elif reason == "container_member":
+                    skipped_container_member += 1
+                elif reason == "source_missing":
+                    skipped_source_missing += 1
+                elif reason == "size_mismatch":
+                    skipped_size_mismatch += 1
+                else:
+                    skipped_no_source_path += 1
+                if len(samples) < max(0, sample_size):
+                    samples.append(
+                        BlobReferenceDebtRestoreSample(
+                            blob_hash=blob_hash,
+                            source_path=None,
+                            action="skipped",
+                            reason=reason,
+                        )
+                    )
+                continue
+
+            source_path, span_size, span_position = span_candidate
+            candidate_count += 1
+            try:
+                actual_hash, size = _restore_expected_hash_from_source_span(
+                    blob_store,
+                    blob_hash,
+                    source_path,
+                    size_bytes=span_size,
+                    position=span_position,
+                    dry_run=dry_run,
+                )
+            except OSError as exc:
+                skipped_error += 1
+                if len(samples) < max(0, sample_size):
+                    samples.append(
+                        BlobReferenceDebtRestoreSample(
+                            blob_hash=blob_hash,
+                            source_path=str(source_path),
+                            action="skipped",
+                            reason=f"error:{exc}",
+                        )
+                    )
+                continue
+            if actual_hash != blob_hash:
+                skipped_hash_mismatch += 1
+                if len(samples) < max(0, sample_size):
+                    samples.append(
+                        BlobReferenceDebtRestoreSample(
+                            blob_hash=blob_hash,
+                            source_path=str(source_path),
+                            action="skipped",
+                            reason=f"{span_position}_hash_mismatch:{actual_hash}",
+                        )
+                    )
+                continue
+            if dry_run:
+                if len(samples) < max(0, sample_size):
+                    samples.append(
+                        BlobReferenceDebtRestoreSample(
+                            blob_hash=blob_hash,
+                            source_path=str(source_path),
+                            action="would_restore",
+                            reason=span_position,
+                            bytes_restored=size,
+                        )
+                    )
+                continue
+            restored_count += 1
+            restored_bytes += size
             if len(samples) < max(0, sample_size):
                 samples.append(
                     BlobReferenceDebtRestoreSample(
                         blob_hash=blob_hash,
-                        source_path=None,
-                        action="skipped",
-                        reason=reason,
+                        source_path=str(source_path),
+                        action="restored",
+                        reason=span_position,
+                        bytes_restored=size,
                     )
                 )
             continue

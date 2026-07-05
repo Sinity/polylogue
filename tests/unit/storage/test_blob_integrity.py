@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import zipfile
@@ -418,6 +419,77 @@ def test_restore_direct_blob_reference_debt_rejects_hash_mismatch(tmp_path: Path
     assert report.skipped_hash_mismatch == 1
     assert not store.exists(expected_hash)
     assert [path for path in store.root.rglob("*") if path.is_file()] == []
+
+
+def test_restore_blob_reference_debt_recovers_exact_append_spans(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    prefix_payload = b'{"event":"prefix"}\n'
+    suffix_payload = b'{"event":"suffix"}\n'
+    prefix_source = tmp_path / "prefix.jsonl"
+    suffix_source = tmp_path / "suffix.jsonl"
+    prefix_source.write_bytes(prefix_payload + b'{"event":"later"}\n')
+    suffix_source.write_bytes(b'{"event":"earlier"}\n' + suffix_payload)
+    prefix_hash = hashlib.sha256(prefix_payload).hexdigest()
+    suffix_hash = hashlib.sha256(suffix_payload).hexdigest()
+
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                blob_size INTEGER NOT NULL,
+                source_path TEXT,
+                source_index INTEGER
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                raw_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL,
+                PRIMARY KEY(blob_hash, raw_id, ref_type)
+            );
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (raw_id, blob_hash, blob_size, source_path, source_index)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("raw-prefix", bytes.fromhex(prefix_hash), len(prefix_payload), str(prefix_source), 0),
+                ("raw-suffix", bytes.fromhex(suffix_hash), len(suffix_payload), str(suffix_source), -1),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, raw_id, ref_type, source_path, size_bytes)
+            VALUES (?, ?, 'raw_payload', ?, ?)
+            """,
+            [
+                (bytes.fromhex(prefix_hash), "raw-prefix", str(prefix_source), len(prefix_payload)),
+                (bytes.fromhex(suffix_hash), "raw-suffix", str(suffix_source), len(suffix_payload)),
+            ],
+        )
+
+    dry_run = restore_direct_blob_reference_debt(source_db, store=store)
+
+    assert dry_run.candidate_count == 2
+    assert dry_run.restored_count == 0
+    assert sorted(str(sample.reason) for sample in dry_run.samples) == ["prefix", "suffix"]
+    assert not store.exists(prefix_hash)
+    assert not store.exists(suffix_hash)
+
+    applied = restore_direct_blob_reference_debt(source_db, store=store, dry_run=False)
+
+    assert applied.candidate_count == 2
+    assert applied.restored_count == 2
+    assert applied.restored_bytes == len(prefix_payload) + len(suffix_payload)
+    assert sorted(str(sample.reason) for sample in applied.samples) == ["prefix", "suffix"]
+    assert store.exists(prefix_hash)
+    assert store.exists(suffix_hash)
 
 
 def test_prune_orphan_blob_reference_debt_quarantines_before_delete(tmp_path: Path) -> None:

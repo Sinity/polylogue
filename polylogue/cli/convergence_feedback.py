@@ -42,16 +42,10 @@ def _active_rebuild_warning(attempts: list[dict[str, object]]) -> str:
 def _raw_materialization_warning(readiness: dict[str, object]) -> str | None:
     if not readiness.get("available", False):
         return None
-    affected = (
-        _safe_int(readiness.get("affected_actionable"))
-        + _safe_int(readiness.get("affected_blocked"))
-        + _safe_int(readiness.get("affected_open"))
-    )
     rows = (
         _safe_int(readiness.get("actionable")) + _safe_int(readiness.get("blocked")) + _safe_int(readiness.get("open"))
     )
-    count = affected or rows
-    if count <= 0:
+    if rows <= 0:
         unchecked = _safe_int(readiness.get("affected_unchecked")) or _safe_int(readiness.get("unchecked"))
         if unchecked > 0:
             raw_count = _safe_int(readiness.get("raw_artifact_count"))
@@ -64,7 +58,18 @@ def _raw_materialization_warning(readiness: dict[str, object]) -> str | None:
                 "results may be partial until daemon convergence classifies them."
             )
         return None
-    return f"Archive is converging: {count:,} raw artifact(s) are not materialized; results may be partial."
+    category_counts = readiness.get("category_counts")
+    parse_failed = 0
+    if isinstance(category_counts, dict):
+        parse_failed = _safe_int(category_counts.get("parse_failed"))
+    parse_failed = parse_failed or _safe_int(readiness.get("affected_actionable"))
+    details = ""
+    if parse_failed > 0:
+        details = f"; {parse_failed:,} parse-failed raw artifact(s)"
+    return (
+        f"Archive has raw materialization debt: {rows:,} issue group(s){details}; "
+        "results may be partial for affected source artifacts."
+    )
 
 
 def _safe_int(value: Any) -> int:
