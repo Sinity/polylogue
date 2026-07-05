@@ -61,6 +61,20 @@ _CANONICAL_FTS_TRIGGERS = frozenset(
 )
 
 
+def test_fts_freshness_state_has_one_production_ddl_owner() -> None:
+    """The index tier owns the freshness ledger shape; lifecycle code reuses it."""
+
+    storage_root = Path(__file__).parents[3] / "polylogue" / "storage"
+    create_sites: list[str] = []
+    needle = "CREATE TABLE IF NOT EXISTS fts_freshness_state"
+    for path in storage_root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if needle in text:
+            create_sites.append(str(path.relative_to(storage_root)))
+
+    assert create_sites == ["sqlite/archive_tiers/index.py"]
+
+
 # ---------------------------------------------------------------------------
 # § Schema Versioning Model — fresh-first; mismatch is rejected.
 # ---------------------------------------------------------------------------

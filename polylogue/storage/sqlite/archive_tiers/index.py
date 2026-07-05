@@ -35,6 +35,20 @@ from polylogue.storage.sqlite.archive_tiers.common import (
 
 INDEX_SCHEMA_VERSION = 24
 
+FTS_FRESHNESS_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS fts_freshness_state (
+    surface TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'unknown')),
+    checked_at TEXT NOT NULL,
+    source_rows INTEGER NOT NULL DEFAULT 0,
+    indexed_rows INTEGER NOT NULL DEFAULT 0,
+    missing_rows INTEGER NOT NULL DEFAULT 0,
+    excess_rows INTEGER NOT NULL DEFAULT 0,
+    duplicate_rows INTEGER NOT NULL DEFAULT 0,
+    detail TEXT
+) STRICT;
+"""
+
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
     session_id              TEXT GENERATED ALWAYS AS (origin || ':' || native_id) STORED UNIQUE,
@@ -309,17 +323,7 @@ AFTER UPDATE ON blocks BEGIN
     WHERE new.search_text != '';
 END;
 
-CREATE TABLE IF NOT EXISTS fts_freshness_state (
-    surface TEXT PRIMARY KEY,
-    state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'unknown')),
-    checked_at TEXT NOT NULL,
-    source_rows INTEGER NOT NULL DEFAULT 0,
-    indexed_rows INTEGER NOT NULL DEFAULT 0,
-    missing_rows INTEGER NOT NULL DEFAULT 0,
-    excess_rows INTEGER NOT NULL DEFAULT 0,
-    duplicate_rows INTEGER NOT NULL DEFAULT 0,
-    detail TEXT
-) STRICT;
+{FTS_FRESHNESS_STATE_DDL}
 
 CREATE VIEW IF NOT EXISTS actions AS
 SELECT
@@ -1024,4 +1028,4 @@ CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_run
 ON session_context_snapshots(run_ref);
 """
 
-__all__ = ["INDEX_DDL", "INDEX_SCHEMA_VERSION"]
+__all__ = ["FTS_FRESHNESS_STATE_DDL", "INDEX_DDL", "INDEX_SCHEMA_VERSION"]

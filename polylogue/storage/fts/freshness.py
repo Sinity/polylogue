@@ -8,26 +8,14 @@ from typing import Any
 
 import aiosqlite
 
+from polylogue.storage.sqlite.archive_tiers.index import FTS_FRESHNESS_STATE_DDL
+
 FRESHNESS_TABLE = "fts_freshness_state"
 READY = "ready"
 STALE = "stale"
 UNKNOWN = "unknown"
 MESSAGE_SURFACE = "messages_fts"
 _MESSAGE_FTS_TRIGGER_NAMES = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
-
-_CREATE_TABLE_SQL = f"""
-    CREATE TABLE IF NOT EXISTS {FRESHNESS_TABLE} (
-        surface TEXT PRIMARY KEY,
-        state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'unknown')),
-        checked_at TEXT NOT NULL,
-        source_rows INTEGER NOT NULL DEFAULT 0,
-        indexed_rows INTEGER NOT NULL DEFAULT 0,
-        missing_rows INTEGER NOT NULL DEFAULT 0,
-        excess_rows INTEGER NOT NULL DEFAULT 0,
-        duplicate_rows INTEGER NOT NULL DEFAULT 0,
-        detail TEXT
-    )
-"""
 
 _COLUMN_UPGRADES: tuple[tuple[str, str], ...] = (
     ("source_rows", "INTEGER NOT NULL DEFAULT 0"),
@@ -161,7 +149,7 @@ async def _message_fts_triggers_present_async(conn: aiosqlite.Connection) -> boo
 
 
 def ensure_fts_freshness_table_sync(conn: sqlite3.Connection) -> None:
-    conn.execute(_CREATE_TABLE_SQL)
+    conn.execute(FTS_FRESHNESS_STATE_DDL)
     columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({FRESHNESS_TABLE})").fetchall()}
     for name, definition in _COLUMN_UPGRADES:
         if name not in columns:
@@ -169,7 +157,7 @@ def ensure_fts_freshness_table_sync(conn: sqlite3.Connection) -> None:
 
 
 async def ensure_fts_freshness_table_async(conn: aiosqlite.Connection) -> None:
-    await conn.execute(_CREATE_TABLE_SQL)
+    await conn.execute(FTS_FRESHNESS_STATE_DDL)
     rows = await (await conn.execute(f"PRAGMA table_info({FRESHNESS_TABLE})")).fetchall()
     columns = {str(row[1]) for row in rows}
     for name, definition in _COLUMN_UPGRADES:
