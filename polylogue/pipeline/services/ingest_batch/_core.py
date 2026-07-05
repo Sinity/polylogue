@@ -413,7 +413,13 @@ def _write_session(
             counts["skipped_session_events"] = len(payload.parsed_session.session_events)
             return False, counts
 
-    if not force_write and existing_raw_id and payload.raw_id and existing_raw_id != payload.raw_id:
+    if (
+        not force_write
+        and not payload.append_only
+        and existing_raw_id
+        and payload.raw_id
+        and existing_raw_id != payload.raw_id
+    ):
         existing_is_dom_fallback = session_has_parser_ingest_flag(conn, payload.session_id, DOM_FALLBACK_INGEST_FLAG)
         incoming_is_dom_fallback = _incoming_has_ingest_flag(payload, DOM_FALLBACK_INGEST_FLAG)
         current_stored_message_count = stored_message_count(conn, payload.session_id)

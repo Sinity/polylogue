@@ -855,7 +855,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
             backend = create_backend(db_path=db_path_val)
             repository = SessionRepository(backend=backend)
             try:
-                target_blob_store = BlobStore(blob_store_root())
+                target_blob_store = BlobStore(archive_root / "blob")
                 sample_summary = await _seed_archive_subset(
                     manifest=manifest,
                     repository=repository,

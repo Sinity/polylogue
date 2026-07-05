@@ -58,12 +58,17 @@ def _seed_live_cli_schema_fixture(cli_workspace: dict[str, Path], monkeypatch: p
     rebuild_index()
 
 
-def _invoke_live_cli(args: list[str]) -> str:
+def _invoke_live_cli(args: list[str], cli_workspace: dict[str, Path]) -> str:
     from click.testing import CliRunner
 
     from polylogue.cli import cli
 
-    result = CliRunner().invoke(cli, ["--plain", *args])
+    env = {
+        "XDG_STATE_HOME": str(cli_workspace["state_dir"]),
+        "POLYLOGUE_ARCHIVE_ROOT": str(cli_workspace["archive_root"]),
+        "POLYLOGUE_FORCE_PLAIN": "1",
+    }
+    result = CliRunner().invoke(cli, ["--plain", *args], env=env)
     assert result.exit_code == 0, result.output
     return result.output
 
@@ -340,7 +345,7 @@ def test_live_read_all_json_rows_validate_against_schema(
     _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
     schema = _load_published_schema("session-list-row")
 
-    payload = json.loads(_invoke_live_cli(["read", "--all", "-f", "json"]))
+    payload = json.loads(_invoke_live_cli(["read", "--all", "-f", "json"], cli_workspace))
     assert isinstance(payload, dict)
     rows = payload.get("items")
     assert isinstance(rows, list)
@@ -358,7 +363,7 @@ def test_live_read_all_ndjson_rows_validate_against_schema(
     _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
     schema = _load_published_schema("session-list-row")
 
-    lines = [line for line in _invoke_live_cli(["read", "--all", "-f", "ndjson"]).splitlines() if line]
+    lines = [line for line in _invoke_live_cli(["read", "--all", "-f", "ndjson"], cli_workspace).splitlines() if line]
     assert len(lines) == 1
     row = json.loads(lines[0])
     jsonschema.validate(instance=row, schema=schema)
@@ -374,7 +379,7 @@ def test_live_search_json_rows_validate_against_schema(
     _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
     schema = _load_published_schema("session-search-hit")
 
-    payload = json.loads(_invoke_live_cli(["find", "schema", "-f", "json"]))
+    payload = json.loads(_invoke_live_cli(["find", "schema", "-f", "json"], cli_workspace))
     assert isinstance(payload, dict)
     rows = payload.get("items")
     assert isinstance(rows, list)
@@ -395,7 +400,7 @@ def test_live_search_ndjson_rows_validate_against_schema(
     _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
     schema = _load_published_schema("session-search-hit")
 
-    lines = [line for line in _invoke_live_cli(["find", "schema", "-f", "ndjson"]).splitlines() if line]
+    lines = [line for line in _invoke_live_cli(["find", "schema", "-f", "ndjson"], cli_workspace).splitlines() if line]
     assert lines
     row = json.loads(lines[0])
     jsonschema.validate(instance=row, schema=schema)

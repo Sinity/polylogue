@@ -205,7 +205,7 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
         json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
     )
     assert maintenance_item.get("name") == "session_insights"
-    assert maintenance_item.get("repaired_count") == 1
+    assert maintenance_item.get("repaired_count") == 2
 
 
 def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
@@ -435,7 +435,7 @@ class TestCheckCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "ops", "doctor", "--format", "json"])
+        result = cli_runner.invoke(cli, ["--plain", "ops", "doctor", "--deep", "--format", "json"])
         assert result.exit_code == 0
 
         # Parse JSON output
@@ -520,7 +520,7 @@ class TestCheckCommand:
             conn.commit()  # Explicit commit to ensure orphan persists
             conn.execute("PRAGMA foreign_keys = ON")
 
-        result = cli_runner.invoke(cli, ["--plain", "ops", "doctor", "--format", "json"])
+        result = cli_runner.invoke(cli, ["--plain", "ops", "doctor", "--deep", "--format", "json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -589,7 +589,7 @@ class TestCheckCommand:
             )
             conn.commit()  # Explicit commit to ensure session persists
 
-        result = cli_runner.invoke(cli, ["--plain", "ops", "doctor", "--format", "json"])
+        result = cli_runner.invoke(cli, ["--plain", "ops", "doctor", "--deep", "--format", "json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)

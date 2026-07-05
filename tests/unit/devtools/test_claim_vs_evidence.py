@@ -475,13 +475,13 @@ async def test_claim_vs_evidence_seeded_demo_reproduces_method(tmp_path: Path) -
         )
     )
 
-    assert report["sample_frame"]["total_structured_failures"] == 4
-    assert report["sample_frame"]["inspected_structured_failures"] == 4
-    assert report["totals"]["acknowledged"] == 2
+    assert report["sample_frame"]["total_structured_failures"] == 5
+    assert report["sample_frame"]["inspected_structured_failures"] == 5
+    assert report["totals"]["acknowledged"] == 3
     assert report["totals"]["silent_proceed"] == 2
     assert report["totals"]["ambiguous"] == 0
     public_summary = json.loads((out_dir / "public-summary.json").read_text())
-    assert public_summary["proofs"][0]["total_structured_failures"] == 4
+    assert public_summary["proofs"][0]["total_structured_failures"] == 5
     public_reproduction = (out_dir / "PUBLIC_REPRODUCTION.md").read_text()
     assert "Counts will differ because the deterministic demo archive is synthetic." in public_reproduction
 

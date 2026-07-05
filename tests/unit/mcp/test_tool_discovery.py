@@ -78,6 +78,8 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "explain_query_expression": {"expression": "repo:polylogue"},
     "query_completions": {"kind": "field", "incomplete": "d"},
     "action_affordances": {},
+    "agent_coordination": {},
+    "usage_timeline": {"limit": 1},
     "embedding_status": {},
     "embedding_preflight": {},
     "build_context_image": {"project_repo": "test"},

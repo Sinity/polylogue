@@ -2974,7 +2974,7 @@ class TestSearchQueryContracts:
         )
 
         assert result.exit_code == 0, result.output
-        assert "run:codex-session:child-run [subagent/completed]" in result.output
+        assert "run:codex-session:ext-run-hit:subagent:0:tool-run [subagent/completed]" in result.output
         assert "agent:codex/Explore" in result.output
 
     def test_context_snapshot_unit_source_routes_to_query_units(self, search_workspace: SearchWorkspace) -> None:

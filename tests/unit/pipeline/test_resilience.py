@@ -34,6 +34,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     RawSessionData,
 )
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -433,9 +434,7 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
             for raw_id in result.raw_ids:
                 stored = await backend.get_raw_session(raw_id)
                 assert stored is not None
-                from polylogue.storage.blob_store import load_raw_content
-
-                raw_bytes = load_raw_content(raw_id)
+                raw_bytes = BlobStore(Path(tempdir) / "blob").read_all(raw_id)
                 payload_id = json.loads(raw_bytes)["id"]
                 assert stored.source_name == expected_first_provider[payload_id]
                 # #1743: raw_sessions stores a single origin column; payload_provider

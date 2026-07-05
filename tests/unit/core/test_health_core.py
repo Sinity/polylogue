@@ -56,11 +56,6 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "empty_sessions",
                 "duplicate_sessions",
                 "fts_sync",
-                "transcript_embeddings",
-                "transcript_embedding_freshness",
-                "retrieval_evidence",
-                "retrieval_inference",
-                "retrieval_enrichment",
                 "schemas_missing",
                 "schemas_freshness",
             },
@@ -138,55 +133,53 @@ def test_run_health_embedding_status_contract(
             f"pending {pending_sessions:,}, stale 0, missing provenance 0)"
         )
     )
-    with patch(
-        "polylogue.storage.derived.derived_status.collect_derived_model_statuses_sync",
-        return_value={
-            "messages_fts": DerivedModelStatus(
-                name="messages_fts",
-                ready=True,
-                detail="Messages FTS ready",
-                source_rows=3,
-                materialized_rows=3,
-            ),
-            "transcript_embeddings": DerivedModelStatus(
-                name="transcript_embeddings",
-                ready=embeddings_ready,
-                detail=expected_detail,
-                source_documents=3,
-                materialized_documents=embedded_sessions,
-                materialized_rows=embedded_messages,
-                pending_documents=pending_sessions,
-            ),
-            "retrieval_evidence": DerivedModelStatus(
-                name="retrieval_evidence",
-                ready=True,
-                detail="Evidence retrieval ready",
-                source_rows=3,
-                materialized_rows=3,
-            ),
-            "retrieval_inference": DerivedModelStatus(
-                name="retrieval_inference",
-                ready=True,
-                detail="Inference retrieval ready",
-                source_rows=3,
-                materialized_rows=3,
-            ),
-            "retrieval_enrichment": DerivedModelStatus(
-                name="retrieval_enrichment",
-                ready=True,
-                detail="Enrichment retrieval ready",
-                source_rows=3,
-                materialized_rows=3,
-            ),
-            "session_profile_enrichment_fts": DerivedModelStatus(
-                name="session_profile_enrichment_fts",
-                ready=True,
-                detail="Session-profile enrichment FTS ready",
-                source_rows=3,
-                materialized_rows=3,
-            ),
-        },
-    ):
+    derived_statuses = {
+        "messages_fts": DerivedModelStatus(
+            name="messages_fts",
+            ready=True,
+            detail="Messages FTS ready",
+            source_rows=3,
+            materialized_rows=3,
+        ),
+        "transcript_embeddings": DerivedModelStatus(
+            name="transcript_embeddings",
+            ready=embeddings_ready,
+            detail=expected_detail,
+            source_documents=3,
+            materialized_documents=embedded_sessions,
+            materialized_rows=embedded_messages,
+            pending_documents=pending_sessions,
+        ),
+        "retrieval_evidence": DerivedModelStatus(
+            name="retrieval_evidence",
+            ready=True,
+            detail="Evidence retrieval ready",
+            source_rows=3,
+            materialized_rows=3,
+        ),
+        "retrieval_inference": DerivedModelStatus(
+            name="retrieval_inference",
+            ready=True,
+            detail="Inference retrieval ready",
+            source_rows=3,
+            materialized_rows=3,
+        ),
+        "retrieval_enrichment": DerivedModelStatus(
+            name="retrieval_enrichment",
+            ready=True,
+            detail="Enrichment retrieval ready",
+            source_rows=3,
+            materialized_rows=3,
+        ),
+        "session_profile_enrichment_fts": DerivedModelStatus(
+            name="session_profile_enrichment_fts",
+            ready=True,
+            detail="Session-profile enrichment FTS ready",
+            source_rows=3,
+            materialized_rows=3,
+        ),
+    }
+    with patch("polylogue.readiness._collect_table_status_best_effort", return_value=(derived_statuses, {})):
         report = run_archive_readiness(get_config())
 
     check = next(c for c in report.checks if c.name == "transcript_embeddings")

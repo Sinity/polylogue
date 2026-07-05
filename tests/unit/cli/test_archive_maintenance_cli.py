@@ -15,6 +15,7 @@ from polylogue.cli.click_app import cli
 from polylogue.cli.commands import maintenance
 from polylogue.config import Config
 from polylogue.core.enums import Provider
+from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
@@ -1051,7 +1052,7 @@ def test_rebuild_index_replays_source_rows_with_materialization_controls(
         "polylogue.cli.commands.maintenance._all_index_rebuild_raw_ids",
         lambda _root: ["raw-parent", "raw-child"],
     )
-    monkeypatch.setattr("polylogue.cli.commands.maintenance._rebuild_index_from_source", fake_rebuild)
+    monkeypatch.setattr("polylogue.cli.commands.maintenance.rebuild_index_from_source", fake_rebuild)
 
     result = cli_runner.invoke(
         cli,
@@ -1156,7 +1157,7 @@ def test_rebuild_index_can_replay_only_missing_source_rows(
 
     monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 10)
     monkeypatch.setattr("polylogue.cli.commands.maintenance._missing_index_raw_ids", lambda _root: ["raw-a", "raw-b"])
-    monkeypatch.setattr("polylogue.cli.commands.maintenance._rebuild_index_from_source", fake_rebuild)
+    monkeypatch.setattr("polylogue.cli.commands.maintenance.rebuild_index_from_source", fake_rebuild)
 
     result = cli_runner.invoke(
         cli,
@@ -1184,8 +1185,6 @@ def test_rebuild_index_selected_raw_ids_materialize_processed_sessions_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.cli.commands import maintenance
-
     captured: dict[str, object] = {}
 
     class FakeBackend:
@@ -1238,7 +1237,7 @@ def test_rebuild_index_selected_raw_ids_materialize_processed_sessions_only(
     monkeypatch.setattr("polylogue.pipeline.run_stages.execute_materialize_stage", fake_materialize)
 
     result = asyncio.run(
-        maintenance._rebuild_index_from_source(
+        rebuild_index_from_source(
             Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db"),
             raw_ids=["raw-a", "raw-b"],
             raw_batch_size=7,
@@ -1286,7 +1285,7 @@ def test_rebuild_index_can_replay_explicit_raw_ids(
         }
 
     monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 10)
-    monkeypatch.setattr("polylogue.cli.commands.maintenance._rebuild_index_from_source", fake_rebuild)
+    monkeypatch.setattr("polylogue.cli.commands.maintenance.rebuild_index_from_source", fake_rebuild)
 
     result = cli_runner.invoke(
         cli,
@@ -1363,7 +1362,7 @@ def test_rebuild_index_filters_selected_rows_by_blob_size(
         "polylogue.cli.commands.maintenance._missing_index_raw_ids",
         lambda _root: ["raw-large", "raw-small"],
     )
-    monkeypatch.setattr("polylogue.cli.commands.maintenance._rebuild_index_from_source", fake_rebuild)
+    monkeypatch.setattr("polylogue.cli.commands.maintenance.rebuild_index_from_source", fake_rebuild)
 
     result = cli_runner.invoke(
         cli,

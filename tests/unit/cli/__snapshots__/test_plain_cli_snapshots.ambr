@@ -511,7 +511,10 @@
 # name: test_json_status_snapshot
   '''
   {
+    "ok": true,
+    "source": "direct",
     "daemon_liveness": false,
+    "full_status_command": "polylogue ops status --json --full",
     "archive_root": "<PATH>",
     "active_archive_root": "<PATH>",
     "active_archive_root_matches_configured": true,
@@ -519,855 +522,10 @@
     "active_db_path": "<PATH>",
     "config_exists": false,
     "config_path": "<PATH>",
-    "archive_tiers": {
-      "source": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 1,
-        "user_version": 1,
-        "version_status": "ok",
-        "table_counts": {
-          "raw_sessions": 2,
-          "blob_refs": 2,
-          "raw_artifacts": 0,
-          "raw_hook_events": 0,
-          "history_sidecars": 0
-        }
-      },
-      "index": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 21,
-        "user_version": 21,
-        "version_status": "ok",
-        "table_counts": {
-          "sessions": 2,
-          "messages": 10,
-          "blocks": 27,
-          "session_profiles": 0,
-          "session_work_events": 0,
-          "session_phases": 0,
-          "threads": 2,
-          "thread_sessions": 2,
-          "insight_materialization": 0
-        }
-      },
-      "embeddings": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 1,
-        "user_version": 1,
-        "version_status": "ok",
-        "table_counts": {
-          "message_embeddings_meta": 0,
-          "embedding_status": 0
-        }
-      },
-      "user": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 3,
-        "user_version": 3,
-        "version_status": "ok",
-        "table_counts": {
-          "assertions": 0
-        }
-      },
-      "ops": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 1,
-        "user_version": 1,
-        "version_status": "ok",
-        "table_counts": {
-          "ingest_cursor": 0,
-          "ingest_attempts": 0,
-          "convergence_debt": 0,
-          "cursor_lag_samples": 0,
-          "daemon_stage_events": 0,
-          "daemon_events": 0,
-          "embedding_catchup_runs": 0,
-          "otlp_spans": 0,
-          "otlp_telemetry": 0
-        }
-      }
-    },
-    "ingest_workload": {
-      "available": true,
-      "actively_ingesting": false,
-      "running_count": 0,
-      "running": [],
-      "throughput": {
-        "window_minutes": 5,
-        "batches": 0,
-        "files": 0,
-        "materialized": 0,
-        "files_per_second": 0.0
-      },
-      "cursor": {
-        "tracked": 0,
-        "excluded": 0,
-        "retry_pending": 0
-      },
-      "debt": {
-        "total": 0,
-        "by_status": {}
-      },
-      "lifetime_attempts": {}
-    },
-    "archive_readiness": {
-      "checked": false,
-      "reason": "direct_status_default_skips_exact_archive_readiness",
-      "surfaces": {}
-    },
-    "archive_facade_routes": {
-      "checked": true,
-      "source": "static_facade_route_catalog",
-      "total_method_count": 126,
-      "archive_ready_method_count": 125,
-      "unsupported_method_count": 0,
-      "route_counts": {
-        "archive_routed": 111,
-        "archive_direct": 14,
-        "not_archive_runtime": 1
-      },
-      "tier_counts": {
-        "user": 40,
-        "index": 81,
-        "none": 1,
-        "source": 4
-      },
-      "unsupported_methods": [],
-      "routes": {
-        "add_mark": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes user marks through user.db"
-        },
-        "add_tag": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes user tags through user.db"
-        },
-        "archive_count_sessions": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "current archive helper"
-        },
-        "archive_debt": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads unified archive debt rows from archive readiness surfaces"
-        },
-        "archive_get_session": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "current archive helper"
-        },
-        "archive_list_sessions": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "current archive helper"
-        },
-        "archive_search_sessions": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "current archive helper"
-        },
-        "bulk_get_messages": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads messages from index.db"
-        },
-        "bulk_tag_sessions": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes user tags through user.db"
-        },
-        "clear_corrections": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "clears user corrections through user.db"
-        },
-        "close": {
-          "route": "not_archive_runtime",
-          "tier": "none",
-          "detail": "resource lifecycle method"
-        },
-        "compile_context": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "compiles bounded context images from archive reads"
-        },
-        "context_image_payload": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "builds context-image DTOs from archive-routed reads"
-        },
-        "context_preamble_payload": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "builds context preamble DTOs from archive-routed reads"
-        },
-        "cost_outlook": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "uses archive-routed session cost insight reads"
-        },
-        "count_sessions": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "counts sessions from index.db"
-        },
-        "create_recall_pack": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes recall packs through user.db"
-        },
-        "delete_annotation": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "deletes annotations through user.db"
-        },
-        "delete_correction": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "deletes corrections through user.db"
-        },
-        "delete_metadata": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "deletes user metadata through user.db"
-        },
-        "delete_recall_pack": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "deletes recall packs through user.db"
-        },
-        "delete_session": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "delegates to archive-routed safe delete"
-        },
-        "delete_session_safe": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "deletes index rows while preserving user.db overlays"
-        },
-        "delete_view": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "deletes saved views through user.db"
-        },
-        "delete_workspace": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "deletes workspaces through user.db"
-        },
-        "diagnose_query_miss": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "explains an empty index query result from index.db probes"
-        },
-        "explain_import": {
-          "route": "archive_routed",
-          "tier": "source",
-          "detail": "explains source detection and import parsing without writing rows"
-        },
-        "explain_query_expression": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "explains query DSL parsing and lowering"
-        },
-        "export_insight_bundle": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "exports from insight tables when active"
-        },
-        "export_otel": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "projects bounded archive evidence into OTel-style payloads"
-        },
-        "facets": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "computes scoped/global facets from index.db"
-        },
-        "find_resume_candidates": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "uses archive-routed resume operations"
-        },
-        "find_stuck_session_latency_profile_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads latency profiles from index.db"
-        },
-        "get_actions": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "derives actions from index.db content blocks"
-        },
-        "get_actions_batch": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "batch-derives actions from index.db content blocks"
-        },
-        "get_ancestors": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads session topology from index.db"
-        },
-        "get_annotation": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads annotations through user.db"
-        },
-        "get_descendants": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads session topology from index.db"
-        },
-        "get_index_status": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "reads block-FTS existence and doc count from index.db"
-        },
-        "get_logical_session": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads session topology from index.db"
-        },
-        "get_messages_paginated": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads messages from index.db session envelopes"
-        },
-        "get_metadata": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads user metadata through user.db"
-        },
-        "get_raw_artifacts_for_session": {
-          "route": "archive_routed",
-          "tier": "source",
-          "detail": "reads raw artifacts through source.db"
-        },
-        "get_recall_pack": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads recall packs through user.db"
-        },
-        "get_session": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads session envelopes from index.db"
-        },
-        "get_session_insight_status": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads insight readiness from index.db"
-        },
-        "get_session_latency_profile_insight": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads latency profiles from index.db"
-        },
-        "get_session_phase_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads phases from index.db"
-        },
-        "get_session_profile_insight": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads profiles from index.db"
-        },
-        "get_session_profile_record": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads session profile record from index.db"
-        },
-        "get_session_stats": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads stats from index.db summaries"
-        },
-        "get_session_summary": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads summaries from index.db"
-        },
-        "get_session_topology": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads session topology from index.db"
-        },
-        "get_session_tree": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads session tree from index.db"
-        },
-        "get_session_work_event_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads work events from index.db"
-        },
-        "get_sessions": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "delegates each read to the archive-routed session reader"
-        },
-        "get_siblings": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads session topology from index.db"
-        },
-        "get_stats_by": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "groups session counts from index.db"
-        },
-        "get_thread": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads session topology from index.db"
-        },
-        "get_thread_insight": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads work threads from index.db"
-        },
-        "get_view": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads saved views through user.db"
-        },
-        "get_view_by_name": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads saved views through user.db"
-        },
-        "get_workspace": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads workspaces through user.db"
-        },
-        "health_check": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "returns archive tier/index readiness"
-        },
-        "insight_readiness_report": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads insight readiness from index.db"
-        },
-        "insight_rigor_audit": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads insight rigor from index.db"
-        },
-        "judge_assertion_candidate": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes candidate assertion judgments through user.db"
-        },
-        "list_annotations": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads annotations through user.db"
-        },
-        "list_archive_coverage_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads coverage insights from index.db"
-        },
-        "list_archive_debt_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads archive debt projection from index.db"
-        },
-        "list_assertion_candidate_reviews": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads candidate assertion review rows through user.db"
-        },
-        "list_assertion_candidates": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads candidate assertion claims through user.db"
-        },
-        "list_assertion_claim_payloads": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads assertion claim payload DTOs through user.db"
-        },
-        "list_assertion_claims": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads assertion claims through user.db"
-        },
-        "list_blackboard_notes": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads blackboard notes through user.db"
-        },
-        "list_corrections": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads corrections through user.db"
-        },
-        "list_cost_rollup_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads cost rollups from index.db"
-        },
-        "list_marks": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads marks through user.db"
-        },
-        "list_read_view_profiles": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "lists executable read-view profiles"
-        },
-        "list_recall_packs": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads recall packs through user.db"
-        },
-        "list_session_cost_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads session costs from index.db"
-        },
-        "list_session_latency_profile_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads latency profiles from index.db"
-        },
-        "list_session_phase_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads phases from index.db"
-        },
-        "list_session_profile_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads profiles from index.db"
-        },
-        "list_session_tag_rollup_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads tag rollups from index.db"
-        },
-        "list_session_work_event_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads work events from index.db"
-        },
-        "list_sessions": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads full sessions from index.db"
-        },
-        "list_sessions_for_spec": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "runs a query spec directly against index.db"
-        },
-        "list_summaries": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "reads session summaries from index.db without hydration"
-        },
-        "list_tags": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads user tag counts through user.db"
-        },
-        "list_thread_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads work threads from index.db"
-        },
-        "list_tool_usage_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads tool usage insights from index.db"
-        },
-        "list_views": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads saved views through user.db"
-        },
-        "list_workspaces": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "reads workspaces through user.db"
-        },
-        "materialize_pathology_assertions": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes pathology candidate assertions through user.db"
-        },
-        "neighbor_candidate_payloads": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "builds neighbor DTOs from index.db"
-        },
-        "neighbor_candidates": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "discovers neighbors from index.db"
-        },
-        "parse_file": {
-          "route": "archive_routed",
-          "tier": "source",
-          "detail": "writes source.db and index.db directly"
-        },
-        "parse_sources": {
-          "route": "archive_routed",
-          "tier": "source",
-          "detail": "writes source.db and index.db directly"
-        },
-        "pathology_report": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "compiles pathology reports from archive-routed projections"
-        },
-        "portfolio_bundle": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "builds portfolio bundles from archive-routed session reads"
-        },
-        "post_blackboard_note": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes blackboard notes through user.db"
-        },
-        "postmortem_bundle": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "compiles postmortem bundles from archive-routed session reads"
-        },
-        "provider_usage_report": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "delegates to the provider usage report archive helper"
-        },
-        "query_completions": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "returns query DSL completions from index.db metadata"
-        },
-        "query_sessions": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "queries summaries from index.db"
-        },
-        "query_units": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "queries terminal archive units from index.db"
-        },
-        "rebuild_index": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "rebuilds messages_fts from index.db"
-        },
-        "rebuild_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "rebuilds insight tables"
-        },
-        "record_correction": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes corrections through user.db"
-        },
-        "remove_mark": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes user marks through user.db"
-        },
-        "remove_tag": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes user tags through user.db"
-        },
-        "resolve_ref": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "resolves public refs through bounded archive read payloads"
-        },
-        "resume_brief": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "builds resume briefs from archive-routed reads"
-        },
-        "save_annotation": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes annotations through user.db"
-        },
-        "save_view": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes saved views through user.db"
-        },
-        "save_workspace": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes workspaces through user.db"
-        },
-        "search": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "searches index.db block FTS"
-        },
-        "search_envelope": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "builds envelopes from index.db"
-        },
-        "search_session_hits": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "projects FTS/hybrid search hits from index.db"
-        },
-        "session_correlation_payload": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "builds git/GitHub correlation DTOs from index.db sessions"
-        },
-        "set_metadata": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "writes user metadata through user.db"
-        },
-        "stats": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads archive stats from index.db"
-        },
-        "storage_stats": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "reads lightweight archive counts from index.db"
-        },
-        "update_index": {
-          "route": "archive_direct",
-          "tier": "index",
-          "detail": "rebuilds the block-FTS index against index.db blocks"
-        },
-        "update_metadata": {
-          "route": "archive_routed",
-          "tier": "user",
-          "detail": "delegates to archive-routed metadata writes"
-        }
-      }
-    },
-    "archive_cli_routes": {
-      "checked": true,
-      "source": "static_cli_route_catalog",
-      "total_command_count": 5,
-      "archive_ready_command_count": 5,
-      "unsupported_command_count": 0,
-      "route_counts": {
-        "archive_direct": 5
-      },
-      "tier_counts": {
-        "user": 3,
-        "source": 2
-      },
-      "unsupported_commands": [],
-      "routes": {
-        "ops.state.blackboard.list": {
-          "route": "archive_direct",
-          "tier": "user",
-          "detail": "reads blackboard notes through active-root user.db"
-        },
-        "ops.state.blackboard.post": {
-          "route": "archive_direct",
-          "tier": "user",
-          "detail": "writes blackboard notes through active-root user.db"
-        },
-        "reset.database": {
-          "route": "archive_direct",
-          "tier": "source",
-          "detail": "deletes active-root tier files and sidecars"
-        },
-        "reset.session": {
-          "route": "archive_direct",
-          "tier": "user",
-          "detail": "writes suppressions to active-root user.db and deletes rebuildable active-root index rows"
-        },
-        "reset.source": {
-          "route": "archive_direct",
-          "tier": "source",
-          "detail": "resolves source paths through active-root source.db/index.db and writes user-tier suppressions"
-        }
-      }
-    },
-    "archive_runtime_paths": {
-      "checked": true,
-      "source": "static_facade_route_catalog",
-      "archive_routing_ready": true,
-      "archive_runtime_ready": true,
-      "primary_ingest_store": "archive_file_set",
-      "ingest_write_mode": "archive",
-      "archive_ingest_write_targets": [
-        "source.db",
-        "index.db"
-      ],
-      "archive_tier_targets": [
-        "source.db",
-        "index.db",
-        "embeddings.db",
-        "user.db",
-        "ops.db"
-      ],
-      "facade_tier_route_counts": {
-        "user": 40,
-        "index": 81,
-        "none": 1,
-        "source": 4
-      },
-      "cli_tier_route_counts": {
-        "user": 3,
-        "source": 2
-      },
-      "index_rebuild_store": "index_db",
-      "unsupported_primary_method_count": 0,
-      "unsupported_primary_methods": [],
-      "final_shape_blockers": []
-    },
-    "raw_materialization_readiness": {
-      "available": true,
-      "total": 0,
-      "critical": 0,
-      "warning": 0,
-      "actionable": 0,
-      "blocked": 0,
-      "classified": 0,
-      "affected_total": 0,
-      "affected_actionable": 0,
-      "affected_blocked": 0,
-      "affected_open": 0,
-      "affected_classified": 0,
-      "category_counts": {},
-      "source_family_counts": {},
-      "sampled_rows": []
-    },
+    "sessions": 2,
+    "messages": 10,
+    "raw_records": 2,
+    "next_action": "polylogue init",
     "component_readiness": {
       "raw_materialization": {
         "component": "raw_materialization",
@@ -1386,14 +544,27 @@
           "affected_total": 0,
           "affected_actionable": 0,
           "affected_open": 0,
-          "affected_classified": 0
+          "affected_classified": 0,
+          "unchecked": 0,
+          "affected_unchecked": 0,
+          "lost_source_evidence_count": 0,
+          "raw_artifact_count": 0,
+          "materialized_raw_artifact_count": 0,
+          "archive_session_count": 0,
+          "join_gap_count": 0
         },
         "caveats": [],
         "repair_hint": null,
         "evidence_refs": [],
         "metadata": {
-          "category_counts": {},
-          "source_family_counts": {}
+          "category_counts": {
+            "raw_id_join_gap": 0,
+            "skipped": 0,
+            "parse_failed": 0,
+            "parsed_without_index_session": 0
+          },
+          "source_family_counts": {},
+          "lost_source_evidence_samples": []
         }
       },
       "embeddings": {
@@ -1408,6 +579,8 @@
           "embedded_sessions": 0,
           "embedded_messages": 0,
           "pending_sessions": 2,
+          "pending_messages": null,
+          "pending_messages_exact": false,
           "stale_messages": 0,
           "failure_count": 0,
           "retrieval_ready": false
@@ -1674,7 +847,7 @@
       "transforms": {
         "component": "transforms",
         "scope": "session-analysis",
-        "state": "blocked",
+        "state": "unknown",
         "summary": "direct_status_default_skips_exact_archive_readiness",
         "last_success": null,
         "last_attempt": null,
@@ -1691,16 +864,242 @@
         ]
       }
     },
-    "next_action": "polylogue init",
+    "archive_tiers": {
+      "source": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": <SIZE_BYTES>,
+        "expected_user_version": 2,
+        "user_version": 2,
+        "version_status": "ok",
+        "table_counts": {
+          "raw_sessions": 2,
+          "blob_refs": 2,
+          "raw_artifacts": 0,
+          "raw_hook_events": 0,
+          "history_sidecars": 0
+        },
+        "table_count_precision": {
+          "raw_sessions": "exact",
+          "blob_refs": "exact",
+          "raw_artifacts": "exact",
+          "raw_hook_events": "exact",
+          "history_sidecars": "exact"
+        }
+      },
+      "index": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": <SIZE_BYTES>,
+        "expected_user_version": 24,
+        "user_version": 24,
+        "version_status": "ok",
+        "table_counts": {
+          "sessions": 2,
+          "messages": 10,
+          "blocks": 27,
+          "session_profiles": 0,
+          "session_work_events": 0,
+          "session_phases": 0,
+          "threads": 2,
+          "thread_sessions": 2,
+          "insight_materialization": 0
+        },
+        "table_count_precision": {
+          "sessions": "exact",
+          "messages": "exact",
+          "blocks": "exact",
+          "session_profiles": "exact",
+          "session_work_events": "exact",
+          "session_phases": "exact",
+          "threads": "exact",
+          "thread_sessions": "exact",
+          "insight_materialization": "exact"
+        }
+      },
+      "embeddings": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": <SIZE_BYTES>,
+        "expected_user_version": 1,
+        "user_version": 1,
+        "version_status": "ok",
+        "table_counts": {
+          "message_embeddings_meta": 0,
+          "embedding_status": 0
+        },
+        "table_count_precision": {
+          "message_embeddings_meta": "exact",
+          "embedding_status": "exact"
+        }
+      },
+      "user": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": <SIZE_BYTES>,
+        "expected_user_version": 4,
+        "user_version": 4,
+        "version_status": "ok",
+        "table_counts": {
+          "assertions": 0
+        },
+        "table_count_precision": {
+          "assertions": "exact"
+        }
+      },
+      "ops": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": <SIZE_BYTES>,
+        "expected_user_version": 1,
+        "user_version": 1,
+        "version_status": "ok",
+        "table_counts": {
+          "ingest_cursor": 0,
+          "ingest_attempts": 0,
+          "convergence_debt": 0,
+          "cursor_lag_samples": 0,
+          "daemon_stage_events": 0,
+          "daemon_events": 0,
+          "embedding_catchup_runs": 0,
+          "otlp_spans": 0,
+          "otlp_telemetry": 0
+        },
+        "table_count_precision": {
+          "ingest_cursor": "exact",
+          "ingest_attempts": "exact",
+          "convergence_debt": "exact",
+          "cursor_lag_samples": "exact",
+          "daemon_stage_events": "exact",
+          "daemon_events": "exact",
+          "embedding_catchup_runs": "exact",
+          "otlp_spans": "exact",
+          "otlp_telemetry": "exact"
+        }
+      }
+    },
+    "sqlite_maintenance": {
+      "archive_root": "<PATH>",
+      "total_wal_bytes": 0,
+      "tiers_with_planner_stats": [
+        "source",
+        "index",
+        "embeddings"
+      ],
+      "tiers": {
+        "source": {
+          "path": "<PATH>",
+          "exists": true,
+          "wal_bytes": 0,
+          "sqlite_stat1_rows": 7,
+          "planner_stats_present": true
+        },
+        "index": {
+          "path": "<PATH>",
+          "exists": true,
+          "wal_bytes": 0,
+          "sqlite_stat1_rows": 36,
+          "planner_stats_present": true
+        },
+        "embeddings": {
+          "path": "<PATH>",
+          "exists": true,
+          "wal_bytes": 0,
+          "sqlite_stat1_rows": 1,
+          "planner_stats_present": true
+        },
+        "user": {
+          "path": "<PATH>",
+          "exists": true,
+          "wal_bytes": 0,
+          "sqlite_stat1_rows": 0,
+          "planner_stats_present": false
+        },
+        "ops": {
+          "path": "<PATH>",
+          "exists": true,
+          "wal_bytes": 0,
+          "sqlite_stat1_rows": 0,
+          "planner_stats_present": false
+        }
+      }
+    },
+    "storage": {
+      "active_db_path": "<PATH>"
+    },
+    "ingest": {
+      "available": true,
+      "actively_ingesting": false,
+      "running_count": 0,
+      "running": [],
+      "throughput": {
+        "window_minutes": 5,
+        "batches": 0,
+        "files": 0,
+        "materialized": 0,
+        "files_per_second": 0.0
+      },
+      "cursor": {
+        "tracked": 0,
+        "excluded": 0,
+        "retry_pending": 0
+      },
+      "debt": {
+        "total": 0,
+        "by_status": {}
+      },
+      "lifetime_attempts": {}
+    },
+    "raw_materialization_readiness": {
+      "available": true,
+      "classification": "not_run",
+      "precision": "raw_id_join_gap",
+      "raw_artifact_count": 0,
+      "materialized_raw_artifact_count": 0,
+      "archive_session_count": 0,
+      "join_gap_count": 0,
+      "total": 0,
+      "critical": 0,
+      "warning": 0,
+      "actionable": 0,
+      "blocked": 0,
+      "classified": 0,
+      "unchecked": 0,
+      "affected_total": 0,
+      "affected_actionable": 0,
+      "affected_blocked": 0,
+      "affected_open": 0,
+      "affected_classified": 0,
+      "affected_unchecked": 0,
+      "lost_source_evidence_count": 0,
+      "lost_source_evidence_samples": [],
+      "category_counts": {
+        "raw_id_join_gap": 0,
+        "skipped": 0,
+        "parse_failed": 0,
+        "parsed_without_index_session": 0
+      },
+      "source_family_counts": {}
+    },
+    "raw_replay_backlog": {
+      "available": true,
+      "candidate_count": 0,
+      "missing_blob_count": 0,
+      "already_parsed_count": 0,
+      "total_blob_bytes": 0,
+      "max_blob_bytes": 0,
+      "execute_blob_limit_bytes": 1073741824,
+      "oversized_count": 0,
+      "oversized_stream_safe_count": 0,
+      "top_raw_rows": [],
+      "origin_summary": []
+    },
     "diagnostic": {
       "kind": "no_sources",
       "headline": "No configured chat sources.",
       "detail": "No `<PATH>` found. Run `polylogue init` to detect chat sources and write a starter config.",
       "next_action": "polylogue init"
-    },
-    "sessions": 2,
-    "messages": 10,
-    "raw_records": 2
+    }
   }
   
   '''

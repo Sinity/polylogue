@@ -344,7 +344,7 @@ async def get_messages_paginated(
     count_row = await count_cursor.fetchone()
     total = count_row[0] if count_row else 0
 
-    query += " ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id"
+    query += " ORDER BY m.position, m.variant_index, m.message_id"
     query += " LIMIT ? OFFSET ?"
     params.extend([limit, offset])
 

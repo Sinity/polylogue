@@ -17,6 +17,8 @@ from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.runtime import RawSessionRecord
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from polylogue.config import Source
     from polylogue.sources.drive.types import DriveConfigLike, DriveUILike
 
@@ -36,6 +38,7 @@ def _drain_batch(
 async def iter_source_raw_stream(
     source: Source,
     *,
+    blob_root: Path | None = None,
     known_mtimes: dict[str, str] | None = None,
     known_cursors: dict[str, dict[str, object]] | None = None,
     observation_callback: ObservationCallback | None = None,
@@ -56,6 +59,7 @@ async def iter_source_raw_stream(
             source,
             known_mtimes=known_mtimes,
             known_cursors=known_cursors,
+            blob_root=blob_root,
             observation_callback=observation_callback,
             status_callback=_status_callback if progress_callback is not None else None,
         )
@@ -124,6 +128,7 @@ async def iter_drive_raw_stream(
 async def iter_raw_record_stream(
     source: Source,
     *,
+    blob_root: Path | None = None,
     known_mtimes: dict[str, str] | None = None,
     known_cursors: dict[str, dict[str, object]] | None = None,
     ui: DriveUILike | None = None,
@@ -147,6 +152,7 @@ async def iter_raw_record_stream(
     else:
         raw_stream = iter_source_raw_stream(
             source,
+            blob_root=blob_root,
             known_mtimes=known_mtimes,
             known_cursors=known_cursors,
             observation_callback=observation_callback,
@@ -158,7 +164,7 @@ async def iter_raw_record_stream(
             continue
         raw_source_path = raw_data.source_path
         try:
-            record = make_raw_record(raw_data, source.name)
+            record = make_raw_record(raw_data, source.name, blob_root=blob_root)
             # Explicitly break reference to raw bytes so GC can collect them
             # before the next iteration reads the next file.
             del raw_data

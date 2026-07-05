@@ -43,7 +43,56 @@ _STORAGE_ROOT: Final = Path("polylogue/storage")
 # currently-safe interpolation. This dict exists for the rare future case
 # where an interpolation site cannot be expressed as a single trusted-name
 # reference (e.g. an inline expression). Each entry MUST carry a rationale.
-_AUDITED_SITES: Final[dict[tuple[str, int], str]] = {}
+_AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
+    (
+        "polylogue/storage/embeddings/status_payload.py",
+        624,
+    ): 'conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}") uses an internal integer constant.',
+    (
+        "polylogue/storage/sqlite/archive_tiers/archive.py",
+        4972,
+    ): "query_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL plus closed predicate/order fragments; user values are bound.",
+    (
+        "polylogue/storage/sqlite/archive_tiers/archive.py",
+        5023,
+    ): "query_session_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL, placeholders, and closed order direction; ids are bound.",
+    (
+        "polylogue/storage/sqlite/archive_tiers/archive.py",
+        5501,
+    ): "query_runs interpolates run_relation_sql() and closed predicate/order fragments; user values are bound.",
+    (
+        "polylogue/storage/sqlite/archive_tiers/archive.py",
+        5552,
+    ): "query_observed_events interpolates observed_event_relation_sql() and closed predicate/order fragments; user values are bound.",
+    (
+        "polylogue/storage/sqlite/archive_tiers/archive.py",
+        5607,
+    ): "query_context_snapshots interpolates context_snapshot_relation_sql() and closed predicate/order fragments; user values are bound.",
+    (
+        "polylogue/storage/sqlite/archive_tiers/ops_write.py",
+        585,
+    ): "read_embedding_catchup_run formats outcome column names from _embedding_catchup_run_outcome_columns(), a closed schema-shape helper.",
+    (
+        "polylogue/storage/sqlite/maintenance.py",
+        42,
+    ): 'conn.execute(f"PRAGMA analysis_limit = {int(analysis_limit)}") casts the caller value to int before interpolation.',
+    (
+        "polylogue/storage/sqlite/migration_runner.py",
+        136,
+    ): 'conn.execute(f"PRAGMA user_version = {step.version}") uses the internal migration step integer version.',
+    (
+        "polylogue/storage/usage.py",
+        1343,
+    ): "provider usage summary interpolates closed counter-column expressions and WHERE fragments; filter values are bound.",
+    (
+        "polylogue/storage/usage.py",
+        1385,
+    ): "provider cumulative usage interpolates closed counter-column expressions and origin SELECT/JOIN fragments; origin is bound.",
+    (
+        "polylogue/storage/usage.py",
+        1450,
+    ): "usage quality examples interpolate closed diagnostic predicates; origin and limit values are bound.",
+}
 
 
 def _execute_call_target(node: ast.Call) -> str | None:
@@ -171,6 +220,7 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "having_clause",
         "tag_clause",
         "limit_clause",
+        "max_message_filter",
         "effective_raw_provider_sql",
         "base_select",  # local literal SELECT template; dynamic values stay bound
         "quoted",  # double-quote escaped identifier from a closed table list
@@ -207,15 +257,35 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "alias_sql",
         "raw_filter",
         "origin_filter",
+        "raw_select_columns",
+        "origin_expr",
+        "native_id_expr",
+        "message_count_expr",
+        "updated_at_expr",
+        "order_expr",
         "source_root_filter",
         "route_column",
         "route_value",
         "route_update",
-        # embedding/search/read-model fragments from closed helper functions or
-        # local literal templates; all external values stay bound.
+        "aggregate_expr",
         "status_select",
         "count_select",
+        "relation",
         "messages_ref",
+        "blocks_ref",
+        "text_filter",
+        "stale_message_clause",
+        "stale_session_clause",
+        "stale_eligible_clause",
+        "outcome_columns",
+        "select_parts",
+        "group_columns",
+        "event_where",
+        "cost_where",
+        "total_predicate",
+        "origin_select",
+        # embedding/search/read-model fragments from closed helper functions or
+        # local literal templates; all external values stay bound.
         "archive_messages_table_ref",
         "archive_embeddable_message_where",
         "materialization_selects",
@@ -231,9 +301,7 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "_phase_select",
         "_phase_from",
         "_where_origin",
-        "select_parts",
         "total_cols",
-        "total_predicate",
         "predicates",
         "limit",
         "_quote_identifier",

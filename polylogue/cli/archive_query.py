@@ -10,6 +10,7 @@ import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, NoReturn, TypeVar, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -1006,19 +1007,30 @@ def _fetch_daemon_sessions_payload(config: Config, query_params: Mapping[str, ob
     daemon_url = daemon_url_value.rstrip("/")
     auth_token = getattr(config, "api_auth_token", None)
     auth_header = auth_token if isinstance(auth_token, str) and auth_token else None
-    return _fetch_daemon_sessions_payload_with_deadline(daemon_url, auth_header, dict(query_params))
+    expected_archive_root = archive_file_set_root_for_paths(
+        archive_root_path=config.archive_root,
+        db_anchor=config.db_path,
+    )
+    return _fetch_daemon_sessions_payload_with_deadline(
+        daemon_url,
+        auth_header,
+        dict(query_params),
+        expected_archive_root=expected_archive_root,
+    )
 
 
 def _fetch_daemon_sessions_payload_with_deadline(
     daemon_url: str,
     auth_token: str | None,
     query_params: Mapping[str, object],
+    *,
+    expected_archive_root: Path | None = None,
 ) -> dict[str, object] | None:
     ctx = multiprocessing.get_context("fork")
     queue: multiprocessing.Queue[dict[str, object] | None] = ctx.Queue(maxsize=1)
     worker = ctx.Process(
         target=_fetch_daemon_sessions_payload_worker,
-        args=(daemon_url, auth_token, dict(query_params), queue),
+        args=(daemon_url, auth_token, dict(query_params), expected_archive_root, queue),
         daemon=True,
     )
     worker.start()
@@ -1040,16 +1052,32 @@ def _fetch_daemon_sessions_payload_worker(
     daemon_url: str,
     auth_token: str | None,
     query_params: Mapping[str, object],
+    expected_archive_root: Path | None,
     queue: multiprocessing.Queue[dict[str, object] | None],
 ) -> None:
-    queue.put(_fetch_daemon_sessions_payload_once(daemon_url, auth_token, query_params))
+    queue.put(
+        _fetch_daemon_sessions_payload_once(
+            daemon_url,
+            auth_token,
+            query_params,
+            expected_archive_root=expected_archive_root,
+        )
+    )
 
 
 def _fetch_daemon_sessions_payload_once(
     daemon_url: str,
     auth_token: str | None,
     query_params: Mapping[str, object],
+    *,
+    expected_archive_root: Path | None = None,
 ) -> dict[str, object] | None:
+    if expected_archive_root is not None and not _daemon_matches_archive_root(
+        daemon_url,
+        auth_token,
+        expected_archive_root,
+    ):
+        return None
     query_string = urlencode(tuple(_daemon_query_pairs(query_params)), doseq=True)
     url = f"{daemon_url}/api/sessions"
     if query_string:
@@ -1059,6 +1087,34 @@ def _fetch_daemon_sessions_payload_once(
         headers["Authorization"] = f"Bearer {auth_token}"
     try:
         req = Request(url, headers=headers, method="GET")
+        with urlopen(req, timeout=_DAEMON_FAST_PATH_TIMEOUT_S) as resp:
+            if int(resp.status) != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+    except (HTTPError, URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _daemon_matches_archive_root(daemon_url: str, auth_token: str | None, expected_archive_root: Path) -> bool:
+    status = _fetch_daemon_status_once(daemon_url, auth_token)
+    if not isinstance(status, Mapping):
+        return False
+    active_root = status.get("active_archive_root")
+    if not isinstance(active_root, str) or not active_root:
+        return False
+    try:
+        return Path(active_root).expanduser().resolve() == expected_archive_root.expanduser().resolve()
+    except OSError:
+        return False
+
+
+def _fetch_daemon_status_once(daemon_url: str, auth_token: str | None) -> dict[str, object] | None:
+    headers = {"Accept": "application/json"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    try:
+        req = Request(f"{daemon_url}/api/status", headers=headers, method="GET")
         with urlopen(req, timeout=_DAEMON_FAST_PATH_TIMEOUT_S) as resp:
             if int(resp.status) != 200:
                 return None

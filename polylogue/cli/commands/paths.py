@@ -6,6 +6,7 @@ import contextlib
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -64,7 +65,7 @@ def paths_command(output_format: str) -> None:
         tier_versions[name]["version_status"] == "ok" for name in ("source", "index", "embeddings", "ops", "user")
     )
     active_rebuild_attempts = active_rebuild_index_attempts(ops_db)
-    raw_materialization_readiness = raw_materialization_readiness_snapshot(active_archive)
+    raw_materialization_readiness = _raw_materialization_readiness(active_archive)
     archive_materialization_ready = (
         source_db.exists()
         and db.exists()
@@ -254,6 +255,97 @@ def _schema_blocker_text(tier_versions: dict[str, dict[str, object]]) -> str:
         if info["version_status"] != "ok"
     ]
     return "blocked=" + ",".join(blockers)
+
+
+def _raw_materialization_readiness(active_archive: Path) -> dict[str, object]:
+    readiness = raw_materialization_readiness_snapshot(active_archive)
+    return _merge_raw_materialization_debt(readiness, active_archive)
+
+
+def _merge_raw_materialization_debt(readiness: dict[str, object], active_archive: Path) -> dict[str, object]:
+    """Fold the unified raw-materialization debt classifier into readiness.
+
+    The structural snapshot is intentionally cheap and local to raw_id joins.
+    Archive debt is the richer shared classifier for actionable/blocking raw
+    materialization rows. `paths` reports archive readiness, so it must compose
+    both instead of treating the richer debt projection as an optional operator
+    command.
+    """
+    try:
+        from polylogue.operations import archive_debt as archive_debt_ops
+
+        payload = archive_debt_ops.archive_debt_list(
+            archive_root=active_archive,
+            kinds=("raw-materialization",),
+            exact_fts=False,
+        )
+    except Exception:
+        return readiness
+    rows = getattr(payload, "rows", ())
+    totals = getattr(payload, "totals", None)
+    if totals is None or not rows:
+        return readiness
+    enriched = dict(readiness)
+    enriched["available"] = True
+    enriched["classification"] = _combined_classification(str(enriched.get("classification") or "not_run"))
+    for key in (
+        "total",
+        "critical",
+        "warning",
+        "info",
+        "actionable",
+        "blocked",
+        "classified",
+        "affected_total",
+        "affected_critical",
+        "affected_warning",
+        "affected_info",
+        "affected_actionable",
+        "affected_blocked",
+        "affected_open",
+        "affected_classified",
+    ):
+        enriched[key] = _max_payload_int(enriched.get(key), getattr(totals, key, 0))
+    existing_categories = _string_int_mapping(enriched.get("category_counts"))
+    debt_categories: dict[str, int] = {}
+    source_families = _string_int_mapping(enriched.get("source_family_counts"))
+    for row in rows:
+        category = getattr(row, "category", None)
+        affected_count = getattr(row, "affected_count", None)
+        count = _max_payload_int(affected_count, 1)
+        if category:
+            debt_categories[str(category)] = debt_categories.get(str(category), 0) + count
+        source_family = getattr(row, "source_family", None)
+        if source_family:
+            family = str(source_family)
+            source_families[family] = _max_payload_int(source_families.get(family), 0) + count
+    existing_categories.update(debt_categories)
+    enriched["category_counts"] = existing_categories
+    enriched["source_family_counts"] = source_families
+    return enriched
+
+
+def _combined_classification(current: str) -> str:
+    if current and current != "not_run":
+        return f"{current}+archive_debt"
+    return "archive_debt"
+
+
+def _max_payload_int(left: Any, right: Any) -> int:
+    return max(_payload_int(left), _payload_int(right))
+
+
+def _payload_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _string_int_mapping(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): _payload_int(item) for key, item in value.items()}
 
 
 def _detect_bind_mounts(archive: Path, out: list[dict[str, object]]) -> None:

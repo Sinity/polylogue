@@ -22,6 +22,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 
 
@@ -215,7 +216,13 @@ def test_full_ingest_writes_archive_with_route_observability(
         "archive_present_tiers": "source,index,ops",
         "archive_missing_tiers": "embeddings,user",
         "archive_tier_user_versions_json": json.dumps(
-            {"embeddings": None, "index": INDEX_SCHEMA_VERSION, "ops": 1, "source": 1, "user": None},
+            {
+                "embeddings": None,
+                "index": INDEX_SCHEMA_VERSION,
+                "ops": 1,
+                "source": SOURCE_SCHEMA_VERSION,
+                "user": None,
+            },
             sort_keys=True,
         ),
     }
@@ -307,7 +314,13 @@ def test_streaming_full_ingest_writes_archive_from_blob(
         "archive_present_tiers": "source,index,ops",
         "archive_missing_tiers": "embeddings,user",
         "archive_tier_user_versions_json": json.dumps(
-            {"embeddings": None, "index": INDEX_SCHEMA_VERSION, "ops": 1, "source": 1, "user": None},
+            {
+                "embeddings": None,
+                "index": INDEX_SCHEMA_VERSION,
+                "ops": 1,
+                "source": SOURCE_SCHEMA_VERSION,
+                "user": None,
+            },
             sort_keys=True,
         ),
     }
@@ -600,7 +613,13 @@ def test_full_ingest_bootstraps_archive_root(
         "archive_present_tiers": "source,index,embeddings,user,ops",
         "archive_missing_tiers": "",
         "archive_tier_user_versions_json": json.dumps(
-            {"embeddings": 1, "index": INDEX_SCHEMA_VERSION, "ops": 1, "source": 1, "user": USER_SCHEMA_VERSION},
+            {
+                "embeddings": 1,
+                "index": INDEX_SCHEMA_VERSION,
+                "ops": 1,
+                "source": SOURCE_SCHEMA_VERSION,
+                "user": USER_SCHEMA_VERSION,
+            },
             sort_keys=True,
         ),
     }

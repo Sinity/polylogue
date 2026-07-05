@@ -19,6 +19,15 @@ from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, lis
 
 EXPECTED_DEMO_SESSIONS = (
     (
+        "aistudio-drive:demo-00",
+        "aistudio-drive",
+        "demo-00",
+        "Please inspect the attached fixture note.",
+        1706934576990,
+        1706934756990,
+        4,
+    ),
+    (
         "chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5",
         "chatgpt-export",
         "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
@@ -48,6 +57,7 @@ EXPECTED_DEMO_SESSIONS = (
 )
 
 EXPECTED_DEMO_SOURCE_PATHS = (
+    "gemini/demo-00.json",
     "chatgpt/demo-00.json",
     "claude-code/demo-00.jsonl",
     "codex/demo-00.jsonl",
@@ -132,9 +142,9 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     result = await parse_sources_archive(archive_root, sources)
 
     assert sorted(result.processed_ids) == [row[0] for row in EXPECTED_DEMO_SESSIONS]
-    assert result.counts["sessions"] == 3
-    assert result.counts["messages"] == 23
-    assert result.changed_counts["sessions"] == 3
+    assert result.counts["sessions"] == 4
+    assert result.counts["messages"] == 27
+    assert result.changed_counts["sessions"] == 4
     assert _session_rows(archive_root) == EXPECTED_DEMO_SESSIONS
     assert _raw_source_paths(archive_root) == EXPECTED_DEMO_SOURCE_PATHS
 
@@ -152,7 +162,7 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     assert all(fragment not in value for value in stored_values for fragment in forbidden_fragments)
 
     overlay = seed_demo_user_overlays(archive_root)
-    assert overlay.session_ids == tuple(row[0] for row in EXPECTED_DEMO_SESSIONS)
+    assert set(overlay.session_ids) == {row[0] for row in EXPECTED_DEMO_SESSIONS}
     assert overlay.tag == "pytest-triage"
     assert overlay.note_id == "demo-note:pytest-triage"
     assert overlay.saved_view_id == "demo-view:pytest-triage"
