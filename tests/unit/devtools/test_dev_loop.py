@@ -1373,6 +1373,7 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
     repo = workspace_env["state_dir"] / "repo"
     repo.mkdir(parents=True)
     archive_root = workspace_env["archive_root"]
+    browser_capture_spool = workspace_env["state_dir"] / "browser-capture"
     initialize_active_archive_root(archive_root)
     monkeypatch.setattr(dev_loop, "_repo_root", lambda: repo)
     monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
@@ -1419,6 +1420,8 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
                 "9876",
                 "--browser-capture-port",
                 "9875",
+                "--browser-capture-spool",
+                str(browser_capture_spool),
                 "--launch-daemon",
             ]
         )
@@ -1427,6 +1430,7 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
 
     payload = json.loads(capsys.readouterr().out)
     launch = payload["daemon_launch"]
+    assert payload["preflight"]["browser_capture_spool"] == str(browser_capture_spool)
     command = launch["command"]
     assert command[:4] == [
         sys.executable,
@@ -1438,12 +1442,13 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
     assert "--no-source-catchup" in command
     assert command[command.index("--spool") : command.index("--spool") + 2] == [
         "--spool",
-        launch["spool_path"],
+        str(browser_capture_spool),
     ]
     assert command[command.index("--root") : command.index("--root") + 2] == [
         "--root",
-        launch["spool_path"],
+        str(browser_capture_spool),
     ]
+    assert launch["spool_path"] == str(browser_capture_spool)
     assert command[command.index("--api-port") : command.index("--api-port") + 2] == ["--api-port", "9876"]
     assert command[command.index("--port") : command.index("--port") + 2] == ["--port", "9875"]
     assert launch["pid"] == 4242

@@ -770,6 +770,25 @@ def test_polylogued_run_uses_default_sources() -> None:
     assert "Starting polylogued (watch=1 source(s)). Ctrl-C to stop." in result.stderr
 
 
+def test_spool_override_replaces_default_browser_capture_source() -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    default_spool = Path("/tmp/default-browser-capture")
+    override_spool = Path("/tmp/override-browser-capture")
+    sources = (
+        WatchSource(name="codex", root=Path("/tmp/codex")),
+        WatchSource(name="browser-capture", root=default_spool, suffixes=(".json",)),
+    )
+
+    with patch("polylogue.daemon.cli.default_sources", return_value=sources):
+        resolved = daemon_cli._watch_sources_from_roots((), browser_capture_spool_path=override_spool)
+
+    assert resolved == (
+        WatchSource(name="codex", root=Path("/tmp/codex")),
+        WatchSource(name="browser-capture", root=override_spool, suffixes=(".json",)),
+    )
+
+
 def test_polylogued_run_can_skip_configured_source_catchup() -> None:
     recorded: dict[str, object] = {}
 
@@ -971,6 +990,23 @@ def test_explicit_browser_capture_root_keeps_capture_suffixes(
 
     assert sources == (
         WatchSource(name="browser-capture", root=spool, suffixes=(".json",)),
+        WatchSource(name="ordinary-jsonl-root", root=ordinary, suffixes=(".jsonl",)),
+    )
+
+
+def test_explicit_browser_capture_root_uses_spool_override_classifier(tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    override_spool = tmp_path / "override-browser-capture"
+    ordinary = tmp_path / "ordinary-jsonl-root"
+
+    sources = daemon_cli._watch_sources_from_roots(
+        (override_spool, ordinary),
+        browser_capture_spool_path=override_spool,
+    )
+
+    assert sources == (
+        WatchSource(name="browser-capture", root=override_spool, suffixes=(".json",)),
         WatchSource(name="ordinary-jsonl-root", root=ordinary, suffixes=(".jsonl",)),
     )
 

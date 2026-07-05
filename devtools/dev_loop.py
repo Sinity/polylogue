@@ -2217,6 +2217,7 @@ def launch_branch_daemon(
     preflight: dict[str, Any],
     readiness_timeout_s: float,
     full_source_catchup: bool = False,
+    browser_capture_spool: Path | None = None,
 ) -> dict[str, object]:
     """Launch a branch-local polylogued and persist process/debug artifacts."""
 
@@ -2270,10 +2271,13 @@ def launch_branch_daemon(
     assert isinstance(receiver_status, dict)
     api_port = int(api_status["port"])
     receiver_port = int(receiver_status["port"])
-    data_home = Path(
-        str(env.get("XDG_DATA_HOME", repo_root / ".cache" / "dev-loop" / str(preflight["run_id"]) / "xdg-data"))
-    )
-    spool_path = data_home / "polylogue" / "browser-capture"
+    if browser_capture_spool is not None:
+        spool_path = browser_capture_spool.expanduser()
+    else:
+        data_home = Path(
+            str(env.get("XDG_DATA_HOME", repo_root / ".cache" / "dev-loop" / str(preflight["run_id"]) / "xdg-data"))
+        )
+        spool_path = data_home / "polylogue" / "browser-capture"
     spool_path.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
@@ -2823,6 +2827,7 @@ def _build_operator_plan(
     dev_events: Path,
     api_port: int,
     browser_capture_port: int,
+    browser_capture_spool: Path | None,
     prepared: bool,
 ) -> dict[str, object]:
     browser_plan_json = browser_artifact_dir / "browser-plan.json"
@@ -2835,12 +2840,15 @@ def _build_operator_plan(
         logs=logs,
         extra_args=["--prepare"],
     )
+    launch_extra_args = ["--launch-daemon", "--json"]
+    if browser_capture_spool is not None:
+        launch_extra_args[0:0] = ["--browser-capture-spool", str(browser_capture_spool)]
     launch_command = _dev_loop_cli_args(
         api_port=api_port,
         browser_capture_port=browser_capture_port,
         archive=archive,
         logs=logs,
-        extra_args=["--launch-daemon", "--json"],
+        extra_args=launch_extra_args,
     )
     receiver_smoke_command = _dev_loop_cli_args(
         api_port=api_port,
@@ -3055,6 +3063,7 @@ def build_dev_loop_status(
     browser_capture_port: int = DEFAULT_BROWSER_CAPTURE_PORT,
     archive_root: Path | None = None,
     log_dir: Path | None = None,
+    browser_capture_spool: Path | None = None,
     prepare: bool = False,
     port_selection: str = "explicit",
 ) -> dict[str, Any]:
@@ -3150,6 +3159,7 @@ def build_dev_loop_status(
         dev_events=dev_events,
         api_port=api_port,
         browser_capture_port=browser_capture_port,
+        browser_capture_spool=browser_capture_spool,
         prepared=prepare,
     )
     plan_actions = {str(action["name"]): action for action in cast(list[dict[str, object]], operator_plan["actions"])}
@@ -3177,7 +3187,9 @@ def build_dev_loop_status(
         "run_daemon": (
             f"{shell_env_prefix} "
             f"{shlex.quote(sys.executable)} -c 'from polylogue.daemon.cli import main; main()' "
-            f"run --api-port {api_port} --port {browser_capture_port} 2>&1 | tee {daemon_log}"
+            "run "
+            f"{('--spool ' + shlex.quote(str(browser_capture_spool.expanduser())) + ' ') if browser_capture_spool is not None else ''}"
+            f"--api-port {api_port} --port {browser_capture_port} 2>&1 | tee {daemon_log}"
         ),
         "open_web_shell": web_url,
         "receiver_status": f"curl -sf {receiver_url}/v1/status",
@@ -3204,6 +3216,7 @@ def build_dev_loop_status(
         "api_url": api_url,
         "web_url": web_url,
         "receiver_url": receiver_url,
+        "browser_capture_spool": str(browser_capture_spool.expanduser()) if browser_capture_spool is not None else None,
         "artifacts": {
             "daemon_log": str(daemon_log),
             "browser_dir": str(browser_artifact_dir),
@@ -3533,6 +3546,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--archive-root", type=Path, help="Branch-local archive root to report/use.")
     parser.add_argument("--log-dir", type=Path, help="Branch-local dev-loop log directory to report/use.")
+    parser.add_argument(
+        "--browser-capture-spool",
+        type=Path,
+        help=(
+            "Filesystem spool for --launch-daemon browser captures. "
+            "Defaults to the isolated dev-loop XDG data directory."
+        ),
+    )
     parser.add_argument("--prepare", action="store_true", help="Create the reported archive/log directories.")
     parser.add_argument(
         "--receiver-smoke",
@@ -3657,6 +3678,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_capture_port=browser_capture_port,
         archive_root=args.archive_root,
         log_dir=args.log_dir,
+        browser_capture_spool=args.browser_capture_spool,
         prepare=args.prepare
         or args.receiver_smoke
         or args.launch_daemon
@@ -3697,6 +3719,7 @@ def main(argv: list[str] | None = None) -> int:
                 preflight=payload,
                 readiness_timeout_s=args.daemon_ready_timeout_s,
                 full_source_catchup=args.full_source_catchup,
+                browser_capture_spool=args.browser_capture_spool,
             )
         except ValueError as exc:
             parser.error(str(exc))

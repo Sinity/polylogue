@@ -106,7 +106,11 @@ def _enable_faulthandler_if_supported() -> None:
         faulthandler.enable()
 
 
-def _watch_sources_from_roots(roots: tuple[Path, ...]) -> tuple[WatchSource, ...]:
+def _watch_sources_from_roots(
+    roots: tuple[Path, ...],
+    *,
+    browser_capture_spool_path: Path | None = None,
+) -> tuple[WatchSource, ...]:
     """Build watch sources for explicit daemon roots.
 
     An explicit ``--root`` normally means a JSONL session tree. The archive
@@ -116,22 +120,31 @@ def _watch_sources_from_roots(roots: tuple[Path, ...]) -> tuple[WatchSource, ...
     default inbox source.
     """
     if not roots:
-        return default_sources()
+        sources = list(default_sources())
+        if browser_capture_spool_path is not None:
+            spool = browser_capture_spool_path.expanduser()
+            sources = [source for source in sources if source.name != "browser-capture"]
+            sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
+        return tuple(sources)
 
     from polylogue.paths import archive_root, browser_capture_spool_root
 
     inbox_root = (archive_root() / "inbox").resolve(strict=False)
-    browser_root = browser_capture_spool_root().resolve(strict=False)
-    sources: list[WatchSource] = []
+    browser_root = (
+        browser_capture_spool_path.expanduser()
+        if browser_capture_spool_path is not None
+        else browser_capture_spool_root()
+    ).resolve(strict=False)
+    explicit_sources: list[WatchSource] = []
     for root in roots:
         resolved = root.resolve(strict=False)
         if resolved == inbox_root:
-            sources.append(WatchSource(name="inbox", root=root, suffixes=INBOX_SOURCE_SUFFIXES))
+            explicit_sources.append(WatchSource(name="inbox", root=root, suffixes=INBOX_SOURCE_SUFFIXES))
         elif resolved == browser_root:
-            sources.append(WatchSource(name="browser-capture", root=root, suffixes=(".json",)))
+            explicit_sources.append(WatchSource(name="browser-capture", root=root, suffixes=(".json",)))
         else:
-            sources.append(WatchSource(name=root.name, root=root, suffixes=(".jsonl",)))
-    return tuple(sources)
+            explicit_sources.append(WatchSource(name=root.name, root=root, suffixes=(".jsonl",)))
+    return tuple(explicit_sources)
 
 
 def _active_index_db_path() -> Path:
@@ -1567,7 +1580,7 @@ def run_command(
 
     atexit.register(_cleanup_pidfile)
 
-    sources = _watch_sources_from_roots(roots)
+    sources = _watch_sources_from_roots(roots, browser_capture_spool_path=spool_path)
     components = []
     if enable_watch:
         components.append(f"watch={len(sources)} source(s)")
