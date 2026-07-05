@@ -232,26 +232,6 @@
             printf '%s' "$sync_fingerprint" > "$sync_fingerprint_file"
           fi
 
-          # Render AGENTS.md when CLAUDE.md or its @include targets change.
-          # Uses content hashing (not mtime) to avoid spurious rebuilds on
-          # touch / rsync / branch switches without content change.
-          agents_hash_file=".cache/.last-agents-render-hash"
-          agents_hash="$(
-            cat CLAUDE.md CONTRIBUTING.md TESTING.md \
-              docs/architecture.md docs/internals.md docs/devtools.md \
-              2>/dev/null | sha256sum | cut -d' ' -f1
-          )"
-          agents_last_hash=""
-          if [ -f "$agents_hash_file" ]; then
-            agents_last_hash="$(cat "$agents_hash_file")"
-          fi
-
-          if [ "$agents_hash" != "$agents_last_hash" ]; then
-            echo "devshell: regenerating AGENTS.md (sources changed)" >&2
-            devtools render agents >/dev/null
-            printf '%s' "$agents_hash" > "$agents_hash_file"
-          fi
-
           if [[ $- == *i* ]]; then
             devtools status --stderr || true
             export POLYLOGUE_MOTD_RENDERED=1

@@ -92,12 +92,6 @@ def _selected_surfaces(skip: set[str]) -> list[GeneratedSurface]:
     return [surface for surface in GENERATED_SURFACES if surface.name not in skip]
 
 
-def _agents_last(surfaces: list[GeneratedSurface]) -> list[GeneratedSurface]:
-    return [surface for surface in surfaces if surface.name != "agents"] + [
-        surface for surface in surfaces if surface.name == "agents"
-    ]
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Refresh or verify generated repository surfaces.")
     parser.add_argument(
@@ -114,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    selected = _agents_last(_selected_surfaces(set(args.skip)))
+    selected = _selected_surfaces(set(args.skip))
     if not selected:
         print("render all: no surfaces selected", file=sys.stderr)
         return 2
@@ -127,21 +121,13 @@ def main(argv: list[str] | None = None) -> int:
                 exit_code = result if exit_code == 0 else exit_code
         return exit_code
 
-    # Render independent surfaces in parallel. AGENTS is rendered after the
-    # other surfaces because it transcludes generated docs such as
-    # docs/devtools.md.
-    agents = [surface for surface in selected if surface.name == "agents"]
-    parallel = [surface for surface in selected if surface.name != "agents"]
+    # Generated surfaces are independent, so render them in parallel.
     with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(_render_one, s, bool(args.check)): s for s in parallel}
+        futures = {pool.submit(_render_one, s, bool(args.check)): s for s in selected}
         for future in futures:
             result = future.result()
             if result != 0:
                 exit_code = result if exit_code == 0 else exit_code
-    for surface in agents:
-        result = _render_one(surface, check=False)
-        if result != 0:
-            exit_code = result if exit_code == 0 else exit_code
     return exit_code
 
 

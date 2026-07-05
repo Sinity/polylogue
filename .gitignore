@@ -65,9 +65,6 @@ browser-extension/package-lock.json
 # Legacy build-tool defaults that may still appear at the repo root
 dist/
 
-# Generated agent surface
-AGENTS.md
-
 # Agent workspace: track reusable scaffold, ignore live state/artifacts
 .agent/*
 !.agent/README.md

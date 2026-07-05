@@ -18,8 +18,7 @@ nix develop
 All commands below assume you are already inside that environment. If not, use
 `nix develop -c <command>`.
 
-The devshell regenerates `AGENTS.md` from [CLAUDE.md](CLAUDE.md) on entry.
-It is gitignored.
+`AGENTS.md` is a symlink to [CLAUDE.md](CLAUDE.md); edit `CLAUDE.md`.
 
 For repository maintenance, use `devtools`:
 

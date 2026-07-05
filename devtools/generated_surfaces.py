@@ -6,7 +6,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from devtools import (
-    render_agents,
     render_cli_output_schemas,
     render_cli_reference,
     render_demo_corpus_datasheet,
@@ -34,22 +33,6 @@ class GeneratedSurface:
 
 
 GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
-    GeneratedSurface(
-        name="agents",
-        label="AGENTS",
-        description="Render AGENTS.md from the root CLAUDE transclusion surface.",
-        command=control_plane_argv("render agents"),
-        main=render_agents.main,
-        inputs=(
-            "devtools/render_agents.py",
-            "CLAUDE.md",
-            "CONTRIBUTING.md",
-            "TESTING.md",
-            "docs/architecture.md",
-            "docs/internals.md",
-            "docs/devtools.md",
-        ),
-    ),
     GeneratedSurface(
         name="cli-reference",
         label="CLI docs",
