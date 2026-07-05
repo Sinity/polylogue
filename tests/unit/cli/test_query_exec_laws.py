@@ -37,6 +37,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import MaterialOrigin, Provider
 from polylogue.services import build_runtime_services
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 from polylogue.surfaces.payloads import decode_search_cursor
 from tests.infra.builders import make_conv, make_msg
 
@@ -611,6 +612,175 @@ def test_async_execute_query_archive_routes_pure_structured_terms_to_list(
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "list"
     assert payload["items"][0]["id"] == "codex-session:native-1"
+
+
+def test_async_execute_query_archive_exact_id_clause_reads_session(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            assert token == "chatgpt-export:6a49af33-d698-83ed-a11f-8750f19027e1"
+            return token
+
+        def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
+            raise AssertionError("exact id: refs must not fall through to FTS")
+
+        def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
+            assert session_id == "chatgpt-export:6a49af33-d698-83ed-a11f-8750f19027e1"
+            return ArchiveSessionEnvelope(
+                session_id=session_id,
+                native_id="6a49af33-d698-83ed-a11f-8750f19027e1",
+                origin="chatgpt-export",
+                title="Captured ChatGPT session",
+                active_leaf_message_id=None,
+                messages=(),
+            )
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("id:chatgpt-export:6a49af33-d698-83ed-a11f-8750f19027e1",),
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "session"
+    assert payload["session_id"] == "chatgpt-export:6a49af33-d698-83ed-a11f-8750f19027e1"
+    assert payload["messages"] == []
+
+
+def test_async_execute_query_archive_bare_native_ref_resolves_before_fts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+    native_id = "6a49af33-d698-83ed-a11f-8750f19027e1"
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            assert token == native_id
+            return f"chatgpt-export:{native_id}"
+
+        def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
+            raise AssertionError("bare native refs must resolve before lexical search")
+
+        def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
+            assert session_id == f"chatgpt-export:{native_id}"
+            return ArchiveSessionEnvelope(
+                session_id=session_id,
+                native_id=native_id,
+                origin="chatgpt-export",
+                title="Captured ChatGPT session",
+                active_leaf_message_id=None,
+                messages=(),
+            )
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": (native_id,),
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "session"
+    assert payload["session_id"] == f"chatgpt-export:{native_id}"
+    assert payload["native_id"] == native_id
+
+
+def test_async_execute_query_archive_unresolved_bare_ref_falls_back_to_fts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            assert token == "missing-native-12345"
+            raise KeyError(token)
+
+        def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
+            assert query == "missing-native-12345"
+            assert kwargs["session_id"] is None
+            return []
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        asyncio.run(
+            async_execute_query(
+                env,
+                {
+                    "archive": True,
+                    "query": ("missing-native-12345",),
+                    "output_format": "json",
+                },
+            )
+        )
+    assert exc_info.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "search"
+    assert payload["items"] == []
 
 
 def test_async_execute_query_archive_uses_daemon_for_supported_session_pages(

@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import multiprocessing
+import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
@@ -76,6 +77,7 @@ _PageRow = TypeVar("_PageRow", ArchiveSessionSummary, ArchiveSessionSearchHit)
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
 _DAEMON_FAST_PATH_TIMEOUT_S = 0.75
+_NATIVE_REF_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]{11,}")
 
 
 def _object_int(value: object) -> int:
@@ -498,7 +500,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 origin=origin,
             )
             return
-        conv_id = params.get("conv_id")
+        conv_id = compiled_spec.session_id or params.get("conv_id")
         if conv_id:
             try:
                 session_id = archive.resolve_session_id(str(conv_id))
@@ -602,6 +604,19 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 fields=fields,
             )
             return
+        if query and not similar_text:
+            try:
+                exact_session_id = _resolve_single_query_ref(archive, query)
+            except ValueError as exc:
+                raise click.UsageError(str(exc)) from exc
+            if exact_session_id is not None:
+                envelope = archive.read_session(exact_session_id)
+                _emit_session(
+                    envelope,
+                    output_format=output_format,
+                    fields=fields,
+                )
+                return
         if query or similar_text:
             if sample_count is not None:
                 raise click.UsageError("Root query does not combine --sample with search terms.")
@@ -872,6 +887,8 @@ def _try_emit_daemon_session_page(
     retaining local ArchiveStore execution for mutations, streaming, unit rows,
     stats, vector search, and features the HTTP route does not yet represent.
     """
+    if compiled_spec.session_id is not None or _single_query_token_looks_like_ref(query):
+        return False
     if not _daemon_session_page_supported(
         params,
         compiled_spec=compiled_spec,
@@ -917,6 +934,29 @@ def _try_emit_daemon_session_page(
         )
         return True
     return False
+
+
+def _resolve_single_query_ref(archive: ArchiveStore, query: str) -> str | None:
+    """Resolve a singleton query token as a session ref before FTS fallback."""
+    if not _single_query_token_looks_like_ref(query):
+        return None
+    try:
+        return archive.resolve_session_id(query)
+    except KeyError:
+        return None
+    except ValueError as exc:
+        # ``repo:polylogue`` and other structured field clauses can look
+        # ref-shaped to the cheap syntactic probe. They are not identity queries;
+        # let normal DSL/list execution handle them. Ambiguous suffix/prefix
+        # matches are real identity failures and should not broaden to FTS.
+        if "ambiguous" in str(exc):
+            raise
+        return None
+
+
+def _single_query_token_looks_like_ref(query: str) -> bool:
+    token = query.strip()
+    return bool(token and " " not in token and (":" in token or _NATIVE_REF_RE.fullmatch(token)))
 
 
 def _daemon_session_page_supported(
