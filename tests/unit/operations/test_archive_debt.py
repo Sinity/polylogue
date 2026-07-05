@@ -853,7 +853,7 @@ def test_archive_debt_ignores_fully_materialized_embedded_claude_code_aggregates
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
 
 
-def test_archive_debt_source_path_aliases_do_not_hide_parse_failures(tmp_path: Path) -> None:
+def test_archive_debt_source_path_aliases_do_not_hide_real_parse_failures(tmp_path: Path) -> None:
     _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
     source_path = tmp_path / "drive-cache" / "codex-native.jsonl.txt.json"
     source_path.parent.mkdir(parents=True)
@@ -877,3 +877,40 @@ def test_archive_debt_source_path_aliases_do_not_hide_parse_failures(tmp_path: P
 
     refs = {row.debt_ref for row in payload.rows}
     assert "debt:raw-materialization:codex-session:parse-failed" in refs
+
+
+def test_archive_debt_classifies_stale_decode_aliases(tmp_path: Path) -> None:
+    _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    source_path = tmp_path / "drive-cache" / "codex-native.jsonl.txt.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("{}", encoding="utf-8")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            UPDATE raw_sessions
+            SET native_id = NULL, source_path = ?, blob_hash = ?, parsed_at_ms = NULL, parse_error = ?
+            WHERE raw_id = ?
+            """,
+            (
+                str(source_path),
+                bytes.fromhex("bb" * 32),
+                "decode: [Errno 2] No such file or directory: '/tmp/archive/blob/bb/bbbb'",
+                "raw-missing-blob",
+            ),
+        )
+    blob = tmp_path / "blob" / "bb" / ("bb" * 31)
+    blob.parent.mkdir(exist_ok=True)
+    blob.write_bytes(b"{}")
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
+            ("codex-session:codex-native", "codex-session", "codex-native", "older-raw"),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    refs = {row.debt_ref: row for row in payload.rows}
+    assert "debt:raw-materialization:codex-session:parse-failed" not in refs
+    alias = refs["debt:raw-materialization:codex-session:materialized-alias"]
+    assert alias.status == "classified"
+    assert alias.severity == "info"

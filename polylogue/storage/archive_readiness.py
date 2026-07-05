@@ -213,10 +213,22 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     archive_session_count = int(row["archive_session_count"] or 0)
     join_gap_count = int(row["join_gap_count"] or total)
     skipped = int(row["skipped"] or 0)
-    parse_failed = int(row["parse_failed"] or 0)
+    raw_parse_failed = int(row["parse_failed"] or 0)
     parsed_without_index_session = int(row["parsed_without_index_session"] or 0)
-    classified = sum(classified_counts.values())
-    parse_failed_origins = {str(item["origin"] or "unknown") for item in gap_rows if item["parse_error"] is not None}
+    parse_failed = classified_counts.get("parse-failed", 0)
+    classified = sum(count for category, count in classified_counts.items() if category != "parse-failed")
+    parse_failed_origins = {
+        str(item["origin"] or "unknown")
+        for item in gap_rows
+        if item["parse_error"] is not None
+        and (
+            not _retryable_decode_missing_blob_error(item["parse_error"])
+            or (
+                not _raw_gap_materialized_by_alias(conn, item, session_columns=session_columns)
+                and not _raw_gap_matches_missing_index_raw_link(conn, item, session_columns=session_columns)
+            )
+        )
+    }
     actionable = len(parse_failed_origins)
     critical = actionable
     affected_actionable = parse_failed
@@ -227,9 +239,12 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "raw_id_join_gap": raw_id_join_gap_count,
         "skipped": skipped,
         "parse_failed": parse_failed,
+        "raw_parse_failed": raw_parse_failed,
         "parsed_without_index_session": parsed_without_index_session,
     }
-    category_counts.update(dict(classified_counts))
+    category_counts.update(
+        {category: count for category, count in classified_counts.items() if category != "parse-failed"}
+    )
     return {
         "available": True,
         "classification": classification,
@@ -419,15 +434,25 @@ def _classify_raw_gap_rows(
         return Counter()
     counts: Counter[str] = Counter()
     for row in rows:
-        if _raw_gap_materialized_by_alias(conn, row, session_columns=session_columns):
+        can_reconcile_alias = not row["parse_error"] or _retryable_decode_missing_blob_error(row["parse_error"])
+        if can_reconcile_alias and _raw_gap_materialized_by_alias(conn, row, session_columns=session_columns):
             counts["materialized-alias"] += 1
             continue
-        if _raw_gap_matches_missing_index_raw_link(conn, row, session_columns=session_columns):
+        if can_reconcile_alias and _raw_gap_matches_missing_index_raw_link(conn, row, session_columns=session_columns):
             counts["lost-source-evidence-alias"] += 1
             continue
         if _raw_gap_parsed_non_session_artifact(archive_root, row, raw_columns=raw_columns):
             counts["parsed-non-session-artifact"] += 1
+            continue
+        if row["parse_error"]:
+            counts["parse-failed"] += 1
     return counts
+
+
+def _retryable_decode_missing_blob_error(parse_error: object) -> bool:
+    if not isinstance(parse_error, str):
+        return False
+    return parse_error.startswith("decode:") and "No such file or directory" in parse_error
 
 
 def _raw_gap_materialized_by_alias(

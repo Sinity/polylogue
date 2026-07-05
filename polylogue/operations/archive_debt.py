@@ -271,9 +271,10 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
         grouped: dict[tuple[str, str], list[sqlite3.Row]] = {}
         for row in candidate_rows:
             category: str
-            if row["parse_error"]:
-                category = _raw_materialization_category(conn, row, archive_root)
-            elif _raw_materialized_by_native_id(conn, row) or _raw_materialized_by_source_path_native(conn, row):
+            can_reconcile_alias = not row["parse_error"] or _retryable_decode_missing_blob_error(row["parse_error"])
+            if can_reconcile_alias and (
+                _raw_materialized_by_native_id(conn, row) or _raw_materialized_by_source_path_native(conn, row)
+            ):
                 category = "materialized-alias"
             elif _raw_materialized_by_embedded_session_ids(conn, row):
                 continue
@@ -323,6 +324,12 @@ def _raw_materialized_by_native_id(conn: sqlite3.Connection, row: sqlite3.Row) -
         (origin, str(native_id)),
     ).fetchone()
     return existing is not None
+
+
+def _retryable_decode_missing_blob_error(parse_error: object) -> bool:
+    if not isinstance(parse_error, str):
+        return False
+    return parse_error.startswith("decode:") and "No such file or directory" in parse_error
 
 
 def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:

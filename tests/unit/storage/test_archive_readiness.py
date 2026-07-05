@@ -54,6 +54,7 @@ def test_raw_materialization_snapshot_ignores_skipped_raw_rows(tmp_path: Path) -
         "raw_id_join_gap": 1,
         "skipped": 0,
         "parse_failed": 0,
+        "raw_parse_failed": 0,
         "parsed_without_index_session": 1,
     }
     assert snapshot["source_family_counts"] == {"chatgpt-export": 1}
@@ -144,6 +145,7 @@ def test_raw_materialization_snapshot_marks_parse_failures_actionable(tmp_path: 
         "raw_id_join_gap": 0,
         "skipped": 0,
         "parse_failed": 2,
+        "raw_parse_failed": 2,
         "parsed_without_index_session": 0,
     }
 
@@ -200,6 +202,71 @@ def test_raw_materialization_snapshot_classifies_native_aliases(tmp_path: Path) 
     counts = _category_counts(snapshot)
     assert counts["materialized-alias"] == 1
     assert counts["raw_id_join_gap"] == 0
+
+
+def test_raw_materialization_snapshot_classifies_stale_decode_aliases(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                blob_hash BLOB,
+                validation_status TEXT,
+                parse_error TEXT,
+                parsed_at_ms INTEGER
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "raw-stale-error",
+                    "codex-session",
+                    "session-1",
+                    "session-1.jsonl",
+                    bytes.fromhex("11" * 32),
+                    "failed",
+                    "decode: [Errno 2] No such file or directory: '/tmp/archive/blob/11/1111'",
+                    None,
+                ),
+                (
+                    "raw-current",
+                    "codex-session",
+                    "session-1",
+                    "current.jsonl",
+                    bytes.fromhex("12" * 32),
+                    "passed",
+                    None,
+                    123,
+                ),
+            ],
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
+        conn.execute(
+            "INSERT INTO sessions(session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
+            ("codex-session:session-1", "codex-session", "session-1", "raw-current"),
+        )
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+
+    assert snapshot["actionable"] == 0
+    assert snapshot["affected_actionable"] == 0
+    assert snapshot["classified"] == 1
+    counts = _category_counts(snapshot)
+    assert counts["materialized-alias"] == 1
+    assert counts["parse_failed"] == 0
+    assert counts["raw_parse_failed"] == 1
 
 
 def test_raw_materialization_snapshot_classifies_dangling_index_raw_link_as_lost_source_evidence(
