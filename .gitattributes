@@ -30,5 +30,9 @@ flake.lock linguist-generated -diff
 .claude/ export-ignore
 tests/ export-ignore
 
+# Vendored upstream litellm price catalog — not our code, exclude from
+# GitHub language stats and suppress its huge diff (overrides *.json diff=json).
+polylogue/archive/semantic/data/litellm_model_prices.json linguist-vendored -diff
+
 # Merge strategies
 flake.lock merge=ours

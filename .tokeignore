@@ -1,0 +1,3 @@
+# Vendored upstream data, not first-party source — keep it out of LOC stats.
+# tokei reads this file with .gitignore semantics.
+polylogue/archive/semantic/data/litellm_model_prices.json
