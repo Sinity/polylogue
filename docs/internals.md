@@ -36,7 +36,7 @@ debugging landmarks. For the conceptual system shape, see
 | `storage/sqlite/schema.py` | Shared sync/async fresh-init, version guard, and extension application |
 | `storage/sqlite/schema_bootstrap.py` | Shared schema snapshot, bootstrap branching, and extension planning |
 | `storage/sqlite/connection_profile.py` | Canonical read/write SQLite timeouts, cache, mmap, and PRAGMA profiles |
-| `storage/repository/__init__.py` | Repository facade (9-mixin composition: archive reads/writes, action reads, four insight readers, raw, vectors) |
+| `storage/repository/__init__.py` | Repository facade (10-mixin composition: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology) |
 | `storage/search_providers/fts5.py` | Lexical search |
 | `storage/search_providers/hybrid.py` | Hybrid retrieval (RRF fusion) |
 
@@ -54,7 +54,7 @@ debugging landmarks. For the conceptual system shape, see
 
 **Adding a provider**: Start at `sources/dispatch.py:detect_provider()`. Add a
 `looks_like()` function in a new parser under `sources/parsers/`. Add a
-`Provider` enum variant in `types.py`. Add a provider schema bundle under
+`Provider` enum variant in `core/enums.py`. Add a provider schema bundle under
 `schemas/providers/`. Dispatch is generally strict-before-loose for record-path
 and Pydantic-validated checks, but `sources/dispatch.py` runs some structural
 sequence detectors before loose code/dict probes. Insert the new check at the
@@ -234,7 +234,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   cheap local rows directly from `sessions` and `blocks` (main runs,
   `session_started`, tool-finished outcomes, and session-start context
   snapshots). The durable evidence stays `session_events` + `messages` +
-  `topology_edges`, and materialized rows are retained only where they encode
+  `session_links`, and materialized rows are retained only where they encode
   richer non-local projections that are not cheap to lower directly. Existing
   index tiers must be rebuilt from source evidence (`polylogue ops reset --index
   && polylogued run`).
@@ -336,26 +336,30 @@ replaced merely because two captures describe the same provider-native id.
 
 ## Topology Edges (#1258)
 
-`topology_edges` persists every parent reference asserted by a parser as a
-typed row, including references whose parent has not yet been ingested
-(out-of-order ingestion) or has been hard-deleted. The pre-existing fast
-path (`sessions.parent_session_id` set when the parent is in the
-prepare cache) is unchanged; the topology table is an additional durable
-record that always carries the original provider-native parent id.
+The `session_links` table (index tier) persists every parent reference asserted
+by a parser as a typed row, including references whose parent has not yet been
+ingested (out-of-order ingestion) or has been hard-deleted. The pre-existing
+fast path (`sessions.parent_session_id` set when the parent is in the prepare
+cache) is unchanged; `session_links` is an additional durable record that always
+carries the original provider-native parent id. The same table also carries the
+#2467 prefix-sharing lineage columns (`branch_point_message_id`, `inheritance`).
 
-- **Identity:** `(src_session_id, dst_provider_native_id, edge_type)`
-  with `UNIQUE`. Re-ingesting the same child is idempotent.
-- **Closed enums:** `polylogue/archive/topology/edge.py` defines
-  `TopologyEdgeType` (continuation / sidechain / subagent / branch / fork /
-  resume / repaired) and `TopologyEdgeStatus` (unresolved / resolved /
-  repaired). Slice A emits `unresolved` and `resolved` only.
-- **Resolve:** every session save runs
-  `resolve_topology_edges_for_session` so that an out-of-order child's
-  edge flips to `resolved` the moment its parent's native id appears in
+- **Identity:** primary key
+  `(src_session_id, dst_origin, dst_native_id, link_type)`.
+  Re-ingesting the same child is idempotent.
+- **Closed enums:** `polylogue/core/enums.py` owns `LinkType`
+  (continuation / sidechain / subagent / branch / fork / resume / repaired),
+  re-exported as `TopologyEdgeType` from
+  `polylogue/archive/topology/edge.py`, and `TopologyEdgeStatus`
+  (unresolved / resolved / repaired / quarantined). `quarantined` marks a link
+  the topology reducer dropped to break a cycle.
+- **Resolve:** every session save runs `resolve_session_links_for_session`
+  (`polylogue/storage/sqlite/queries/session_links.py`) so that an out-of-order
+  child's edge flips to `resolved` the moment its parent's native id appears in
   `sessions`.
-- **Hash boundary:** topology edges are derived per ingest and are NOT part
-  of `sessions.content_hash` — mirrors the same boundary as
-  `user_corrections` (#1131) and the blob lease tables.
+- **Hash boundary:** these links are derived per ingest and are NOT part
+  of `sessions.content_hash` — mirrors the same boundary as user correction
+  assertions (#1131) and the blob lease tables.
 
 ## Logical Session Identity (#866)
 
@@ -373,10 +377,12 @@ agents and MCP callers; `get_session_topology` remains the full graph view.
 
 ## Learning Corrections (Feedback Loop)
 
-User corrections are stored in `user_corrections` and live outside the
-content-hash boundary by construction (#1131):
+User corrections live outside the content-hash boundary by construction
+(#1131). In the split archive they are `AssertionKind.CORRECTION` rows in the
+unified `user.db` `assertions` table; a legacy `user_corrections` table is still
+read for pre-split single-file archives (`storage/insights/feedback/`):
 
-- Keyed by `(session_id, insight_kind)` — at most one correction of
+- Keyed by session and correction kind — at most one correction of
   each kind per session, so deterministic rebuilds always produce the
   same merged insight output.
 - Recognized kinds (closed `CorrectionKind` enum):
