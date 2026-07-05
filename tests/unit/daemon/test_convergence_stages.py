@@ -62,6 +62,88 @@ def test_default_convergence_stages_retry_bounded_false_results(tmp_path: Path) 
     assert stages_by_name["insights"].false_means_pending is True
 
 
+def test_file_probe_exceptions_log_and_fail_toward_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    db_path = tmp_path / "legacy.sqlite"
+    db_path.touch()
+    paths = [tmp_path / "one.jsonl", tmp_path / "two.jsonl"]
+    session_ids = ["codex-session:s1", "codex-session:s2"]
+
+    def locked_connection(_path: Path, *, timeout: float) -> sqlite3.Connection:
+        del timeout
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", locked_connection)
+    warning_exc_info: list[object] = []
+    real_warning = stages.logger.warning
+
+    def capture_warning(message: str, *args: object, **kwargs: object) -> None:
+        warning_exc_info.append(kwargs.get("exc_info"))
+        real_warning(message, *args, **kwargs)
+
+    monkeypatch.setattr(stages.logger, "warning", capture_warning)
+
+    fts = make_fts_stage(db_path)
+    insights = make_insights_stage(db_path)
+    with caplog.at_level("WARNING"):
+        assert fts.check(paths[0]) is True
+        assert fts.check_many is not None
+        assert fts.check_many(paths) == set(paths)
+        assert fts.check_sessions is not None
+        assert fts.check_sessions(session_ids) == set(session_ids)
+
+        assert insights.check(paths[0]) is True
+        assert insights.check_many is not None
+        assert insights.check_many(paths) == set(paths)
+        assert insights.check_sessions is not None
+        assert insights.check_sessions(session_ids) == set(session_ids)
+
+    assert "convergence freshness probe" in caplog.text
+    assert "treating as needs-work" in caplog.text
+    assert warning_exc_info
+    assert all(value is True for value in warning_exc_info)
+
+
+def test_archive_probe_exceptions_log_and_fail_toward_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    archive_db = tmp_path / "index.db"
+    paths = [tmp_path / "one.jsonl", tmp_path / "two.jsonl"]
+    session_ids = ["codex-session:s1", "codex-session:s2"]
+
+    def locked_connect(*_args: object, **_kwargs: object) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(sqlite3, "connect", locked_connect)
+    warning_exc_info: list[object] = []
+    real_warning = stages.logger.warning
+
+    def capture_warning(message: str, *args: object, **kwargs: object) -> None:
+        warning_exc_info.append(kwargs.get("exc_info"))
+        real_warning(message, *args, **kwargs)
+
+    monkeypatch.setattr(stages.logger, "warning", capture_warning)
+
+    with caplog.at_level("WARNING"):
+        assert stages._archive_fts_check_sessions(archive_db, session_ids) == set(session_ids)
+        assert stages._archive_embed_check(archive_db, paths[0]) is True
+        assert stages._archive_embed_check_many(archive_db, paths) == set(paths)
+        assert stages._archive_embed_check_sessions(archive_db, session_ids) == set(session_ids)
+        assert stages._archive_insights_check(archive_db, paths[0]) is True
+        assert stages._archive_insights_check_many(archive_db, paths) == set(paths)
+        assert stages._archive_insights_check_sessions(archive_db, session_ids) == set(session_ids)
+
+    assert caplog.text.count("convergence freshness probe") >= 7
+    assert "treating as needs-work" in caplog.text
+    assert warning_exc_info
+    assert all(value is True for value in warning_exc_info)
+
+
 def _main_db_path(conn: sqlite3.Connection) -> Path:
     row = conn.execute("PRAGMA database_list").fetchone()
     return Path(str(row[2]))
