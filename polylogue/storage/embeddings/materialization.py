@@ -29,6 +29,11 @@ if TYPE_CHECKING:
 
 EmbedSingleStatus = Literal["embedded", "no_messages", "no_embeddable_messages", "not_found", "error"]
 ARCHIVE_EMBED_MESSAGE_BATCH_SIZE = 128
+TERMINAL_PROVIDER_ERROR_MARKERS = (
+    "http 400",
+    "status 400",
+    "400 bad request",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +62,15 @@ class ArchiveEmbeddingSessionState:
     eligible_sessions: int
     embedded_sessions: int
     pending_sessions: int
+
+
+def is_terminal_embedding_provider_error(error_message: object) -> bool:
+    """Return whether a provider error should leave visible non-retried debt."""
+
+    if not isinstance(error_message, str):
+        return False
+    normalized = " ".join(error_message.lower().split())
+    return any(marker in normalized for marker in TERMINAL_PROVIDER_ERROR_MARKERS)
 
 
 def archive_embeddable_message_where(alias: str = "m") -> str:
@@ -313,8 +327,13 @@ def select_pending_archive_session_window(
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
-                 OR e.message_count_embedded < {aggregate_expr}
-                 {stale_message_clause}
+                 OR (
+                    e.error_message IS NULL
+                    AND (
+                        e.message_count_embedded < {aggregate_expr}
+                        {stale_message_clause}
+                    )
+                 )
               )
             """
         else:
@@ -322,7 +341,6 @@ def select_pending_archive_session_window(
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
-                 OR e.error_message IS NOT NULL
               )
             """
     elif aggregate_expr is None:
@@ -343,8 +361,13 @@ def select_pending_archive_session_window(
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
-                 OR e.message_count_embedded < {aggregate_expr}
-                 {stale_message_clause}
+                 OR (
+                    e.error_message IS NULL
+                    AND (
+                        e.message_count_embedded < {aggregate_expr}
+                        {stale_message_clause}
+                    )
+                 )
               )
             """
         else:
@@ -352,7 +375,6 @@ def select_pending_archive_session_window(
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
-                 OR e.error_message IS NOT NULL
               )
             """
     limit_clause = ""
@@ -387,10 +409,11 @@ def select_pending_archive_session_window(
             message_count_embedded = _row_int(row, 4, "message_count_embedded") if status_session_id is not None else 0
             error_message = _row_value(row, 5, "error_message") if status_session_id is not None else None
             estimated_count = _row_int(row, 6, "estimated_message_count")
+            clean_status_row = status_session_id is not None and error_message is None
             needs_exact_count = (
                 include_stale_checks
                 and exact_counts_available
-                and status_session_id is not None
+                and clean_status_row
                 and needs_reindex == 0
                 and message_count_embedded > 0
                 and (not clean_status_is_authoritative or message_count_embedded < estimated_count)
@@ -406,10 +429,11 @@ def select_pending_archive_session_window(
                 or not status_table
                 or status_session_id is None
                 or needs_reindex == 1
-                or error_message is not None
-                or (include_stale_checks and message_count_embedded < estimated_count)
+                or (include_stale_checks and clean_status_row and message_count_embedded < estimated_count)
                 or (
-                    include_stale_checks and archive_session_has_stale_embeddings(conn, session_id, stale_message_table)
+                    include_stale_checks
+                    and clean_status_row
+                    and archive_session_has_stale_embeddings(conn, session_id, stale_message_table)
                 )
             ):
                 continue
@@ -579,6 +603,7 @@ def count_archive_embedding_session_state(
                     CASE
                         WHEN e.session_id IS NOT NULL
                          AND e.needs_reindex = 0
+                         AND e.error_message IS NULL
                          AND NOT (
                             0
                             {stale_session_clause}
@@ -590,7 +615,13 @@ def count_archive_embedding_session_state(
                     CASE
                         WHEN e.session_id IS NULL
                           OR e.needs_reindex = 1
-                          {stale_session_clause}
+                          OR (
+                            e.error_message IS NULL
+                            AND (
+                                0
+                                {stale_session_clause}
+                            )
+                          )
                         THEN 1 ELSE 0
                     END
                 ) AS pending_sessions
@@ -640,6 +671,7 @@ def count_archive_embedding_session_state(
                 CASE
                     WHEN e.session_id IS NOT NULL
                      AND e.needs_reindex = 0
+                     AND e.error_message IS NULL
                      AND e.message_count_embedded >= ec.message_count
                      AND NOT (
                         0
@@ -648,15 +680,20 @@ def count_archive_embedding_session_state(
                     THEN 1 ELSE 0
                 END
             ) AS embedded_sessions,
-            SUM(
-                CASE
-                    WHEN e.session_id IS NULL
-                      OR e.needs_reindex = 1
-                      OR e.message_count_embedded < ec.message_count
-                      {stale_eligible_clause}
-                    THEN 1 ELSE 0
-                END
-            ) AS pending_sessions
+                SUM(
+                    CASE
+                        WHEN e.session_id IS NULL
+                          OR e.needs_reindex = 1
+                          OR (
+                            e.error_message IS NULL
+                            AND (
+                                e.message_count_embedded < ec.message_count
+                                {stale_eligible_clause}
+                            )
+                          )
+                        THEN 1 ELSE 0
+                    END
+                ) AS pending_sessions
         FROM eligible_counts ec
         LEFT JOIN {status_table} e ON e.session_id = ec.session_id
         """
@@ -969,6 +1006,7 @@ def embed_archive_session_sync(
                     session_id=session_id,
                     origin=str(origin_row["origin"]),
                     error_message=str(exc),
+                    retryable=not is_terminal_embedding_provider_error(str(exc)),
                 )
         finally:
             with contextlib.suppress(sqlite3.Error):

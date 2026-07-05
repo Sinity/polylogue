@@ -1386,6 +1386,70 @@ def test_archive_embedding_error_records_retryable_status(tmp_path: Path) -> Non
         conn.close()
 
 
+def test_archive_embedding_http_400_records_terminal_status(tmp_path: Path) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    class ErrorProvider(_FakeV1VectorProvider):
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            raise RuntimeError("Embedding generation failed: HTTP 400")
+
+    archive_root = tmp_path / "archive"
+    long_text = "This archive message is long enough to trigger provider hard failure."
+    with ArchiveStore(archive_root) as archive:
+        session_id = archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="embed-v1-hard-error",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text=long_text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=long_text)],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    )
+                ],
+            )
+        )
+
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+
+    outcome = embed_archive_session_sync(index_db, ErrorProvider(), session_id)
+
+    assert outcome.status == "error"
+    assert outcome.error == "Embedding generation failed: HTTP 400"
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        status = conn.execute(
+            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert status == (0, "Embedding generation failed: HTTP 400")
+    finally:
+        conn.close()
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        assert [
+            item.session_id
+            for item in select_pending_archive_session_window(conn, status_table="embeddings.embedding_status")
+        ] == []
+        state = count_archive_embedding_session_state(conn, status_table="embeddings.embedding_status")
+        assert state.eligible_sessions == 1
+        assert state.embedded_sessions == 0
+        assert state.pending_sessions == 0
+    finally:
+        conn.close()
+
+
 class TestEmbeddingStatsLockedConnection:
     """Propagation of connection-level errors."""
 

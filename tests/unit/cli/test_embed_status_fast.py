@@ -811,3 +811,32 @@ def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
         "command": "polylogue --semantic <query>",
         "reason": "Embeddings are retrieval-ready.",
     }
+
+
+def test_status_json_reports_terminal_failures_before_ready(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(db_anchor)
+    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, needs_reindex, error_message
+            ) VALUES ('codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400')
+            """
+        )
+        conn.commit()
+
+    payload = _run_status(
+        db_anchor,
+        "--detail",
+        cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"),
+    )
+
+    assert payload["status"] == "partial"
+    assert payload["pending_sessions"] == 0
+    assert payload["failure_count"] == 1
+    assert payload["next_action"] == {
+        "code": "inspect_failures",
+        "command": "polylogue ops embed status --detail",
+        "reason": "Embedding failures exist and need inspection before treating coverage as clean.",
+    }

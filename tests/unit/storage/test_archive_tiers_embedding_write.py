@@ -125,3 +125,23 @@ def test_archive_tiers_embedding_writer_records_reindexable_errors(tmp_path: Pat
         needs_reindex=True,
         error_message="provider timeout",
     )
+
+
+def test_archive_tiers_embedding_writer_records_terminal_errors(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "embeddings.db")
+    status = mark_session_embedding_error(
+        conn,
+        session_id="codex-session:bad-input",
+        origin=Origin.CODEX_SESSION,
+        error_message="Embedding generation failed: HTTP 400",
+        retryable=False,
+    )
+
+    assert status == ArchiveEmbeddingStatus(
+        session_id="codex-session:bad-input",
+        origin="codex-session",
+        message_count_embedded=0,
+        last_embedded_at_ms=None,
+        needs_reindex=False,
+        error_message="Embedding generation failed: HTTP 400",
+    )

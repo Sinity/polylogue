@@ -481,6 +481,12 @@ def _next_action(
             "command": "polylogue ops embed enable --voyage-api-key ...",
             "reason": "Semantic retrieval needs a Voyage API key before embedding can run.",
         }
+    if failure_count > 0:
+        return {
+            "code": "inspect_failures",
+            "command": "polylogue ops embed status --detail",
+            "reason": "Embedding failures exist and need inspection before treating coverage as clean.",
+        }
     if not config_enabled:
         if pending_sessions <= 0 and retrieval_ready:
             return {
@@ -501,12 +507,6 @@ def _next_action(
             "code": "enable_embeddings",
             "command": "polylogue ops embed enable --yes",
             "reason": "A Voyage key is available, but embedding convergence is disabled in config.",
-        }
-    if failure_count > 0 and pending_sessions > 0:
-        return {
-            "code": "inspect_failures",
-            "command": "polylogue ops embed status --detail",
-            "reason": "Recent embedding failures exist while backlog remains.",
         }
     if stale_messages > 0:
         return {
@@ -554,6 +554,8 @@ def _payload_from_stats(
         embedded_sessions=embedded_sessions,
         pending_sessions=pending_sessions,
     )
+    if stats.failure_count > 0 and status == "complete":
+        status = "partial"
     retrieval_ready = _retrieval_ready(stats)
     message_coverage = _message_coverage_percent(
         embedded_messages=stats.embedded_messages,
