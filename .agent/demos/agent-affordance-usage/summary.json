@@ -1,0 +1,209 @@
+{
+  "archive_root": "/home/sinity/.local/share/polylogue",
+  "artifact": "agent-affordance-usage",
+  "caveats": [
+    "Counts describe captured action evidence, not independent proof of user benefit.",
+    "Failure rates are provider-reported tool-result signals where available; missing outcome structure is not success.",
+    "Recent windows are adoption-sensitive and can legitimately differ from all-time counts.",
+    "Zero captured agent use is not enough to remove operator-only surfaces; those rows carry an operator-only caveat."
+  ],
+  "claim": "Polylogue can compare agent affordance usage across normalized action evidence without summing unlike tool-name spellings or provider-specific call shapes.",
+  "index_schema_version": 24,
+  "non_claim": "This is not a human-quality utility evaluation of any particular tool family. It measures captured usage evidence, failure signals, and coverage gaps; usefulness still requires qualitative review of session context and outcomes.",
+  "proof_report": {
+    "action_scope": "grouped-tool-name-recent-window",
+    "detail_patterns": [],
+    "patterns": [
+      "serena",
+      "codebase",
+      "cclsp",
+      "context7",
+      "polylogue",
+      "lynchpin"
+    ],
+    "recent_top_families": [
+      {
+        "actions": 12,
+        "errors": 1,
+        "evidence_kind": "mcp_tool_call",
+        "failure_rate": 0.083,
+        "family": "serena",
+        "nonzero_exits": 0,
+        "raw_tool_name_count": 1,
+        "raw_tool_names": "mcp__serena__find_symbol",
+        "sessions": 4,
+        "tool_name": "serena/find_symbol"
+      },
+      {
+        "actions": 7,
+        "errors": 0,
+        "evidence_kind": "mcp_tool_call",
+        "failure_rate": 0.0,
+        "family": "serena",
+        "nonzero_exits": 0,
+        "raw_tool_name_count": 1,
+        "raw_tool_names": "mcp__serena__get_symbols_overview",
+        "sessions": 3,
+        "tool_name": "serena/get_symbols_overview"
+      },
+      {
+        "actions": 5,
+        "errors": 2,
+        "evidence_kind": "mcp_tool_call",
+        "failure_rate": 0.4,
+        "family": "polylogue",
+        "nonzero_exits": 0,
+        "raw_tool_name_count": 1,
+        "raw_tool_names": "mcp__polylogue__query_units",
+        "sessions": 1,
+        "tool_name": "polylogue/query_units"
+      },
+      {
+        "actions": 4,
+        "errors": 0,
+        "evidence_kind": "mcp_tool_call",
+        "failure_rate": 0.0,
+        "family": "polylogue",
+        "nonzero_exits": 0,
+        "raw_tool_name_count": 1,
+        "raw_tool_names": "mcp__polylogue__get_session_summary",
+        "sessions": 3,
+        "tool_name": "polylogue/get_session_summary"
+      },
+      {
+        "actions": 2,
+        "errors": 0,
+        "evidence_kind": "mcp_tool_call",
+        "failure_rate": 0.0,
+        "family": "lynchpin",
+        "nonzero_exits": 0,
+        "raw_tool_name_count": 1,
+        "raw_tool_names": "mcp__lynchpin__lynchpin_project",
+        "sessions": 1,
+        "tool_name": "lynchpin/lynchpin_project"
+      },
+      {
+        "actions": 2,
+        "errors": 0,
+        "evidence_kind": "mcp_tool_call",
+        "failure_rate": 0.0,
+        "family": "polylogue",
+        "nonzero_exits": 0,
+        "raw_tool_name_count": 1,
+        "raw_tool_names": "mcp__polylogue__get_pathologies",
+        "sessions": 2,
+        "tool_name": "polylogue/get_pathologies"
+      },
+      {
+        "actions": 2,
+        "errors": 0,
+        "evidence_kind": "mcp_tool_call",
+        "failure_rate": 0.0,
+        "family": "polylogue",
+        "nonzero_exits": 0,
+        "raw_tool_name_count": 1,
+        "raw_tool_names": "mcp__polylogue__get_resume_brief",
+        "sessions": 2,
+        "tool_name": "polylogue/get_resume_brief"
+      },
+      {
+        "actions": 2,
+        "errors": 0,
+        "evidence_kind": "mcp_tool_call",
+        "failure_rate": 0.0,
+        "family": "polylogue",
+        "nonzero_exits": 0,
+        "raw_tool_name_count": 1,
+        "raw_tool_names": "mcp__polylogue__list_sessions",
+        "sessions": 1,
+        "tool_name": "polylogue/list_sessions"
+      }
+    ],
+    "recent_window_days": 7,
+    "report_version": 3,
+    "surface_inventory_summary": [
+      {
+        "classification": "keep",
+        "observed_actions": 20,
+        "surface_type": "cli_command",
+        "surfaces": 45
+      },
+      {
+        "classification": "kill",
+        "observed_actions": 0,
+        "surface_type": "cli_command",
+        "surfaces": 34
+      },
+      {
+        "classification": "promote",
+        "observed_actions": 959,
+        "surface_type": "cli_command",
+        "surfaces": 15
+      },
+      {
+        "classification": "keep",
+        "observed_actions": 108,
+        "surface_type": "mcp_tool",
+        "surfaces": 32
+      },
+      {
+        "classification": "kill",
+        "observed_actions": 0,
+        "surface_type": "mcp_tool",
+        "surfaces": 59
+      },
+      {
+        "classification": "promote",
+        "observed_actions": 35,
+        "surface_type": "mcp_tool",
+        "surfaces": 5
+      }
+    ],
+    "top_families": [
+      {
+        "actions": 20,
+        "errors": 1,
+        "family": "serena",
+        "nonzero_exits": 0,
+        "sessions": 5,
+        "tools": 3
+      },
+      {
+        "actions": 19,
+        "errors": 3,
+        "family": "polylogue",
+        "nonzero_exits": 0,
+        "sessions": 6,
+        "tools": 8
+      },
+      {
+        "actions": 3,
+        "errors": 0,
+        "family": "lynchpin",
+        "nonzero_exits": 0,
+        "sessions": 1,
+        "tools": 2
+      },
+      {
+        "actions": 2,
+        "errors": 0,
+        "family": "codebase-memory",
+        "nonzero_exits": 0,
+        "sessions": 1,
+        "tools": 2
+      }
+    ]
+  },
+  "source_files": [
+    "affordance-usage.report.json",
+    "family-counts.csv",
+    "evidence-kind-counts.csv",
+    "tool-counts.csv",
+    "tool-by-origin.csv",
+    "recent-7d-tool-counts.csv",
+    "tool-samples.csv",
+    "surface-inventory.csv",
+    "surface-classification-summary.csv"
+  ],
+  "updated_at": "2026-07-05T08:42:39.982266+00:00"
+}

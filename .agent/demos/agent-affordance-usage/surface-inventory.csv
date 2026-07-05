@@ -1,0 +1,191 @@
+surface_type,surface_name,observed_actions,observed_sessions,failure_rate,classification,operator_only_caveat,caveat
+mcp_tool,action_affordances,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,add_mark,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,add_tag,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,agent_coordination,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,aggregate_sessions,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,archive_coverage,2,1,0.5,keep,False,
+mcp_tool,archive_debt,2,2,0.5,keep,False,
+mcp_tool,archive_get_session,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,archive_list_sessions,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,archive_search_sessions,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,blackboard_list,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,blackboard_post,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,build_context_image,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,bulk_tag_sessions,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,clear_corrections,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,compare_sessions,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,compile_context,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,compose_context_preamble,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,correlate_session,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,correlate_sessions,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,cost_outlook,2,1,0.5,keep,False,
+mcp_tool,cost_rollups,4,3,0.75,keep,False,
+mcp_tool,delete_annotation,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,delete_metadata,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,delete_recall_pack,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,delete_saved_view,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,delete_session,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+mcp_tool,delete_workspace,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,embedding_preflight,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,embedding_status,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,explain_import,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,explain_query_expression,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,facets,1,1,1.0,keep,False,
+mcp_tool,find_abandoned_sessions,3,1,1.0,keep,False,
+mcp_tool,find_resume_candidates,3,1,1.0,keep,False,
+mcp_tool,find_similar_sessions,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,find_stuck_sessions,1,1,1.0,keep,False,
+mcp_tool,get_logical_session,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,get_messages,9,4,0.0,promote,False,
+mcp_tool,get_metadata,3,1,0.0,keep,False,
+mcp_tool,get_pathologies,2,2,0.0,keep,False,
+mcp_tool,get_postmortem_bundle,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,get_resume_brief,8,8,0.0,promote,False,
+mcp_tool,get_session,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,get_session_summary,5,4,0.0,promote,False,
+mcp_tool,get_session_topology,1,1,0.0,keep,False,
+mcp_tool,get_session_tree,2,1,0.0,keep,False,
+mcp_tool,get_stats_by,5,3,0.4,keep,False,
+mcp_tool,insight_rigor_audit,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,list_annotations,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,list_assertion_claims,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,list_corrections,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,list_marks,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,list_read_view_profiles,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,list_recall_packs,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,list_saved_views,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,list_sessions,5,2,0.0,promote,False,
+mcp_tool,list_tags,2,1,0.0,keep,False,
+mcp_tool,list_workspaces,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,maintenance_execute,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+mcp_tool,maintenance_list,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+mcp_tool,maintenance_preview,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+mcp_tool,maintenance_status,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+mcp_tool,neighbor_candidates,1,1,0.0,keep,False,
+mcp_tool,provider_usage,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,query_completions,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,query_units,5,1,0.4,keep,False,
+mcp_tool,raw_artifacts,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,readiness_check,3,3,0.0,keep,False,
+mcp_tool,rebuild_index,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+mcp_tool,rebuild_session_insights,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,record_correction,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,remove_mark,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,remove_tag,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,resolve_ref,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,save_annotation,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,save_recall_pack,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,save_saved_view,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,save_workspace,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,search,50,16,0.3,keep,False,
+mcp_tool,session_costs,1,1,0.0,keep,False,
+mcp_tool,session_latency_profile,1,1,1.0,keep,False,
+mcp_tool,session_phases,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,session_profile,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,session_profiles,3,2,0.333,keep,False,
+mcp_tool,session_tag_rollups,1,1,0.0,keep,False,
+mcp_tool,session_tool_timing,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,session_work_events,3,2,0.333,keep,False,
+mcp_tool,set_metadata,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,stats,8,6,0.125,promote,False,
+mcp_tool,threads,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,tool_call_latency_distribution,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,tool_usage,4,4,0.5,keep,False,
+mcp_tool,update_index,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+mcp_tool,usage_timeline,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+mcp_tool,workflow_shape_distribution,3,1,1.0,keep,False,
+cli_command,agents,2,1,0.0,keep,False,
+cli_command,agents conflicts,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,agents current,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,agents handoff,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,agents overlap,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,agents self,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,agents status,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,agents work-item,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze,25,13,0.0,promote,False,
+cli_command,analyze insights,1,1,0.0,keep,False,
+cli_command,analyze insights cost-rollups,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights costs,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights coverage,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights debt,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights phases,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights profiles,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights tags,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights threads,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights timeline,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights tool-usage,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights usage-timeline,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze insights work-events,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze pace,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze tools,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze turns,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,analyze usage,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,config,82,45,0.134,promote,True,
+cli_command,config action-affordances,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,config completions,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,config paths,11,8,0.091,promote,True,
+cli_command,config query-completions,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,continue,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,dashboard,27,8,0.0,promote,False,
+cli_command,delete,2,2,0.0,keep,True,
+cli_command,demo,100,30,0.06,promote,False,
+cli_command,demo script,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,demo seed,36,15,0.056,promote,False,
+cli_command,demo tour,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,demo verify,1,1,0.0,keep,False,
+cli_command,facets,17,7,0.0,promote,False,
+cli_command,import,342,116,0.099,promote,True,
+cli_command,init,11,5,0.0,promote,True,
+cli_command,mark,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,mark candidates,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,mark candidates accept,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,mark candidates defer,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,mark candidates list,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,mark candidates reject,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,mark candidates review,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,mark candidates supersede,0,0,0.0,kill,False,zero captured agent use in this archive window; review before removal
+cli_command,ops,4,3,0.0,keep,True,
+cli_command,ops auth,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops backup,1,1,0.0,keep,True,
+cli_command,ops debt,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops debt list,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops diagnostics,1,1,0.0,keep,True,
+cli_command,ops diagnostics space,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops diagnostics workload,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops doctor,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops embed,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops embed backfill,9,1,0.0,promote,True,
+cli_command,ops embed disable,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops embed enable,2,1,0.0,keep,True,
+cli_command,ops embed preflight,1,1,0.0,keep,True,
+cli_command,ops embed status,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops insights,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops insights audit,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops insights export,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops insights status,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance,1,1,0.0,keep,True,
+cli_command,ops maintenance archive-init,1,1,0.0,keep,True,
+cli_command,ops maintenance archive-plan,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance archive-read,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance assertion-export,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance backup-plan,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance blob-gc,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance blob-reference-debt,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance blob-reference-prune-orphans,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance blob-reference-recovery-plan,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance blob-reference-replace-from-source,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance gc-history,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance migrate-tier,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance missing-raw-blob-cursors,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance plan,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance preview,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance rebuild-index,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance run,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops maintenance status,0,0,0.0,keep,True,operator-only surface; zero captured agent use is not removal evidence
+cli_command,ops reset,11,7,0.0,promote,True,
+cli_command,ops status,8,6,0.0,promote,True,
+cli_command,read,11,7,0.091,promote,False,
+cli_command,select,8,6,0.0,promote,False,
+cli_command,status,261,87,0.057,promote,False,
+cli_command,tutorial,3,2,0.0,keep,False,

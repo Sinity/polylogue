@@ -1,0 +1,3 @@
+tool_name,family,evidence_kind,raw_tool_names,raw_tool_name_count,sessions,actions,errors,nonzero_exits,failure_rate
+serena/command-detail,serena,command_detail,,0,1,3,1,0,0.333
+codebase-memory/command-detail,codebase-memory,command_detail,,0,1,1,0,0,0.0

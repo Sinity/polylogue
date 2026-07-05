@@ -1,0 +1,16 @@
+tool_name,family,evidence_kind,raw_tool_names,raw_tool_name_count,sessions,actions,errors,nonzero_exits,failure_rate
+serena/find_symbol,serena,mcp_tool_call,mcp__serena__find_symbol,1,4,12,1,0,0.083
+serena/get_symbols_overview,serena,mcp_tool_call,mcp__serena__get_symbols_overview,1,3,7,0,0,0.0
+polylogue/query_units,polylogue,mcp_tool_call,mcp__polylogue__query_units,1,1,5,2,0,0.4
+polylogue/get_session_summary,polylogue,mcp_tool_call,mcp__polylogue__get_session_summary,1,3,4,0,0,0.0
+lynchpin/lynchpin_project,lynchpin,mcp_tool_call,mcp__lynchpin__lynchpin_project,1,1,2,0,0,0.0
+polylogue/get_pathologies,polylogue,mcp_tool_call,mcp__polylogue__get_pathologies,1,2,2,0,0,0.0
+polylogue/get_resume_brief,polylogue,mcp_tool_call,mcp__polylogue__get_resume_brief,1,2,2,0,0,0.0
+polylogue/list_sessions,polylogue,mcp_tool_call,mcp__polylogue__list_sessions,1,1,2,0,0,0.0
+polylogue/stats,polylogue,mcp_tool_call,mcp__polylogue__stats,1,2,2,0,0,0.0
+codebase-memory/get_architecture,codebase-memory,mcp_tool_call,mcp__codebase-memory-mcp__get_architecture,1,1,1,0,0,0.0
+codebase-memory/list_projects,codebase-memory,mcp_tool_call,mcp__codebase-memory-mcp__list_projects,1,1,1,0,0,0.0
+lynchpin/lynchpin_status,lynchpin,mcp_tool_call,mcp__lynchpin__lynchpin_status,1,1,1,0,0,0.0
+polylogue/get_stats_by,polylogue,mcp_tool_call,mcp__polylogue__get_stats_by,1,1,1,0,0,0.0
+polylogue/tool_usage,polylogue,mcp_tool_call,mcp__polylogue__tool_usage,1,1,1,1,0,1.0
+serena/initial_instructions,serena,mcp_tool_call,mcp__serena__initial_instructions,1,1,1,0,0,0.0

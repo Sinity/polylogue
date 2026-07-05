@@ -11,7 +11,7 @@ better demo supersedes them.
 - `agent-affordance-usage` — Agent Affordance Usage
   - readme: `agent-affordance-usage/README.md`
   - analysis: `agent-affordance-usage/ANALYSIS.md`
-  - files: 44 (41 readable)
+  - files: 46 (43 readable)
 - `agent-forensics` — Agent Forensics
   - readme: `agent-forensics/README.md`
   - files: 9 (9 readable)

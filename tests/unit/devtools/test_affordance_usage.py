@@ -10,6 +10,9 @@ from typing import Any
 import pytest
 
 from devtools import affordance_usage
+from polylogue.cli.click_app import cli
+from polylogue.cli.command_inventory import iter_command_paths
+from tests.infra.mcp import EXPECTED_TOOL_NAMES
 
 
 def _make_index_db(root: Path) -> Path:
@@ -37,6 +40,7 @@ def _make_index_db(root: Path) -> Path:
                 block_type TEXT,
                 tool_name TEXT,
                 tool_id TEXT,
+                semantic_type TEXT,
                 tool_command TEXT,
                 tool_path TEXT,
                 tool_input TEXT,
@@ -72,14 +76,16 @@ def _make_index_db(root: Path) -> Path:
                 ('m2', 's2', 4102444800000),
                 ('m3', 's2', 0);
             INSERT INTO blocks VALUES
-                ('s1', 'm1', 'tool_use', 'mcp__serena__find_symbol', 't1', '', '/repo/a.py', '', NULL, NULL),
-                ('s1', 'm1', 'tool_use', 'mcp__context7__query-docs', 't2', '', '', 'react', NULL, NULL),
-                ('s2', 'm2', 'tool_use', 'mcp__plugin_context7_context7__query-docs', 't3', '', '', 'sqlite', NULL, NULL),
-                ('s2', 'm2', 'tool_result', NULL, 't3', '', '', '', 1, NULL),
-                ('s2', 'm3', 'tool_use', 'mcp__cclsp__find_definition', 't4', '', '/repo/lib.rs', '', NULL, NULL),
-                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't5', 'codebase-memory-mcp cli search_code', '', '', NULL, NULL),
-                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't6', 'codebase-memory-mcp cli search code', '', '', NULL, NULL),
-                ('s1', 'm1', 'tool_use', 'search_code', 't7', '', '', 'search_code query', NULL, NULL);
+                ('s1', 'm1', 'tool_use', 'mcp__serena__find_symbol', 't1', NULL, '', '/repo/a.py', '', NULL, NULL),
+                ('s1', 'm1', 'tool_use', 'mcp__context7__query-docs', 't2', NULL, '', '', 'react', NULL, NULL),
+                ('s2', 'm2', 'tool_use', 'mcp__plugin_context7_context7__query-docs', 't3', NULL, '', '', 'sqlite', NULL, NULL),
+                ('s2', 'm2', 'tool_result', NULL, 't3', NULL, '', '', '', 1, NULL),
+                ('s2', 'm3', 'tool_use', 'mcp__cclsp__find_definition', 't4', NULL, '', '/repo/lib.rs', '', NULL, NULL),
+                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't5', NULL, 'codebase-memory-mcp cli search_code', '', '', NULL, NULL),
+                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't6', NULL, 'codebase-memory-mcp cli search code', '', '', NULL, NULL),
+                ('s1', 'm1', 'tool_use', 'search_code', 't7', NULL, '', '', 'search_code query', NULL, NULL),
+                ('s1', 'm1', 'tool_use', 'mcp__polylogue__query_units', 't8', NULL, '', '', 'messages where text:timeout', NULL, NULL),
+                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't9', NULL, 'polylogue read session:s1 --view summary', '', '', NULL, NULL);
             """
         )
         conn.commit()
@@ -118,6 +124,17 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     assert evidence[("serena", "mcp_tool_call")]["actions"] == 1
     assert evidence[("context7", "mcp_tool_call")]["actions"] == 2
     assert report["recent_tool_counts"][0]["family"] in {"context7", "serena", "cclsp"}
+    surface_rows = {(str(row["surface_type"]), str(row["surface_name"])): row for row in report["surface_inventory"]}
+    command_paths = {command.display_name for command in iter_command_paths(cli, include_root=False)}
+    assert {name for kind, name in surface_rows if kind == "mcp_tool"} == EXPECTED_TOOL_NAMES
+    assert {name for kind, name in surface_rows if kind == "cli_command"} == command_paths
+    assert surface_rows[("mcp_tool", "query_units")]["observed_actions"] == 1
+    assert surface_rows[("mcp_tool", "query_units")]["classification"] == "keep"
+    assert surface_rows[("cli_command", "read")]["observed_actions"] == 1
+    assert surface_rows[("mcp_tool", "maintenance_execute")]["operator_only_caveat"] is True
+    assert surface_rows[("mcp_tool", "maintenance_execute")]["classification"] == "keep"
+    assert surface_rows[("mcp_tool", "search")]["classification"] in {"kill", "keep", "promote"}
+    assert report["surface_inventory_summary"]
 
     with (out_dir / "family-counts.csv").open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -131,10 +148,15 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     assert written_summary["artifact"] == "agent-affordance-usage"
     assert written_summary["index_schema_version"] == report["index_schema_version"]
     assert written_summary["proof_report"]["top_families"] == report["summary"]["top_families"]
+    assert written_summary["proof_report"]["surface_inventory_summary"] == report["surface_inventory_summary"]
     assert "claim" in written_summary
     assert "non_claim" in written_summary
     assert "caveats" in written_summary
+    with (out_dir / "surface-inventory.csv").open(encoding="utf-8", newline="") as handle:
+        inventory_rows = list(csv.DictReader(handle))
+    assert len(inventory_rows) == len(EXPECTED_TOOL_NAMES) + len(command_paths)
     assert "recent" in (out_dir / "README.md").read_text(encoding="utf-8").lower()
+    assert "surface inventory" in (out_dir / "README.md").read_text(encoding="utf-8").lower()
     assert "`summary.json`" in (out_dir / "README.md").read_text(encoding="utf-8")
 
 

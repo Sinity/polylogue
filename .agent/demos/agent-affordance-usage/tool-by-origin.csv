@@ -1,0 +1,16 @@
+origin,tool_name,family,evidence_kind,raw_tool_names,raw_tool_name_count,actions
+claude-code-session,serena/find_symbol,serena,mcp_tool_call,mcp__serena__find_symbol,1,12
+claude-code-session,serena/get_symbols_overview,serena,mcp_tool_call,mcp__serena__get_symbols_overview,1,7
+claude-code-session,polylogue/query_units,polylogue,mcp_tool_call,mcp__polylogue__query_units,1,5
+claude-code-session,polylogue/get_session_summary,polylogue,mcp_tool_call,mcp__polylogue__get_session_summary,1,4
+claude-code-session,lynchpin/lynchpin_project,lynchpin,mcp_tool_call,mcp__lynchpin__lynchpin_project,1,2
+claude-code-session,polylogue/get_pathologies,polylogue,mcp_tool_call,mcp__polylogue__get_pathologies,1,2
+claude-code-session,polylogue/get_resume_brief,polylogue,mcp_tool_call,mcp__polylogue__get_resume_brief,1,2
+claude-code-session,polylogue/list_sessions,polylogue,mcp_tool_call,mcp__polylogue__list_sessions,1,2
+claude-code-session,polylogue/stats,polylogue,mcp_tool_call,mcp__polylogue__stats,1,2
+claude-code-session,codebase-memory/get_architecture,codebase-memory,mcp_tool_call,mcp__codebase-memory-mcp__get_architecture,1,1
+claude-code-session,codebase-memory/list_projects,codebase-memory,mcp_tool_call,mcp__codebase-memory-mcp__list_projects,1,1
+claude-code-session,lynchpin/lynchpin_status,lynchpin,mcp_tool_call,mcp__lynchpin__lynchpin_status,1,1
+claude-code-session,polylogue/get_stats_by,polylogue,mcp_tool_call,mcp__polylogue__get_stats_by,1,1
+claude-code-session,polylogue/tool_usage,polylogue,mcp_tool_call,mcp__polylogue__tool_usage,1,1
+claude-code-session,serena/initial_instructions,serena,mcp_tool_call,mcp__serena__initial_instructions,1,1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -173,7 +174,7 @@ def _write_csv(path: Path, rows: Iterable[dict[str, object]]) -> None:
     materialized = list(rows)
     fieldnames = list(materialized[0].keys()) if materialized else []
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(materialized)
 
@@ -184,6 +185,7 @@ def _write_json(path: Path, payload: object) -> None:
 
 def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
     summary = cast(dict[str, object], report["summary"])
+    surface_summary = cast(dict[str, object], report.get("surface_inventory_summary", {}))
     return {
         "artifact": "agent-affordance-usage",
         "updated_at": report["captured_at"],
@@ -206,11 +208,13 @@ def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
             "detail_patterns": report["detail_patterns"],
             "top_families": summary["top_families"],
             "recent_top_families": summary["recent_top_families"],
+            "surface_inventory_summary": surface_summary,
         },
         "caveats": [
             "Counts describe captured action evidence, not independent proof of user benefit.",
             "Failure rates are provider-reported tool-result signals where available; missing outcome structure is not success.",
             "Recent windows are adoption-sensitive and can legitimately differ from all-time counts.",
+            "Zero captured agent use is not enough to remove operator-only surfaces; those rows carry an operator-only caveat.",
         ],
         "source_files": [
             "affordance-usage.report.json",
@@ -220,6 +224,8 @@ def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
             "tool-by-origin.csv",
             f"recent-{report['recent_window_days']}d-tool-counts.csv",
             "tool-samples.csv",
+            "surface-inventory.csv",
+            "surface-classification-summary.csv",
         ],
     }
 
@@ -250,6 +256,468 @@ def _tool_family_from_normalized(tool_name: object) -> str:
     if "/" in normalized:
         return normalized.split("/", 1)[0] or "unknown"
     return _family_for_row({"tool_name": normalized, "match_detail": ""})
+
+
+_FAST_TOOL_PREFIXES_BY_PATTERN: dict[str, tuple[str, ...]] = {
+    "serena": ("mcp__serena__",),
+    "codebase": ("mcp__codebase", "mcp__codebase_memory", "mcp__codebase-memory"),
+    "codebase-memory": ("mcp__codebase", "mcp__codebase_memory", "mcp__codebase-memory"),
+    "cclsp": ("mcp__cclsp__",),
+    "context7": ("mcp__context7__", "mcp__plugin_context7__", "mcp__plugin_context7_context7__"),
+    "polylogue": ("mcp__polylogue__",),
+    "lynchpin": ("mcp__lynchpin__",),
+}
+_FAST_TOOL_EXACT_BY_PATTERN: dict[str, tuple[str, ...]] = {
+    "codebase": (
+        "custom_cypher_query",
+        "detect_changes",
+        "get_architecture",
+        "get_code_snippet",
+        "search_code",
+        "search_graph",
+        "trace_path",
+    ),
+    "codebase-memory": (
+        "custom_cypher_query",
+        "detect_changes",
+        "get_architecture",
+        "get_code_snippet",
+        "search_code",
+        "search_graph",
+        "trace_path",
+    ),
+}
+
+
+def _prefix_upper_bound(prefix: str) -> str:
+    return f"{prefix}\uffff"
+
+
+def _fast_tool_name_where(tool_patterns: tuple[str, ...]) -> tuple[str, list[object]] | None:
+    cleaned_tools = _clean_patterns(tool_patterns or DEFAULT_FAMILY_PATTERNS)
+    if not cleaned_tools:
+        cleaned_tools = DEFAULT_FAMILY_PATTERNS
+    unknown = [
+        pattern
+        for pattern in cleaned_tools
+        if pattern not in _FAST_TOOL_PREFIXES_BY_PATTERN and pattern not in _FAST_TOOL_EXACT_BY_PATTERN
+    ]
+    if unknown:
+        return None
+    tool_expr = "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown')"
+    clauses: list[str] = []
+    params: list[object] = []
+    for pattern in cleaned_tools:
+        for prefix in _FAST_TOOL_PREFIXES_BY_PATTERN.get(pattern, ()):
+            clauses.append(f"({tool_expr} >= ? AND {tool_expr} < ?)")
+            params.extend((prefix, _prefix_upper_bound(prefix)))
+        for tool_name in _FAST_TOOL_EXACT_BY_PATTERN.get(pattern, ()):
+            clauses.append(f"{tool_expr} = ?")
+            params.append(tool_name)
+    return " OR ".join(clauses), params
+
+
+def _aggregate_grouped_tool_rows(rows: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
+    tool_buckets: dict[tuple[str, str, str], dict[str, object]] = {}
+    tool_sessions: dict[tuple[str, str, str], set[str]] = {}
+    tool_raw_names: dict[tuple[str, str, str], set[str]] = {}
+    tool_by_origin_buckets: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    tool_by_origin_raw_names: dict[tuple[str, str, str, str], set[str]] = {}
+    evidence_buckets: dict[tuple[str, str], dict[str, object]] = {}
+    evidence_sessions: dict[tuple[str, str], set[str]] = {}
+    family_buckets: dict[str, dict[str, object]] = {}
+    family_sessions: dict[str, set[str]] = {}
+    for row in rows:
+        raw_tool_name = str(row.get("tool_name") or "unknown")
+        public_row = {"tool_name": raw_tool_name, "match_detail": ""}
+        normalized_tool = _normalized_tool_name(public_row)
+        family = _tool_family_from_normalized(normalized_tool)
+        evidence_kind = _evidence_kind(public_row)
+        origin = str(row.get("origin") or "unknown-export")
+        actions = _int(row.get("call_count"))
+        errors = _int(row.get("error_count"))
+        nonzero_exits = _int(row.get("nonzero_exit_count"))
+        session_ids = {value for value in str(row.get("session_ids") or "").split(",") if value}
+        if not session_ids and row.get("session_count") is not None:
+            session_ids = {f"count:{_int(row.get('session_count'))}"}
+        tool_key = (family, normalized_tool, evidence_kind)
+        tool_bucket = tool_buckets.setdefault(
+            tool_key,
+            {
+                "tool_name": normalized_tool,
+                "family": family,
+                "evidence_kind": evidence_kind,
+                "raw_tool_names": "",
+                "raw_tool_name_count": 0,
+                "sessions": 0,
+                "actions": 0,
+                "errors": 0,
+                "nonzero_exits": 0,
+                "failure_rate": 0.0,
+            },
+        )
+        tool_bucket["actions"] = _int(tool_bucket["actions"]) + actions
+        tool_bucket["errors"] = _int(tool_bucket["errors"]) + errors
+        tool_bucket["nonzero_exits"] = _int(tool_bucket["nonzero_exits"]) + nonzero_exits
+        tool_sessions.setdefault(tool_key, set()).update(session_ids)
+        tool_raw_names.setdefault(tool_key, set()).add(raw_tool_name)
+
+        origin_key = (origin, family, normalized_tool, evidence_kind)
+        origin_bucket = tool_by_origin_buckets.setdefault(
+            origin_key,
+            {
+                "origin": origin,
+                "tool_name": normalized_tool,
+                "family": family,
+                "evidence_kind": evidence_kind,
+                "raw_tool_names": "",
+                "raw_tool_name_count": 0,
+                "actions": 0,
+            },
+        )
+        origin_bucket["actions"] = _int(origin_bucket["actions"]) + actions
+        tool_by_origin_raw_names.setdefault(origin_key, set()).add(raw_tool_name)
+
+        evidence_key = (family, evidence_kind)
+        evidence_bucket = evidence_buckets.setdefault(
+            evidence_key,
+            {"family": family, "evidence_kind": evidence_kind, "sessions": 0, "actions": 0},
+        )
+        evidence_bucket["actions"] = _int(evidence_bucket["actions"]) + actions
+        evidence_sessions.setdefault(evidence_key, set()).update(session_ids)
+
+        family_bucket = family_buckets.setdefault(
+            family,
+            {"family": family, "tools": 0, "sessions": 0, "actions": 0, "errors": 0, "nonzero_exits": 0},
+        )
+        family_bucket["actions"] = _int(family_bucket["actions"]) + actions
+        family_bucket["errors"] = _int(family_bucket["errors"]) + errors
+        family_bucket["nonzero_exits"] = _int(family_bucket["nonzero_exits"]) + nonzero_exits
+        family_sessions.setdefault(family, set()).update(session_ids)
+
+    for tool_bucket_key, bucket in tool_buckets.items():
+        raw_tool_names = sorted(tool_raw_names.get(tool_bucket_key, set()))
+        actions = _int(bucket["actions"])
+        bucket["sessions"] = len(tool_sessions.get(tool_bucket_key, set()))
+        bucket["raw_tool_names"] = ";".join(raw_tool_names)
+        bucket["raw_tool_name_count"] = len(raw_tool_names)
+        bucket["failure_rate"] = (
+            round((_int(bucket["errors"]) + _int(bucket["nonzero_exits"])) / actions, 3) if actions else 0.0
+        )
+    for origin_bucket_key, bucket in tool_by_origin_buckets.items():
+        raw_tool_names = sorted(tool_by_origin_raw_names.get(origin_bucket_key, set()))
+        bucket["raw_tool_names"] = ";".join(raw_tool_names)
+        bucket["raw_tool_name_count"] = len(raw_tool_names)
+    for evidence_bucket_key, bucket in evidence_buckets.items():
+        bucket["sessions"] = len(evidence_sessions.get(evidence_bucket_key, set()))
+    for family, bucket in family_buckets.items():
+        bucket["tools"] = sum(1 for key in tool_buckets if key[0] == family)
+        bucket["sessions"] = len(family_sessions.get(family, set()))
+
+    return {
+        "tool_counts": sorted(
+            tool_buckets.values(),
+            key=lambda row: (
+                -_int(row["actions"]),
+                str(row["family"]),
+                str(row["tool_name"]),
+                str(row["evidence_kind"]),
+            ),
+        ),
+        "tool_by_origin": sorted(
+            tool_by_origin_buckets.values(),
+            key=lambda row: (
+                -_int(row["actions"]),
+                str(row["origin"]),
+                str(row["family"]),
+                str(row["tool_name"]),
+                str(row["evidence_kind"]),
+            ),
+        ),
+        "evidence_kind_counts": sorted(
+            evidence_buckets.values(),
+            key=lambda row: (-_int(row["actions"]), str(row["family"]), str(row["evidence_kind"])),
+        ),
+        "family_counts": sorted(family_buckets.values(), key=lambda row: (-_int(row["actions"]), str(row["family"]))),
+    }
+
+
+def _try_grouped_tool_name_report(
+    *,
+    args: AffordanceUsageArgs,
+    config: Config,
+    conn: Connection,
+    recent_cutoff_ms: int,
+    effective_tool_patterns: tuple[str, ...],
+    effective_detail_patterns: tuple[str, ...],
+) -> dict[str, Any] | None:
+    if effective_detail_patterns:
+        return None
+    fast_where = _fast_tool_name_where(effective_tool_patterns)
+    if fast_where is None:
+        return None
+    where_sql, params = fast_where
+    if not args.all_time:
+        where_sql = f"({where_sql}) AND s.sort_key_ms >= ?"
+        params = [*params, recent_cutoff_ms]
+    rows = _rows(
+        conn,
+        f"""
+        SELECT
+            s.origin AS origin,
+            LOWER(COALESCE(NULLIF(u.tool_name, ''), 'unknown')) AS tool_name,
+            COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') AS action_kind,
+            COUNT(*) AS call_count,
+            COUNT(DISTINCT u.session_id) AS session_count,
+            GROUP_CONCAT(DISTINCT u.session_id) AS session_ids,
+            SUM(CASE WHEN r.tool_result_is_error = 1 THEN 1 ELSE 0 END) AS error_count,
+            SUM(CASE WHEN r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0 THEN 1 ELSE 0 END)
+                AS nonzero_exit_count
+        FROM blocks AS u
+        JOIN sessions AS s ON s.session_id = u.session_id
+        LEFT JOIN blocks AS r
+            ON r.tool_id = u.tool_id
+           AND r.session_id = u.session_id
+           AND r.block_type = 'tool_result'
+        WHERE u.block_type = 'tool_use'
+          AND ({where_sql})
+        GROUP BY s.origin, LOWER(COALESCE(NULLIF(u.tool_name, ''), 'unknown')), action_kind
+        ORDER BY call_count DESC, s.origin ASC, tool_name ASC, action_kind ASC
+        """,
+        params,
+    )
+    aggregates = _aggregate_grouped_tool_rows(rows)
+    family_rows = aggregates["family_counts"]
+    tool_counts = aggregates["tool_counts"]
+    tool_by_origin = aggregates["tool_by_origin"]
+    evidence_kind_counts = aggregates["evidence_kind_counts"]
+    recent_counts = tool_counts if not args.all_time else []
+    origin_counts = _rows(
+        conn,
+        "SELECT origin, COUNT(*) AS sessions FROM sessions GROUP BY origin ORDER BY sessions DESC",
+    )
+    action_scope = "grouped-tool-name-all-time" if args.all_time else "grouped-tool-name-recent-window"
+    return {
+        "report_version": 3,
+        "captured_at": datetime.now(UTC).isoformat(),
+        "command": "devtools workspace affordance-usage",
+        "archive_root": str(config.archive_root),
+        "index_db": str(config.db_path),
+        "index_schema_version": _user_version(conn),
+        "patterns": list(args.family or DEFAULT_FAMILY_PATTERNS),
+        "detail_patterns": list(args.detail_pattern),
+        "action_scope": action_scope,
+        "recent_window_days": args.days,
+        "recent_cutoff_ms": recent_cutoff_ms,
+        "origin_counts": origin_counts,
+        "family_counts": family_rows,
+        "evidence_kind_counts": evidence_kind_counts,
+        "tool_counts": tool_counts,
+        "tool_by_origin": tool_by_origin,
+        "recent_tool_counts": recent_counts,
+        "samples": [],
+        "summary": _build_summary(family_counts=family_rows, recent_counts=recent_counts, days=args.days),
+        "notes": [
+            "Default family counts used an indexed grouped tool-name path over blocks.",
+            "Command and input text bodies are not scanned unless --detail-pattern is supplied.",
+            "Samples are omitted on this fast grouped path to avoid materializing every matching action row.",
+        ],
+    }
+
+
+_OPERATOR_ONLY_MCP_PREFIXES = ("maintenance_",)
+_OPERATOR_ONLY_MCP_TOOLS = {
+    "delete_session",
+    "maintenance_execute",
+    "maintenance_list",
+    "maintenance_preview",
+    "maintenance_status",
+    "rebuild_index",
+    "update_index",
+}
+_OPERATOR_ONLY_CLI_PREFIXES = (
+    "ops",
+    "delete",
+    "config",
+    "init",
+    "import",
+)
+
+
+def _surface_classification(*, observed_actions: int, failure_rate: float, operator_only: bool) -> str:
+    if observed_actions == 0:
+        return "keep" if operator_only else "kill"
+    if observed_actions >= 5 and failure_rate <= 0.2:
+        return "promote"
+    return "keep"
+
+
+def _surface_caveat(*, observed_actions: int, operator_only: bool) -> str:
+    if operator_only and observed_actions == 0:
+        return "operator-only surface; zero captured agent use is not removal evidence"
+    if observed_actions == 0:
+        return "zero captured agent use in this archive window; review before removal"
+    return ""
+
+
+def _mcp_action_rows(conn: Connection) -> list[dict[str, object]]:
+    tool_expr = "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown')"
+    return _annotate_rows(
+        _rows(
+            conn,
+            f"""
+            SELECT
+                u.tool_name,
+                u.session_id,
+                s.origin,
+                s.title,
+                u.message_id,
+                NULL AS occurred_at_ms,
+                '' AS match_detail,
+                '' AS detail,
+                r.tool_result_is_error AS is_error,
+                r.tool_result_exit_code AS exit_code
+            FROM blocks AS u
+            JOIN sessions AS s ON s.session_id = u.session_id
+            LEFT JOIN blocks AS r
+                ON r.tool_id = u.tool_id
+               AND r.session_id = u.session_id
+               AND r.block_type = 'tool_result'
+            WHERE u.block_type = 'tool_use'
+              AND {tool_expr} >= ?
+              AND {tool_expr} < ?
+            ORDER BY u.tool_name, u.session_id
+            """,
+            ["mcp__polylogue__", _prefix_upper_bound("mcp__polylogue__")],
+        ),
+        tool_patterns=("polylogue",),
+        detail_patterns=(),
+    )
+
+
+def _mcp_surface_inventory(conn: Connection) -> list[dict[str, object]]:
+    from tests.infra.mcp import EXPECTED_TOOL_NAMES
+
+    tool_counts = _aggregate_tool_counts(_mcp_action_rows(conn))
+    counts_by_tool = {str(row["tool_name"]): row for row in tool_counts}
+    rows: list[dict[str, object]] = []
+    for name in sorted(EXPECTED_TOOL_NAMES):
+        tool_key = f"polylogue/{name}"
+        observed = counts_by_tool.get(tool_key)
+        actions = _int(observed.get("actions") if observed else 0)
+        sessions = _int(observed.get("sessions") if observed else 0)
+        failure_rate = float(cast(float | int | str, observed.get("failure_rate")) if observed else 0.0)
+        operator_only = name in _OPERATOR_ONLY_MCP_TOOLS or any(
+            name.startswith(prefix) for prefix in _OPERATOR_ONLY_MCP_PREFIXES
+        )
+        rows.append(
+            {
+                "surface_type": "mcp_tool",
+                "surface_name": name,
+                "observed_actions": actions,
+                "observed_sessions": sessions,
+                "failure_rate": failure_rate,
+                "classification": _surface_classification(
+                    observed_actions=actions,
+                    failure_rate=failure_rate,
+                    operator_only=operator_only,
+                ),
+                "operator_only_caveat": operator_only,
+                "caveat": _surface_caveat(observed_actions=actions, operator_only=operator_only),
+            }
+        )
+    return rows
+
+
+def _cli_command_paths() -> tuple[str, ...]:
+    from polylogue.cli.click_app import cli
+    from polylogue.cli.command_inventory import iter_command_paths
+
+    return tuple(command.display_name for command in iter_command_paths(cli, include_root=False))
+
+
+def _cli_action_rows(conn: Connection) -> list[dict[str, object]]:
+    tool_expr = "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown')"
+    generic_tools = ("exec_command", "functions", "functions.exec_command", "bash", "shell", "client")
+    return _rows(
+        conn,
+        f"""
+        SELECT
+            u.session_id,
+            lower(coalesce(u.tool_command, '') || ' ' || coalesce(u.tool_path, '')) AS detail,
+            r.tool_result_is_error AS is_error,
+            r.tool_result_exit_code AS exit_code
+        FROM blocks AS u
+        LEFT JOIN blocks AS r
+            ON r.tool_id = u.tool_id
+           AND r.session_id = u.session_id
+           AND r.block_type = 'tool_result'
+        WHERE
+            u.block_type = 'tool_use'
+            AND {tool_expr} IN ({", ".join("?" for _ in generic_tools)})
+            AND (
+                lower(coalesce(u.tool_command, '')) LIKE '%polylogue%'
+                OR lower(coalesce(u.tool_path, '')) LIKE '%polylogue%'
+            )
+        """,
+        generic_tools,
+    )
+
+
+def _cli_surface_inventory(conn: Connection) -> list[dict[str, object]]:
+    command_paths = _cli_command_paths()
+    sorted_paths = sorted(command_paths, key=lambda value: (-len(value.split()), value))
+    buckets: dict[str, dict[str, object]] = {
+        path: {"actions": 0, "sessions": set(), "failures": 0} for path in command_paths
+    }
+    patterns = {path: re.compile(rf"(?<![\w-])polylogue\s+{re.escape(path)}(?![\w-])") for path in command_paths}
+    for row in _cli_action_rows(conn):
+        detail = str(row.get("detail") or "")
+        matched_path = next((path for path in sorted_paths if patterns[path].search(detail)), None)
+        if matched_path is None:
+            continue
+        bucket = buckets[matched_path]
+        bucket["actions"] = _int(bucket["actions"]) + 1
+        cast(set[str], bucket["sessions"]).add(str(row["session_id"]))
+        bucket["failures"] = _int(bucket["failures"]) + _failed_action(row)
+    rows: list[dict[str, object]] = []
+    for path in sorted(command_paths):
+        bucket = buckets[path]
+        actions = _int(bucket["actions"])
+        failures = _int(bucket["failures"])
+        failure_rate = round(failures / actions, 3) if actions else 0.0
+        root = path.split(" ", 1)[0]
+        operator_only = root in _OPERATOR_ONLY_CLI_PREFIXES
+        rows.append(
+            {
+                "surface_type": "cli_command",
+                "surface_name": path,
+                "observed_actions": actions,
+                "observed_sessions": len(cast(set[str], bucket["sessions"])),
+                "failure_rate": failure_rate,
+                "classification": _surface_classification(
+                    observed_actions=actions,
+                    failure_rate=failure_rate,
+                    operator_only=operator_only,
+                ),
+                "operator_only_caveat": operator_only,
+                "caveat": _surface_caveat(observed_actions=actions, operator_only=operator_only),
+            }
+        )
+    return rows
+
+
+def _surface_inventory_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    buckets: dict[tuple[str, str], dict[str, object]] = {}
+    for row in rows:
+        key = (str(row["surface_type"]), str(row["classification"]))
+        bucket = buckets.setdefault(
+            key,
+            {"surface_type": key[0], "classification": key[1], "surfaces": 0, "observed_actions": 0},
+        )
+        bucket["surfaces"] = _int(bucket["surfaces"]) + 1
+        bucket["observed_actions"] = _int(bucket["observed_actions"]) + _int(row["observed_actions"])
+    return sorted(buckets.values(), key=lambda row: (str(row["surface_type"]), str(row["classification"])))
 
 
 def _report_from_product_action_rows(
@@ -611,11 +1079,22 @@ def _recent_action_rows(
     session_rows: list[dict[str, object]],
     where_sql: str,
     where_params: list[object],
+    include_tool_input: bool,
 ) -> list[dict[str, object]]:
     session_meta = {
         str(row["session_id"]): {"origin": row.get("origin"), "title": row.get("title")} for row in session_rows
     }
     rows: list[dict[str, object]] = []
+    match_detail_expr = (
+        "coalesce(a.tool_command, '') || ' ' || coalesce(a.tool_path, '') || ' ' || coalesce(a.tool_input, '')"
+        if include_tool_input
+        else "coalesce(a.tool_command, '') || ' ' || coalesce(a.tool_path, '')"
+    )
+    detail_expr = (
+        "substr(coalesce(a.tool_command, a.tool_path, a.tool_input, ''), 1, 240)"
+        if include_tool_input
+        else "substr(coalesce(a.tool_command, a.tool_path, ''), 1, 240)"
+    )
     for session_ids in _chunks(list(session_meta), 400):
         placeholders = ",".join("?" for _ in session_ids)
         chunk_rows = _rows(
@@ -626,10 +1105,8 @@ def _recent_action_rows(
                 a.session_id,
                 a.message_id,
                 m.occurred_at_ms,
-                coalesce(a.tool_command, '') || ' ' ||
-                    coalesce(a.tool_path, '') || ' ' ||
-                    coalesce(a.tool_input, '') AS match_detail,
-                substr(coalesce(a.tool_command, a.tool_path, a.tool_input, ''), 1, 240) AS detail,
+                {match_detail_expr} AS match_detail,
+                {detail_expr} AS detail,
                 a.is_error,
                 a.exit_code
             FROM actions AS a
@@ -651,7 +1128,18 @@ def _all_time_action_rows(
     *,
     where_sql: str,
     where_params: list[object],
+    include_tool_input: bool,
 ) -> list[dict[str, object]]:
+    match_detail_expr = (
+        "coalesce(a.tool_command, '') || ' ' || coalesce(a.tool_path, '') || ' ' || coalesce(a.tool_input, '')"
+        if include_tool_input
+        else "coalesce(a.tool_command, '') || ' ' || coalesce(a.tool_path, '')"
+    )
+    detail_expr = (
+        "substr(coalesce(a.tool_command, a.tool_path, a.tool_input, ''), 1, 240)"
+        if include_tool_input
+        else "substr(coalesce(a.tool_command, a.tool_path, ''), 1, 240)"
+    )
     return _rows(
         conn,
         f"""
@@ -662,10 +1150,8 @@ def _all_time_action_rows(
             s.title,
             a.message_id,
             m.occurred_at_ms,
-            coalesce(a.tool_command, '') || ' ' ||
-                coalesce(a.tool_path, '') || ' ' ||
-                coalesce(a.tool_input, '') AS match_detail,
-            substr(coalesce(a.tool_command, a.tool_path, a.tool_input, ''), 1, 240) AS detail,
+            {match_detail_expr} AS match_detail,
+            {detail_expr} AS detail,
             a.is_error,
             a.exit_code
         FROM actions AS a
@@ -698,8 +1184,21 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
             recent_cutoff_ms=recent_cutoff_ms,
             effective_detail_patterns=effective_detail_patterns,
         )
-        if product_report is not None:
-            report = product_report
+        grouped_report = (
+            None
+            if product_report is not None
+            else _try_grouped_tool_name_report(
+                args=args,
+                config=config,
+                conn=conn,
+                recent_cutoff_ms=recent_cutoff_ms,
+                effective_tool_patterns=effective_tool_patterns,
+                effective_detail_patterns=effective_detail_patterns,
+            )
+        )
+        fast_report = product_report or grouped_report
+        if fast_report is not None:
+            report = fast_report
             origin_counts = cast(list[dict[str, object]], report["origin_counts"])
             family_rows = cast(list[dict[str, object]], report["family_counts"])
             evidence_kind_counts = cast(list[dict[str, object]], report["evidence_kind_counts"])
@@ -711,7 +1210,12 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
             if args.all_time:
                 action_scope = "all-time"
                 action_rows = _annotate_rows(
-                    _all_time_action_rows(conn, where_sql=where_sql, where_params=where_params),
+                    _all_time_action_rows(
+                        conn,
+                        where_sql=where_sql,
+                        where_params=where_params,
+                        include_tool_input=bool(effective_detail_patterns),
+                    ),
                     tool_patterns=effective_tool_patterns,
                     detail_patterns=effective_detail_patterns,
                 )
@@ -720,7 +1224,11 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
                 session_rows = _recent_session_rows(conn, recent_cutoff_ms)
                 action_rows = _annotate_rows(
                     _recent_action_rows(
-                        conn, session_rows=session_rows, where_sql=where_sql, where_params=where_params
+                        conn,
+                        session_rows=session_rows,
+                        where_sql=where_sql,
+                        where_params=where_params,
+                        include_tool_input=bool(effective_detail_patterns),
                     ),
                     tool_patterns=effective_tool_patterns,
                     detail_patterns=effective_detail_patterns,
@@ -757,6 +1265,10 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
                 "samples": samples,
                 "summary": _build_summary(family_counts=family_rows, recent_counts=recent_counts, days=args.days),
             }
+        surface_inventory = [*_mcp_surface_inventory(conn), *_cli_surface_inventory(conn)]
+        surface_summary = _surface_inventory_summary(surface_inventory)
+        report["surface_inventory"] = surface_inventory
+        report["surface_inventory_summary"] = surface_summary
     finally:
         conn.close()
     if args.out_dir is not None:
@@ -769,6 +1281,11 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
         _write_csv(out_dir / "tool-by-origin.csv", tool_by_origin)
         _write_csv(out_dir / f"recent-{args.days}d-tool-counts.csv", recent_counts)
         _write_csv(out_dir / "tool-samples.csv", samples)
+        _write_csv(out_dir / "surface-inventory.csv", cast(list[dict[str, object]], report["surface_inventory"]))
+        _write_csv(
+            out_dir / "surface-classification-summary.csv",
+            cast(list[dict[str, object]], report["surface_inventory_summary"]),
+        )
         _write_json(out_dir / "affordance-usage.report.json", report)
         _write_json(out_dir / "summary.json", _demo_summary(report))
         _write_readme(out_dir / "README.md", report)
@@ -781,6 +1298,9 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
     recent_top_families = cast(list[dict[str, object]], summary["recent_top_families"])
     interpretation = cast(list[str], summary["interpretation"])
     notes = cast(list[str], report.get("notes", []))
+    surface_summary = cast(list[dict[str, object]], report.get("surface_inventory_summary", []))
+    surface_rows = cast(list[dict[str, object]], report.get("surface_inventory", []))
+    kill_rows = [row for row in surface_rows if row.get("classification") == "kill"][:12]
     lines = [
         "# Agent Affordance Usage",
         "",
@@ -804,12 +1324,30 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
             f"- {row['family']}: {row['tool_name']} — {row['actions']} actions across {row['sessions']} session(s), "
             f"failure_rate={row['failure_rate']}."
         )
+    if surface_summary:
+        lines.extend(["", "## Surface Inventory Classification", ""])
+        for row in surface_summary:
+            lines.append(
+                f"- {row['surface_type']} {row['classification']}: "
+                f"{row['surfaces']} surface(s), observed_actions={row['observed_actions']}."
+            )
+    if kill_rows:
+        lines.extend(["", "## Kill Candidates", ""])
+        lines.append(
+            "These are zero-use non-operator surfaces in the captured archive evidence. "
+            "They are review candidates, not automatic removals."
+        )
+        lines.append("")
+        for row in kill_rows:
+            lines.append(f"- {row['surface_type']} `{row['surface_name']}` — {row['caveat']}")
     lines.extend(
         [
             "",
             "## Interpretation",
             "",
             *[f"- {item}" for item in interpretation],
+            "- The surface inventory left-joins observed usage against every registered MCP tool and CLI command.",
+            "- Operator-only rows are kept even when unused; the classification caveat is part of the data.",
             "",
             *(["## Notes", "", *[f"- {item}" for item in notes], ""] if notes else []),
             "## Files",
@@ -820,6 +1358,8 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
             "- `tool-by-origin.csv`",
             f"- `recent-{report['recent_window_days']}d-tool-counts.csv`",
             "- `tool-samples.csv`",
+            "- `surface-inventory.csv`",
+            "- `surface-classification-summary.csv`",
             "- `affordance-usage.report.json`",
             "- `summary.json`",
             "",

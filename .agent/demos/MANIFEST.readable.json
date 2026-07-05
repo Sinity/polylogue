@@ -3,8 +3,8 @@
   "root": "/realm/project/polylogue/.agent/demos",
   "packaging": "Use devtools workspace read-package for portable readable bundles; this helper only writes indexes.",
   "curation_policy": "This is not append-only. Keep the best current demos here; replace, consolidate, or move stale demos out.",
-  "file_count": 136,
-  "readable_count": 109,
+  "file_count": 138,
+  "readable_count": 111,
   "files": [
     {
       "path": "agent-affordance-usage/ANALYSIS.md",
@@ -13,12 +13,12 @@
     },
     {
       "path": "agent-affordance-usage/README.md",
-      "bytes": 1869,
+      "bytes": 4295,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/affordance-usage.report.json",
-      "bytes": 74906,
+      "bytes": 81388,
       "readable": true
     },
     {
@@ -73,12 +73,12 @@
     },
     {
       "path": "agent-affordance-usage/evidence-kind-counts.csv",
-      "bytes": 149,
+      "bytes": 159,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/family-counts.csv",
-      "bytes": 115,
+      "bytes": 140,
       "readable": true
     },
     {
@@ -203,27 +203,37 @@
     },
     {
       "path": "agent-affordance-usage/recent-7d-tool-counts.csv",
-      "bytes": 2048,
+      "bytes": 1561,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/summary.json",
-      "bytes": 4705,
+      "bytes": 6084,
+      "readable": true
+    },
+    {
+      "path": "agent-affordance-usage/surface-classification-summary.csv",
+      "bytes": 195,
+      "readable": true
+    },
+    {
+      "path": "agent-affordance-usage/surface-inventory.csv",
+      "bytes": 18767,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/tool-by-origin.csv",
-      "bytes": 2190,
+      "bytes": 1673,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/tool-counts.csv",
-      "bytes": 2048,
+      "bytes": 1561,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/tool-samples.csv",
-      "bytes": 28550,
+      "bytes": 2,
       "readable": true
     },
     {
