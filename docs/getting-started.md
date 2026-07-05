@@ -31,8 +31,10 @@ Point Polylogue at your AI chat exports, then search:
 polylogue "css refactor"
 ```
 
-Polylogue is query-first: bare tokens are full-text search terms. Results are
-rendered in your pager.
+Polylogue is query-first: a quoted expression (as above) or one after the
+`find` keyword is a full-text search. A bare *unquoted* word is treated as a
+command name and prints a hint instead of searching (#1842), so quote
+multi-word queries. Results are rendered in your pager.
 
 ## First list
 
