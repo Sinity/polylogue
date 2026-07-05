@@ -1,0 +1,1253 @@
+{
+  "archive_tiers": {
+    "complete": true,
+    "derived_readiness": {
+      "checked": true,
+      "counts": {
+        "action_count": 1,
+        "action_count_exact": false,
+        "block_count": 665890,
+        "cost_profile_count": 0,
+        "lost_source_evidence_count": 0,
+        "lost_source_evidence_samples": [],
+        "message_count": 4364655,
+        "messages_fts_count": -2,
+        "messages_fts_exact_counts": false,
+        "missing_profile_row_count": 0,
+        "missing_raw_session_count": 0,
+        "missing_raw_session_samples": [],
+        "orphan_profile_row_count": 0,
+        "phase_row_count": 4,
+        "profile_phase_count_mismatch": 0,
+        "profile_row_count": 16816,
+        "profile_work_event_count_mismatch": 0,
+        "raw_link_count": 16816,
+        "raw_materialization_debt_count": 0,
+        "raw_materialization_debt_group_count": 10,
+        "session_count": 16816,
+        "session_tag_count": 6,
+        "text_block_count": 665890,
+        "thread_count": 3,
+        "thread_session_count": 8992,
+        "work_event_row_count": 5
+      },
+      "materialization_counts": {
+        "context_snapshots": 16816,
+        "latency": 16816,
+        "observed_events": 16816,
+        "phases": 16816,
+        "runs": 16816,
+        "session_profile": 16816,
+        "thread": 16816,
+        "work_events": 16816
+      },
+      "missing_materialization_counts": {
+        "latency": 0,
+        "phases": 0,
+        "session_profile": 0,
+        "thread": 0,
+        "work_events": 0
+      },
+      "ready": {
+        "latency_materialization_ready": true,
+        "messages_fts_ready": true,
+        "phase_materialization_ready": true,
+        "profile_counts_ready": true,
+        "profile_materialization_ready": true,
+        "profile_rows_ready": true,
+        "raw_links_ready": true,
+        "raw_materialization_ready": true,
+        "thread_materialization_ready": true,
+        "work_event_materialization_ready": true
+      },
+      "reason": null,
+      "source_check_available": true,
+      "surface_readiness": {
+        "archive_sessions": {
+          "blockers": [],
+          "evidence": {
+            "message_count": 4364655,
+            "session_count": 16816,
+            "text_block_count": 665890
+          },
+          "ready": true
+        },
+        "latency_profiles": {
+          "blockers": [],
+          "evidence": {
+            "missing_materialization_count": 0
+          },
+          "ready": true
+        },
+        "raw_artifacts": {
+          "blockers": [],
+          "evidence": {
+            "lost_source_evidence_count": 0,
+            "lost_source_evidence_samples": [],
+            "missing_raw_session_count": 0,
+            "missing_raw_session_samples": [],
+            "raw_link_count": 16816,
+            "raw_materialization_debt_count": 0,
+            "raw_materialization_debt_group_count": 10,
+            "source_check_available": true
+          },
+          "ready": true
+        },
+        "search": {
+          "blockers": [],
+          "evidence": {
+            "messages_fts_count": -2,
+            "messages_fts_exact_counts": false,
+            "text_block_count": 665890
+          },
+          "ready": true
+        },
+        "session_costs": {
+          "blockers": [],
+          "evidence": {
+            "cost_profile_count": 0,
+            "missing_materialization_count": 0,
+            "missing_profile_row_count": 0
+          },
+          "ready": true
+        },
+        "session_profiles": {
+          "blockers": [],
+          "evidence": {
+            "missing_materialization_count": 0,
+            "missing_profile_row_count": 0,
+            "orphan_profile_row_count": 0,
+            "profile_row_count": 16816
+          },
+          "ready": true
+        },
+        "tag_rollups": {
+          "blockers": [],
+          "evidence": {
+            "session_tag_count": 6
+          },
+          "ready": true
+        },
+        "threads": {
+          "blockers": [],
+          "evidence": {
+            "missing_materialization_count": 0,
+            "thread_count": 3,
+            "thread_session_count": 8992
+          },
+          "ready": true
+        },
+        "timeline_phases": {
+          "blockers": [],
+          "evidence": {
+            "missing_materialization_count": 0,
+            "phase_row_count": 4
+          },
+          "ready": true
+        },
+        "timeline_work_events": {
+          "blockers": [],
+          "evidence": {
+            "missing_materialization_count": 0,
+            "work_event_row_count": 5
+          },
+          "ready": true
+        },
+        "tool_usage": {
+          "blockers": [],
+          "evidence": {
+            "action_count": 1,
+            "action_count_exact": false
+          },
+          "ready": true
+        }
+      }
+    },
+    "expected_count": 5,
+    "layout_readiness": {
+      "archive_ready": true,
+      "blockers": [],
+      "evidence": {
+        "blocked_surface_count": 0,
+        "complete": true,
+        "derived_readiness_checked": true,
+        "derived_surface_count": 11,
+        "expected_count": 5,
+        "missing_backup_required_count": 0,
+        "present_count": 5,
+        "schema_mismatch_count": 0,
+        "user_overlay_checked": true,
+        "user_overlay_orphan_session_references": 0
+      },
+      "state": "archive_ready"
+    },
+    "missing_backup_required": [],
+    "observed_tier": "index",
+    "present": true,
+    "present_count": 5,
+    "root": "/home/sinity/.local/share/polylogue",
+    "schema_mismatches": [],
+    "table_count_mode": "mixed",
+    "tiers": {
+      "embeddings": {
+        "backup_required": true,
+        "durability": "expensive_rebuild",
+        "error": null,
+        "exists": true,
+        "expected_user_version": 1,
+        "filename": "embeddings.db",
+        "integrity": "not_checked",
+        "observed_by_probe": false,
+        "path": "/home/sinity/.local/share/polylogue/embeddings.db",
+        "size_bytes": 3159937024,
+        "table_count_precision": {
+          "embedding_status": "exact",
+          "message_embeddings": "unavailable",
+          "message_embeddings_meta": "estimate"
+        },
+        "table_counts": {
+          "embedding_status": 13214,
+          "message_embeddings": -2,
+          "message_embeddings_meta": 534688
+        },
+        "tier": "embeddings",
+        "user_version": 1
+      },
+      "index": {
+        "backup_required": false,
+        "durability": "rebuildable",
+        "error": null,
+        "exists": true,
+        "expected_user_version": 24,
+        "filename": "index.db",
+        "integrity": "not_checked",
+        "observed_by_probe": true,
+        "path": "/home/sinity/.local/share/polylogue/index.db",
+        "size_bytes": 26055458816,
+        "table_count_precision": {
+          "attachment_refs": "estimate",
+          "attachments": "estimate",
+          "blocks": "estimate",
+          "insight_materialization": "exact",
+          "messages": "exact",
+          "messages_fts_docsize": "unavailable",
+          "paste_spans": "estimate",
+          "repos": "estimate",
+          "session_commits": "estimate",
+          "session_events": "estimate",
+          "session_links": "estimate",
+          "session_phases": "estimate",
+          "session_profiles": "exact",
+          "session_repos": "estimate",
+          "session_tags": "estimate",
+          "session_work_events": "estimate",
+          "session_working_dirs": "estimate",
+          "sessions": "exact",
+          "thread_sessions": "estimate",
+          "threads": "estimate"
+        },
+        "table_counts": {
+          "attachment_refs": 872,
+          "attachments": 70,
+          "blocks": 665890,
+          "insight_materialization": 134528,
+          "messages": 4364655,
+          "messages_fts_docsize": -2,
+          "paste_spans": 1,
+          "repos": 1,
+          "session_commits": 283,
+          "session_events": 0,
+          "session_links": 3418,
+          "session_phases": 4,
+          "session_profiles": 16816,
+          "session_repos": 12117,
+          "session_tags": 6,
+          "session_work_events": 5,
+          "session_working_dirs": 4703,
+          "sessions": 16816,
+          "thread_sessions": 8992,
+          "threads": 3
+        },
+        "tier": "index",
+        "user_version": 24
+      },
+      "ops": {
+        "backup_required": false,
+        "durability": "disposable",
+        "error": null,
+        "exists": true,
+        "expected_user_version": 1,
+        "filename": "ops.db",
+        "integrity": "not_checked",
+        "observed_by_probe": false,
+        "path": "/home/sinity/.local/share/polylogue/ops.db",
+        "size_bytes": 448720896,
+        "table_count_precision": {
+          "convergence_debt": "exact",
+          "cursor_lag_samples": "exact",
+          "daemon_events": "exact",
+          "daemon_stage_events": "exact",
+          "embedding_catchup_runs": "estimate",
+          "ingest_attempts": "exact",
+          "ingest_cursor": "estimate",
+          "otlp_spans": "unavailable",
+          "otlp_telemetry": "unavailable"
+        },
+        "table_counts": {
+          "convergence_debt": 5,
+          "cursor_lag_samples": 0,
+          "daemon_events": 54153,
+          "daemon_stage_events": 345458,
+          "embedding_catchup_runs": 348,
+          "ingest_attempts": 46625,
+          "ingest_cursor": 13553,
+          "otlp_spans": -2,
+          "otlp_telemetry": -2
+        },
+        "tier": "ops",
+        "user_version": 1
+      },
+      "source": {
+        "backup_required": true,
+        "durability": "irreplaceable",
+        "error": null,
+        "exists": true,
+        "expected_user_version": 2,
+        "filename": "source.db",
+        "integrity": "not_checked",
+        "observed_by_probe": false,
+        "path": "/home/sinity/.local/share/polylogue/source.db",
+        "size_bytes": 22884352,
+        "table_count_precision": {
+          "blob_refs": "estimate",
+          "history_sidecars": "unavailable",
+          "raw_artifacts": "estimate",
+          "raw_hook_events": "unavailable",
+          "raw_sessions": "exact"
+        },
+        "table_counts": {
+          "blob_refs": 21050,
+          "history_sidecars": -2,
+          "raw_artifacts": 476,
+          "raw_hook_events": -2,
+          "raw_sessions": 17160
+        },
+        "tier": "source",
+        "user_version": 2
+      },
+      "user": {
+        "backup_required": true,
+        "durability": "human",
+        "error": null,
+        "exists": true,
+        "expected_user_version": 4,
+        "filename": "user.db",
+        "integrity": "not_checked",
+        "observed_by_probe": false,
+        "path": "/home/sinity/.local/share/polylogue/user.db",
+        "size_bytes": 32768,
+        "table_count_precision": {
+          "assertions": "unavailable",
+          "session_metadata": "missing",
+          "session_tags": "missing"
+        },
+        "table_counts": {
+          "assertions": -2,
+          "session_metadata": -1,
+          "session_tags": -1
+        },
+        "tier": "user",
+        "user_version": 4
+      }
+    },
+    "user_overlay_orphans": {
+      "checked": true,
+      "orphan_session_reference_counts": {
+        "assertion_annotations": 0,
+        "assertion_corrections": 0,
+        "assertion_marks": 0,
+        "assertion_metadata": 0,
+        "assertion_notes": 0,
+        "assertion_suppressions": 0,
+        "assertion_tags": 0
+      },
+      "reason": null,
+      "total_orphan_session_references": 0
+    }
+  },
+  "attempt_counts": {
+    "completed": 46602,
+    "failed": 1,
+    "overlapping_source_paths": [],
+    "running": 0,
+    "stale_cursor_writes": 0,
+    "total": 46627
+  },
+  "automatic_convergence_backlog": {
+    "checked": true,
+    "counts": {
+      "automatic_backlog_total": 0,
+      "missing_latency_materialization": 0,
+      "missing_phases_materialization": 0,
+      "missing_profile_rows": 0,
+      "missing_session_profile_materialization": 0,
+      "missing_threads_materialization": 0,
+      "missing_work_events_materialization": 0,
+      "retry_debt_unresolved": 5
+    },
+    "reason": null,
+    "state": "ready"
+  },
+  "blob_lease_state": {
+    "distinct_operations": 0,
+    "oldest_acquired_at": null,
+    "pending_lease_count": 0,
+    "table_present": true
+  },
+  "blob_reference_debt": {
+    "checked": false,
+    "ok": true,
+    "reason": "skipped; pass --blob-reference-debt to scan referenced blob files"
+  },
+  "boundary_table_count_mode": "mixed",
+  "boundary_table_count_precision": {
+    "artifact_observations": "missing",
+    "blocks": "estimate",
+    "convergence_debt": "exact",
+    "cursor_lag_samples": "exact",
+    "daemon_events": "exact",
+    "daemon_stage_events": "exact",
+    "ingest_attempts": "exact",
+    "live_ingest_attempt": "missing",
+    "message_embeddings": "missing",
+    "messages": "exact",
+    "messages_fts_docsize": "unavailable",
+    "otlp_telemetry": "unavailable",
+    "pending_blob_refs": "missing",
+    "raw_sessions": "exact",
+    "repos": "estimate",
+    "session_commits": "estimate",
+    "session_events": "estimate",
+    "session_links": "estimate",
+    "session_profiles": "exact",
+    "session_repos": "estimate",
+    "sessions": "exact"
+  },
+  "boundary_table_counts": {
+    "artifact_observations": -1,
+    "blocks": 665890,
+    "convergence_debt": 5,
+    "cursor_lag_samples": 0,
+    "daemon_events": 54153,
+    "daemon_stage_events": 345458,
+    "ingest_attempts": 46625,
+    "live_ingest_attempt": -1,
+    "message_embeddings": -1,
+    "messages": 4364655,
+    "messages_fts_docsize": -2,
+    "otlp_telemetry": -2,
+    "pending_blob_refs": -1,
+    "raw_sessions": 17160,
+    "repos": 1,
+    "session_commits": 283,
+    "session_events": 0,
+    "session_links": 3418,
+    "session_profiles": 16816,
+    "session_repos": 12117,
+    "sessions": 16816
+  },
+  "captured_at": "2026-07-05T07:32:18+00:00",
+  "convergence_debt": {
+    "by_stage": [
+      {
+        "deferred_count": 0,
+        "failed_count": 3,
+        "stage": "embed",
+        "unresolved_count": 3
+      },
+      {
+        "deferred_count": 2,
+        "failed_count": 0,
+        "stage": "insights",
+        "unresolved_count": 2
+      }
+    ],
+    "deferred_count": 2,
+    "failed_count": 3,
+    "unresolved_count": 5
+  },
+  "convergence_stage_timings": {
+    "convergence_time_s": {
+      "max": 0.033543,
+      "mean": 0.021329,
+      "min": 0.010881,
+      "sum": 0.106646
+    },
+    "parse_time_s": {
+      "max": 0.892975,
+      "mean": 0.308558,
+      "min": 0.042021,
+      "sum": 1.542791
+    },
+    "per_stage_s": {
+      "append.archive_open": {
+        "max": 0.009627,
+        "mean": 0.005347,
+        "min": 0.002976,
+        "sum": 0.026736
+      },
+      "append.blob_store_open": {
+        "max": 8.3e-05,
+        "mean": 5.3e-05,
+        "min": 2.3e-05,
+        "sum": 0.000265
+      },
+      "append.blob_write": {
+        "max": 0.000793,
+        "mean": 0.000592,
+        "min": 0.000343,
+        "sum": 0.002962
+      },
+      "append.imports": {
+        "max": 1.6e-05,
+        "mean": 1.1e-05,
+        "min": 6e-06,
+        "sum": 5.5e-05
+      },
+      "append.index.attachments": {
+        "max": 4.4e-05,
+        "mean": 2e-05,
+        "min": 8e-06,
+        "sum": 0.000101
+      },
+      "append.index.blocks": {
+        "max": 0.165804,
+        "mean": 0.054065,
+        "min": 0.006764,
+        "sum": 0.270324
+      },
+      "append.index.graph_resolve": {
+        "max": 0.710643,
+        "mean": 0.150252,
+        "min": 0.000265,
+        "sum": 0.75126
+      },
+      "append.index.graph_resolve.inbound_lookup": {
+        "max": 0.00073,
+        "mean": 0.000275,
+        "min": 3.5e-05,
+        "sum": 0.001374
+      },
+      "append.index.graph_resolve.outbound_links": {
+        "max": 0.000598,
+        "mean": 0.000179,
+        "min": 4.9e-05,
+        "sum": 0.000894
+      },
+      "append.index.graph_resolve.projection_refresh": {
+        "max": 0.001447,
+        "mean": 0.000574,
+        "min": 0.000117,
+        "sum": 0.001723
+      },
+      "append.index.graph_resolve.reextract_prefix_tails": {
+        "max": 2e-06,
+        "mean": 1e-06,
+        "min": 0.0,
+        "sum": 3e-06
+      },
+      "append.index.graph_resolve.repair_stale_branch_points": {
+        "max": 0.000607,
+        "mean": 0.000225,
+        "min": 3.3e-05,
+        "sum": 0.000674
+      },
+      "append.index.graph_resolve.root_current_check": {
+        "max": 0.028347,
+        "mean": 0.005968,
+        "min": 6.7e-05,
+        "sum": 0.029842
+      },
+      "append.index.graph_resolve.root_init": {
+        "max": 0.000141,
+        "mean": 5.4e-05,
+        "min": 2.8e-05,
+        "sum": 0.000272
+      },
+      "append.index.graph_resolve.thread_refresh": {
+        "max": 0.706325,
+        "mean": 0.23881,
+        "min": 0.004807,
+        "sum": 0.716431
+      },
+      "append.index.merge_prepare": {
+        "max": 0.003089,
+        "mean": 0.000873,
+        "min": 0.000146,
+        "sum": 0.004367
+      },
+      "append.index.messages": {
+        "max": 0.107705,
+        "mean": 0.029509,
+        "min": 0.003542,
+        "sum": 0.147545
+      },
+      "append.index.parent_links": {
+        "max": 2.5e-05,
+        "mean": 1.2e-05,
+        "min": 5e-06,
+        "sum": 5.9e-05
+      },
+      "append.index.paste_spans": {
+        "max": 1e-05,
+        "mean": 6e-06,
+        "min": 3e-06,
+        "sum": 2.8e-05
+      },
+      "append.index.prepare": {
+        "max": 0.000122,
+        "mean": 7.5e-05,
+        "min": 3.7e-05,
+        "sum": 0.000376
+      },
+      "append.index.provider_usage_rollup": {
+        "max": 0.003394,
+        "mean": 0.001035,
+        "min": 0.000171,
+        "sum": 0.005174
+      },
+      "append.index.repo_edges": {
+        "max": 1.3e-05,
+        "mean": 9e-06,
+        "min": 7e-06,
+        "sum": 4.7e-05
+      },
+      "append.index.reported_costs": {
+        "max": 1.2e-05,
+        "mean": 1e-05,
+        "min": 8e-06,
+        "sum": 5e-05
+      },
+      "append.index.session_counts": {
+        "max": 0.000117,
+        "mean": 7.1e-05,
+        "min": 4.9e-05,
+        "sum": 0.000355
+      },
+      "append.index.session_events": {
+        "max": 0.13111,
+        "mean": 0.044771,
+        "min": 0.00491,
+        "sum": 0.223853
+      },
+      "append.index.session_link": {
+        "max": 2e-06,
+        "mean": 1e-06,
+        "min": 1e-06,
+        "sum": 6e-06
+      },
+      "append.index.session_upsert": {
+        "max": 0.00766,
+        "mean": 0.001864,
+        "min": 0.000302,
+        "sum": 0.00932
+      },
+      "append.index.web_constructs": {
+        "max": 0.004654,
+        "mean": 0.001092,
+        "min": 0.000164,
+        "sum": 0.00546
+      },
+      "append.index.working_dirs": {
+        "max": 2e-06,
+        "mean": 2e-06,
+        "min": 1e-06,
+        "sum": 8e-06
+      },
+      "append.index_parsed_write": {
+        "max": 0.875147,
+        "mean": 0.287317,
+        "min": 0.02956,
+        "sum": 1.436587
+      },
+      "append.json_stream": {
+        "max": 0.000529,
+        "mean": 0.000307,
+        "min": 0.000148,
+        "sum": 0.001533
+      },
+      "append.provider_parse": {
+        "max": 0.00281,
+        "mean": 0.001473,
+        "min": 0.000729,
+        "sum": 0.007367
+      },
+      "append.raw_and_index_write": {
+        "max": 0.882928,
+        "mean": 0.297504,
+        "min": 0.036709,
+        "sum": 1.48752
+      },
+      "append.source_connect": {
+        "max": 0.000207,
+        "mean": 0.00013,
+        "min": 7.4e-05,
+        "sum": 0.000649
+      },
+      "append.source_raw_write": {
+        "max": 0.017399,
+        "mean": 0.010048,
+        "min": 0.007042,
+        "sum": 0.050239
+      },
+      "insights": {
+        "max": 0.004678,
+        "mean": 0.003709,
+        "min": 0.002973,
+        "sum": 0.018546
+      }
+    },
+    "read_amplification": {
+      "max": 0.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "sum": 0.0
+    },
+    "sample_size": 5
+  },
+  "cursor_lag_baselines": {
+    "families": [],
+    "family_count": 0,
+    "table_present": true,
+    "total_sample_count": 0
+  },
+  "daemon_resource_signal": {
+    "available": true,
+    "cgroup_memory_anon_mb": 392.4,
+    "cgroup_memory_current_mb": 2329.9,
+    "cgroup_memory_file_mb": 1865.2,
+    "cgroup_memory_inactive_file_mb": 1279.0,
+    "cgroup_memory_peak_mb": 3481.1,
+    "cgroup_memory_swap_current_mb": 0.0,
+    "rss_current_mb": 422.1,
+    "rss_peak_children_mb": 86.6,
+    "rss_peak_self_mb": 1058.5
+  },
+  "db_path": "/home/sinity/.local/share/polylogue/index.db",
+  "fts_trigger_state": {
+    "all_present": true,
+    "expected": [
+      "messages_fts_ai",
+      "messages_fts_ad",
+      "messages_fts_au"
+    ],
+    "missing": [],
+    "present": [
+      "messages_fts_ad",
+      "messages_fts_ai",
+      "messages_fts_au"
+    ]
+  },
+  "gc_state": {
+    "generation_count": 0,
+    "high_water_generation": 0,
+    "last_completed_at": null,
+    "table_present": true
+  },
+  "observability_locations": {
+    "archive_root": "/home/sinity/.local/share/polylogue",
+    "logical_tables": {
+      "blocks": {
+        "db_path": "/home/sinity/.local/share/polylogue/index.db",
+        "exists": true,
+        "logical_table": "blocks",
+        "physical_table": "blocks",
+        "tier": "index"
+      },
+      "convergence_debt": {
+        "db_path": "/home/sinity/.local/share/polylogue/ops.db",
+        "exists": true,
+        "logical_table": "convergence_debt",
+        "physical_table": "convergence_debt",
+        "tier": "ops"
+      },
+      "live_ingest_attempt": {
+        "db_path": "/home/sinity/.local/share/polylogue/ops.db",
+        "exists": true,
+        "logical_table": "live_ingest_attempt",
+        "physical_table": "ingest_attempts",
+        "tier": "ops"
+      },
+      "live_ingest_attempt_stage_events": {
+        "db_path": "/home/sinity/.local/share/polylogue/ops.db",
+        "exists": true,
+        "logical_table": "live_ingest_attempt_stage_events",
+        "physical_table": "daemon_stage_events",
+        "tier": "ops"
+      },
+      "messages": {
+        "db_path": "/home/sinity/.local/share/polylogue/index.db",
+        "exists": true,
+        "logical_table": "messages",
+        "physical_table": "messages",
+        "tier": "index"
+      },
+      "messages_fts": {
+        "db_path": "/home/sinity/.local/share/polylogue/index.db",
+        "exists": true,
+        "logical_table": "messages_fts",
+        "physical_table": "messages_fts",
+        "tier": "index"
+      },
+      "pending_blob_refs": {
+        "db_path": "/home/sinity/.local/share/polylogue/source.db",
+        "exists": true,
+        "logical_table": "pending_blob_refs",
+        "physical_table": "pending_blob_refs",
+        "tier": "source"
+      },
+      "raw_sessions": {
+        "db_path": "/home/sinity/.local/share/polylogue/source.db",
+        "exists": true,
+        "logical_table": "raw_sessions",
+        "physical_table": "raw_sessions",
+        "tier": "source"
+      },
+      "sessions": {
+        "db_path": "/home/sinity/.local/share/polylogue/index.db",
+        "exists": true,
+        "logical_table": "sessions",
+        "physical_table": "sessions",
+        "tier": "index"
+      }
+    },
+    "tiers": {
+      "index": "/home/sinity/.local/share/polylogue/index.db",
+      "ops": "/home/sinity/.local/share/polylogue/ops.db",
+      "source": "/home/sinity/.local/share/polylogue/source.db"
+    }
+  },
+  "ok": true,
+  "query_plans": {
+    "message_fts_gap_probe": {
+      "hazards": [],
+      "plan": [
+        "SEARCH b USING INDEX idx_blocks_session_position (session_id=?)",
+        "SEARCH d USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
+      ]
+    },
+    "source_path_lookup": {
+      "hazards": [],
+      "plan": [
+        "SEARCH r USING INDEX idx_raw_sessions_source_path (source_path=?)",
+        "SEARCH s USING INDEX idx_sessions_raw_id (raw_id=?)",
+        "USE TEMP B-TREE FOR DISTINCT"
+      ],
+      "storage_route": "archive_file_set"
+    }
+  },
+  "raw_replay_backlog": {
+    "already_parsed_count": 0,
+    "available": true,
+    "candidate_count": 0,
+    "execute_blob_limit_bytes": 1073741824,
+    "max_blob_bytes": 0,
+    "missing_blob_count": 2,
+    "missing_blob_source_available_count": 0,
+    "missing_blob_source_missing_count": 2,
+    "origin_summary": [],
+    "oversized_count": 0,
+    "oversized_stream_safe_count": 0,
+    "source_path_summary": [],
+    "top_raw_rows": [],
+    "total_blob_bytes": 0
+  },
+  "recent_attempts": [
+    {
+      "attempt_id": "5a212c8c-c282-4132-934a-a29207dd0a64",
+      "completed_at": "2026-07-05T07:31:58.700000+00:00",
+      "convergence_time_s": 0.033543,
+      "cursor_fingerprint_read_bytes": 0,
+      "failed_file_count": 0,
+      "input_bytes": 422759578,
+      "needed_file_count": 1,
+      "parse_time_s": 0.042021,
+      "phase": "completed",
+      "queued_file_count": 1,
+      "read_amplification": 0.0,
+      "source_paths": [
+        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-019f12b5-fc19-7110-b069-4f49a78da82d.jsonl"
+      ],
+      "source_payload_read_bytes": 49825,
+      "stage_timings_s": {
+        "append.archive_open": 0.002976,
+        "append.blob_store_open": 2.3e-05,
+        "append.blob_write": 0.000343,
+        "append.imports": 6e-06,
+        "append.index.attachments": 8e-06,
+        "append.index.blocks": 0.012418,
+        "append.index.graph_resolve": 0.005708,
+        "append.index.graph_resolve.inbound_lookup": 4.4e-05,
+        "append.index.graph_resolve.outbound_links": 5.2e-05,
+        "append.index.graph_resolve.projection_refresh": 0.000159,
+        "append.index.graph_resolve.reextract_prefix_tails": 0.0,
+        "append.index.graph_resolve.repair_stale_branch_points": 3.4e-05,
+        "append.index.graph_resolve.root_current_check": 8e-05,
+        "append.index.graph_resolve.root_init": 3.3e-05,
+        "append.index.graph_resolve.thread_refresh": 0.005299,
+        "append.index.merge_prepare": 0.000146,
+        "append.index.messages": 0.004055,
+        "append.index.parent_links": 5e-06,
+        "append.index.paste_spans": 3e-06,
+        "append.index.prepare": 3.7e-05,
+        "append.index.provider_usage_rollup": 0.000171,
+        "append.index.repo_edges": 7e-06,
+        "append.index.reported_costs": 8e-06,
+        "append.index.session_counts": 4.9e-05,
+        "append.index.session_events": 0.00491,
+        "append.index.session_link": 1e-06,
+        "append.index.session_upsert": 0.000302,
+        "append.index.web_constructs": 0.000181,
+        "append.index.working_dirs": 1e-06,
+        "append.index_parsed_write": 0.02956,
+        "append.json_stream": 0.00019,
+        "append.provider_parse": 0.000729,
+        "append.raw_and_index_write": 0.036709,
+        "append.source_connect": 0.0001,
+        "append.source_raw_write": 0.007042,
+        "insights": 0.003082
+      },
+      "stale_cursor_write_count": 0,
+      "started_at": "2026-07-05T07:31:58.342000+00:00",
+      "status": "completed",
+      "storage_route": "archive_append",
+      "succeeded_file_count": 1,
+      "total_read_bytes": 49825,
+      "updated_at": "2026-07-05T07:31:58.700000+00:00"
+    },
+    {
+      "attempt_id": "0e4ca74a-515c-4093-a565-f07c9c77b1f0",
+      "completed_at": "2026-07-05T07:31:58.342000+00:00",
+      "convergence_time_s": 0.010881,
+      "cursor_fingerprint_read_bytes": 0,
+      "failed_file_count": 0,
+      "input_bytes": 435061792,
+      "needed_file_count": 1,
+      "parse_time_s": 0.066899,
+      "phase": "completed",
+      "queued_file_count": 13699,
+      "read_amplification": 0.0,
+      "source_paths": [
+        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-28-06-019f12b5-1a85-7b42-858e-44eccf8469dc.jsonl"
+      ],
+      "source_payload_read_bytes": 11493,
+      "stage_timings_s": {
+        "append.archive_open": 0.009627,
+        "append.blob_store_open": 7.4e-05,
+        "append.blob_write": 0.000717,
+        "append.imports": 1.6e-05,
+        "append.index.attachments": 1.6e-05,
+        "append.index.blocks": 0.023336,
+        "append.index.graph_resolve": 0.000265,
+        "append.index.graph_resolve.inbound_lookup": 5e-05,
+        "append.index.graph_resolve.outbound_links": 6.7e-05,
+        "append.index.graph_resolve.root_current_check": 0.000102,
+        "append.index.graph_resolve.root_init": 4e-05,
+        "append.index.merge_prepare": 0.000182,
+        "append.index.messages": 0.007742,
+        "append.index.parent_links": 7e-06,
+        "append.index.paste_spans": 4e-06,
+        "append.index.prepare": 6.6e-05,
+        "append.index.provider_usage_rollup": 0.00022,
+        "append.index.repo_edges": 1.1e-05,
+        "append.index.reported_costs": 1.2e-05,
+        "append.index.session_counts": 7.7e-05,
+        "append.index.session_events": 0.006716,
+        "append.index.session_link": 1e-06,
+        "append.index.session_upsert": 0.000442,
+        "append.index.web_constructs": 0.000164,
+        "append.index.working_dirs": 2e-06,
+        "append.index_parsed_write": 0.040914,
+        "append.json_stream": 0.000353,
+        "append.provider_parse": 0.002028,
+        "append.raw_and_index_write": 0.051803,
+        "append.source_connect": 0.000207,
+        "append.source_raw_write": 0.01067,
+        "insights": 0.002973
+      },
+      "stale_cursor_write_count": 0,
+      "started_at": "2026-07-05T07:31:58.001000+00:00",
+      "status": "completed",
+      "storage_route": "archive_append",
+      "succeeded_file_count": 1,
+      "total_read_bytes": 11493,
+      "updated_at": "2026-07-05T07:31:58.342000+00:00"
+    },
+    {
+      "attempt_id": "6d9b9c39-745f-46f3-9070-328dd3605e1b",
+      "completed_at": "2026-07-05T07:31:42.151000+00:00",
+      "convergence_time_s": 0.018234,
+      "cursor_fingerprint_read_bytes": 0,
+      "failed_file_count": 0,
+      "input_bytes": 422709753,
+      "needed_file_count": 1,
+      "parse_time_s": 0.892975,
+      "phase": "completed",
+      "queued_file_count": 1,
+      "read_amplification": 0.0,
+      "source_paths": [
+        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-019f12b5-fc19-7110-b069-4f49a78da82d.jsonl"
+      ],
+      "source_payload_read_bytes": 94657,
+      "stage_timings_s": {
+        "append.archive_open": 0.004416,
+        "append.blob_store_open": 5.6e-05,
+        "append.blob_write": 0.000793,
+        "append.imports": 1e-05,
+        "append.index.attachments": 1.5e-05,
+        "append.index.blocks": 0.062002,
+        "append.index.graph_resolve": 0.710643,
+        "append.index.graph_resolve.inbound_lookup": 0.00073,
+        "append.index.graph_resolve.outbound_links": 0.000128,
+        "append.index.graph_resolve.projection_refresh": 0.001447,
+        "append.index.graph_resolve.reextract_prefix_tails": 2e-06,
+        "append.index.graph_resolve.repair_stale_branch_points": 0.000607,
+        "append.index.graph_resolve.root_current_check": 0.001246,
+        "append.index.graph_resolve.root_init": 0.000141,
+        "append.index.graph_resolve.thread_refresh": 0.706325,
+        "append.index.merge_prepare": 0.00068,
+        "append.index.messages": 0.024501,
+        "append.index.parent_links": 1.2e-05,
+        "append.index.paste_spans": 4e-06,
+        "append.index.prepare": 8.6e-05,
+        "append.index.provider_usage_rollup": 0.001211,
+        "append.index.repo_edges": 9e-06,
+        "append.index.reported_costs": 1e-05,
+        "append.index.session_counts": 0.000117,
+        "append.index.session_events": 0.071383,
+        "append.index.session_link": 1e-06,
+        "append.index.session_upsert": 0.000348,
+        "append.index.web_constructs": 0.00022,
+        "append.index.working_dirs": 2e-06,
+        "append.index_parsed_write": 0.875147,
+        "append.json_stream": 0.000529,
+        "append.provider_parse": 0.00281,
+        "append.raw_and_index_write": 0.882928,
+        "append.source_connect": 0.000175,
+        "append.source_raw_write": 0.007597,
+        "insights": 0.004013
+      },
+      "stale_cursor_write_count": 0,
+      "started_at": "2026-07-05T07:31:40.984000+00:00",
+      "status": "completed",
+      "storage_route": "archive_append",
+      "succeeded_file_count": 1,
+      "total_read_bytes": 94657,
+      "updated_at": "2026-07-05T07:31:42.151000+00:00"
+    },
+    {
+      "attempt_id": "99460266-d5ac-41e6-83d5-6c97e25fd970",
+      "completed_at": "2026-07-05T07:31:40.968000+00:00",
+      "convergence_time_s": 0.021405,
+      "cursor_fingerprint_read_bytes": 0,
+      "failed_file_count": 0,
+      "input_bytes": 435050299,
+      "needed_file_count": 1,
+      "parse_time_s": 0.484405,
+      "phase": "completed",
+      "queued_file_count": 13699,
+      "read_amplification": 0.0,
+      "source_paths": [
+        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-28-06-019f12b5-1a85-7b42-858e-44eccf8469dc.jsonl"
+      ],
+      "source_payload_read_bytes": 18921,
+      "stage_timings_s": {
+        "append.archive_open": 0.004082,
+        "append.blob_store_open": 2.9e-05,
+        "append.blob_write": 0.000624,
+        "append.imports": 7e-06,
+        "append.index.attachments": 4.4e-05,
+        "append.index.blocks": 0.165804,
+        "append.index.graph_resolve": 0.029499,
+        "append.index.graph_resolve.inbound_lookup": 0.000515,
+        "append.index.graph_resolve.outbound_links": 0.000598,
+        "append.index.graph_resolve.root_current_check": 0.028347,
+        "append.index.graph_resolve.root_init": 3e-05,
+        "append.index.merge_prepare": 0.003089,
+        "append.index.messages": 0.107705,
+        "append.index.parent_links": 2.5e-05,
+        "append.index.paste_spans": 1e-05,
+        "append.index.prepare": 6.5e-05,
+        "append.index.provider_usage_rollup": 0.003394,
+        "append.index.repo_edges": 1.3e-05,
+        "append.index.reported_costs": 1.2e-05,
+        "append.index.session_counts": 6.1e-05,
+        "append.index.session_events": 0.13111,
+        "append.index.session_link": 2e-06,
+        "append.index.session_upsert": 0.00766,
+        "append.index.web_constructs": 0.004654,
+        "append.index.working_dirs": 2e-06,
+        "append.index_parsed_write": 0.459829,
+        "append.json_stream": 0.000148,
+        "append.provider_parse": 0.001062,
+        "append.raw_and_index_write": 0.47733,
+        "append.source_connect": 9.3e-05,
+        "append.source_raw_write": 0.017399,
+        "insights": 0.004678
+      },
+      "stale_cursor_write_count": 0,
+      "started_at": "2026-07-05T07:31:40.026000+00:00",
+      "status": "completed",
+      "storage_route": "archive_append",
+      "succeeded_file_count": 1,
+      "total_read_bytes": 18921,
+      "updated_at": "2026-07-05T07:31:40.968000+00:00"
+    },
+    {
+      "attempt_id": "3331e545-4fc1-4fcf-8f53-ee242c4e8683",
+      "completed_at": "2026-07-05T07:31:12.646000+00:00",
+      "convergence_time_s": 0.022583,
+      "cursor_fingerprint_read_bytes": 0,
+      "failed_file_count": 0,
+      "input_bytes": 422615096,
+      "needed_file_count": 1,
+      "parse_time_s": 0.056491,
+      "phase": "completed",
+      "queued_file_count": 1,
+      "read_amplification": 0.0,
+      "source_paths": [
+        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-019f12b5-fc19-7110-b069-4f49a78da82d.jsonl"
+      ],
+      "source_payload_read_bytes": 13644,
+      "stage_timings_s": {
+        "append.archive_open": 0.005635,
+        "append.blob_store_open": 8.3e-05,
+        "append.blob_write": 0.000485,
+        "append.imports": 1.6e-05,
+        "append.index.attachments": 1.8e-05,
+        "append.index.blocks": 0.006764,
+        "append.index.graph_resolve": 0.005145,
+        "append.index.graph_resolve.inbound_lookup": 3.5e-05,
+        "append.index.graph_resolve.outbound_links": 4.9e-05,
+        "append.index.graph_resolve.projection_refresh": 0.000117,
+        "append.index.graph_resolve.reextract_prefix_tails": 1e-06,
+        "append.index.graph_resolve.repair_stale_branch_points": 3.3e-05,
+        "append.index.graph_resolve.root_current_check": 6.7e-05,
+        "append.index.graph_resolve.root_init": 2.8e-05,
+        "append.index.graph_resolve.thread_refresh": 0.004807,
+        "append.index.merge_prepare": 0.00027,
+        "append.index.messages": 0.003542,
+        "append.index.parent_links": 1e-05,
+        "append.index.paste_spans": 7e-06,
+        "append.index.prepare": 0.000122,
+        "append.index.provider_usage_rollup": 0.000178,
+        "append.index.repo_edges": 7e-06,
+        "append.index.reported_costs": 8e-06,
+        "append.index.session_counts": 5.1e-05,
+        "append.index.session_events": 0.009734,
+        "append.index.session_link": 1e-06,
+        "append.index.session_upsert": 0.000568,
+        "append.index.web_constructs": 0.000241,
+        "append.index.working_dirs": 1e-06,
+        "append.index_parsed_write": 0.031137,
+        "append.json_stream": 0.000313,
+        "append.provider_parse": 0.000738,
+        "append.raw_and_index_write": 0.03875,
+        "append.source_connect": 7.4e-05,
+        "append.source_raw_write": 0.007531,
+        "insights": 0.0038
+      },
+      "stale_cursor_write_count": 0,
+      "started_at": "2026-07-05T07:31:12.189000+00:00",
+      "status": "completed",
+      "storage_route": "archive_append",
+      "succeeded_file_count": 1,
+      "total_read_bytes": 13644,
+      "updated_at": "2026-07-05T07:31:12.646000+00:00"
+    }
+  ],
+  "report_version": 18,
+  "source_path_churn": [
+    {
+      "append_raw_count": 13,
+      "full_raw_count": 6,
+      "latest_acquired_at": "2026-07-05T07:32:15.451000+00:00",
+      "materialized_raw_count": 1,
+      "orphan_raw_count": 18,
+      "raw_count": 19,
+      "session_count": 1,
+      "source_path": "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-28-06-019f12b5-1a85-7b42-858e-44eccf8469dc.jsonl",
+      "storage_route": "archive_file_set",
+      "total_blob_bytes": 2523369313
+    },
+    {
+      "append_raw_count": 14,
+      "full_raw_count": 1,
+      "latest_acquired_at": "2026-07-05T07:32:15.935000+00:00",
+      "materialized_raw_count": 1,
+      "orphan_raw_count": 14,
+      "raw_count": 15,
+      "session_count": 1,
+      "source_path": "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-019f12b5-fc19-7110-b069-4f49a78da82d.jsonl",
+      "storage_route": "archive_file_set",
+      "total_blob_bytes": 431478053
+    }
+  ],
+  "sqlite_maintenance": {
+    "observed_db": "/home/sinity/.local/share/polylogue/index.db",
+    "tiers": {
+      "embeddings": {
+        "exists": true,
+        "path": "/home/sinity/.local/share/polylogue/embeddings.db",
+        "planner_stats_present": true,
+        "sqlite_stat1_rows": 6,
+        "wal_bytes": 0
+      },
+      "index": {
+        "exists": true,
+        "path": "/home/sinity/.local/share/polylogue/index.db",
+        "planner_stats_present": true,
+        "sqlite_stat1_rows": 118,
+        "wal_bytes": 881712
+      },
+      "ops": {
+        "exists": true,
+        "path": "/home/sinity/.local/share/polylogue/ops.db",
+        "planner_stats_present": true,
+        "sqlite_stat1_rows": 13,
+        "wal_bytes": 0
+      },
+      "source": {
+        "exists": true,
+        "path": "/home/sinity/.local/share/polylogue/source.db",
+        "planner_stats_present": true,
+        "sqlite_stat1_rows": 9,
+        "wal_bytes": 148352
+      },
+      "user": {
+        "exists": true,
+        "path": "/home/sinity/.local/share/polylogue/user.db",
+        "planner_stats_present": false,
+        "sqlite_stat1_rows": 0,
+        "wal_bytes": 0
+      }
+    },
+    "tiers_with_planner_stats": 4,
+    "total_wal_bytes": 1030064
+  },
+  "storage_route_counts": {
+    "archive_append": 2597,
+    "archive_file_set": 0,
+    "archive_full": 643,
+    "other": 0,
+    "unknown": 43387,
+    "unsupported_polylogue_batch": 0
+  },
+  "topology_quarantine_state": {
+    "oldest_quarantined_at": null,
+    "quarantined_count": 0,
+    "resolved_count": 8077,
+    "table_present": true,
+    "unresolved_count": 141
+  }
+}

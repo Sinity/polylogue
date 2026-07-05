@@ -1,0 +1,3 @@
+exit_code=124
+elapsed_s=120.03
+command=POLYLOGUE_ARCHIVE_ROOT=/home/sinity/.local/share/polylogue polylogue --plain analyze insights cost-rollups --format json --limit 100

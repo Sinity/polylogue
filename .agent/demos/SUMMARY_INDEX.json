@@ -1,0 +1,156 @@
+{
+  "root": "/realm/project/polylogue/.agent/demos",
+  "summary_count": 6,
+  "coverage": {
+    "without_claim": [],
+    "without_non_claim": [],
+    "without_proof_fields": [],
+    "without_caveat_fields": [],
+    "unsummarized_demos": [
+      "chatlog-exports",
+      "cli-surface-audit",
+      "degraded-archive-proof",
+      "query-runtime-projections",
+      "temporal-archive-aggregates",
+      "temporal-devloop"
+    ]
+  },
+  "records": [
+    {
+      "demo": "agent-affordance-usage",
+      "summary_path": "agent-affordance-usage/summary.json",
+      "artifact": "agent-affordance-usage",
+      "claim": "Polylogue can compare agent affordance usage across normalized action evidence without summing unlike tool-name spellings or provider-specific call shapes.",
+      "non_claim": "This is not a human-quality utility evaluation of any particular tool family. It measures captured usage evidence, failure signals, and coverage gaps; usefulness still requires qualitative review of session context and outcomes.",
+      "proof_fields": [
+        "proof_report"
+      ],
+      "caveat_fields": [
+        "caveats"
+      ],
+      "archive_root": "/home/sinity/.local/share/polylogue",
+      "index_schema_version": 24,
+      "timestamp": "2026-07-04T09:05:42.230151+00:00",
+      "coverage": {
+        "claim": true,
+        "non_claim": true,
+        "proof_fields": true,
+        "caveat_fields": true
+      }
+    },
+    {
+      "demo": "agent-forensics/current",
+      "summary_path": "agent-forensics/current/summary.json",
+      "artifact": "agent-forensics",
+      "claim": "Polylogue can regenerate a current v24 longitudinal agent-usage forensics packet over the live archive using product analysis surfaces, with provenance-separated token/cost lanes and explicit physical-vs-logical token grains.",
+      "non_claim": "This packet is not provider billing truth, not an LLM judgment of failure follow-up behavior, and not a resurrected standalone forensics script; it reads the current archive through product commands and points structured-failure follow-up to the current claim-vs-evidence packet.",
+      "proof_fields": [
+        "command_proofs",
+        "proof_fields"
+      ],
+      "caveat_fields": [
+        "caveat_fields",
+        "usage_headline_caveats"
+      ],
+      "archive_root": "/home/sinity/.local/share/polylogue",
+      "index_schema_version": 24,
+      "timestamp": "2026-07-05T07:36:52Z",
+      "coverage": {
+        "claim": true,
+        "non_claim": true,
+        "proof_fields": true,
+        "caveat_fields": true
+      }
+    },
+    {
+      "demo": "archive-debt-summary",
+      "summary_path": "archive-debt-summary/summary.json",
+      "artifact": "archive-debt-summary",
+      "claim": "Polylogue can distinguish unresolved raw-materialization work from classified raw/index join gaps on the active archive, so operators do not keep replaying aliases or non-session artifacts as if they were missing transcript sessions.",
+      "non_claim": "This is not a full raw-row forensic audit and it does not prove every classified source row is semantically valuable. It proves the current debt surface has no actionable/open raw-materialization work and keeps classified evidence inspectable.",
+      "proof_fields": [
+        "proof_debt_payloads",
+        "proof_status",
+        "proof_summary_csv"
+      ],
+      "caveat_fields": [
+        "caveats"
+      ],
+      "archive_root": "/home/sinity/.local/share/polylogue",
+      "index_schema_version": 24,
+      "timestamp": null,
+      "coverage": {
+        "claim": true,
+        "non_claim": true,
+        "proof_fields": true,
+        "caveat_fields": true
+      }
+    },
+    {
+      "demo": "claim-vs-evidence",
+      "summary_path": "claim-vs-evidence/public-summary.json",
+      "artifact": "claim-vs-evidence-public-summary",
+      "claim": "Polylogue can ground a failure-follow-up finding in normalized tool-result outcomes, state the bounded sample frame, and publish aggregate rates without exposing raw private transcripts.",
+      "non_claim": "The live aggregate is not reproducible without the private archive; the deterministic demo archive reproduces the method and artifact shape, not the private corpus rates.",
+      "proof_fields": [
+        "proofs"
+      ],
+      "caveat_fields": [
+        "caveats"
+      ],
+      "archive_root": "/home/sinity/.local/share/polylogue",
+      "index_schema_version": 24,
+      "timestamp": "2026-07-04T08:55:53.667311+00:00",
+      "coverage": {
+        "claim": true,
+        "non_claim": true,
+        "proof_fields": true,
+        "caveat_fields": true
+      }
+    },
+    {
+      "demo": "claim-vs-evidence",
+      "summary_path": "claim-vs-evidence/summary.json",
+      "artifact": "claim-vs-evidence",
+      "claim": "Polylogue can produce a bounded claim-vs-evidence report by anchoring on structured tool failures and classifying the immediately following assistant turn for explicit failure acknowledgment.",
+      "non_claim": "This is not a whole-archive rate unless --limit exceeds all structured failures, and it is not an LLM judgment of intent or utility. Ambiguous follow-ups remain in the denominator.",
+      "proof_fields": [
+        "proof_report"
+      ],
+      "caveat_fields": [
+        "caveats"
+      ],
+      "archive_root": "/home/sinity/.local/share/polylogue",
+      "index_schema_version": 24,
+      "timestamp": "2026-07-04T08:55:53.667311+00:00",
+      "coverage": {
+        "claim": true,
+        "non_claim": true,
+        "proof_fields": true,
+        "caveat_fields": true
+      }
+    },
+    {
+      "demo": "lineage-validation/current",
+      "summary_path": "lineage-validation/current/summary.json",
+      "artifact": "lineage-validation",
+      "claim": "Polylogue can emit a read-only lineage validation artifact that separates physical stored archive counts from logical session counts before those numbers are cited externally.",
+      "non_claim": "This artifact does not prove every composed transcript is byte-identical to the pre-lineage archive; it samples composed reads and flags residual integrity gaps for follow-up.",
+      "proof_fields": [
+        "proof_report"
+      ],
+      "caveat_fields": [
+        "caveats"
+      ],
+      "archive_root": "/home/sinity/.local/share/polylogue",
+      "index_schema_version": 24,
+      "timestamp": "2026-07-04T18:29:36.911935+00:00",
+      "coverage": {
+        "claim": true,
+        "non_claim": true,
+        "proof_fields": true,
+        "caveat_fields": true
+      }
+    }
+  ]
+}

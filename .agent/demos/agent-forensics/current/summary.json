@@ -1,0 +1,146 @@
+{
+  "artifact": "agent-forensics",
+  "title": "Agent Forensics v24",
+  "generated_at": "2026-07-05T07:36:52Z",
+  "archive_root": "/home/sinity/.local/share/polylogue",
+  "index_schema_version": 24,
+  "archive_cardinality": {
+    "physical_sessions": 16816,
+    "messages": 4364655,
+    "blocks": 665890,
+    "session_profiles_materialized": 16816,
+    "origin_rows": 8,
+    "usage_timeline_rows": 329
+  },
+  "physical_session_tokens_accounted": 399898650781,
+  "logical_session_high_water_tokens_accounted": 292924997563,
+  "all_provider_replay_gap_tokens": 106973653218,
+  "claude_code_physical_session_tokens": 176394213870,
+  "claude_code_logical_session_high_water_tokens": 153697902116,
+  "claude_code_replay_gap_tokens": 22696311754,
+  "codex_physical_session_tokens": 223435128172,
+  "codex_logical_session_high_water_tokens": 139157786708,
+  "codex_replay_gap_tokens": 84277341464,
+  "stored_provider_priced_usd": 247949.986586,
+  "catalog_api_equivalent_usd": 344935.458291,
+  "logical_catalog_api_equivalent_usd": 285519.693396,
+  "claim": "Polylogue can regenerate a current v24 longitudinal agent-usage forensics packet over the live archive using product analysis surfaces, with provenance-separated token/cost lanes and explicit physical-vs-logical token grains.",
+  "non_claim": "This packet is not provider billing truth, not an LLM judgment of failure follow-up behavior, and not a resurrected standalone forensics script; it reads the current archive through product commands and points structured-failure follow-up to the current claim-vs-evidence packet.",
+  "proof_fields": [
+    "archive_cardinality",
+    "physical_session_tokens_accounted",
+    "logical_session_high_water_tokens_accounted",
+    "pricing_lanes",
+    "coverage-origin.json",
+    "usage-timeline-month-origin-model.json"
+  ],
+  "caveat_fields": [
+    "usage_headline_caveats",
+    "cost_rollups_performance",
+    "coverage_semantics"
+  ],
+  "usage_headline_caveats": [
+    "provider usage events, transcript text volume, and model rollups are separate evidence streams",
+    "this report does not query provider billing and is not a precise cost report",
+    "headline detail computes session/source/model-rollup totals only; run with detail='full' for provider-event, cumulative, sample, and stale-rollup diagnostics"
+  ],
+  "pricing_lanes": [
+    {
+      "provenance": "priced",
+      "row_count": 14084,
+      "session_count": 12519,
+      "matched_model_row_count": 12840,
+      "unmatched_model_row_count": 1244,
+      "usage": {
+        "input_tokens": 775487832,
+        "output_tokens": 432221981,
+        "cached_input_tokens": 170163126330,
+        "cache_write_tokens": 5092686466,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 176463522609
+      },
+      "stored_cost_usd": 247949.986586,
+      "catalog_api_equivalent_usd": 247949.986586,
+      "caveats": [
+        "missing_price"
+      ]
+    },
+    {
+      "provenance": "origin_reported",
+      "row_count": 2411,
+      "session_count": 2381,
+      "matched_model_row_count": 2404,
+      "unmatched_model_row_count": 7,
+      "usage": {
+        "input_tokens": 8812395779,
+        "output_tokens": 573781865,
+        "cached_input_tokens": 214048950528,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 223435128172
+      },
+      "stored_cost_usd": 0.0,
+      "catalog_api_equivalent_usd": 96985.471705,
+      "caveats": [
+        "missing_price"
+      ]
+    }
+  ],
+  "logical_pricing_lanes": [
+    {
+      "provenance": "priced",
+      "row_count": 7297,
+      "session_count": 5514,
+      "matched_model_row_count": 6400,
+      "unmatched_model_row_count": 897,
+      "usage": {
+        "input_tokens": 388695925,
+        "output_tokens": 386477605,
+        "cached_input_tokens": 149106003169,
+        "cache_write_tokens": 3886034156,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 153767210855
+      },
+      "stored_cost_usd": 0.0,
+      "catalog_api_equivalent_usd": 221937.298359,
+      "caveats": [
+        "missing_price"
+      ]
+    },
+    {
+      "provenance": "origin_reported",
+      "row_count": 2215,
+      "session_count": 2199,
+      "matched_model_row_count": 2208,
+      "unmatched_model_row_count": 7,
+      "usage": {
+        "input_tokens": 4609727637,
+        "output_tokens": 335726015,
+        "cached_input_tokens": 134212333056,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 139157786708
+      },
+      "stored_cost_usd": 0.0,
+      "catalog_api_equivalent_usd": 63582.395037,
+      "caveats": [
+        "missing_price"
+      ]
+    }
+  ],
+  "command_proofs": {
+    "workload": "POLYLOGUE_ARCHIVE_ROOT=/home/sinity/.local/share/polylogue polylogue --plain ops diagnostics workload --json",
+    "usage_all": "POLYLOGUE_ARCHIVE_ROOT=/home/sinity/.local/share/polylogue polylogue --plain analyze usage --detail headline --format json --limit 0",
+    "usage_claude_code": "POLYLOGUE_ARCHIVE_ROOT=/home/sinity/.local/share/polylogue polylogue --plain analyze usage --detail headline --origin claude-code-session --format json --limit 0",
+    "usage_codex": "POLYLOGUE_ARCHIVE_ROOT=/home/sinity/.local/share/polylogue polylogue --plain analyze usage --detail headline --origin codex-session --format json --limit 0",
+    "coverage_origin": "POLYLOGUE_ARCHIVE_ROOT=/home/sinity/.local/share/polylogue polylogue --plain analyze insights coverage --group-by origin --format json --limit 1000",
+    "usage_timeline": "POLYLOGUE_ARCHIVE_ROOT=/home/sinity/.local/share/polylogue polylogue --plain analyze insights usage-timeline --group-by month-origin-model --format json --limit 500"
+  },
+  "cost_rollups_performance": {
+    "command": "POLYLOGUE_ARCHIVE_ROOT=/home/sinity/.local/share/polylogue polylogue --plain analyze insights cost-rollups --format json --limit 100",
+    "timeout_s": 120,
+    "exit_code": 124,
+    "elapsed_s": 120.03,
+    "impact": "The v24 packet uses analyze usage headline cost/pricing lanes for current cost claims; cost-rollups drilldown should be optimized or bounded before being used as a cold-reader proof."
+  }
+}
