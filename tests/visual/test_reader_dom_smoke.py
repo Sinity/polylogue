@@ -293,7 +293,14 @@ def test_reader_search_query_no_results_and_facets_evidence(
     assert "generated_at" in facets
     deferred_families = cast(dict[str, object], facets["deferred_families"])
     family_status = cast(dict[str, dict[str, object]], facets["family_status"])
-    assert deferred_families == {"repos": "deferred_by_default", "action_types": "deferred_by_default"}
+    assert deferred_families == {
+        "action_types": "deferred_by_default",
+        "has_flags": "deferred_by_default",
+        "material_origins": "deferred_by_default",
+        "message_types": "deferred_by_default",
+        "repos": "deferred_by_default",
+        "role_counts": "deferred_by_default",
+    }
     assert family_status["repos"]["state"] == "deferred"
     assert_no_private_paths(json.dumps(query), context="reader search JSON")
     assert_no_private_paths(json.dumps(no_results), context="reader no-results JSON")
@@ -710,7 +717,14 @@ def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, t
     assert "data-route-state-name" in empty_shell
     assert empty_facets["total_sessions"] == 0
     assert set(cast(list[str], empty_facets["complete_families"])) >= {"total_counts", "origins", "tags"}
-    assert empty_facets["deferred_families"] == {}
+    assert empty_facets["deferred_families"] == {
+        "action_types": "deferred_by_default",
+        "has_flags": "deferred_by_default",
+        "material_origins": "deferred_by_default",
+        "message_types": "deferred_by_default",
+        "repos": "deferred_by_default",
+        "role_counts": "deferred_by_default",
+    }
     assert degraded_status == 200
     degraded_payload = json.loads(degraded_body)
     assert degraded_payload["total"] is None

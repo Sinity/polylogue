@@ -19,6 +19,8 @@ parallel execution.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 pytestmark = pytest.mark.xdist_group("web-reader")
@@ -370,6 +372,42 @@ def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
                 ],
             )
         )
+
+
+def _facets_from_facade(
+    workspace: dict[str, Path],
+    params: dict[str, list[str]],
+    *,
+    include_deferred: bool,
+) -> dict[str, object]:
+    from polylogue.api import Polylogue
+    from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.daemon.http import _build_query_spec_params
+
+    query_params = _build_query_spec_params(params, _QueryParamBuilderHandler())  # type: ignore[arg-type]
+    spec = SessionQuerySpec.from_params(query_params) if query_params else None
+    archive = Polylogue(archive_root=workspace["archive_root"], db_path=workspace["archive_root"] / "index.db")
+
+    async def _run() -> dict[str, object]:
+        response = await archive.facets(spec, include_deferred=include_deferred)
+        return cast(dict[str, object], response.model_dump(mode="json", by_alias=True))
+
+    return asyncio.run(_run())
+
+
+def _assert_facets_match_facade(
+    workspace: dict[str, Path],
+    route_payload: dict[str, object],
+    params: dict[str, list[str]],
+    *,
+    include_deferred: bool,
+) -> None:
+    expected = _facets_from_facade(workspace, params, include_deferred=include_deferred)
+    # The two calls are intentionally independent; all route content should
+    # match the facade except the wall-clock timestamp each call assigns.
+    route_without_timestamp = {key: value for key, value in route_payload.items() if key != "generated_at"}
+    expected_without_timestamp = {key: value for key, value in expected.items() if key != "generated_at"}
+    assert route_without_timestamp == expected_without_timestamp
 
 
 def _seed_browser_capture_reader_archive(workspace: dict[str, Path]) -> tuple[str, str]:
@@ -732,21 +770,26 @@ class TestReaderSearchState:
         assert payload["budget_exceeded"] is False
         assert set(payload["complete_families"]) >= {"total_counts", "origins", "tags"}
         assert payload["deferred_families"] == {
+            "has_flags": "deferred_by_default",
+            "material_origins": "deferred_by_default",
+            "message_types": "deferred_by_default",
             "repos": "deferred_by_default",
+            "role_counts": "deferred_by_default",
             "action_types": "deferred_by_default",
         }
         assert payload["family_status"]["repos"]["state"] == "deferred"
         assert "repos" in payload and "action_types" in payload
+        _assert_facets_match_facade(workspace_env, payload, {}, include_deferred=False)
 
-    def test_facets_budget_exceeded_metadata(self, workspace_env: dict[str, Path]) -> None:
+    def test_facets_request_materializes_deferred_families(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             payload = _get_json(base_url, "/api/facets?include_deferred=1&budget_ms=0")
         assert isinstance(payload, dict)
-        assert payload["budget_exceeded"] is True
-        assert payload["deferred_families"] == {"repos": "budget_exceeded", "action_types": "budget_exceeded"}
+        assert payload["budget_exceeded"] is False
+        assert payload["deferred_families"] == {}
         repo_status = payload["family_status"]["repos"]
-        assert repo_status["state"] == "deferred"
-        assert repo_status["reason"] == "budget_exceeded"
+        assert repo_status["state"] == "complete"
+        assert repo_status["reason"] is None
         assert repo_status["error"] is None
         assert repo_status["stale"] is False
         assert repo_status["stale_age_s"] is None
@@ -754,17 +797,18 @@ class TestReaderSearchState:
         assert repo_status["source"] == "session_repos + repos"
         assert repo_status["canonicalization"]
         assert repo_status["expensive"] is True
-        assert "repos" not in payload["complete_families"]
+        assert "repos" in payload["complete_families"]
+        assert "has_flags" in payload
+        assert "idf" in payload
+        _assert_facets_match_facade(workspace_env, payload, {}, include_deferred=True)
 
-    def test_session_list_stays_visible_while_facets_budget_exceeded(self, workspace_env: dict[str, Path]) -> None:
-        """A populated session list coexists with budget-exceeded facets (#2304).
+    def test_session_list_stays_visible_while_facets_include_expensive(self, workspace_env: dict[str, Path]) -> None:
+        """A populated session list coexists with materialized expensive facets.
 
-        The workbench must not let a slow/expensive facet family empty or block
-        the cheap first-paint surfaces. With the optional facet budget forced to
-        zero, the expensive families degrade truthfully (``budget_exceeded``)
-        while ``/api/sessions`` still returns rows and the cheap facet families
-        (``total_counts``/``origins``) stay complete — the contract that
-        forbids "populated data coexisting with empty counters."
+        The workbench must not let expensive facet families empty or block the
+        base session list. The route now delegates to the facade; requesting
+        deferred families materializes the shared buckets while ``/api/sessions``
+        still returns rows.
         """
         with _running_server(workspace_env) as (_, base_url):
             sessions = cast(dict[str, object], _get_json(base_url, "/api/sessions"))
@@ -779,17 +823,11 @@ class TestReaderSearchState:
         assert len(cast(list[object], sessions["items"])) == 3
         assert cast(dict[str, object], sessions["route_state"])["state"] == "ready"
 
-        # Only the expensive families degrade; the cheap first-paint families
-        # remain complete, so the counters never lie about an empty archive.
-        assert facets["budget_exceeded"] is True
-        assert facets["deferred_families"] == {
-            "repos": "budget_exceeded",
-            "action_types": "budget_exceeded",
-        }
+        assert facets["budget_exceeded"] is False
+        assert facets["deferred_families"] == {}
         assert {"total_counts", "origins"} <= set(cast(list[str], facets["complete_families"]))
-        # A cheap family still carries real data — the counters are not zeroed by
-        # the expensive-family timeout.
         assert cast(list[object], facets["origins"])
+        _assert_facets_match_facade(workspace_env, facets, {}, include_deferred=True)
 
     @pytest.mark.parametrize(
         "path",
@@ -945,17 +983,28 @@ class TestReaderSearchState:
         assert global_payload["origins"] == {"codex-session": 1}
         assert global_payload["budget_exceeded"] is False
         assert global_payload["deferred_families"] == {
+            "has_flags": "deferred_by_default",
+            "material_origins": "deferred_by_default",
+            "message_types": "deferred_by_default",
             "action_types": "deferred_by_default",
             "repos": "deferred_by_default",
+            "role_counts": "deferred_by_default",
         }
         assert global_payload["family_status"]["repos"]["state"] == "deferred"
         assert global_payload["family_status"]["repos"]["reason"] == "deferred_by_default"
         assert global_payload["repos"] == {}
         assert global_payload["action_types"] == {}
+        _assert_facets_match_facade(workspace_env, global_payload, {}, include_deferred=False)
         assert isinstance(scoped_payload, dict)
         assert scoped_payload["scoped_to_query"] is True
         assert scoped_payload["total_sessions"] == 1
         assert scoped_payload["origins"] == {"codex-session": 1}
+        _assert_facets_match_facade(
+            workspace_env,
+            scoped_payload,
+            {"origin": ["codex-session"]},
+            include_deferred=False,
+        )
 
     def test_archive_file_set_facets_can_include_expensive_families(
         self,
@@ -975,7 +1024,7 @@ class TestReaderSearchState:
         assert isinstance(payload["repos"], dict)
         assert isinstance(payload["action_types"], dict)
 
-    def test_archive_file_set_facets_budget_exceeded_metadata(
+    def test_archive_file_set_facets_requested_expensive_metadata(
         self,
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
@@ -985,14 +1034,11 @@ class TestReaderSearchState:
             payload = _get_json(base_url, "/api/facets?include_expensive=1&budget_ms=0")
 
         assert isinstance(payload, dict)
-        assert payload["budget_exceeded"] is True
-        assert payload["deferred_families"] == {
-            "action_types": "budget_exceeded",
-            "repos": "budget_exceeded",
-        }
-        assert payload["family_status"]["repos"]["state"] == "deferred"
-        assert payload["family_status"]["repos"]["reason"] == "budget_exceeded"
-        assert "repos" not in payload["complete_families"]
+        assert payload["budget_exceeded"] is False
+        assert payload["deferred_families"] == {}
+        assert payload["family_status"]["repos"]["state"] == "complete"
+        assert payload["family_status"]["repos"]["reason"] is None
+        _assert_facets_match_facade(workspace_env, payload, {}, include_deferred=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2622,7 +2668,10 @@ class TestQueryNoResultsDiagnosticPath:
         )
 
         with _running_server_without_seed() as (_, base_url):
-            payload = cast(dict[str, object], _get_json(base_url, "/api/facets?origin=claude-code-session"))
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, "/api/facets?origin=claude-code-session&include_deferred=1"),
+            )
 
         role_counts = cast(dict[str, int], payload["role_counts"])
         material_origins = cast(dict[str, int], payload["material_origins"])
@@ -2633,6 +2682,12 @@ class TestQueryNoResultsDiagnosticPath:
         assert material_origins["runtime_protocol"] == 1
         assert material_origins["assistant_authored"] == 1
         assert message_types["message"] == 3
+        _assert_facets_match_facade(
+            workspace_env,
+            payload,
+            {"origin": ["claude-code-session"]},
+            include_deferred=True,
+        )
 
     def test_facets_scoped_returns_subset(self, workspace_env: dict[str, Path]) -> None:
         """Scoped /api/facets?origin=... returns scoped_to_query=True."""
