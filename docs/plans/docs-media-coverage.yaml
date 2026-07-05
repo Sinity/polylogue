@@ -111,11 +111,9 @@ surfaces:
 
   agent_guide:
     path: CLAUDE.md
-    generated_by: devtools render agents
-    verified_by: devtools render all --check
     notes: >
-      Agent memory and working rules. Generated from CLAUDE.md +
-      included files. Renders AGENTS.md. Verified by render all.
+      Standalone agent onboarding — architecture understanding and working
+      rules. Manually maintained. AGENTS.md is a symlink to CLAUDE.md.
 
   release_docs:
     path: docs/release.md

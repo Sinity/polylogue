@@ -9,8 +9,8 @@ This page is the operator checklist. The repo-side wiring lives in:
 
 - [`.claude/settings.json`](../.claude/settings.json) — env + Bash allowlist
 - [`.claude/setup.sh`](../.claude/setup.sh) — sandbox bootstrap
-- [`CLAUDE.md`](../CLAUDE.md) — "Cloud lane" section (agent-facing rules,
-  rendered into `AGENTS.md` by `devtools render agents`)
+- [`CLAUDE.md`](../CLAUDE.md) — "Cloud lane" section (agent-facing rules;
+  `AGENTS.md` is a symlink to `CLAUDE.md`)
 
 See also: `2026-05-27_Build_Plan.md` §D (Cloud agent enablement).
 

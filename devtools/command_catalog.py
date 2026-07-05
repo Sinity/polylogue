@@ -105,12 +105,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
-        "render agents",
-        "generated surfaces",
-        "Render AGENTS.md from CLAUDE.md and its included files.",
-        "devtools.render_agents",
-    ),
-    CommandSpec(
         "render cli-reference",
         "generated surfaces",
         "Render docs/cli-reference.md from live CLI help.",

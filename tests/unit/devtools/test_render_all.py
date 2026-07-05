@@ -19,10 +19,10 @@ def test_render_all_runs_selected_surfaces(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(
         render_all,
         "GENERATED_SURFACES",
-        (FakeSurface("agents"), FakeSurface("docs-surface")),
+        (FakeSurface("cli-reference"), FakeSurface("docs-surface")),
     )
 
-    assert render_all.main(["--skip", "agents"]) == 0
+    assert render_all.main(["--skip", "cli-reference"]) == 0
     assert calls == [("docs-surface", ())]
 
 
@@ -30,7 +30,7 @@ def test_render_all_check_passes_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, ...]] = []
 
     class FakeSurface:
-        name = "agents"
+        name = "cli-reference"
 
         @staticmethod
         def main(argv: list[str] | None) -> int:
@@ -43,7 +43,7 @@ def test_render_all_check_passes_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [("--check",)]
 
 
-def test_render_all_check_runs_surfaces_sequentially_with_agents_last(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_render_all_check_runs_surfaces_in_registry_order(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     class FakeSurface:
@@ -58,11 +58,11 @@ def test_render_all_check_runs_surfaces_sequentially_with_agents_last(monkeypatc
     monkeypatch.setattr(
         render_all,
         "GENERATED_SURFACES",
-        (FakeSurface("agents"), FakeSurface("devtools-reference"), FakeSurface("quality-reference")),
+        (FakeSurface("cli-reference"), FakeSurface("devtools-reference"), FakeSurface("quality-reference")),
     )
 
     assert render_all.main(["--check"]) == 0
-    assert calls == ["devtools-reference", "quality-reference", "agents"]
+    assert calls == ["cli-reference", "devtools-reference", "quality-reference"]
 
 
 def test_render_all_reports_surface_progress(
@@ -70,7 +70,7 @@ def test_render_all_reports_surface_progress(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     class FakeSurface:
-        name = "agents"
+        name = "cli-reference"
 
         @staticmethod
         def main(argv: list[str] | None) -> int:
@@ -81,4 +81,4 @@ def test_render_all_reports_surface_progress(
 
     assert render_all.main([]) == 0
     captured = capsys.readouterr()
-    assert "render all: render agents" in captured.err
+    assert "render all: render cli-reference" in captured.err

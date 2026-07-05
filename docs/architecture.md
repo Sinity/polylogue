@@ -147,9 +147,18 @@ convergence stages.
 | Codex | Session envelope structure | `parsers/codex.py` |
 | Gemini | `chunkedPrompt.chunks` structure | `parsers/drive.py` |
 | Drive | Google Takeout format with OAuth | `parsers/drive.py` |
+| Gemini CLI | `local_agent.looks_like_gemini_cli()` document shape | `parsers/local_agent.py` |
+| Hermes | state-db payload or hermes agent document | `parsers/hermes_state.py`, `parsers/local_agent.py` |
 | Antigravity | Brain artifact metadata (`*.metadata.json`) or language-server Markdown export envelope | `parsers/antigravity.py` |
+| Browser capture | capture envelope wrapping a native provider payload | `parsers/browser_capture.py` |
 
-`detect_provider()` calls each parser's `looks_like()` in order.
+`detect_provider()` (in `sources/dispatch.py`) runs `looks_like()` checks in a
+tightness order, not filename order: structural/document detectors first
+(browser-capture, gemini-cli, hermes, antigravity), then Pydantic-validated
+record checks (Codex, Claude Code), then loose dict-key checks (ChatGPT,
+Claude web, Gemini). Insert a new check at the tightness level it deserves or an
+earlier parser will claim its records. `Provider.GROK`/`grok-export` is a
+reserved origin token with no wired parser yet.
 
 ## Provider and Origin Vocabulary
 
@@ -234,15 +243,15 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 | Abstraction | Location | Role |
 |-------------|----------|------|
 | `Polylogue` | `api/__init__.py` | Async entry point. Wraps storage + search + pipeline. |
-| `SessionRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors). |
+| `SessionRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (10 mixins: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology). |
 | `SearchProvider` protocol | `protocols.py` | FTS5 and Hybrid (RRF fusion) implementations. |
 | `SessionFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
 | `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized session payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
-| `Provider` enum | `types.py` | Legacy/provider-wire identifier used by parsers, schemas, provider metadata, and compatibility bridges. |
+| `Provider` enum | `core/enums.py` | Legacy/provider-wire identifier used by parsers, schemas, provider metadata, and compatibility bridges. |
 | `Origin` enum | `core/enums.py` | Public source-origin identity used by query/read surfaces and archive payloads. |
 | `Source` dataclass | `core/sources.py` | Source-centered identity (`family`, `runtime_root`, `originating_lab`) used for runtime roots and lab attribution. |
-| `TopologyEdgeRecord` | `archive/topology/edge.py` | Typed cross-session parent reference. Persisted in `topology_edges` even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed `TopologyEdgeType` / `TopologyEdgeStatus` enums centralize the vocabulary. |
+| `TopologyEdgeRecord` | `archive/topology/edge.py` | Typed cross-session parent reference. Persisted in `session_links` even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed `TopologyEdgeType` (a `LinkType` alias) / `TopologyEdgeStatus` enums (both in `core/enums.py`) centralize the vocabulary. |
 | Logical Session ID | `session_profiles.logical_session_id` | Materialized root session for continuation/fork/subagent lineages. Rollups expose `logical_session_count` alongside physical `session_count`, and `get_logical_session()` returns the compact read-pull lineage envelope. |
 
 ## Artifact Taxonomy
