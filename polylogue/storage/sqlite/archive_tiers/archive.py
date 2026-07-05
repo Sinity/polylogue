@@ -31,6 +31,7 @@ from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostEstimatePayload,
     CostEstimateStatus,
+    CostModelBreakdown,
     CostUnavailableReason,
     CostUsagePayload,
     _normalize_model,
@@ -83,7 +84,6 @@ from polylogue.insights.archive import (
     WorkEventInferencePayload,
 )
 from polylogue.insights.archive_models import ThreadMemberEvidencePayload, ThreadPayload
-from polylogue.insights.archive_rollups import aggregate_cost_rollup_insights
 from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.confidence import from_score as confidence_from_score
@@ -210,6 +210,32 @@ class _UsageTimelineAccumulator:
     subscription_credits: float = 0.0
     cost_provenance_counts: dict[str, int] = field(default_factory=dict)
     source_sort_key: float | None = None
+
+    def note_sort_key(self, value: object) -> None:
+        if isinstance(value, int | float) and (self.source_sort_key is None or float(value) > self.source_sort_key):
+            self.source_sort_key = float(value)
+
+
+@dataclass(slots=True)
+class _CostRollupAccumulator:
+    source_name: str
+    model_name: str | None
+    normalized_model: str | None
+    session_count: int = 0
+    priced_session_count: int = 0
+    unavailable_session_count: int = 0
+    status_counts: dict[str, int] = field(default_factory=dict)
+    basis: CostBasisPayload = field(default_factory=CostBasisPayload)
+    usage: CostUsagePayload = field(default_factory=CostUsagePayload)
+    total_usd: float = 0.0
+    confidence_total: float = 0.0
+    source_updated_at_ms: int | None = None
+    source_sort_key: float | None = None
+    per_model: dict[tuple[str | None, str | None], CostModelBreakdown] = field(default_factory=dict)
+
+    def note_source_updated_at(self, value: object) -> None:
+        if isinstance(value, int) and (self.source_updated_at_ms is None or value > self.source_updated_at_ms):
+            self.source_updated_at_ms = value
 
     def note_sort_key(self, value: object) -> None:
         if isinstance(value, int | float) and (self.source_sort_key is None or float(value) > self.source_sort_key):
@@ -1528,16 +1554,190 @@ class ArchiveStore:
         limit: int | None = None,
         offset: int = 0,
     ) -> list[CostRollupInsight]:
-        """Aggregate archive session-cost insights into public cost rollups."""
-        session_costs = self.list_session_cost_insights(
-            provider=provider,
-            model=model,
-            since_ms=since_ms,
-            until_ms=until_ms,
-            limit=None,
-            offset=0,
-        )
-        rollups = aggregate_cost_rollup_insights(session_costs, materialized_at=datetime.now(UTC).isoformat())
+        """Aggregate archive model-usage rows into public cost rollups."""
+        origin = _origin_for_provider_value(provider)
+        where = ["s.sort_key_ms > 0"]
+        params: list[object] = []
+        if origin is not None:
+            where.append("s.origin = ?")
+            params.append(origin)
+        if since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(since_ms)
+        if until_ms is not None:
+            where.append("s.sort_key_ms <= ?")
+            params.append(until_ms)
+
+        rows = self._conn.execute(
+            f"""
+            SELECT s.origin AS source_name,
+                   u.model_name AS model_name,
+                   COUNT(DISTINCT u.session_id) AS session_count,
+                   COALESCE(SUM(COALESCE(u.cost_usd, sp.cost_usd, 0.0)), 0.0) AS stored_cost_usd,
+                   COALESCE(SUM(u.cost_credits), 0.0) AS stored_credits,
+                   COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens,
+                   COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
+                   COALESCE(SUM(
+                       u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens
+                   ), 0) AS total_tokens,
+                   COALESCE(
+                       CASE WHEN u.cost_usd IS NOT NULL THEN u.cost_provenance ELSE sp.cost_provenance END,
+                       'unknown'
+                   ) AS cost_provenance,
+                   MAX(s.updated_at_ms) AS source_updated_at,
+                   MAX(s.sort_key_ms) AS source_sort_key
+            FROM session_model_usage u
+            JOIN sessions s ON s.session_id = u.session_id
+            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
+            WHERE {" AND ".join(where)}
+            GROUP BY s.origin,
+                     u.model_name,
+                     COALESCE(
+                         CASE WHEN u.cost_usd IS NOT NULL THEN u.cost_provenance ELSE sp.cost_provenance END,
+                         'unknown'
+                     )
+            """,
+            tuple(params),
+        ).fetchall()
+        no_usage_where = where + ["u.session_id IS NULL"]
+        no_usage_rows = self._conn.execute(
+            f"""
+            SELECT s.origin AS source_name,
+                   NULL AS model_name,
+                   COUNT(DISTINCT s.session_id) AS session_count,
+                   COALESCE(SUM(sp.cost_usd), 0.0) AS stored_cost_usd,
+                   COALESCE(SUM(sp.cost_credits), 0.0) AS stored_credits,
+                   0 AS input_tokens,
+                   0 AS output_tokens,
+                   0 AS cache_read_tokens,
+                   0 AS cache_write_tokens,
+                   0 AS total_tokens,
+                   COALESCE(sp.cost_provenance, 'unknown') AS cost_provenance,
+                   MAX(s.updated_at_ms) AS source_updated_at,
+                   MAX(s.sort_key_ms) AS source_sort_key
+            FROM sessions s
+            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
+            LEFT JOIN session_model_usage u ON u.session_id = s.session_id
+            WHERE {" AND ".join(no_usage_where)}
+            GROUP BY s.origin, COALESCE(sp.cost_provenance, 'unknown')
+            """,
+            tuple(params),
+        ).fetchall()
+
+        grouped: dict[tuple[str, str | None], _CostRollupAccumulator] = {}
+        materialized_at = datetime.now(UTC).isoformat()
+        for row in [*rows, *no_usage_rows]:
+            source_origin = str(row["source_name"] or "unknown")
+            source_name = _provider_for_origin(source_origin).value
+            model_name = str(row["model_name"]) if row["model_name"] is not None else None
+            normalized_model = _normalize_model(model_name) if model_name is not None else None
+            if model is not None and model not in {model_name, normalized_model}:
+                continue
+            key = (source_name, normalized_model or model_name)
+            session_count = int(row["session_count"] or 0)
+            stored_cost_usd = float(row["stored_cost_usd"] or 0.0)
+            stored_credits = float(row["stored_credits"] or 0.0)
+            input_tokens = int(row["input_tokens"] or 0)
+            output_tokens = int(row["output_tokens"] or 0)
+            cache_read_tokens = int(row["cache_read_tokens"] or 0)
+            cache_write_tokens = int(row["cache_write_tokens"] or 0)
+            total_tokens = int(row["total_tokens"] or 0)
+            provenance = str(row["cost_provenance"] or "unknown")
+
+            usage = CostUsagePayload(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                total_tokens=total_tokens,
+            )
+            subscription_credits = stored_credits or float(
+                compute_credit_cost(
+                    normalized_model or "",
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                )
+            )
+            basis = CostBasisPayload(
+                provider_reported_usd=stored_cost_usd if provenance in {"exact", "origin_reported"} else 0.0,
+                catalog_priced_usd=stored_cost_usd if provenance in {"priced", "estimated"} else 0.0,
+                subscription_equivalent_usd=subscription_credits,
+            )
+
+            entry = grouped.setdefault(
+                key,
+                _CostRollupAccumulator(
+                    source_name=source_name,
+                    model_name=model_name,
+                    normalized_model=normalized_model,
+                ),
+            )
+            entry.session_count += session_count
+            if stored_cost_usd > 0 and provenance in {"exact", "origin_reported"}:
+                status = "exact"
+                confidence = 1.0
+            elif stored_cost_usd > 0:
+                status = "priced"
+                confidence = 0.7 if provenance == "estimated" else 0.9
+            else:
+                status = "unavailable"
+                confidence = 0.0
+            entry.status_counts[status] = entry.status_counts.get(status, 0) + session_count
+            if stored_cost_usd > 0:
+                entry.priced_session_count += session_count
+                entry.confidence_total += session_count * confidence
+            else:
+                entry.unavailable_session_count += session_count
+            entry.basis = entry.basis.plus(basis)
+            entry.usage = entry.usage.plus(usage)
+            entry.total_usd += stored_cost_usd
+            entry.note_source_updated_at(row["source_updated_at"])
+            entry.note_sort_key(row["source_sort_key"])
+            entry.per_model[(model_name, normalized_model)] = CostModelBreakdown(
+                model_name=model_name,
+                normalized_model=normalized_model,
+                usage=usage,
+                basis=basis,
+                total_usd=stored_cost_usd,
+                session_count=session_count,
+            )
+
+        rollups: list[CostRollupInsight] = []
+        for entry in grouped.values():
+            rollups.append(
+                CostRollupInsight(
+                    source_name=entry.source_name,
+                    model_name=entry.model_name,
+                    normalized_model=entry.normalized_model,
+                    session_count=entry.session_count,
+                    priced_session_count=entry.priced_session_count,
+                    unavailable_session_count=entry.unavailable_session_count,
+                    status_counts=dict(sorted(entry.status_counts.items())),
+                    total_usd=entry.total_usd,
+                    basis=entry.basis,
+                    unavailable_reason_counts=(
+                        {"no_tokens": entry.unavailable_session_count} if entry.unavailable_session_count else {}
+                    ),
+                    per_model_breakdown=tuple(
+                        sorted(entry.per_model.values(), key=lambda item: item.total_usd, reverse=True)
+                    ),
+                    usage=entry.usage,
+                    confidence=(
+                        entry.confidence_total / entry.priced_session_count if entry.priced_session_count else 0.0
+                    ),
+                    provenance=ArchiveInsightProvenance(
+                        materializer_version=0,
+                        materialized_at=materialized_at,
+                        source_updated_at=_iso_from_ms(entry.source_updated_at_ms),
+                        source_sort_key=entry.source_sort_key,
+                    ),
+                )
+            )
+        rollups.sort(key=lambda insight: insight.total_usd, reverse=True)
         if offset:
             rollups = rollups[offset:]
         if limit is not None:

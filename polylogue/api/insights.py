@@ -33,7 +33,6 @@ from polylogue.insights.archive import (
     UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
-from polylogue.insights.archive_rollups import aggregate_cost_rollup_insights
 from polylogue.insights.cost_enrichment import enrich_session_cost_insights
 from polylogue.insights.tag_rollups import synthesize_provider_tag_rollups
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
@@ -509,31 +508,14 @@ class PolylogueInsightsMixin:
     ) -> list[CostRollupInsight]:
         request = query or CostRollupInsightQuery()
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            # Aggregate over the enriched session costs (not the archive's
-            # degraded scalar reconstruction) so rollups group by the real
-            # ``normalized_model`` and carry the catalog/per-model basis.
-            session_costs = enrich_session_cost_insights(
-                archive,
-                archive.list_session_cost_insights(
-                    provider=request.provider,
-                    model=None,
-                    since_ms=_archive_query_date_ms("since", request.since),
-                    until_ms=_archive_query_date_ms("until", request.until),
-                    limit=None,
-                    offset=0,
-                ),
+            return archive.list_cost_rollup_insights(
+                provider=request.provider,
+                model=request.model,
+                since_ms=_archive_query_date_ms("since", request.since),
+                until_ms=_archive_query_date_ms("until", request.until),
+                limit=request.limit,
+                offset=request.offset,
             )
-        rollups = aggregate_cost_rollup_insights(
-            session_costs,
-            materialized_at=datetime.now(UTC).isoformat(),
-        )
-        if request.model is not None:
-            rollups = [rollup for rollup in rollups if request.model in {rollup.normalized_model, rollup.model_name}]
-        if request.offset:
-            rollups = rollups[request.offset :]
-        if request.limit is not None:
-            rollups = rollups[: max(int(request.limit), 0)]
-        return rollups
 
     async def list_usage_timeline_insights(
         self,
