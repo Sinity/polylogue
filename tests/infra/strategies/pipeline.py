@@ -121,9 +121,12 @@ def parse_merge_events_strategy(
                     "sessions": draw(st.integers(min_value=0, max_value=1)),
                     "messages": draw(st.integers(min_value=0, max_value=5)),
                     "attachments": draw(st.integers(min_value=0, max_value=2)),
+                    "session_events": draw(st.integers(min_value=0, max_value=3)),
+                    "raw_links": draw(st.integers(min_value=0, max_value=1)),
                     "skipped_sessions": draw(st.integers(min_value=0, max_value=2)),
                     "skipped_messages": draw(st.integers(min_value=0, max_value=5)),
                     "skipped_attachments": draw(st.integers(min_value=0, max_value=2)),
+                    "skipped_session_events": draw(st.integers(min_value=0, max_value=3)),
                 },
                 content_changed=draw(st.booleans()),
             )
@@ -168,20 +171,28 @@ def expected_parse_merge_totals(events: list[ParseMergeEvent]) -> ParseMergeTota
         "sessions": 0,
         "messages": 0,
         "attachments": 0,
+        "session_events": 0,
+        "raw_links": 0,
         "skipped_sessions": 0,
         "skipped_messages": 0,
         "skipped_attachments": 0,
+        "skipped_session_events": 0,
     }
     changed_counts = {
         "sessions": 0,
         "messages": 0,
         "attachments": 0,
+        "session_events": 0,
     }
     processed_ids: set[str] = set()
 
     for event in events:
         ingest_changed = (
-            event.result_counts["sessions"] + event.result_counts["messages"] + event.result_counts["attachments"]
+            event.result_counts["sessions"]
+            + event.result_counts["messages"]
+            + event.result_counts["attachments"]
+            + event.result_counts["session_events"]
+            + event.result_counts["raw_links"]
         ) > 0
         if ingest_changed or event.content_changed:
             processed_ids.add(event.session_id)
@@ -189,6 +200,7 @@ def expected_parse_merge_totals(events: list[ParseMergeEvent]) -> ParseMergeTota
             changed_counts["sessions"] += 1
         changed_counts["messages"] += event.result_counts["messages"]
         changed_counts["attachments"] += event.result_counts["attachments"]
+        changed_counts["session_events"] += event.result_counts["session_events"]
         for key, value in event.result_counts.items():
             counts[key] += value
 

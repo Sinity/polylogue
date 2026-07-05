@@ -87,7 +87,10 @@ class ReadinessReport(OutcomeReport):
 
     @property
     def summary(self) -> dict[str, int]:
-        return self.summary_counts()
+        counts = self.summary_counts(include_skip=True)
+        if counts.get(VerifyStatus.SKIP.value, 0) == 0:
+            counts.pop(VerifyStatus.SKIP.value, None)
+        return counts
 
     @property
     def provenance(self) -> _ReportProvenance:

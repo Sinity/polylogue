@@ -3937,14 +3937,15 @@ class PolylogueArchiveMixin:
             ]
             return messages[offset : offset + limit], len(messages)
 
+        resolved_session_id = await self.repository.resolve_id(session_id) or session_id
         messages, total = await self.repository.get_messages_paginated(
-            session_id,
+            resolved_session_id,
             message_role=message_role,
             message_type=message_type,
             limit=limit,
             offset=offset,
         )
-        if total == 0 and await self.repository.resolve_id(session_id) is None:
+        if total == 0 and resolved_session_id == session_id and await self.repository.resolve_id(session_id) is None:
             raise SessionNotFoundError(session_id)
         if content_projection is not None and content_projection.filters_content():
             messages = project_message_content(messages, content_projection)

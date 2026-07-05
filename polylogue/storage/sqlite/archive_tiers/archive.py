@@ -830,7 +830,7 @@ class ArchiveStore:
         incoming_is_dom_fallback = DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
         current_stored_message_count = 0
 
-        if existing_raw_id and raw_id and existing_raw_id != raw_id:
+        if source_index >= 0 and existing_raw_id and raw_id and existing_raw_id != raw_id:
             existing_is_dom_fallback = session_has_parser_ingest_flag(
                 self._conn,
                 session_id,

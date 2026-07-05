@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import zipfile
 from collections.abc import Iterable
+from pathlib import Path
 from typing import IO, TypeAlias
 
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.logging import get_logger
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
@@ -55,6 +56,7 @@ def _iter_entry_payloads(
 def iter_source_raw_data(
     source: Source,
     *,
+    blob_root: Path | None = None,
     cursor_state: CursorState | None = None,
     known_mtimes: dict[str, str] | None = None,
     known_cursors: dict[str, dict[str, object]] | None = None,
@@ -81,7 +83,7 @@ def iter_source_raw_data(
     if walk is None:
         return
 
-    blob_store = get_blob_store()
+    blob_store = BlobStore(blob_root) if blob_root is not None else get_blob_store()
     failed_count = 0
     empty_artifact_count = 0
     for path, file_mtime in walk.paths_to_process:

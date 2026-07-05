@@ -106,7 +106,7 @@ def runtime_operation_target_names() -> tuple[str, ...]:
 def declared_operation_target_names() -> tuple[str, ...]:
     from polylogue.operations import build_declared_operation_catalog
 
-    return build_declared_operation_catalog().names()
+    return tuple(dict.fromkeys((*build_declared_operation_catalog().names(), "materialize-run-projection")))
 
 
 @lru_cache(maxsize=1)

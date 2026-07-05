@@ -315,6 +315,9 @@ def missing_source_raw_session_evidence(active_archive: Path, *, limit: int = 10
 
 
 def _missing_source_raw_session_count(conn: sqlite3.Connection) -> int:
+    session_columns = _table_columns(conn, "main", "sessions")
+    if "raw_id" not in session_columns:
+        return 0
     return _readiness_scalar_int(
         conn,
         """
@@ -330,14 +333,19 @@ def _missing_source_raw_session_count(conn: sqlite3.Connection) -> int:
 
 def _missing_source_raw_session_samples(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, object]]:
     session_columns = _table_columns(conn, "main", "sessions")
-    if "session_id" not in session_columns:
+    if not {"session_id", "raw_id"} <= session_columns:
         return []
+    origin_expr = "s.origin" if "origin" in session_columns else "NULL"
+    native_id_expr = "s.native_id" if "native_id" in session_columns else "NULL"
     message_count_expr = "s.message_count" if "message_count" in session_columns else "NULL"
     updated_at_expr = "s.updated_at_ms" if "updated_at_ms" in session_columns else "NULL"
     order_expr = "s.updated_at_ms DESC, s.session_id" if "updated_at_ms" in session_columns else "s.session_id"
     rows = conn.execute(
         f"""
-        SELECT s.session_id, s.origin, s.native_id, s.raw_id,
+        SELECT s.session_id,
+               {origin_expr} AS origin,
+               {native_id_expr} AS native_id,
+               s.raw_id,
                {message_count_expr} AS message_count,
                {updated_at_expr} AS updated_at_ms
         FROM sessions AS s

@@ -248,6 +248,16 @@ def _invoke_raw_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -
     return result.exit_code, result.output
 
 
+def _invoke_workspace_raw_json_command(
+    args: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> tuple[int, str]:
+    monkeypatch.setenv("XDG_STATE_HOME", str(workspace_env["state_dir"]))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(workspace_env["archive_root"]))
+    return _invoke_raw_json_command(args, monkeypatch)
+
+
 def _init_empty_archive(workspace_env: dict[str, Path]) -> None:
     """Bootstrap an empty archive `index.db` under the workspace archive root.
 
@@ -283,7 +293,11 @@ class TestReadAllJsonContract:
         zero rows. Only search mode (a query that matched nothing) exits 2.
         """
         _init_empty_archive(workspace_env)
-        exit_code, output = _invoke_raw_json_command(["read", "--all", "--format", "json"], monkeypatch)
+        exit_code, output = _invoke_workspace_raw_json_command(
+            ["read", "--all", "--format", "json"],
+            monkeypatch,
+            workspace_env,
+        )
         assert exit_code == 0, (
             f"read --all --format json on empty archive: expected exit 0, got {exit_code}: {output!r}"
         )

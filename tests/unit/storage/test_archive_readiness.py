@@ -202,7 +202,7 @@ def test_raw_materialization_snapshot_classifies_native_aliases(tmp_path: Path) 
     assert counts["raw_id_join_gap"] == 0
 
 
-def test_raw_materialization_snapshot_does_not_classify_native_alias_when_index_raw_link_is_dangling(
+def test_raw_materialization_snapshot_classifies_dangling_index_raw_link_as_lost_source_evidence(
     tmp_path: Path,
 ) -> None:
     source_db = tmp_path / "source.db"
@@ -239,11 +239,14 @@ def test_raw_materialization_snapshot_does_not_classify_native_alias_when_index_
 
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
-    assert snapshot["classified"] == 0
-    assert snapshot["unchecked"] == 1
+    assert snapshot["lost_source_evidence_count"] == 1
+    assert snapshot["classified"] == 1
+    assert snapshot["unchecked"] == 0
+    assert raw_materialization_ready(snapshot) is False
     counts = _category_counts(snapshot)
     assert counts.get("materialized-alias", 0) == 0
-    assert counts["raw_id_join_gap"] == 1
+    assert counts["lost-source-evidence-alias"] == 1
+    assert counts["raw_id_join_gap"] == 0
 
 
 def test_raw_materialization_snapshot_classifies_source_path_aliases(tmp_path: Path) -> None:

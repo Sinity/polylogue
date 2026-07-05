@@ -1077,11 +1077,12 @@ async def run_daemon_services(
                         converger=converger,
                         event_emitter=_emit_live_batch_event,
                     )
-                    if catch_up_complete_gate is not None:
+                    watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
+                    if catch_up_complete_gate is not None and watcher_catch_up_complete is not None:
                         maintenance_tasks.append(
                             asyncio.create_task(
                                 _bridge_catch_up_complete(
-                                    watcher.catch_up_complete,
+                                    watcher_catch_up_complete,
                                     catch_up_complete_gate,
                                 )
                             )
@@ -1173,11 +1174,6 @@ async def run_daemon_services(
 
             await asyncio.to_thread(_mark_interrupted_live_ingest_attempts_on_shutdown)
 
-            if server is not None:
-                server.server_close()
-            if api_server is not None:
-                api_server.server_close()
-
             # Clean up pidfile and release advisory lock.
             if pidfile_fd is not None:
                 with contextlib.suppress(OSError):
@@ -1190,6 +1186,12 @@ async def run_daemon_services(
                     status="stopped",
                 )
         finally:
+            if server is not None:
+                with contextlib.suppress(Exception):
+                    server.server_close()
+            if api_server is not None:
+                with contextlib.suppress(Exception):
+                    api_server.server_close()
             if cleanup_task is not None:
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()

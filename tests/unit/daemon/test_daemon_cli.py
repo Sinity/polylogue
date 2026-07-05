@@ -156,6 +156,7 @@ def test_polylogued_status_json_reports_rebuild_index_not_ready(tmp_path: Path) 
         ("ops.db", ArchiveTier.OPS),
     ):
         initialize_archive_database(tmp_path / filename, tier)
+    now_ms = 1_700_000_001_000
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         record_ingest_attempt(
             conn,
@@ -163,8 +164,8 @@ def test_polylogued_status_json_reports_rebuild_index_not_ready(tmp_path: Path) 
             source_path=str(tmp_path / "source.db"),
             status="running",
             phase="rebuild-index",
-            started_at_ms=1_700_000_000_000,
-            heartbeat_at_ms=1_700_000_001_000,
+            started_at_ms=now_ms - 1_000,
+            heartbeat_at_ms=now_ms,
             storage_route="maintenance",
         )
 
@@ -173,6 +174,7 @@ def test_polylogued_status_json_reports_rebuild_index_not_ready(tmp_path: Path) 
         patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
+        patch("polylogue.storage.archive_readiness.time.time", return_value=now_ms / 1000),
     ):
         result = CliRunner().invoke(main, ["status", "--format", "json"])
 
@@ -187,8 +189,8 @@ def test_polylogued_status_json_reports_rebuild_index_not_ready(tmp_path: Path) 
         {
             "attempt_id": "rebuild-active",
             "phase": "rebuild-index",
-            "started_at_ms": 1_700_000_000_000,
-            "heartbeat_at_ms": 1_700_000_001_000,
+            "started_at_ms": now_ms - 1_000,
+            "heartbeat_at_ms": now_ms,
             "parsed_raw_count": 0,
             "materialized_count": 0,
         }
@@ -2501,7 +2503,7 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
         patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: wait_forever()),
         patch.object(daemon_cli, "_sweep_orphaned_blob_leases", wait_forever),
         patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown", mark_interrupted_cleanup),
-        patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", wait_forever),
+        patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", lambda **_kwargs: wait_forever()),
         patch("polylogue.daemon.convergence.DaemonConverger", return_value=FakeConverger()),
         patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
         patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=api_server),

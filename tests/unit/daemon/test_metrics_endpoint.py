@@ -33,6 +33,7 @@ from polylogue.daemon.metrics import (
     PROMETHEUS_CONTENT_TYPE,
     format_metrics,
 )
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -159,7 +160,7 @@ class TestFormatMetricsExpositionShape:
         assert 'polylogue_archive_tier_present{tier="embeddings"} 1' in body
         assert 'polylogue_archive_tier_count{state="present"} 5' in body
         assert 'polylogue_archive_tier_count{state="missing"} 0' in body
-        assert 'polylogue_archive_tier_user_version{tier="source"} 1' in body
+        assert f'polylogue_archive_tier_user_version{{tier="source"}} {SOURCE_SCHEMA_VERSION}' in body
         assert 'polylogue_archive_storage_layout{layout="archive_complete"} 1' in body
         assert 'polylogue_archive_storage_layout{layout="archive_partial"} 0' in body
         assert 'polylogue_archive_storage_ready{state="archive_runtime"} 1' in body

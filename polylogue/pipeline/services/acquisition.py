@@ -143,6 +143,7 @@ class AcquisitionService:
             try:
                 async for record in iter_raw_record_stream(
                     source,
+                    blob_root=self.backend.db_path.parent / "blob",
                     known_mtimes=known_mtimes,
                     known_cursors=known_cursors,
                     ui=drive_ui,

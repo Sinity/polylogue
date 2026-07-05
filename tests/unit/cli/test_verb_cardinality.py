@@ -122,6 +122,7 @@ class TestReadVerbCardinality:
             timestamp_policy=None,
             out_path=None,
             all_matches=all_matches,
+            full=False,
             limit=None,
             offset=0,
             window_hours=24,

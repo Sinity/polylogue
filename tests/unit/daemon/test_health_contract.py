@@ -21,6 +21,7 @@ test_daemon_http_contracts.py): no real daemon, no socket listener.
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Iterator
 from email.message import Message
 from http import HTTPStatus
@@ -89,6 +90,28 @@ EXPECTED_READINESS_REASONS: frozenset[str] = frozenset(
         "probe_error",
     }
 )
+
+
+def _seed_ready_message_fts(index_db: Path) -> None:
+    index_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(index_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS fts_freshness_state (
+                surface TEXT PRIMARY KEY,
+                state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'unknown')),
+                checked_at TEXT NOT NULL,
+                source_rows INTEGER NOT NULL DEFAULT 0,
+                indexed_rows INTEGER NOT NULL DEFAULT 0,
+                missing_rows INTEGER NOT NULL DEFAULT 0,
+                excess_rows INTEGER NOT NULL DEFAULT 0,
+                duplicate_rows INTEGER NOT NULL DEFAULT 0,
+                detail TEXT
+            ) STRICT;
+            INSERT OR REPLACE INTO fts_freshness_state
+            VALUES ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 0, 0, 0, 0, 0, 'ready');
+            """
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +420,7 @@ class TestReadinessProbeContract:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         self._patch_healthy_fast(monkeypatch)
+        _seed_ready_message_fts(workspace_env["archive_root"] / "index.db")
         handler = _make_handler("GET", "/healthz/ready")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
@@ -413,26 +437,12 @@ class TestReadinessProbeContract:
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import sqlite3
-
         self._patch_healthy_fast(monkeypatch)
         # The readiness probe reads the index.db messages_fts surface; a
         # fresh, trigger-backed surface is ready and the bounded path must not
         # fall back to an exact ``fts_invariant_snapshot_sync`` scan.
         index_db = workspace_env["archive_root"] / "index.db"
-        index_db.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(index_db) as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS fts_freshness_state (
-                    surface TEXT PRIMARY KEY,
-                    state TEXT NOT NULL,
-                    checked_at TEXT NOT NULL
-                );
-                INSERT OR REPLACE INTO fts_freshness_state
-                VALUES ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00');
-                """
-            )
+        _seed_ready_message_fts(index_db)
         monkeypatch.setattr(
             "polylogue.daemon.fts_status.fts_invariant_snapshot_sync",
             lambda _conn: (_ for _ in ()).throw(AssertionError("readiness must not run exact FTS scans")),

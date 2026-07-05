@@ -260,9 +260,23 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
     assert result.exit_code == 0, result.output
     source_root = workspace_env["archive_root"] / "demo-fixture-world-source"
     staged = workspace_env["archive_root"] / "inbox" / "demo-fixture-world-source"
-    assert sorted(path.name for path in source_root.iterdir()) == ["chatgpt", "claude-code", "codex"]
-    assert sorted(path.name for path in staged.iterdir()) == ["chatgpt", "claude-code", "codex"]
-    assert len(tuple(staged.rglob("demo-*.json*"))) == 3
+    assert sorted(path.name for path in source_root.iterdir()) == [
+        "browser-capture",
+        "chatgpt",
+        "claude-ai",
+        "claude-code",
+        "codex",
+        "gemini",
+    ]
+    assert sorted(path.name for path in staged.iterdir()) == [
+        "browser-capture",
+        "chatgpt",
+        "claude-ai",
+        "claude-code",
+        "codex",
+        "gemini",
+    ]
+    assert len(tuple(staged.rglob("demo-*.json*"))) == 4
 
     request = cast("Request", captured["request"])
     assert request.data is not None

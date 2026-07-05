@@ -128,6 +128,7 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_tool_usage_insights",
         "list_session_cost_insights",
         "list_cost_rollup_insights",
+        "list_usage_timeline_insights",
         "list_archive_debt_insights",
         "provider_usage_report",
         "count_sessions",
@@ -2269,7 +2270,7 @@ async def test_query_units_returns_run_rows(tmp_path: Path) -> None:
         assert item.status == "completed"
         assert item.agent_ref == "agent:codex/Explore"
         assert item.parent_run_ref == "run:codex-session:ext-facade-run-v1"
-        assert item.run_ref == "run:codex-session:facade-run-child"
+        assert item.run_ref == "run:codex-session:ext-facade-run-v1:subagent:0:tool-run"
     finally:
         await archive.close()
 
@@ -2327,11 +2328,11 @@ async def test_export_otel_projects_query_unit_rows(tmp_path: Path) -> None:
         assert payload.trace_count == 1
         assert payload.span_count == 1
         assert "session:codex-session:ext-facade-otel-v1" in payload.refs
-        assert "run:codex-session:facade-otel-child" in payload.refs
+        assert "run:codex-session:ext-facade-otel-v1:subagent:0:tool-run" in payload.refs
         assert any(ref.startswith("codex-session:ext-facade-otel-v1::") for ref in payload.refs)
-        assert "context-snapshot:codex-session:facade-otel-child:subagent_start" in payload.refs
+        assert "context-snapshot:codex-session:ext-facade-otel-v1:subagent:0:tool-run:subagent_start" in payload.refs
         [span] = payload.spans
-        assert span.attributes["polylogue.run.ref"] == "run:codex-session:facade-otel-child"
+        assert span.attributes["polylogue.run.ref"] == "run:codex-session:ext-facade-otel-v1:subagent:0:tool-run"
         assert span.attributes["polylogue.run.cwd.redacted"] is True
     finally:
         await archive.close()
@@ -2414,7 +2415,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             referenced_paths=("README.md",),
             cwd_prefix="/realm/project",
             typed_only=True,
-            message_type="tool-use",
+            message_type="tool_use",
             title="API",
             max_words=10,
         )

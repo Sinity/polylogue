@@ -160,7 +160,7 @@ class TestShowEmbeddingStats:
 
         captured = capsys.readouterr()
         assert "Embedding Statistics" in captured.out
-        assert f"Coverage:             {expected_coverage}" in captured.out
+        assert f"Session coverage:     {expected_coverage}" in captured.out
         assert f"Pending:              {expected_pending}" in captured.out
         assert "Retrieval ready:" in captured.out
 

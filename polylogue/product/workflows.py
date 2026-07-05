@@ -383,7 +383,7 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
         ),
         action_path=("read",),
         output_kind="human",
-        stdout_contains=("The module structure looks good", "1 passed"),
+        stdout_contains=("The module structure looks good", "Inspecting generated workload record"),
         required_affordance_ids=("read",),
     ),
     ExecutableWorkflowGoldenPath(

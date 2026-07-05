@@ -691,9 +691,11 @@ def _archive_readiness_status(root: Path) -> dict[str, Any]:
                     counts.update(
                         {
                             "missing_raw_session_count": missing_raw_count,
-                            "missing_raw_session_samples": missing_raw_samples,
+                            "missing_raw_session_samples": missing_raw_samples
+                            or _safe_list(counts.get("missing_raw_session_samples")),
                             "lost_source_evidence_count": lost_source_count,
-                            "lost_source_evidence_samples": lost_source_samples,
+                            "lost_source_evidence_samples": lost_source_samples
+                            or _safe_list(counts.get("lost_source_evidence_samples")),
                         }
                     )
             finally:
@@ -732,25 +734,48 @@ def _archive_readiness_counts(
         else 0
     )
     missing_raw_session_count = 0
+    missing_raw_session_samples: list[dict[str, Any]] = []
     if source_check_available and source_conn is not None and _column_exists(conn, "sessions", "raw_id"):
         raw_ids = {
             str(row[0])
             for row in source_conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
             if row[0] is not None
         }
-        missing_raw_session_count = sum(
-            1
-            for row in conn.execute("SELECT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
-            if str(row[0]) not in raw_ids
-        )
+        missing_rows = [
+            row
+            for row in conn.execute(
+                """
+                SELECT session_id, origin, native_id, raw_id, message_count, updated_at_ms
+                FROM sessions
+                WHERE raw_id IS NOT NULL
+                ORDER BY updated_at_ms DESC, session_id
+                """
+            ).fetchall()
+            if str(row[3]) not in raw_ids
+        ]
+        missing_raw_session_count = len(missing_rows)
+        missing_raw_session_samples = [
+            {
+                "session_id": str(row[0]),
+                "origin": str(row[1]),
+                "native_id": str(row[2]),
+                "missing_raw_id": str(row[3]),
+                "message_count": int(row[4] or 0),
+                "updated_at_ms": None if row[5] is None else int(row[5]),
+                "evidence_status": "lost_source_evidence",
+                "loss_reason": "index_raw_id_missing_from_source_tier",
+                "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
+            }
+            for row in missing_rows[:10]
+        ]
     insight_status = session_insight_status_sync(conn, verify_freshness=True)
     return {
         "session_count": session_count,
         "raw_link_count": raw_link_count,
         "missing_raw_session_count": missing_raw_session_count,
-        "missing_raw_session_samples": [],
+        "missing_raw_session_samples": missing_raw_session_samples,
         "lost_source_evidence_count": missing_raw_session_count,
-        "lost_source_evidence_samples": [],
+        "lost_source_evidence_samples": missing_raw_session_samples,
         "message_count": _fast_count(conn, "SELECT COUNT(*) FROM messages") if _table_exists(conn, "messages") else 0,
         "text_block_count": _fast_count(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
         if _table_exists(conn, "blocks")

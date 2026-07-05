@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from typing_extensions import TypedDict
 
@@ -31,6 +32,8 @@ class ScanResult:
 def make_raw_record(
     raw_data: RawSessionData,
     source_name: str,
+    *,
+    blob_root: Path | None = None,
 ) -> RawSessionRecord:
     """Prepare a raw session record from acquisition data.
 
@@ -43,9 +46,10 @@ def make_raw_record(
     elif raw_data.raw_bytes:
         # Bytes provided without pre-computed blob hash (e.g. from tests
         # or legacy callers). Write to blob store and use the hash.
-        from polylogue.storage.blob_store import get_blob_store
+        from polylogue.storage.blob_store import BlobStore, get_blob_store
 
-        raw_id, blob_size = get_blob_store().write_from_bytes(raw_data.raw_bytes)
+        blob_store = BlobStore(blob_root) if blob_root is not None else get_blob_store()
+        raw_id, blob_size = blob_store.write_from_bytes(raw_data.raw_bytes)
     else:
         raise ValueError("RawSessionData has neither blob_hash nor raw_bytes")
 

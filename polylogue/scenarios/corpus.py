@@ -752,6 +752,13 @@ def build_demo_corpus_specs(
     )
 
 
+def _resolve_existing_demo_session(archive: object, session_id: str) -> str | None:
+    try:
+        return str(archive.resolve_session_id(session_id))  # type: ignore[attr-defined]
+    except KeyError:
+        return None
+
+
 def seed_demo_user_overlays(
     archive_root: Path,
     *,
@@ -778,7 +785,11 @@ def seed_demo_user_overlays(
     )
 
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        resolved_session_ids = tuple(archive.resolve_session_id(session_id) for session_id in DEMO_SESSION_IDS)
+        resolved_session_ids = tuple(
+            resolved
+            for session_id in DEMO_SESSION_IDS
+            if (resolved := _resolve_existing_demo_session(archive, session_id)) is not None
+        )
         archive.add_user_tags((DEMO_CLAUDE_CODE_SESSION_ID,), ("pytest-triage",))
 
     user_db_path = archive_root / "user.db"

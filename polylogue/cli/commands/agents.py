@@ -22,7 +22,9 @@ def _format_options(func: F) -> F:
     func = click.option(
         "--cwd", type=click.Path(file_okay=False, path_type=Path), default=None, help="Repo/cwd to inspect."
     )(func)
-    func = click.option("--limit", type=int, default=10, show_default=True, help="Maximum peer/resource rows.")(func)
+    func = click.option("--limit", "-l", type=int, default=10, show_default=True, help="Maximum peer/resource rows.")(
+        func
+    )
     func = click.option("--json", "json_output", is_flag=True, help="Emit JSON.")(func)
     func = click.option(
         "--format",

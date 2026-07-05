@@ -22,11 +22,10 @@ from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import preview_backfill
 from polylogue.maintenance.preview import ALL_SCOPES, staleness_inventory
 from polylogue.maintenance.registry import MaintenanceOperationRegistry, OperationRecord
-from polylogue.maintenance.replay import ReplayProgress, execute_replay
+from polylogue.maintenance.replay import ReplayProgress, execute_replay, rebuild_index_from_source
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 from polylogue.paths import archive_file_set_root_for_paths, archive_root, blob_store_root, db_path, render_root
-from polylogue.protocols import ProgressCallback
 from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_integrity import (
     BlobReferenceDebtClassificationReport,
@@ -1346,63 +1345,6 @@ def _record_rebuild_index_attempt(
         return None
 
 
-async def _rebuild_index_from_source(
-    config: Config,
-    *,
-    raw_ids: list[str] | None,
-    raw_batch_size: int,
-    ingest_workers: int | None,
-    force_write: bool,
-    materialize: bool,
-    progress_callback: ProgressCallback | None,
-) -> dict[str, object]:
-    from polylogue.pipeline.run_stages import execute_materialize_stage
-    from polylogue.pipeline.services.parsing import ParsingService
-    from polylogue.storage.repository import SessionRepository
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-    backend = SQLiteBackend(db_path=config.archive_root / "index.db")
-    repository = SessionRepository(backend=backend, archive_root=config.archive_root)
-    try:
-        parser = ParsingService(
-            repository=repository,
-            archive_root=config.archive_root,
-            config=config,
-            raw_batch_size=raw_batch_size,
-            ingest_workers=ingest_workers,
-        )
-        parse_result = await parser.parse_from_raw(
-            raw_ids=raw_ids,
-            progress_callback=progress_callback,
-            force_write=force_write,
-            repair_message_fts=True,
-        )
-        materialize_result = None
-        if materialize:
-            materialize_stage = "reprocess" if raw_ids is not None else "materialize"
-            materialize_processed_ids = set(parse_result.processed_ids) if raw_ids is not None else set()
-            materialize_result = await execute_materialize_stage(
-                stage=materialize_stage,
-                source_names=None,
-                processed_ids=materialize_processed_ids,
-                backend=backend,
-                progress_callback=progress_callback,
-            )
-        return {
-            "parse_counts": dict(parse_result.counts),
-            "changed_counts": dict(parse_result.changed_counts),
-            "processed_session_count": len(parse_result.processed_ids),
-            "parse_failure_count": parse_result.parse_failures,
-            "batch_count": len(parse_result.batch_observations),
-            "materialized": materialize_result is not None,
-            "materialized_session_count": materialize_result.item_count if materialize_result is not None else 0,
-            "materialized_rebuilt": materialize_result.rebuilt if materialize_result is not None else False,
-            "materialize_observation": materialize_result.observation if materialize_result is not None else None,
-        }
-    finally:
-        await repository.close()
-
-
 @maintenance_group.command("rebuild-index")
 @click.option("--batch-size", type=int, default=50, show_default=True, help="Maximum raw records per ingest batch.")
 @click.option("--workers", type=int, default=None, help="Optional ingest worker count.")
@@ -1604,7 +1546,7 @@ def rebuild_index_command(
 
     try:
         result = asyncio.run(
-            _rebuild_index_from_source(
+            rebuild_index_from_source(
                 config,
                 raw_ids=selected_raw_ids,
                 raw_batch_size=batch_size,

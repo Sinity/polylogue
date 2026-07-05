@@ -3812,10 +3812,10 @@ class TestBooleanQueryExpression:
         assert row.harness == "codex"
         assert row.agent_ref == "agent:codex/Explore"
         assert row.parent_run_ref == "run:codex-session:ext-hit"
-        assert row.run_ref == "run:codex-session:child-run"
+        assert row.run_ref == "run:codex-session:ext-hit:subagent:0:tool-run"
         assert row.git_branch == "feature/query-runs"
         assert row.cwd == "/realm/project/polylogue"
-        assert row.context_snapshot_ref == "context-snapshot:codex-session:child-run:subagent_start"
+        assert row.context_snapshot_ref == "context-snapshot:codex-session:ext-hit:subagent:0:tool-run:subagent_start"
 
     def test_terminal_main_run_reads_sessions_without_materialization(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows
