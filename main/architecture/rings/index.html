@@ -521,13 +521,34 @@ convergence stages.</p>
 <td><code>parsers/drive.py</code></td>
 </tr>
 <tr>
+<td>Gemini CLI</td>
+<td><code>local_agent.looks_like_gemini_cli()</code> document shape</td>
+<td><code>parsers/local_agent.py</code></td>
+</tr>
+<tr>
+<td>Hermes</td>
+<td>state-db payload or hermes agent document</td>
+<td><code>parsers/hermes_state.py</code>, <code>parsers/local_agent.py</code></td>
+</tr>
+<tr>
 <td>Antigravity</td>
 <td>Brain artifact metadata (<code>*.metadata.json</code>) or language-server Markdown export envelope</td>
 <td><code>parsers/antigravity.py</code></td>
 </tr>
+<tr>
+<td>Browser capture</td>
+<td>capture envelope wrapping a native provider payload</td>
+<td><code>parsers/browser_capture.py</code></td>
+</tr>
 </tbody>
 </table>
-<p><code>detect_provider()</code> calls each parser's <code>looks_like()</code> in order.</p>
+<p><code>detect_provider()</code> (in <code>sources/dispatch.py</code>) runs <code>looks_like()</code> checks in a
+tightness order, not filename order: structural/document detectors first
+(browser-capture, gemini-cli, hermes, antigravity), then Pydantic-validated
+record checks (Codex, Claude Code), then loose dict-key checks (ChatGPT,
+Claude web, Gemini). Insert a new check at the tightness level it deserves or an
+earlier parser will claim its records. <code>Provider.GROK</code>/<code>grok-export</code> is a
+reserved origin token with no wired parser yet.</p>
 <h2>Provider and Origin Vocabulary</h2>
 <p>The codebase has origin-related vocabularies with different scopes. See
 <code>docs/provider-origin-identity.md</code> for the full classification table and
@@ -631,7 +652,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 <tr>
 <td><code>SessionRepository</code></td>
 <td><code>storage/repository/__init__.py</code></td>
-<td>Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors).</td>
+<td>Mixin-composed async repository (10 mixins: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology).</td>
 </tr>
 <tr>
 <td><code>SearchProvider</code> protocol</td>
@@ -655,7 +676,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 </tr>
 <tr>
 <td><code>Provider</code> enum</td>
-<td><code>types.py</code></td>
+<td><code>core/enums.py</code></td>
 <td>Legacy/provider-wire identifier used by parsers, schemas, provider metadata, and compatibility bridges.</td>
 </tr>
 <tr>
@@ -671,7 +692,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 <tr>
 <td><code>TopologyEdgeRecord</code></td>
 <td><code>archive/topology/edge.py</code></td>
-<td>Typed cross-session parent reference. Persisted in <code>topology_edges</code> even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed <code>TopologyEdgeType</code> / <code>TopologyEdgeStatus</code> enums centralize the vocabulary.</td>
+<td>Typed cross-session parent reference. Persisted in <code>session_links</code> even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed <code>TopologyEdgeType</code> (a <code>LinkType</code> alias) / <code>TopologyEdgeStatus</code> enums (both in <code>core/enums.py</code>) centralize the vocabulary.</td>
 </tr>
 <tr>
 <td>Logical Session ID</td>

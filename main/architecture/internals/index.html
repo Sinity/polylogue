@@ -457,7 +457,7 @@ debugging landmarks. For the conceptual system shape, see
 </tr>
 <tr>
 <td><code>storage/repository/__init__.py</code></td>
-<td>Repository facade (9-mixin composition: archive reads/writes, action reads, four insight readers, raw, vectors)</td>
+<td>Repository facade (10-mixin composition: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology)</td>
 </tr>
 <tr>
 <td><code>storage/search_providers/fts5.py</code></td>
@@ -503,7 +503,7 @@ debugging landmarks. For the conceptual system shape, see
 <h2>Extension Points</h2>
 <p><strong>Adding a provider</strong>: Start at <code>sources/dispatch.py:detect_provider()</code>. Add a
 <code>looks_like()</code> function in a new parser under <code>sources/parsers/</code>. Add a
-<code>Provider</code> enum variant in <code>types.py</code>. Add a provider schema bundle under
+<code>Provider</code> enum variant in <code>core/enums.py</code>. Add a provider schema bundle under
 <code>schemas/providers/</code>. Dispatch is generally strict-before-loose for record-path
 and Pydantic-validated checks, but <code>sources/dispatch.py</code> runs some structural
 sequence detectors before loose code/dict probes. Insert the new check at the
@@ -711,7 +711,7 @@ terminal <code>run</code> / <code>observed-event</code> / <code>context-snapshot
 cheap local rows directly from <code>sessions</code> and <code>blocks</code> (main runs,
 <code>session_started</code>, tool-finished outcomes, and session-start context
 snapshots). The durable evidence stays <code>session_events</code> + <code>messages</code> +
-<code>topology_edges</code>, and materialized rows are retained only where they encode
+<code>session_links</code>, and materialized rows are retained only where they encode
 richer non-local projections that are not cheap to lower directly. Existing
 index tiers must be rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
 </li>
@@ -818,26 +818,30 @@ constraint. A native session can have multiple durable source observations
 still coalescing to one canonical indexed session; source evidence must not be
 replaced merely because two captures describe the same provider-native id.</p>
 <h2>Topology Edges (#1258)</h2>
-<p><code>topology_edges</code> persists every parent reference asserted by a parser as a
-typed row, including references whose parent has not yet been ingested
-(out-of-order ingestion) or has been hard-deleted. The pre-existing fast
-path (<code>sessions.parent_session_id</code> set when the parent is in the
-prepare cache) is unchanged; the topology table is an additional durable
-record that always carries the original provider-native parent id.</p>
+<p>The <code>session_links</code> table (index tier) persists every parent reference asserted
+by a parser as a typed row, including references whose parent has not yet been
+ingested (out-of-order ingestion) or has been hard-deleted. The pre-existing
+fast path (<code>sessions.parent_session_id</code> set when the parent is in the prepare
+cache) is unchanged; <code>session_links</code> is an additional durable record that always
+carries the original provider-native parent id. The same table also carries the
+#2467 prefix-sharing lineage columns (<code>branch_point_message_id</code>, <code>inheritance</code>).</p>
 <ul>
-<li><strong>Identity:</strong> <code>(src_session_id, dst_provider_native_id, edge_type)</code>
-with <code>UNIQUE</code>. Re-ingesting the same child is idempotent.</li>
-<li><strong>Closed enums:</strong> <code>polylogue/archive/topology/edge.py</code> defines
-<code>TopologyEdgeType</code> (continuation / sidechain / subagent / branch / fork /
-resume / repaired) and <code>TopologyEdgeStatus</code> (unresolved / resolved /
-repaired). Slice A emits <code>unresolved</code> and <code>resolved</code> only.</li>
-<li><strong>Resolve:</strong> every session save runs
-<code>resolve_topology_edges_for_session</code> so that an out-of-order child's
-edge flips to <code>resolved</code> the moment its parent's native id appears in
+<li><strong>Identity:</strong> primary key
+<code>(src_session_id, dst_origin, dst_native_id, link_type)</code>.
+Re-ingesting the same child is idempotent.</li>
+<li><strong>Closed enums:</strong> <code>polylogue/core/enums.py</code> owns <code>LinkType</code>
+(continuation / sidechain / subagent / branch / fork / resume / repaired),
+re-exported as <code>TopologyEdgeType</code> from
+<code>polylogue/archive/topology/edge.py</code>, and <code>TopologyEdgeStatus</code>
+(unresolved / resolved / repaired / quarantined). <code>quarantined</code> marks a link
+the topology reducer dropped to break a cycle.</li>
+<li><strong>Resolve:</strong> every session save runs <code>resolve_session_links_for_session</code>
+(<code>polylogue/storage/sqlite/queries/session_links.py</code>) so that an out-of-order
+child's edge flips to <code>resolved</code> the moment its parent's native id appears in
 <code>sessions</code>.</li>
-<li><strong>Hash boundary:</strong> topology edges are derived per ingest and are NOT part
-of <code>sessions.content_hash</code> — mirrors the same boundary as
-<code>user_corrections</code> (#1131) and the blob lease tables.</li>
+<li><strong>Hash boundary:</strong> these links are derived per ingest and are NOT part
+of <code>sessions.content_hash</code> — mirrors the same boundary as user correction
+assertions (#1131) and the blob lease tables.</li>
 </ul>
 <h2>Logical Session Identity (#866)</h2>
 <p><code>session_profiles.logical_session_id</code> materializes the resolved root of a
@@ -851,10 +855,12 @@ logical sessions without re-walking parent pointers. The Python API exposes
 <code>get_logical_session(session_id)</code> as the compact read-pull envelope for
 agents and MCP callers; <code>get_session_topology</code> remains the full graph view.</p>
 <h2>Learning Corrections (Feedback Loop)</h2>
-<p>User corrections are stored in <code>user_corrections</code> and live outside the
-content-hash boundary by construction (#1131):</p>
+<p>User corrections live outside the content-hash boundary by construction
+(#1131). In the split archive they are <code>AssertionKind.CORRECTION</code> rows in the
+unified <code>user.db</code> <code>assertions</code> table; a legacy <code>user_corrections</code> table is still
+read for pre-split single-file archives (<code>storage/insights/feedback/</code>):</p>
 <ul>
-<li>Keyed by <code>(session_id, insight_kind)</code> — at most one correction of
+<li>Keyed by session and correction kind — at most one correction of
 each kind per session, so deterministic rebuilds always produce the
 same merged insight output.</li>
 <li>Recognized kinds (closed <code>CorrectionKind</code> enum):

@@ -374,8 +374,10 @@ Polylogue follows XDG conventions and works without a mandatory config file.</p>
 <p>Point Polylogue at your AI chat exports, then search:</p>
 <pre><code class="language-bash">polylogue &quot;css refactor&quot;
 </code></pre>
-<p>Polylogue is query-first: bare tokens are full-text search terms. Results are
-rendered in your pager.</p>
+<p>Polylogue is query-first: a quoted expression (as above) or one after the
+<code>find</code> keyword is a full-text search. A bare <em>unquoted</em> word is treated as a
+command name and prints a hint instead of searching (#1842), so quote
+multi-word queries. Results are rendered in your pager.</p>
 <h2>First list</h2>
 <p>List recent sessions with natural-language time filters:</p>
 <pre><code class="language-bash">polylogue --since yesterday read --all

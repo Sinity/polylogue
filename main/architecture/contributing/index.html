@@ -366,8 +366,7 @@ direnv allow   # one-time setup; afterward the devshell loads automatically on c
 </code></pre>
 <p>All commands below assume you are already inside that environment. If not, use
 <code>nix develop -c &lt;command&gt;</code>.</p>
-<p>The devshell regenerates <code>AGENTS.md</code> from <a href="https://github.com/Sinity/polylogue/blob/master/CLAUDE.md">CLAUDE.md</a> on entry.
-It is gitignored.</p>
+<p><code>AGENTS.md</code> is a symlink to <a href="https://github.com/Sinity/polylogue/blob/master/CLAUDE.md">CLAUDE.md</a>; edit <code>CLAUDE.md</code>.</p>
 <p>For repository maintenance, use <code>devtools</code>:</p>
 <pre><code class="language-bash">devtools --help
 devtools status
