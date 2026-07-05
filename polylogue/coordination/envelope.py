@@ -35,6 +35,7 @@ from polylogue.coordination.payloads import (
     CoordinationSessionTreeEdgePayload,
     CoordinationSessionTreeNodePayload,
     CoordinationSessionTreePayload,
+    CoordinationSubagentExchangePayload,
     CoordinationView,
     CoordinationWorkItemPayload,
 )
@@ -79,7 +80,7 @@ def build_coordination_envelope(
     peers, resources = _process_payloads(command_runner, root_cwd, peer_limit=peer_limit, resource_limit=resource_limit)
     handoff = _handoff_payloads(repo.root or str(root_cwd))
     archive = _archive_payload(resources)
-    session_trees, activity_episodes, proof_refs, context_flow_refs = _archive_evidence_payloads(
+    session_trees, activity_episodes, subagent_exchanges, proof_refs, context_flow_refs = _archive_evidence_payloads(
         repo,
         self_payload,
         archive,
@@ -101,6 +102,7 @@ def build_coordination_envelope(
         archive=archive,
         session_trees=session_trees,
         activity_episodes=activity_episodes,
+        subagent_exchanges=subagent_exchanges,
         proof_refs=proof_refs,
         context_flow_refs=context_flow_refs,
         beads=beads,
@@ -605,17 +607,18 @@ def _archive_evidence_payloads(
 ) -> tuple[
     tuple[CoordinationSessionTreePayload, ...],
     tuple[CoordinationActivityEpisodePayload, ...],
+    tuple[CoordinationSubagentExchangePayload, ...],
     tuple[CoordinationProofRefPayload, ...],
     tuple[CoordinationContextFlowRefPayload, ...],
 ]:
     if archive is None or not archive.index_exists or archive.index_user_version is None:
-        return (), (), (), ()
+        return (), (), (), (), ()
     index = Path(archive.index_db)
     try:
         conn = sqlite3.connect(f"file:{index}?mode=ro", uri=True, timeout=0.2)
         conn.row_factory = sqlite3.Row
     except sqlite3.Error:
-        return (), (), (), ()
+        return (), (), (), (), ()
     try:
         if not _archive_tables_present(
             conn,
@@ -627,18 +630,19 @@ def _archive_evidence_payloads(
                 "session_context_snapshots",
             ),
         ):
-            return (), (), (), ()
+            return (), (), (), (), ()
         target_session_id = _resolve_coordination_session(conn, repo, self_payload)
         session_tree: tuple[CoordinationSessionTreePayload, ...] = ()
         if target_session_id is not None:
             tree = _session_tree_payload(conn, target_session_id, limit=limit)
             session_tree = (tree,) if tree is not None else ()
         activity = _archive_activity_payloads(conn, target_session_id, repo, limit=limit)
+        subagent_exchanges = _archive_subagent_exchange_payloads(conn, target_session_id, repo, limit=limit)
         proof_refs = _archive_proof_payloads(conn, target_session_id, repo, limit=limit)
         context_refs = _archive_context_flow_payloads(conn, target_session_id, repo, limit=limit)
-        return session_tree, activity, proof_refs, context_refs
+        return session_tree, activity, subagent_exchanges, proof_refs, context_refs
     except sqlite3.Error:
-        return (), (), (), ()
+        return (), (), (), (), ()
     finally:
         conn.close()
 
@@ -914,6 +918,60 @@ def _archive_proof_payloads(
     return tuple(_proof_payload_from_row(row) for row in rows[: max(1, limit)])
 
 
+def _archive_subagent_exchange_payloads(
+    conn: sqlite3.Connection,
+    target_session_id: str | None,
+    repo: CoordinationRepoPayload,
+    *,
+    limit: int,
+) -> tuple[CoordinationSubagentExchangePayload, ...]:
+    rows = _archive_subagent_exchange_rows(conn, target_session_id, repo, limit=limit)
+    if not rows and target_session_id is not None and repo.branch:
+        rows = _archive_subagent_exchange_rows(conn, None, repo, limit=limit)
+    return tuple(_subagent_exchange_payload_from_row(row) for row in rows[: max(1, limit)])
+
+
+def _archive_subagent_exchange_rows(
+    conn: sqlite3.Connection,
+    target_session_id: str | None,
+    repo: CoordinationRepoPayload,
+    *,
+    limit: int,
+) -> list[sqlite3.Row]:
+    params: list[object] = []
+    where = _archive_scope_where(target_session_id, repo, params, alias="r")
+    if where:
+        where += " AND "
+    else:
+        where = "WHERE "
+    where += "r.role = 'subagent'"
+    rows = conn.execute(
+        f"""
+        SELECT
+            r.run_ref,
+            r.session_id,
+            r.native_session_id,
+            r.agent_ref,
+            r.context_snapshot_ref,
+            r.status,
+            r.title AS dispatch_prompt,
+            r.evidence_refs_json,
+            finished.event_ref AS finished_event_ref,
+            finished.summary AS returned_final_message,
+            finished.evidence_refs_json AS finished_evidence_refs_json
+        FROM session_runs r
+        LEFT JOIN session_observed_events finished
+          ON finished.run_ref = r.run_ref
+         AND finished.kind = 'subagent_finished'
+        {where}
+        ORDER BY COALESCE(finished.source_updated_at, r.source_updated_at, r.materialized_at) DESC, r.position
+        LIMIT ?
+        """,
+        (*params, max(1, limit)),
+    ).fetchall()
+    return list(rows)
+
+
 def _archive_proof_rows(
     conn: sqlite3.Connection,
     target_session_id: str | None,
@@ -1038,6 +1096,30 @@ def _proof_payload_from_row(row: sqlite3.Row) -> CoordinationProofRefPayload:
         summary=_str_or_none(row["summary"]),
         evidence_refs=_json_str_tuple(row["evidence_refs_json"], limit=10),
         provenance=_prov("archive-proof-outcome", path="index.db:session_observed_events", confidence=0.7),
+    )
+
+
+def _subagent_exchange_payload_from_row(row: sqlite3.Row) -> CoordinationSubagentExchangePayload:
+    run_refs = _json_str_tuple(row["evidence_refs_json"], limit=10)
+    final_refs = _json_str_tuple(row["finished_evidence_refs_json"], limit=10)
+    evidence_refs = tuple(dict.fromkeys((*run_refs, *final_refs)))
+    return CoordinationSubagentExchangePayload(
+        ref=_str_or_none(row["finished_event_ref"]) or str(row["run_ref"]),
+        session_id=str(row["session_id"]),
+        run_ref=str(row["run_ref"]),
+        agent_ref=_str_or_none(row["agent_ref"]),
+        dispatch_prompt=_str_or_none(row["dispatch_prompt"]),
+        returned_final_message=_str_or_none(row["returned_final_message"]),
+        status=_str_or_none(row["status"]),
+        child_session_id=_str_or_none(row["native_session_id"]),
+        context_snapshot_ref=_str_or_none(row["context_snapshot_ref"]),
+        evidence_refs=evidence_refs,
+        provenance=_prov(
+            "archive-subagent-exchange",
+            path="index.db:session_runs,session_observed_events",
+            confidence=0.75,
+            note="subagent dispatch comes from the projected subagent run title; final return comes from subagent_finished",
+        ),
     )
 
 

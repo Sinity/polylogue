@@ -78,6 +78,13 @@ def render_coordination_text(payload: AgentCoordinationPayload) -> str:
             lines.append(
                 f"    - {activity_episode.kind} {activity_episode.ref} {activity_episode.summary or ''}".rstrip()
             )
+    if payload.subagent_exchanges:
+        lines.append(f"  subagent exchanges: {len(payload.subagent_exchanges)}")
+        for exchange in payload.subagent_exchanges[: payload.limits.resource_limit]:
+            status = f" status={exchange.status}" if exchange.status else ""
+            prompt = f" prompt={exchange.dispatch_prompt}" if exchange.dispatch_prompt else ""
+            final = f" final={exchange.returned_final_message}" if exchange.returned_final_message else ""
+            lines.append(f"    - {exchange.run_ref}{status}{prompt}{final}".rstrip())
     if payload.proof_refs:
         lines.append(f"  proof refs: {len(payload.proof_refs)}")
         for proof in payload.proof_refs[: payload.limits.resource_limit]:
@@ -139,6 +146,19 @@ def render_coordination_markdown(payload: AgentCoordinationPayload) -> str:
             )
     else:
         lines.append("- No archive activity refs in this projection.")
+    lines.append("")
+    lines.append("## Subagent Exchanges")
+    if payload.subagent_exchanges:
+        for exchange in payload.subagent_exchanges:
+            lines.append(f"- Run `{exchange.run_ref}` status `{exchange.status or 'n/a'}`")
+            if exchange.dispatch_prompt:
+                lines.append(f"  - Dispatch: {exchange.dispatch_prompt}")
+            if exchange.returned_final_message:
+                lines.append(f"  - Returned: {exchange.returned_final_message}")
+            if exchange.context_snapshot_ref:
+                lines.append(f"  - Context: `{exchange.context_snapshot_ref}`")
+    else:
+        lines.append("- No subagent dispatch/return refs in this projection.")
     lines.append("")
     lines.append("## Proof / Outcome Refs")
     if payload.proof_refs:
@@ -220,6 +240,13 @@ def render_coordination_tree(payload: AgentCoordinationPayload) -> str:
     lines.append(f"+- archive-activity {len(payload.activity_episodes)}")
     for activity_episode in payload.activity_episodes:
         lines.append(f"|  +- {activity_episode.kind} {activity_episode.ref} session={activity_episode.session_id}")
+    lines.append(f"+- subagent-exchanges {len(payload.subagent_exchanges)}")
+    for exchange in payload.subagent_exchanges:
+        lines.append(f"|  +- {exchange.run_ref} status={exchange.status or 'n/a'}")
+        if exchange.dispatch_prompt:
+            lines.append(f"|     +- dispatch {exchange.dispatch_prompt}")
+        if exchange.returned_final_message:
+            lines.append(f"|     +- returned {exchange.returned_final_message}")
     lines.append(f"+- proof-refs {len(payload.proof_refs)}")
     for proof in payload.proof_refs:
         lines.append(f"|  +- {proof.kind} {proof.ref} status={proof.status or 'n/a'}")

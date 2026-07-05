@@ -134,6 +134,20 @@ class CoordinationActivityEpisodePayload(SurfacePayloadModel):
     provenance: CoordinationProvenancePayload
 
 
+class CoordinationSubagentExchangePayload(SurfacePayloadModel):
+    ref: str
+    session_id: str
+    run_ref: str
+    agent_ref: str | None = None
+    dispatch_prompt: str | None = None
+    returned_final_message: str | None = None
+    status: str | None = None
+    child_session_id: str | None = None
+    context_snapshot_ref: str | None = None
+    evidence_refs: tuple[str, ...] = ()
+    provenance: CoordinationProvenancePayload
+
+
 class CoordinationProofRefPayload(SurfacePayloadModel):
     ref: str
     session_id: str
@@ -211,6 +225,7 @@ class AgentCoordinationPayload(SurfacePayloadModel):
     archive: CoordinationArchivePayload | None = None
     session_trees: tuple[CoordinationSessionTreePayload, ...] = ()
     activity_episodes: tuple[CoordinationActivityEpisodePayload, ...] = ()
+    subagent_exchanges: tuple[CoordinationSubagentExchangePayload, ...] = ()
     proof_refs: tuple[CoordinationProofRefPayload, ...] = ()
     context_flow_refs: tuple[CoordinationContextFlowRefPayload, ...] = ()
     beads: CoordinationBeadsPayload | None = None
