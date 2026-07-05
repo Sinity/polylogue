@@ -84,6 +84,12 @@ function renderInspectorMission(el) {
     return '<div class="mission-item">' + esc(item.kind || 'activity') + ' · ' + esc(item.ref || 'n/a')
       + '<br><span class="muted">' + esc(item.summary || item.session_id || '') + '</span></div>';
   }, 'No archive activity refs in this projection.') + '</div>';
+  html += '<div class="mission-card"><h4>Subagent Exchanges</h4>' + renderMissionList(payload.subagent_exchanges, function(item) {
+    return '<div class="mission-item">' + esc(item.run_ref || item.ref || 'subagent')
+      + ' · ' + esc(item.status || 'n/a')
+      + '<br><span class="muted">dispatch: ' + esc(item.dispatch_prompt || 'n/a') + '</span>'
+      + '<br><span class="muted">returned: ' + esc(item.returned_final_message || 'n/a') + '</span></div>';
+  }, 'No subagent dispatch/return refs in this projection.') + '</div>';
   html += '<div class="mission-card"><h4>Proof / Context</h4>'
     + renderMissionList(payload.proof_refs, function(proof) {
       return '<div class="mission-item">' + esc(proof.kind || 'proof') + ' · ' + esc(proof.status || 'n/a')

@@ -42,10 +42,24 @@ def _seed_coordination_archive(index: Path) -> None:
                 position INTEGER NOT NULL,
                 materialized_at TEXT NOT NULL,
                 source_updated_at TEXT,
+                native_session_id TEXT,
+                native_parent_session_id TEXT,
+                parent_run_ref TEXT,
+                agent_ref TEXT,
+                context_snapshot_ref TEXT,
+                provider_origin TEXT NOT NULL DEFAULT 'codex-session',
+                harness TEXT NOT NULL DEFAULT 'codex',
+                role TEXT NOT NULL DEFAULT 'main',
                 status TEXT NOT NULL,
+                confidence TEXT NOT NULL DEFAULT 'raw',
                 title TEXT,
+                cwd TEXT,
+                git_branch TEXT,
+                lineage_refs_json TEXT NOT NULL DEFAULT '[]',
                 search_text TEXT,
-                evidence_refs_json TEXT NOT NULL
+                evidence_refs_json TEXT NOT NULL,
+                transcript_ref TEXT,
+                payload_json TEXT NOT NULL DEFAULT '{}'
             );
             CREATE TABLE session_observed_events (
                 event_ref TEXT PRIMARY KEY,
@@ -56,6 +70,9 @@ def _seed_coordination_archive(index: Path) -> None:
                 source_updated_at TEXT,
                 kind TEXT NOT NULL,
                 summary TEXT,
+                delivery_state TEXT NOT NULL DEFAULT 'observed',
+                subject_ref TEXT,
+                object_refs_json TEXT NOT NULL DEFAULT '[]',
                 evidence_refs_json TEXT NOT NULL,
                 payload_json TEXT NOT NULL
             );
@@ -92,9 +109,22 @@ def _seed_coordination_archive(index: Path) -> None:
         conn.execute(
             """
             INSERT INTO session_runs
-                (run_ref, session_id, position, materialized_at, source_updated_at, status, title, search_text, evidence_refs_json)
+                (run_ref, session_id, position, materialized_at, source_updated_at, role, status, title, search_text, evidence_refs_json)
             VALUES
-                ('run:thread-1', 'codex-session:thread-1', 0, '2026-07-04T18:00:00+00:00', '2026-07-04T18:01:00+00:00', 'completed', 'main run', 'main run', '["session:thread-1"]')
+                ('run:thread-1', 'codex-session:thread-1', 0, '2026-07-04T18:00:00+00:00', '2026-07-04T18:01:00+00:00', 'main', 'completed', 'main run', 'main run', '["session:thread-1"]'),
+                ('run:thread-1:subagent:0:tool-2', 'codex-session:thread-1', 1, '2026-07-04T18:00:00+00:00', '2026-07-04T18:01:30+00:00', 'subagent', 'completed', 'Map the coordination surface and report caveats.', 'Map the coordination surface and report caveats.', '["message:m2"]')
+            """
+        )
+        conn.execute(
+            """
+            UPDATE session_runs
+            SET native_session_id = 'codex-session:child-42',
+                native_parent_session_id = 'codex-session:thread-1',
+                parent_run_ref = 'run:thread-1',
+                agent_ref = 'agent:codex/Explore',
+                context_snapshot_ref = 'context-snapshot:run:thread-1:subagent:0:tool-2:subagent_start',
+                lineage_refs_json = '["run:thread-1","run:thread-1:subagent:0:tool-2"]'
+            WHERE run_ref = 'run:thread-1:subagent:0:tool-2'
             """
         )
         conn.execute(
@@ -102,7 +132,9 @@ def _seed_coordination_archive(index: Path) -> None:
             INSERT INTO session_observed_events
                 (event_ref, session_id, run_ref, position, materialized_at, source_updated_at, kind, summary, evidence_refs_json, payload_json)
             VALUES
-                ('event:tool', 'codex-session:thread-1', 'run:thread-1', 1, '2026-07-04T18:00:00+00:00', '2026-07-04T18:02:00+00:00', 'tool_finished', 'pytest passed', '["message:m1"]', '{"status":"passed"}')
+                ('event:tool', 'codex-session:thread-1', 'run:thread-1', 1, '2026-07-04T18:00:00+00:00', '2026-07-04T18:02:00+00:00', 'tool_finished', 'pytest passed', '["message:m1"]', '{"status":"passed"}'),
+                ('event:subagent-started', 'codex-session:thread-1', 'run:thread-1', 2, '2026-07-04T18:00:00+00:00', '2026-07-04T18:02:30+00:00', 'subagent_started', 'Explore subagent started', '["message:m2"]', '{}'),
+                ('event:subagent-finished', 'codex-session:thread-1', 'run:thread-1:subagent:0:tool-2', 3, '2026-07-04T18:00:00+00:00', '2026-07-04T18:03:00+00:00', 'subagent_finished', 'Subagent done: coordination surface mapped; caveat: web fixture only.', '["message:m3"]', '{}')
             """
         )
         conn.execute(
@@ -308,7 +340,7 @@ def test_coordination_envelope_composes_archive_evidence(
     monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
     monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
 
-    payload = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), limit=2)
+    payload = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), limit=4)
 
     assert len(payload.session_trees) == 1
     tree = payload.session_trees[0]
@@ -318,9 +350,16 @@ def test_coordination_envelope_composes_archive_evidence(
     assert len(tree.edges) == 2
     assert any(edge.parent_native_id == "native-missing-parent" for edge in tree.edges)
     assert tree.provenance.source == "archive-session-topology"
-    assert len(payload.activity_episodes) == 2
-    assert {episode.kind for episode in payload.activity_episodes} == {"run", "tool_finished"}
+    assert len(payload.activity_episodes) == 4
+    assert {"run", "tool_finished", "subagent_finished"} <= {episode.kind for episode in payload.activity_episodes}
     assert all(episode.provenance.source == "archive-run-projection" for episode in payload.activity_episodes)
+    assert len(payload.subagent_exchanges) == 1
+    exchange = payload.subagent_exchanges[0]
+    assert exchange.run_ref == "run:thread-1:subagent:0:tool-2"
+    assert exchange.dispatch_prompt == "Map the coordination surface and report caveats."
+    assert exchange.returned_final_message == "Subagent done: coordination surface mapped; caveat: web fixture only."
+    assert exchange.child_session_id == "codex-session:child-42"
+    assert exchange.provenance.source == "archive-subagent-exchange"
     assert len(payload.proof_refs) == 1
     assert payload.proof_refs[0].status == "passed"
     assert payload.proof_refs[0].provenance.source == "archive-proof-outcome"

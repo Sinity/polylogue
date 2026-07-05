@@ -16,6 +16,7 @@ from polylogue.coordination.payloads import (
     CoordinationProvenancePayload,
     CoordinationRepoPayload,
     CoordinationSelfPayload,
+    CoordinationSubagentExchangePayload,
     CoordinationView,
     CoordinationWorkItemPayload,
 )
@@ -38,6 +39,19 @@ def _payload(view: str = "status") -> AgentCoordinationPayload:
         ),
         work_item=CoordinationWorkItemPayload(
             source="beads", ref="polylogue-s7ae.1", confidence=0.95, provenance=provenance
+        ),
+        subagent_exchanges=(
+            CoordinationSubagentExchangePayload(
+                ref="event:subagent-finished",
+                session_id="codex-session:thread-1",
+                run_ref="run:thread-1:subagent:0:tool-2",
+                agent_ref="agent:codex/Explore",
+                dispatch_prompt="Map the coordination surface.",
+                returned_final_message="Subagent done: surface mapped.",
+                status="completed",
+                evidence_refs=("message:m2", "message:m3"),
+                provenance=provenance,
+            ),
         ),
         limits=CoordinationLimitsPayload(peer_limit=10, resource_limit=10, changed_path_limit=40, command_chars=220),
         provenance=(provenance,),
@@ -93,6 +107,10 @@ def test_agents_status_markdown_and_tree_use_shared_envelope(monkeypatch: pytest
     assert markdown.exit_code == 0
     assert "# Agent Coordination Mission Control" in markdown.output
     assert "polylogue-s7ae.1" in markdown.output
+    assert "Subagent Exchanges" in markdown.output
+    assert "Map the coordination surface." in markdown.output
+    assert "Subagent done: surface mapped." in markdown.output
     assert tree.exit_code == 0
     assert "coordination" in tree.output
     assert "work polylogue-s7ae.1" in tree.output
+    assert "subagent-exchanges 1" in tree.output
