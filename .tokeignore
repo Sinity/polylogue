@@ -1,3 +1,14 @@
-# Vendored upstream data, not first-party source — keep it out of LOC stats.
-# tokei reads this file with .gitignore semantics.
+# Files kept out of LOC stats — tokei reads this with .gitignore semantics.
+# (tokei already skips dot-dirs like .agent/ by default; listed here for
+#  robustness under `tokei --hidden` and to document intent.)
+
+# Vendored upstream litellm price catalog (~44k lines).
 polylogue/archive/semantic/data/litellm_model_prices.json
+
+# Generated surfaces.
+docs/schemas/cli-output/
+.agent/demos/
+
+# Fixtures / captured provider payloads (parser witnesses, not first-party code).
+**/representatives/
+tests/data/

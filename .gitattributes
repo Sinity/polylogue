@@ -34,5 +34,13 @@ tests/ export-ignore
 # GitHub language stats and suppress its huge diff (overrides *.json diff=json).
 polylogue/archive/semantic/data/litellm_model_prices.json linguist-vendored -diff
 
+# Generated surfaces — exclude from language stats, suppress regen diff noise.
+docs/schemas/cli-output/*.json linguist-generated -diff
+.agent/demos/**/*.json linguist-generated -diff
+
+# Fixtures / captured payloads — not first-party code (keep diffs: they're edited).
+**/representatives/*.json linguist-vendored
+tests/data/** linguist-vendored
+
 # Merge strategies
 flake.lock merge=ours
