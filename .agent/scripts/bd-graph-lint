@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Bead-graph invariant lint (polylogue variant). Run before shipping bead deltas.
+# Universal invariants: no cycles; no open bead without acceptance criteria;
+# no duplicate wave:/area: labels; no wave inversions where both sides carry waves.
+# INTENTIONAL DIVERGENCE from sinex: multi-area labels are polylogue convention;
+# only duplicate wave: labels are flagged (lane:/delivery:/horizon: taxonomy is local).
+# NB: `bd list --json` dep objects use type/depends_on_id (bd show --json differs).
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+bd dep cycles
+bd list --all -n 0 --json | python3 -c "
+import json, sys
+issues = json.load(sys.stdin)
+by_id = {i['id']: i for i in issues}
+def wave(i):
+    for l in (i.get('labels') or []):
+        if l.startswith('wave:'):
+            return int(l[5:])
+    return None
+dup = inv = noac = 0
+for i in issues:
+    if i['status'] == 'closed':
+        continue
+    labels = i.get('labels') or []
+    for pfx in ('wave:',):  # multi-area is polylogue-intentional
+        n = len([l for l in labels if l.startswith(pfx)])
+        if n > 1:
+            dup += 1; print(f'duplicate-{pfx[:-1]}:', i['id'], labels)
+    if not (i.get('acceptance_criteria') or '').strip():
+        noac += 1; print('missing-AC:', i['id'], i['title'][:60])
+    wv = wave(i)
+    for d in (i.get('dependencies') or []):
+        if d.get('type') != 'blocks':
+            continue
+        dep = by_id.get(d['depends_on_id'])
+        if dep and dep['status'] != 'closed':
+            dw = wave(dep)
+            if wv is not None and dw is not None and dw > wv:
+                inv += 1
+                print(f'wave-inversion: {i[\"id\"]} (wave:{wv}) <- {dep[\"id\"]} (wave:{dw})')
+print(f'violations: dup_labels={dup} inversions={inv} missing_ac={noac}')
+sys.exit(1 if (dup or inv or noac) else 0)
+"

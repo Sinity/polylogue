@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="420" viewBox="0 0 880 420" font-family="system-ui,sans-serif">
+<rect width="880" height="420" fill="#0d1117"/>
+<text x="440" y="22" fill="#e6edf3" font-size="15" font-weight="600" text-anchor="middle">Catalog API-equivalent cost by model (USD)</text>
+<rect x="220" y="44.0" width="590.0" height="20" fill="#4f9ecf" rx="2"/>
+<text x="212" y="60.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-opus-4-8</text>
+<text x="816.0" y="60.0" fill="#8b949e" font-size="10">66.9k</text>
+<rect x="220" y="74.0" width="494.4" height="20" fill="#e4754f" rx="2"/>
+<text x="212" y="90.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-opus-4-7</text>
+<text x="720.4" y="90.0" fill="#8b949e" font-size="10">56.1k</text>
+<rect x="220" y="104.0" width="490.5" height="20" fill="#6cc24a" rx="2"/>
+<text x="212" y="120.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-opus-4-6</text>
+<text x="716.5" y="120.0" fill="#8b949e" font-size="10">55.6k</text>
+<rect x="220" y="134.0" width="368.1" height="20" fill="#b072d6" rx="2"/>
+<text x="212" y="150.0" fill="#e6edf3" font-size="11" text-anchor="end">gpt-5.4</text>
+<text x="594.1" y="150.0" fill="#8b949e" font-size="10">41.7k</text>
+<rect x="220" y="164.0" width="274.3" height="20" fill="#e0b341" rx="2"/>
+<text x="212" y="180.0" fill="#e6edf3" font-size="11" text-anchor="end">gpt-5.5</text>
+<text x="500.3" y="180.0" fill="#8b949e" font-size="10">31.1k</text>
+<rect x="220" y="194.0" width="197.1" height="20" fill="#4ac6c2" rx="2"/>
+<text x="212" y="210.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-opus-4-5-20251101</text>
+<text x="423.1" y="210.0" fill="#8b949e" font-size="10">22.4k</text>
+<rect x="220" y="224.0" width="173.4" height="20" fill="#d6606f" rx="2"/>
+<text x="212" y="240.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-opus-4-20250514</text>
+<text x="399.4" y="240.0" fill="#8b949e" font-size="10">19.7k</text>
+<rect x="220" y="254.0" width="57.0" height="20" fill="#8a8f99" rx="2"/>
+<text x="212" y="270.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-sonnet-4-6</text>
+<text x="283.0" y="270.0" fill="#8b949e" font-size="10">6.5k</text>
+<rect x="220" y="284.0" width="36.8" height="20" fill="#4f9ecf" rx="2"/>
+<text x="212" y="300.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-sonnet-4-20250514</text>
+<text x="262.8" y="300.0" fill="#8b949e" font-size="10">4.2k</text>
+<rect x="220" y="314.0" width="27.9" height="20" fill="#e4754f" rx="2"/>
+<text x="212" y="330.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-opus-4-1-20250805</text>
+<text x="253.9" y="330.0" fill="#8b949e" font-size="10">3.2k</text>
+<rect x="220" y="344.0" width="16.9" height="20" fill="#6cc24a" rx="2"/>
+<text x="212" y="360.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-sonnet-4-5-20250929</text>
+<text x="242.9" y="360.0" fill="#8b949e" font-size="10">1.9k</text>
+<rect x="220" y="374.0" width="15.8" height="20" fill="#b072d6" rx="2"/>
+<text x="212" y="390.0" fill="#e6edf3" font-size="11" text-anchor="end">gpt-5.3-codex-spark</text>
+<text x="241.8" y="390.0" fill="#8b949e" font-size="10">1.8k</text>
+</svg>

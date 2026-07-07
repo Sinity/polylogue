@@ -1,0 +1,24 @@
+{
+  "run_id": "2026-07-03-polylogue-devloop-n1",
+  "pairs": [
+    {
+      "pair_id": "polylogue-devloop-current-state-n1",
+      "subject_native_id": "019f12b5-fc19-7110-b069-4f49a78da82d",
+      "task": "Reconstruct the current continuation state for the Polylogue devloop: current slice, open threads, likely next action, and main risks/caveats.",
+      "arms": {
+        "raw_ref": {
+          "agent_id": "019f278e-d974-7402-882d-ad9840b07eea",
+          "output": "arms/raw-ref-output.md",
+          "score": 8
+        },
+        "handoff_pack": {
+          "agent_id": "019f278e-fc99-7e41-87cb-7879efa3c3e3",
+          "output": "arms/handoff-pack-output.md",
+          "score": 5
+        }
+      },
+      "delta_raw_minus_pack": 3,
+      "interpretation": "Diagnostic negative pilot: the pack arm reconstructed prior-slice context but missed current-state changes after the packet was generated."
+    }
+  ]
+}

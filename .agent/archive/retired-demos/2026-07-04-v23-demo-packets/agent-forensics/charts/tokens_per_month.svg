@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" font-family="system-ui,sans-serif">
+<rect width="880" height="360" fill="#0d1117"/>
+<text x="440" y="22" fill="#e6edf3" font-size="15" font-weight="600" text-anchor="middle">Tokens per month (last-event totals)</text>
+<line x1="60" y1="290.0" x2="860" y2="290.0" stroke="#21262d"/>
+<text x="54" y="294.0" fill="#8b949e" font-size="10" text-anchor="end">0</text>
+<line x1="60" y1="227.5" x2="860" y2="227.5" stroke="#21262d"/>
+<text x="54" y="231.5" fill="#8b949e" font-size="10" text-anchor="end">23.8B</text>
+<line x1="60" y1="165.0" x2="860" y2="165.0" stroke="#21262d"/>
+<text x="54" y="169.0" fill="#8b949e" font-size="10" text-anchor="end">47.6B</text>
+<line x1="60" y1="102.5" x2="860" y2="102.5" stroke="#21262d"/>
+<text x="54" y="106.5" fill="#8b949e" font-size="10" text-anchor="end">71.5B</text>
+<line x1="60" y1="40.0" x2="860" y2="40.0" stroke="#21262d"/>
+<text x="54" y="44.0" fill="#8b949e" font-size="10" text-anchor="end">95.3B</text>
+<rect x="68.0" y="290.0" width="37.3" height="0.0" fill="#4f9ecf" rx="2"/>
+<text x="86.7" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 86.7 304)">2025-05</text>
+<rect x="121.3" y="290.0" width="37.3" height="0.0" fill="#4f9ecf" rx="2"/>
+<text x="140.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 140.0 304)">2025-06</text>
+<rect x="174.7" y="290.0" width="37.3" height="0.0" fill="#4f9ecf" rx="2"/>
+<text x="193.3" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 193.3 304)">2025-07</text>
+<rect x="228.0" y="290.0" width="37.3" height="0.0" fill="#4f9ecf" rx="2"/>
+<text x="246.7" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 246.7 304)">2025-08</text>
+<rect x="281.3" y="286.2" width="37.3" height="3.8" fill="#4f9ecf" rx="2"/>
+<text x="300.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 300.0 304)">2025-09</text>
+<rect x="334.7" y="261.9" width="37.3" height="28.1" fill="#4f9ecf" rx="2"/>
+<text x="353.3" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 353.3 304)">2025-10</text>
+<rect x="388.0" y="243.0" width="37.3" height="47.0" fill="#4f9ecf" rx="2"/>
+<text x="406.7" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 406.7 304)">2025-11</text>
+<rect x="441.3" y="209.8" width="37.3" height="80.2" fill="#4f9ecf" rx="2"/>
+<text x="460.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 460.0 304)">2025-12</text>
+<rect x="494.7" y="264.6" width="37.3" height="25.4" fill="#4f9ecf" rx="2"/>
+<text x="513.3" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 513.3 304)">2026-01</text>
+<rect x="548.0" y="287.7" width="37.3" height="2.3" fill="#4f9ecf" rx="2"/>
+<text x="566.7" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 566.7 304)">2026-02</text>
+<rect x="601.3" y="40.0" width="37.3" height="250.0" fill="#4f9ecf" rx="2"/>
+<text x="620.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 620.0 304)">2026-03</text>
+<rect x="654.7" y="123.5" width="37.3" height="166.5" fill="#4f9ecf" rx="2"/>
+<text x="673.3" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 673.3 304)">2026-04</text>
+<rect x="708.0" y="228.6" width="37.3" height="61.4" fill="#4f9ecf" rx="2"/>
+<text x="726.7" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 726.7 304)">2026-05</text>
+<rect x="761.3" y="226.5" width="37.3" height="63.5" fill="#4f9ecf" rx="2"/>
+<text x="780.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 780.0 304)">2026-06</text>
+<rect x="814.7" y="284.6" width="37.3" height="5.4" fill="#4f9ecf" rx="2"/>
+<text x="833.3" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 833.3 304)">2026-07</text>
+</svg>

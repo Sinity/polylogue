@@ -1,0 +1,58 @@
+{
+  "config_enabled": true,
+  "configured_dimension": 1024,
+  "configured_model": "voyage-4",
+  "daemon_stage_enabled": true,
+  "embedded_messages": 417644,
+  "embedded_sessions": 6068,
+  "embedding_coverage_percent": 37.7,
+  "embedding_dimensions": {
+    "1024": 417644
+  },
+  "embedding_models": {
+    "voyage-4": 417644
+  },
+  "failure_count": 0,
+  "freshness_status": "partial",
+  "has_voyage_api_key": true,
+  "latest_catchup_run": {
+    "completed_at": "2026-07-02T14:56:59.429000+00:00",
+    "embedded_messages": 0,
+    "embedded_sessions": 0,
+    "error_count": 0,
+    "estimated_cost_usd": 0.0,
+    "last_session_id": null,
+    "max_errors": null,
+    "max_messages": null,
+    "max_sessions": null,
+    "planned_messages": 0,
+    "planned_sessions": 25,
+    "processed_sessions": 25,
+    "rebuild": false,
+    "run_id": "692fbdc1-afc9-47b0-9ec3-a1fa58458c0c",
+    "skipped_sessions": 0,
+    "started_at": "2026-07-02T14:56:58.980000+00:00",
+    "status": "completed",
+    "stop_after_seconds": null,
+    "stop_reason": null,
+    "updated_at": "2026-07-02T14:56:59.429000+00:00"
+  },
+  "messages_missing_provenance": 0,
+  "monthly_cost_cap_usd": 1000.0,
+  "newest_embedded_at": "2026-07-02T14:51:32.888000+00:00",
+  "next_action": {
+    "code": "drain_backlog",
+    "command": "polylogue ops embed backfill --max-sessions 10",
+    "reason": "Embedding convergence is enabled and pending sessions remain."
+  },
+  "oldest_embedded_at": "2026-07-02T04:23:48.827000+00:00",
+  "pending_messages": null,
+  "pending_messages_exact": false,
+  "pending_sessions": 10013,
+  "retrieval_bands": {},
+  "retrieval_ready": true,
+  "stale_messages": 0,
+  "status": "partial",
+  "total_estimated_cost_usd": 0.0,
+  "total_sessions": 16580
+}

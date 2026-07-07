@@ -1,0 +1,79 @@
+{
+  "artifact": "handoff-pack",
+  "claim": "Polylogue can regenerate a bounded handoff read package for this live Polylogue devloop session using exact-session temporal and chronicle projections over the current archive.",
+  "non_claim": "This is not a full transcript export and not proof that the devtools read-package wrapper has optimal process reuse; it is a bounded handoff packet over selected temporal, chronicle, and spec artifacts.",
+  "proof": [
+    "temporal.json and chronicle.json were generated against /home/sinity/.local/share/polylogue schema v23",
+    "focused read-view tests passed for exact-id summary resolution and indexed temporal event sampling",
+    "JSON validation loaded every file in .agent/demos/handoff-pack/current"
+  ],
+  "caveat": [
+    "message_events_capped and action_events_capped mean the packet is intentionally bounded",
+    "the devtools read-package wrapper still needs process-reuse/progress work tracked in Beads"
+  ],
+  "session_id": "019f12b5-fc19-7110-b069-4f49a78da82d",
+  "role": "Polylogue devloop session",
+  "temporal_ms": 325.989,
+  "chronicle_ms": 48.404,
+  "temporal_phases": [
+    {
+      "name": "prepare",
+      "elapsed_ms": 271.728,
+      "details": {
+        "archive_root": "/home/sinity/.local/share/polylogue",
+        "limit": 50
+      }
+    },
+    {
+      "name": "select_sessions",
+      "elapsed_ms": 10.029,
+      "details": {
+        "session_count": 1
+      }
+    },
+    {
+      "name": "project_sessions",
+      "elapsed_ms": 0.02,
+      "details": {
+        "event_count": 1
+      }
+    },
+    {
+      "name": "project_messages",
+      "elapsed_ms": 9.705,
+      "details": {
+        "event_count": 8,
+        "caveats": [
+          "message_events_capped"
+        ]
+      }
+    },
+    {
+      "name": "project_actions",
+      "elapsed_ms": 34.255,
+      "details": {
+        "event_count": 4,
+        "caveats": [
+          "action_events_capped"
+        ]
+      }
+    },
+    {
+      "name": "build_window",
+      "elapsed_ms": 0.201,
+      "details": {
+        "event_count": 13,
+        "family_counts": {
+          "archive-action": 4,
+          "archive-message": 8,
+          "archive-session": 1
+        }
+      }
+    }
+  ],
+  "files": {
+    "chronicle.json": 8477,
+    "spec.json": 465,
+    "temporal.json": 17027
+  }
+}

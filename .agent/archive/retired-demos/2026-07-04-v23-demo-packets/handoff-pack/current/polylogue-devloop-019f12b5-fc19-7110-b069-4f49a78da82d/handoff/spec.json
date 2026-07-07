@@ -1,0 +1,25 @@
+{
+  "selection": {
+    "refs": [
+      "session:019f12b5-fc19-7110-b069-4f49a78da82d"
+    ]
+  },
+  "projection": {
+    "families": [
+      "temporal",
+      "sessions",
+      "chronicle",
+      "messages"
+    ],
+    "body_policy": "authored-dialogue",
+    "max_tokens": 1200,
+    "edge_limit": 2,
+    "redact_paths": true
+  },
+  "render": {
+    "format": "json",
+    "destination": "file",
+    "layout": "context-image",
+    "timestamps": "include-available"
+  }
+}

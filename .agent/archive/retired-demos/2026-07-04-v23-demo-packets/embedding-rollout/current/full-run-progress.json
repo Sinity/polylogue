@@ -1,0 +1,47 @@
+{
+  "captured_at": "2026-07-03T06:48:12Z",
+  "archive_root": "/home/sinity/.local/share/polylogue",
+  "service": {
+    "active_state": "inactive",
+    "sub_state": "dead",
+    "main_pid": 0,
+    "memory_current_bytes": 0,
+    "cpu_usage_nsec": 0
+  },
+  "counts": {
+    "embedded_message_rows": 426894,
+    "status_rows": 6371,
+    "failure_rows": 0,
+    "needs_reindex_rows": 0
+  },
+  "pending_preflight": {
+    "backfill_args": [
+      "ops",
+      "embed",
+      "backfill",
+      "--yes",
+      "--min-messages",
+      "2"
+    ],
+    "backfill_command": "polylogue ops embed backfill --yes --min-messages 2",
+    "dimension": 1024,
+    "effective_cost_cap_usd": 1000.0,
+    "estimated_cost_usd": 53.44625,
+    "estimated_tokens": 534462500,
+    "max_cost_usd": null,
+    "max_messages": null,
+    "max_sessions": null,
+    "min_messages": 2,
+    "model": "voyage-4",
+    "monthly_cost_cap_usd": 1000.0,
+    "pending_messages": 1068925,
+    "pending_sessions": 9389,
+    "pricing": {
+      "approximate": true,
+      "cost_usd_per_1m_tokens": 0.1,
+      "estimated_tokens_per_message": 500
+    },
+    "total_sessions": 16498,
+    "windowed": true
+  }
+}

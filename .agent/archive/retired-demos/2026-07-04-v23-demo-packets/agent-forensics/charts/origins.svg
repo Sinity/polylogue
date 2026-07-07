@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="300" viewBox="0 0 880 300" font-family="system-ui,sans-serif">
+<rect width="880" height="300" fill="#0d1117"/>
+<text x="440" y="22" fill="#e6edf3" font-size="15" font-weight="600" text-anchor="middle">Sessions by origin</text>
+<rect x="220" y="44.0" width="590.0" height="20" fill="#4f9ecf" rx="2"/>
+<text x="212" y="60.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-code-session</text>
+<text x="816.0" y="60.0" fill="#8b949e" font-size="10">10.3k</text>
+<rect x="220" y="74.0" width="142.9" height="20" fill="#e4754f" rx="2"/>
+<text x="212" y="90.0" fill="#e6edf3" font-size="11" text-anchor="end">codex-session</text>
+<text x="368.9" y="90.0" fill="#8b949e" font-size="10">2.5k</text>
+<rect x="220" y="104.0" width="141.0" height="20" fill="#6cc24a" rx="2"/>
+<text x="212" y="120.0" fill="#e6edf3" font-size="11" text-anchor="end">chatgpt-export</text>
+<text x="367.0" y="120.0" fill="#8b949e" font-size="10">2.5k</text>
+<rect x="220" y="134.0" width="51.0" height="20" fill="#b072d6" rx="2"/>
+<text x="212" y="150.0" fill="#e6edf3" font-size="11" text-anchor="end">claude-ai-export</text>
+<text x="277.0" y="150.0" fill="#8b949e" font-size="10">890</text>
+<rect x="220" y="164.0" width="12.7" height="20" fill="#e0b341" rx="2"/>
+<text x="212" y="180.0" fill="#e6edf3" font-size="11" text-anchor="end">aistudio-drive</text>
+<text x="238.7" y="180.0" fill="#8b949e" font-size="10">222</text>
+<rect x="220" y="194.0" width="6.6" height="20" fill="#4ac6c2" rx="2"/>
+<text x="212" y="210.0" fill="#e6edf3" font-size="11" text-anchor="end">antigravity-session</text>
+<text x="232.6" y="210.0" fill="#8b949e" font-size="10">116</text>
+<rect x="220" y="224.0" width="1.1" height="20" fill="#d6606f" rx="2"/>
+<text x="212" y="240.0" fill="#e6edf3" font-size="11" text-anchor="end">gemini-cli-session</text>
+<text x="227.1" y="240.0" fill="#8b949e" font-size="10">20</text>
+<rect x="220" y="254.0" width="0.3" height="20" fill="#8a8f99" rx="2"/>
+<text x="212" y="270.0" fill="#e6edf3" font-size="11" text-anchor="end">grok-export</text>
+<text x="226.3" y="270.0" fill="#8b949e" font-size="10">6</text>
+</svg>
