@@ -645,6 +645,26 @@ class TestPrivacyContract:
 
         assert sentinel not in WEB_SHELL_HTML
 
+    def test_load_status_success_path_clears_the_status_route_notice(self) -> None:
+        """Dogfood regression (2026-07-08): loadStatus()'s success path set
+        state.routeStates.status to 'ready' but never called renderFacets(),
+        so a "Status: loading" notice rendered from an earlier snapshot
+        stayed stuck in the sidebar forever — verified live against the
+        real archive daemon. The error path already called renderFacets();
+        the success path must too, or any future edit that reintroduces
+        this asymmetry regresses silently (there is no JS-executing test
+        for this file's inline script, so this is a structural string
+        check on the success-path source, not a DOM assertion)."""
+        from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+        anchor = "setRouteState('status', {state: 'ready', route: statusRoute, status: '200', error: ''});"
+        idx = WEB_SHELL_HTML.index(anchor)
+        following = WEB_SHELL_HTML[idx + len(anchor) : idx + len(anchor) + 200]
+        assert "renderFacets();" in following, (
+            "loadStatus() success path must call renderFacets() to clear any "
+            "stale 'Status: loading' notice rendered before this route became ready"
+        )
+
     def test_get_session_does_not_leak_adjacent_sessions(
         self,
         workspace_env: dict[str, Path],

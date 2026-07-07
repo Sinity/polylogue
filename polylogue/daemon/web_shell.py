@@ -841,12 +841,15 @@ async function loadStatus() {
   try {
     var s = await fetchJSON(statusRoute, {timeoutMs: 5000});
     var readiness = s.component_readiness || {};
+    var profileCounts = (readiness.session_profiles && readiness.session_profiles.counts) || {};
+    var totalSessions = s.total_sessions != null ? s.total_sessions : profileCounts.total_sessions;
+    var totalMessages = s.total_messages != null ? s.total_messages : null;
     var convs = document.getElementById('status-convs');
     var msgs = document.getElementById('status-msgs');
-    convs.textContent = (s.total_sessions != null ? Number(s.total_sessions).toLocaleString() : 'unknown') + ' convs';
-    msgs.textContent = (s.total_messages != null ? Number(s.total_messages).toLocaleString() : 'unknown') + ' msgs';
-    setChipQuality(convs, s.total_sessions != null ? 'canonical' : 'partial');
-    setChipQuality(msgs, s.total_messages != null ? 'canonical' : 'partial');
+    convs.textContent = (totalSessions != null ? Number(totalSessions).toLocaleString() : 'unknown') + ' convs';
+    msgs.textContent = (totalMessages != null ? Number(totalMessages).toLocaleString() : 'unknown') + ' msgs';
+    setChipQuality(convs, totalSessions != null ? 'canonical' : 'partial');
+    setChipQuality(msgs, totalMessages != null ? 'canonical' : 'partial');
     renderFtsChip(readiness.search || null, s.fts_readiness || {});
     renderMaterializationChip(readiness.raw_materialization || null, s.raw_materialization_readiness || {});
     renderSemanticChip(readiness.embeddings || null);
@@ -854,6 +857,7 @@ async function loadStatus() {
     renderIngestChip(readiness.daemon_ingest || null, s.live || {});
     renderBrowserCaptureChip(readiness.browser_capture || null, s.browser_capture || {});
     setRouteState('status', {state: 'ready', route: statusRoute, status: '200', error: ''});
+    renderFacets();
   } catch(e) {
     updateStatusCountsUnknown('degraded');
     setRouteState('status', Object.assign({state: 'error', stale_available: false}, routeErrorDetails(e, statusRoute)));
