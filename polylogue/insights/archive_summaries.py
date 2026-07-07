@@ -17,7 +17,7 @@ from polylogue.insights.archive import (
     records_provenance,
 )
 from polylogue.insights.archive_models import DaySessionSummaryPayload, WeekSessionSummaryPayload
-from polylogue.insights.temporal_source import classify_aggregate_hwm_source
+from polylogue.insights.temporal_source import TemporalSource, classify_aggregate_hwm_source
 from polylogue.storage.runtime import DaySessionSummaryRecord
 
 
@@ -59,10 +59,20 @@ def build_day_session_summary_records(
         summary = summarize_day(day_profiles, bucket_day)
         source_updates: list[str] = []
         source_sorts: list[float] = []
+        contributor_sources: list[TemporalSource] = []
         for profile in day_profiles:
             iso_values, sort_values = profile_timestamp_values(profile)
             source_updates.extend(iso_values)
             source_sorts.extend(sort_values)
+            if iso_values:
+                # profile_timestamp_values draws from four raw provider-parsed
+                # fields (updated_at, last_message_at, first_message_at,
+                # created_at); classify_profile_hwm_source only checks
+                # updated_at specifically, which can disagree with which
+                # field actually won the aggregate's max() below. Any
+                # non-empty result here is genuinely provider-sourced —
+                # tag it directly rather than re-deriving from one field.
+                contributor_sources.append("provider_ts")
         search_text = " \n".join(
             part
             for part in (
@@ -82,7 +92,7 @@ def build_day_session_summary_records(
                 source_updated_at=hwm,
                 source_sort_key=max(source_sorts) if source_sorts else None,
                 input_high_water_mark=hwm,
-                input_high_water_mark_source=classify_aggregate_hwm_source(source_updates),
+                input_high_water_mark_source=classify_aggregate_hwm_source(contributor_sources),
                 input_row_count=summary.session_count,
                 session_count=summary.session_count,
                 logical_session_count=summary.logical_session_count,
