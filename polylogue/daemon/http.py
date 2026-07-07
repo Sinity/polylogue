@@ -2782,10 +2782,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         unhandled ``AttributeError`` (polylogue-g9j6). Mirrors the MCP
         ``provider_usage`` tool, which is a thin wrapper over the same
         ``Polylogue.provider_usage_report`` API method.
+
+        Defaults to ``detail=headline``, NOT ``full`` (unlike the MCP
+        tool): ``full`` walks ``session_provider_usage_events`` with a
+        Python-side scan-and-compare with no row cap, measured to exceed
+        90s on the live archive — a synchronous HTTP request thread is a
+        much worse place to block on that than a CLI call a human can
+        interrupt (polylogue-dlmv). Callers that want the full
+        diagnostics can still request ``?detail=full`` explicitly.
         """
         origin = self._get_param(params, "origin")
         limit = self._get_int(params, "limit", 25)
-        detail = self._get_param(params, "detail", "full") or "full"
+        detail = self._get_param(params, "detail", "headline") or "headline"
 
         async def _get(poly: Polylogue) -> object:
             report = await poly.provider_usage_report(origin=origin, limit=limit, detail=detail)
