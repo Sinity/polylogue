@@ -92,6 +92,22 @@ def test_returns_200_with_origin_usage_for_seeded_session(workspace_env: dict[st
     assert "pricing_lanes" in payload
 
 
+def test_default_detail_is_headline_not_full(workspace_env: dict[str, Path]) -> None:
+    """polylogue-dlmv: detail=full does an unbounded Python-side scan over
+    session_provider_usage_events, measured to exceed 90s on the live
+    archive. A synchronous HTTP request thread must not default into that
+    path — headline is fast (SQL-side rollups only) and the MCP tool's
+    detail="full" default is deliberately NOT mirrored here."""
+    handler = _make_handler()
+    send_json = _capture_json(handler)
+
+    handler.do_GET()
+
+    status, payload = send_json.call_args.args
+    assert status == HTTPStatus.OK
+    assert payload["detail_level"] == "headline"
+
+
 def test_respects_detail_and_limit_query_params(workspace_env: dict[str, Path]) -> None:
     handler = _make_handler("/api/provider-usage?detail=headline&limit=5")
     send_json = _capture_json(handler)
