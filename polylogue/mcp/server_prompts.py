@@ -7,6 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import islice
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from typing_extensions import TypedDict
@@ -400,6 +401,106 @@ Your task:
 Session summaries:
 {json.dumps(summaries, indent=2)}
 """
+
+    @mcp.prompt()
+    async def resume_context(repo: str = "", limit: int = 5) -> str:
+        """Rebuild working context for the current repo from the archive."""
+        repo_name, cwd = _repo_context(repo)
+        return f"""Rebuild working context for repo '{repo_name}' from the Polylogue archive.
+
+Call sequence:
+1. find_resume_candidates(repo_path="{cwd}", limit={limit}) — ranked resumable logical sessions for this checkout.
+2. get_resume_brief(session_id=<top candidate>) — typed brief: goals, open threads, next actions, provenance refs.
+3. agent_coordination_brief(view="self") — check concurrent agents/worktrees before claiming work.
+4. blackboard_list(scope_repo="{repo_name}", unresolved=True) — unresolved notes/handoffs addressed to agents here.
+
+Rules:
+- Cite refs (session_id, message_id) instead of pasting transcripts; fetch full text only for messages you will act on.
+- Empty results usually mean a wrong archive root: the harness must point POLYLOGUE_ARCHIVE_ROOT at the live archive, not a sandbox default.
+"""
+
+    @mcp.prompt()
+    async def postmortem_last(repo: str = "", since: str = "14d") -> str:
+        """Postmortem the most recent failed or abandoned session for a repo."""
+        repo_name, cwd = _repo_context(repo)
+        return f"""Postmortem the most recent failed or abandoned session for repo '{repo_name}'.
+
+Call sequence:
+1. find_abandoned_sessions(repo_path="{cwd}", since="{since}") and find_stuck_sessions(since="{since}") — candidates with dangling work or stuck tool calls.
+2. Pick the most recent relevant session; orient with get_session_summary(id=<session_id>).
+3. get_postmortem_bundle(repo="{repo_name}", since="{since}") — forensic bundle: timeline, decisions, tool errors.
+4. get_pathologies(repo="{repo_name}", since="{since}") — detected anti-patterns in the same window.
+
+Report: what was attempted, where it failed (cite tool_result errors by ref), what remained undone, and the smallest next action.
+"""
+
+    @mcp.prompt()
+    async def decisions_about(topic: str, limit: int = 20) -> str:
+        """Find what was decided about a topic, recorded and inferred."""
+        return f"""Find what was decided about '{topic}'.
+
+Call sequence:
+1. list_assertion_claims(kinds="decision,judgment,lesson", statuses="active,candidate", limit={limit}) — recorded decisions (authoritative when user-authored).
+2. query_units(expression='assertions where kind:decision AND text:"{topic}"') — targeted assertion search.
+3. search(query='near:"{topic}"', limit=10) — decision discussions never recorded as assertions.
+
+Rules:
+- Recorded assertions outrank inferred prose; label each finding as recorded vs inferred.
+- status:candidate rows are agent-proposed and unreviewed — never present them as settled.
+"""
+
+    @mcp.prompt()
+    async def unacknowledged_failures(repo: str = "", since: str = "7d") -> str:
+        """Surface recent failures that nobody acknowledged."""
+        repo_name, _cwd = _repo_context(repo)
+        return f"""Surface failures in '{repo_name}' since {since} that were never acknowledged.
+
+Call sequence:
+1. query_units(expression='sessions where repo:{repo_name} since:{since} AND exists action(output:failed)', limit=20) — sessions containing failed tool actions.
+2. find_stuck_sessions(since="{since}") — sessions whose provider tool calls are bounded as stuck.
+3. For each hit: list_marks(session_id=<session_id>) and list_annotations for that session — an existing mark/annotation means acknowledged.
+
+Report only sessions with failures and no acknowledgment; cite the failing action refs (tool, path, error).
+"""
+
+    @mcp.prompt()
+    async def sessions_touching_file(path: str, repo: str = "") -> str:
+        """Find sessions that edited or referenced a file path."""
+        repo_name, _cwd = _repo_context(repo)
+        repo_clause = f"repo:{repo_name} AND " if repo_name else ""
+        return f"""Find sessions that touched file path '{path}'.
+
+Call sequence:
+1. query_units(expression='sessions where {repo_clause}exists file(action:file_edit AND path:{path})', limit=20) — sessions that edited the path.
+2. query_units(expression='files where path:{path}', limit=20) — per-file action rows (edits, reads, shell references).
+3. search(query='"{path}"', limit=10) — mentions in prose that never became edits.
+4. get_session_summary(id=<session_id>) on each hit for orientation.
+
+Rules: path matching is substring — prefer repo-relative fragments (e.g. polylogue/mcp/server_prompts.py) over bare filenames.
+"""
+
+    @mcp.prompt()
+    async def cost_of(since: str = "30d", limit: int = 10) -> str:
+        """Report cost/usage for a time window with honest accounting."""
+        return f"""Report cost/usage for the last {since}, with honest accounting.
+
+Call sequence:
+1. cost_rollups(since="{since}") — aggregate spend by model.
+2. session_costs(since="{since}", limit={limit}) — top sessions by cost.
+3. provider_usage(detail="summary") — usage accounting diagnostics without billing estimates.
+4. For one repo's sessions: search(query='repo:<repo> since:{since}') then session_costs(session_id=<id>) per hit — cost tools have no repo filter.
+
+Rules:
+- cost_usd is API-list-equivalent; on subscription plans report the subscription-credit view separately (cache reads are ~free on Claude Max/Pro).
+- Codex 'input' includes cached tokens and 'output' includes reasoning — treat lanes as disjoint, never sum naively.
+"""
+
+
+def _repo_context(repo: str) -> tuple[str, str]:
+    cwd = Path.cwd()
+    if repo:
+        return repo, str(cwd)
+    return cwd.name, str(cwd)
 
 
 __all__ = ["register_prompts"]
