@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import hmac
 import json
 import os
 import select
@@ -18,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES, read_view_http_capability_payloads
 from polylogue.core.enums import AssertionKind, AssertionStatus
@@ -990,9 +991,44 @@ def _check_auth_logic(
         return _AuthResult(allowed=True, reason=None)
     if not auth_header.startswith("Bearer "):
         return _AuthResult(allowed=False, reason="unauthorized")
-    if auth_header[7:] != auth_token:
+    if not hmac.compare_digest(auth_header[7:], auth_token):
         return _AuthResult(allowed=False, reason="unauthorized")
     return _AuthResult(allowed=True, reason=None)
+
+
+def _check_host_admission_logic(host_header: str, api_host: str) -> bool:
+    """Pure logic: is *host_header* an allowed Host for this daemon?
+
+    DNS rebinding: an attacker-controlled domain name can be made to
+    resolve to 127.0.0.1, after which a hostile page's "same-origin"
+    requests genuinely originate from the local machine — client-IP
+    loopback checks cannot detect this, because the TCP peer really is
+    localhost. The Host header is the one signal a browser cannot forge
+    to match ours: it always names the domain the page believes it is
+    talking to, which can never equal our loopback names or the
+    configured ``api_host`` unless the attacker already controls DNS for
+    that literal string.
+
+    An ABSENT Host header is allowed through: every real HTTP/1.1 browser
+    request carries one (RFC 7230 §5.4), so DNS rebinding — which relies
+    on the browser itself constructing the request — can never omit it.
+    Only a raw non-browser local client could send no Host at all, and
+    that threat class is already accepted by this daemon's trust model
+    (``_check_auth`` grants full access to any local caller when no
+    token is configured). Rejecting on presence-and-mismatch, not on
+    absence, closes the real hole without reshaping that model.
+
+    A malformed Host (e.g. unmatched IPv6 brackets) makes ``urlsplit``
+    raise ``ValueError`` — treated as a refusal, not left to propagate as
+    an unhandled exception.
+    """
+    if not host_header:
+        return True
+    try:
+        hostname = urlsplit(f"//{host_header}").hostname or ""
+    except ValueError:
+        return False
+    return is_loopback_host(hostname) or hostname == api_host
 
 
 class _AuthResult:
@@ -1034,6 +1070,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # The client_address is (host, port) from the underlying socket.
         return str(self.client_address[0])
 
+    _SSE_ROUTE_PATH = "/api/events"
+
     def _check_auth(self) -> bool:
         """Validate the Authorization header against the daemon token.
 
@@ -1042,12 +1080,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         must present it. Loopback is not a security boundary when a
         browser on the same host can reach the daemon.
 
-        ``access_token`` query parameter is accepted as a fallback for
-        clients that cannot set custom headers (``EventSource``).
+        The ``access_token`` query parameter is accepted as a fallback
+        ONLY on the SSE route (``/api/events``) — ``EventSource`` cannot
+        set custom headers, so it is the sole legitimate use case.
+        Accepting it broadly would leak bearer tokens into server logs,
+        proxies, and the ``Referer`` header on every other route.
         """
         auth_header = self.headers.get("Authorization", "")
-        if not auth_header and self._auth_token:
-            parsed = urlparse(self.path)
+        parsed = urlparse(self.path)
+        if not auth_header and self._auth_token and parsed.path == self._SSE_ROUTE_PATH:
             qs_params = parse_qs(parsed.query)
             qs_token = qs_params.get("access_token", [None])[0]
             if qs_token:
@@ -1056,6 +1097,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not result.allowed:
             self._send_error(HTTPStatus.UNAUTHORIZED, result.reason or "unauthorized")
         return result.allowed
+
+    def _check_host_admission(self) -> bool:
+        """Reject requests whose Host header does not name this daemon.
+
+        See :func:`_check_host_admission_logic` for the rationale. Applied
+        before EVERY GET dispatch branch (web shell bootstrap, paste/
+        attachment pages, healthz/metrics probes, and the authenticated
+        API route tables) and to all POST/DELETE requests including the
+        OTLP special-case, which bypasses the normal auth/Origin checks.
+        The web shell's own bootstrap still works: its Host is loopback
+        (or the configured ``api_host``), which this check admits — only
+        a foreign Host (the DNS-rebinding signature) is refused. Health/
+        metrics probes leak real information (PID, archive_root, DB
+        sizes, exception text) and are not merely inert booleans, so they
+        are gated too; the documented deployment pattern
+        (``docs/docker-compose.yaml``) already targets ``127.0.0.1``/
+        ``localhost`` and is unaffected.
+        """
+        host_header = self.headers.get("Host", "")
+        if _check_host_admission_logic(host_header, self._api_host):
+            return True
+        self._send_error(HTTPStatus.FORBIDDEN, "host_not_allowed")
+        return False
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1190,6 +1254,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     def _dispatch_get(self, path: list[str], params: dict[str, list[str]]) -> None:
         """Dispatch GET requests via route table."""
+        if not self._check_host_admission():
+            return
+
         # Web shell is the only unauthenticated endpoint (localhost only).
         if (
             path == [""]
@@ -1328,6 +1395,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _do_post_impl(self) -> None:
         path, params = self._parse_path()
 
+        if not self._check_host_admission():
+            return
+
         # OTLP receiver endpoints (#1321) gated on the explicit
         # ``observability_enabled`` config flag (closes #1604). When
         # the flag is off the routes return 404 so the receiver does
@@ -1381,6 +1451,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _do_delete_impl(self) -> None:
         path, params = self._parse_path()
 
+        if not self._check_host_admission():
+            return
         if not self._check_auth():
             return
         if not self._check_cross_origin():
@@ -2700,6 +2772,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.thread_continue import build_templates_envelope
 
         self._send_json(HTTPStatus.OK, build_templates_envelope())
+
+    @daemon_safe_handler
+    def _handle_provider_usage(self, params: dict[str, list[str]]) -> None:
+        """``GET /api/provider-usage`` returns usage-accounting diagnostics.
+
+        Registered in ``_static_get_routes`` and ``route_contracts.py``
+        since #2469 but never implemented — any request raised an
+        unhandled ``AttributeError`` (polylogue-g9j6). Mirrors the MCP
+        ``provider_usage`` tool, which is a thin wrapper over the same
+        ``Polylogue.provider_usage_report`` API method.
+        """
+        origin = self._get_param(params, "origin")
+        limit = self._get_int(params, "limit", 25)
+        detail = self._get_param(params, "detail", "full") or "full"
+
+        async def _get(poly: Polylogue) -> object:
+            report = await poly.provider_usage_report(origin=origin, limit=limit, detail=detail)
+            return report.to_dict()
+
+        result = self._sync_run(_get)
+        self._send_json(HTTPStatus.OK, result)
 
     @daemon_safe_handler
     def _handle_query_units(self, params: dict[str, list[str]]) -> None:

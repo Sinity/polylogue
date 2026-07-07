@@ -74,6 +74,42 @@ def test_route_contract_security_matrices_are_non_empty() -> None:
     assert ENDPOINTS_DELETE
 
 
+def test_every_registered_route_handler_name_resolves_to_a_real_method() -> None:
+    """Prevents a repeat of polylogue-g9j6: /api/provider-usage was registered
+    in both the static-GET route table and route_contracts.py, but
+    _handle_provider_usage was never defined — any real request raised an
+    unhandled AttributeError. This walks every route table and asserts the
+    named handler actually exists on DaemonAPIHandler."""
+    from polylogue.daemon.http import (
+        DaemonAPIHandler,
+        _authenticated_post_routes,
+        _observability_post_routes,
+        _parameterized_get_routes,
+        _static_get_routes,
+    )
+
+    missing: list[str] = []
+    for static_get_route in _static_get_routes():
+        if not hasattr(DaemonAPIHandler, static_get_route.handler_name):
+            missing.append(f"static GET {static_get_route.pattern} -> {static_get_route.handler_name}")
+    for parameterized_get_route in _parameterized_get_routes():
+        if not hasattr(DaemonAPIHandler, parameterized_get_route.handler_name):
+            missing.append(
+                f"parameterized GET {parameterized_get_route.pattern} -> {parameterized_get_route.handler_name}"
+            )
+    for authenticated_post_route in _authenticated_post_routes():
+        if not hasattr(DaemonAPIHandler, authenticated_post_route.handler_name):
+            missing.append(
+                f"authenticated POST {authenticated_post_route.pattern} -> {authenticated_post_route.handler_name}"
+            )
+    for observability_post_route in _observability_post_routes():
+        if not hasattr(DaemonAPIHandler, observability_post_route.handler_name):
+            missing.append(
+                f"observability POST {observability_post_route.pattern} -> {observability_post_route.handler_name}"
+            )
+    assert missing == [], f"registered routes with no matching handler method: {missing}"
+
+
 # ---------------------------------------------------------------------------
 # Pure-logic auth: the function called by every route's _check_auth()
 # ---------------------------------------------------------------------------
@@ -200,13 +236,19 @@ def _make_handler(
     *,
     auth_header: str = "",
     origin: str = "",
+    host: str = "",
     body: bytes = b"",
 ) -> DaemonAPIHandler:
     """Build a ``DaemonAPIHandler`` instance with mocked transport.
 
     Returns a handler ready to receive a ``do_GET`` / ``do_POST`` call.
-    The route handlers are not invoked unless ``_check_auth`` and
-    ``_check_cross_origin`` admit the request.
+    The route handlers are not invoked unless ``_check_host_admission``,
+    ``_check_auth``, and ``_check_cross_origin`` admit the request.
+    ``host`` defaults to unset, matching every pre-existing caller in this
+    file — ``_check_host_admission_logic`` treats an absent Host header as
+    permissive (see its docstring), so omitting it here is equivalent to a
+    non-browser client and does not gate any of the auth/origin coverage
+    below. Tests of the Host gate itself pass ``host`` explicitly.
     """
     from polylogue.daemon.http import DaemonAPIHandler
 
@@ -222,6 +264,8 @@ def _make_handler(
         headers["Authorization"] = auth_header
     if origin:
         headers["Origin"] = origin
+    if host:
+        headers["Host"] = host
     handler.headers = cast("Message[str, str]", _MockHeaders(headers))
     handler.rfile = BytesIO(body)
     handler.wfile = BytesIO()
@@ -395,6 +439,132 @@ class TestDeleteEndpointAuthAndOriginGate:
             assert status not in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN), (
                 f"DELETE {path} returned {status.value} with valid token + same-origin"
             )
+
+
+# ---------------------------------------------------------------------------
+# Host admission — the DNS-rebinding gate (polylogue-kwsb.1). A hostile page
+# can get an attacker domain resolved to 127.0.0.1; the browser's Origin
+# check alone does not stop it (Origin was POST-only and absent-tolerant),
+# and client-IP loopback checks are worthless since the TCP peer really is
+# localhost. Only the Host header, allowlisted against loopback names and
+# the configured api_host, can distinguish the attacker's page.
+# ---------------------------------------------------------------------------
+
+
+class TestCheckHostAdmissionLogic:
+    """Pure logic: ``_check_host_admission_logic`` is the DNS-rebinding gate."""
+
+    @pytest.mark.parametrize(
+        ("host_header", "expected_allowed"),
+        [
+            ("", True),  # absent Host — non-browser local client, see docstring
+            ("127.0.0.1:8766", True),
+            ("127.0.0.1", True),
+            ("localhost:8766", True),
+            ("localhost", True),
+            ("[::1]:8766", True),  # bracketed IPv6 loopback
+            ("[::1]", True),
+            ("evil.example.com", False),  # DNS-rebound attacker domain
+            ("evil.example.com:8766", False),
+            ("127.0.0.1.evil.com", False),  # subdomain trick
+            ("127.0.0.1evil.com", False),
+            ("[::1", False),  # malformed IPv6: unmatched bracket, urlsplit raises ValueError
+            ("[bad", False),  # malformed IPv6: invalid content, urlsplit raises ValueError
+            ("xn--0.evil.com", False),  # punycode/NFKC-adjacent host, still just a foreign name
+        ],
+    )
+    def test_loopback_and_configured_host_admitted(self, host_header: str, expected_allowed: bool) -> None:
+        from polylogue.daemon.http import _check_host_admission_logic
+
+        assert _check_host_admission_logic(host_header, "127.0.0.1") is expected_allowed
+
+    def test_configured_non_loopback_api_host_is_admitted(self) -> None:
+        """A daemon explicitly bound to a non-loopback host trusts that exact name."""
+        from polylogue.daemon.http import _check_host_admission_logic
+
+        assert _check_host_admission_logic("archive.internal:8766", "archive.internal") is True
+        assert _check_host_admission_logic("evil.example.com", "archive.internal") is False
+
+
+@pytest.mark.parametrize("path", ENDPOINTS_GET)
+class TestGetEndpointHostGate:
+    """Cross-origin GET with a foreign Host is refused (kwsb.1 AC)."""
+
+    def test_foreign_host_returns_403_before_auth_is_even_checked(self, path: str) -> None:
+        """No token is configured in these fixtures — proves the Host gate runs
+        independently of auth, closing the archive-read hole even when the
+        daemon has no token set (the common local-dev default)."""
+        handler = _make_handler("GET", path, host="evil.example.com")
+        send_error, _ = _capture_responses(handler)
+        handler.do_GET()
+        send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "host_not_allowed")
+
+    def test_loopback_host_reaches_the_auth_gate(self, path: str) -> None:
+        handler = _make_handler("GET", path, host="127.0.0.1:8766")
+        send_error, _ = _capture_responses(handler)
+        handler.do_GET()
+        # No token configured on the mock server -> passes straight through
+        # to the route handler layer; the point here is that it is NOT
+        # refused at the Host gate.
+        for call in send_error.call_args_list:
+            assert call.args[0] != HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/", "/s/some-id", "/w/stack", "/p", "/a", "/healthz/live", "/healthz/ready", "/metrics"],
+)
+class TestBootstrapAndProbeRoutesHostGate:
+    """The Host gate covers unauthenticated bootstrap/probe routes too.
+
+    These routes carry real information (dev-loop/status leak PID and
+    archive_root elsewhere; healthz/metrics leak exception text, DB
+    sizes, and counts) and are reachable via DNS rebinding exactly like
+    the authenticated API routes — a foreign Host must be refused here
+    just as much as on ``/api/*``.
+    """
+
+    def test_foreign_host_returns_403(self, path: str) -> None:
+        handler = _make_handler("GET", path, host="evil.example.com")
+        send_error, _ = _capture_responses(handler)
+        handler.do_GET()
+        send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "host_not_allowed")
+
+    def test_loopback_host_passes_the_gate(self, path: str) -> None:
+        """A loopback Host is not refused at the gate itself.
+
+        Asserts the gate's own decision directly rather than driving the
+        full ``do_GET`` request lifecycle — these routes serve real HTML/
+        healthz/metrics output that needs response-writer scaffolding
+        beyond this file's minimal mock handler, which is exercised by
+        their own dedicated test files.
+        """
+        handler = _make_handler("GET", path, host="localhost:8766")
+        assert handler._check_host_admission() is True
+
+    def test_absent_host_passes_the_gate(self, path: str) -> None:
+        """No pre-existing test in this file sets a Host header — confirms
+        the gate stays backward compatible with every non-browser caller."""
+        handler = _make_handler("GET", path)
+        assert handler._check_host_admission() is True
+
+
+@pytest.mark.parametrize("path", ENDPOINTS_POST)
+class TestPostEndpointHostGate:
+    def test_foreign_host_returns_403_even_with_valid_token(self, path: str) -> None:
+        handler = _make_handler("POST", path, auth_header="Bearer secret", host="evil.example.com")
+        send_error, _ = _capture_responses(handler)
+        handler.do_POST()
+        send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "host_not_allowed")
+
+
+@pytest.mark.parametrize("path", ENDPOINTS_DELETE)
+class TestDeleteEndpointHostGate:
+    def test_foreign_host_returns_403_even_with_valid_token(self, path: str) -> None:
+        handler = _make_handler("DELETE", path, auth_header="Bearer secret", host="evil.example.com")
+        send_error, _ = _capture_responses(handler)
+        handler.do_DELETE()
+        send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "host_not_allowed")
 
 
 # ---------------------------------------------------------------------------
@@ -912,6 +1082,24 @@ class TestOtlpGating:
     comment claiming otherwise — see #1604."""
 
     OTLP_PATHS = ["/v1/traces", "/v1/metrics", "/v1/logs"]
+
+    @pytest.mark.parametrize("path", OTLP_PATHS)
+    def test_foreign_host_returns_403_before_observability_special_case(
+        self, path: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The OTLP branch runs BEFORE the normal auth/Origin checks in
+        ``_do_post_impl`` — it must not also bypass the Host gate, or a
+        DNS-rebound page could post telemetry into ops.db (kwsb.1)."""
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            "polylogue.config.load_polylogue_config",
+            lambda: SimpleNamespace(observability_enabled=True, otlp_max_body_bytes=8 * 1024 * 1024),
+        )
+        handler = _make_handler("POST", path, host="evil.example.com")
+        send_error, _ = _capture_responses(handler)
+        handler.do_POST()
+        send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "host_not_allowed")
 
     @pytest.mark.parametrize("path", OTLP_PATHS)
     def test_disabled_observability_returns_404(self, path: str, monkeypatch: pytest.MonkeyPatch) -> None:
