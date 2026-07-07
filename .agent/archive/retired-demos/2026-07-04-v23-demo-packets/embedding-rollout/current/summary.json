@@ -1,0 +1,54 @@
+{
+  "artifact": "embedding-rollout",
+  "updated_at": "2026-07-03T06:48:12Z",
+  "archive_root": "/home/sinity/.local/share/polylogue",
+  "index_schema_version": 23,
+  "claim": "Polylogue can run and inspect a bounded prose-only embedding backfill on the active archive, expose material catch-up progress separately from zero-progress daemon scans, and keep semantic-search coverage visible through status/preflight artifacts.",
+  "non_claim": "This is not full embedding convergence; thousands of eligible sessions remain pending, and the active prod daemon may still write older zero-count catch-up rows until deployed code catches up.",
+  "proof_backfill": {
+    "candidate_sessions": 25,
+    "processed_sessions": 25,
+    "embedded_sessions": 25,
+    "embedded_messages": 498,
+    "error_count": 0,
+    "estimated_cost_usd": 0.0249
+  },
+  "proof_before_after": {
+    "embedded_sessions_before": 6131,
+    "embedded_sessions_after": 6371,
+    "embedded_messages_before": 420462,
+    "embedded_messages_after": 426894,
+    "newest_embedded_at_before": "2026-07-02T14:59:10.592000+00:00",
+    "newest_embedded_at_after": "2026-07-02T15:23:05.750000+00:00"
+  },
+  "proof_current": {
+    "embedded_message_rows": 426894,
+    "status_rows": 6371,
+    "failure_rows": 0,
+    "needs_reindex_rows": 0,
+    "pending_sessions_window_next": 9389,
+    "pending_messages_window_next": 1068925,
+    "retrieval_ready": true,
+    "embedding_models": {
+      "voyage-4": 426894
+    },
+    "embedding_dimensions": {
+      "1024": 426894
+    }
+  },
+  "caveats": [
+    "The bounded run used --max-sessions 25 --max-messages 5000 --max-cost-usd 1 and completed after 25 candidate sessions.",
+    "Preflight cost is approximate; actual charged/provider cost is not independently reconciled here.",
+    "The status latest_catchup_run can still show a newer zero-progress daemon scan until deployed code catches up; latest_material_catchup_run plus before/after status are the proof for this packet."
+  ],
+  "source_files": [
+    "current/status-before.json",
+    "current/preflight-before.json",
+    "current/backfill-result.json",
+    "current/status-after.json",
+    "current/preflight-next.json",
+    "current/status.json",
+    "current/preflight-remaining.json",
+    "current/full-run-progress.json"
+  ]
+}

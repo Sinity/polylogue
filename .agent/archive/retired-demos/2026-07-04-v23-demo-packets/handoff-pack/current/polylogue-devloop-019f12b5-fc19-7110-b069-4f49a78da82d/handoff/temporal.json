@@ -1,0 +1,366 @@
+{
+  "temporal_window": {
+    "since": null,
+    "until": null,
+    "bucket": "hour",
+    "events": [
+      {
+        "event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-4:message",
+        "occurred_at": "2026-07-02T16:12:29.070000Z",
+        "family": "archive-message",
+        "kind": "context",
+        "label": "system context #0: **IMPORTANT**: If the current directory is a coding project you are working on: ",
+        "source_ref": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-4",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-4"
+        ],
+        "phase": "system"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-5:message",
+        "occurred_at": "2026-07-02T16:12:29.070000Z",
+        "family": "archive-message",
+        "kind": "message",
+        "label": "user message #1: <codex_internal_context source=\"goal\"> Continue working toward the active thread",
+        "source_ref": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-5",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-5"
+        ],
+        "phase": "user"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg_03b86bf35e9725e6016a468def86548190ad799c14012bebff:message",
+        "occurred_at": "2026-07-02T16:12:32.623000Z",
+        "family": "archive-message",
+        "kind": "message",
+        "label": "assistant message #2: The new slice is active: bounded CLI search latency. I\u2019ve confirmed the active f",
+        "source_ref": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg_03b86bf35e9725e6016a468def86548190ad799c14012bebff",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg_03b86bf35e9725e6016a468def86548190ad799c14012bebff"
+        ],
+        "phase": "assistant"
+      },
+      {
+        "event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030:0:action",
+        "occurred_at": "2026-07-02T16:12:33.117000Z",
+        "family": "archive-action",
+        "kind": "agent",
+        "label": "agent via activate_project",
+        "source_ref": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030:0",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030",
+          "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030:0"
+        ],
+        "phase": "agent"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030:message",
+        "occurred_at": "2026-07-02T16:12:33.117000Z",
+        "family": "archive-message",
+        "kind": "tool_use",
+        "label": "assistant tool_use #3: activate_project",
+        "source_ref": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030"
+        ],
+        "phase": "assistant"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:call_QKhTGGRx4pDfFlrjPrgryJOC:message",
+        "occurred_at": "2026-07-02T16:12:33.246000Z",
+        "family": "archive-message",
+        "kind": "tool_result",
+        "label": "tool tool_result #4: Wall time: 0.0742 seconds Output: {\"result\":\"The project with name 'polylogue' a",
+        "source_ref": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:call_QKhTGGRx4pDfFlrjPrgryJOC",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:call_QKhTGGRx4pDfFlrjPrgryJOC"
+        ],
+        "phase": "tool"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-12:message",
+        "occurred_at": "2026-07-02T16:12:33.262000Z",
+        "family": "archive-message",
+        "kind": "message",
+        "label": "user message #5: you crashed; continue",
+        "source_ref": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-12",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-12"
+        ],
+        "phase": "user"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg_03b86bf35e9725e6016a468df470b88190ae6998cce2da1adf:message",
+        "occurred_at": "2026-07-02T16:12:37.369000Z",
+        "family": "archive-message",
+        "kind": "message",
+        "label": "assistant message #6: I\u2019m back in the active slice. I\u2019ll first reproduce the slow bounded query on the",
+        "source_ref": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg_03b86bf35e9725e6016a468df470b88190ae6998cce2da1adf",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg_03b86bf35e9725e6016a468df470b88190ae6998cce2da1adf"
+        ],
+        "phase": "assistant"
+      },
+      {
+        "event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c:0:action",
+        "occurred_at": "2026-07-02T16:12:40.441000Z",
+        "family": "archive-action",
+        "kind": "agent",
+        "label": "agent via update_plan",
+        "source_ref": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c:0",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c",
+          "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c:0"
+        ],
+        "phase": "agent"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c:message",
+        "occurred_at": "2026-07-02T16:12:40.441000Z",
+        "family": "archive-message",
+        "kind": "tool_use",
+        "label": "assistant tool_use #7: update_plan",
+        "source_ref": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c"
+        ],
+        "phase": "assistant"
+      },
+      {
+        "event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe45288190b613755b993145da:0:action",
+        "occurred_at": "2026-07-02T16:12:46.422000Z",
+        "family": "archive-action",
+        "kind": "shell",
+        "label": "shell via exec_command",
+        "source_ref": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe45288190b613755b993145da:0",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe45288190b613755b993145da",
+          "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe45288190b613755b993145da:0"
+        ],
+        "phase": "shell"
+      },
+      {
+        "event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe453c81908ad94be5dcebf2c1:0:action",
+        "occurred_at": "2026-07-02T16:12:46.427000Z",
+        "family": "archive-action",
+        "kind": "shell",
+        "label": "shell via exec_command",
+        "source_ref": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe453c81908ad94be5dcebf2c1:0",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+          "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe453c81908ad94be5dcebf2c1",
+          "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe453c81908ad94be5dcebf2c1:0"
+        ],
+        "phase": "shell"
+      },
+      {
+        "event_id": "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:session",
+        "occurred_at": "2026-07-02T16:16:34.435000Z",
+        "family": "archive-session",
+        "kind": "session",
+        "label": "019f12b5-fc19-7110-b069-4f49a78da82d",
+        "source_ref": "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d"
+        ],
+        "phase": null
+      }
+    ],
+    "event_count": 13,
+    "family_counts": {
+      "archive-action": 4,
+      "archive-message": 8,
+      "archive-session": 1
+    },
+    "kind_counts": {
+      "agent": 2,
+      "context": 1,
+      "message": 4,
+      "session": 1,
+      "shell": 2,
+      "tool_result": 1,
+      "tool_use": 2
+    },
+    "buckets": [
+      {
+        "bucket_start": "2026-07-02T16:00:00Z",
+        "family": "archive-action",
+        "kind": "agent",
+        "count": 2
+      },
+      {
+        "bucket_start": "2026-07-02T16:00:00Z",
+        "family": "archive-action",
+        "kind": "shell",
+        "count": 2
+      },
+      {
+        "bucket_start": "2026-07-02T16:00:00Z",
+        "family": "archive-message",
+        "kind": "context",
+        "count": 1
+      },
+      {
+        "bucket_start": "2026-07-02T16:00:00Z",
+        "family": "archive-message",
+        "kind": "message",
+        "count": 4
+      },
+      {
+        "bucket_start": "2026-07-02T16:00:00Z",
+        "family": "archive-message",
+        "kind": "tool_result",
+        "count": 1
+      },
+      {
+        "bucket_start": "2026-07-02T16:00:00Z",
+        "family": "archive-message",
+        "kind": "tool_use",
+        "count": 2
+      },
+      {
+        "bucket_start": "2026-07-02T16:00:00Z",
+        "family": "archive-session",
+        "kind": "session",
+        "count": 1
+      }
+    ],
+    "activity_bands": [
+      {
+        "bucket_start": "2026-07-02T16:00:00Z",
+        "event_count": 13,
+        "family_counts": {
+          "archive-action": 4,
+          "archive-message": 8,
+          "archive-session": 1
+        },
+        "kind_counts": {
+          "agent": 2,
+          "context": 1,
+          "message": 4,
+          "session": 1,
+          "shell": 2,
+          "tool_result": 1,
+          "tool_use": 2
+        }
+      }
+    ],
+    "phase_spans": [
+      {
+        "from_phase": "system",
+        "to_phase": "user",
+        "start_at": "2026-07-02T16:12:29.070000Z",
+        "end_at": "2026-07-02T16:12:29.070000Z",
+        "duration_seconds": 0.0,
+        "start_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-4:message",
+        "end_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-5:message"
+      },
+      {
+        "from_phase": "user",
+        "to_phase": "assistant",
+        "start_at": "2026-07-02T16:12:29.070000Z",
+        "end_at": "2026-07-02T16:12:32.623000Z",
+        "duration_seconds": 3.553,
+        "start_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-5:message",
+        "end_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg_03b86bf35e9725e6016a468def86548190ad799c14012bebff:message"
+      },
+      {
+        "from_phase": "assistant",
+        "to_phase": "agent",
+        "start_at": "2026-07-02T16:12:32.623000Z",
+        "end_at": "2026-07-02T16:12:33.117000Z",
+        "duration_seconds": 0.494,
+        "start_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg_03b86bf35e9725e6016a468def86548190ad799c14012bebff:message",
+        "end_event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030:0:action"
+      },
+      {
+        "from_phase": "agent",
+        "to_phase": "assistant",
+        "start_at": "2026-07-02T16:12:33.117000Z",
+        "end_at": "2026-07-02T16:12:33.117000Z",
+        "duration_seconds": 0.0,
+        "start_event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030:0:action",
+        "end_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030:message"
+      },
+      {
+        "from_phase": "assistant",
+        "to_phase": "tool",
+        "start_at": "2026-07-02T16:12:33.117000Z",
+        "end_at": "2026-07-02T16:12:33.246000Z",
+        "duration_seconds": 0.129,
+        "start_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df087548190ba174bf658365030:message",
+        "end_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:call_QKhTGGRx4pDfFlrjPrgryJOC:message"
+      },
+      {
+        "from_phase": "tool",
+        "to_phase": "user",
+        "start_at": "2026-07-02T16:12:33.246000Z",
+        "end_at": "2026-07-02T16:12:33.262000Z",
+        "duration_seconds": 0.016,
+        "start_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:call_QKhTGGRx4pDfFlrjPrgryJOC:message",
+        "end_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-12:message"
+      },
+      {
+        "from_phase": "user",
+        "to_phase": "assistant",
+        "start_at": "2026-07-02T16:12:33.262000Z",
+        "end_at": "2026-07-02T16:12:37.369000Z",
+        "duration_seconds": 4.107,
+        "start_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg-12:message",
+        "end_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg_03b86bf35e9725e6016a468df470b88190ae6998cce2da1adf:message"
+      },
+      {
+        "from_phase": "assistant",
+        "to_phase": "agent",
+        "start_at": "2026-07-02T16:12:37.369000Z",
+        "end_at": "2026-07-02T16:12:40.441000Z",
+        "duration_seconds": 3.072,
+        "start_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:msg_03b86bf35e9725e6016a468df470b88190ae6998cce2da1adf:message",
+        "end_event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c:0:action"
+      },
+      {
+        "from_phase": "agent",
+        "to_phase": "assistant",
+        "start_at": "2026-07-02T16:12:40.441000Z",
+        "end_at": "2026-07-02T16:12:40.441000Z",
+        "duration_seconds": 0.0,
+        "start_event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c:0:action",
+        "end_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c:message"
+      },
+      {
+        "from_phase": "assistant",
+        "to_phase": "shell",
+        "start_at": "2026-07-02T16:12:40.441000Z",
+        "end_at": "2026-07-02T16:12:46.422000Z",
+        "duration_seconds": 5.981,
+        "start_event_id": "message:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468df548948190add6af490b66f61c:message",
+        "end_event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe45288190b613755b993145da:0:action"
+      },
+      {
+        "from_phase": "shell",
+        "to_phase": "shell",
+        "start_at": "2026-07-02T16:12:46.422000Z",
+        "end_at": "2026-07-02T16:12:46.427000Z",
+        "duration_seconds": 0.005,
+        "start_event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe45288190b613755b993145da:0:action",
+        "end_event_id": "action:codex-session:019f12b5-fc19-7110-b069-4f49a78da82d:fc_03b86bf35e9725e6016a468dfe453c81908ad94be5dcebf2c1:0:action"
+      }
+    ],
+    "caveats": [
+      "message_events_capped",
+      "action_events_capped",
+      "window_bound_open"
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "artifacts": [
+    {
+      "name": "handoff-temporal-json",
+      "view": "temporal",
+      "format": "json",
+      "projection": {
+        "max_tokens": 1200
+      },
+      "path": "handoff/temporal.json"
+    },
+    {
+      "name": "handoff-temporal-spec-json",
+      "view": "temporal",
+      "format": "json",
+      "projection": {
+        "max_tokens": 1200
+      },
+      "render": {
+        "fields": "selection,projection,render"
+      },
+      "spec": true,
+      "path": "handoff/temporal-spec.json"
+    },
+    {
+      "name": "handoff-chronicle-json",
+      "view": "chronicle",
+      "format": "json",
+      "projection": {
+        "edge_limit": 2
+      },
+      "path": "handoff/chronicle.json"
+    },
+    {
+      "name": "handoff-chronicle-spec-json",
+      "view": "chronicle",
+      "format": "json",
+      "projection": {
+        "edge_limit": 2
+      },
+      "render": {
+        "fields": "selection,projection,render"
+      },
+      "spec": true,
+      "path": "handoff/chronicle-spec.json"
+    }
+  ]
+}

@@ -1,0 +1,374 @@
+{
+  "temporal_window": {
+    "since": null,
+    "until": null,
+    "bucket": "hour",
+    "events": [
+      {
+        "event_id": "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:session",
+        "occurred_at": "2026-06-29T09:28:06.538000Z",
+        "family": "archive-session",
+        "kind": "session",
+        "label": "019f12b5-1a85-7b42-858e-44eccf8469dc",
+        "source_ref": "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc"
+        ],
+        "phase": null
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-3:message",
+        "occurred_at": "2026-06-29T09:28:56.485000Z",
+        "family": "archive-message",
+        "kind": "context",
+        "label": "system context #0: <permissions instructions> Filesystem sandboxing defines which files can be read",
+        "source_ref": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-3",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-3"
+        ],
+        "phase": "system"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-4:message",
+        "occurred_at": "2026-06-29T09:28:56.485000Z",
+        "family": "archive-message",
+        "kind": "context",
+        "label": "user context #1: # AGENTS.md instructions for /realm/project/sinex  <INSTRUCTIONS> <!-- Generated",
+        "source_ref": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-4",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-4"
+        ],
+        "phase": "user"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-6:message",
+        "occurred_at": "2026-06-29T09:28:56.967000Z",
+        "family": "archive-message",
+        "kind": "context",
+        "label": "system context #2: **IMPORTANT**: If the current directory is a coding project you are working on: ",
+        "source_ref": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-6",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-6"
+        ],
+        "phase": "system"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-7:message",
+        "occurred_at": "2026-06-29T09:28:56.971000Z",
+        "family": "archive-message",
+        "kind": "message",
+        "label": "user message #3: read sinex devloop markdowns in /realm/inbox in depth, and report your understan",
+        "source_ref": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-7",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-7"
+        ],
+        "phase": "user"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg_051977fd92da986b016a423adbef248194ba547f53d8e06bb1:message",
+        "occurred_at": "2026-06-29T09:29:01.058000Z",
+        "family": "archive-message",
+        "kind": "message",
+        "label": "assistant message #4: I\u2019ll first activate the Sinex project context in Serena as required, then I\u2019ll i",
+        "source_ref": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg_051977fd92da986b016a423adbef248194ba547f53d8e06bb1",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg_051977fd92da986b016a423adbef248194ba547f53d8e06bb1"
+        ],
+        "phase": "assistant"
+      },
+      {
+        "event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897:0:action",
+        "occurred_at": "2026-06-29T09:29:01.436000Z",
+        "family": "archive-action",
+        "kind": "action",
+        "label": "action via client",
+        "source_ref": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897:0",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897",
+          "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897:0"
+        ],
+        "phase": "action"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897:message",
+        "occurred_at": "2026-06-29T09:29:01.436000Z",
+        "family": "archive-message",
+        "kind": "tool_use",
+        "label": "assistant tool_use #5: client",
+        "source_ref": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897"
+        ],
+        "phase": "assistant"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:call_AUnBOXd1yWo7UdjzTUv7PiyC:message",
+        "occurred_at": "2026-06-29T09:29:01.568000Z",
+        "family": "archive-message",
+        "kind": "tool_result",
+        "label": "tool tool_result #6: [{\"description\": \"CRITICAL: Before starting to work on a coding task, call the `",
+        "source_ref": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:call_AUnBOXd1yWo7UdjzTUv7PiyC",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:call_AUnBOXd1yWo7UdjzTUv7PiyC"
+        ],
+        "phase": "tool"
+      },
+      {
+        "event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6:0:action",
+        "occurred_at": "2026-06-29T09:29:03.362000Z",
+        "family": "archive-action",
+        "kind": "agent",
+        "label": "agent via activate_project",
+        "source_ref": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6:0",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6",
+          "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6:0"
+        ],
+        "phase": "agent"
+      },
+      {
+        "event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6:message",
+        "occurred_at": "2026-06-29T09:29:03.362000Z",
+        "family": "archive-message",
+        "kind": "tool_use",
+        "label": "assistant tool_use #7: activate_project",
+        "source_ref": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6"
+        ],
+        "phase": "assistant"
+      },
+      {
+        "event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0e93a387694e05e4016a423ae10ee081978df7b85a7822f052:0:action",
+        "occurred_at": "2026-06-29T09:29:05.336000Z",
+        "family": "archive-action",
+        "kind": "agent",
+        "label": "agent via initial_instructions",
+        "source_ref": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0e93a387694e05e4016a423ae10ee081978df7b85a7822f052:0",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0e93a387694e05e4016a423ae10ee081978df7b85a7822f052",
+          "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0e93a387694e05e4016a423ae10ee081978df7b85a7822f052:0"
+        ],
+        "phase": "agent"
+      },
+      {
+        "event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0637960ee787a84c016a423ae7ea2081969f79a5f7e83c285a:0:action",
+        "occurred_at": "2026-06-29T09:29:12.001000Z",
+        "family": "archive-action",
+        "kind": "shell",
+        "label": "shell via exec_command",
+        "source_ref": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0637960ee787a84c016a423ae7ea2081969f79a5f7e83c285a:0",
+        "evidence_refs": [
+          "session:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc",
+          "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0637960ee787a84c016a423ae7ea2081969f79a5f7e83c285a",
+          "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0637960ee787a84c016a423ae7ea2081969f79a5f7e83c285a:0"
+        ],
+        "phase": "shell"
+      }
+    ],
+    "event_count": 13,
+    "family_counts": {
+      "archive-action": 4,
+      "archive-message": 8,
+      "archive-session": 1
+    },
+    "kind_counts": {
+      "action": 1,
+      "agent": 2,
+      "context": 3,
+      "message": 2,
+      "session": 1,
+      "shell": 1,
+      "tool_result": 1,
+      "tool_use": 2
+    },
+    "buckets": [
+      {
+        "bucket_start": "2026-06-29T09:00:00Z",
+        "family": "archive-action",
+        "kind": "action",
+        "count": 1
+      },
+      {
+        "bucket_start": "2026-06-29T09:00:00Z",
+        "family": "archive-action",
+        "kind": "agent",
+        "count": 2
+      },
+      {
+        "bucket_start": "2026-06-29T09:00:00Z",
+        "family": "archive-action",
+        "kind": "shell",
+        "count": 1
+      },
+      {
+        "bucket_start": "2026-06-29T09:00:00Z",
+        "family": "archive-message",
+        "kind": "context",
+        "count": 3
+      },
+      {
+        "bucket_start": "2026-06-29T09:00:00Z",
+        "family": "archive-message",
+        "kind": "message",
+        "count": 2
+      },
+      {
+        "bucket_start": "2026-06-29T09:00:00Z",
+        "family": "archive-message",
+        "kind": "tool_result",
+        "count": 1
+      },
+      {
+        "bucket_start": "2026-06-29T09:00:00Z",
+        "family": "archive-message",
+        "kind": "tool_use",
+        "count": 2
+      },
+      {
+        "bucket_start": "2026-06-29T09:00:00Z",
+        "family": "archive-session",
+        "kind": "session",
+        "count": 1
+      }
+    ],
+    "activity_bands": [
+      {
+        "bucket_start": "2026-06-29T09:00:00Z",
+        "event_count": 13,
+        "family_counts": {
+          "archive-action": 4,
+          "archive-message": 8,
+          "archive-session": 1
+        },
+        "kind_counts": {
+          "action": 1,
+          "agent": 2,
+          "context": 3,
+          "message": 2,
+          "session": 1,
+          "shell": 1,
+          "tool_result": 1,
+          "tool_use": 2
+        }
+      }
+    ],
+    "phase_spans": [
+      {
+        "from_phase": "system",
+        "to_phase": "user",
+        "start_at": "2026-06-29T09:28:56.485000Z",
+        "end_at": "2026-06-29T09:28:56.485000Z",
+        "duration_seconds": 0.0,
+        "start_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-3:message",
+        "end_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-4:message"
+      },
+      {
+        "from_phase": "user",
+        "to_phase": "system",
+        "start_at": "2026-06-29T09:28:56.485000Z",
+        "end_at": "2026-06-29T09:28:56.967000Z",
+        "duration_seconds": 0.482,
+        "start_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-4:message",
+        "end_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-6:message"
+      },
+      {
+        "from_phase": "system",
+        "to_phase": "user",
+        "start_at": "2026-06-29T09:28:56.967000Z",
+        "end_at": "2026-06-29T09:28:56.971000Z",
+        "duration_seconds": 0.004,
+        "start_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-6:message",
+        "end_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-7:message"
+      },
+      {
+        "from_phase": "user",
+        "to_phase": "assistant",
+        "start_at": "2026-06-29T09:28:56.971000Z",
+        "end_at": "2026-06-29T09:29:01.058000Z",
+        "duration_seconds": 4.087,
+        "start_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg-7:message",
+        "end_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg_051977fd92da986b016a423adbef248194ba547f53d8e06bb1:message"
+      },
+      {
+        "from_phase": "assistant",
+        "to_phase": "action",
+        "start_at": "2026-06-29T09:29:01.058000Z",
+        "end_at": "2026-06-29T09:29:01.436000Z",
+        "duration_seconds": 0.378,
+        "start_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:msg_051977fd92da986b016a423adbef248194ba547f53d8e06bb1:message",
+        "end_event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897:0:action"
+      },
+      {
+        "from_phase": "action",
+        "to_phase": "assistant",
+        "start_at": "2026-06-29T09:29:01.436000Z",
+        "end_at": "2026-06-29T09:29:01.436000Z",
+        "duration_seconds": 0.0,
+        "start_event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897:0:action",
+        "end_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897:message"
+      },
+      {
+        "from_phase": "assistant",
+        "to_phase": "tool",
+        "start_at": "2026-06-29T09:29:01.436000Z",
+        "end_at": "2026-06-29T09:29:01.568000Z",
+        "duration_seconds": 0.132,
+        "start_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:tsc_051977fd92da986b016a423adcfa248194bfdc7c296cbb7897:message",
+        "end_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:call_AUnBOXd1yWo7UdjzTUv7PiyC:message"
+      },
+      {
+        "from_phase": "tool",
+        "to_phase": "agent",
+        "start_at": "2026-06-29T09:29:01.568000Z",
+        "end_at": "2026-06-29T09:29:03.362000Z",
+        "duration_seconds": 1.794,
+        "start_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:call_AUnBOXd1yWo7UdjzTUv7PiyC:message",
+        "end_event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6:0:action"
+      },
+      {
+        "from_phase": "agent",
+        "to_phase": "assistant",
+        "start_at": "2026-06-29T09:29:03.362000Z",
+        "end_at": "2026-06-29T09:29:03.362000Z",
+        "duration_seconds": 0.0,
+        "start_event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6:0:action",
+        "end_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6:message"
+      },
+      {
+        "from_phase": "assistant",
+        "to_phase": "agent",
+        "start_at": "2026-06-29T09:29:03.362000Z",
+        "end_at": "2026-06-29T09:29:05.336000Z",
+        "duration_seconds": 1.974,
+        "start_event_id": "message:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_09eef8c4f230affa016a423adee8108193a9a1c0bad1e445f6:message",
+        "end_event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0e93a387694e05e4016a423ae10ee081978df7b85a7822f052:0:action"
+      },
+      {
+        "from_phase": "agent",
+        "to_phase": "shell",
+        "start_at": "2026-06-29T09:29:05.336000Z",
+        "end_at": "2026-06-29T09:29:12.001000Z",
+        "duration_seconds": 6.665,
+        "start_event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0e93a387694e05e4016a423ae10ee081978df7b85a7822f052:0:action",
+        "end_event_id": "action:codex-session:019f12b5-1a85-7b42-858e-44eccf8469dc:fc_0637960ee787a84c016a423ae7ea2081969f79a5f7e83c285a:0:action"
+      }
+    ],
+    "caveats": [
+      "message_events_capped",
+      "action_events_capped",
+      "window_bound_open"
+    ]
+  }
+}

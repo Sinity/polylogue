@@ -1,0 +1,33 @@
+{
+  "archive_root": "/home/sinity/.local/share/polylogue",
+  "index_schema_version": 23,
+  "captured_at": "2026-07-03T18:27:00+02:00",
+  "command": "polylogue --plain analyze usage --detail headline --format json --limit 0",
+  "headline_payload": {
+    "detail_level": "headline",
+    "origin_count": 8,
+    "physical_session_total_tokens": 395320980423,
+    "logical_session_model_high_water_total_tokens": 288741229728
+  },
+  "before_profile_seconds": {
+    "base_session_stats": 0.851,
+    "physical_model_rollup": 0.233,
+    "logical_model_rollup": 1.807,
+    "source_raw_stats_limit0": 0.370,
+    "provider_event_stats": 32.840,
+    "provider_cumulative_usage": 5.274,
+    "stale_rollup_limit0": 12.003,
+    "full_report_limit0_warm": 18.437
+  },
+  "after_profile_seconds": {
+    "storage_provider_usage_report_headline_warm": 0.141,
+    "python_module_cli_headline": 5.27,
+    "unwrapped_cli_headline": 5.40,
+    "devshell_scoped_cli_headline": 45.59
+  },
+  "interpretation": [
+    "The Polylogue report path now has a first-class headline detail mode that computes the physical and logical model-rollup totals without scanning provider-event, cumulative, sample, or stale-rollup diagnostics.",
+    "The remaining 45.59s devshell command latency is dominated by the Sinnix scope wrapper; bypassing that wrapper or invoking python -m polylogue runs the same headline command in about 5.3s.",
+    "The headline payload is intentionally caveated: it says full provider-event/stale diagnostics were not computed and directs users to detail=full for that audit."
+  ]
+}

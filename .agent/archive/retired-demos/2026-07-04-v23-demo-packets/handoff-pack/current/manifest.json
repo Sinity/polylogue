@@ -1,0 +1,146 @@
+{
+  "generated_by": "direct read-view builders after CLI package timeout under IO pressure",
+  "generated_at": "2026-07-03T10:29:43.951013+00:00",
+  "archive_root": "/home/sinity/.local/share/polylogue",
+  "sessions": [
+    {
+      "session_id": "019f12b5-fc19-7110-b069-4f49a78da82d",
+      "role": "Polylogue devloop session",
+      "temporal_ms": 325.989,
+      "chronicle_ms": 48.404,
+      "temporal_phases": [
+        {
+          "name": "prepare",
+          "elapsed_ms": 271.728,
+          "details": {
+            "archive_root": "/home/sinity/.local/share/polylogue",
+            "limit": 50
+          }
+        },
+        {
+          "name": "select_sessions",
+          "elapsed_ms": 10.029,
+          "details": {
+            "session_count": 1
+          }
+        },
+        {
+          "name": "project_sessions",
+          "elapsed_ms": 0.02,
+          "details": {
+            "event_count": 1
+          }
+        },
+        {
+          "name": "project_messages",
+          "elapsed_ms": 9.705,
+          "details": {
+            "event_count": 8,
+            "caveats": [
+              "message_events_capped"
+            ]
+          }
+        },
+        {
+          "name": "project_actions",
+          "elapsed_ms": 34.255,
+          "details": {
+            "event_count": 4,
+            "caveats": [
+              "action_events_capped"
+            ]
+          }
+        },
+        {
+          "name": "build_window",
+          "elapsed_ms": 0.201,
+          "details": {
+            "event_count": 13,
+            "family_counts": {
+              "archive-action": 4,
+              "archive-message": 8,
+              "archive-session": 1
+            }
+          }
+        }
+      ],
+      "files": {
+        "chronicle.json": 8477,
+        "spec.json": 465,
+        "temporal.json": 17027
+      }
+    },
+    {
+      "session_id": "019f12b5-1a85-7b42-858e-44eccf8469dc",
+      "role": "Sinex devloop peer session",
+      "temporal_ms": 6764.984,
+      "chronicle_ms": 51.878,
+      "temporal_phases": [
+        {
+          "name": "prepare",
+          "elapsed_ms": 0.153,
+          "details": {
+            "archive_root": "/home/sinity/.local/share/polylogue",
+            "limit": 50
+          }
+        },
+        {
+          "name": "select_sessions",
+          "elapsed_ms": 3.976,
+          "details": {
+            "session_count": 1
+          }
+        },
+        {
+          "name": "project_sessions",
+          "elapsed_ms": 0.015,
+          "details": {
+            "event_count": 1
+          }
+        },
+        {
+          "name": "project_messages",
+          "elapsed_ms": 7.489,
+          "details": {
+            "event_count": 8,
+            "caveats": [
+              "message_events_capped"
+            ]
+          }
+        },
+        {
+          "name": "project_actions",
+          "elapsed_ms": 6752.849,
+          "details": {
+            "event_count": 4,
+            "caveats": [
+              "action_events_capped"
+            ]
+          }
+        },
+        {
+          "name": "build_window",
+          "elapsed_ms": 0.411,
+          "details": {
+            "event_count": 13,
+            "family_counts": {
+              "archive-action": 4,
+              "archive-message": 8,
+              "archive-session": 1
+            }
+          }
+        }
+      ],
+      "files": {
+        "chronicle.json": 2489,
+        "spec.json": 465,
+        "temporal.json": 17019
+      }
+    }
+  ],
+  "index_schema_version": 23,
+  "archive_counts": {
+    "sessions": 16498,
+    "messages": 4142175
+  }
+}

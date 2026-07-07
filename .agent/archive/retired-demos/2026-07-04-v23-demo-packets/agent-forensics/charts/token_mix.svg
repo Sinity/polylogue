@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="210" viewBox="0 0 880 210" font-family="system-ui,sans-serif">
+<rect width="880" height="210" fill="#0d1117"/>
+<text x="440" y="22" fill="#e6edf3" font-size="15" font-weight="600" text-anchor="middle">Token mix</text>
+<rect x="220" y="44.0" width="590.0" height="20" fill="#4f9ecf" rx="2"/>
+<text x="212" y="60.0" fill="#e6edf3" font-size="11" text-anchor="end">cache read</text>
+<text x="816.0" y="60.0" fill="#8b949e" font-size="10">343.6B</text>
+<rect x="220" y="74.0" width="12.3" height="20" fill="#e4754f" rx="2"/>
+<text x="212" y="90.0" fill="#e6edf3" font-size="11" text-anchor="end">fresh input</text>
+<text x="238.3" y="90.0" fill="#8b949e" font-size="10">7.1B</text>
+<rect x="220" y="104.0" width="8.5" height="20" fill="#6cc24a" rx="2"/>
+<text x="212" y="120.0" fill="#e6edf3" font-size="11" text-anchor="end">cache write</text>
+<text x="234.5" y="120.0" fill="#8b949e" font-size="10">4.9B</text>
+<rect x="220" y="134.0" width="1.5" height="20" fill="#b072d6" rx="2"/>
+<text x="212" y="150.0" fill="#e6edf3" font-size="11" text-anchor="end">output</text>
+<text x="227.5" y="150.0" fill="#8b949e" font-size="10">879.0M</text>
+<rect x="220" y="164.0" width="0.5" height="20" fill="#e0b341" rx="2"/>
+<text x="212" y="180.0" fill="#e6edf3" font-size="11" text-anchor="end">reasoning</text>
+<text x="226.5" y="180.0" fill="#8b949e" font-size="10">320.1M</text>
+</svg>

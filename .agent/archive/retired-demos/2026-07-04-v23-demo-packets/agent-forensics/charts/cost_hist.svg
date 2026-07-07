@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" font-family="system-ui,sans-serif">
+<rect width="880" height="360" fill="#0d1117"/>
+<text x="440" y="22" fill="#e6edf3" font-size="15" font-weight="600" text-anchor="middle">Per-session cost distribution (USD, log bands)</text>
+<line x1="60" y1="290.0" x2="860" y2="290.0" stroke="#21262d"/>
+<text x="54" y="294.0" fill="#8b949e" font-size="10" text-anchor="end">0</text>
+<line x1="60" y1="227.5" x2="860" y2="227.5" stroke="#21262d"/>
+<text x="54" y="231.5" fill="#8b949e" font-size="10" text-anchor="end">965</text>
+<line x1="60" y1="165.0" x2="860" y2="165.0" stroke="#21262d"/>
+<text x="54" y="169.0" fill="#8b949e" font-size="10" text-anchor="end">1.9k</text>
+<line x1="60" y1="102.5" x2="860" y2="102.5" stroke="#21262d"/>
+<text x="54" y="106.5" fill="#8b949e" font-size="10" text-anchor="end">2.9k</text>
+<line x1="60" y1="40.0" x2="860" y2="40.0" stroke="#21262d"/>
+<text x="54" y="44.0" fill="#8b949e" font-size="10" text-anchor="end">3.9k</text>
+<rect x="75.0" y="288.8" width="70.0" height="1.2" fill="#4f9ecf" rx="2"/>
+<text x="110.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 110.0 304)">0.00-0.00</text>
+<rect x="175.0" y="279.2" width="70.0" height="10.8" fill="#4f9ecf" rx="2"/>
+<text x="210.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 210.0 304)">0.00-0.01</text>
+<rect x="275.0" y="230.2" width="70.0" height="59.8" fill="#4f9ecf" rx="2"/>
+<text x="310.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 310.0 304)">0.01-0.10</text>
+<rect x="375.0" y="40.0" width="70.0" height="250.0" fill="#4f9ecf" rx="2"/>
+<text x="410.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 410.0 304)">0.10-1</text>
+<rect x="475.0" y="116.0" width="70.0" height="174.0" fill="#4f9ecf" rx="2"/>
+<text x="510.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 510.0 304)">1-10</text>
+<rect x="575.0" y="180.1" width="70.0" height="109.9" fill="#4f9ecf" rx="2"/>
+<text x="610.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 610.0 304)">10-100</text>
+<rect x="675.0" y="265.3" width="70.0" height="24.7" fill="#4f9ecf" rx="2"/>
+<text x="710.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 710.0 304)">100-1.0k</text>
+<rect x="775.0" y="287.2" width="70.0" height="2.8" fill="#4f9ecf" rx="2"/>
+<text x="810.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 810.0 304)">1.0k-10.0k</text>
+</svg>

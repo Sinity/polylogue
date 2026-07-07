@@ -1,0 +1,17 @@
+{
+  "artifact": "uplift-two-arm",
+  "claim": "Polylogue can run and preserve a construct-valid pilot comparing a bounded handoff packet against a raw session reference for a continuation reconstruction task.",
+  "non_claim": "This n=1 pilot does not prove general agent uplift, does not isolate model stochasticity, and does not replace the planned n=12-20 paired protocol.",
+  "proof": [
+    "protocol.json fixes the arms, task, context rules, metrics, and construct-validity limits before arm outputs are scored",
+    "arm prompts are preserved with agent ids in protocol.json",
+    "outputs and scoring are stored under current/arms and current/metrics"
+  ],
+  "caveat": [
+    "the run is susceptible to repository-environment contamination because both agents have normal local tools",
+    "the pilot uses self-reported secondary metrics unless later archive capture is joined in"
+  ],
+  "archive_root": "/home/sinity/.local/share/polylogue",
+  "index_schema_version": 23,
+  "timestamp": "2026-07-03T12:38:36+02:00"
+}

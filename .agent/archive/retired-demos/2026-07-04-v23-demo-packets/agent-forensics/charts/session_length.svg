@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" font-family="system-ui,sans-serif">
+<rect width="880" height="360" fill="#0d1117"/>
+<text x="440" y="22" fill="#e6edf3" font-size="15" font-weight="600" text-anchor="middle">Session length distribution (messages, log bands)</text>
+<line x1="60" y1="290.0" x2="860" y2="290.0" stroke="#21262d"/>
+<text x="54" y="294.0" fill="#8b949e" font-size="10" text-anchor="end">0</text>
+<line x1="60" y1="227.5" x2="860" y2="227.5" stroke="#21262d"/>
+<text x="54" y="231.5" fill="#8b949e" font-size="10" text-anchor="end">1.8k</text>
+<line x1="60" y1="165.0" x2="860" y2="165.0" stroke="#21262d"/>
+<text x="54" y="169.0" fill="#8b949e" font-size="10" text-anchor="end">3.7k</text>
+<line x1="60" y1="102.5" x2="860" y2="102.5" stroke="#21262d"/>
+<text x="54" y="106.5" fill="#8b949e" font-size="10" text-anchor="end">5.5k</text>
+<line x1="60" y1="40.0" x2="860" y2="40.0" stroke="#21262d"/>
+<text x="54" y="44.0" fill="#8b949e" font-size="10" text-anchor="end">7.3k</text>
+<rect x="84.0" y="155.2" width="112.0" height="134.8" fill="#4f9ecf" rx="2"/>
+<text x="140.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 140.0 304)">1-10</text>
+<rect x="244.0" y="40.0" width="112.0" height="250.0" fill="#4f9ecf" rx="2"/>
+<text x="300.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 300.0 304)">10-100</text>
+<rect x="404.0" y="131.2" width="112.0" height="158.8" fill="#4f9ecf" rx="2"/>
+<text x="460.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 460.0 304)">100-1.0k</text>
+<rect x="564.0" y="273.1" width="112.0" height="16.9" fill="#4f9ecf" rx="2"/>
+<text x="620.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 620.0 304)">1.0k-10.0k</text>
+<rect x="724.0" y="288.4" width="112.0" height="1.6" fill="#4f9ecf" rx="2"/>
+<text x="780.0" y="304" fill="#8b949e" font-size="9" text-anchor="end" transform="rotate(-55 780.0 304)">10.0k-100.0k</text>
+</svg>

@@ -1,0 +1,36 @@
+{
+  "backfill_args": [
+    "ops",
+    "embed",
+    "backfill",
+    "--yes",
+    "--max-sessions",
+    "100",
+    "--max-messages",
+    "10000",
+    "--max-cost-usd",
+    "10",
+    "--min-messages",
+    "2"
+  ],
+  "backfill_command": "polylogue ops embed backfill --yes --max-sessions 100 --max-messages 10000 --max-cost-usd 10 --min-messages 2",
+  "dimension": 1024,
+  "effective_cost_cap_usd": 10.0,
+  "estimated_cost_usd": 0.49805,
+  "estimated_tokens": 4980500,
+  "max_cost_usd": 10.0,
+  "max_messages": 10000,
+  "max_sessions": 100,
+  "min_messages": 2,
+  "model": "voyage-4",
+  "monthly_cost_cap_usd": 1000.0,
+  "pending_messages": 9961,
+  "pending_sessions": 63,
+  "pricing": {
+    "approximate": true,
+    "cost_usd_per_1m_tokens": 0.1,
+    "estimated_tokens_per_message": 500
+  },
+  "total_sessions": 16580,
+  "windowed": true
+}

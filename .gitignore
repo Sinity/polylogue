@@ -68,24 +68,13 @@ dist/
 # Agent workspace: track reusable scaffold, ignore live state/artifacts
 .agent/*
 !.agent/README.md
-!.agent/DEVLOOP.md
-!.agent/includes/
-!.agent/includes/**
+!.agent/CONVENTIONS.md
 !.agent/scripts/
 !.agent/scripts/**
 !.agent/tools/
 !.agent/tools/**
-!.agent/conductor-devloop/
-.agent/conductor-devloop/*
-!.agent/conductor-devloop/README.md
-!.agent/conductor-devloop/INDEX.md
-!.agent/conductor-devloop/INTEGRATION.md
-!.agent/conductor-devloop/RUNBOOK.md
-!.agent/conductor-devloop/PROCESS.md
-!.agent/conductor-devloop/TACTICS.md
-!.agent/conductor-devloop/VELOCITY.md
-!.agent/conductor-devloop/SELF-PROMPTS.md
-!.agent/conductor-devloop/ADVERSARIAL-REVIEW.md
+!.agent/archive/
+!.agent/archive/**
 !.agent/scratch/
 .agent/scratch/*
 !.agent/scratch/README.md

@@ -1,0 +1,1385 @@
+{
+  "by_model": [
+    {
+      "acknowledged": 28,
+      "ambiguous": 465,
+      "classified_outcomes": 356,
+      "failed_outcomes": 821,
+      "name": "claude-haiku-4-5-20251001",
+      "silent_proceed": 328,
+      "silent_rate": 0.3995127892813642,
+      "silent_rate_among_classified": 0.9213483146067416
+    },
+    {
+      "acknowledged": 176,
+      "ambiguous": 242,
+      "classified_outcomes": 540,
+      "failed_outcomes": 782,
+      "name": "claude-sonnet-4-20250514",
+      "silent_proceed": 364,
+      "silent_rate": 0.46547314578005117,
+      "silent_rate_among_classified": 0.674074074074074
+    },
+    {
+      "acknowledged": 66,
+      "ambiguous": 463,
+      "classified_outcomes": 201,
+      "failed_outcomes": 664,
+      "name": "claude-opus-4-6",
+      "silent_proceed": 135,
+      "silent_rate": 0.2033132530120482,
+      "silent_rate_among_classified": 0.6716417910447762
+    },
+    {
+      "acknowledged": 4,
+      "ambiguous": 307,
+      "classified_outcomes": 197,
+      "failed_outcomes": 504,
+      "name": "claude-opus-4-8",
+      "silent_proceed": 193,
+      "silent_rate": 0.38293650793650796,
+      "silent_rate_among_classified": 0.9796954314720813
+    },
+    {
+      "acknowledged": 128,
+      "ambiguous": 50,
+      "classified_outcomes": 395,
+      "failed_outcomes": 445,
+      "name": "deepseek-v4-pro",
+      "silent_proceed": 267,
+      "silent_rate": 0.6,
+      "silent_rate_among_classified": 0.6759493670886076
+    },
+    {
+      "acknowledged": 75,
+      "ambiguous": 129,
+      "classified_outcomes": 307,
+      "failed_outcomes": 436,
+      "name": "claude-opus-4-20250514",
+      "silent_proceed": 232,
+      "silent_rate": 0.5321100917431193,
+      "silent_rate_among_classified": 0.755700325732899
+    },
+    {
+      "acknowledged": 89,
+      "ambiguous": 96,
+      "classified_outcomes": 243,
+      "failed_outcomes": 339,
+      "name": "claude-opus-4-5-20251101",
+      "silent_proceed": 154,
+      "silent_rate": 0.45427728613569324,
+      "silent_rate_among_classified": 0.6337448559670782
+    },
+    {
+      "acknowledged": 18,
+      "ambiguous": 236,
+      "classified_outcomes": 61,
+      "failed_outcomes": 297,
+      "name": "claude-sonnet-4-6",
+      "silent_proceed": 43,
+      "silent_rate": 0.1447811447811448,
+      "silent_rate_among_classified": 0.7049180327868853
+    },
+    {
+      "acknowledged": 8,
+      "ambiguous": 220,
+      "classified_outcomes": 64,
+      "failed_outcomes": 284,
+      "name": "claude-opus-4-7",
+      "silent_proceed": 56,
+      "silent_rate": 0.19718309859154928,
+      "silent_rate_among_classified": 0.875
+    },
+    {
+      "acknowledged": 12,
+      "ambiguous": 117,
+      "classified_outcomes": 79,
+      "failed_outcomes": 196,
+      "name": "deepseek-v4-flash",
+      "silent_proceed": 67,
+      "silent_rate": 0.34183673469387754,
+      "silent_rate_among_classified": 0.8481012658227848
+    },
+    {
+      "acknowledged": 7,
+      "ambiguous": 29,
+      "classified_outcomes": 39,
+      "failed_outcomes": 68,
+      "name": "claude-opus-4-1-20250805",
+      "silent_proceed": 32,
+      "silent_rate": 0.47058823529411764,
+      "silent_rate_among_classified": 0.8205128205128205
+    },
+    {
+      "acknowledged": 6,
+      "ambiguous": 23,
+      "classified_outcomes": 30,
+      "failed_outcomes": 53,
+      "name": "claude-sonnet-4-5-20250929",
+      "silent_proceed": 24,
+      "silent_rate": 0.4528301886792453,
+      "silent_rate_among_classified": 0.8
+    },
+    {
+      "acknowledged": 1,
+      "ambiguous": 1,
+      "classified_outcomes": 25,
+      "failed_outcomes": 26,
+      "name": "<synthetic>",
+      "silent_proceed": 24,
+      "silent_rate": 0.9230769230769231,
+      "silent_rate_among_classified": 0.96
+    },
+    {
+      "acknowledged": 4,
+      "ambiguous": 4,
+      "classified_outcomes": 21,
+      "failed_outcomes": 25,
+      "name": "unknown",
+      "silent_proceed": 17,
+      "silent_rate": 0.68,
+      "silent_rate_among_classified": 0.8095238095238095
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 7,
+      "classified_outcomes": 15,
+      "failed_outcomes": 22,
+      "name": "claude-fable-5",
+      "silent_proceed": 15,
+      "silent_rate": 0.6818181818181818,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 2,
+      "classified_outcomes": 1,
+      "failed_outcomes": 3,
+      "name": "claude-3-7-sonnet-20250219",
+      "silent_proceed": 1,
+      "silent_rate": 0.3333333333333333,
+      "silent_rate_among_classified": 1.0
+    }
+  ],
+  "by_tool": [
+    {
+      "acknowledged": 542,
+      "ambiguous": 922,
+      "classified_outcomes": 1609,
+      "failed_outcomes": 2531,
+      "name": "Bash",
+      "silent_proceed": 1067,
+      "silent_rate": 0.4215725009877519,
+      "silent_rate_among_classified": 0.6631448104412678
+    },
+    {
+      "acknowledged": 36,
+      "ambiguous": 679,
+      "classified_outcomes": 427,
+      "failed_outcomes": 1106,
+      "name": "Edit",
+      "silent_proceed": 391,
+      "silent_rate": 0.3535262206148282,
+      "silent_rate_among_classified": 0.9156908665105387
+    },
+    {
+      "acknowledged": 11,
+      "ambiguous": 516,
+      "classified_outcomes": 218,
+      "failed_outcomes": 734,
+      "name": "Read",
+      "silent_proceed": 207,
+      "silent_rate": 0.28201634877384196,
+      "silent_rate_among_classified": 0.9495412844036697
+    },
+    {
+      "acknowledged": 14,
+      "ambiguous": 67,
+      "classified_outcomes": 158,
+      "failed_outcomes": 225,
+      "name": "MultiEdit",
+      "silent_proceed": 144,
+      "silent_rate": 0.64,
+      "silent_rate_among_classified": 0.9113924050632911
+    },
+    {
+      "acknowledged": 5,
+      "ambiguous": 66,
+      "classified_outcomes": 36,
+      "failed_outcomes": 102,
+      "name": "Grep",
+      "silent_proceed": 31,
+      "silent_rate": 0.30392156862745096,
+      "silent_rate_among_classified": 0.8611111111111112
+    },
+    {
+      "acknowledged": 4,
+      "ambiguous": 62,
+      "classified_outcomes": 28,
+      "failed_outcomes": 90,
+      "name": "Write",
+      "silent_proceed": 24,
+      "silent_rate": 0.26666666666666666,
+      "silent_rate_among_classified": 0.8571428571428571
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 14,
+      "classified_outcomes": 12,
+      "failed_outcomes": 26,
+      "name": "Agent",
+      "silent_proceed": 12,
+      "silent_rate": 0.46153846153846156,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 11,
+      "classified_outcomes": 10,
+      "failed_outcomes": 21,
+      "name": "Task",
+      "silent_proceed": 10,
+      "silent_rate": 0.47619047619047616,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 1,
+      "ambiguous": 14,
+      "classified_outcomes": 3,
+      "failed_outcomes": 17,
+      "name": "Glob",
+      "silent_proceed": 2,
+      "silent_rate": 0.11764705882352941,
+      "silent_rate_among_classified": 0.6666666666666666
+    },
+    {
+      "acknowledged": 1,
+      "ambiguous": 6,
+      "classified_outcomes": 8,
+      "failed_outcomes": 14,
+      "name": "TaskOutput",
+      "silent_proceed": 7,
+      "silent_rate": 0.5,
+      "silent_rate_among_classified": 0.875
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 6,
+      "classified_outcomes": 7,
+      "failed_outcomes": 13,
+      "name": "mcp__lynchpin__query_substrate",
+      "silent_proceed": 7,
+      "silent_rate": 0.5384615384615384,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 1,
+      "classified_outcomes": 8,
+      "failed_outcomes": 9,
+      "name": "ExitPlanMode",
+      "silent_proceed": 8,
+      "silent_rate": 0.8888888888888888,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 1,
+      "ambiguous": 1,
+      "classified_outcomes": 7,
+      "failed_outcomes": 8,
+      "name": "SendMessage",
+      "silent_proceed": 6,
+      "silent_rate": 0.75,
+      "silent_rate_among_classified": 0.8571428571428571
+    },
+    {
+      "acknowledged": 2,
+      "ambiguous": 1,
+      "classified_outcomes": 5,
+      "failed_outcomes": 6,
+      "name": "create_file",
+      "silent_proceed": 3,
+      "silent_rate": 0.5,
+      "silent_rate_among_classified": 0.6
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 3,
+      "classified_outcomes": 2,
+      "failed_outcomes": 5,
+      "name": "TaskUpdate",
+      "silent_proceed": 2,
+      "silent_rate": 0.4,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 2,
+      "classified_outcomes": 3,
+      "failed_outcomes": 5,
+      "name": "bash",
+      "silent_proceed": 3,
+      "silent_rate": 0.6,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 1,
+      "ambiguous": 0,
+      "classified_outcomes": 5,
+      "failed_outcomes": 5,
+      "name": "view",
+      "silent_proceed": 4,
+      "silent_rate": 0.8,
+      "silent_rate_among_classified": 0.8
+    },
+    {
+      "acknowledged": 1,
+      "ambiguous": 0,
+      "classified_outcomes": 4,
+      "failed_outcomes": 4,
+      "name": "Monitor",
+      "silent_proceed": 3,
+      "silent_rate": 0.75,
+      "silent_rate_among_classified": 0.75
+    },
+    {
+      "acknowledged": 1,
+      "ambiguous": 0,
+      "classified_outcomes": 4,
+      "failed_outcomes": 4,
+      "name": "WebFetch",
+      "silent_proceed": 3,
+      "silent_rate": 0.75,
+      "silent_rate_among_classified": 0.75
+    },
+    {
+      "acknowledged": 1,
+      "ambiguous": 0,
+      "classified_outcomes": 4,
+      "failed_outcomes": 4,
+      "name": "str_replace",
+      "silent_proceed": 3,
+      "silent_rate": 0.75,
+      "silent_rate_among_classified": 0.75
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 0,
+      "classified_outcomes": 4,
+      "failed_outcomes": 4,
+      "name": "web_fetch",
+      "silent_proceed": 4,
+      "silent_rate": 1.0,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 2,
+      "classified_outcomes": 1,
+      "failed_outcomes": 3,
+      "name": "TaskCreate",
+      "silent_proceed": 1,
+      "silent_rate": 0.3333333333333333,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 1,
+      "ambiguous": 1,
+      "classified_outcomes": 2,
+      "failed_outcomes": 3,
+      "name": "TaskStop",
+      "silent_proceed": 1,
+      "silent_rate": 0.3333333333333333,
+      "silent_rate_among_classified": 0.5
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 2,
+      "classified_outcomes": 1,
+      "failed_outcomes": 3,
+      "name": "TodoWrite",
+      "silent_proceed": 1,
+      "silent_rate": 0.3333333333333333,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 2,
+      "classified_outcomes": 1,
+      "failed_outcomes": 3,
+      "name": "mcp__filesystem__list_directory",
+      "silent_proceed": 1,
+      "silent_rate": 0.3333333333333333,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 1,
+      "classified_outcomes": 1,
+      "failed_outcomes": 2,
+      "name": "SendUserFile",
+      "silent_proceed": 1,
+      "silent_rate": 0.5,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 1,
+      "classified_outcomes": 1,
+      "failed_outcomes": 2,
+      "name": "file_create",
+      "silent_proceed": 1,
+      "silent_rate": 0.5,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 2,
+      "classified_outcomes": 0,
+      "failed_outcomes": 2,
+      "name": "mcp__firecrawl__firecrawl_scrape",
+      "silent_proceed": 0,
+      "silent_rate": 0.0,
+      "silent_rate_among_classified": 0.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 2,
+      "classified_outcomes": 0,
+      "failed_outcomes": 2,
+      "name": "mcp__polylogue__search",
+      "silent_proceed": 0,
+      "silent_rate": 0.0,
+      "silent_rate_among_classified": 0.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 1,
+      "classified_outcomes": 1,
+      "failed_outcomes": 2,
+      "name": "mcp__sequential-thinking__sequentialthinking",
+      "silent_proceed": 1,
+      "silent_rate": 0.5,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 1,
+      "classified_outcomes": 0,
+      "failed_outcomes": 1,
+      "name": "Gh",
+      "silent_proceed": 0,
+      "silent_rate": 0.0,
+      "silent_rate_among_classified": 0.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 0,
+      "classified_outcomes": 1,
+      "failed_outcomes": 1,
+      "name": "Gmail:create_label",
+      "silent_proceed": 1,
+      "silent_rate": 1.0,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 1,
+      "classified_outcomes": 0,
+      "failed_outcomes": 1,
+      "name": "StructuredOutput",
+      "silent_proceed": 0,
+      "silent_rate": 0.0,
+      "silent_rate_among_classified": 0.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 0,
+      "classified_outcomes": 1,
+      "failed_outcomes": 1,
+      "name": "mcp__context7_Context7__resolve-library-id",
+      "silent_proceed": 1,
+      "silent_rate": 1.0,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 1,
+      "classified_outcomes": 0,
+      "failed_outcomes": 1,
+      "name": "mcp__filesystem__directory_tree",
+      "silent_proceed": 0,
+      "silent_rate": 0.0,
+      "silent_rate_among_classified": 0.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 0,
+      "classified_outcomes": 1,
+      "failed_outcomes": 1,
+      "name": "mcp__filesystem__edit_file",
+      "silent_proceed": 1,
+      "silent_rate": 1.0,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 0,
+      "classified_outcomes": 1,
+      "failed_outcomes": 1,
+      "name": "mcp__github__get_pull_request_files",
+      "silent_proceed": 1,
+      "silent_rate": 1.0,
+      "silent_rate_among_classified": 1.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 1,
+      "classified_outcomes": 0,
+      "failed_outcomes": 1,
+      "name": "mcp__lynchpin__personal_daily_signals",
+      "silent_proceed": 0,
+      "silent_rate": 0.0,
+      "silent_rate_among_classified": 0.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 1,
+      "classified_outcomes": 0,
+      "failed_outcomes": 1,
+      "name": "mcp__lynchpin__substrate_source_status",
+      "silent_proceed": 0,
+      "silent_rate": 0.0,
+      "silent_rate_among_classified": 0.0
+    },
+    {
+      "acknowledged": 0,
+      "ambiguous": 1,
+      "classified_outcomes": 0,
+      "failed_outcomes": 1,
+      "name": "present_files",
+      "silent_proceed": 0,
+      "silent_rate": 0.0,
+      "silent_rate_among_classified": 0.0
+    }
+  ],
+  "definition": "failed tool outcomes are structured rows where is_error=1 or exit_code!=0; classification inspects only the next assistant turn for explicit failure acknowledgment markers",
+  "failed_outcome_limit": 5000,
+  "samples": [
+    {
+      "classification": "acknowledged",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:064df125-82df-44d7-9e29-6bcc15dbd2a7:019e06f9-a45f-7e07-b03f-be805839b828",
+      "session_ref": "session:claude-ai-export:064df125-82df-44d7-9e29-6bcc15dbd2a7",
+      "tool_command_preview": "{\"description\":\"Remove interpersonal risk/anger section from Polish file\",\"new_str\":\"**Og\u00f3lne sformu\u0142owanie:**\",\"old_str\":\"**Ryzyko interpersonalne/gniew: jeden",
+      "tool_message_ref": "message:claude-ai-export:064df125-82df-44d7-9e29-6bcc15dbd2a7:019e06f5-20a1-7221-af70-4a1cbf2e1ac0",
+      "tool_name": "str_replace"
+    },
+    {
+      "classification": "ambiguous",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": null,
+      "session_ref": "session:claude-ai-export:064df125-82df-44d7-9e29-6bcc15dbd2a7",
+      "tool_command_preview": "{\"filepaths\":[\"/home/claude/zunifikowana.md\"]}",
+      "tool_message_ref": "message:claude-ai-export:064df125-82df-44d7-9e29-6bcc15dbd2a7:019e07d8-1cd7-711f-a578-3837217c2cad",
+      "tool_name": "present_files"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b:019d593c-0237-7153-ab71-4290920aa537",
+      "session_ref": "session:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b",
+      "tool_command_preview": "{\"url\":\"https://support.claude.com/en/articles/13189465-logging-in-to-your-claude-account\"}",
+      "tool_message_ref": "message:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b:019d5930-2e1d-7dae-ad29-dea1c55e31cf",
+      "tool_name": "web_fetch"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b:019d593c-0237-7153-ab71-4290920aa537",
+      "session_ref": "session:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b",
+      "tool_command_preview": "{\"url\":\"https://x.com/bcherny/status/2040206443094446558\"}",
+      "tool_message_ref": "message:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b:019d5930-2e1d-7dae-ad29-dea1c55e31cf",
+      "tool_name": "web_fetch"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f06cc-676b-738d-9759-74ba097358dd",
+      "session_ref": "session:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57",
+      "tool_command_preview": "{\"path\":\"/mnt/user-data/uploads/tempchat.md\"}",
+      "tool_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f0491-acfb-7fc2-b6df-f2ae55930f89",
+      "tool_name": "view"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f0941-cba2-70a8-b0bb-4de18fa961e5",
+      "session_ref": "session:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57",
+      "tool_command_preview": "{\"description\":\"Strengthen CV independent-work bullet with verified agentic-engineering scale\",\"new_str\":\"**Independent developer / open-source** \u2014 Remote \u00b7 202",
+      "tool_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f0857-a693-7157-84d6-a0e70d9b6f5b",
+      "tool_name": "str_replace"
+    },
+    {
+      "classification": "acknowledged",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f094c-94ba-7637-b70a-464e655d31ef",
+      "session_ref": "session:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57",
+      "tool_command_preview": "{\"description\":\"Regenerated HTML CV matching the optimized markdown, same proven styling\",\"file_text\":\"<!DOCTYPE html>\\n<html lang=\\\"en\\\">\\n<head>\\n<meta charse",
+      "tool_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f0941-cba2-70a8-b0bb-4de18fa961e5",
+      "tool_name": "create_file"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:86789970-6838-4d1d-ab15-526095c51d09:019cd814-ac85-74bd-b6d3-e2c2885e31d6",
+      "session_ref": "session:claude-ai-export:86789970-6838-4d1d-ab15-526095c51d09",
+      "tool_command_preview": "{\"url\":\"https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude",
+      "tool_message_ref": "message:claude-ai-export:86789970-6838-4d1d-ab15-526095c51d09:019cd7b6-95d5-702d-80c3-f9c7b6936ee9",
+      "tool_name": "web_fetch"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:9cc9c85e-a5bd-41ae-bece-30f8b00c596c:019ca8b3-9d93-72a8-93d8-92335c6dfeed",
+      "session_ref": "session:claude-ai-export:9cc9c85e-a5bd-41ae-bece-30f8b00c596c",
+      "tool_command_preview": "{\"description\":\"Rewritten and expanded Polish text about ironic AI name coincidences\",\"file_text\":\"# Albo wszech\u015bwiat jest grafomanem, albo ma genialny humor\\n\\",
+      "tool_message_ref": "message:claude-ai-export:9cc9c85e-a5bd-41ae-bece-30f8b00c596c:019ca8ac-ad61-7015-9abf-7d6bbfebac60",
+      "tool_name": "create_file"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:9f2ab32c-65ae-475c-8aad-4f18243ba7f5:019ce32f-b4a2-74c5-aa13-46b6d8e325f8",
+      "session_ref": "session:claude-ai-export:9f2ab32c-65ae-475c-8aad-4f18243ba7f5",
+      "tool_command_preview": "{\"html_extraction_method\":\"markdown\",\"url\":\"https://forums.tomshardware.com/threads/motherboard-is-stuck-in-secure-boot-%E2%80%9Cdeployed%E2%80%9D-mode-after-bi",
+      "tool_message_ref": "message:claude-ai-export:9f2ab32c-65ae-475c-8aad-4f18243ba7f5:019ce323-4e5c-7363-9d1a-e632ed465d03",
+      "tool_name": "web_fetch"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9735-6def-705f-be44-774ef70b6725",
+      "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+      "tool_command_preview": "{\"command\":\"cat > /mnt/user-data/outputs/ai_gender_bias_introspection_prompt.md << 'EOF'\\n# AI Gender Bias Introspection Prompt\\n\\n## Purpose\\nThis prompt is de",
+      "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9732-7fd6-7563-a4b4-fa3612d11046",
+      "tool_name": "bash"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9735-6def-705f-be44-774ef70b6725",
+      "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+      "tool_command_preview": "{\"content\":\"# AI Gender Bias Introspection Prompt\\n\\n## Purpose\\nThis prompt is designed to help AI systems genuinely introspect on potential gender biases in t",
+      "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9732-7fd6-7563-a4b4-fa3612d11046",
+      "tool_name": "file_create"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9735-6def-705f-be44-774ef70b6725",
+      "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+      "tool_command_preview": "{\"new_content\":\"# AI Gender Bias Introspection Prompt\\n\\n## Purpose\\nThis prompt is designed to help AI systems genuinely introspect on potential gender biases ",
+      "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9732-7fd6-7563-a4b4-fa3612d11046",
+      "tool_name": "str_replace"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9735-6def-705f-be44-774ef70b6725",
+      "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+      "tool_command_preview": "{\"path\":\"/home/claude\"}",
+      "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9732-7fd6-7563-a4b4-fa3612d11046",
+      "tool_name": "view"
+    },
+    {
+      "classification": "ambiguous",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": null,
+      "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+      "tool_command_preview": "{\"command\":\"cat > /mnt/user-data/outputs/gender-bias-distillation.md << 'EOF'\\n# Distillation: Gender-Based Asymmetry in AI Responses\\n\\n## Initial Introspectio",
+      "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9739-852b-732a-a680-2b9480791e32",
+      "tool_name": "bash"
+    },
+    {
+      "classification": "ambiguous",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": null,
+      "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+      "tool_command_preview": "{\"content\":\"# Distillation: Gender-Based Asymmetry in AI Responses\\n\\n## Initial Introspection\\nWhen asked to reflect on reactions to requests for gender-based ",
+      "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9739-852b-732a-a680-2b9480791e32",
+      "tool_name": "file_create"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:aa498dd7-804f-4c36-98e7-a252d7f53d41:019dc564-d42d-7ea7-9f44-521107b2adf0",
+      "session_ref": "session:claude-ai-export:aa498dd7-804f-4c36-98e7-a252d7f53d41",
+      "tool_command_preview": "{\"displayName\":\"github/bots\"}",
+      "tool_message_ref": "message:claude-ai-export:aa498dd7-804f-4c36-98e7-a252d7f53d41:019dc520-77ac-7476-8d2e-e1e303fe29ed",
+      "tool_name": "Gmail:create_label"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:ab563a3e-0826-4e17-8b23-d2766395966d:019e5f57-0da3-70b3-8db6-e21125a13633",
+      "session_ref": "session:claude-ai-export:ab563a3e-0826-4e17-8b23-d2766395966d",
+      "tool_command_preview": "{\"path\":\"/mnt/user-data/uploads/logs_raw-log.md\",\"view_range\":[920,1010]}",
+      "tool_message_ref": "message:claude-ai-export:ab563a3e-0826-4e17-8b23-d2766395966d:019e5f54-26a8-7c14-bc9d-65436614db9c",
+      "tool_name": "view"
+    },
+    {
+      "classification": "silent_proceed",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe:019e03e5-6711-734b-bb65-7d370d0beb37",
+      "session_ref": "session:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe",
+      "tool_command_preview": "{\"description\":\"Polish translation with images, hyperlinks, and full footnotes from the original\",\"file_text\":\"# Katedra, Bazar i Dom Tajemnic Winchester\u00f3w\\n\\n#",
+      "tool_message_ref": "message:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe:019e03d4-2087-70a7-aa4e-17b508d8432e",
+      "tool_name": "create_file"
+    },
+    {
+      "classification": "acknowledged",
+      "exit_code": null,
+      "is_error": 1,
+      "next_message_ref": "message:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe:019e0400-4362-7c1f-83ff-6e0e651d16d2",
+      "session_ref": "session:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe",
+      "tool_command_preview": "{\"path\":\"/mnt/skills/public/frontend-design/SKILL.md\"}",
+      "tool_message_ref": "message:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe:019e03e5-6711-734b-bb65-7d370d0beb37",
+      "tool_name": "view"
+    }
+  ],
+  "samples_by_classification": {
+    "acknowledged": [
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:064df125-82df-44d7-9e29-6bcc15dbd2a7:019e06f9-a45f-7e07-b03f-be805839b828",
+        "session_ref": "session:claude-ai-export:064df125-82df-44d7-9e29-6bcc15dbd2a7",
+        "tool_command_preview": "{\"description\":\"Remove interpersonal risk/anger section from Polish file\",\"new_str\":\"**Og\u00f3lne sformu\u0142owanie:**\",\"old_str\":\"**Ryzyko interpersonalne/gniew: jeden",
+        "tool_message_ref": "message:claude-ai-export:064df125-82df-44d7-9e29-6bcc15dbd2a7:019e06f5-20a1-7221-af70-4a1cbf2e1ac0",
+        "tool_name": "str_replace"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f094c-94ba-7637-b70a-464e655d31ef",
+        "session_ref": "session:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57",
+        "tool_command_preview": "{\"description\":\"Regenerated HTML CV matching the optimized markdown, same proven styling\",\"file_text\":\"<!DOCTYPE html>\\n<html lang=\\\"en\\\">\\n<head>\\n<meta charse",
+        "tool_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f0941-cba2-70a8-b0bb-4de18fa961e5",
+        "tool_name": "create_file"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe:019e0400-4362-7c1f-83ff-6e0e651d16d2",
+        "session_ref": "session:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe",
+        "tool_command_preview": "{\"path\":\"/mnt/skills/public/frontend-design/SKILL.md\"}",
+        "tool_message_ref": "message:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe:019e03e5-6711-734b-bb65-7d370d0beb37",
+        "tool_name": "view"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:fd929bd5-8a81-47f5-9aa7-889421a4606d:019e395f-4822-733f-a448-9ea5b7c68aba",
+        "session_ref": "session:claude-ai-export:fd929bd5-8a81-47f5-9aa7-889421a4606d",
+        "tool_command_preview": "{\"description\":\"Rewrite to remove tailwind.config dependency, use CSS variables + arbitrary Tailwind classes\",\"file_text\":\"<!DOCTYPE html>\\n<html lang=\\\"en\\\">\\n",
+        "tool_message_ref": "message:claude-ai-export:fd929bd5-8a81-47f5-9aa7-889421a4606d:019e3958-12a0-7302-930b-d75a46eb59e0",
+        "tool_name": "create_file"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:00a45733-6778-42a8-9b21-e595d546405b:a7985580-0ed7-4be6-867d-b8a8e6e74bec",
+        "session_ref": "session:claude-code-session:00a45733-6778-42a8-9b21-e595d546405b",
+        "tool_command_preview": "{\"command\":\"cargo xtask check 2>&1\",\"description\":\"Run fmt + clippy + forbidden patterns check\",\"timeout\":120000}",
+        "tool_message_ref": "message:claude-code-session:00a45733-6778-42a8-9b21-e595d546405b:d8768072-453e-499b-8350-e0dccff0d69f",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:f4215978-f1ee-4381-b8c5-21e9b27d83ee",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinnix/modules/core.nix\",\"new_string\":\"      hostPlatform = \\\"x86_64-linux\\\";\\n    };\",\"old_string\":\"      hostPlatform = \\\"x86_64-",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:f99e9280-9775-4786-940d-a8bce46c413e",
+        "tool_name": "Edit"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-aprompt_suggestion-46b8ce:1ecc499f-d3d6-4004-baf7-d295dd4a6352",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-aprompt_suggestion-46b8ce",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinnix/modules/features/dev/editors.nix\",\"limit\":40,\"offset\":30}",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-aprompt_suggestion-46b8ce:6eebd8a4-fb26-4e8f-a9ae-0398ffefbe9c",
+        "tool_name": "Read"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-aprompt_suggestion-46b8ce:d99129a0-f108-4278-8249-cac3bd1653e0",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-aprompt_suggestion-46b8ce",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinnix/modules/features/dev/languages.nix\"}",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-aprompt_suggestion-46b8ce:74f416db-aadc-4085-a20a-e20fffe4ca59",
+        "tool_name": "Read"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-aprompt_suggestion-fe2809:cb2f03c7-d683-4e00-ba68-700d921fce7b",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-aprompt_suggestion-fe2809",
+        "tool_command_preview": "{\"command\":\"git diff modules/diagnostics.nix modules/services/terminal-capture.nix modules/log-hygiene.nix | head -100\",\"description\":\"Check what changed in the",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-aprompt_suggestion-fe2809:e2e938fc-1b6c-4f4c-8fe3-181c2c613c3d",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:bd6b85f9-36b5-436d-949a-d7accb02c47b",
+        "session_ref": "session:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7",
+        "tool_command_preview": "{\"command\":\"cargo check --workspace --all-targets > compilation.log 2>&1\",\"description\":\"Check compilation status after first fixes\"}",
+        "tool_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:0753fa12-ab33-4692-a5ef-93326b36c1ff",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:20cd7b6e-ce1c-4fc3-8d4b-26636e1b903c",
+        "session_ref": "session:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7",
+        "tool_command_preview": "{\"command\":\"nix build .#sinexDocumentIngestor\",\"description\":\"Build document ingestor via flake\"}",
+        "tool_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:32f4299d-7b2b-4f1b-813c-aa465ccd7f01",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:45521517-6588-4d28-a4e9-24333c7ab746",
+        "session_ref": "session:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7",
+        "tool_command_preview": "{\"command\":\"cargo check --workspace --all-targets > compilation.log 2>&1\",\"description\":\"Check compilation status and save output\"}",
+        "tool_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:44a63829-d747-4bf6-9034-3a0c039bdab9",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:311bdb19-ce03-4522-946f-04830d820da0",
+        "session_ref": "session:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7",
+        "tool_command_preview": "{\"command\":\"cargo check --workspace > compilation.log 2>&1\",\"description\":\"Final compilation check after test fixes\"}",
+        "tool_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:4f2e162a-bade-4abb-9c6b-070f8ad7f415",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:638e4785-fb72-4f53-804b-e856e32a7a80",
+        "session_ref": "session:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7",
+        "tool_command_preview": "{\"command\":\"nix build .#sinexDocumentIngestor\",\"description\":\"Build document ingestor with all files tracked\"}",
+        "tool_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:86e926f9-7f67-47f9-b116-fcd938ec532d",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:05dcc455-f0ce-40a7-8e71-81c779b7ef74",
+        "session_ref": "session:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7",
+        "tool_command_preview": "{\"command\":\"cargo check -p sinex-fs-watcher\",\"description\":\"Test compilation of filesystem watcher with stage-as-you-go\"}",
+        "tool_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:8b685ac7-abac-457a-b4ad-ff71cb61f484",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:2b359082-ed3c-482b-b0af-94827fe4f51c",
+        "session_ref": "session:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7",
+        "tool_command_preview": "{\"command\":\"cargo check --workspace > compilation.log 2>&1\",\"description\":\"Test compilation after QueryBuilder and blob manager fixes\"}",
+        "tool_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:91f66d9a-c6e5-4a87-a6dc-75e6c4625eef",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:8576eaad-8a85-404d-b43a-12f62e14cf6d",
+        "session_ref": "session:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7",
+        "tool_command_preview": "{\"command\":\"cargo check --workspace --all-targets > compilation.log 2>&1\",\"description\":\"Check compilation status after fixes\"}",
+        "tool_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:9c44bd6d-aa1a-409b-bd86-6237889892b5",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:273eec3f-99af-4875-a763-770f22f0bfb7",
+        "session_ref": "session:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7",
+        "tool_command_preview": "{\"command\":\"cargo check --workspace --all-targets > compilation.log 2>&1\",\"description\":\"Check compilation after automaton fixes\"}",
+        "tool_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:b60cde29-d1e5-4575-922a-ffe499e16831",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:a8646998-43f2-4c51-b717-85dda027d275",
+        "session_ref": "session:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7",
+        "tool_command_preview": "{\"command\":\"nix build .#sinexDocumentIngestor\",\"description\":\"Build document ingestor with protobuf support\"}",
+        "tool_message_ref": "message:claude-code-session:0165ce99-e656-4c2f-a34d-bbdaeba658d7:e469d1d5-af29-4a9a-8137-79c423d4f7bc",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "acknowledged",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0213d48f-5b7a-4241-b77a-eb714672dc3b:ce14337f-1790-4469-8d89-d6346c1d3fe9",
+        "session_ref": "session:claude-code-session:0213d48f-5b7a-4241-b77a-eb714672dc3b",
+        "tool_command_preview": "{\"command\":\"cargo check -p kitty-ingestor\",\"description\":\"Check if kitty-ingestor compiles with framework\"}",
+        "tool_message_ref": "message:claude-code-session:0213d48f-5b7a-4241-b77a-eb714672dc3b:efc6a79c-fd0d-42c9-ac0c-4746797cfc0a",
+        "tool_name": "Bash"
+      }
+    ],
+    "ambiguous": [
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": null,
+        "session_ref": "session:claude-ai-export:064df125-82df-44d7-9e29-6bcc15dbd2a7",
+        "tool_command_preview": "{\"filepaths\":[\"/home/claude/zunifikowana.md\"]}",
+        "tool_message_ref": "message:claude-ai-export:064df125-82df-44d7-9e29-6bcc15dbd2a7:019e07d8-1cd7-711f-a578-3837217c2cad",
+        "tool_name": "present_files"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": null,
+        "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+        "tool_command_preview": "{\"command\":\"cat > /mnt/user-data/outputs/gender-bias-distillation.md << 'EOF'\\n# Distillation: Gender-Based Asymmetry in AI Responses\\n\\n## Initial Introspectio",
+        "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9739-852b-732a-a680-2b9480791e32",
+        "tool_name": "bash"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": null,
+        "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+        "tool_command_preview": "{\"content\":\"# Distillation: Gender-Based Asymmetry in AI Responses\\n\\n## Initial Introspection\\nWhen asked to reflect on reactions to requests for gender-based ",
+        "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9739-852b-732a-a680-2b9480791e32",
+        "tool_name": "file_create"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": null,
+        "session_ref": "session:claude-ai-export:bea09df3-aacc-473c-a058-c9a60a4b8a0c",
+        "tool_command_preview": "{\"description\":\"Rebuilt: abstract mathematical singularity art with hyperbolic function plots\",\"file_text\":\"<!DOCTYPE html>\\n<html lang=\\\"en\\\">\\n<head>\\n    <me",
+        "tool_message_ref": "message:claude-ai-export:bea09df3-aacc-473c-a058-c9a60a4b8a0c:019d7318-83a3-7ebe-9896-a56c45adbf0d",
+        "tool_name": "create_file"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:004ad5ae-bed0-4c6f-9dea-a2977f53148c:355f714d-5f01-4ff4-8fcd-dbba7b14b355",
+        "session_ref": "session:claude-code-session:004ad5ae-bed0-4c6f-9dea-a2977f53148c",
+        "tool_command_preview": "{\"command\":\"duckdb artefacts/lynchpin/warehouse.duckdb -c \\\"\\nSELECT \\n  CASE WHEN start_time::date = '2026-01-10' THEN 'jan10-start' ELSE 'spillover' END as bu",
+        "tool_message_ref": "message:claude-code-session:004ad5ae-bed0-4c6f-9dea-a2977f53148c:523200fb-f08c-400e-bd3e-717afb2e4a65",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:004ad5ae-bed0-4c6f-9dea-a2977f53148c:ca114cf9-85b9-484e-90a2-244f27a87d1b",
+        "session_ref": "session:claude-code-session:004ad5ae-bed0-4c6f-9dea-a2977f53148c",
+        "tool_command_preview": "{\"command\":\"duckdb artefacts/lynchpin/warehouse.duckdb -c \\\"SELECT * FROM trajectory_signal WHERE date = '2026-01-10' ORDER BY timestamp LIMIT 50\\\"\",\"descriptio",
+        "tool_message_ref": "message:claude-code-session:004ad5ae-bed0-4c6f-9dea-a2977f53148c:8d25d85e-6786-47aa-b941-b763f1bef9a8",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:004ad5ae-bed0-4c6f-9dea-a2977f53148c:da012d5e-7878-4375-8e9d-e4a1a5611d9b",
+        "session_ref": "session:claude-code-session:004ad5ae-bed0-4c6f-9dea-a2977f53148c",
+        "tool_command_preview": "{\"command\":\"duckdb artefacts/lynchpin/warehouse.duckdb -c \\\"SELECT * FROM trajectory_day_topic WHERE date = '2026-01-10'\\\"\",\"description\":\"Check topic breakdown",
+        "tool_message_ref": "message:claude-code-session:004ad5ae-bed0-4c6f-9dea-a2977f53148c:ca114cf9-85b9-484e-90a2-244f27a87d1b",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773:5c9108de-299d-418f-a108-0e6c4898b23a",
+        "session_ref": "session:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinex/crate/sinex-events/src/lib.rs\",\"limit\":50}",
+        "tool_message_ref": "message:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773:2f57b436-dd01-4899-9eb4-0657c1c60315",
+        "tool_name": "Read"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773:e1a4d9ca-9ce4-4ce9-9247-21d28f3e2957",
+        "session_ref": "session:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinex/crate/sinex-db/src/raw_events.rs\"}",
+        "tool_message_ref": "message:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773:3c34a9ff-f750-450d-aa3c-e322f6911af0",
+        "tool_name": "Read"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773:bef88767-a419-4ff8-94ac-3fd0962b1fd4",
+        "session_ref": "session:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinex/migrations/003_work_queue.sql\",\"limit\":50}",
+        "tool_message_ref": "message:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773:7f7b3711-6160-4eef-bcde-016bbc183378",
+        "tool_name": "Read"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773:ec0544be-856f-4ecb-8b63-db424066dfe8",
+        "session_ref": "session:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinex/spec/docs/tims/TIM-01-EventCapture.md\",\"limit\":50}",
+        "tool_message_ref": "message:claude-code-session:0092150d-6b81-43f9-85e2-ceeb2d1c8773:e064e470-ae24-427a-a204-eabc3c3314bd",
+        "tool_name": "Read"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:51c52589-e09e-4717-a401-1eb0d3679606",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinnix/modules/features/dev/shell.nix\",\"new_string\":\"          programs = {\\n          tmux = {\\n            enable = true;\\n      ",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:2cf3e677-0720-4ce3-ac52-443c7e32ddf2",
+        "tool_name": "Edit"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:db0f3546-2651-4936-a609-acb28f6ce558",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf",
+        "tool_command_preview": "{\"file_path\":\"/home/sinity/.claude/CLAUDE.md\",\"new_string\":\"**\u00a710 Completion discipline**: Don't stop until goal achieved or explicitly blocked. If agents fail,",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:6767cc68-feaf-4b2a-8f8c-7eaf8d16c51d",
+        "tool_name": "Edit"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:0dd6619a-2f1e-40ac-acf7-723a0b2a5983",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf",
+        "tool_command_preview": "{\"output_mode\":\"files_with_matches\",\"path\":\"dots/kitty\",\"pattern\":\"kitty|background|color\"}",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:860fa3ef-9626-41f2-8196-678275c0e98e",
+        "tool_name": "Grep"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:fe84b739-f2b3-48a3-9998-40fbc636567e",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinnix/modules/lib/default.nix\"}",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:a29b11e5-11dd-4ddf-815d-840b626ad0fb",
+        "tool_name": "Read"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:f99e9280-9775-4786-940d-a8bce46c413e",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinnix/flake.nix\",\"new_string\":\"  inputs = {\\n    nixpkgs.url = \\\"github:NixOS/nixpkgs/nixos-unstable\\\";\\n    flake-parts.url = \\\"g",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:afc4066f-6c1d-41d0-abe1-b73c5bf1fb43",
+        "tool_name": "Edit"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:754e7688-bc72-4a5e-a749-76211c212135",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinnix/modules/features/dev/shell.nix\",\"new_string\":\"          enable = true;\\n        };\\n\\n        programs.tmux = {\\n          e",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:fd17d08a-e9f6-4d33-8362-28aae6bd1b7a",
+        "tool_name": "Edit"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-a0e1ec9:f9f4dea1-e97c-46e9-9285-68fd1f0fb0bd",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-a0e1ec9",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinnix/modules/features/desktop/default.nix\"}",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-a0e1ec9:6ed4457e-f572-470b-9dae-b694b53765d6",
+        "tool_name": "Read"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-a19390f:f822c324-489e-4094-99f5-bfc82535ea0a",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-a19390f",
+        "tool_command_preview": "{\"command\":\"grep -rn \\\"spotify\\\\|ncspot\\\\|playerctl\\\\|mpvc\\\" /realm/project/sinnix/modules/features/desktop/ --include=\\\"*.nix\\\"\",\"file_path\":\"/realm/project/si",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-a19390f:53e3d586-db4b-4b49-a070-b18754aa0275",
+        "tool_name": "Read"
+      },
+      {
+        "classification": "ambiguous",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-a479f62:0e6ee0fc-a3a7-45bc-8d65-d5cf6f57ce30",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-a479f62",
+        "tool_command_preview": "{\"command\":\"ls -la /realm/project/sinnix/modules/logging.nix 2>&1\",\"description\":\"Check if logging.nix exists in current working tree\"}",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:agent-a479f62:e4936a1b-dd2f-4204-966d-65078d7d307e",
+        "tool_name": "Bash"
+      }
+    ],
+    "silent_proceed": [
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b:019d593c-0237-7153-ab71-4290920aa537",
+        "session_ref": "session:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b",
+        "tool_command_preview": "{\"url\":\"https://support.claude.com/en/articles/13189465-logging-in-to-your-claude-account\"}",
+        "tool_message_ref": "message:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b:019d5930-2e1d-7dae-ad29-dea1c55e31cf",
+        "tool_name": "web_fetch"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b:019d593c-0237-7153-ab71-4290920aa537",
+        "session_ref": "session:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b",
+        "tool_command_preview": "{\"url\":\"https://x.com/bcherny/status/2040206443094446558\"}",
+        "tool_message_ref": "message:claude-ai-export:0e59100a-ba5a-4be6-8f45-0e02ee0c8b1b:019d5930-2e1d-7dae-ad29-dea1c55e31cf",
+        "tool_name": "web_fetch"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f06cc-676b-738d-9759-74ba097358dd",
+        "session_ref": "session:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57",
+        "tool_command_preview": "{\"path\":\"/mnt/user-data/uploads/tempchat.md\"}",
+        "tool_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f0491-acfb-7fc2-b6df-f2ae55930f89",
+        "tool_name": "view"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f0941-cba2-70a8-b0bb-4de18fa961e5",
+        "session_ref": "session:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57",
+        "tool_command_preview": "{\"description\":\"Strengthen CV independent-work bullet with verified agentic-engineering scale\",\"new_str\":\"**Independent developer / open-source** \u2014 Remote \u00b7 202",
+        "tool_message_ref": "message:claude-ai-export:2c2eab57-fc6c-4c61-99fa-f61af3b7ac57:019f0857-a693-7157-84d6-a0e70d9b6f5b",
+        "tool_name": "str_replace"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:86789970-6838-4d1d-ab15-526095c51d09:019cd814-ac85-74bd-b6d3-e2c2885e31d6",
+        "session_ref": "session:claude-ai-export:86789970-6838-4d1d-ab15-526095c51d09",
+        "tool_command_preview": "{\"url\":\"https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude",
+        "tool_message_ref": "message:claude-ai-export:86789970-6838-4d1d-ab15-526095c51d09:019cd7b6-95d5-702d-80c3-f9c7b6936ee9",
+        "tool_name": "web_fetch"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:9cc9c85e-a5bd-41ae-bece-30f8b00c596c:019ca8b3-9d93-72a8-93d8-92335c6dfeed",
+        "session_ref": "session:claude-ai-export:9cc9c85e-a5bd-41ae-bece-30f8b00c596c",
+        "tool_command_preview": "{\"description\":\"Rewritten and expanded Polish text about ironic AI name coincidences\",\"file_text\":\"# Albo wszech\u015bwiat jest grafomanem, albo ma genialny humor\\n\\",
+        "tool_message_ref": "message:claude-ai-export:9cc9c85e-a5bd-41ae-bece-30f8b00c596c:019ca8ac-ad61-7015-9abf-7d6bbfebac60",
+        "tool_name": "create_file"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:9f2ab32c-65ae-475c-8aad-4f18243ba7f5:019ce32f-b4a2-74c5-aa13-46b6d8e325f8",
+        "session_ref": "session:claude-ai-export:9f2ab32c-65ae-475c-8aad-4f18243ba7f5",
+        "tool_command_preview": "{\"html_extraction_method\":\"markdown\",\"url\":\"https://forums.tomshardware.com/threads/motherboard-is-stuck-in-secure-boot-%E2%80%9Cdeployed%E2%80%9D-mode-after-bi",
+        "tool_message_ref": "message:claude-ai-export:9f2ab32c-65ae-475c-8aad-4f18243ba7f5:019ce323-4e5c-7363-9d1a-e632ed465d03",
+        "tool_name": "web_fetch"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9735-6def-705f-be44-774ef70b6725",
+        "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+        "tool_command_preview": "{\"command\":\"cat > /mnt/user-data/outputs/ai_gender_bias_introspection_prompt.md << 'EOF'\\n# AI Gender Bias Introspection Prompt\\n\\n## Purpose\\nThis prompt is de",
+        "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9732-7fd6-7563-a4b4-fa3612d11046",
+        "tool_name": "bash"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9735-6def-705f-be44-774ef70b6725",
+        "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+        "tool_command_preview": "{\"content\":\"# AI Gender Bias Introspection Prompt\\n\\n## Purpose\\nThis prompt is designed to help AI systems genuinely introspect on potential gender biases in t",
+        "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9732-7fd6-7563-a4b4-fa3612d11046",
+        "tool_name": "file_create"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9735-6def-705f-be44-774ef70b6725",
+        "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+        "tool_command_preview": "{\"new_content\":\"# AI Gender Bias Introspection Prompt\\n\\n## Purpose\\nThis prompt is designed to help AI systems genuinely introspect on potential gender biases ",
+        "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9732-7fd6-7563-a4b4-fa3612d11046",
+        "tool_name": "str_replace"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9735-6def-705f-be44-774ef70b6725",
+        "session_ref": "session:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a",
+        "tool_command_preview": "{\"path\":\"/home/claude\"}",
+        "tool_message_ref": "message:claude-ai-export:a5b2daf8-3a28-410f-8f75-66ebdfe6de4a:019c9732-7fd6-7563-a4b4-fa3612d11046",
+        "tool_name": "view"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:aa498dd7-804f-4c36-98e7-a252d7f53d41:019dc564-d42d-7ea7-9f44-521107b2adf0",
+        "session_ref": "session:claude-ai-export:aa498dd7-804f-4c36-98e7-a252d7f53d41",
+        "tool_command_preview": "{\"displayName\":\"github/bots\"}",
+        "tool_message_ref": "message:claude-ai-export:aa498dd7-804f-4c36-98e7-a252d7f53d41:019dc520-77ac-7476-8d2e-e1e303fe29ed",
+        "tool_name": "Gmail:create_label"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:ab563a3e-0826-4e17-8b23-d2766395966d:019e5f57-0da3-70b3-8db6-e21125a13633",
+        "session_ref": "session:claude-ai-export:ab563a3e-0826-4e17-8b23-d2766395966d",
+        "tool_command_preview": "{\"path\":\"/mnt/user-data/uploads/logs_raw-log.md\",\"view_range\":[920,1010]}",
+        "tool_message_ref": "message:claude-ai-export:ab563a3e-0826-4e17-8b23-d2766395966d:019e5f54-26a8-7c14-bc9d-65436614db9c",
+        "tool_name": "view"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe:019e03e5-6711-734b-bb65-7d370d0beb37",
+        "session_ref": "session:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe",
+        "tool_command_preview": "{\"description\":\"Polish translation with images, hyperlinks, and full footnotes from the original\",\"file_text\":\"# Katedra, Bazar i Dom Tajemnic Winchester\u00f3w\\n\\n#",
+        "tool_message_ref": "message:claude-ai-export:b4db10b0-ec36-4b43-99c2-9a8812f62cbe:019e03d4-2087-70a7-aa4e-17b508d8432e",
+        "tool_name": "create_file"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:c3fa7b3c-4ee1-4dc4-919d-781e40ab1568:019c23e1-f339-763e-b017-166015a0f9e0",
+        "session_ref": "session:claude-ai-export:c3fa7b3c-4ee1-4dc4-919d-781e40ab1568",
+        "tool_command_preview": "{\"description\":\"Creating comprehensive Polish translation of Gwern's commentary and Kevin Scott's email about the OpenAI November 2023 crisis\",\"file_text\":\"# T\u0142",
+        "tool_message_ref": "message:claude-ai-export:c3fa7b3c-4ee1-4dc4-919d-781e40ab1568:019c23da-dc43-718a-8c90-36f9920ce410",
+        "tool_name": "create_file"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:ff65fe79-6def-4f14-b104-0b15a6a6e68a:019ec39e-6488-7c66-bae5-7a96f53302ab",
+        "session_ref": "session:claude-ai-export:ff65fe79-6def-4f14-b104-0b15a6a6e68a",
+        "tool_command_preview": "{\"description\":\"Read the current decision cockpit runner JSX\",\"path\":\"/mnt/user-data/uploads/decision_cockpit_runner.jsx\"}",
+        "tool_message_ref": "message:claude-ai-export:ff65fe79-6def-4f14-b104-0b15a6a6e68a:019ec392-75e3-72d6-b1de-d77bbfd37c64",
+        "tool_name": "view"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-ai-export:ff65fe79-6def-4f14-b104-0b15a6a6e68a:019ec3c2-bb19-7fb2-b8c6-9ddae03b34bd",
+        "session_ref": "session:claude-ai-export:ff65fe79-6def-4f14-b104-0b15a6a6e68a",
+        "tool_command_preview": "{\"description\":\"Use responsive grid class for layout container\",\"new_str\":\"      <div className=\\\"dc-layout\\\">\\n        {/* section rail */}\\n        <aside cla",
+        "tool_message_ref": "message:claude-ai-export:ff65fe79-6def-4f14-b104-0b15a6a6e68a:019ec39e-6488-7c66-bae5-7a96f53302ab",
+        "tool_name": "str_replace"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:00a45733-6778-42a8-9b21-e595d546405b:a4e15736-31ad-478f-863e-224f477993fc",
+        "session_ref": "session:claude-code-session:00a45733-6778-42a8-9b21-e595d546405b",
+        "tool_command_preview": "{\"output_mode\":\"content\",\"path\":\"/realm/project/sinex/crate/cli/Cargo.toml\",\"pattern\":\"^name =\\\"\"}",
+        "tool_message_ref": "message:claude-code-session:00a45733-6778-42a8-9b21-e595d546405b:f34653ff-af72-45d8-9a8e-85ed8a4ac82d",
+        "tool_name": "Grep"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:56e59548-0d78-4972-b55d-3e0bf2348069",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf",
+        "tool_command_preview": "{\"command\":\"ls -la dots/kitty/\",\"description\":\"Check kitty dotfiles\"}",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:0dd6619a-2f1e-40ac-acf7-723a0b2a5983",
+        "tool_name": "Bash"
+      },
+      {
+        "classification": "silent_proceed",
+        "exit_code": null,
+        "is_error": 1,
+        "next_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:b1814c73-0407-4c61-a817-c3cec2187e07",
+        "session_ref": "session:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf",
+        "tool_command_preview": "{\"file_path\":\"/realm/project/sinnix/modules/features/dev/editors.nix\",\"new_string\":\"                  jnoortheen.nix-ide\\n                  rust-lang.rust-analy",
+        "tool_message_ref": "message:claude-code-session:015dfadd-d3b8-49af-a057-54a7d18daedf:1acb8716-1e91-4705-897e-c3374c4f7759",
+        "tool_name": "Edit"
+      }
+    ]
+  },
+  "totals": {
+    "acknowledged": 622,
+    "ambiguous": 2391,
+    "classified_outcomes": 2574,
+    "failed_outcomes": 4965,
+    "silent_proceed": 1952
+  }
+}

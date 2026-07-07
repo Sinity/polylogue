@@ -1,0 +1,79 @@
+{
+  "title": "Agent Forensics",
+  "generated_at": "2026-07-03",
+  "archive_root": "/home/sinity/.local/share/polylogue",
+  "index_schema_version": 23,
+  "freshness": "historical-v23-full-report; current v24 archive cardinality is in temporal-archive-aggregates and archive-debt-summary",
+  "current_archive_cardinality": {
+    "index_schema_version": 24,
+    "physical_sessions": 16627,
+    "logical_root_sessions": 8730,
+    "messages": 4254615,
+    "session_profiles_materialized": 4413
+  },
+  "sessions_physical": 16498,
+  "messages": 4142175,
+  "physical_session_tokens_accounted": 395320980423,
+  "logical_session_high_water_tokens_accounted": 288741229728,
+  "all_provider_replay_gap_tokens": 106579750695,
+  "claude_code_physical_session_tokens": 175785958091,
+  "claude_code_logical_session_high_water_tokens": 153454761777,
+  "claude_code_replay_gap_tokens": 22331196314,
+  "codex_physical_session_tokens": 219465713593,
+  "codex_logical_session_high_water_tokens": 135217159212,
+  "codex_replay_gap_tokens": 84248554381,
+  "stored_provider_priced_usd": 243392.189328,
+  "catalog_api_equivalent_usd": 337565.031618,
+  "pricing_lanes": [
+    {
+      "provenance": "priced",
+      "row_count": 13889,
+      "session_count": 12331,
+      "matched_model_row_count": 12650,
+      "unmatched_model_row_count": 1239,
+      "usage": {
+        "input_tokens": 769203342,
+        "output_tokens": 423008174,
+        "cached_input_tokens": 169689384985,
+        "cache_write_tokens": 4973670329,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 175855266830
+      },
+      "stored_cost_usd": 243392.189328,
+      "catalog_api_equivalent_usd": 243392.189328,
+      "caveats": ["missing_price"]
+    },
+    {
+      "provenance": "origin_reported",
+      "row_count": 2308,
+      "session_count": 2270,
+      "matched_model_row_count": 2302,
+      "unmatched_model_row_count": 6,
+      "usage": {
+        "input_tokens": 8717124959,
+        "output_tokens": 566998746,
+        "cached_input_tokens": 210181589888,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 219465713593
+      },
+      "stored_cost_usd": 0.0,
+      "catalog_api_equivalent_usd": 94172.84229,
+      "caveats": ["missing_price"]
+    }
+  ],
+  "delta_vs_2026_06_27": {
+    "old_tokens_accounted": 546600000000,
+    "old_priced_cost_usd": 89367.84,
+    "tokens_delta": -151279019577,
+    "stored_provider_priced_usd_delta": 154024.349328,
+    "new_origin_reported_catalog_usd": 94172.84229,
+    "comparability_note": "Not a clean time-series point: archive deduplication, schema changes, provider coverage, and pricing coverage changed between runs."
+  },
+  "failure_followup_limit": 5000,
+  "svg_count": 9,
+  "claim": "Polylogue can produce a longitudinal agent-usage report over the live archive with provenance-separated stored/catalog-priced cost views and explicit physical/logical token-grain labels.",
+  "non_claim": "This is not final billing reconciliation and not a finished all-provider logical-session repricing. The physical token total is a current archive measurement; the Claude Code logical high-water figure is the current non-replay grain for logical-work claims.",
+  "proof": "report.md plus valid charts/*.svg against active schema v23 archive; token-grain audit refreshed with polylogue analyze usage.",
+  "caveat": "This full report was generated before the v24 rebuild. Current v24 physical counts are recorded in current_archive_cardinality, but the full forensics packet should be regenerated after session-profile convergence before citing logical high-water totals as current."
+}

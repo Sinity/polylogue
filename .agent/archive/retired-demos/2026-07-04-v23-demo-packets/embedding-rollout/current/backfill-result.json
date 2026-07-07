@@ -1,0 +1,295 @@
+{
+  "candidate_sessions": 25,
+  "embedded_sessions": 18,
+  "error_count": 0,
+  "estimated_cost_usd": 0.0242,
+  "preflight": {
+    "backfill_args": [
+      "ops",
+      "embed",
+      "backfill",
+      "--yes",
+      "--max-sessions",
+      "25",
+      "--max-messages",
+      "5000",
+      "--max-cost-usd",
+      "1"
+    ],
+    "backfill_command": "polylogue ops embed backfill --yes --max-sessions 25 --max-messages 5000 --max-cost-usd 1",
+    "dimension": 1024,
+    "effective_cost_cap_usd": 1.0,
+    "estimated_cost_usd": 0.0683,
+    "estimated_tokens": 683000,
+    "max_cost_usd": 1.0,
+    "max_messages": 5000,
+    "max_sessions": 25,
+    "min_messages": null,
+    "model": "voyage-4",
+    "monthly_cost_cap_usd": 1000.0,
+    "pending_messages": 1366,
+    "pending_sessions": 25,
+    "pricing": {
+      "approximate": true,
+      "cost_usd_per_1m_tokens": 0.1,
+      "estimated_tokens_per_message": 500
+    },
+    "total_sessions": 16580,
+    "windowed": true
+  },
+  "processed_sessions": 25,
+  "sessions": [
+    {
+      "embedded_message_count": 1,
+      "error": null,
+      "estimated_cost_usd": 5e-05,
+      "index": 1,
+      "session_id": "claude-code-session:fa2ea5be-8306-43f3-9f4d-4ae495cd0d8e",
+      "status": "embedded",
+      "title": "fa2ea5be-8306-43f3-9f4d-4ae495cd0d8e",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 1,
+      "error": null,
+      "estimated_cost_usd": 5e-05,
+      "index": 2,
+      "session_id": "claude-code-session:abd7e57c-e642-48d7-b4fd-2295cf33bdc8",
+      "status": "embedded",
+      "title": "abd7e57c-e642-48d7-b4fd-2295cf33bdc8",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 1,
+      "error": null,
+      "estimated_cost_usd": 5e-05,
+      "index": 3,
+      "session_id": "claude-ai-export:3684cac2-0677-489e-b377-359875497195",
+      "status": "embedded",
+      "title": "Crafting a clear message",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 0,
+      "error": null,
+      "estimated_cost_usd": 0.0,
+      "index": 4,
+      "session_id": "claude-code-session:17d98045-6461-40ad-97e0-269df378715a",
+      "status": "no_embeddable_messages",
+      "title": "17d98045-6461-40ad-97e0-269df378715a",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 0,
+      "error": null,
+      "estimated_cost_usd": 0.0,
+      "index": 5,
+      "session_id": "claude-code-session:32a85e32-d1d6-4e0c-8d9b-b52f469dccd6",
+      "status": "no_embeddable_messages",
+      "title": "32a85e32-d1d6-4e0c-8d9b-b52f469dccd6",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 0,
+      "error": null,
+      "estimated_cost_usd": 0.0,
+      "index": 6,
+      "session_id": "claude-code-session:4410ccfb-3f66-4a49-b9f3-615f89c28fb8",
+      "status": "no_embeddable_messages",
+      "title": "4410ccfb-3f66-4a49-b9f3-615f89c28fb8",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 0,
+      "error": null,
+      "estimated_cost_usd": 0.0,
+      "index": 7,
+      "session_id": "claude-code-session:a1a036c8-cb2c-4211-b112-6c84c5ec013d",
+      "status": "no_embeddable_messages",
+      "title": "a1a036c8-cb2c-4211-b112-6c84c5ec013d",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 0,
+      "error": null,
+      "estimated_cost_usd": 0.0,
+      "index": 8,
+      "session_id": "claude-code-session:6a244c56-e0ff-4266-9508-3564353a3188",
+      "status": "no_embeddable_messages",
+      "title": "6a244c56-e0ff-4266-9508-3564353a3188",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 1,
+      "error": null,
+      "estimated_cost_usd": 5e-05,
+      "index": 9,
+      "session_id": "claude-code-session:389282bc-b16a-46df-8312-bea87cf09158",
+      "status": "embedded",
+      "title": "389282bc-b16a-46df-8312-bea87cf09158",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 0,
+      "error": null,
+      "estimated_cost_usd": 0.0,
+      "index": 10,
+      "session_id": "claude-code-session:28072543-90de-44b7-9ba7-11401af6d6e2",
+      "status": "no_embeddable_messages",
+      "title": "28072543-90de-44b7-9ba7-11401af6d6e2",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 1,
+      "error": null,
+      "estimated_cost_usd": 5e-05,
+      "index": 11,
+      "session_id": "claude-code-session:11a93cf2-ec55-4315-b392-f41a208e9704",
+      "status": "embedded",
+      "title": "11a93cf2-ec55-4315-b392-f41a208e9704",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 0,
+      "error": null,
+      "estimated_cost_usd": 0.0,
+      "index": 12,
+      "session_id": "claude-code-session:49a22410-d90e-4f51-bd9b-4e13cb0f03c0",
+      "status": "no_embeddable_messages",
+      "title": "49a22410-d90e-4f51-bd9b-4e13cb0f03c0",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 1,
+      "error": null,
+      "estimated_cost_usd": 5e-05,
+      "index": 13,
+      "session_id": "claude-code-session:573e35bc-e6ec-453c-a44e-47e49070fcc2",
+      "status": "embedded",
+      "title": "573e35bc-e6ec-453c-a44e-47e49070fcc2",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 3,
+      "error": null,
+      "estimated_cost_usd": 0.00015,
+      "index": 14,
+      "session_id": "claude-code-session:955471bc-e0ce-46c5-881f-8c63bd5ebddb:agent-aadaf6c980115d4a9",
+      "status": "embedded",
+      "title": "Research everything useful about the Gigabyte Z790 AORUS ELITE AX BIOS (version ...",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 97,
+      "error": null,
+      "estimated_cost_usd": 0.00485,
+      "index": 15,
+      "session_id": "claude-code-session:886393e7-a450-49df-acbe-f623bdeb1b17:agent-acompact-981a3a4492dac1ff",
+      "status": "embedded",
+      "title": "go on",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 143,
+      "error": null,
+      "estimated_cost_usd": 0.00715,
+      "index": 16,
+      "session_id": "claude-code-session:716630e9-22e3-43b9-9664-b767d1ead09e:agent-acompact-b8a0add553f1a25a",
+      "status": "embedded",
+      "title": "it's been another hour. perhaps sth is blockiing the output somehow?",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 12,
+      "error": null,
+      "estimated_cost_usd": 0.0006,
+      "index": 17,
+      "session_id": "claude-code-session:955471bc-e0ce-46c5-881f-8c63bd5ebddb:agent-afd623f99b34005a1",
+      "status": "embedded",
+      "title": "Investigate the Linux kernel's ACPI thermal zone driver, specifically: 1. Fetch ...",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 21,
+      "error": null,
+      "estimated_cost_usd": 0.00105,
+      "index": 18,
+      "session_id": "claude-code-session:955471bc-e0ce-46c5-881f-8c63bd5ebddb:agent-a8c5bbe6f627dcff1",
+      "status": "embedded",
+      "title": "Scope the work required to port coreboot to the Gigabyte Z790 AORUS ELITE AX mot...",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 9,
+      "error": null,
+      "estimated_cost_usd": 0.00045,
+      "index": 19,
+      "session_id": "claude-code-session:5158189b-c054-4c53-8f96-21b84a893998",
+      "status": "embedded",
+      "title": "You are writing the Sinex Architect's Companion v2 \u2014 the definitive reference do...",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 8,
+      "error": null,
+      "estimated_cost_usd": 0.0004,
+      "index": 20,
+      "session_id": "claude-code-session:88ec9985-e999-4a77-818d-28426f059f10",
+      "status": "embedded",
+      "title": "You are writing the Sinex Architect's Companion v2 \u2014 the definitive reference do...",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 7,
+      "error": null,
+      "estimated_cost_usd": 0.00035,
+      "index": 21,
+      "session_id": "claude-code-session:88ec9985-e999-4a77-818d-28426f059f10:agent-acompact-c9fc2bcc9713d4b5",
+      "status": "embedded",
+      "title": "You are writing the Sinex Architect's Companion v2 \u2014 the definitive reference do...",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 80,
+      "error": null,
+      "estimated_cost_usd": 0.004,
+      "index": 22,
+      "session_id": "claude-code-session:886393e7-a450-49df-acbe-f623bdeb1b17:agent-acompact-1d5e794ea29f17c1",
+      "status": "embedded",
+      "title": "Your task is to create a detailed summary of the conversation so far, paying clo...",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 14,
+      "error": null,
+      "estimated_cost_usd": 0.0007,
+      "index": 23,
+      "session_id": "claude-code-session:440f09ba-eaf0-48b9-bf7d-9fe7befe4edc",
+      "status": "embedded",
+      "title": "You are writing the Sinex Architect's Companion v2 \u2014 the definitive reference do...",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 9,
+      "error": null,
+      "estimated_cost_usd": 0.00045,
+      "index": 24,
+      "session_id": "claude-code-session:5158189b-c054-4c53-8f96-21b84a893998:agent-a358579cb84467850",
+      "status": "embedded",
+      "title": "Read the complete file at /realm/project/sinex/.claude/scratch/sinex-ultimate-vi...",
+      "total": 25
+    },
+    {
+      "embedded_message_count": 75,
+      "error": null,
+      "estimated_cost_usd": 0.00375,
+      "index": 25,
+      "session_id": "claude-code-session:886393e7-a450-49df-acbe-f623bdeb1b17:agent-acompact-6fdae03033f10d6c",
+      "status": "embedded",
+      "title": "Your task is to create a detailed summary of the conversation so far, paying clo...",
+      "total": 25
+    }
+  ],
+  "status": "complete",
+  "stopped_reason": null
+}
