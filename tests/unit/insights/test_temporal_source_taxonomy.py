@@ -25,12 +25,26 @@ import pytest
 
 from polylogue.insights.temporal_source import (
     TEMPORAL_SOURCE_VALUES,
+    TemporalSource,
+    audit_temporal_source_leaf_callers,
     classify_aggregate_hwm_source,
     classify_profile_hwm_source,
     classify_thread_hwm_source,
     is_valid_temporal_source,
+    weakest_of,
+    weakest_source,
 )
 from tests.infra.storage_records import SessionBuilder, db_setup
+
+# Strongest to weakest, matching the taxonomy docstring order exactly.
+_ORDERED_SOURCES: tuple[TemporalSource, ...] = (
+    "provider_ts",
+    "hook_event_ts",
+    "sort_key",
+    "file_mtime",
+    "materialization_ts",
+    "fallback_date",
+)
 
 
 class TestTemporalSourceLiteral:
@@ -84,10 +98,66 @@ class TestClassifierHelpers:
         assert classify_thread_hwm_source(None) == "fallback_date"
 
     def test_aggregate_with_inputs_is_provider_ts(self) -> None:
-        assert classify_aggregate_hwm_source(["2026-05-01T00:00:00+00:00"]) == "provider_ts"
+        assert classify_aggregate_hwm_source(["provider_ts"]) == "provider_ts"
 
     def test_aggregate_without_inputs_is_fallback_date(self) -> None:
         assert classify_aggregate_hwm_source([]) == "fallback_date"
+
+    def test_aggregate_of_all_provider_ts_stays_provider_ts(self) -> None:
+        assert classify_aggregate_hwm_source(["provider_ts", "provider_ts", "provider_ts"]) == "provider_ts"
+
+    def test_aggregate_mixed_provider_ts_and_fallback_emits_fallback(self) -> None:
+        """A single weak contributor must not be laundered by the strong ones."""
+        assert classify_aggregate_hwm_source(["provider_ts", "fallback_date"]) == "fallback_date"
+        assert classify_aggregate_hwm_source(["fallback_date", "provider_ts", "provider_ts"]) == "fallback_date"
+
+    def test_aggregate_reports_the_single_weakest_contributor(self) -> None:
+        assert classify_aggregate_hwm_source(["provider_ts", "hook_event_ts", "sort_key", "file_mtime"]) == "file_mtime"
+
+
+class TestWeakestSourceLattice:
+    """Table-driven: every ordered pair of TemporalSource values."""
+
+    @pytest.mark.parametrize("stronger", _ORDERED_SOURCES)
+    @pytest.mark.parametrize("weaker", _ORDERED_SOURCES)
+    def test_weakest_source_picks_the_later_taxonomy_entry(
+        self, weaker: TemporalSource, stronger: TemporalSource
+    ) -> None:
+        a_index = _ORDERED_SOURCES.index(weaker)
+        b_index = _ORDERED_SOURCES.index(stronger)
+        expected = weaker if a_index >= b_index else stronger
+        assert weakest_source(weaker, stronger) == expected
+        # Commutative: argument order must not matter.
+        assert weakest_source(stronger, weaker) == expected
+
+    def test_weakest_source_is_reflexive(self) -> None:
+        for source in _ORDERED_SOURCES:
+            assert weakest_source(source, source) == source
+
+    def test_weakest_of_reduces_a_sequence(self) -> None:
+        assert weakest_of(["provider_ts", "sort_key", "hook_event_ts"]) == "sort_key"
+        assert weakest_of(["fallback_date"]) == "fallback_date"
+
+    def test_weakest_of_empty_is_none(self) -> None:
+        assert weakest_of([]) is None
+
+
+class TestLeafClassifierAudit:
+    """AC: leaf audit reports unjustifiable provider_ts paths."""
+
+    def test_known_leaf_callers_are_justified(self) -> None:
+        import polylogue
+
+        package_root = str(Path(polylogue.__file__).parent)
+        violations = audit_temporal_source_leaf_callers(package_root)
+        assert violations == [], f"unjustifiable provider_ts leaf call sites: {violations}"
+
+    def test_audit_flags_an_unjustified_call_site(self, tmp_path: Path) -> None:
+        """The audit must actually detect a planted violation, not just pass vacuously."""
+        bad_module = tmp_path / "bad_caller.py"
+        bad_module.write_text("source = classify_profile_hwm_source(profile.file_mtime)  # wrong field\n")
+        violations = audit_temporal_source_leaf_callers(str(tmp_path))
+        assert any("bad_caller.py" in v and "classify_profile_hwm_source" in v for v in violations)
 
 
 @pytest.fixture()

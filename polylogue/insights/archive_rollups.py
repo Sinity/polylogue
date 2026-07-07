@@ -23,7 +23,11 @@ from polylogue.insights.archive import (
     profile_timestamp_values,
     records_provenance,
 )
-from polylogue.insights.temporal_source import classify_aggregate_hwm_source
+from polylogue.insights.temporal_source import (
+    TemporalSource,
+    classify_aggregate_hwm_source,
+    classify_profile_hwm_source,
+)
 from polylogue.storage.runtime import SessionTagRollupRecord
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 
@@ -37,6 +41,7 @@ class _TagRollupBucket:
     repos: Counter[str] = field(default_factory=Counter)
     source_updated_at: list[str] = field(default_factory=list)
     source_sort_key: list[float] = field(default_factory=list)
+    contributor_sources: list[TemporalSource] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -82,6 +87,8 @@ def build_session_tag_rollup_records(
             bucket.repos.update(repo_names)
             bucket.source_updated_at.extend(iso_timestamps)
             bucket.source_sort_key.extend(sort_keys)
+            if iso_timestamps:
+                bucket.contributor_sources.append(classify_profile_hwm_source(profile.updated_at))
 
     rows: list[SessionTagRollupRecord] = []
     for (source_name, bucket_day_text, tag), bucket in sorted(grouped.items()):
@@ -96,7 +103,7 @@ def build_session_tag_rollup_records(
                 source_updated_at=hwm,
                 source_sort_key=max(bucket.source_sort_key) if bucket.source_sort_key else None,
                 input_high_water_mark=hwm,
-                input_high_water_mark_source=classify_aggregate_hwm_source(bucket.source_updated_at),
+                input_high_water_mark_source=classify_aggregate_hwm_source(bucket.contributor_sources),
                 input_row_count=bucket.session_count,
                 session_count=bucket.session_count,
                 logical_session_count=len(bucket.logical_session_ids),
