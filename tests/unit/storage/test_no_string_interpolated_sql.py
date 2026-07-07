@@ -46,28 +46,32 @@ _STORAGE_ROOT: Final = Path("polylogue/storage")
 _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     (
         "polylogue/storage/embeddings/status_payload.py",
-        624,
+        626,
     ): 'conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}") uses an internal integer constant.',
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        4972,
+        5172,
     ): "query_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL plus closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5023,
+        5223,
     ): "query_session_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL, placeholders, and closed order direction; ids are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5501,
+        5701,
     ): "query_runs interpolates run_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5552,
+        5752,
     ): "query_observed_events interpolates observed_event_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5607,
+        5807,
     ): "query_context_snapshots interpolates context_snapshot_relation_sql() and closed predicate/order fragments; user values are bound.",
+    (
+        "polylogue/storage/sqlite/archive_tiers/archive.py",
+        1605,
+    ): "cost_rollup no-usage leg interpolates a closed WHERE fragment list built in-function; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/ops_write.py",
         585,
