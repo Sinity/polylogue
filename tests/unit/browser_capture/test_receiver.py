@@ -176,6 +176,60 @@ def test_write_capture_envelope_replaces_same_artifact(tmp_path: Path) -> None:
     assert json.loads(first.path.read_text(encoding="utf-8"))["session"]["provider_session_id"] == "conv-123"
 
 
+class TestSpoolGovernor:
+    """Spool quota bounds disk growth from distinct-session capture floods (kwsb.1)."""
+
+    def test_replacing_an_existing_capture_bypasses_the_quota(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-capturing the SAME session never grows the spool, so it must
+        never be refused by the quota — only NEW distinct sessions can."""
+        import polylogue.browser_capture.receiver as receiver_mod
+
+        monkeypatch.setattr(receiver_mod, "SPOOL_MAX_FILES", 1)
+        envelope = BrowserCaptureEnvelope.model_validate(_payload())
+        write_capture_envelope(envelope, spool_path=tmp_path)
+
+        # At the file-count quota already; replacing the same session must
+        # still succeed since it does not create a new file.
+        result = write_capture_envelope(envelope, spool_path=tmp_path)
+        assert result.replaced is True
+
+    def test_new_session_over_file_count_quota_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import polylogue.browser_capture.receiver as receiver_mod
+        from polylogue.browser_capture.receiver import SpoolQuotaExceededError
+
+        monkeypatch.setattr(receiver_mod, "SPOOL_MAX_FILES", 1)
+        write_capture_envelope(
+            BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-1")), spool_path=tmp_path
+        )
+
+        with pytest.raises(SpoolQuotaExceededError):
+            write_capture_envelope(
+                BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-2")), spool_path=tmp_path
+            )
+
+    def test_new_session_over_byte_quota_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import polylogue.browser_capture.receiver as receiver_mod
+        from polylogue.browser_capture.receiver import SpoolQuotaExceededError
+
+        write_capture_envelope(
+            BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-1")), spool_path=tmp_path
+        )
+        monkeypatch.setattr(receiver_mod, "SPOOL_MAX_BYTES", 1)
+
+        with pytest.raises(SpoolQuotaExceededError):
+            write_capture_envelope(
+                BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-2")), spool_path=tmp_path
+            )
+
+    def test_under_quota_new_session_succeeds(self, tmp_path: Path) -> None:
+        result = write_capture_envelope(
+            BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-fresh")), spool_path=tmp_path
+        )
+        assert result.replaced is False
+
+
 def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None:
     envelope = BrowserCaptureEnvelope.model_validate(_payload())
     write_capture_envelope(envelope, spool_path=tmp_path)
@@ -254,6 +308,33 @@ def test_receiver_accepts_extension_capture_and_reports_typed_dto(tmp_path: Path
     assert body.artifact_ref == capture_artifact_ref(BrowserCaptureEnvelope.model_validate(_payload()), tmp_path)
     assert Path(body.artifact_ref).is_absolute() is False
     assert (tmp_path / body.artifact_ref).exists()
+
+
+def test_receiver_returns_429_without_writing_when_spool_quota_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.browser_capture.receiver as receiver_mod
+
+    monkeypatch.setattr(receiver_mod, "SPOOL_MAX_FILES", 1)
+    write_capture_envelope(
+        BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-existing")), spool_path=tmp_path
+    )
+    files_before = sorted(tmp_path.rglob("*.json"))
+
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "POST",
+            "/v1/browser-captures",
+            body=_payload(session_id="conv-new-over-quota"),
+            origin=_EXTENSION_ORIGIN,
+        )
+        error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+
+    assert response.status == HTTPStatus.TOO_MANY_REQUESTS
+    assert error.error == "spool_quota_exceeded"
+    assert sorted(tmp_path.rglob("*.json")) == files_before
 
 
 def test_receiver_does_not_double_prefix_prefixed_capture_id(tmp_path: Path) -> None:
@@ -496,3 +577,24 @@ def test_receiver_allows_extra_web_origin_only_with_token(tmp_path: Path) -> Non
     assert response.status == HTTPStatus.ACCEPTED
     assert body.ok is True
     assert Path(body.artifact_ref).is_absolute() is False
+
+
+def test_receiver_rejects_wrong_token(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path, auth_token="secret", extra_origins=(_CHATGPT_ORIGIN,)) as (host, port):
+        conn = HTTPConnection(host, port)
+        conn.request(
+            "POST",
+            "/v1/browser-captures",
+            body=json.dumps(_payload()),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": _CHATGPT_ORIGIN,
+                "Authorization": "Bearer wrong-token",
+            },
+        )
+        response = conn.getresponse()
+        error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+        conn.close()
+
+    assert response.status == HTTPStatus.UNAUTHORIZED
+    assert error.error == "unauthorized"

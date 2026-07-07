@@ -315,17 +315,66 @@ def _escape_like_suffix(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# Spool governor (kwsb.1): a hostile or runaway poster sending distinct
+# (provider, provider_session_id) pairs creates a new file per capture —
+# unlike a repeat capture of the SAME session, which replaces its existing
+# file in place and never grows the spool. These bounds cap that growth.
+SPOOL_MAX_FILES = 20_000
+SPOOL_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+
+
+class SpoolQuotaExceededError(RuntimeError):
+    """Raised when writing a new (non-replacing) capture would exceed the spool quota."""
+
+
+@dataclass(frozen=True, slots=True)
+class SpoolUsage:
+    file_count: int
+    total_bytes: int
+
+
+def _spool_usage(spool_root: Path) -> SpoolUsage:
+    file_count = 0
+    total_bytes = 0
+    if spool_root.exists():
+        for path in spool_root.rglob("*.json"):
+            try:
+                total_bytes += path.stat().st_size
+            except OSError:
+                continue
+            file_count += 1
+    return SpoolUsage(file_count=file_count, total_bytes=total_bytes)
+
+
+def _check_spool_quota(spool_root: Path) -> None:
+    usage = _spool_usage(spool_root)
+    if usage.file_count >= SPOOL_MAX_FILES or usage.total_bytes >= SPOOL_MAX_BYTES:
+        raise SpoolQuotaExceededError(
+            f"capture spool quota exceeded: {usage.file_count} files, {usage.total_bytes} bytes "
+            f"(limits: {SPOOL_MAX_FILES} files, {SPOOL_MAX_BYTES} bytes)"
+        )
+
+
 def write_capture_envelope(
     envelope: BrowserCaptureEnvelope,
     *,
     spool_path: Path | None = None,
 ) -> BrowserCaptureWriteResult:
-    """Atomically write a browser-capture source artifact into the capture spool."""
+    """Atomically write a browser-capture source artifact into the capture spool.
+
+    Raises :class:`SpoolQuotaExceededError` before writing a NEW artifact
+    (one that does not replace an existing same-session file) once the
+    spool quota is reached — replacing an existing capture never grows the
+    spool and is always allowed.
+    """
     target = capture_artifact_path(envelope, spool_path)
+    replaced = target.exists()
+    if not replaced:
+        root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
+        _check_spool_quota(root)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = envelope.model_dump(mode="json", exclude_none=True)
     raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
-    replaced = target.exists()
     with tempfile.NamedTemporaryFile("wb", dir=target.parent, prefix=f".{target.name}.", delete=False) as handle:
         temp_path = Path(handle.name)
         handle.write(raw)

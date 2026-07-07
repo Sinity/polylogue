@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import time
 from collections.abc import Callable
@@ -29,6 +30,7 @@ from polylogue.browser_capture.receiver import (
     BrowserPostCommandConflictError,
     BrowserPostCommandStateError,
     BrowserPostDisabledError,
+    SpoolQuotaExceededError,
     ack_post_command,
     browser_post_enabled,
     capture_response_id,
@@ -70,7 +72,7 @@ def _check_token(headers: dict[str, str], config: BrowserCaptureReceiverConfig) 
     if config.auth_token is None:
         return True
     auth = headers.get("Authorization", "")
-    return bool(auth.startswith("Bearer ") and auth[7:] == config.auth_token)
+    return bool(auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], config.auth_token))
 
 
 class BrowserCaptureHTTPServer(ThreadingHTTPServer):
@@ -281,6 +283,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         try:
             result = write_capture_envelope(envelope, spool_path=self.server.config.spool_path)
+        except SpoolQuotaExceededError as exc:
+            logger.warning("browser_capture.spool_quota_exceeded", request_id=self._request_id(), error=str(exc))
+            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "spool_quota_exceeded")
+            return
         except OSError as exc:
             logger.warning("browser_capture.write_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")

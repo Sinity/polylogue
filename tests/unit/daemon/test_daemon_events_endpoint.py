@@ -380,3 +380,25 @@ class TestAccessTokenQueryFallback:
 
         # Sanity: the raw logic still rejects when no header is present.
         assert _check_auth_logic("secret", "127.0.0.1", "").allowed is False
+
+    def test_access_token_in_query_string_is_ignored_on_non_sse_routes(self, empty_events_db: Path) -> None:
+        """The query-token fallback is scoped to /api/events only (kwsb.1).
+
+        Accepting ?access_token= broadly would leak bearer tokens into
+        server logs, proxies, and the Referer header on every route —
+        EventSource's header limitation is the sole legitimate reason for
+        the fallback to exist at all.
+        """
+        handler = _make_handler("GET", "/api/status?access_token=secret")
+        handler.server = cast(
+            "DaemonAPIHTTPServer",
+            type(
+                "_Srv",
+                (),
+                {"auth_token": "secret", "api_host": "127.0.0.1"},
+            )(),
+        )
+        send_error = MagicMock()
+        handler._send_error = send_error  # type: ignore[method-assign]
+        handler.do_GET()
+        send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
