@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -327,6 +328,13 @@ class SpoolQuotaExceededError(RuntimeError):
     """Raised when writing a new (non-replacing) capture would exceed the spool quota."""
 
 
+# BrowserCaptureHTTPServer is a ThreadingHTTPServer — concurrent POSTs run on
+# separate threads. Without this lock, multiple new-capture writes could all
+# pass _check_spool_quota() before any of them lands (TOCTOU), overshooting
+# the quota under load. Held across check-and-write, not just the check.
+_SPOOL_WRITE_LOCK = threading.Lock()
+
+
 @dataclass(frozen=True, slots=True)
 class SpoolUsage:
     file_count: int
@@ -365,21 +373,25 @@ def write_capture_envelope(
     Raises :class:`SpoolQuotaExceededError` before writing a NEW artifact
     (one that does not replace an existing same-session file) once the
     spool quota is reached — replacing an existing capture never grows the
-    spool and is always allowed.
+    spool and is always allowed. The quota check and the write are
+    serialized against every other call (see ``_SPOOL_WRITE_LOCK``) so
+    concurrent requests cannot all pass the check before any one write
+    lands.
     """
     target = capture_artifact_path(envelope, spool_path)
-    replaced = target.exists()
-    if not replaced:
-        root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
-        _check_spool_quota(root)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload = envelope.model_dump(mode="json", exclude_none=True)
-    raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
-    with tempfile.NamedTemporaryFile("wb", dir=target.parent, prefix=f".{target.name}.", delete=False) as handle:
-        temp_path = Path(handle.name)
-        handle.write(raw)
-        handle.write(b"\n")
-    temp_path.replace(target)
+    with _SPOOL_WRITE_LOCK:
+        replaced = target.exists()
+        if not replaced:
+            root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
+            _check_spool_quota(root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = envelope.model_dump(mode="json", exclude_none=True)
+        raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
+        with tempfile.NamedTemporaryFile("wb", dir=target.parent, prefix=f".{target.name}.", delete=False) as handle:
+            temp_path = Path(handle.name)
+            handle.write(raw)
+            handle.write(b"\n")
+        temp_path.replace(target)
     return BrowserCaptureWriteResult(
         provider=envelope.provider.value,
         provider_session_id=envelope.provider_session_id,

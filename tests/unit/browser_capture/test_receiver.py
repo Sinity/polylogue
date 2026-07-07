@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPResponse
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
 from typing import cast
 
 import pytest
@@ -228,6 +228,43 @@ class TestSpoolGovernor:
             BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-fresh")), spool_path=tmp_path
         )
         assert result.replaced is False
+
+    def test_concurrent_new_session_writes_never_exceed_the_quota(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TOCTOU regression: without serializing check-and-write, concurrent
+        threads can all pass ``_check_spool_quota`` before any one write
+        lands, overshooting the file-count limit."""
+        import polylogue.browser_capture.receiver as receiver_mod
+
+        quota = 5
+        thread_count = 20
+        monkeypatch.setattr(receiver_mod, "SPOOL_MAX_FILES", quota)
+
+        successes: list[bool] = []
+        lock = Lock()
+
+        def _attempt(index: int) -> None:
+            try:
+                write_capture_envelope(
+                    BrowserCaptureEnvelope.model_validate(_payload(session_id=f"conv-race-{index}")),
+                    spool_path=tmp_path,
+                )
+                ok = True
+            except receiver_mod.SpoolQuotaExceededError:
+                ok = False
+            with lock:
+                successes.append(ok)
+
+        threads = [Thread(target=_attempt, args=(i,)) for i in range(thread_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        written = list(tmp_path.rglob("*.json"))
+        assert len(written) <= quota, f"spool grew to {len(written)} files, over quota {quota}"
+        assert sum(successes) == len(written)
 
 
 def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None:

@@ -468,6 +468,9 @@ class TestCheckHostAdmissionLogic:
             ("evil.example.com:8766", False),
             ("127.0.0.1.evil.com", False),  # subdomain trick
             ("127.0.0.1evil.com", False),
+            ("[::1", False),  # malformed IPv6: unmatched bracket, urlsplit raises ValueError
+            ("[bad", False),  # malformed IPv6: invalid content, urlsplit raises ValueError
+            ("xn--0.evil.com", False),  # punycode/NFKC-adjacent host, still just a foreign name
         ],
     )
     def test_loopback_and_configured_host_admitted(self, host_header: str, expected_allowed: bool) -> None:

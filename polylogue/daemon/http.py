@@ -1017,10 +1017,17 @@ def _check_host_admission_logic(host_header: str, api_host: str) -> bool:
     (``_check_auth`` grants full access to any local caller when no
     token is configured). Rejecting on presence-and-mismatch, not on
     absence, closes the real hole without reshaping that model.
+
+    A malformed Host (e.g. unmatched IPv6 brackets) makes ``urlsplit``
+    raise ``ValueError`` — treated as a refusal, not left to propagate as
+    an unhandled exception.
     """
     if not host_header:
         return True
-    hostname = urlsplit(f"//{host_header}").hostname or ""
+    try:
+        hostname = urlsplit(f"//{host_header}").hostname or ""
+    except ValueError:
+        return False
     return is_loopback_host(hostname) or hostname == api_host
 
 
