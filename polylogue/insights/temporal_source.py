@@ -48,7 +48,7 @@ was derived). The three axes coexist and answer different questions.
 
 from __future__ import annotations
 
-import re
+import ast
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Literal, get_args
@@ -136,13 +136,22 @@ def classify_aggregate_hwm_source(contributor_sources: Sequence[TemporalSource])
     return weakest if weakest is not None else "fallback_date"
 
 
-_LEAF_CALLER_CONTRACTS: dict[str, re.Pattern[str]] = {
-    # classify_profile_hwm_source is justified ONLY when called with the raw
-    # provider-parsed Session.updated_at field (never backfilled from a
-    # weaker clock). classify_thread_hwm_source: same contract for end_time.
-    "classify_profile_hwm_source": re.compile(r"classify_profile_hwm_source\(\s*\w+\.updated_at\s*\)"),
-    "classify_thread_hwm_source": re.compile(r"classify_thread_hwm_source\(\s*\w+\.end_time\s*\)"),
+# classify_profile_hwm_source is justified ONLY when called with the raw
+# provider-parsed Session.updated_at field (never backfilled from a weaker
+# clock). classify_thread_hwm_source: same contract for end_time.
+_LEAF_CALLER_CONTRACTS: dict[str, str] = {
+    "classify_profile_hwm_source": "updated_at",
+    "classify_thread_hwm_source": "end_time",
 }
+
+
+def _call_matches_contract(call: ast.Call, required_attr: str) -> bool:
+    """True if *call* has exactly one positional arg shaped ``<expr>.<required_attr>``."""
+
+    if len(call.args) != 1 or call.keywords:
+        return False
+    arg = call.args[0]
+    return isinstance(arg, ast.Attribute) and arg.attr == required_attr
 
 
 def audit_temporal_source_leaf_callers(package_root: str) -> list[str]:
@@ -153,11 +162,14 @@ def audit_temporal_source_leaf_callers(package_root: str) -> list[str]:
     justifies (``<x>.updated_at``, ``<x>.end_time`` — raw provider-parsed
     fields, never backfilled from a weaker clock). If a future call site
     passes a different field while still expecting ``provider_ts``
-    semantics, that is an unjustifiable provider_ts path. Scans every
-    ``.py`` file under *package_root* (this module's own definitions are
-    skipped by filename); an empty result means every call site found is
-    justified. Finding zero call sites at all is itself reported — it
-    means the contract can no longer be checked, not that it is satisfied.
+    semantics, that is an unjustifiable provider_ts path. Parses every
+    ``.py`` file under *package_root* as an AST and walks ``ast.Call``
+    nodes — unlike a text/regex scan, this cannot miscount multiline calls
+    or false-positive on comments and string literals that merely mention
+    the function name. This module's own definitions are skipped by
+    filename. An empty result means every call site found is justified.
+    Finding zero call sites at all is itself reported — it means the
+    contract can no longer be checked, not that it is satisfied.
     """
 
     import pathlib
@@ -167,14 +179,19 @@ def audit_temporal_source_leaf_callers(package_root: str) -> list[str]:
     for path in pathlib.Path(package_root).rglob("*.py"):
         if path.name == "temporal_source.py":
             continue
-        source = path.read_text()
-        for name, pattern in _LEAF_CALLER_CONTRACTS.items():
-            for line in source.splitlines():
-                if f"{name}(" not in line:
-                    continue
-                call_site_counts[name] += 1
-                if not pattern.search(line):
-                    violations.append(f"{name}: unjustified call in {path}: {line.strip()}")
+        try:
+            tree = ast.parse(path.read_text(), filename=str(path))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            required_attr = _LEAF_CALLER_CONTRACTS.get(node.func.id)
+            if required_attr is None:
+                continue
+            call_site_counts[node.func.id] += 1
+            if not _call_matches_contract(node, required_attr):
+                violations.append(f"{node.func.id}: unjustified call in {path}:{node.lineno}")
     for name, count in call_site_counts.items():
         if count == 0:
             violations.append(f"{name}: no call sites found under {package_root} — contract unverifiable")

@@ -116,23 +116,26 @@ class TestClassifierHelpers:
 
 
 class TestWeakestSourceLattice:
-    """Table-driven: every ordered pair of TemporalSource values."""
+    """Table-driven: every ordered pair of TemporalSource values.
 
-    @pytest.mark.parametrize("stronger", _ORDERED_SOURCES)
-    @pytest.mark.parametrize("weaker", _ORDERED_SOURCES)
+    ``source_a``/``source_b`` are drawn independently from the same list —
+    neither is guaranteed weaker or stronger, hence the neutral names;
+    ``expected`` is re-derived from each pair's actual taxonomy position.
+    The diagonal (``source_a == source_b``) is covered by this same matrix,
+    so no separate reflexivity test is needed.
+    """
+
+    @pytest.mark.parametrize("source_b", _ORDERED_SOURCES)
+    @pytest.mark.parametrize("source_a", _ORDERED_SOURCES)
     def test_weakest_source_picks_the_later_taxonomy_entry(
-        self, weaker: TemporalSource, stronger: TemporalSource
+        self, source_a: TemporalSource, source_b: TemporalSource
     ) -> None:
-        a_index = _ORDERED_SOURCES.index(weaker)
-        b_index = _ORDERED_SOURCES.index(stronger)
-        expected = weaker if a_index >= b_index else stronger
-        assert weakest_source(weaker, stronger) == expected
+        a_index = _ORDERED_SOURCES.index(source_a)
+        b_index = _ORDERED_SOURCES.index(source_b)
+        expected = source_a if a_index >= b_index else source_b
+        assert weakest_source(source_a, source_b) == expected
         # Commutative: argument order must not matter.
-        assert weakest_source(stronger, weaker) == expected
-
-    def test_weakest_source_is_reflexive(self) -> None:
-        for source in _ORDERED_SOURCES:
-            assert weakest_source(source, source) == source
+        assert weakest_source(source_b, source_a) == expected
 
     def test_weakest_of_reduces_a_sequence(self) -> None:
         assert weakest_of(["provider_ts", "sort_key", "hook_event_ts"]) == "sort_key"
@@ -158,6 +161,21 @@ class TestLeafClassifierAudit:
         bad_module.write_text("source = classify_profile_hwm_source(profile.file_mtime)  # wrong field\n")
         violations = audit_temporal_source_leaf_callers(str(tmp_path))
         assert any("bad_caller.py" in v and "classify_profile_hwm_source" in v for v in violations)
+
+    def test_audit_ignores_comments_strings_and_handles_multiline_calls(self, tmp_path: Path) -> None:
+        """AST-based scan: no false positives from text mentioning the name,
+        no miscount on a call split across lines."""
+        good_module = tmp_path / "good_caller.py"
+        good_module.write_text(
+            "# classify_profile_hwm_source(profile.file_mtime) — mentioned only in a comment\n"
+            '"""classify_profile_hwm_source(profile.file_mtime) — mentioned only in a docstring"""\n'
+            "source = classify_profile_hwm_source(\n"
+            "    profile.updated_at\n"
+            ")\n"
+            "thread_source = classify_thread_hwm_source(thread.end_time)\n"
+        )
+        violations = audit_temporal_source_leaf_callers(str(tmp_path))
+        assert violations == []
 
 
 @pytest.fixture()

@@ -23,11 +23,7 @@ from polylogue.insights.archive import (
     profile_timestamp_values,
     records_provenance,
 )
-from polylogue.insights.temporal_source import (
-    TemporalSource,
-    classify_aggregate_hwm_source,
-    classify_profile_hwm_source,
-)
+from polylogue.insights.temporal_source import TemporalSource, classify_aggregate_hwm_source
 from polylogue.storage.runtime import SessionTagRollupRecord
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 
@@ -88,7 +84,11 @@ def build_session_tag_rollup_records(
             bucket.source_updated_at.extend(iso_timestamps)
             bucket.source_sort_key.extend(sort_keys)
             if iso_timestamps:
-                bucket.contributor_sources.append(classify_profile_hwm_source(profile.updated_at))
+                # See archive_summaries.py: iso_timestamps draws from four raw
+                # provider-parsed fields, any of which winning the aggregate
+                # max() is genuinely provider_ts — classify_profile_hwm_source
+                # only checks updated_at and can disagree with the winner.
+                bucket.contributor_sources.append("provider_ts")
 
     rows: list[SessionTagRollupRecord] = []
     for (source_name, bucket_day_text, tag), bucket in sorted(grouped.items()):

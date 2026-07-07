@@ -17,11 +17,7 @@ from polylogue.insights.archive import (
     records_provenance,
 )
 from polylogue.insights.archive_models import DaySessionSummaryPayload, WeekSessionSummaryPayload
-from polylogue.insights.temporal_source import (
-    TemporalSource,
-    classify_aggregate_hwm_source,
-    classify_profile_hwm_source,
-)
+from polylogue.insights.temporal_source import TemporalSource, classify_aggregate_hwm_source
 from polylogue.storage.runtime import DaySessionSummaryRecord
 
 
@@ -69,7 +65,14 @@ def build_day_session_summary_records(
             source_updates.extend(iso_values)
             source_sorts.extend(sort_values)
             if iso_values:
-                contributor_sources.append(classify_profile_hwm_source(profile.updated_at))
+                # profile_timestamp_values draws from four raw provider-parsed
+                # fields (updated_at, last_message_at, first_message_at,
+                # created_at); classify_profile_hwm_source only checks
+                # updated_at specifically, which can disagree with which
+                # field actually won the aggregate's max() below. Any
+                # non-empty result here is genuinely provider-sourced —
+                # tag it directly rather than re-deriving from one field.
+                contributor_sources.append("provider_ts")
         search_text = " \n".join(
             part
             for part in (
