@@ -6,6 +6,8 @@ import sys
 from typing import Any, cast
 from unittest.mock import patch
 
+import pytest
+
 from polylogue import logging as logging_mod
 from polylogue.logging import BoundLoggerLike
 
@@ -181,7 +183,9 @@ def test_configure_logging_accepts_typed_force_plain_config() -> None:
     console_renderer.assert_called_once_with(colors=False)
 
 
-def test_stdlib_bound_logger_forwards_exc_info_before_structlog_configured() -> None:
+def test_stdlib_bound_logger_forwards_exc_info_before_structlog_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Callers pass exc_info/extra structlog-style before configure_logging() runs.
 
     Previously these kwargs were silently dropped, so a `logger.warning(...,
@@ -196,6 +200,10 @@ def test_stdlib_bound_logger_forwards_exc_info_before_structlog_configured() -> 
 
     stdlib_logger = logging.getLogger("polylogue.tests.exc-forwarding")
     stdlib_logger.warning = _record  # type: ignore[assignment]
+
+    # An earlier test in the same worker may have run configure_logging();
+    # this test is specifically about the pre-configuration stdlib path.
+    monkeypatch.setattr(logging_mod, "_structlog_configured", False)
 
     with patch("polylogue.logging.logging.getLogger", return_value=stdlib_logger):
         bound = logging_mod.get_logger("polylogue.tests.exc-forwarding")

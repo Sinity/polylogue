@@ -561,6 +561,7 @@
             "raw_id_join_gap": 0,
             "skipped": 0,
             "parse_failed": 0,
+            "raw_parse_failed": 0,
             "parsed_without_index_session": 0
           },
           "source_family_counts": {},
@@ -1077,6 +1078,7 @@
         "raw_id_join_gap": 0,
         "skipped": 0,
         "parse_failed": 0,
+        "raw_parse_failed": 0,
         "parsed_without_index_session": 0
       },
       "source_family_counts": {}
@@ -1085,6 +1087,8 @@
       "available": true,
       "candidate_count": 0,
       "missing_blob_count": 0,
+      "missing_blob_source_available_count": 0,
+      "missing_blob_source_missing_count": 0,
       "already_parsed_count": 0,
       "total_blob_bytes": 0,
       "max_blob_bytes": 0,
