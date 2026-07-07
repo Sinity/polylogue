@@ -129,6 +129,12 @@ EXPECTED_PROMPT_NAMES = {
     "compare_sessions",
     "extract_patterns",
     "agent_coordination_brief",
+    "resume_context",
+    "postmortem_last",
+    "decisions_about",
+    "unacknowledged_failures",
+    "sessions_touching_file",
+    "cost_of",
 }
 
 SurfaceResult = TypeVar("SurfaceResult")

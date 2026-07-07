@@ -1131,6 +1131,77 @@ class TestPromptSurfaces:
         assert '"provider"' not in result
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("prompt_name", "kwargs", "expected_tools"),
+        [
+            (
+                "resume_context",
+                {},
+                ("find_resume_candidates", "get_resume_brief", "agent_coordination_brief", "blackboard_list"),
+            ),
+            (
+                "postmortem_last",
+                {},
+                ("find_abandoned_sessions", "find_stuck_sessions", "get_postmortem_bundle", "get_pathologies"),
+            ),
+            (
+                "decisions_about",
+                {"topic": "schema versioning"},
+                ("list_assertion_claims", "query_units", "search"),
+            ),
+            (
+                "unacknowledged_failures",
+                {},
+                ("query_units", "find_stuck_sessions", "list_marks"),
+            ),
+            (
+                "sessions_touching_file",
+                {"path": "polylogue/mcp/server.py"},
+                ("query_units", "search", "get_session_summary"),
+            ),
+            (
+                "cost_of",
+                {},
+                ("cost_rollups", "session_costs", "provider_usage"),
+            ),
+        ],
+    )
+    async def test_cookbook_prompts_render_tool_recipes(
+        self: object,
+        mcp_server: MCPServerUnderTest,
+        prompt_name: str,
+        kwargs: dict[str, object],
+        expected_tools: tuple[str, ...],
+    ) -> None:
+        result = await invoke_surface_async(mcp_server._prompt_manager._prompts[prompt_name].fn, **kwargs)
+        for tool in expected_tools:
+            assert tool in result, f"{prompt_name} recipe must name tool {tool}"
+
+    @pytest.mark.asyncio
+    async def test_cookbook_prompts_prefill_repo_context(self: object, mcp_server: MCPServerUnderTest) -> None:
+        prompts = mcp_server._prompt_manager._prompts
+        cwd = Path.cwd()
+
+        resume = await invoke_surface_async(prompts["resume_context"].fn)
+        assert str(cwd) in resume
+        assert cwd.name in resume
+        assert "POLYLOGUE_ARCHIVE_ROOT" in resume
+        assert "refs" in resume.lower()
+
+        override = await invoke_surface_async(prompts["resume_context"].fn, repo="sinex")
+        assert "'sinex'" in override
+
+        touching = await invoke_surface_async(
+            prompts["sessions_touching_file"].fn, path="polylogue/cli/click_app.py", repo="polylogue"
+        )
+        assert "path:polylogue/cli/click_app.py" in touching
+        assert "repo:polylogue" in touching
+
+        decisions = await invoke_surface_async(prompts["decisions_about"].fn, topic="lineage")
+        assert 'near:"lineage"' in decisions
+        assert "candidate" in decisions
+
+    @pytest.mark.asyncio
     async def test_compare_sessions_prompt_reads_archive_file_set(
         self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
     ) -> None:
