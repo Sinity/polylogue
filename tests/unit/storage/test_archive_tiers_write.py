@@ -1101,6 +1101,155 @@ def test_provider_usage_events_repair_single_model_usage_rollup(tmp_path: Path) 
     }
 
 
+def test_provider_usage_model_switch_on_reingest_does_not_double_count(tmp_path: Path) -> None:
+    """#2472 / polylogue-f2qv.1: Codex's cumulative token_count is
+    session-global, not per-model. A session first ingested with only model
+    A, then re-ingested (full re-write, not merge_append) after growing a
+    second message on model B with a NEW session-global cumulative that
+    already subsumes model A's tokens, must attribute the WHOLE cumulative
+    to model B only -- model A's stale rollup must not survive and get
+    summed in alongside it (sum(per_model) must equal the session total,
+    never exceed it)."""
+    conn = _connect(tmp_path / "index.db")
+
+    def _usage_event(model: str, *, input_tokens: int, cached: int, output: int) -> ParsedSessionEvent:
+        return ParsedSessionEvent(
+            event_type="token_count",
+            payload={
+                "type": "token_count",
+                "model": model,
+                "total_token_usage": {
+                    "input_tokens": input_tokens,
+                    "cached_input_tokens": cached,
+                    "output_tokens": output,
+                    "reasoning_output_tokens": 0,
+                },
+            },
+        )
+
+    session_v1 = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="reingest-model-switch",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex-mini",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first answer")],
+            )
+        ],
+        session_events=[_usage_event("gpt-5-codex-mini", input_tokens=100, cached=0, output=30)],
+    )
+    write_parsed_session_to_archive(conn, session_v1)
+
+    # Session grows: a second message on a different model, with a new
+    # session-global cumulative that already includes model A's tokens.
+    session_v2 = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="reingest-model-switch",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex-mini",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first answer")],
+            ),
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second answer, different model")],
+            ),
+        ],
+        session_events=[
+            _usage_event("gpt-5-codex-mini", input_tokens=100, cached=0, output=30),
+            _usage_event("gpt-5-codex", input_tokens=250, cached=20, output=80),
+        ],
+    )
+    session_id = write_parsed_session_to_archive(conn, session_v2)
+
+    rows = conn.execute(
+        "SELECT model_name, input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
+        (session_id,),
+    ).fetchall()
+    per_model = {row["model_name"]: (row["input_tokens"], row["output_tokens"]) for row in rows}
+
+    session_total_input = sum(v[0] for v in per_model.values())
+    session_total_output = sum(v[1] for v in per_model.values())
+
+    # 250 total - 20 cached = 230 fresh input; output 80 (reasoning already inside).
+    assert (session_total_input, session_total_output) == (230, 80), (
+        f"per-model rollups do not partition the session total: {per_model}"
+    )
+    # No single model row should hold LESS than the full total by construction
+    # here, but the defect this test guards is a model row holding tokens on
+    # top of the new cumulative -- assert no row is nonzero except the model
+    # that carried the latest cumulative.
+    nonzero_models = {model: v for model, v in per_model.items() if v != (0, 0)}
+    assert nonzero_models == {"gpt-5-codex": (230, 80)}, (
+        f"stale model rollup survived re-ingest and would double-count: {per_model}"
+    )
+
+
+def test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup(tmp_path: Path) -> None:
+    """A message's model can vanish between full re-ingests (e.g. corrected
+    message-boundary re-parsing). The old model's session_model_usage row
+    must not survive as an orphaned, stale contributor to per-model sums."""
+    conn = _connect(tmp_path / "index.db")
+
+    def _usage_event(model: str, *, input_tokens: int, cached: int, output: int) -> ParsedSessionEvent:
+        return ParsedSessionEvent(
+            event_type="token_count",
+            payload={
+                "type": "token_count",
+                "model": model,
+                "total_token_usage": {
+                    "input_tokens": input_tokens,
+                    "cached_input_tokens": cached,
+                    "output_tokens": output,
+                    "reasoning_output_tokens": 0,
+                },
+            },
+        )
+
+    session_v1 = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="reingest-model-vanish",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex-mini",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first answer")],
+            )
+        ],
+        session_events=[_usage_event("gpt-5-codex-mini", input_tokens=100, cached=0, output=30)],
+    )
+    write_parsed_session_to_archive(conn, session_v1)
+
+    session_v2 = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="reingest-model-vanish",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="only answer now")],
+            )
+        ],
+        session_events=[_usage_event("gpt-5-codex", input_tokens=50, cached=0, output=10)],
+    )
+    session_id = write_parsed_session_to_archive(conn, session_v2)
+
+    rows = conn.execute(
+        "SELECT model_name, input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
+        (session_id,),
+    ).fetchall()
+    per_model = {row["model_name"]: (row["input_tokens"], row["output_tokens"]) for row in rows}
+    assert per_model == {"gpt-5-codex": (50, 10)}, f"stale vanished-model rollup survived: {per_model}"
+
+
 def test_provider_usage_disjoint_lanes_subtracts_cached_and_does_not_re_add_reasoning() -> None:
     from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
 
