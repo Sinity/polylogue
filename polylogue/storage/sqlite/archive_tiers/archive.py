@@ -1212,11 +1212,20 @@ class ArchiveStore:
         if heuristic_label is not None:
             where.append("we.work_event_type = ?")
             params.append(heuristic_label)
+        # A work event with no reliable timestamp anywhere in its fallback
+        # chain (COALESCE(...) IS NULL) is not evidence it falls outside a
+        # since/until window -- include it rather than let SQL's NULL
+        # propagation silently exclude it (polylogue-2seq, sort_key_ms
+        # COALESCE audit).
         if since_ms is not None:
-            where.append("COALESCE(we.started_at_ms, s.sort_key_ms) >= ?")
+            where.append(
+                "(COALESCE(we.started_at_ms, s.sort_key_ms) IS NULL OR COALESCE(we.started_at_ms, s.sort_key_ms) >= ?)"
+            )
             params.append(since_ms)
         if until_ms is not None:
-            where.append("COALESCE(we.started_at_ms, s.sort_key_ms) <= ?")
+            where.append(
+                "(COALESCE(we.started_at_ms, s.sort_key_ms) IS NULL OR COALESCE(we.started_at_ms, s.sort_key_ms) <= ?)"
+            )
             params.append(until_ms)
         clause = "WHERE " + " AND ".join(where) if where else ""
         pagination = "" if limit is None else " LIMIT ? OFFSET ?"
@@ -1275,11 +1284,20 @@ class ArchiveStore:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
+        # A phase with no reliable timestamp anywhere in its fallback chain
+        # (COALESCE(...) IS NULL) is not evidence it falls outside a
+        # since/until window -- include it rather than let SQL's NULL
+        # propagation silently exclude it (polylogue-2seq, sort_key_ms
+        # COALESCE audit).
         if since_ms is not None:
-            where.append("COALESCE(sp.started_at_ms, s.sort_key_ms) >= ?")
+            where.append(
+                "(COALESCE(sp.started_at_ms, s.sort_key_ms) IS NULL OR COALESCE(sp.started_at_ms, s.sort_key_ms) >= ?)"
+            )
             params.append(since_ms)
         if until_ms is not None:
-            where.append("COALESCE(sp.started_at_ms, s.sort_key_ms) <= ?")
+            where.append(
+                "(COALESCE(sp.started_at_ms, s.sort_key_ms) IS NULL OR COALESCE(sp.started_at_ms, s.sort_key_ms) <= ?)"
+            )
             params.append(until_ms)
         clause = "WHERE " + " AND ".join(where) if where else ""
         pagination = "" if limit is None else " LIMIT ? OFFSET ?"
