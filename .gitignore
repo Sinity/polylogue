@@ -75,6 +75,8 @@ dist/
 !.agent/tools/**
 !.agent/archive/
 !.agent/archive/**
+!.agent/reports/
+!.agent/reports/**
 !.agent/scratch/
 .agent/scratch/*
 !.agent/scratch/README.md
