@@ -1767,7 +1767,32 @@ class ArchiveStore:
 
         event_scan_cutoff_ms: int | None = None
         skip_event_scan = False
-        if limit is not None and offset == 0 and limit > 0:
+        # The first-page cutoff optimization below reasons about events sorted
+        # by a real occurred_at_ms/sort_key_ms timestamp; a genuinely timeless
+        # event (both NULL, landing in the "unknown" bucket) doesn't fit that
+        # ordering at all, and the heuristic's own cost_page probe excludes
+        # timeless sessions, so it cannot see one coming. If it fired anyway,
+        # the caller's event_scan_cutoff_ms branch below adds an unconditional
+        # "e.occurred_at_ms IS NOT NULL" filter, silently dropping the very
+        # "unknown" bucket rows this fix exists to preserve. Skip the
+        # optimization entirely whenever a timeless event exists rather than
+        # risk that.
+        has_timeless_event = (
+            limit is not None
+            and offset == 0
+            and limit > 0
+            and bool(
+                self._conn.execute(
+                    """
+                    SELECT 1 FROM session_provider_usage_events e
+                    JOIN sessions s ON s.session_id = e.session_id
+                    WHERE e.occurred_at_ms IS NULL AND s.sort_key_ms IS NULL
+                    LIMIT 1
+                    """
+                ).fetchone()
+            )
+        )
+        if limit is not None and offset == 0 and limit > 0 and not has_timeless_event:
             event_scan_cutoff_ms, skip_event_scan = self._usage_timeline_event_scan_cutoff_ms(
                 origin=origin,
                 model=model,
@@ -1777,7 +1802,7 @@ class ArchiveStore:
                 limit=limit,
             )
 
-        where = ["COALESCE(e.occurred_at_ms, s.sort_key_ms, 0) > 0"]
+        where: list[str] = []
         params: list[object] = []
         if origin is not None:
             where.append("s.origin = ?")
@@ -1797,9 +1822,12 @@ class ArchiveStore:
             params.append(event_scan_cutoff_ms)
         event_rows = []
         if not skip_event_scan:
+            event_where = " AND ".join(where) if where else "1=1"
             event_rows = self._conn.execute(
                 f"""
-                SELECT strftime('%Y-%m', COALESCE(e.occurred_at_ms, s.sort_key_ms)/1000, 'unixepoch') AS bucket,
+                SELECT CASE WHEN COALESCE(e.occurred_at_ms, s.sort_key_ms) IS NULL THEN 'unknown'
+                            ELSE strftime('%Y-%m', COALESCE(e.occurred_at_ms, s.sort_key_ms)/1000, 'unixepoch')
+                       END AS bucket,
                        s.origin AS source_name,
                        COALESCE(e.model_name, '') AS model_name,
                        COUNT(*) AS event_count,
@@ -1813,7 +1841,7 @@ class ArchiveStore:
                        MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key
                 FROM session_provider_usage_events e
                 JOIN sessions s ON s.session_id = e.session_id
-                WHERE {" AND ".join(where)}
+                WHERE {event_where}
                 GROUP BY bucket, s.origin, model_name
                 """,
                 tuple(params),
@@ -1845,7 +1873,11 @@ class ArchiveStore:
             item.reasoning_output_tokens += int(row["reasoning_output_tokens"] or 0)
             item.note_sort_key(row["source_sort_key"])
 
-        cost_where = ["s.sort_key_ms > 0"]
+        # No longer excludes timeless sessions (was "s.sort_key_ms > 0", which
+        # silently dropped their cost/usage from every bucket forever, not
+        # just under a since/until window -- polylogue-rvtu). The bucket
+        # expression below routes such rows to an explicit "unknown" bucket.
+        cost_where: list[str] = []
         cost_params: list[object] = []
         if origin is not None:
             cost_where.append("s.origin = ?")
@@ -1859,9 +1891,12 @@ class ArchiveStore:
         if until_ms is not None:
             cost_where.append("s.sort_key_ms <= ?")
             cost_params.append(until_ms)
+        cost_where_clause = " AND ".join(cost_where) if cost_where else "1=1"
         cost_rows = self._conn.execute(
             f"""
-            SELECT strftime('%Y-%m', s.sort_key_ms/1000, 'unixepoch') AS bucket,
+            SELECT CASE WHEN s.sort_key_ms IS NULL THEN 'unknown'
+                        ELSE strftime('%Y-%m', s.sort_key_ms/1000, 'unixepoch')
+                   END AS bucket,
                    s.origin AS source_name,
                    COALESCE(u.model_name, '') AS model_name,
                    COUNT(DISTINCT u.session_id) AS session_count,
@@ -1874,7 +1909,7 @@ class ArchiveStore:
                    MAX(s.sort_key_ms) AS source_sort_key
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
-            WHERE {" AND ".join(cost_where)}
+            WHERE {cost_where_clause}
             GROUP BY bucket, s.origin, model_name, cost_provenance
             """,
             tuple(cost_params),
