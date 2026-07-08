@@ -121,6 +121,38 @@ def test_enqueue_rejects_duplicate_normalized_command_id(tmp_path: Path, post_en
         enqueue_post_command(_request_obj().model_copy(update={"command_id": "manual id"}), spool_path=tmp_path)
 
 
+def test_enqueue_over_file_count_quota_raises(
+    tmp_path: Path, post_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post-command queue has its own bound, independent of the capture
+    spool -- a runaway enqueue loop must not grow the queue unbounded
+    (polylogue-gnie)."""
+    import polylogue.browser_capture.receiver as receiver_mod
+    from polylogue.browser_capture.receiver import SpoolQuotaExceededError
+
+    monkeypatch.setattr(receiver_mod, "POST_COMMAND_QUEUE_MAX_FILES", 1)
+    enqueue_post_command(_request_obj(conversation_id="conv-1"), spool_path=tmp_path)
+
+    with pytest.raises(SpoolQuotaExceededError):
+        enqueue_post_command(_request_obj(conversation_id="conv-2"), spool_path=tmp_path)
+
+
+def test_enqueue_over_byte_quota_raises(tmp_path: Path, post_enabled: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.browser_capture.receiver as receiver_mod
+    from polylogue.browser_capture.receiver import SpoolQuotaExceededError
+
+    enqueue_post_command(_request_obj(conversation_id="conv-1"), spool_path=tmp_path)
+    monkeypatch.setattr(receiver_mod, "POST_COMMAND_QUEUE_MAX_BYTES", 1)
+
+    with pytest.raises(SpoolQuotaExceededError):
+        enqueue_post_command(_request_obj(conversation_id="conv-2"), spool_path=tmp_path)
+
+
+def test_enqueue_under_quota_succeeds(tmp_path: Path, post_enabled: None) -> None:
+    command = enqueue_post_command(_request_obj(), spool_path=tmp_path)
+    assert command.status == "pending"
+
+
 def test_ack_requires_dispatched_state(tmp_path: Path, post_enabled: None) -> None:
     command = enqueue_post_command(_request_obj(), spool_path=tmp_path)
 
@@ -196,6 +228,30 @@ def test_http_enqueue_disabled_returns_403(tmp_path: Path, post_disabled: None) 
         status, body = _request(host, port, "POST", "/v1/post-commands", body={"provider": "chatgpt", "text": "hi"})
     assert status == HTTPStatus.FORBIDDEN
     assert body["error"] == "post_disabled"
+
+
+def test_http_enqueue_returns_429_without_writing_when_queue_quota_exceeded(
+    tmp_path: Path, post_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.browser_capture.receiver as receiver_mod
+
+    monkeypatch.setattr(receiver_mod, "POST_COMMAND_QUEUE_MAX_FILES", 1)
+    enqueue_post_command(_request_obj(conversation_id="conv-1"), spool_path=tmp_path)
+    before = sorted(post_command_queue_root(tmp_path).glob("*.json"))
+
+    with _running_receiver(tmp_path) as (host, port):
+        status, body = _request(
+            host,
+            port,
+            "POST",
+            "/v1/post-commands",
+            body={"provider": "chatgpt", "target": {"conversation_id": "conv-2"}, "text": "hi"},
+        )
+
+    assert status == HTTPStatus.TOO_MANY_REQUESTS
+    assert body["error"] == "post_command_quota_exceeded"
+    after = sorted(post_command_queue_root(tmp_path).glob("*.json"))
+    assert after == before
 
 
 def test_http_post_command_full_lifecycle(tmp_path: Path, post_enabled: None) -> None:

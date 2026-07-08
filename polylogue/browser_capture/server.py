@@ -332,6 +332,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             logger.warning("browser_capture.post_command_conflict", request_id=self._request_id())
             self._safe_error(HTTPStatus.CONFLICT, "duplicate_post_command")
             return
+        except SpoolQuotaExceededError as exc:
+            logger.warning("browser_capture.post_command_quota_exceeded", request_id=self._request_id(), error=str(exc))
+            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "post_command_quota_exceeded")
+            return
         except OSError as exc:
             logger.warning("browser_capture.post_enqueue_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
