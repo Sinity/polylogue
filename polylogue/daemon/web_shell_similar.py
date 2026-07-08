@@ -58,7 +58,7 @@ function renderSimilarReadyResults(data) {
     var providerStr = hit.source_name ? esc(hit.source_name) : '\u2014';
     html += '<div class="similar-hit" style="padding:6px 0;border-bottom:1px solid var(--border)">'
       + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">'
-      +   '<a href="#" onclick="openSimilarHit(\'' + escAttr(hit.session_id) + '\');return false;" '
+      +   '<a href="#" onclick="openSimilarHit(\'' + escJsAttr(hit.session_id) + '\');return false;" '
       +     'style="color:var(--accent);font-size:var(--small);text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
       +     esc(String(title))
       +   '</a>'

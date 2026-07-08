@@ -501,7 +501,7 @@ function _polyCopyActionRailHtml(m) {
   // the contract surface is stable.
   var hasSpans = _polyEffectivePasteSpans(m).length > 0;
   var disabledAttr = hasSpans ? '' : 'disabled aria-disabled="true" data-disabled-reason="no_paste_spans"';
-  var msgId = escAttr(String(m.id || ''));
+  var msgId = escJsAttr(String(m.id || ''));
   return ''
     + '<button class="act-btn" data-act="copy-typed" '
     +         'title="Copy typed only (excludes paste spans)" '
@@ -546,8 +546,8 @@ function _polyPasteBrowserRender(items) {
       if (spanCount > 1) badges += '<span class="pb-badge">' + spanCount + ' spans</span>';
       return ''
         + '<a class="pb-row" href="' + href + '">'
-        +   '<span class="pb-role">' + (it.role || '') + '</span>'
-        +   '<span class="pb-snippet">' + (it.snippet || '').replace(/[<&]/g, function(c) { return c === '<' ? '&lt;' : '&amp;'; }) + '</span>'
+        +   '<span class="pb-role">' + esc(it.role || '') + '</span>'
+        +   '<span class="pb-snippet">' + esc(it.snippet || '') + '</span>'
         +   '<span class="pb-meta">' + (it.word_count || 0) + ' words ' + badges + '</span>'
         + '</a>';
     }).join('');
@@ -555,9 +555,9 @@ function _polyPasteBrowserRender(items) {
       + '<div class="pb-group">'
       +   '<div class="pb-group-title">'
       +     '<a href="/s/' + encodeURIComponent(cid) + '">'
-      +     (g.title || cid).replace(/[<&]/g, function(c) { return c === '<' ? '&lt;' : '&amp;'; })
+      +     esc(g.title || cid)
       +     '</a>'
-      +     '<span class="pb-origin">' + (g.origin || '') + '</span>'
+      +     '<span class="pb-origin">' + esc(g.origin || '') + '</span>'
       +   '</div>'
       +   rows
       + '</div>';
