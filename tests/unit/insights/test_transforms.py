@@ -21,6 +21,7 @@ from polylogue.insights.transforms import (
     SubagentReport,
     ToolSummary,
     TransformRawRef,
+    assert_forensic_conclusion_has_caveat,
     compile_session_digest,
     compile_session_run_projection,
     render_session_report,
@@ -870,7 +871,11 @@ def test_blame_report_renders_forensic_evidence_report_with_raw_refs() -> None:
     assert f"- extracted_claims: {digest.forensic_index.claim_count} [evidence: codex-session:demo]" in report
     assert "## Command And Test Outcomes" in report
     assert "- test_passed: devtools verify --quick passed (exit 0) [evidence: codex-session:demo::m2::0]" in report
-    assert "- Bash [test] status=ok lines=3 — devtools verify --quick [evidence: codex-session:demo::m2::0" in report
+    assert (
+        "- Bash [test] status=ok lines=3 — devtools verify --quick "
+        "[text-derived: pr_refs, test_evidence; unverified, not a confirmed outcome] "
+        "[evidence: codex-session:demo::m2::0"
+    ) in report
     assert "output: ruff check ... ok 20 passed in 50.28s" in report
     assert "Explore [tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42]:" in report
     assert "## Evidence Timeline" in report
@@ -878,6 +883,76 @@ def test_blame_report_renders_forensic_evidence_report_with_raw_refs() -> None:
     # No fabricated GitHub Events section.
     assert "## GitHub Events" not in report
     _assert_report_claim_lines_are_evidence_linked(report)
+
+
+def test_prose_mined_tool_summary_fields_carry_text_derived_evidence_class() -> None:
+    """polylogue-9e5.30: a tool with mined refs is text_derived; a clean one is raw_evidence."""
+    digest = compile_session_digest(_session())
+
+    mined = next(tool for tool in digest.tool_summaries if tool.commit_refs or tool.pr_refs or tool.issue_refs)
+    assert mined.evidence_class == "text_derived"
+    assert mined.text_derived_fields
+
+    clean = ToolSummary(tool_name="Bash", status="ok", raw_refs=(TransformRawRef(session_id="s", message_id="m1"),))
+    assert clean.evidence_class == "raw_evidence"
+    assert clean.text_derived_fields == ()
+
+
+def test_decision_candidates_are_always_text_derived() -> None:
+    """polylogue-9e5.30: DecisionCandidate has no structural counterpart -- always text_derived."""
+    digest = compile_session_digest(_session())
+
+    assert digest.decision_candidates
+    for candidate in digest.decision_candidates:
+        assert candidate.evidence_class == "text_derived"
+        assert "text" in candidate.text_derived_fields
+
+
+def test_session_digest_event_stays_raw_evidence() -> None:
+    """polylogue-9e5.30: structured tool/test outcomes (#2482) are never text_derived."""
+    ref = TransformRawRef(session_id="s", message_id="m1")
+    event = SessionDigestEvent(kind="test_passed", summary="pytest passed (exit 0)", raw_refs=(ref,))
+    assert event.evidence_class == "raw_evidence"
+
+
+def test_forensic_index_entry_evidence_class_is_union_of_contributing_claims() -> None:
+    """polylogue-9e5.30: an entry is text_derived if ANY claim sharing its raw ref is."""
+    digest = compile_session_digest(_session())
+
+    decision_entries = [entry for entry in digest.forensic_index.entries if "decision_candidate" in entry.claim_kinds]
+    assert decision_entries
+    for entry in decision_entries:
+        assert entry.evidence_class == "text_derived"
+        assert "decision_candidate" in entry.text_derived_fields
+
+    digest_entry = next(entry for entry in digest.forensic_index.entries if entry.claim_kinds == ("digest",))
+    assert digest_entry.evidence_class == "raw_evidence"
+    assert digest_entry.text_derived_fields == ()
+
+
+def test_render_blame_report_marks_every_text_derived_claim_with_a_caveat() -> None:
+    """polylogue-9e5.30: renderer must caveat every text-derived tool/decision line."""
+    digest = compile_session_digest(_session())
+
+    report = render_session_report(digest, preset="blame")
+
+    for tool in digest.tool_summaries:
+        if tool.evidence_class == "text_derived":
+            line = next(line for line in report.splitlines() if line.startswith(f"- {tool.tool_name} ["))
+            assert_forensic_conclusion_has_caveat(tool.evidence_class, line)
+    for candidate in digest.decision_candidates:
+        line = next(line for line in report.splitlines() if candidate.text in line)
+        assert_forensic_conclusion_has_caveat(candidate.evidence_class, line)
+
+
+def test_assert_forensic_conclusion_has_caveat_catches_a_missing_caveat() -> None:
+    """polylogue-9e5.30 policy guard: a text-derived line with no caveat text must raise."""
+    assert_forensic_conclusion_has_caveat("raw_evidence", "- test_passed: pytest passed (exit 0)")
+    assert_forensic_conclusion_has_caveat(
+        "text_derived", "- decision: keep it [text-derived: text; unverified, not a confirmed outcome]"
+    )
+    with pytest.raises(ValueError, match="no caveat"):
+        assert_forensic_conclusion_has_caveat("text_derived", "- decision: keep it")
 
 
 def _assert_report_claim_lines_are_evidence_linked(report: str) -> None:
