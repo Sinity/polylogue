@@ -8,7 +8,6 @@ import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 import aiosqlite
 
@@ -17,6 +16,7 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
 from polylogue.core.enums import SessionKind
 from polylogue.core.memory import release_process_memory
+from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.insights.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
@@ -760,14 +760,6 @@ def build_session_insight_record_bundles(
     ]
 
 
-def _parse_archive_datetime(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    normalized = value.replace("Z", "+00:00")
-    parsed = datetime.fromisoformat(normalized)
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-
-
 def _session_count_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
     row = conn.execute(_SESSION_INSIGHT_COUNT_SQL, (session_id,)).fetchone()
     if row is None:
@@ -793,8 +785,8 @@ def _large_session_profile_record_from_row(
     logical_session_id: str | None,
     materialized_at: str,
 ) -> SessionProfileRecord:
-    created_at = _parse_archive_datetime(row["created_at"])
-    updated_at = _parse_archive_datetime(row["updated_at"])
+    created_at = parse_archive_datetime(row["created_at"])
+    updated_at = parse_archive_datetime(row["updated_at"])
     canonical_at = created_at or updated_at
     message_count = int(row["message_count"] or 0)
     tool_use_count = int(row["tool_use_count"] or 0)

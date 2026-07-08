@@ -21,6 +21,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.core.enums import MaterialOrigin, Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.types import SessionId
 
 _AttachableT = TypeVar("_AttachableT", Session, SessionSummary)
@@ -110,14 +111,6 @@ def _session_seed_hits(
     return archive.semantic_summaries(scored, limit=pool, offset=0, **_plan_filter_kwargs(plan))
 
 
-def _parse_archive_datetime(value: str | None) -> datetime | None:
-    from datetime import datetime as _datetime
-
-    if value is None:
-        return None
-    return _datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
 def _datetime_to_ms(value: datetime | None) -> int | None:
     if value is None:
         return None
@@ -201,8 +194,8 @@ def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
         id=SessionId(summary.session_id),
         origin=origin_from_provider(summary.provider),
         title=summary.title,
-        created_at=_parse_archive_datetime(summary.created_at),
-        updated_at=_parse_archive_datetime(summary.updated_at),
+        created_at=parse_archive_datetime(summary.created_at),
+        updated_at=parse_archive_datetime(summary.updated_at),
         working_directories=tuple(summary.working_directories),
         git_branch=summary.git_branch,
         git_repository_url=summary.git_repository_url,
@@ -252,7 +245,7 @@ def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Mes
         id=message.message_id,
         role=Role.normalize(message.role),
         text=text,
-        timestamp=_parse_archive_datetime(message.occurred_at),
+        timestamp=parse_archive_datetime(message.occurred_at),
         provider=provider,
         blocks=content_blocks,
         message_type=MessageType.normalize(message.message_type),

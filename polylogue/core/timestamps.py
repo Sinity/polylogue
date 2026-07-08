@@ -61,6 +61,33 @@ def parse_timestamp(value: str | int | float | None) -> datetime | None:
     return None
 
 
+def parse_archive_datetime(value: str | None) -> datetime | None:
+    """Parse an archive-stored ISO 8601 datetime string, always UTC-aware.
+
+    Consolidates six identical/near-identical ``_parse_archive_datetime``
+    private copies (context/selection.py, mcp/archive_support.py,
+    cli/read_views/standard.py, api/archive.py,
+    archive/query/archive_execution.py, storage/insights/session/rebuild.py)
+    that had silently diverged: five returned a naive ``datetime`` for a
+    naive-looking input string (no ``Z``/offset suffix), while the rebuild.py
+    copy forced UTC on naive results. The same stored string could therefore
+    parse to offset-naive or offset-aware depending on which surface read it
+    — a latent ``TypeError: can't compare offset-naive and offset-aware
+    datetimes`` wherever a value from one surface met a value from another
+    (polylogue-a7xr.6).
+
+    Unlike :func:`parse_timestamp`, this deliberately does NOT swallow a
+    malformed non-empty string into ``None`` — archive-stored timestamp
+    columns are expected to already be well-formed ISO 8601, so a parse
+    failure here indicates real data corruption worth surfacing via
+    ``ValueError``, not silently discarding.
+    """
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
 def format_timestamp(ts: int | float | datetime) -> str:
     """Format a timestamp as ISO 8601 string with UTC timezone.
 

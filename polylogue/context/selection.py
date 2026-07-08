@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.mcp.archive_support import archive_index_active_paths, archive_query_filters
 from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveSessionSearchHit,
@@ -260,8 +260,8 @@ def archive_context_image_summary(row: ArchiveSessionSummary) -> SimpleNamespace
         origin=row.origin,
         title=row.title,
         display_title=row.title,
-        created_at=_parse_archive_datetime(row.created_at),
-        updated_at=_parse_archive_datetime(row.updated_at),
+        created_at=parse_archive_datetime(row.created_at),
+        updated_at=parse_archive_datetime(row.updated_at),
         message_count=row.message_count,
         messages=(),
         tool_use_count=0,
@@ -280,9 +280,3 @@ def dedupe_archive_context_image_rows(
         seen.add(session_id)
         deduped.append(row)
     return deduped
-
-
-def _parse_archive_datetime(value: str | None) -> datetime | None:
-    if value is None:
-        return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
