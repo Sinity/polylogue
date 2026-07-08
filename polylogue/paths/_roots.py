@@ -104,6 +104,11 @@ def browser_capture_spool_root() -> Path:
     return data_home() / "browser-capture"
 
 
+def browser_capture_receiver_token_path() -> Path:
+    """Default path for the auto-minted browser-capture receiver bearer token."""
+    return state_home() / "browser-capture-receiver-token"
+
+
 def archive_root() -> Path:
     """Archive root (overridable via POLYLOGUE_ARCHIVE_ROOT)."""
     return _xdg_path("POLYLOGUE_ARCHIVE_ROOT", data_home())

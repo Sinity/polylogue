@@ -143,6 +143,20 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("state-detail").textContent).toContain("daemon has not caught up");
   });
 
+  it("renders an unauthorized receiver as a pairing prompt, not a generic offline state", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: false,
+        captured: false,
+        error: "unauthorized",
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Unauthorized");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("browser-capture token show");
+  });
+
   it("renders DOM fallback with concrete next action", async () => {
     await loadPopup({
       polylogueState: {

@@ -419,6 +419,10 @@ class PolylogueConfig:
         return bool(self._data.get("browser_capture_allow_remote"))
 
     @property
+    def browser_capture_allow_no_auth(self) -> bool:
+        return bool(self._data.get("browser_capture_allow_no_auth"))
+
+    @property
     def source_roots(self) -> tuple[str, ...]:
         v = self._data.get("source_roots")
         if isinstance(v, (list, tuple)):
@@ -584,7 +588,16 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         cli_override="polylogued run --browser-capture-auth-token",
         owner_class="network-security",
         reload_behavior="startup-bound",
-        description="Bearer token for browser-capture requests when web origins or remote binds are enabled.",
+        description="Bearer token for browser-capture requests; auto-minted/loaded from a 0600 file if unset.",
+    ),
+    ConfigInventoryEntry(
+        "browser_capture_allow_no_auth",
+        toml_path="daemon.browser_capture.allow_no_auth",
+        env_var="POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH",
+        cli_override="polylogued run --browser-capture-allow-no-auth",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Explicit opt-out of the auto-minted receiver bearer token (receiver serves unauthenticated).",
     ),
     ConfigInventoryEntry(
         "browser_capture_spool_path",
@@ -893,6 +906,7 @@ _FLOAT_CONFIG_KEYS = frozenset({"embedding_max_cost_usd", "slow_query_notice_sec
 _BOOL_CONFIG_KEYS = frozenset(
     {
         "browser_capture_allow_remote",
+        "browser_capture_allow_no_auth",
         "embedding_enabled",
         "force_plain",
         "no_color",
@@ -1026,6 +1040,7 @@ def _default_config_values() -> dict[str, object]:
         "browser_capture_spool_path": "",
         "browser_capture_auth_token": None,
         "browser_capture_allow_remote": False,
+        "browser_capture_allow_no_auth": False,
         "source_roots": (),
         "subscription_plans": (),
     }

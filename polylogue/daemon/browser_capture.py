@@ -10,10 +10,13 @@ from pydantic import ValidationError
 
 from polylogue.browser_capture.models import BrowserPostCommandRequest, BrowserPostProvider, BrowserPostTarget
 from polylogue.browser_capture.receiver import (
+    BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
     BROWSER_POST_ENABLED_ENV,
     BrowserPostDisabledError,
     browser_post_enabled,
     enqueue_post_command,
+    load_or_mint_receiver_token,
+    resolve_receiver_auth_token,
 )
 from polylogue.browser_capture.server import make_server
 from polylogue.core.json import dumps
@@ -45,17 +48,58 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8765, show_default=True, type=int)
 @click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
-def serve_command(host: str, port: int, spool_path: Path | None) -> None:
-    """Run the local browser-capture receiver."""
-    server = make_server(host, port, spool_path=spool_path)
+@click.option("--auth-token", "auth_token", default=None, help="Bearer token; auto-minted/loaded if not given.")
+@click.option(
+    "--allow-no-auth",
+    is_flag=True,
+    default=False,
+    help=(
+        f"Serve with no bearer token at all (same effect as {BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV}=1). "
+        "Any local process can then read/post to the receiver -- default OFF."
+    ),
+)
+def serve_command(host: str, port: int, spool_path: Path | None, auth_token: str | None, allow_no_auth: bool) -> None:
+    """Run the local browser-capture receiver.
+
+    Requires a bearer token by default: an explicit ``--auth-token`` wins,
+    otherwise one is auto-minted/loaded from a 0600 file (see
+    ``browser-capture token show``). Pass ``--allow-no-auth`` to opt out.
+    """
+    resolved_token = resolve_receiver_auth_token(auth_token, allow_no_auth=allow_no_auth)
+    server = make_server(host, port, spool_path=spool_path, auth_token=resolved_token)
     click.echo(f"Listening on http://{host}:{port}")
     click.echo(f"Writing captures to {server.config.spool_path}")
+    if resolved_token is None:
+        click.echo("WARNING: no bearer token configured -- any local process can read/post to this receiver")
+    else:
+        click.echo("Auth: bearer token required (run `polylogued browser-capture token show` to view/pair it)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         click.echo("Stopping browser capture receiver")
     finally:
         server.server_close()
+
+
+@browser_capture_command.group("token")
+def token_group() -> None:
+    """Manage the browser-capture receiver's local pairing token."""
+
+
+@token_group.command("show")
+@click.option("--rotate", is_flag=True, help="Mint a new token, invalidating the previous one.")
+@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+def token_show(rotate: bool, output_format: str | None) -> None:
+    """Print the receiver's bearer token, minting one if none exists yet.
+
+    Paste this into the extension popup's "Receiver token" field to pair it
+    with a receiver that requires authentication (the default posture).
+    """
+    token = load_or_mint_receiver_token(rotate=rotate)
+    if output_format == "json":
+        click.echo(dumps({"token": token, "rotated": rotate}))
+        return
+    click.echo(token)
 
 
 @browser_capture_command.command("post")

@@ -751,6 +751,76 @@ def test_polylogued_browser_capture_help_lists_service_commands() -> None:
     assert result.exit_code == 0
     assert "serve" in result.output
     assert "status" in result.output
+    assert "token" in result.output
+
+
+def test_polylogued_run_help_lists_allow_no_auth_flag() -> None:
+    result = CliRunner().invoke(main, ["run", "--help"])
+
+    assert result.exit_code == 0
+    assert "--browser-capture-allow-no-auth" in result.output
+
+
+class TestBrowserCaptureReceiverTokenAutoMint:
+    """The daemon's browser-capture receiver requires a bearer token by
+    default (polylogue-gnie): unless an explicit token or the loud
+    ``--browser-capture-allow-no-auth`` opt-out is given, one is
+    auto-minted so unauthenticated capture requests are refused."""
+
+    @staticmethod
+    def _run_with_captured_make_server_kwargs(**run_kwargs: Any) -> dict[str, object]:
+        from polylogue.daemon import cli as daemon_cli
+
+        class FakeServer:
+            def serve_forever(self, poll_interval: float = 0.5) -> None:
+                raise RuntimeError("server stopped")
+
+            def shutdown(self) -> None:
+                pass
+
+            def server_close(self) -> None:
+                pass
+
+        captured: dict[str, object] = {}
+
+        def _fake_make_server(*_args: object, **kwargs: object) -> FakeServer:
+            captured.update(kwargs)
+            return FakeServer()
+
+        with (
+            patch.object(daemon_cli, "make_server", side_effect=_fake_make_server),
+            pytest.raises(RuntimeError, match="server stopped"),
+        ):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    debounce_s=1.0,
+                    enable_watch=False,
+                    enable_browser_capture=True,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                    **run_kwargs,
+                )
+            )
+        return captured
+
+    def test_default_run_mints_a_receiver_token(self) -> None:
+        captured = self._run_with_captured_make_server_kwargs()
+
+        token = captured.get("auth_token")
+        assert isinstance(token, str)
+        assert len(token) > 20
+
+    def test_allow_no_auth_serves_with_no_token(self) -> None:
+        captured = self._run_with_captured_make_server_kwargs(browser_capture_allow_no_auth=True)
+
+        assert captured.get("auth_token") is None
+
+    def test_explicit_token_wins_over_auto_mint(self) -> None:
+        captured = self._run_with_captured_make_server_kwargs(browser_capture_auth_token="operator-set-token")
+
+        assert captured.get("auth_token") == "operator-set-token"
 
 
 def test_polylogued_run_uses_default_sources() -> None:

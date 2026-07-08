@@ -299,6 +299,43 @@ def test_browser_capture_status_daemon_cli_json(cli_workspace: dict[str, Path]) 
     assert typed.spool_path.endswith("browser-capture")
 
 
+def test_browser_capture_token_show_mints_and_persists(cli_workspace: dict[str, Path]) -> None:
+    runner = CliRunner()
+
+    first = runner.invoke(daemon_cli, ["browser-capture", "token", "show", "--format", "json"], catch_exceptions=False)
+    second = runner.invoke(daemon_cli, ["browser-capture", "token", "show", "--format", "json"], catch_exceptions=False)
+
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    first_token = json.loads(first.output)["token"]
+    second_token = json.loads(second.output)["token"]
+    assert first_token == second_token
+    assert len(first_token) > 20
+
+
+def test_browser_capture_token_show_rotate_changes_the_token(cli_workspace: dict[str, Path]) -> None:
+    runner = CliRunner()
+
+    original = json.loads(
+        runner.invoke(
+            daemon_cli, ["browser-capture", "token", "show", "--format", "json"], catch_exceptions=False
+        ).output
+    )["token"]
+    rotated = json.loads(
+        runner.invoke(
+            daemon_cli, ["browser-capture", "token", "show", "--rotate", "--format", "json"], catch_exceptions=False
+        ).output
+    )["token"]
+    reloaded = json.loads(
+        runner.invoke(
+            daemon_cli, ["browser-capture", "token", "show", "--format", "json"], catch_exceptions=False
+        ).output
+    )["token"]
+
+    assert rotated != original
+    assert reloaded == rotated
+
+
 def test_browser_capture_route_contracts_cover_receiver_boundary() -> None:
     concrete_routes = {(contract.method, contract.pattern) for contract in BROWSER_CAPTURE_ROUTE_CONTRACTS}
 

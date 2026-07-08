@@ -19,6 +19,7 @@ from pathlib import Path
 import click
 
 from polylogue.api import Polylogue
+from polylogue.browser_capture.receiver import resolve_receiver_auth_token
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.json import dumps
@@ -832,6 +833,7 @@ async def run_daemon_services(
     browser_capture_spool_path: Path | None,
     browser_capture_allow_remote: bool = False,
     browser_capture_auth_token: str | None = None,
+    browser_capture_allow_no_auth: bool = False,
     browser_capture_extra_origins: tuple[str, ...] = (),
     enable_api: bool = False,
     api_host: str = "127.0.0.1",
@@ -967,12 +969,15 @@ async def run_daemon_services(
 
     try:
         if enable_browser_capture:
+            resolved_browser_capture_auth_token = resolve_receiver_auth_token(
+                browser_capture_auth_token, allow_no_auth=browser_capture_allow_no_auth
+            )
             server = make_server(
                 browser_capture_host,
                 browser_capture_port,
                 spool_path=browser_capture_spool_path,
                 allow_remote=browser_capture_allow_remote,
-                auth_token=browser_capture_auth_token,
+                auth_token=resolved_browser_capture_auth_token,
                 extra_origins=browser_capture_extra_origins,
             )
             server_task = asyncio.create_task(asyncio.to_thread(server.serve_forever, 0.5))
@@ -988,6 +993,7 @@ async def run_daemon_services(
                         "spool_path": str(browser_capture_spool_path)
                         if browser_capture_spool_path is not None
                         else None,
+                        "auth_enabled": resolved_browser_capture_auth_token is not None,
                     },
                 )
 
@@ -1470,7 +1476,16 @@ def health_command(
 @click.option(
     "--browser-capture-auth-token",
     default=None,
-    help="Auth token for non-loopback browser-capture requests.",
+    help="Browser-capture bearer token; auto-minted/loaded from a 0600 file if not given.",
+)
+@click.option(
+    "--browser-capture-allow-no-auth",
+    is_flag=True,
+    default=False,
+    help=(
+        "Run the browser-capture receiver with no bearer token at all. Any local process can "
+        "then read/post to it -- default OFF; an explicit opt-out for the auto-minted-token default."
+    ),
 )
 @click.option(
     "--browser-capture-origin",
@@ -1516,6 +1531,7 @@ def run_command(
     no_browser_capture: bool,
     insecure_allow_remote: bool,
     browser_capture_auth_token: str | None,
+    browser_capture_allow_no_auth: bool,
     browser_capture_origins: tuple[str, ...],
     no_api: bool,
     api_host: str,
@@ -1554,6 +1570,8 @@ def run_command(
         insecure_allow_remote = cfg.browser_capture_allow_remote
     if parameter_is_default("browser_capture_auth_token") and cfg.browser_capture_auth_token:
         browser_capture_auth_token = cfg.browser_capture_auth_token
+    if parameter_is_default("browser_capture_allow_no_auth"):
+        browser_capture_allow_no_auth = cfg.browser_capture_allow_no_auth
     if not browser_capture_origins and cfg.layer_of("browser_capture_allowed_origins") != "default":
         browser_capture_origins = tuple(
             origin.strip() for origin in cfg.browser_capture_allowed_origins.split(",") if origin.strip()
@@ -1606,6 +1624,7 @@ def run_command(
                 browser_capture_spool_path=spool_path,
                 browser_capture_allow_remote=insecure_allow_remote,
                 browser_capture_auth_token=browser_capture_auth_token,
+                browser_capture_allow_no_auth=browser_capture_allow_no_auth,
                 browser_capture_extra_origins=browser_capture_origins,
                 enable_api=enable_api,
                 api_host=api_host,

@@ -55,9 +55,17 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 | `--host` | `127.0.0.1` | Browser-capture receiver host |
 | `--port` | `8765` | Browser-capture receiver port |
 | `--spool` | (auto) | Browser-capture artifact spool path |
-| `--browser-capture-auth-token` | none | Auth token for non-loopback requests |
+| `--browser-capture-auth-token` | auto | Receiver bearer token; auto-minted/loaded from a 0600 file if not given |
+| `--browser-capture-allow-no-auth` | off | Explicit opt-out: serve with no bearer token at all |
 | `--browser-capture-origin` | none | Additional allowed origin (repeatable) |
 | `--insecure-allow-remote` | off | Allow non-loopback binding |
+
+By default the receiver requires the auto-minted/loaded bearer token on every
+route (GET status/archive-state/post-commands and POST captures/post-commands
+alike) — run `polylogued browser-capture token show` to print it and paste it
+into the extension popup's "Receiver token" field to pair. Pass
+`--browser-capture-allow-no-auth` to opt out and serve unauthenticated (any
+local process can then read/post to the receiver).
 
 ### HTTP API
 
