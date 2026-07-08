@@ -19,6 +19,7 @@
     {
       "acquired_blob_bytes_on_disk": 403110,
       "acquired_blob_count": 9,
+      "acquired_null_blob_hash_count": 0,
       "acquisition_status": "acquired",
       "attachment_count": 9,
       "declared_byte_sum": 403110,
@@ -40,6 +41,7 @@
     {
       "acquired_blob_bytes_on_disk": 0,
       "acquired_blob_count": 0,
+      "acquired_null_blob_hash_count": 0,
       "acquisition_status": "unfetched",
       "attachment_count": 9,
       "declared_byte_sum": 0,
@@ -61,6 +63,7 @@
     {
       "acquired_blob_bytes_on_disk": 41401,
       "acquired_blob_count": 1,
+      "acquired_null_blob_hash_count": 0,
       "acquisition_status": "acquired",
       "attachment_count": 1,
       "declared_byte_sum": 41401,
@@ -76,6 +79,7 @@
     {
       "acquired_blob_bytes_on_disk": 0,
       "acquired_blob_count": 0,
+      "acquired_null_blob_hash_count": 0,
       "acquisition_status": "unfetched",
       "attachment_count": 1666,
       "declared_byte_sum": 0,
@@ -111,6 +115,7 @@
     {
       "acquired_blob_bytes_on_disk": 0,
       "acquired_blob_count": 0,
+      "acquired_null_blob_hash_count": 0,
       "acquisition_status": "unfetched",
       "attachment_count": 3078,
       "declared_byte_sum": 13369453110,
@@ -145,6 +150,7 @@
     {
       "acquired_blob_bytes_on_disk": 29277933,
       "acquired_blob_count": 957,
+      "acquired_null_blob_hash_count": 0,
       "acquisition_status": "acquired",
       "attachment_count": 957,
       "declared_byte_sum": 29277933,
@@ -179,6 +185,7 @@
     {
       "acquired_blob_bytes_on_disk": 0,
       "acquired_blob_count": 0,
+      "acquired_null_blob_hash_count": 0,
       "acquisition_status": "unfetched",
       "attachment_count": 1636,
       "declared_byte_sum": 315015758,
@@ -213,6 +220,7 @@
     {
       "acquired_blob_bytes_on_disk": 0,
       "acquired_blob_count": 0,
+      "acquired_null_blob_hash_count": 0,
       "acquisition_status": "unfetched",
       "attachment_count": 34,
       "declared_byte_sum": 0,
@@ -248,6 +256,7 @@
   "totals": {
     "acquired_blob_bytes_on_disk": 29722444,
     "acquired_blob_count": 967,
+    "acquired_null_blob_hash_count": 0,
     "attachment_count": 7390,
     "declared_byte_sum": 13714191312,
     "missing_blob_ref_count": 0

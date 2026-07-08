@@ -10,6 +10,7 @@ Read-only census over the active archive (polylogue-83u.6), grouped by (origin, 
 - Declared bytes: 13,714,191,312
 - Acquired blobs on disk: 967 (29,722,444 bytes)
 - Missing blob refs (actionable debt): 0
+- Acquired rows with a NULL blob_hash (schema anomaly, should be 0): 0
 - Cross-origin attachments (referenced from >1 origin): 0
 - Reconciles against `polylogue ops maintenance attachment-acquisition-debt`: True
 

@@ -73,6 +73,12 @@ for row in rows:
             "acquired_blob_count": 0,
             "acquired_blob_bytes_on_disk": 0,
             "missing_blob_ref_count": 0,
+            # An 'acquired' row with a NULL blob_hash should never happen (the
+            # write path always sets a hash when it marks a row acquired) but
+            # the schema has no CHECK enforcing that invariant. Track it
+            # separately rather than silently dropping it from both the
+            # success and failure buckets (CodeRabbit #2587).
+            "acquired_null_blob_hash_count": 0,
             "upload_origin_counts": defaultdict(int),
             "sample_attachment_ids": [],
         },
@@ -86,7 +92,9 @@ for row in rows:
         bucket["sample_attachment_ids"].append(row["attachment_id"])
 
     blob_hash = row["blob_hash"]
-    if status == "acquired" and blob_hash is not None:
+    if status == "acquired" and blob_hash is None:
+        bucket["acquired_null_blob_hash_count"] += 1
+    elif status == "acquired" and blob_hash is not None:
         hash_hex = blob_hash.hex() if isinstance(blob_hash, bytes) else str(blob_hash)
         if store.exists(hash_hex):
             bucket["acquired_blob_count"] += 1
@@ -101,6 +109,7 @@ totals = {
     "acquired_blob_count": 0,
     "acquired_blob_bytes_on_disk": 0,
     "missing_blob_ref_count": 0,
+    "acquired_null_blob_hash_count": 0,
 }
 for (origin, status), bucket in sorted(groups.items()):
     census_rows.append(
@@ -112,6 +121,7 @@ for (origin, status), bucket in sorted(groups.items()):
             "acquired_blob_count": bucket["acquired_blob_count"],
             "acquired_blob_bytes_on_disk": bucket["acquired_blob_bytes_on_disk"],
             "missing_blob_ref_count": bucket["missing_blob_ref_count"],
+            "acquired_null_blob_hash_count": bucket["acquired_null_blob_hash_count"],
             "upload_origin_counts": dict(bucket["upload_origin_counts"]),
             "sample_attachment_ids": bucket["sample_attachment_ids"],
         }
@@ -128,7 +138,7 @@ payload = {
         "attachment_acquisition_debt_command": reconcile,
         "totals_match": (
             totals["attachment_count"] == reconcile["total_attachments"]
-            and totals["acquired_blob_count"] + reconcile["acquired_missing_blob_count"]
+            and totals["acquired_blob_count"] + totals["missing_blob_ref_count"] + totals["acquired_null_blob_hash_count"]
             == reconcile["acquired_count"]
             and totals["missing_blob_ref_count"] == reconcile["acquired_missing_blob_count"]
         ),
@@ -154,6 +164,8 @@ lines = [
     f"- Declared bytes: {totals['declared_byte_sum']:,}",
     f"- Acquired blobs on disk: {totals['acquired_blob_count']:,} ({totals['acquired_blob_bytes_on_disk']:,} bytes)",
     f"- Missing blob refs (actionable debt): {totals['missing_blob_ref_count']:,}",
+    f"- Acquired rows with a NULL blob_hash (schema anomaly, should be 0): "
+    f"{totals['acquired_null_blob_hash_count']:,}",
     f"- Cross-origin attachments (referenced from >1 origin): {cross_origin_attachment_count:,}",
     f"- Reconciles against `polylogue ops maintenance attachment-acquisition-debt`: "
     f"{payload['reconciliation']['totals_match']}",
