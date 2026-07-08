@@ -11,8 +11,7 @@ Use this map when you need the complete repository documentation surface. The to
 | [Installation](installation.md) | Source checkout, Nix flake, and managed NixOS/Home Manager install paths. |
 | [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Architecture Spine](architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
-| [Execution Plan](execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
-| [Design Direction](design/README.md) | Historical design inputs and current guidance for using them without treating them as parallel roadmaps. |
+| [Design Direction](design/README.md) | Beads-first design doctrine and the standing domain-model references that survive it. |
 | [Query-Action Workflows](product/workflows.md) | Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths. |
 | [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
 | [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |

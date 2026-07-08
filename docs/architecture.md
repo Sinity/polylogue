@@ -3,9 +3,9 @@
 For the target shape, guardrails, and architectural decision log, see
 [Architecture Spine](architecture-spine.md). Current sequencing and active
 workstreams live in the Beads backlog (`bd ready`, `bd list --status open`) —
-the durable directive substrate; the former `docs/execution-plan.md` is
-superseded (its GitHub-issue map was re-encoded as Beads issues) and slated for
-retirement (Ref polylogue-3tl.13). For the vocabulary split between
+the durable directive substrate; the former `docs/execution-plan.md` was
+superseded (its GitHub-issue map was re-encoded as Beads issues) and retired
+(Ref polylogue-3tl.13). For the vocabulary split between
 provider-wire identity, public origin, source roots, capture mode, parser
 provenance, and refs, see `docs/provider-origin-identity.md`.
 
