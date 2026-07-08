@@ -1476,6 +1476,42 @@ def _message_content_hash(
     )
 
 
+def _block_content_hash(
+    *,
+    block_type: str,
+    text: str | None,
+    tool_name: str | None,
+    tool_input_json: str | None,
+    semantic_type: str | None,
+    media_type: str | None,
+    language: str | None,
+    is_error: bool | None,
+    exit_code: int | None,
+) -> bytes:
+    """Digest a block's canonical EVIDENCE, deliberately excluding identity (svfj).
+
+    Excludes session_id/message_id/position/tool_id on purpose: those shift
+    on fork-position replay, re-ingest renumbering, and provider tool-id
+    regeneration, but the block's actual evidence content does not. This is
+    the anchor atom multiple programs stand on (webui citations, finding
+    evidence refs, drift detection, compaction loss anchors, export
+    citations) -- a citation keyed on this hash survives all three shifts.
+    """
+
+    return _hash_bytes(
+        "block",
+        block_type,
+        _sqlite_text(text) or "",
+        _sqlite_text(tool_name) or "",
+        tool_input_json or "",
+        _sqlite_text(semantic_type) or "",
+        _sqlite_text(media_type) or "",
+        _sqlite_text(language) or "",
+        "" if is_error is None else str(int(is_error)),
+        "" if exit_code is None else str(exit_code),
+    )
+
+
 def _write_blocks(
     conn: sqlite3.Connection,
     session_id: str,
@@ -1495,20 +1531,37 @@ def _write_blocks(
             )
             blocks = _message_blocks(message)
             for position, block in enumerate(blocks):
+                block_type = _block_type(block)
+                tool_input_json = _json_dumps(block.tool_input) if block.tool_input is not None else None
+                semantic_type = _semantic_type(block)
+                language = _block_language(block)
+                is_error = getattr(block, "is_error", None)
+                exit_code = getattr(block, "exit_code", None)
                 yield (
                     message_id,
                     session_id,
                     position,
-                    _block_type(block).value,
+                    block_type.value,
                     _sqlite_text(block.text),
                     _sqlite_text(block.tool_name),
                     _sqlite_text(block.tool_id),
-                    _json_dumps(block.tool_input) if block.tool_input is not None else None,
-                    _sqlite_text(_semantic_type(block)),
+                    tool_input_json,
+                    _sqlite_text(semantic_type),
                     _sqlite_text(block.media_type),
-                    _sqlite_text(_block_language(block)),
-                    _sqlite_bool(getattr(block, "is_error", None)),
-                    getattr(block, "exit_code", None),
+                    _sqlite_text(language),
+                    _sqlite_bool(is_error),
+                    exit_code,
+                    _block_content_hash(
+                        block_type=block_type.value,
+                        text=block.text,
+                        tool_name=block.tool_name,
+                        tool_input_json=tool_input_json,
+                        semantic_type=semantic_type,
+                        media_type=block.media_type,
+                        language=language,
+                        is_error=is_error,
+                        exit_code=exit_code,
+                    ),
                 )
 
     conn.executemany(
@@ -1516,8 +1569,8 @@ def _write_blocks(
         INSERT OR REPLACE INTO blocks (
             message_id, session_id, position, block_type, text, tool_name,
             tool_id, tool_input, semantic_type, media_type, language,
-            tool_result_is_error, tool_result_exit_code
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tool_result_is_error, tool_result_exit_code, content_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows(),
     )

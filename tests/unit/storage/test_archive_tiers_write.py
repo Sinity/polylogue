@@ -104,6 +104,106 @@ def test_message_content_hash_tracks_same_identity_body_edits(tmp_path: Path) ->
         conn.close()
 
 
+def _block_hash(conn: sqlite3.Connection, session_id: str, native_message_id: str, position: int) -> bytes:
+    row = conn.execute(
+        """
+        SELECT b.content_hash FROM blocks b
+        JOIN messages m ON m.message_id = b.message_id
+        WHERE m.session_id = ? AND m.native_id = ? AND b.position = ?
+        """,
+        (session_id, native_message_id, position),
+    ).fetchone()
+    return bytes(row[0])
+
+
+def test_block_content_hash_is_stable_across_position_and_tool_id_but_sensitive_to_evidence(
+    tmp_path: Path,
+) -> None:
+    """svfj: the citation anchor hash excludes session/message/position/tool_id (identity),
+    but changes when the actual evidence content changes."""
+
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="hash-stability",
+            title="Hash stability",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE,
+                            tool_name="Bash",
+                            tool_id="tool-call-1",
+                            tool_input={"command": "pytest"},
+                        ),
+                        ParsedContentBlock(type=BlockType.TEXT, text="second block, different position later"),
+                    ],
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+        original_hash = _block_hash(conn, session_id, "m1", 0)
+
+        # Same evidence (type/tool_name/tool_input), DIFFERENT tool_id and
+        # DIFFERENT position (moved to index 1) -- the anchor hash must be
+        # identical, since neither tool_id nor position is part of the
+        # citable evidence.
+        reordered = session.model_copy(
+            update={
+                "messages": [
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+                        blocks=[
+                            ParsedContentBlock(type=BlockType.TEXT, text="a new first block"),
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Bash",
+                                tool_id="tool-call-REGENERATED",
+                                tool_input={"command": "pytest"},
+                            ),
+                        ],
+                    )
+                ]
+            }
+        )
+        write_parsed_session_to_archive(conn, reordered)
+        moved_hash = _block_hash(conn, session_id, "m1", 1)
+        assert moved_hash == original_hash
+
+        # Changing the actual evidence (the command) MUST change the hash.
+        changed_evidence = session.model_copy(
+            update={
+                "messages": [
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Bash",
+                                tool_id="tool-call-1",
+                                tool_input={"command": "pytest -k different"},
+                            ),
+                            ParsedContentBlock(type=BlockType.TEXT, text="second block, different position later"),
+                        ],
+                    )
+                ]
+            }
+        )
+        write_parsed_session_to_archive(conn, changed_evidence)
+        changed_hash = _block_hash(conn, session_id, "m1", 0)
+        assert changed_hash != original_hash
+    finally:
+        conn.close()
+
+
 def test_archive_tiers_writer_materializes_typed_web_constructs(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
