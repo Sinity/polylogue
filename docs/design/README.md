@@ -1,24 +1,23 @@
 # Polylogue Design Direction
 
-This directory holds product and interaction design material that is specific
-enough to guide implementation. Architecture-level contracts still live in
-`docs/architecture*.md`; this area is for the user-facing reader, workbench,
-and surface behavior those contracts need to support.
+Design direction lives in the Beads backlog, not in this directory: each
+surface's owning bead carries its spec in the `design` field (`bd show <id>`),
+and the aesthetics/interaction directions live in `.agent/reports/` with
+their decisions recorded on beads. Planning documents are mined into beads
+and then purged — there is no "historical reference" tier (superseded
+`docs/execution-plan.md`, and the MK2/MK3 packs, were removed under this
+rule; recover from git history if ever needed).
 
-## Design Inputs
+What remains here are **standing design references** that describe durable
+domain models rather than plans:
 
-| Input | Status | Purpose |
-|------|--------|---------|
-| [Query-action workflows](query-action-workflows.md) | Moved pointer | Redirects to the generated product contract at `docs/product/workflows.md`, which is rendered from live workflow and action registries. |
-| [MK3 design pack](mk3/README.md) | Historical source material | Archive workbench direction for the daemon web reader, multi-chat workspace, topology, paste and attachment rendering, user state, realtime, degraded states, and implementation slices. |
+| Doc | Purpose |
+|-----|---------|
+| [Session lineage model](session-lineage-model.md) | Fork/resume/compaction storage + composition semantics (polylogue-4ts) |
+| [Query set algebra](query-set-algebra.md) | Set-composition semantics over query results (polylogue-fnm.13) |
+| [Agent-first MCP](agent-first-mcp.md) | MCP surface doctrine (polylogue-t46.8, polylogue-rsad) |
+| [Project memory](project-memory.md) · [Second brain](second-brain.md) · [Time machine](time-machine.md) · [Archive storytelling](archive-storytelling.md) · [Whole product](whole-product.md) | Vision statements feeding horizon beads |
+| [Query-action workflows](query-action-workflows.md) | Moved pointer to the generated `docs/product/workflows.md` |
 
-## How To Use These Docs
-
-Use the MK3 pack as reference material, not as dispatch truth. The current
-implementation order lives in [`docs/execution-plan.md`](../execution-plan.md)
-and the open GitHub issues. If a design detail still matters, fold it into the
-owning issue or current docs before implementing it.
-
-The bundled MK3 boards and screenshots are useful for visual vocabulary and
-fixture ideas, but they do not override the live query, route, assertion, and
-workbench contracts in the codebase.
+If a doc here stops matching its owning beads, the beads win — update or
+purge the doc.
