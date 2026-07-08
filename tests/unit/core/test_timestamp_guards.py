@@ -19,7 +19,12 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 
 from polylogue.core.dates import parse_date
-from polylogue.core.timestamps import canonical_timestamp_text, format_timestamp, parse_timestamp
+from polylogue.core.timestamps import (
+    canonical_timestamp_text,
+    format_timestamp,
+    parse_archive_datetime,
+    parse_timestamp,
+)
 from polylogue.schemas.operator.schema_inference import _is_safe_enum_value
 from tests.infra.tables import FORMAT_TIMESTAMP_TABLE, PARSE_TIMESTAMP_FORMAT_TABLE
 
@@ -348,3 +353,79 @@ def test_timestamp_format_parse_roundtrip(epoch: int) -> None:
 def test_parse_timestamp_never_crashes(text: str) -> None:
     result = parse_timestamp(text)
     assert result is None or isinstance(result, datetime)
+
+
+# =============================================================================
+# parse_archive_datetime: consolidation of six duplicated
+# _parse_archive_datetime copies (polylogue-a7xr.6). Five of the six
+# returned a NAIVE datetime for a naive-looking input string; one
+# (storage/insights/session/rebuild.py) forced UTC. The same stored
+# string could therefore parse to offset-naive or offset-aware depending
+# on which surface read it -- a latent TypeError wherever a value from
+# one surface met a value from another. These tests pin the consolidated
+# function's ALWAYS-aware contract and its two behavioral quirks
+# (empty-string treated as None; malformed non-empty strings raise).
+# =============================================================================
+
+
+def test_parse_archive_datetime_returns_none_for_none() -> None:
+    assert parse_archive_datetime(None) is None
+
+
+def test_parse_archive_datetime_returns_none_for_empty_string() -> None:
+    assert parse_archive_datetime("") is None
+
+
+def test_parse_archive_datetime_forces_utc_on_naive_input() -> None:
+    """The regression this bead exists to close: a naive-looking ISO
+    string (no Z, no offset) must come back tz-aware, not naive."""
+    result = parse_archive_datetime("2026-01-15T10:30:00")
+    assert result is not None
+    assert result.tzinfo is not None
+    assert result.utcoffset() == timezone.utc.utcoffset(None)
+
+
+def test_parse_archive_datetime_preserves_explicit_utc_suffix() -> None:
+    result = parse_archive_datetime("2026-01-15T10:30:00Z")
+    assert result is not None
+    assert result.tzinfo is not None
+    assert result == datetime(2026, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+
+
+def test_parse_archive_datetime_preserves_non_utc_offset() -> None:
+    result = parse_archive_datetime("2026-01-15T10:30:00+05:00")
+    assert result is not None
+    assert result.tzinfo is not None
+    assert result.utcoffset().total_seconds() == 5 * 3600  # type: ignore[union-attr]
+
+
+def test_parse_archive_datetime_naive_and_aware_inputs_are_comparable() -> None:
+    """The exact regression: comparing a result parsed from a naive-looking
+    string against one with an explicit offset must not raise TypeError."""
+    naive_input = parse_archive_datetime("2026-01-15T10:30:00")
+    aware_input = parse_archive_datetime("2026-01-16T10:30:00Z")
+    assert naive_input is not None
+    assert aware_input is not None
+    assert naive_input < aware_input  # raises TypeError if either is naive
+
+
+def test_parse_archive_datetime_raises_on_malformed_non_empty_string() -> None:
+    """Unlike parse_timestamp, malformed archive-stored timestamps are
+    NOT silently swallowed -- a parse failure here means real data
+    corruption worth surfacing, not a value to discard."""
+    with pytest.raises(ValueError):
+        parse_archive_datetime("not a timestamp")
+
+
+@given(
+    st.datetimes(
+        min_value=datetime(1970, 1, 2),
+        max_value=datetime(2100, 1, 1),
+        timezones=st.just(timezone.utc) | st.none(),
+    )
+)
+def test_parse_archive_datetime_is_always_aware_for_valid_iso_input(dt: datetime) -> None:
+    text = dt.isoformat()
+    result = parse_archive_datetime(text)
+    assert result is not None
+    assert result.tzinfo is not None

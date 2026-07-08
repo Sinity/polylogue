@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from polylogue.archive.query.spec import parse_query_date
+from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
 from polylogue.surfaces.payloads import TargetRefPayload, reader_anchor
 
@@ -155,8 +155,8 @@ def archive_summary_payload(summary: ArchiveSessionSummary) -> MCPSessionSummary
         message_count=summary.message_count,
         target_ref=TargetRefPayload.session(session_id),
         anchor=reader_anchor("session", session_id),
-        created_at=_parse_archive_datetime(summary.created_at),
-        updated_at=_parse_archive_datetime(summary.updated_at),
+        created_at=parse_archive_datetime(summary.created_at),
+        updated_at=parse_archive_datetime(summary.updated_at),
     )
 
 
@@ -487,12 +487,6 @@ def archive_search_hit_payload(hit: ArchiveSessionSearchHit, *, archive: Archive
 def _date_ms(value: str | None) -> int | None:
     parsed = parse_query_date("date", value)
     return int(parsed.timestamp() * 1000) if parsed is not None else None
-
-
-def _parse_archive_datetime(value: str | None) -> datetime | None:
-    if value is None:
-        return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _sort_value(sort: object) -> str | None:

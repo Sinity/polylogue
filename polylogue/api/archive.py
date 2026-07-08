@@ -33,6 +33,7 @@ from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin,
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
@@ -509,12 +510,6 @@ async def _archive_context_chronicle_payload(
     finally:
         await backend.close()
     return build_chronicle_projection_payload(session_payloads, edge_limit=edge_limit)
-
-
-def _parse_archive_datetime(value: str | None) -> datetime | None:
-    if value is None:
-        return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) -> dict[str, object]:
@@ -1148,7 +1143,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
         id=message.message_id,
         role=Role.normalize(message.role),
         text=text,
-        timestamp=_parse_archive_datetime(message.occurred_at),
+        timestamp=parse_archive_datetime(message.occurred_at),
         provider=provider,
         blocks=content_blocks,
         message_type=MessageType.normalize(message.message_type),
@@ -1172,8 +1167,8 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
     # fall back to the message-timestamp envelope only when the session row has
     # none. The summary projection already uses the stored values, so this keeps
     # the full-read and summary-read session timelines consistent.
-    stored_created = _parse_archive_datetime(session.created_at)
-    stored_updated = _parse_archive_datetime(session.updated_at)
+    stored_created = parse_archive_datetime(session.created_at)
+    stored_updated = parse_archive_datetime(session.updated_at)
     return Session(
         id=SessionId(session.session_id),
         origin=origin_from_provider(provider),
@@ -1196,8 +1191,8 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
         id=SessionId(summary.session_id),
         origin=origin_from_provider(summary.provider),
         title=summary.title,
-        created_at=_parse_archive_datetime(summary.created_at),
-        updated_at=_parse_archive_datetime(summary.updated_at),
+        created_at=parse_archive_datetime(summary.created_at),
+        updated_at=parse_archive_datetime(summary.updated_at),
         working_directories=tuple(summary.working_directories),
         git_branch=summary.git_branch,
         git_repository_url=summary.git_repository_url,
@@ -4089,8 +4084,8 @@ class PolylogueArchiveMixin:
                 "id": summary.session_id,
                 "title": summary.title,
                 "origin": summary.origin,
-                "created_at": _parse_archive_datetime(summary.created_at),
-                "updated_at": _parse_archive_datetime(summary.updated_at),
+                "created_at": parse_archive_datetime(summary.created_at),
+                "updated_at": parse_archive_datetime(summary.updated_at),
                 "message_count": summary.message_count,
                 "word_count": summary.word_count,
             }

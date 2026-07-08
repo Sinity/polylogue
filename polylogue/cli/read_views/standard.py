@@ -7,7 +7,6 @@ import time
 import webbrowser
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -23,6 +22,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.rendering.formatting import format_session
 from polylogue.surfaces.projection_spec import ProjectionSpec
 from polylogue.surfaces.temporal_evidence import (
@@ -229,19 +229,13 @@ def _dialogue_payload(session: Session, *, projection: ProjectionSpec | None = N
     }
 
 
-def _parse_archive_datetime(value: str | None) -> datetime | None:
-    if value is None:
-        return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
 def _archive_summary_to_domain(summary: Any) -> SessionSummary:
     return SessionSummary(
         id=SessionId(str(summary.session_id)),
         origin=origin_from_provider(summary.provider),
         title=summary.title,
-        created_at=_parse_archive_datetime(summary.created_at),
-        updated_at=_parse_archive_datetime(summary.updated_at),
+        created_at=parse_archive_datetime(summary.created_at),
+        updated_at=parse_archive_datetime(summary.updated_at),
         working_directories=tuple(summary.working_directories),
         git_branch=summary.git_branch,
         git_repository_url=summary.git_repository_url,
