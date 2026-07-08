@@ -8,6 +8,11 @@ import sqlite3
 import zipfile
 from pathlib import Path
 
+import pytest
+
+from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.blob_integrity import (
     classify_blob_reference_debt,
     plan_raw_backed_blob_reference_recovery,
@@ -15,12 +20,14 @@ from polylogue.storage.blob_integrity import (
     referenced_blob_hashes,
     replace_raw_backed_blob_reference_debt_from_source,
     restore_direct_blob_reference_debt,
+    scan_attachment_acquisition_debt,
     scan_blob_integrity,
     scan_blob_reference_debt,
 )
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
 
 def _make_db(path: Path) -> sqlite3.Connection:
@@ -231,6 +238,101 @@ def test_scan_blob_reference_debt_reads_initialized_source_tier(tmp_path: Path) 
     assert report.ok is True
     assert report.total_references_seen == 1
     assert report.reference_sources == {"raw_sessions": 1}
+
+
+def _session_with_attachment(attachment: ParsedAttachment) -> ParsedSession:
+    return ParsedSession(
+        source_name=Provider.GEMINI,
+        provider_session_id="s1",
+        title="s1",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m0",
+                role=Role.USER,
+                text="here is a file",
+                position=0,
+                variant_index=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="here is a file")],
+            )
+        ],
+        attachments=[attachment],
+    )
+
+
+def test_scan_attachment_acquisition_debt_never_counts_unfetched_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """83u.4: unfetched (blob_hash NULL) attachments are an honest floor, never debt."""
+
+    index_db = tmp_path / "index.db"
+    store = BlobStore(tmp_path / "blob")
+    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
+    conn = sqlite3.connect(index_db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    write_parsed_session_to_archive(
+        conn,
+        _session_with_attachment(
+            ParsedAttachment(
+                provider_attachment_id="att-remote",
+                message_provider_id="m0",
+                name="remote-file.txt",
+                mime_type="text/plain",
+                source_url="https://example.invalid/remote-file.txt",
+            )
+        ),
+    )
+    conn.close()
+
+    report = scan_attachment_acquisition_debt(index_db, store=store)
+
+    assert report.total_attachments == 1
+    assert report.unfetched_count == 1
+    assert report.acquired_count == 0
+    assert report.acquired_missing_blob_count == 0
+    assert report.ok is True
+
+
+def test_scan_attachment_acquisition_debt_flags_acquired_row_with_missing_blob_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An acquired attachment whose blob file vanished from the store is genuine debt."""
+
+    index_db = tmp_path / "index.db"
+    store = BlobStore(tmp_path / "blob")
+    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
+    payload = b"attachment bytes that will be deleted from disk"
+    conn = sqlite3.connect(index_db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    write_parsed_session_to_archive(
+        conn,
+        _session_with_attachment(
+            ParsedAttachment(
+                provider_attachment_id="att-acquired",
+                message_provider_id="m0",
+                name="note.txt",
+                mime_type="text/plain",
+                inline_bytes=payload,
+            )
+        ),
+    )
+    expected_attachment_id = conn.execute("SELECT attachment_id FROM attachments").fetchone()["attachment_id"]
+    conn.close()
+
+    blob_hash = hashlib.sha256(payload).hexdigest()
+    store.blob_path(blob_hash).unlink()
+
+    report = scan_attachment_acquisition_debt(index_db, store=store, sample_size=5)
+
+    assert report.total_attachments == 1
+    assert report.acquired_count == 1
+    assert report.acquired_missing_blob_count == 1
+    assert report.acquired_missing_blob_sample == (expected_attachment_id,)
+    assert report.unfetched_count == 0
+    assert report.ok is False
 
 
 def test_classify_blob_reference_debt_groups_recovery_evidence(tmp_path: Path) -> None:

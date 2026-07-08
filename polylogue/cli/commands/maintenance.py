@@ -36,6 +36,7 @@ from polylogue.storage.blob_integrity import (
     plan_raw_backed_blob_reference_recovery,
     prune_orphan_blob_reference_debt,
     replace_raw_backed_blob_reference_debt_from_source,
+    scan_attachment_acquisition_debt,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
@@ -1912,6 +1913,57 @@ def _render_blob_reference_debt_plain(report: BlobReferenceDebtClassificationRep
             click.echo(
                 f"  {sample.blob_hash} origin={origin} source_available={sample.sample_source_available} {source}"
             )
+
+
+@maintenance_group.command("attachment-acquisition-debt")
+@click.option(
+    "--sample-limit",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Maximum number of representative acquired-but-missing attachment ids to include.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def attachment_acquisition_debt_command(sample_limit: int, output_format: str) -> None:
+    """Classify index-tier attachment acquisition state without mutating the archive.
+
+    Deliberately separate from ``blob-reference-debt``: unfetched attachments
+    (``blob_hash IS NULL``) are an honest floor, never counted as missing
+    referenced blobs. Only an acquired attachment whose blob file is absent
+    from the store is genuine attachment acquisition debt.
+    """
+    report = scan_attachment_acquisition_debt(
+        archive_root() / "index.db",
+        sample_size=sample_limit,
+    )
+    payload = {
+        "mode": "attachment_acquisition_debt",
+        "mutates": False,
+        **report.to_dict(),
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    click.echo("Attachment acquisition debt")
+    click.echo(f"Total attachments: {report.total_attachments:,}")
+    click.echo(f"Acquired:          {report.acquired_count:,}")
+    click.echo(f"Unavailable:       {report.unavailable_count:,}")
+    click.echo(f"Unfetched:         {report.unfetched_count:,} (honest floor, not missing blobs)")
+    click.echo(f"Acquired missing:  {report.acquired_missing_blob_count:,} (genuine debt)")
+    click.echo(f"Status:            {'ok' if report.ok else 'debt-present'}")
+    if report.acquired_missing_blob_sample:
+        click.echo("Sample attachment ids with a missing blob file:")
+        for attachment_id in report.acquired_missing_blob_sample:
+            click.echo(f"  {attachment_id}")
 
 
 @maintenance_group.command("blob-reference-recovery-plan")

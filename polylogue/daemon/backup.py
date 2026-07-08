@@ -251,10 +251,14 @@ def _copy_referenced_blobs(
         _write_blob_reference_debt_report(backup_root, debt_report)
         sample = ", ".join(debt_report.sample)
         warnings.append(
-            "referenced blobs missing: "
+            "source-tier referenced blobs missing: "
             f"{debt_report.missing_referenced_blobs} total"
             + (f" (sample: {sample})" if sample else "")
             + "; details: blob-reference-debt.json"
+            + " (this counts source.db/raw_sessions references only -- unfetched"
+            " index-tier attachments with a NULL blob_hash are never counted"
+            " here; see `polylogue ops maintenance attachment-acquisition-debt`"
+            " for attachment-tier acquisition state)"
         )
     return count, size, debt_report
 
