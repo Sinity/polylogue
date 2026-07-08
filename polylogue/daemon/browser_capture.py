@@ -53,6 +53,7 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
     "--allow-no-auth",
     is_flag=True,
     default=False,
+    envvar=BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
     help=(
         f"Serve with no bearer token at all (same effect as {BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV}=1). "
         "Any local process can then read/post to the receiver -- default OFF."

@@ -8,7 +8,9 @@ from http import HTTPStatus
 from http.client import HTTPConnection, HTTPResponse
 from pathlib import Path
 from threading import Lock, Thread
+from types import SimpleNamespace
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -334,6 +336,47 @@ def test_browser_capture_token_show_rotate_changes_the_token(cli_workspace: dict
 
     assert rotated != original
     assert reloaded == rotated
+
+
+class _StubServer:
+    def __init__(self, spool_path: Path) -> None:
+        self.config = SimpleNamespace(spool_path=spool_path)
+
+    def serve_forever(self) -> None:
+        return None
+
+    def server_close(self) -> None:
+        return None
+
+
+def test_browser_capture_serve_allow_no_auth_env_var_matches_the_flag(cli_workspace: dict[str, Path]) -> None:
+    """The --allow-no-auth flag documents itself as equivalent to setting
+    POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH=1 -- prove the env var alone
+    (no flag) actually produces the same no-auth server construction, and
+    that plain default invocation (neither) still auto-mints a token."""
+    runner = CliRunner()
+
+    def _invoke(extra_args: list[str], *, env: dict[str, str] | None = None) -> object | None:
+        captured: dict[str, object] = {}
+
+        def _fake_make_server(*_args: object, **kwargs: object) -> _StubServer:
+            captured.update(kwargs)
+            return _StubServer(cli_workspace["archive_root"] / "browser-capture")
+
+        with patch("polylogue.daemon.browser_capture.make_server", side_effect=_fake_make_server):
+            result = runner.invoke(
+                daemon_cli, ["browser-capture", "serve", *extra_args], env=env, catch_exceptions=False
+            )
+        assert result.exit_code == 0
+        return captured.get("auth_token")
+
+    default_token = _invoke([])
+    env_token = _invoke([], env={"POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH": "1"})
+    flag_token = _invoke(["--allow-no-auth"])
+
+    assert isinstance(default_token, str) and len(default_token) > 20
+    assert env_token is None
+    assert flag_token is None
 
 
 def test_browser_capture_route_contracts_cover_receiver_boundary() -> None:
