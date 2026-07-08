@@ -15,10 +15,9 @@ real archive, serves committed private sample content, or makes pixel-diff
 assertions that would freeze aesthetic iteration.
 
 This page documents the harness so workbench and reader changes have a stable
-reference for what the lane covers and how to run it. Historical visual design
-inputs live at [`docs/design/mk3/`](design/mk3/). Current UI work should cite
-the owning issue/PR verification section and the tracked visual tests under
-`tests/visual/`; old coding-agent handoff packs are not accepted as
+reference for what the lane covers and how to run it. Current UI work should
+cite the owning issue/PR verification section and the tracked visual tests
+under `tests/visual/`; old coding-agent handoff packs are not accepted as
 verification authority.
 
 Representative media has to be evidence, not decoration. Public evidence must
@@ -112,9 +111,6 @@ instead of drifting into a decorative table.
 | `polylogue.local_reader.attachment_surface` | `tests/visual/test_reader_attachments.py` | `reader-visual-attachments-v1` | `/a`<br>`/api/attachments`<br>`/api/sessions/{id}/attachments` |
 | `polylogue.local_reader.attachment_library_empty` | `tests/visual/test_reader_attachments.py` | `reader-visual-attachments-empty` | `/api/attachments` |
 | `polylogue.local_reader.message_card` | `tests/visual/test_reader_action_rail.py` | `reader-visual-synthetic-v1` | `/`<br>`/api/sessions`<br>`/api/messages/{id}/actions` |
-
-Historical design screenshots under `docs/design/mk3/screens/` remain reference
-material for future visual lanes, not current acceptance criteria.
 
 ## What the lane checks
 
