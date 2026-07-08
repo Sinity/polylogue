@@ -55,6 +55,14 @@ SuccessorContextSection = Literal[
     "evidence_gaps",
 ]
 EvidenceSupport = Literal["raw_evidence", "assertion", "inference", "caveat", "missing_evidence"]
+# Field-level marker distinguishing a structural claim (read straight from a
+# keystone/typed field, e.g. tool_result_is_error/exit_code) from a claim
+# mined from message prose via regex (SHA/PR/issue/decision/test-count
+# patterns). The no-regex-over-prose discipline previously only held
+# structurally for the exit-code axis (#2482, SessionDigestEvent); this is
+# the payload-model-level version so any consumer -- not just one renderer --
+# can tell a text-mined claim from a verified one (polylogue-9e5.30).
+FieldEvidenceClass = Literal["raw_evidence", "text_derived"]
 DecisionCandidateReviewStatus = Literal["accepted", "rejected", "deferred"]
 ContextEvidenceWindowKind = Literal[
     "quoted_evidence",
@@ -144,6 +152,8 @@ class ForensicIndexEntry(ArchiveInsightModel):
     raw_ref: TransformRawRef
     claim_kinds: tuple[ForensicClaimKind, ...]
     claim_labels: tuple[str, ...]
+    evidence_class: FieldEvidenceClass = "raw_evidence"
+    text_derived_fields: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _requires_claims(self) -> ForensicIndexEntry:
@@ -203,6 +213,8 @@ class ToolSummary(ArchiveInsightModel):
     file_refs: tuple[str, ...] = ()
     commit_refs: tuple[str, ...] = ()
     raw_refs: tuple[TransformRawRef, ...]
+    evidence_class: FieldEvidenceClass = "raw_evidence"
+    text_derived_fields: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _requires_raw_refs(self) -> ToolSummary:
@@ -226,6 +238,8 @@ class SubagentReport(ArchiveInsightModel):
     test_evidence: tuple[str, ...] = ()
     caveats: tuple[str, ...] = ()
     raw_refs: tuple[TransformRawRef, ...]
+    evidence_class: FieldEvidenceClass = "raw_evidence"
+    text_derived_fields: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _requires_raw_refs(self) -> SubagentReport:
@@ -241,6 +255,8 @@ class RunStateSummary(ArchiveInsightModel):
     blockers: tuple[str, ...] = ()
     next_actions: tuple[str, ...] = ()
     raw_refs: tuple[TransformRawRef, ...]
+    evidence_class: FieldEvidenceClass = "text_derived"
+    text_derived_fields: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _requires_content_and_raw_refs(self) -> RunStateSummary:
@@ -269,6 +285,9 @@ class SessionDigestEvent(ArchiveInsightModel):
     command: str | None = None
     handler_kind: str | None = None
     status: str | None = None
+    # Always raw_evidence -- this model is strictly keystone-derived (#2482),
+    # never regex-mined, so it never carries text_derived_fields.
+    evidence_class: FieldEvidenceClass = "raw_evidence"
 
     @model_validator(mode="after")
     def _requires_raw_refs(self) -> SessionDigestEvent:
@@ -284,6 +303,8 @@ class DecisionCandidate(ArchiveInsightModel):
     status: DecisionCandidateReviewStatus = "accepted"
     reason: str | None = None
     candidate_ref: str | None = None
+    evidence_class: FieldEvidenceClass = "text_derived"
+    text_derived_fields: tuple[str, ...] = ("text",)
 
     @model_validator(mode="after")
     def _requires_raw_refs(self) -> DecisionCandidate:
@@ -1426,6 +1447,7 @@ def _render_blame_report(digest: SessionDigest) -> str:
             command = f" — {tool.command}" if tool.command else ""
             lines.append(
                 f"- {tool.tool_name} [{tool.handler_kind}] status={tool.status} lines={tool.line_count}{command}"
+                f"{_text_derived_caveat_suffix(tool.evidence_class, tool.text_derived_fields)}"
                 f"{_evidence_suffix(digest, tool.raw_refs)}"
             )
             if tool.output_preview:
@@ -1447,7 +1469,9 @@ def _render_blame_report(digest: SessionDigest) -> str:
     lines.extend(["", "## Decision Candidates"])
     if digest.decision_candidates:
         lines.extend(
-            f"- {candidate.kind}: {candidate.text}{_evidence_suffix(digest, candidate.raw_refs)}"
+            f"- {candidate.kind}: {candidate.text}"
+            f"{_text_derived_caveat_suffix(candidate.evidence_class, candidate.text_derived_fields)}"
+            f"{_evidence_suffix(digest, candidate.raw_refs)}"
             for candidate in digest.decision_candidates
         )
     else:
@@ -1455,6 +1479,33 @@ def _render_blame_report(digest: SessionDigest) -> str:
     lines.extend(["", "## Evidence Timeline"])
     lines.extend(_render_evidence_index_lines(digest, limit=None))
     return "\n".join(lines).strip() + "\n"
+
+
+def _text_derived_caveat_suffix(evidence_class: FieldEvidenceClass, text_derived_fields: Sequence[str]) -> str:
+    """Render an inline caveat marking a claim as mined from prose, not verified.
+
+    Every renderer of a text-derived forensic claim must include this (or an
+    equivalent caveat) -- see :func:`assert_forensic_conclusion_has_caveat`,
+    the policy guard a test can call to catch a renderer that silently drops
+    it (polylogue-9e5.30).
+    """
+
+    if evidence_class != "text_derived":
+        return ""
+    fields = ", ".join(text_derived_fields) if text_derived_fields else "unspecified"
+    return f" [text-derived: {fields}; unverified, not a confirmed outcome]"
+
+
+def assert_forensic_conclusion_has_caveat(evidence_class: FieldEvidenceClass, rendered_line: str) -> None:
+    """Policy guard: a text-derived forensic conclusion must render a caveat.
+
+    Raises ``ValueError`` if ``evidence_class`` is ``"text_derived"`` and
+    ``rendered_line`` carries no caveat marker -- a rendered claim mined from
+    prose must never present as an unqualified confirmed outcome.
+    """
+
+    if evidence_class == "text_derived" and "text-derived" not in rendered_line:
+        raise ValueError(f"forensic conclusion rendered from text-derived fields carries no caveat: {rendered_line!r}")
 
 
 def _render_evidence_index_lines(digest: SessionDigest, *, limit: int | None) -> list[str]:
@@ -1514,9 +1565,16 @@ def _build_forensic_index(
     refs_by_key: dict[tuple[str, str | None, int | None, str], TransformRawRef] = {}
     kinds_by_key: dict[tuple[str, str | None, int | None, str], list[ForensicClaimKind]] = {}
     labels_by_key: dict[tuple[str, str | None, int | None, str], list[str]] = {}
+    text_derived_by_key: dict[tuple[str, str | None, int | None, str], list[str]] = {}
     claim_count = 0
 
-    def add(kind: ForensicClaimKind, label: str, refs: Sequence[TransformRawRef]) -> None:
+    def add(
+        kind: ForensicClaimKind,
+        label: str,
+        refs: Sequence[TransformRawRef],
+        *,
+        evidence_class: FieldEvidenceClass = "raw_evidence",
+    ) -> None:
         nonlocal claim_count
         claim_count += 1
         for ref in refs:
@@ -1524,22 +1582,29 @@ def _build_forensic_index(
             refs_by_key.setdefault(key, ref)
             _append_unique(kinds_by_key.setdefault(key, []), kind)
             _append_unique(labels_by_key.setdefault(key, []), label)
+            if evidence_class == "text_derived":
+                _append_unique(text_derived_by_key.setdefault(key, []), kind)
 
     add("digest", "digest:session", (session_ref,))
     for tool in tool_summaries:
         label = f"tool:{tool.tool_name}"
         if tool.tool_id:
             label = f"{label}:{tool.tool_id}"
-        add("tool_summary", label, tool.raw_refs)
+        add("tool_summary", label, tool.raw_refs, evidence_class=tool.evidence_class)
     for index, report in enumerate(subagent_reports):
         label = f"subagent:{report.subagent_type}:{index}"
-        add("subagent_report", label, report.raw_refs)
+        add("subagent_report", label, report.raw_refs, evidence_class=report.evidence_class)
     if run_state is not None:
-        add("run_state", "run_state", run_state.raw_refs)
+        add("run_state", "run_state", run_state.raw_refs, evidence_class=run_state.evidence_class)
     for index, event in enumerate(events):
         add("event", f"event:{event.kind}:{index}", event.raw_refs)
     for index, decision in enumerate(decisions):
-        add("decision_candidate", f"decision:{decision.kind}:{index}", decision.raw_refs)
+        add(
+            "decision_candidate",
+            f"decision:{decision.kind}:{index}",
+            decision.raw_refs,
+            evidence_class=decision.evidence_class,
+        )
 
     entries = tuple(
         ForensicIndexEntry(
@@ -1547,6 +1612,8 @@ def _build_forensic_index(
             raw_ref=ref,
             claim_kinds=tuple(kinds_by_key[key]),
             claim_labels=tuple(labels_by_key[key]),
+            evidence_class="text_derived" if text_derived_by_key.get(key) else "raw_evidence",
+            text_derived_fields=tuple(text_derived_by_key.get(key, ())),
         )
         for key, ref in sorted(refs_by_key.items(), key=lambda item: _raw_ref_sort_key(item[1]))
     )
@@ -1568,6 +1635,16 @@ def _evidence_id(ref: TransformRawRef) -> str:
 def _append_unique(target: list[T], value: T) -> None:
     if value not in target:
         target.append(value)
+
+
+def _present_field_names(**named_values: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the names of keyword args whose tuple value is non-empty.
+
+    Used to compute ``text_derived_fields``: the set of prose-mined fields
+    that actually carried content on one extracted instance.
+    """
+
+    return tuple(name for name, values in named_values.items() if values)
 
 
 def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> Iterable[ToolSummary]:
@@ -1598,6 +1675,18 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
             is_error, exit_code = _block_outcome(result_block or {})
             tool_name = _tool_name(block)
             command = _tool_command(block)
+            pr_refs = tuple(_number_refs(_PR_RE, output_text))
+            issue_refs = tuple(_number_refs(_ISSUE_RE, output_text))
+            test_evidence = tuple(_test_evidence(output_text))
+            file_refs = tuple(_tool_file_refs(tool_name=tool_name, command=command, output_text=output_text))
+            commit_refs = tuple(_tool_commit_refs(command=command, output_text=output_text))
+            text_derived_fields = _present_field_names(
+                pr_refs=pr_refs,
+                issue_refs=issue_refs,
+                test_evidence=test_evidence,
+                file_refs=file_refs,
+                commit_refs=commit_refs,
+            )
             yield ToolSummary(
                 tool_name=tool_name,
                 tool_id=tool_id,
@@ -1606,12 +1695,14 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
                 status=_tool_status(is_error, exit_code),
                 line_count=_line_count(output_text),
                 output_preview=_preview(output_text),
-                pr_refs=tuple(_number_refs(_PR_RE, output_text)),
-                issue_refs=tuple(_number_refs(_ISSUE_RE, output_text)),
-                test_evidence=tuple(_test_evidence(output_text)),
-                file_refs=tuple(_tool_file_refs(tool_name=tool_name, command=command, output_text=output_text)),
-                commit_refs=tuple(_tool_commit_refs(command=command, output_text=output_text)),
+                pr_refs=pr_refs,
+                issue_refs=issue_refs,
+                test_evidence=test_evidence,
+                file_refs=file_refs,
+                commit_refs=commit_refs,
                 raw_refs=tuple(refs),
+                evidence_class="text_derived" if text_derived_fields else "raw_evidence",
+                text_derived_fields=text_derived_fields,
             )
 
 
@@ -1640,6 +1731,14 @@ def _extract_subagent_reports(session: Session, messages: Sequence[Message]) -> 
             if result_ref is not None:
                 refs.append(result_ref)
             result_text = _block_text(result_block or {})
+            pr_refs = tuple(_number_refs(_PR_RE, result_text))
+            issue_refs = tuple(_number_refs(_ISSUE_RE, result_text))
+            test_evidence = tuple(_test_evidence(result_text))
+            text_derived_fields = _present_field_names(
+                pr_refs=pr_refs,
+                issue_refs=issue_refs,
+                test_evidence=test_evidence,
+            )
             yield SubagentReport(
                 subagent_type=_subagent_type(block),
                 tool_id=tool_id,
@@ -1647,11 +1746,13 @@ def _extract_subagent_reports(session: Session, messages: Sequence[Message]) -> 
                 child_session_id=_subagent_child_session_id(block, result_text),
                 prompt=_subagent_prompt(block),
                 final_report_preview=_preview(result_text, limit=320),
-                pr_refs=tuple(_number_refs(_PR_RE, result_text)),
-                issue_refs=tuple(_number_refs(_ISSUE_RE, result_text)),
-                test_evidence=tuple(_test_evidence(result_text)),
+                pr_refs=pr_refs,
+                issue_refs=issue_refs,
+                test_evidence=test_evidence,
                 caveats=tuple(_caveats(result_text)),
                 raw_refs=tuple(refs),
+                evidence_class="text_derived" if text_derived_fields else "raw_evidence",
+                text_derived_fields=text_derived_fields,
             )
 
 
@@ -1832,6 +1933,14 @@ def _extract_run_state(session: Session, messages: Sequence[Message]) -> RunStat
 
     if not refs:
         return None
+    text_derived_fields = _present_field_names(
+        done=tuple(done),
+        in_flight=tuple(in_flight),
+        blockers=tuple(blockers),
+        next_actions=tuple(next_actions),
+    )
+    if goal:
+        text_derived_fields = ("goal", *text_derived_fields)
     return RunStateSummary(
         goal=goal,
         done=tuple(done),
@@ -1839,6 +1948,7 @@ def _extract_run_state(session: Session, messages: Sequence[Message]) -> RunStat
         blockers=tuple(blockers),
         next_actions=tuple(next_actions),
         raw_refs=tuple(refs),
+        text_derived_fields=text_derived_fields,
     )
 
 
@@ -2313,6 +2423,7 @@ __all__ = [
     "TRANSFORM_REGISTRY",
     "DecisionCandidate",
     "DecisionCandidateReviewStatus",
+    "FieldEvidenceClass",
     "ForensicIndex",
     "ForensicIndexEntry",
     "SessionDigest",
@@ -2333,6 +2444,7 @@ __all__ = [
     "TransformDescriptor",
     "TransformMetadata",
     "TransformRawRef",
+    "assert_forensic_conclusion_has_caveat",
     "compile_session_digest",
     "compile_session_run_projection",
     "render_session_report",
