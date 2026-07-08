@@ -20,16 +20,19 @@ archive. Callers can widen the sample for closer audits.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
+from typing import Literal, cast
 
 from pydantic import Field
 
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.rigor import (
     RigorContract,
-    list_rigor_contracts,
+    get_rigor_contract,
     resolve_payload,
+    rigor_exemption_reason,
 )
+
+CoverageStatus = Literal["covered", "uncovered", "exempt"]
 
 DEFAULT_AUDIT_SAMPLE_LIMIT = 500
 
@@ -55,6 +58,7 @@ class InsightRigorAuditEntry(ArchiveInsightModel):
 
     insight_name: str
     display_name: str
+    coverage_status: CoverageStatus = "covered"
     sample_size: int = 0
     evidence_count: int = 0
     inference_count: int = 0
@@ -174,30 +178,49 @@ async def build_insight_rigor_audit_report(
     operations: object,
     query: InsightRigorAuditQuery | None = None,
 ) -> InsightRigorAuditReport:
-    """Audit the rigor profile of every contracted insight product.
+    """Audit the rigor profile of every registered insight product.
 
-    Per product, a bounded sample (``sample_limit`` rows) is fetched
-    through the same operations façade the CLI/MCP/API use, then
-    classified by the declared contract. Products without registered
-    rigor contracts are skipped.
+    Iterates :data:`polylogue.insights.registry.INSIGHT_REGISTRY` -- every
+    product Polylogue ships, not just the ones with a declared rigor
+    contract (9e5.28) -- so a product losing its contract shows up as
+    ``coverage_status="uncovered"`` instead of silently vanishing from the
+    report. A product with a contract is fully audited (a bounded sample
+    fetched and classified as before); a product with neither a contract
+    nor a listed exemption gets a zero-sample ``"uncovered"`` stub; a
+    product in :data:`polylogue.insights.rigor.RIGOR_EXEMPT` gets a
+    zero-sample ``"exempt"`` stub carrying its justification in ``notes``.
     """
+
+    from polylogue.insights.registry import INSIGHT_REGISTRY
 
     request = query or InsightRigorAuditQuery()
     targeted = set(request.insights) if request.insights else None
     entries: list[InsightRigorAuditEntry] = []
-    for contract in list_rigor_contracts():
-        if targeted is not None and contract.insight_name not in targeted:
+    for insight_name, insight_type in INSIGHT_REGISTRY.items():
+        if targeted is not None and insight_name not in targeted:
             continue
-        rows: list[object] = []
-        error: str | None = None
-        try:
-            rows = await _fetch_rows(operations, contract.insight_name, request.sample_limit)
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-        entry = _audit_one(rows, contract)
-        if error is not None:
-            entry = entry.model_copy(update={"error": error})
-        entries.append(entry)
+        contract = get_rigor_contract(insight_name)
+        if contract is not None:
+            rows: list[object] = []
+            error: str | None = None
+            try:
+                rows = await _fetch_rows(operations, insight_name, request.sample_limit)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+            entry = _audit_one(rows, contract)
+            if error is not None:
+                entry = entry.model_copy(update={"error": error})
+            entries.append(entry)
+            continue
+        exemption = rigor_exemption_reason(insight_name)
+        entries.append(
+            InsightRigorAuditEntry(
+                insight_name=insight_name,
+                display_name=insight_type.display_name,
+                coverage_status="exempt" if exemption is not None else "uncovered",
+                notes=(exemption,) if exemption is not None else (),
+            )
+        )
     return InsightRigorAuditReport(sample_limit=request.sample_limit, entries=tuple(entries))
 
 

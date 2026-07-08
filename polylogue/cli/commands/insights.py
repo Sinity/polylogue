@@ -382,6 +382,14 @@ def _render_audit_plain(report: InsightRigorAuditReport) -> None:
     for entry in report.entries:
         sample = entry.sample_size
         click.echo(f"{entry.insight_name} ({entry.display_name})")
+        if entry.coverage_status == "uncovered":
+            click.echo("  UNCOVERED: no rigor contract declared for this registered product")
+            continue
+        if entry.coverage_status == "exempt":
+            click.echo("  exempt: no rigor contract needed")
+            for note in entry.notes:
+                click.echo(f"  reason: {note}")
+            continue
         if entry.error is not None:
             click.echo(f"  error: {entry.error}")
             continue
@@ -412,7 +420,7 @@ def _render_audit_plain(report: InsightRigorAuditReport) -> None:
     "--insight",
     "insights",
     multiple=True,
-    help="Limit the audit to one or more registered insight names. Default: every contracted product.",
+    help="Limit the audit to one or more registered insight names. Default: every registered product.",
 )
 @click.option(
     "--sample-limit",
@@ -445,9 +453,12 @@ def insights_audit_command(
 ) -> None:
     """Report per-product rigor profile across materialized insights (#1275).
 
-    For each contracted product, reports the share of rows that carry an
-    evidence payload, an inference payload, and a fallback marker, plus
-    the stale-version row count and a confidence-bucket distribution.
+    Every registered insight product appears, not just contracted ones
+    (9e5.28): a product with a contract reports the share of rows that
+    carry an evidence payload, an inference payload, and a fallback
+    marker, plus the stale-version row count and a confidence-bucket
+    distribution; a product with no contract shows as uncovered unless
+    it is explicitly listed as exempt.
     """
 
     env: AppEnv = ctx.obj
