@@ -1891,6 +1891,87 @@ def scan_blob_reference_debt(
     )
 
 
+@dataclass(frozen=True)
+class AttachmentAcquisitionDebtReport:
+    """Index-tier attachment acquisition state (#83u.4).
+
+    Deliberately separate from :class:`BlobReferenceDebtReport`, which
+    classifies source-tier backup debt from ``source.db``/``raw_sessions``
+    references and never queries the index-tier ``attachments`` table.
+    ``unfetched`` (``blob_hash IS NULL``) is an honest floor -- bytes were
+    never fetched, not a broken reference -- and must never be conflated
+    with missing referenced blobs. Only an ``acquired`` row whose blob file
+    is absent from the store is genuine attachment acquisition debt.
+    """
+
+    total_attachments: int
+    acquired_count: int
+    acquired_missing_blob_count: int
+    acquired_missing_blob_sample: tuple[str, ...]
+    unavailable_count: int
+    unfetched_count: int
+
+    @property
+    def ok(self) -> bool:
+        return self.acquired_missing_blob_count == 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "total_attachments": self.total_attachments,
+            "acquired_count": self.acquired_count,
+            "acquired_missing_blob_count": self.acquired_missing_blob_count,
+            "acquired_missing_blob_sample": list(self.acquired_missing_blob_sample),
+            "unavailable_count": self.unavailable_count,
+            "unfetched_count": self.unfetched_count,
+        }
+
+
+def scan_attachment_acquisition_debt(
+    db_path: str | Path,
+    *,
+    store: BlobStore | None = None,
+    sample_size: int = _MAX_FINDING_SAMPLE,
+) -> AttachmentAcquisitionDebtReport:
+    """Classify index-tier attachment acquisition debt without mutating state.
+
+    ``db_path`` is the index-tier database (``index.db``), not ``source.db``.
+    """
+
+    blob_store = store if store is not None else get_blob_store()
+    resolved_db_path = Path(db_path)
+    with sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        status_counts: dict[str, int] = dict(
+            conn.execute("SELECT acquisition_status, COUNT(*) FROM attachments GROUP BY acquisition_status").fetchall()
+        )
+        acquired_rows = conn.execute(
+            "SELECT attachment_id, blob_hash FROM attachments WHERE acquisition_status = 'acquired'"
+        ).fetchall()
+
+    missing_sample: list[str] = []
+    missing_count = 0
+    for row in acquired_rows:
+        blob_hash = row["blob_hash"]
+        if blob_hash is None:
+            continue
+        hash_hex = blob_hash.hex() if isinstance(blob_hash, bytes) else str(blob_hash)
+        if blob_store.exists(hash_hex):
+            continue
+        missing_count += 1
+        if len(missing_sample) < sample_size:
+            missing_sample.append(str(row["attachment_id"]))
+
+    return AttachmentAcquisitionDebtReport(
+        total_attachments=sum(status_counts.values()),
+        acquired_count=status_counts.get("acquired", 0),
+        acquired_missing_blob_count=missing_count,
+        acquired_missing_blob_sample=tuple(missing_sample),
+        unavailable_count=status_counts.get("unavailable", 0),
+        unfetched_count=status_counts.get("unfetched", 0),
+    )
+
+
 def scan_blob_integrity(
     db_path: str | Path,
     *,
@@ -1994,6 +2075,7 @@ def scan_blob_integrity(
 
 
 __all__ = [
+    "AttachmentAcquisitionDebtReport",
     "BlobIntegrityFinding",
     "BlobIntegrityKind",
     "BlobIntegrityReport",
@@ -2014,6 +2096,7 @@ __all__ = [
     "referenced_blob_hashes",
     "replace_raw_backed_blob_reference_debt_from_source",
     "restore_direct_blob_reference_debt",
+    "scan_attachment_acquisition_debt",
     "scan_blob_reference_debt",
     "scan_blob_integrity",
 ]

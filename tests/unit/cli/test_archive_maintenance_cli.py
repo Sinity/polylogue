@@ -527,6 +527,42 @@ def test_blob_reference_debt_cli_plain_output_names_read_only_debt(
     assert "Source paths: recoverable_source_path_exists=1, source_path_missing=1" in result.output
 
 
+def test_attachment_acquisition_debt_cli_reports_clean_empty_archive(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "attachment-acquisition-debt", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "attachment_acquisition_debt"
+    assert payload["mutates"] is False
+    assert payload["ok"] is True
+    assert payload["total_attachments"] == 0
+    assert payload["acquired_missing_blob_count"] == 0
+
+
+def test_attachment_acquisition_debt_cli_plain_output_distinguishes_unfetched_from_debt(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "attachment-acquisition-debt"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Attachment acquisition debt" in result.output
+    assert "Unfetched:         0 (honest floor, not missing blobs)" in result.output
+    assert "Acquired missing:  0 (genuine debt)" in result.output
+    assert "Status:            ok" in result.output
+
+
 def test_blob_reference_recovery_plan_cli_writes_raw_backed_manifest(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
