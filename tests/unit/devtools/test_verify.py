@@ -730,6 +730,50 @@ def test_pytest_run_terminates_after_output_stall(
     assert "terminated pytest process group" in captured.err
 
 
+def test_pytest_run_terminates_on_progress_stall_despite_flowing_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """polylogue-27rb: an xdist-master-keeps-emitting D-state deadlock.
+
+    Reproduces the confirmed hang shape: the child process keeps writing
+    output continuously (never silent), but no NEW test-progress event is
+    ever appended to the events ledger -- the output-silence stall check
+    alone would run forever. The progress-based check must fire instead.
+    """
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0.15")
+
+    # _run's _clear_pytest_report wipes PYTEST_EVENTS_PATH before the child
+    # starts, so the child itself must write the one-and-only progress
+    # event (matching a real pytest worker reporting "test started" then
+    # wedging mid-test) -- it reads the path devtools/verify.py's
+    # _subprocess_env() injects for it.
+    child_script = (
+        "import json, os, time\n"
+        "path = os.environ['POLYLOGUE_PYTEST_EVENTS_PATH']\n"
+        "os.makedirs(os.path.dirname(path), exist_ok=True)\n"
+        "with open(path, 'w') as f:\n"
+        "    f.write(json.dumps({'event': 'test_started', 'nodeid': 'wedged::test', "
+        "'updated_at': '2026-01-01T00:00:00Z'}) + '\\n')\n"
+        "for _ in range(200):\n"
+        "    print('progress', flush=True)\n"
+        "    time.sleep(0.02)\n"
+    )
+    rc, _elapsed, metadata = _run("pytest stall", [sys.executable, "-c", child_script])
+
+    captured = capsys.readouterr()
+    assert rc == 124
+    assert metadata["stall_timeout_s"] == 0.15
+    # Output kept flowing the whole time -- the OLD output-silence check
+    # never had a chance to fire; only the progress-based check should.
+    assert "progress" in captured.err
+    assert "pytest produced no output" not in captured.err
+    assert "pytest reported no test progress for 0.15s" in captured.err
+    assert "wedged::test" in captured.err
+    assert "terminated pytest process group" in captured.err
+
+
 def test_pytest_timeout_env_defaults_and_invalid_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", raising=False)
     monkeypatch.delenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", raising=False)
