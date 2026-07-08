@@ -78,7 +78,6 @@ def build_docs_readme(
                     "Installation",
                     "Architecture",
                     "Architecture Spine",
-                    "Execution Plan",
                     "Design Direction",
                     "Query-Action Workflows",
                     "Data Model",
@@ -141,7 +140,9 @@ def build_readme_section(
             "Live site: <https://sinity.github.io/polylogue/> (auto-published on every merge to `master`).",
             "",
             "Start with the generated command and architecture references; "
-            "use [docs/README.md](docs/README.md) for the complete map.",
+            "use [docs/README.md](docs/README.md) for the complete map. "
+            "Current sequencing and active workstreams live in the Beads backlog "
+            "(`bd ready`, `bd list --status open`), not a standalone execution-plan document.",
             "",
             _render_table(featured_docs),
             "",

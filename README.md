@@ -400,15 +400,14 @@ for the token semantics and cross-verification result.
 
 Live site: <https://sinity.github.io/polylogue/> (auto-published on every merge to `master`).
 
-Start with the generated command and architecture references; use [docs/README.md](docs/README.md) for the complete map.
+Start with the generated command and architecture references; use [docs/README.md](docs/README.md) for the complete map. Current sequencing and active workstreams live in the Beads backlog (`bd ready`, `bd list --status open`), not a standalone execution-plan document.
 
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Installation](docs/installation.md) | Source checkout, Nix flake, and managed NixOS/Home Manager install paths. |
 | [Architecture Spine](docs/architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
-| [Execution Plan](docs/execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
-| [Design Direction](docs/design/README.md) | Historical design inputs and current guidance for using them without treating them as parallel roadmaps. |
+| [Design Direction](docs/design/README.md) | Beads-first design doctrine and the standing domain-model references that survive it. |
 | [Query-Action Workflows](docs/product/workflows.md) | Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths. |
 | [Proof Artifacts](docs/proof-artifacts.md) | Claim-to-proof map for public-facing demo, cost, failure-follow-up, and affordance-analysis claims. |
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |

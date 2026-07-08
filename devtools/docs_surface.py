@@ -76,14 +76,9 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Target shape, guardrails, and major decisions with rejected alternatives.",
     ),
     DocsEntry(
-        "Execution Plan",
-        "docs/execution-plan.md",
-        "Current issue-driven sequencing plan for the remaining backlog.",
-    ),
-    DocsEntry(
         "Design Direction",
         "docs/design/README.md",
-        "Historical design inputs and current guidance for using them without treating them as parallel roadmaps.",
+        "Beads-first design doctrine and the standing domain-model references that survive it.",
     ),
     DocsEntry(
         "Query-Action Workflows",
@@ -137,7 +132,6 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Architecture",
     "Installation",
     "Architecture Spine",
-    "Execution Plan",
     "Design Direction",
     "Query-Action Workflows",
     "Proof Artifacts",
