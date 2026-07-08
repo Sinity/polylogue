@@ -323,6 +323,15 @@ def _escape_like_suffix(value: str) -> str:
 SPOOL_MAX_FILES = 20_000
 SPOOL_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 
+#: Outbound post commands are small control-plane objects (a target, some
+#: text, a submit flag), not archive content, so their queue gets a much
+#: tighter bound than the capture spool. This still exists to cap a runaway
+#: caller looping enqueue_post_command, not to bound legitimate use --
+#: dispatched/acked commands are expected to be pruned by the extension's
+#: poll/ack cycle long before this is reached.
+POST_COMMAND_QUEUE_MAX_FILES = 5_000
+POST_COMMAND_QUEUE_MAX_BYTES = 50 * 1024 * 1024  # 50 MiB
+
 
 class SpoolQuotaExceededError(RuntimeError):
     """Raised when writing a new (non-replacing) capture would exceed the spool quota."""
@@ -354,12 +363,23 @@ def _spool_usage(spool_root: Path) -> SpoolUsage:
     return SpoolUsage(file_count=file_count, total_bytes=total_bytes)
 
 
-def _check_spool_quota(spool_root: Path) -> None:
+def _check_spool_quota(
+    spool_root: Path,
+    *,
+    max_files: int,
+    max_bytes: int,
+    label: str = "capture spool",
+) -> None:
+    """Callers must pass max_files/max_bytes explicitly (not as defaults
+    bound to the module constants) so tests can monkeypatch SPOOL_MAX_FILES/
+    SPOOL_MAX_BYTES/POST_COMMAND_QUEUE_MAX_* and have it take effect --
+    a default parameter value binds at function-definition time, before
+    any monkeypatch runs."""
     usage = _spool_usage(spool_root)
-    if usage.file_count >= SPOOL_MAX_FILES or usage.total_bytes >= SPOOL_MAX_BYTES:
+    if usage.file_count >= max_files or usage.total_bytes >= max_bytes:
         raise SpoolQuotaExceededError(
-            f"capture spool quota exceeded: {usage.file_count} files, {usage.total_bytes} bytes "
-            f"(limits: {SPOOL_MAX_FILES} files, {SPOOL_MAX_BYTES} bytes)"
+            f"{label} quota exceeded: {usage.file_count} files, {usage.total_bytes} bytes "
+            f"(limits: {max_files} files, {max_bytes} bytes)"
         )
 
 
@@ -383,7 +403,7 @@ def write_capture_envelope(
         replaced = target.exists()
         if not replaced:
             root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
-            _check_spool_quota(root)
+            _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=SPOOL_MAX_BYTES)
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = envelope.model_dump(mode="json", exclude_none=True)
         raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
@@ -587,26 +607,36 @@ def enqueue_post_command(
 
     Raises :class:`BrowserPostDisabledError` unless the
     ``POLYLOGUE_BROWSER_POST_ENABLED=1`` safety flag is set, so the capability
-    cannot fire by accident.
+    cannot fire by accident. Raises :class:`SpoolQuotaExceededError` before
+    writing a NEW command once the queue quota is reached, guarded by the
+    same write lock the capture-spool path uses so concurrent enqueues
+    cannot all pass the check before any one write lands (polylogue-gnie).
     """
     if not browser_post_enabled():
         raise BrowserPostDisabledError(f"outbound posting is disabled; set {BROWSER_POST_ENABLED_ENV}=1 to enable")
     root = post_command_queue_root(spool_path)
     command_id = _safe_token(request.command_id) if request.command_id else uuid4().hex
-    if _post_command_path(root, command_id).exists():
-        raise BrowserPostCommandConflictError(f"post command already exists: {command_id}")
-    now = datetime.now(UTC).isoformat()
-    command = BrowserPostCommand(
-        command_id=command_id,
-        provider=request.provider,
-        target=request.target,
-        text=request.text,
-        submit=request.submit,
-        status="pending",
-        created_at=now,
-        updated_at=now,
-    )
-    _write_post_command(root, command)
+    with _SPOOL_WRITE_LOCK:
+        if _post_command_path(root, command_id).exists():
+            raise BrowserPostCommandConflictError(f"post command already exists: {command_id}")
+        _check_spool_quota(
+            root,
+            max_files=POST_COMMAND_QUEUE_MAX_FILES,
+            max_bytes=POST_COMMAND_QUEUE_MAX_BYTES,
+            label="post-command queue",
+        )
+        now = datetime.now(UTC).isoformat()
+        command = BrowserPostCommand(
+            command_id=command_id,
+            provider=request.provider,
+            target=request.target,
+            text=request.text,
+            submit=request.submit,
+            status="pending",
+            created_at=now,
+            updated_at=now,
+        )
+        _write_post_command(root, command)
     return command
 
 
