@@ -441,8 +441,13 @@ stays running until interrupted.</p>
 </tr>
 <tr>
 <td><code>--browser-capture-auth-token</code></td>
-<td>none</td>
-<td>Auth token for non-loopback requests</td>
+<td>auto</td>
+<td>Receiver bearer token; auto-minted/loaded from a 0600 file if not given</td>
+</tr>
+<tr>
+<td><code>--browser-capture-allow-no-auth</code></td>
+<td>off</td>
+<td>Explicit opt-out: serve with no bearer token at all</td>
 </tr>
 <tr>
 <td><code>--browser-capture-origin</code></td>
@@ -456,6 +461,12 @@ stays running until interrupted.</p>
 </tr>
 </tbody>
 </table>
+<p>By default the receiver requires the auto-minted/loaded bearer token on every
+route (GET status/archive-state/post-commands and POST captures/post-commands
+alike) — run <code>polylogued browser-capture token show</code> to print it and paste it
+into the extension popup's &quot;Receiver token&quot; field to pair. Pass
+<code>--browser-capture-allow-no-auth</code> to opt out and serve unauthenticated (any
+local process can then read/post to the receiver).</p>
 <h3>HTTP API</h3>
 <table>
 <thead>

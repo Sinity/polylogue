@@ -694,6 +694,13 @@ allowed by default for the local receiver; ordinary web origins such as
 <code>POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN</code>. The config diagnostics payload reports
 these failures before daemon startup, including whether the missing token would
 come from the default, TOML, env, or CLI layer.</p>
+<p>Independent of the above: the receiver requires a bearer token by default on
+every request (GET and POST alike), even on plain loopback with only the
+default extension origin allowed. If <code>daemon.browser_capture.auth_token</code> /
+<code>POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN</code> is unset, one is auto-minted/loaded from
+a 0600 file (<code>polylogued browser-capture token show</code> prints it for pairing with
+the extension popup). <code>daemon.browser_capture.allow_no_auth</code> /
+<code>POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH</code> is the explicit, logged opt-out.</p>
 <p>Embeddings are provider-cost work. <code>VOYAGE_API_KEY</code> alone supplies a credential
 but does not enable daemon embedding convergence. Set <code>embedding.enabled = true</code>
 or <code>POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=true</code> to opt in; without a provider key,
@@ -814,7 +821,12 @@ enable provider spend by themselves.</li>
 <tr>
 <td><code>POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN</code></td>
 <td><code>browser_capture_auth_token</code></td>
-<td>Receiver bearer token; redacted.</td>
+<td>Receiver bearer token; redacted. Auto-minted/loaded if unset.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH</code></td>
+<td><code>browser_capture_allow_no_auth</code></td>
+<td>Explicit opt-out of the auto-minted receiver token.</td>
 </tr>
 <tr>
 <td><code>POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH</code></td>
