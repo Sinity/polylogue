@@ -799,3 +799,55 @@ def test_archive_tiers_archive_facade_filters_since_session_scope(tmp_path: Path
     assert stats.total_sessions == 1
     assert grouped == {"codex-session": 1}
     assert missing == []
+
+
+def test_archive_coverage_averages_render_none_not_zero_over_empty_denominator(tmp_path: Path) -> None:
+    """9e5.29: an average/percentage with zero backing rows is not-applicable, never a lying 0.0."""
+
+    all_assistant_session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="all-assistant",
+        created_at="2026-06-30T08:00:00Z",
+        updated_at="2026-06-30T08:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                timestamp="2026-06-30T08:00:00Z",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="assistant only, no user words at all")],
+            )
+        ],
+    )
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        facade.write_parsed(all_assistant_session)
+
+    with ArchiveStore.open_existing(root) as facade:
+        provider_rows = facade.list_archive_coverage_insights(group_by="provider")
+        day_rows = facade.list_archive_coverage_insights(group_by="day")
+
+    assert len(provider_rows) == 1
+    provider_row = provider_rows[0]
+    # session_count > 0 (a real group), so this average IS computable.
+    assert provider_row.session_count == 1
+    assert provider_row.avg_messages_per_session == 1.0
+    # user_message_count == 0 for an all-assistant session -- the average
+    # over zero user messages must be None, never a fabricated 0.0.
+    assert provider_row.avg_user_words is None
+    assert provider_row.avg_authored_user_words is None
+    # assistant_message_count == 1 (nonzero denominator), so this field is a
+    # real computed value -- possibly 0.0 -- never None.
+    assert provider_row.avg_assistant_words is not None
+
+    assert len(day_rows) == 1
+    day_row = day_rows[0]
+    # day/week grouping computes avg_messages_per_session from already-fetched
+    # message/session counts, but does not fetch per-role message counts --
+    # those fields must render None (uncovered), never a fabricated 0.0.
+    assert day_row.avg_messages_per_session == 1.0
+    assert day_row.avg_user_words is None
+    assert day_row.avg_authored_user_words is None
+    assert day_row.avg_assistant_words is None
+    assert day_row.tool_use_percentage is None
+    assert day_row.thinking_percentage is None

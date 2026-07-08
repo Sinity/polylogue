@@ -135,6 +135,17 @@ API.
 - Notes: `provenance.materializer_version` is a hardcoded literal `1` for
   day/week grouping with no dedicated version constant, and absent
   entirely for provider grouping — not declared as a version field.
+- Field contracts (9e5.29): `avg_messages_per_session`, `avg_user_words`,
+  `avg_authored_user_words`, `avg_assistant_words`, `tool_use_percentage`,
+  and `thinking_percentage` are `derived` fields whose declared
+  denominator (`session_count`, `user_message_count`,
+  `authored_user_message_count`, `assistant_message_count`,
+  `session_count`, `session_count` respectively) being zero renders the
+  field `None` — never a fabricated `0.0`. Day/week grouping does not
+  compute the per-role-message-count averages or the percentage fields
+  at all (no per-type message counts fetched there), so those fields
+  render `None` on every day/week row today, not only zero-denominator
+  ones — a documented coverage gap, not a bug.
 - Consumer-facing fields: `bucket`, `group_by`, `source_name`,
   `session_count`, `message_count`, `total_cost_usd`,
   `tool_use_percentage`, `thinking_percentage`, `work_event_breakdown`,

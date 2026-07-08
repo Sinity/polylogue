@@ -443,16 +443,19 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     total_tool_active_duration_ms: int = 0
     total_wall_duration_ms: int = 0
     total_words: int = 0
-    avg_messages_per_session: float = 0.0
-    avg_user_words: float = 0.0
-    avg_authored_user_words: float = 0.0
-    avg_assistant_words: float = 0.0
+    # None means "no denominator to average over" (uncovered/not-applicable),
+    # never coerced to 0.0 -- an average or percentage over zero backing rows
+    # is undefined, not a measured zero (9e5.29).
+    avg_messages_per_session: float | None = None
+    avg_user_words: float | None = None
+    avg_authored_user_words: float | None = None
+    avg_assistant_words: float | None = None
     tool_use_count: int = 0
     thinking_count: int = 0
     total_sessions_with_tools: int = 0
     total_sessions_with_thinking: int = 0
-    tool_use_percentage: float = 0.0
-    thinking_percentage: float = 0.0
+    tool_use_percentage: float | None = None
+    thinking_percentage: float | None = None
     work_event_breakdown: dict[str, int] = Field(default_factory=dict)
     repos_active: tuple[str, ...] = ()
     origin_breakdown: dict[str, int] = Field(default_factory=dict)
