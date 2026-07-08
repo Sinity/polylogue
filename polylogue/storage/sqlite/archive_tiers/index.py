@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 24
+INDEX_SCHEMA_VERSION = 25
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -208,6 +208,14 @@ CREATE TABLE IF NOT EXISTS blocks (
     language        TEXT,
     tool_result_is_error  INTEGER CHECK (tool_result_is_error IN (0, 1)),
     tool_result_exit_code INTEGER,
+    -- svfj: the citation anchor atom. Hashes canonical block EVIDENCE only
+    -- (type, text, tool_name, canonical tool_input, semantic/media/language,
+    -- is_error, exit_code) -- deliberately EXCLUDING session_id/message_id/
+    -- position/tool_id so the hash survives fork-position shift, re-ingest,
+    -- and provider tool-id regeneration. Nullable (not every low-level test
+    -- fixture / raw SQL writer populates it) -- the real write path always
+    -- sets it; the resolver treats a NULL row as its own state, never a crash.
+    content_hash    BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32),
     tool_command    TEXT GENERATED ALWAYS AS (json_extract(tool_input, '$.command')) VIRTUAL,
     tool_path       TEXT GENERATED ALWAYS AS (
                         COALESCE(json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.path'))
@@ -224,6 +232,9 @@ CREATE TABLE IF NOT EXISTS blocks (
 
 CREATE INDEX IF NOT EXISTS idx_blocks_session_position
 ON blocks(session_id, message_id, position);
+
+CREATE INDEX IF NOT EXISTS idx_blocks_content_hash
+ON blocks(content_hash);
 
 CREATE INDEX IF NOT EXISTS idx_blocks_type
 ON blocks(block_type);

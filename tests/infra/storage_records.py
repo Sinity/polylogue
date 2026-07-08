@@ -510,11 +510,13 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
     if record.text:
         conn.execute(
             """
-            INSERT INTO blocks (message_id, session_id, position, block_type, text)
-            VALUES (?, ?, 0, 'text', ?)
-            ON CONFLICT(message_id, position) DO UPDATE SET text = excluded.text
+            INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash)
+            VALUES (?, ?, 0, 'text', ?, ?)
+            ON CONFLICT(message_id, position) DO UPDATE SET
+                text = excluded.text,
+                content_hash = excluded.content_hash
             """,
-            (message_id, session_id, record.text),
+            (message_id, session_id, record.text, _block_hash_bytes("text", record.text)),
         )
 
     # Persist message blocks if any.
@@ -524,8 +526,8 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             INSERT INTO blocks (
                 message_id, session_id, position, block_type,
                 text, tool_name, tool_id, tool_input, semantic_type,
-                tool_result_is_error, tool_result_exit_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tool_result_is_error, tool_result_exit_code, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id, position) DO UPDATE SET
                 block_type = excluded.block_type,
                 text = excluded.text,
@@ -534,7 +536,8 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
                 tool_input = excluded.tool_input,
                 semantic_type = excluded.semantic_type,
                 tool_result_is_error = excluded.tool_result_is_error,
-                tool_result_exit_code = excluded.tool_result_exit_code
+                tool_result_exit_code = excluded.tool_result_exit_code,
+                content_hash = excluded.content_hash
             """,
             (
                 message_id,
@@ -548,6 +551,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
                 blk.semantic_type.value if blk.semantic_type is not None else None,
                 blk.tool_result_is_error,
                 blk.tool_result_exit_code,
+                _block_hash_bytes(blk.type.value, blk.text, blk.tool_name, blk.tool_input, blk.semantic_type),
             ),
         )
 
@@ -935,6 +939,23 @@ def _record_to_parsed_session(
         git_repository_url=session.git_repository_url,
         provider_project_ref=session.provider_project_ref,
     )
+
+
+def _block_hash_bytes(*parts: object) -> bytes:
+    """Deterministic 32-byte digest for this fixture builder's raw block INSERTs.
+
+    Not required to match production's ``_block_content_hash`` bit-for-bit
+    (production excludes tool_id/position; this fixture path is a raw SQL
+    shortcut used by tests unrelated to citation-anchor semantics) -- only
+    needs to satisfy blocks.content_hash's NOT NULL constraint with a stable,
+    content-derived value.
+    """
+
+    digest = hashlib.sha256()
+    for part in parts:
+        digest.update(str(part).encode("utf-8", errors="surrogatepass"))
+        digest.update(b"\0")
+    return digest.digest()
 
 
 def _writer_hash(value: object) -> str:
