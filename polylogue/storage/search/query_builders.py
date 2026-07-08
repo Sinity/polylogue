@@ -49,7 +49,7 @@ def build_ranked_session_search_query(
                 b.session_id AS session_id,
                 s.origin AS source_name,
                 s.title AS title,
-                COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms, 0) / 1000.0 AS sort_key,
+                COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms) / 1000.0 AS sort_key,
                 bm25(messages_fts) AS relevance
                 {snippet_sql}
             FROM messages_fts
@@ -64,7 +64,7 @@ def build_ranked_session_search_query(
         params,
         scope_names=scope_names,
         since=since,
-        since_column="COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms, 0)",
+        since_column="COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms)",
     )
     sql += """
         ),
@@ -110,7 +110,7 @@ def build_ranked_action_search_query(
                 COALESCE(NULLIF(LOWER(b.tool_name), ''), 'unknown') AS tool_name,
                 s.origin AS source_name,
                 s.title AS title,
-                COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms, 0) / 1000.0 AS sort_key,
+                COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms) / 1000.0 AS sort_key,
                 bm25(messages_fts) AS relevance
                 {snippet_sql}
             FROM messages_fts
@@ -126,7 +126,7 @@ def build_ranked_action_search_query(
         params,
         scope_names=scope_names,
         since=since,
-        since_column="COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms, 0)",
+        since_column="COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms)",
     )
     sql += """
         ),
@@ -168,7 +168,11 @@ def _apply_scope_and_since(
         sql += f" AND s.origin IN ({placeholders})"
         params.extend(str(name) for name in scope_names)
     if since:
-        sql += f" AND {since_column} >= ?"
+        # A row with no reliable timestamp anywhere in its fallback chain
+        # (since_column IS NULL) is not evidence it falls outside a --since
+        # window -- include it rather than let SQL's NULL propagation
+        # silently exclude it (polylogue-s5mm, sort_key_ms COALESCE audit).
+        sql += f" AND ({since_column} IS NULL OR {since_column} >= ?)"
         params.append(_parse_since_timestamp(since) * 1000.0)
     return sql, params
 

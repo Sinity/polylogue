@@ -115,7 +115,14 @@ def _search_archive_blocks(
         clauses.append("s.origin = ?")
         params.append(source)
     if since is not None:
-        clauses.append("COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms, 0) >= ?")
+        # A row with no reliable timestamp anywhere in its fallback chain is
+        # not evidence it falls outside a --since window -- include it
+        # rather than let SQL's NULL propagation silently exclude it
+        # (polylogue-s5mm, sort_key_ms COALESCE audit).
+        clauses.append(
+            "(COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms) IS NULL"
+            " OR COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms) >= ?)"
+        )
         try:
             since_ms = int(datetime.fromisoformat(since).timestamp() * 1000)
         except ValueError as exc:

@@ -192,7 +192,7 @@ async def search_attachment_identity_evidence_hits(
                 ani.id_kind,
                 ani.native_id,
                 c.origin AS source_name,
-                COALESCE(m.occurred_at_ms, c.sort_key_ms, 0) / 1000.0 AS sort_key,
+                COALESCE(m.occurred_at_ms, c.sort_key_ms) / 1000.0 AS sort_key,
                 a.display_name AS attachment_name
             FROM attachments a
             JOIN attachment_refs r ON r.attachment_id = a.attachment_id
@@ -210,7 +210,13 @@ async def search_attachment_identity_evidence_hits(
         params.extend(scope_params)
 
     if since:
-        sql += " AND COALESCE(m.occurred_at_ms, c.sort_key_ms, 0) >= ?"
+        # A row with no reliable timestamp anywhere in its fallback chain is
+        # not evidence it falls outside a since window -- include it rather
+        # than let SQL's NULL propagation silently exclude it
+        # (polylogue-s5mm, sort_key_ms COALESCE audit).
+        sql += (
+            " AND (COALESCE(m.occurred_at_ms, c.sort_key_ms) IS NULL OR COALESCE(m.occurred_at_ms, c.sort_key_ms) >= ?)"
+        )
         params.append(_parse_since_timestamp(since) * 1000.0)
 
     sql += """
