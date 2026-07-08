@@ -3,8 +3,8 @@
   "root": "/realm/project/polylogue/.agent/demos",
   "packaging": "Use devtools workspace read-package for portable readable bundles; this helper only writes indexes.",
   "curation_policy": "This is not append-only. Keep the best current demos here; replace, consolidate, or move stale demos out.",
-  "file_count": 138,
-  "readable_count": 111,
+  "file_count": 143,
+  "readable_count": 115,
   "files": [
     {
       "path": "agent-affordance-usage/ANALYSIS.md",
@@ -23,7 +23,7 @@
     },
     {
       "path": "agent-affordance-usage/archive-origin-counts.csv",
-      "bytes": 190,
+      "bytes": 181,
       "readable": true
     },
     {
@@ -73,12 +73,12 @@
     },
     {
       "path": "agent-affordance-usage/evidence-kind-counts.csv",
-      "bytes": 159,
+      "bytes": 154,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/family-counts.csv",
-      "bytes": 140,
+      "bytes": 135,
       "readable": true
     },
     {
@@ -198,12 +198,12 @@
     },
     {
       "path": "agent-affordance-usage/recent-30d-tool-counts.csv",
-      "bytes": 258,
+      "bytes": 255,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/recent-7d-tool-counts.csv",
-      "bytes": 1561,
+      "bytes": 1545,
       "readable": true
     },
     {
@@ -213,27 +213,27 @@
     },
     {
       "path": "agent-affordance-usage/surface-classification-summary.csv",
-      "bytes": 195,
+      "bytes": 188,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/surface-inventory.csv",
-      "bytes": 18767,
+      "bytes": 18576,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/tool-by-origin.csv",
-      "bytes": 1673,
+      "bytes": 1657,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/tool-counts.csv",
-      "bytes": 1561,
+      "bytes": 1545,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/tool-samples.csv",
-      "bytes": 2,
+      "bytes": 1,
       "readable": true
     },
     {
@@ -325,6 +325,31 @@
       "path": "archive-debt-summary/summary.json",
       "bytes": 2148,
       "readable": true
+    },
+    {
+      "path": "attachment-acquisition-census/ANALYSIS.md",
+      "bytes": 1299,
+      "readable": true
+    },
+    {
+      "path": "attachment-acquisition-census/README.md",
+      "bytes": 2257,
+      "readable": true
+    },
+    {
+      "path": "attachment-acquisition-census/census.json",
+      "bytes": 12609,
+      "readable": true
+    },
+    {
+      "path": "attachment-acquisition-census/reconcile-attachment-acquisition-debt.json",
+      "bytes": 259,
+      "readable": true
+    },
+    {
+      "path": "attachment-acquisition-census/regenerate.sh",
+      "bytes": 6880,
+      "readable": false
     },
     {
       "path": "chatlog-exports/README.md",
