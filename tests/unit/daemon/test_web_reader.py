@@ -276,7 +276,10 @@ def _seed_assertion_claims(workspace: dict[str, Path]) -> None:
             kind=AssertionKind.DECISION,
             body_text="Show assertion-backed overlays in the web workbench.",
             author_ref="agent:poly-07",
-            author_kind="agent",
+            # author_kind="user": an active, injectable decision is always
+            # user-authored in production (37t.15) -- non-user writes land
+            # as candidates regardless of the caller-supplied status/policy.
+            author_kind="user",
             evidence_refs=[f"message:{M_C1}"],
             status=AssertionStatus.ACTIVE,
             visibility=AssertionVisibility.PRIVATE,

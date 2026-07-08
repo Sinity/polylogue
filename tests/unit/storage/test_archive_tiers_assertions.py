@@ -20,8 +20,6 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_CLAIM_KINDS,
     ASSERTION_DEFAULT_AUTHOR_KIND,
     ASSERTION_DEFAULT_AUTHOR_REF,
-    ASSERTION_DEFAULT_CONTEXT_POLICY,
-    ASSERTION_DEFAULT_STATUS,
     ASSERTION_DEFAULT_VISIBILITY,
     AssertionKind,
     AssertionStatus,
@@ -355,9 +353,11 @@ def test_assertion_round_trip_across_kinds(tmp_path: Path) -> None:
         assert read_mark.author_kind == "human"
         assert read_mark.value is None
         assert read_mark.evidence_refs == []
-        assert read_mark.status == ASSERTION_DEFAULT_STATUS
+        # Any non-"user" author_kind -- "human" here, not just "agent" -- is
+        # coerced to a non-injected candidate (37t.15 chokepoint).
+        assert read_mark.status == "candidate"
         assert read_mark.visibility == ASSERTION_DEFAULT_VISIBILITY
-        assert read_mark.context_policy == ASSERTION_DEFAULT_CONTEXT_POLICY
+        assert read_mark.context_policy == {"inject": False, "promotion_required": True}
         assert read_mark.created_at_ms == 1_700_000_000_000
 
         assert read_decision.kind == "decision"

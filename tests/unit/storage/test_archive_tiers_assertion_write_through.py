@@ -270,7 +270,10 @@ def test_blackboard_note_assertion_metadata_is_preserved(tmp_path: Path) -> None
     assert env.author_kind == "agent"
     assert env.evidence_refs == ["message:m1", "block:m1:2"]
     assert env.staleness == {"expires_after_days": 14}
-    assert env.context_policy == {"inject": False}
+    # Non-user author_kind is coerced to a non-injected candidate regardless
+    # of the caller-supplied context_policy (37t.15 chokepoint).
+    assert env.status == "candidate"
+    assert env.context_policy == {"inject": False, "promotion_required": True}
 
 
 def test_assertion_write_boundary_normalizes_public_refs(tmp_path: Path) -> None:

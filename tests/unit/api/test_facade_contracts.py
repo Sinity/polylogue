@@ -1281,7 +1281,10 @@ async def test_list_assertion_claims_filters_lifecycle_claims(tmp_path: Path) ->
             kind=AssertionKind.DECISION,
             body_text="Use the shared query metadata module.",
             author_ref="agent:codex",
-            author_kind="agent",
+            # author_kind="user": an active, injectable decision is always
+            # user-authored in production (37t.15) -- non-user writes land
+            # as candidates regardless of the caller-supplied status/policy.
+            author_kind="user",
             evidence_refs=["codex-session:claim-target::m1"],
             status="active",
             visibility="private",
@@ -2041,7 +2044,10 @@ async def test_query_units_returns_assertion_rows(tmp_path: Path) -> None:
                 value={"rank": 1},
                 body_text="Review assertion query unit facade wiring.",
                 author_ref="agent:codex",
-                author_kind="agent",
+                # author_kind="user": active decisions are always user-authored
+                # in production (37t.15) -- these seed rows test active-status
+                # query filtering, not the write-side security invariant.
+                author_kind="user",
                 evidence_refs=["session:codex-session:unit-assertion-codex#message:m1"],
                 status="active",
                 visibility="public",
@@ -2054,7 +2060,7 @@ async def test_query_units_returns_assertion_rows(tmp_path: Path) -> None:
                 kind=AssertionKind.DECISION,
                 body_text="Review another origin.",
                 author_ref="agent:codex",
-                author_kind="agent",
+                author_kind="user",
                 status="active",
                 now_ms=500,
             )

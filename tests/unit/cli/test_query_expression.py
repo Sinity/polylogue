@@ -3454,7 +3454,11 @@ class TestBooleanQueryExpression:
                 kind=AssertionKind.DECISION,
                 body_text="Review the query unit before merge.",
                 author_ref="agent:codex",
-                author_kind="agent",
+                # author_kind="user": these seed rows test status/filter
+                # logic, not the write-side trust invariant (37t.15) -- a
+                # non-user author would land as a candidate regardless of the
+                # requested status here.
+                author_kind="user",
                 status="active",
                 now_ms=2000,
             )
@@ -3465,7 +3469,7 @@ class TestBooleanQueryExpression:
                 kind=AssertionKind.DECISION,
                 body_text="Review unrelated branch.",
                 author_ref="agent:codex",
-                author_kind="agent",
+                author_kind="user",
                 status="deleted",
                 now_ms=1000,
             )
@@ -3517,7 +3521,9 @@ class TestBooleanQueryExpression:
                 value={"priority": 1},
                 body_text="Review the query unit before merge.",
                 author_ref="agent:codex",
-                author_kind="agent",
+                # author_kind="user": these seed rows test status/filter
+                # logic, not the write-side trust invariant (37t.15).
+                author_kind="user",
                 evidence_refs=["session:codex-session:ext-hit#message:m-hit"],
                 status="active",
                 visibility="public",
@@ -3532,7 +3538,7 @@ class TestBooleanQueryExpression:
                 kind=AssertionKind.DECISION,
                 body_text="Review the other archive.",
                 author_ref="agent:codex",
-                author_kind="agent",
+                author_kind="user",
                 status="active",
                 now_ms=1000,
             )
