@@ -146,6 +146,15 @@ function stateExplanation(state) {
     };
   }
   if (!state.online) {
+    if (state.error === "unauthorized") {
+      return {
+        badge: ["bad", "offline"],
+        archive: "Unauthorized",
+        headline: "Receiver requires a pairing token.",
+        detail:
+          'Run `polylogued browser-capture token show` and paste the value into "Receiver token" below, then Save.',
+      };
+    }
     return {
       badge: ["bad", "offline"],
       archive: "Offline",

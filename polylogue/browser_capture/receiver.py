@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sqlite3
 import tempfile
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,8 +29,11 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.core.hashing import hash_text_short
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.logging import get_logger
 from polylogue.paths import archive_root as default_archive_root
-from polylogue.paths import browser_capture_spool_root
+from polylogue.paths import browser_capture_receiver_token_path, browser_capture_spool_root
+
+logger = get_logger(__name__)
 
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -68,6 +73,76 @@ class BrowserCaptureReceiverConfig:
                 "browser-capture web origins require --browser-capture-auth-token; "
                 f"unauthenticated origins: {', '.join(unauthenticated_web_origins)}"
             )
+
+
+#: Entropy (bytes, pre-base64) for an auto-minted receiver pairing token.
+RECEIVER_TOKEN_ENTROPY_BYTES = 32
+
+#: Env flag that must equal ``"1"`` before the receiver will start with no
+#: bearer token at all. Default OFF: without a token, any local process (not
+#: just a browser page) can read the spool/archive-lifecycle state and post
+#: forged captures — auto-minting a token so unauthenticated requests are
+#: refused by default closes that hole (polylogue-gnie), and this flag is the
+#: explicit, logged escape hatch for the rare intentionally-open setup.
+BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV = "POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH"
+
+
+def load_or_mint_receiver_token(path: Path | None = None, *, rotate: bool = False) -> str:
+    """Return the receiver's persisted bearer token, minting one on first use.
+
+    This is a local pairing secret (paste into the extension popup's
+    "Receiver token" field), not an OAuth credential, so it gets a plain
+    0600 file rather than :mod:`polylogue.sources.token_store`'s
+    keyring-backed store. Written atomically (mkstemp + fchmod(0o600) before
+    any bytes land, then ``os.replace``) so the token is never briefly
+    world-readable under a permissive umask.
+    """
+    target = path if path is not None else browser_capture_receiver_token_path()
+    if not rotate and target.exists():
+        existing = target.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    token = secrets.token_urlsafe(RECEIVER_TOKEN_ENTROPY_BYTES)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token)
+        os.replace(tmp_path, target)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            tmp_path.unlink()
+        raise
+    return token
+
+
+def resolve_receiver_auth_token(
+    explicit_token: str | None,
+    *,
+    allow_no_auth: bool = False,
+    token_path: Path | None = None,
+) -> str | None:
+    """Return the bearer token the receiver should require before serving.
+
+    An explicitly configured token always wins. Otherwise the receiver
+    auto-mints/loads a persisted 0600 token so unauthenticated capture POSTs
+    (and the GET status/archive-state/post-command routes, which share the
+    same auth gate) are refused by default. ``allow_no_auth`` is the
+    explicit, loudly-logged opt-out for the rare setup that wants the
+    pre-gnie fully-open posture.
+    """
+    if explicit_token:
+        return explicit_token
+    if allow_no_auth:
+        logger.warning(
+            "browser_capture.auth_disabled",
+            reason="allow_no_auth explicitly set",
+            risk="any local process can read spool/archive state and post forged captures",
+        )
+        return None
+    return load_or_mint_receiver_token(token_path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -702,8 +777,10 @@ def ack_post_command(
 
 
 __all__ = [
+    "BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV",
     "BROWSER_POST_ENABLED_ENV",
     "POST_COMMAND_QUEUE_DIRNAME",
+    "RECEIVER_TOKEN_ENTROPY_BYTES",
     "BrowserCaptureReceiverConfig",
     "BrowserCaptureWriteResult",
     "BrowserPostCommandConflictError",
@@ -717,8 +794,10 @@ __all__ = [
     "capture_artifact_path",
     "enqueue_post_command",
     "existing_capture_state",
+    "load_or_mint_receiver_token",
     "poll_post_commands",
     "post_command_queue_root",
     "receiver_status_payload",
+    "resolve_receiver_auth_token",
     "write_capture_envelope",
 ]

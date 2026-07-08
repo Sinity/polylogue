@@ -287,6 +287,14 @@ allowed by default for the local receiver; ordinary web origins such as
 these failures before daemon startup, including whether the missing token would
 come from the default, TOML, env, or CLI layer.
 
+Independent of the above: the receiver requires a bearer token by default on
+every request (GET and POST alike), even on plain loopback with only the
+default extension origin allowed. If `daemon.browser_capture.auth_token` /
+`POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN` is unset, one is auto-minted/loaded from
+a 0600 file (`polylogued browser-capture token show` prints it for pairing with
+the extension popup). `daemon.browser_capture.allow_no_auth` /
+`POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH` is the explicit, logged opt-out.
+
 Embeddings are provider-cost work. `VOYAGE_API_KEY` alone supplies a credential
 but does not enable daemon embedding convergence. Set `embedding.enabled = true`
 or `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=true` to opt in; without a provider key,
@@ -355,7 +363,8 @@ Common runtime overrides:
 | `POLYLOGUE_BROWSER_CAPTURE_HOST` / `POLYLOGUE_BROWSER_CAPTURE_PORT` | browser-capture bind | Receiver bind host/port. |
 | `POLYLOGUE_BROWSER_CAPTURE_ALLOWED_ORIGINS` | `browser_capture_allowed_origins` | Comma-separated receiver CORS origins. |
 | `POLYLOGUE_BROWSER_CAPTURE_ALLOW_REMOTE` | `browser_capture_allow_remote` | Explicit remote-bind opt-in. |
-| `POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN` | `browser_capture_auth_token` | Receiver bearer token; redacted. |
+| `POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN` | `browser_capture_auth_token` | Receiver bearer token; redacted. Auto-minted/loaded if unset. |
+| `POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH` | `browser_capture_allow_no_auth` | Explicit opt-out of the auto-minted receiver token. |
 | `POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH` | `browser_capture_spool_path` | Receiver spool override. |
 | `POLYLOGUE_FORCE_PLAIN` | `force_plain` | Force plain output. |
 | `POLYLOGUE_THEME` | `theme` | `auto`, `dark`, or `light`. |

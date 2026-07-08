@@ -123,6 +123,14 @@ browser-capture receiver have different trust models — extension
 talking to receiver vs. CLI/hooks/web-shell talking to daemon — and
 sharing a single token would conflate them.
 
+Unlike the daemon HTTP API, the receiver requires a bearer token by
+default even on plain loopback: without an explicit
+`--browser-capture-auth-token`, one is auto-minted into a 0600 file
+(`polylogued browser-capture token show` prints it for pairing) so that
+no local process other than the paired extension can read receiver
+state or post captures. `--browser-capture-allow-no-auth` is the
+explicit, logged opt-out (polylogue-gnie).
+
 ## Non-Threats
 
 Out of scope:
