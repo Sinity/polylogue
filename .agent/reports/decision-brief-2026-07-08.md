@@ -270,3 +270,46 @@ No changes; the leakage-gate requirement is the load-bearing part.
 
 Items that deliberately stay parked: ca4, c36, 2n6, 2jj, gqx (N-horizon,
 each with its wake condition recorded above).
+
+---
+
+## Addendum: RATIFIED 2026-07-08 (operator, in-session)
+
+All calls above approved. Recorded per-bead (ratification notes on bby.11,
+4p1, hiu, dx1, ze5, ca4, fie, c36, e6ja, ptx, 37t.4, lio, bfv, 2n6, lu1,
+gqx, 2jj, 212.9; rsad design field now carries the six-fix spec; occ5
+design questions resolved in notes; tjx1 closed with sign-off).
+
+### What ratification unlocks — the next design frontier
+
+**Immediately executable, no design left:** e6ja option C (attestation
+check), 4p1 doc PR (draft inventory exists), 4p1.1 fast-path dedup, rsad
+six fixes, hiu step 0 (pf1 divergence reconciliation), 83u.5 blob zstd.
+
+**Newly designable (was blocked on these decisions):**
+
+1. **The cockpit view-spec pack** — bby.11 ratified means every v2 view is
+   now spec-writable against a known substrate (Preact components, generated
+   API client, SSE module, 9xuk tokens, bkzv vocabulary, occ5 affordances):
+   bby.9 mission control, bby.10 timeline/firehose, bby.15 pinboard/basket,
+   the judge-queue view, d4zk variant UX, bby.12 replay, ap7 semantic
+   renderers. One batched design session can write these coherently — the
+   largest formerly-unplannable area in the beadset.
+2. **Typed route registry** — dx1 (ASGI) implies the daemon route table
+   becomes a declare-once registry the OpenAPI render generates FROM; design
+   that registry before the first migrated family so 20d.1 endpoints and
+   webui v2 API land on it.
+3. **user.db v4→v5 migration design** — ze5 (relations, revisions,
+   confidence) + rxdo.2 (queries/result_sets/query_edges) now share one
+   60i5-batched window; the combined DDL + migration doc is writable today.
+4. **rxdo.3 minimal slice** — occ5's result-set footer needs the run/relation
+   schema; designing it now keeps occ5 implementation and rxdo compatible.
+5. **C-gate collapse execution** — with 4p1 doctrine landed, jnj.3/.2/.4,
+   fnm.1/.11, 5wp become mechanical preset-registration slices in the
+   inventory's stated order.
+
+**Recommended batching (per the batch-execution protocol):** three design
+sessions — (a) cockpit pack, (b) read-contract pack (4p1 doc + occ5
+direction + rsad implementation), (c) storage/migration pack (v5 window +
+rxdo.3 + zstd phasing). After 27rb lands, revisit e6ja escalation and
+testmon-in-CI.
