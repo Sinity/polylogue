@@ -1099,7 +1099,7 @@ class ArchiveStore:
                OR root_session_id = ?
             ORDER BY
                 CASE WHEN session_id = ? THEN 0 ELSE 1 END,
-                COALESCE(sort_key_ms, created_at_ms, updated_at_ms, 0),
+                COALESCE(sort_key_ms, created_at_ms, updated_at_ms),
                 session_id
             """,
             (root_session_id, root_session_id, root_session_id),
@@ -1822,7 +1822,7 @@ class ArchiveStore:
             params.append(event_scan_cutoff_ms)
         event_rows = []
         if not skip_event_scan:
-            event_where = " AND ".join(where) if where else "1=1"
+            where_clause = " AND ".join(where) if where else "1=1"
             event_rows = self._conn.execute(
                 f"""
                 SELECT CASE WHEN COALESCE(e.occurred_at_ms, s.sort_key_ms) IS NULL THEN 'unknown'
@@ -1841,7 +1841,7 @@ class ArchiveStore:
                        MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key
                 FROM session_provider_usage_events e
                 JOIN sessions s ON s.session_id = e.session_id
-                WHERE {event_where}
+                WHERE {where_clause}
                 GROUP BY bucket, s.origin, model_name
                 """,
                 tuple(params),
@@ -1891,7 +1891,7 @@ class ArchiveStore:
         if until_ms is not None:
             cost_where.append("s.sort_key_ms <= ?")
             cost_params.append(until_ms)
-        cost_where_clause = " AND ".join(cost_where) if cost_where else "1=1"
+        where_clause = " AND ".join(cost_where) if cost_where else "1=1"
         cost_rows = self._conn.execute(
             f"""
             SELECT CASE WHEN s.sort_key_ms IS NULL THEN 'unknown'
@@ -1909,7 +1909,7 @@ class ArchiveStore:
                    MAX(s.sort_key_ms) AS source_sort_key
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
-            WHERE {cost_where_clause}
+            WHERE {where_clause}
             GROUP BY bucket, s.origin, model_name, cost_provenance
             """,
             tuple(cost_params),
@@ -4946,9 +4946,9 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         if sort == "time":
-            order_by = f"COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction}, m.message_id {order_direction}"
+            order_by = f"COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction}, m.message_id {order_direction}"
         else:
-            order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), m.message_id"
+            order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms), m.message_id"
         clause, params = _structural_predicate_clause("message", "m", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
@@ -5195,10 +5195,10 @@ class ArchiveStore:
         order_direction = _query_unit_order_direction(sort_direction)
         if sort == "time":
             order_by = (
-                f"COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction}, a.tool_use_block_id {order_direction}"
+                f"COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction}, a.tool_use_block_id {order_direction}"
             )
         else:
-            order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), a.tool_use_block_id"
+            order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms), a.tool_use_block_id"
         clause, params = _structural_predicate_clause("action", "a", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
@@ -5279,7 +5279,7 @@ class ArchiveStore:
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
             WHERE a.session_id IN ({placeholders})
-            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction},
+            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction},
                      a.tool_use_block_id {order_direction}
             LIMIT ? OFFSET ?
             """,
@@ -5339,7 +5339,7 @@ class ArchiveStore:
              AND r.block_type = 'tool_result'
             WHERE u.session_id IN ({placeholders})
               AND u.block_type = 'tool_use'
-            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction},
+            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction},
                      u.block_id {order_direction}
             LIMIT ? OFFSET ?
             """,
@@ -5363,9 +5363,9 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         if sort == "time":
-            order_by = f"COALESCE(f.first_seen_ms, 0) {order_direction}, f.path {order_direction}"
+            order_by = f"f.first_seen_ms {order_direction}, f.path {order_direction}"
         else:
-            order_by = "f.path, COALESCE(f.first_seen_ms, 0)"
+            order_by = "f.path, f.first_seen_ms"
         clause, params = _structural_predicate_clause("file", "a", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
@@ -5392,8 +5392,8 @@ class ArchiveStore:
                     MIN(a.message_id) AS first_message_id,
                     MIN(a.tool_use_block_id) AS first_tool_use_block_id,
                     MAX(a.tool_use_block_id) AS last_tool_use_block_id,
-                    MIN(COALESCE(m.occurred_at_ms, s.sort_key_ms, 0)) AS first_seen_ms,
-                    MAX(COALESCE(m.occurred_at_ms, s.sort_key_ms, 0)) AS last_seen_ms
+                    MIN(COALESCE(m.occurred_at_ms, s.sort_key_ms)) AS first_seen_ms,
+                    MAX(COALESCE(m.occurred_at_ms, s.sort_key_ms)) AS last_seen_ms
                 FROM actions a
                 JOIN sessions s ON s.session_id = a.session_id
                 JOIN messages m ON m.message_id = a.message_id
@@ -5469,8 +5469,8 @@ class ArchiveStore:
                     MIN(u.message_id) AS first_message_id,
                     MIN(u.block_id) AS first_tool_use_block_id,
                     MAX(u.block_id) AS last_tool_use_block_id,
-                    MIN(COALESCE(m.occurred_at_ms, s.sort_key_ms, 0)) AS first_seen_ms,
-                    MAX(COALESCE(m.occurred_at_ms, s.sort_key_ms, 0)) AS last_seen_ms
+                    MIN(COALESCE(m.occurred_at_ms, s.sort_key_ms)) AS first_seen_ms,
+                    MAX(COALESCE(m.occurred_at_ms, s.sort_key_ms)) AS last_seen_ms
                 FROM blocks u INDEXED BY idx_blocks_session_position
                 JOIN sessions s ON s.session_id = u.session_id
                 JOIN messages m ON m.message_id = u.message_id
@@ -5481,7 +5481,7 @@ class ArchiveStore:
                 GROUP BY u.session_id, path
             ) f
             JOIN sessions s ON s.session_id = f.session_id
-            ORDER BY COALESCE(f.first_seen_ms, 0) {order_direction},
+            ORDER BY f.first_seen_ms {order_direction},
                      f.path {order_direction}
             LIMIT ? OFFSET ?
             """,
@@ -5574,9 +5574,9 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         if sort == "time":
-            order_by = f"COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction}, b.block_id {order_direction}"
+            order_by = f"COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction}, b.block_id {order_direction}"
         else:
-            order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms, 0), b.block_id"
+            order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms), b.block_id"
         clause, params = _structural_predicate_clause("block", "b", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
@@ -7157,17 +7157,28 @@ def _numeric_predicate_clause(
 
 
 def _time_predicate_clause(expression: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    """Build a ``time`` field predicate clause.
+
+    A row with no resolvable timestamp (``expression`` evaluates to NULL --
+    see :func:`_query_unit_time_expression`) is included rather than
+    silently excluded: an unknown time is not evidence the row falls
+    outside the requested range (polylogue-z29t, sort_key_ms COALESCE
+    audit, .agent/reports/sort-key-ms-coalesce-audit-2026-07-08.md). Before
+    this, the expression coalesced to epoch 0, which always failed a
+    ``>``/``>=`` comparison (silent exclusion) and always passed a
+    ``<``/``<=`` comparison (silent false-inclusion as "old").
+    """
     if not predicate.values:
         return "", []
     value_ms = _date_ms(predicate.values[-1], field="time")
     if predicate.op == ">":
-        return f"{expression} > ?", [value_ms]
+        return f"({expression} IS NULL OR {expression} > ?)", [value_ms]
     if predicate.op == ">=":
-        return f"{expression} >= ?", [value_ms]
+        return f"({expression} IS NULL OR {expression} >= ?)", [value_ms]
     if predicate.op == "<":
-        return f"{expression} < ?", [value_ms]
+        return f"({expression} IS NULL OR {expression} < ?)", [value_ms]
     if predicate.op == "<=":
-        return f"{expression} <= ?", [value_ms]
+        return f"({expression} IS NULL OR {expression} <= ?)", [value_ms]
     raise ValueError("unsupported Boolean query operator for time")
 
 
@@ -7176,20 +7187,20 @@ def _query_unit_time_expression(unit: str, row_alias: str) -> str:
         return (
             f"COALESCE({row_alias}.occurred_at_ms, "
             f"(SELECT time_sessions.sort_key_ms FROM sessions time_sessions "
-            f"WHERE time_sessions.session_id = {row_alias}.session_id), 0)"
+            f"WHERE time_sessions.session_id = {row_alias}.session_id))"
         )
     if unit in {"action", "block"}:
         return (
-            f"(SELECT COALESCE(time_messages.occurred_at_ms, time_sessions.sort_key_ms, 0) "
+            f"(SELECT COALESCE(time_messages.occurred_at_ms, time_sessions.sort_key_ms) "
             f"FROM messages time_messages "
             f"JOIN sessions time_sessions ON time_sessions.session_id = time_messages.session_id "
             f"WHERE time_messages.message_id = {row_alias}.message_id "
             f"LIMIT 1)"
         )
     if unit == "file":
-        return f"COALESCE({row_alias}.first_seen_ms, 0)"
+        return f"{row_alias}.first_seen_ms"
     if unit == "assertion":
-        return f"COALESCE({row_alias}.updated_at_ms, {row_alias}.created_at_ms, 0)"
+        return f"COALESCE({row_alias}.updated_at_ms, {row_alias}.created_at_ms)"
     raise ValueError(f"unsupported time predicate unit: {unit}")
 
 

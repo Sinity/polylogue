@@ -50,23 +50,23 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     ): 'conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}") uses an internal integer constant.',
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5172,
+        5207,
     ): "query_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL plus closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5223,
+        5258,
     ): "query_session_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL, placeholders, and closed order direction; ids are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5701,
+        5736,
     ): "query_runs interpolates run_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5752,
+        5787,
     ): "query_observed_events interpolates observed_event_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5807,
+        5842,
     ): "query_context_snapshots interpolates context_snapshot_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
