@@ -7,6 +7,7 @@
     "without_proof_fields": [],
     "without_caveat_fields": [],
     "unsummarized_demos": [
+      "attachment-acquisition-census",
       "chatlog-exports",
       "cli-surface-audit",
       "degraded-archive-proof",

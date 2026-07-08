@@ -1,0 +1,255 @@
+{
+  "archive_root": "/home/sinity/.local/share/polylogue",
+  "cross_origin_attachment_count": 0,
+  "reconciliation": {
+    "attachment_acquisition_debt_command": {
+      "acquired_count": 967,
+      "acquired_missing_blob_count": 0,
+      "acquired_missing_blob_sample": [],
+      "mode": "attachment_acquisition_debt",
+      "mutates": false,
+      "ok": true,
+      "total_attachments": 7390,
+      "unavailable_count": 0,
+      "unfetched_count": 6423
+    },
+    "totals_match": true
+  },
+  "rows": [
+    {
+      "acquired_blob_bytes_on_disk": 403110,
+      "acquired_blob_count": 9,
+      "acquisition_status": "acquired",
+      "attachment_count": 9,
+      "declared_byte_sum": 403110,
+      "missing_blob_ref_count": 0,
+      "origin": "(unknown)",
+      "sample_attachment_ids": [
+        "1b6382bbe8e99395f284a1df4717e3c6ba29c4ccb093059e62ebc96dcc84612c",
+        "3328a7889c1927dacf0cad612de4664a233979179c9c5577b2d6d840d6fcd1f2",
+        "45ee1b291a13ce56956e45f540e85268b1492b667222721fdcd2f807cb0d03d1",
+        "540fa31a30fd5f216a57b23ad7a2ac396c2decbce33847d981e7a3c182c1e8ec",
+        "9454b33c7c7898f8f8f859aea83d103b54cad02a844ec4249b66fa83b4fefc54",
+        "a3e4d1b966cba6862a8140fe733bb4c50f2c9d831896ebdbe18baf1e5157c2ee",
+        "a9a33a55a8f1911e76a9519df5564893a83e1a5d635ff2bb26b35fad032ccfe0",
+        "ecd0f48f34a49d28ce530f47fc8c2df5b68a9d3460c993c70b71b226b67748c7",
+        "ffc26231b4402ad61d4bc4b9e4ac53848b6b6d238148f57caf242bd58cb04541"
+      ],
+      "upload_origin_counts": {}
+    },
+    {
+      "acquired_blob_bytes_on_disk": 0,
+      "acquired_blob_count": 0,
+      "acquisition_status": "unfetched",
+      "attachment_count": 9,
+      "declared_byte_sum": 0,
+      "missing_blob_ref_count": 0,
+      "origin": "(unknown)",
+      "sample_attachment_ids": [
+        "3708845ad39babba8ef611c5b62531a245051f51b26ace4a2738b3bdc7ab879b",
+        "450abef92f6cd0cfe2fd588f594114ab28dec1e82fda9c78f2b33b5a4cdb27fd",
+        "5c1f53521bbdbb1fd5179a64d7fa367e30ea5debc5b6cb9fbdc6134fa86ebff3",
+        "5eb4e71982277c2b483d1ea51dde17943426b8b7a3368071580d5b2ade3bbd1f",
+        "5f995e831fdd5ba5bba9ba1395ce80755cc74aec08aee3a8dc4e585618ada3fb",
+        "622d641eb75da0c60b502f934d04bca7de0d2a81790d3ba0a1245e2c9c2d1a54",
+        "8b3b40dcb9654f3361561012d8453312e41e255bbd8a7cb170f52102b5a0b329",
+        "960332103a6e9696b73b77b218df5d8501968d0bf8ef6d5b02e5cd2701c4d584",
+        "e2d4619b99353a0ecbb06155f5d71dcd5098fbf454808426889471f9a400a3c7"
+      ],
+      "upload_origin_counts": {}
+    },
+    {
+      "acquired_blob_bytes_on_disk": 41401,
+      "acquired_blob_count": 1,
+      "acquisition_status": "acquired",
+      "attachment_count": 1,
+      "declared_byte_sum": 41401,
+      "missing_blob_ref_count": 0,
+      "origin": "aistudio-drive",
+      "sample_attachment_ids": [
+        "058849c889b62f40934d0052c68fc8968dfec12f3fa50c6cf5704333e6325924"
+      ],
+      "upload_origin_counts": {
+        "paste": 1
+      }
+    },
+    {
+      "acquired_blob_bytes_on_disk": 0,
+      "acquired_blob_count": 0,
+      "acquisition_status": "unfetched",
+      "attachment_count": 1666,
+      "declared_byte_sum": 0,
+      "missing_blob_ref_count": 0,
+      "origin": "aistudio-drive",
+      "sample_attachment_ids": [
+        "002e7cd77ac2e9c3a90c8cd6ef299451a8652e6ba3c37a3c4a6b81dd93a39521",
+        "004db1e58c48396069e998cc10ecbc977a02f106ea21fcecb7b2282d24676cb4",
+        "0055c0ab5770da23e31a741f83a639c9c74fdb95927f96c8c37705787c3bfe96",
+        "006d051cca7b9232c0b6fbe75b954c81a2c80c4c756158cb25c3b1ae54d8a168",
+        "006d05d53999f9eaa56258e54949a95e35ea14a866d7cad2276ba9ada8dab50e",
+        "0099ed8212aa1414c3e33d8d4d0cac68b340a7d2986a61f5a3ccc8f986127508",
+        "00f3a4d2b8b3aa6fae60d46fae1ad162ded92c4fcce8791a327f31b40485ae11",
+        "010b39865d59959d70d51ab56567b14cfe90040625f58ff98f130f71f2c0d155",
+        "010f651e923f2901a319ffec13bf2e44c170887d5e1668aac5875d58c2e3ecf2",
+        "0179cd4c9e742d95a4ec4c0d8a90a6f47d043b9a6c2ce43ccfdf71f04ca3ea44",
+        "0193d3a84699123d7db07bc2bf0e9b62ccdcb7461f97487fe60ebe2d229d8132",
+        "01c39f13a1b6051b15fbf18dc01375403b521fcd078d73a397a943e89153499f",
+        "025663903f42fc754595d4beb8cef40bfce6acfa7f425bafbfabb7bac16be927",
+        "025eaac1cffc84b459e2b950e7c4647fb966397788a4c599ec1084e689f5b6b2",
+        "025ef5cadd4c193bc0ccb82e1d6bc1b3bce23c065ab6e55432481c4af21a033e",
+        "026604a46e1c3019714b56bf18aa6171078317f81ba538de449646a9a76635e5",
+        "02b2041a972e4f229405509456f57f266bd3c024b53baf6689b6489c94a3d525",
+        "02e2dde92abf98c679d5534c343785a245fa7acc6bea448f2de92a151d0a9c69",
+        "02eb999ab3c080262f9dba57fafc2c4d9f838427ff9941743b4ee410095dd049",
+        "0321c4cb086cf6d3e8ad71a1475078dc706c6dc9329a827d629c177be1129a97"
+      ],
+      "upload_origin_counts": {
+        "drive": 1646,
+        "url": 20
+      }
+    },
+    {
+      "acquired_blob_bytes_on_disk": 0,
+      "acquired_blob_count": 0,
+      "acquisition_status": "unfetched",
+      "attachment_count": 3078,
+      "declared_byte_sum": 13369453110,
+      "missing_blob_ref_count": 0,
+      "origin": "chatgpt-export",
+      "sample_attachment_ids": [
+        "000faaca8ea61ec0071223417af9385afd557a3c18b614bee59d2246fbcce1d4",
+        "00279723ba192c5ab0d34f22cbc5077d7c82bb102ecfffbf1d0e7c35cc5d2553",
+        "0029fd9bf2f708a2079ab149fa9e30c9a08eb4520fdc1383b83845dd72d8d050",
+        "003ac1f9d52c7e44c2b556c1c0441ab45d7021deeec86c7cfe88f8a58191cdde",
+        "005d7f5d2f27995348759ab2bbb64c210b60680f606ac9fb288c0b4e0993bf70",
+        "007aefe1848b4ccd8bcbc4fbe2df210de10c68a738fc469488333042b64f4078",
+        "00867cc43da0e5e93493c0629e79419f468d1b83a9522d62edae1e3472f31641",
+        "00a1ca845546f0497b3f5ab4062ba4fbb36a72545a703716ba82085000f08fd6",
+        "00cbebfde51c54e6af212b87529c97b6271817218c8351ddf2158956f85399e6",
+        "00cf84426c5e8677a53145156168daadb9ee8ee818af1e84c60a1ac9b6f33873",
+        "00ea4284cb60f549cb0c9aab10bf227aad4d8511b25b1e8898b25c40d749792a",
+        "00ee319278d10fedf4256aab7faf67053bb953858916f22ced939970d1963061",
+        "01071d82402bc1eca5644292bca42dc32ac5861062f0f95661d04c1c9a437aab",
+        "010d958d699ef7dfabc3da0ddc49a3c64d4aecc06ac9633fb8688302b0862338",
+        "01160aa2f0c7dd5dbf5f8f289d8abddc087f4165d4fe0c155b757018ee7781e1",
+        "0117b72434970c3e5f40cc6b005c92450bc09e7a12b0b832de6335858840ec41",
+        "011cab9510e24f1c2efa966c0f7b7cab26415b5c6961d3b85f43328e9739b949",
+        "013e32e6314bf95023ca9d70b264849da69b99262c4762e3dcb64a92b05fb85e",
+        "0163b1cc815687ea0eca484ce41cd9ee3e3c58422f7f60e36a0c2181880f8315",
+        "0165d260bb2a996f2a99412ca8c93ac0ca1b11365c45a76d4cecbad76500a323"
+      ],
+      "upload_origin_counts": {
+        "oauth": 3078
+      }
+    },
+    {
+      "acquired_blob_bytes_on_disk": 29277933,
+      "acquired_blob_count": 957,
+      "acquisition_status": "acquired",
+      "attachment_count": 957,
+      "declared_byte_sum": 29277933,
+      "missing_blob_ref_count": 0,
+      "origin": "claude-ai-export",
+      "sample_attachment_ids": [
+        "001d621eba95dfb222628727ed73c901c71f82758495e7dd49c09c3ae653fe38",
+        "0041538a4b710946f67b09de0709b81bd2554d84777864d5748375f5883d0df2",
+        "00b16250241988c04b0ded8875268a75e2c180faf9f3ee9393d3341c36f8f756",
+        "0165b8a11251e9a8554c93fb97513b2a7956c0938f6a8beaa30b8d5b1b93c9e7",
+        "0169487d452106f6c1544a85ab859d1f610fe2c20ca41402a8c8d53c2b2e0a36",
+        "026104984fa29200466e7615b202f661ba04daee6c999dcae3d6a3bc5be92dc6",
+        "028b8e841323456a0253dd7609868ccbae6edbdee56ede0922772a823ae066a1",
+        "0298e6e05b6a07e5ea15f019d2e5c870cf587e03f9fe6bf37fe42d8400ba7b3d",
+        "02eafccc5a026dfa8558a7ec23931d9e25113a3c5e958e7af3b42ee777643d2b",
+        "0309b837d3bc61bf6afdda174dea30f98510ca5cc2f4c99a8bc7c8033183bf52",
+        "03308a86ba7ec1f2996d386b4e5e2613add2128ae60dbc9a571aacd9b93a0c0b",
+        "033f94ee6f247ca84074febfdfdba5e3f5e0e5cdf2151ad868bd38291fd008ca",
+        "036da02e0d991643b186688d0009a563728c01701db8b4006c7d93e02b419d28",
+        "043db00c5d6f3322213ab3599ae043c55378b2030049064a588a8321cf27a8ed",
+        "0455999fa375943247a349d28766e9520f434012071c3e253132d9408fe8714e",
+        "0493c86f45adbfa8f6d3571416dda87975a3f29d4e7686db4a831d8204ea5f4e",
+        "05119bcfbe4552a168c3b1db81950a69d4f3c86e3fcd370746b855abe64e47e9",
+        "051f835406d58f2da07597502e3d12f0f64eb42e5f896f638281b23a72827541",
+        "05282f6fb45a9474c28026df8402dcbfd3b3509bc12dc4d90e281db939f99ff4",
+        "053bb160ebeee60d98f407d525ffe9b1fb2dd9f2497e6d52dcdeb720ac20ae57"
+      ],
+      "upload_origin_counts": {
+        "oauth": 957
+      }
+    },
+    {
+      "acquired_blob_bytes_on_disk": 0,
+      "acquired_blob_count": 0,
+      "acquisition_status": "unfetched",
+      "attachment_count": 1636,
+      "declared_byte_sum": 315015758,
+      "missing_blob_ref_count": 0,
+      "origin": "claude-ai-export",
+      "sample_attachment_ids": [
+        "000f5418cda8c7171b2570308895a68e13ed0d4be94e6b5a303043f693b0b201",
+        "003c134a83d3943522f07b8ffb09b4c10b68fb270b83ef4e7c53ad03e2b989bb",
+        "008ebe5f4528b15a6b6bae0fdefeb7f73bcf336f8bdb33ab15251e66eec20da0",
+        "00b8f7bebc3fc0bc8d7253c8debca26397ec8035baedca3fd928d41f1ac2dcf4",
+        "00ce4b7194fd1fa037d49408b99e1a28a7c9e1e43a6b10c6b3ba25e34918a0bc",
+        "00e71e49223b2732d6c2ebea20484bff4b8e931b9ba597d33a815cc7f4e34669",
+        "00eb70f0157d68467b162d2d462bf8f09fc77e73e7f367ca4fa5c0fd2ac2b138",
+        "013c4d918a52cd29b8cf9495bdd63a0f7a71497510a26a2a400218aabfd8a5db",
+        "013fff521741de22e91affcd97baa641505a510cc817c5da898bf3a1b784044a",
+        "015bb982291691145dbea481ba09e17dd5882056242c573f838c3ffd30a4811c",
+        "0171c624666f9ce1ab7a0effa3497fafa877da757512ca58d8da4260b98381f1",
+        "01b7c497ec97f1b678c72529bc10aeda5a52488ff8df84bda606a5810b369fdd",
+        "01ea7be071557b068aa2d30ff4876238ccc579c70afdb99903d200195f1c2b87",
+        "023328cf2fdb0f06269f432f13a3388a13ac0b42a3138acbfeeb31fe02e0c5be",
+        "0265f3a427c62ddf717230591074d240d337fcef239ec9d3f19921859cd7f9d5",
+        "027fff34f37151abd18ae57bb7ecf81d57aaf00101e79c3572bc4c914eb7611c",
+        "0281d01e6753ac16de1440e17fd4f831fa265c8dc4f2e75f9d5d053a66830df1",
+        "029cf57a1de4c377d902b23a10bbf6a4871c808fe257d7e654f528a606dc9908",
+        "02a37b09d972f8643edc1affcbd561bdf746bccdb03e8f16779a26645a205734",
+        "02e444c98d18570a1f7a4f10b52067be222758ccac5a2fdd4618c81ca70b2341"
+      ],
+      "upload_origin_counts": {
+        "oauth": 1636
+      }
+    },
+    {
+      "acquired_blob_bytes_on_disk": 0,
+      "acquired_blob_count": 0,
+      "acquisition_status": "unfetched",
+      "attachment_count": 34,
+      "declared_byte_sum": 0,
+      "missing_blob_ref_count": 0,
+      "origin": "grok-export",
+      "sample_attachment_ids": [
+        "0df71b008d1cdca42d6235d72c2b0031f985fcbccacb73387dc6215d151e7c5c",
+        "1d6ef4dae227bee029fcf6b62164069f5a1e0e80cd728a50d836f1320cd922ba",
+        "32449d32dd3a318577bc51ff00d356cb1167dfc4819d45095c8606fbcd516983",
+        "3436526db753c0fb034fadb39377e954854a774b740dd8b10e9753c6447221a6",
+        "39bb34d30367f9fd8e8f66ddfa7ff2f826669323b6e2052a2a7a89785f1ffbb1",
+        "44cb31df81897444fb9a9c0933041ec0f767328fb55ee09c4bf1b0de01de8f11",
+        "46df55ded069327df88aa0930a524c5bd666c4363f82c364d1275b96e402e5ba",
+        "4c36927a6f18a56c41ccfe0db0f5570a6c1c01a680c12549007078c3c1cc4154",
+        "53e76533a691dc83882205de4d49552a067d870b300344744a71a8bf171e0214",
+        "5900ac7c0a0814ece87a206af80964c67acbc8206ee77a4afe61541823409b34",
+        "5afbb0a75503e5d7be16f380b70ff7d72a4259932a3b3e883bd784d61172d413",
+        "6a0647d655fd9048e5726fe38fa61a075fb5da3436188ccae63329aeac3ea636",
+        "6ace4e44eebfc4fb2a76ae51d801e466272a0e92f861911c8f353d48627eb6b9",
+        "6d8cf0adc56c988ecb9be69949548b9cc76bbe445028335c9ef4d1fa0111d65c",
+        "6f9dadba8131f434b5a26440ace1c93cbc5c01b8a8316ad0b50f61d0c05d0eb2",
+        "736da7a907cd486858956cd212c709dcef5b95b2c4696d5918d40c097ebe2111",
+        "78bf8e0f2164b65f63f03631c40afb82b4cb1ef28c52fedb5d201c5bfefe4d34",
+        "7bab32832a133ec3f0e2c2b220ead6ec487568f6a035bae64aa446414a80e105",
+        "871b65a18d55727df1286cdd2b949cf6173ecde0511313be4d391b115d3677de",
+        "8a6a03623af7988e26675a9dec0b6ac158953f288a93fa8741a18b130ea6bbe0"
+      ],
+      "upload_origin_counts": {
+        "url": 34
+      }
+    }
+  ],
+  "totals": {
+    "acquired_blob_bytes_on_disk": 29722444,
+    "acquired_blob_count": 967,
+    "attachment_count": 7390,
+    "declared_byte_sum": 13714191312,
+    "missing_blob_ref_count": 0
+  }
+}

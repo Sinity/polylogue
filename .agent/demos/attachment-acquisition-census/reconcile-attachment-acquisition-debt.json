@@ -1,0 +1,11 @@
+{
+  "acquired_count": 967,
+  "acquired_missing_blob_count": 0,
+  "acquired_missing_blob_sample": [],
+  "mode": "attachment_acquisition_debt",
+  "mutates": false,
+  "ok": true,
+  "total_attachments": 7390,
+  "unavailable_count": 0,
+  "unfetched_count": 6423
+}

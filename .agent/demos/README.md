@@ -19,6 +19,10 @@ better demo supersedes them.
   - readme: `archive-debt-summary/README.md`
   - analysis: `archive-debt-summary/ANALYSIS.md`
   - files: 9 (8 readable)
+- `attachment-acquisition-census` — Attachment Acquisition Census
+  - readme: `attachment-acquisition-census/README.md`
+  - analysis: `attachment-acquisition-census/ANALYSIS.md`
+  - files: 5 (4 readable)
 - `chatlog-exports` — Chatlog Export Demos
   - readme: `chatlog-exports/README.md`
   - files: 27 (26 readable)
