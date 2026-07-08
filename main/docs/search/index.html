@@ -773,9 +773,17 @@ and result-shaping modes that do not have row semantics yet, such as
 <code>delete</code>, <code>open</code>, <code>stats</code>, <code>count</code>, <code>--cursor</code>, and custom sort/reverse modes,
 are rejected instead of silently coercing row queries back to session queries.</p>
 <h2>Assertion Candidate Judgment</h2>
-<p>Transform and session-analysis jobs may emit assertion rows with <code>status:candidate</code>.
-Candidate rows are private, carry <code>context_policy.inject=false</code>, and keep
-<code>promotion_required=true</code> until an operator makes an explicit judgment. They
+<p>Any non-user-authored assertion write (agent, transform, detector, blackboard
+post, or any future automated writer) lands with <code>status:candidate</code> by
+default -- enforced once, inside <code>upsert_assertion</code> itself, not per-writer
+(37t.15). Two narrow exceptions: an assertion_id that already carries a
+terminal judgment outcome (accepted/rejected/deferred/superseded/deleted)
+keeps that outcome instead of being resurrected to candidate, and session
+tags (<code>AssertionKind.TAG</code>) opt out entirely via <code>require_promotion=False</code>
+since tags are categorization, not epistemic claims, and have no
+judgment-queue path today. Candidate rows are private, carry
+<code>context_policy.inject=false</code>, and keep <code>promotion_required=true</code> until an
+operator makes an explicit judgment. They
 can be inspected like any other assertion row, or through the review list that
 keeps pending candidates separate from already judged lifecycle rows:</p>
 <pre><code class="language-bash">polylogue assertions where 'status:candidate AND target:session:codex-session:abc123' --format json
