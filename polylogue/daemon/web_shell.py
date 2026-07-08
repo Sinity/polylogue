@@ -408,8 +408,25 @@ var state = {
   apiDebug: {counter: 0, last: null}
 };
 
+// Three escaping contexts, three functions -- do not use one for another
+// (polylogue-2n39). esc(): plain HTML text between tags. escAttr(): a plain
+// HTML attribute value (e.g. data-id="..."), no embedded JS. escJsAttr(): a
+// value interpolated into a single-quoted JS string literal that itself
+// lives inside an HTML event-handler attribute (onclick="fn('VALUE')") --
+// this needs JS-string escaping (backslash escaped FIRST, so an
+// attacker-controlled trailing backslash cannot consume the escape of a
+// following quote) followed by HTML-attribute escaping of the result, since
+// the browser's HTML parser decodes entities in the attribute value BEFORE
+// the JS engine parses that decoded string as the handler's source --
+// HTML-entity-escaping a quote (e.g. '&#39;') does NOT protect this nested
+// context, because decoding restores the raw quote right before JS parses
+// it, letting attacker content break out of the string and execute.
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function escAttr(s) { return String(s).replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+function escAttr(s) { return esc(s).replace(/'/g,'&#39;'); }
+function escJsAttr(s) {
+  var jsEscaped = String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,'\\r');
+  return jsEscaped.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+}
 
 function nowMs() {
   return (window.performance && performance.now) ? performance.now() : Date.now();
@@ -1118,7 +1135,7 @@ function renderSessions() {
     return '<div class="conv-item' + sel + selectionSel + '" data-id="' + escAttr(c.id) + '">'
       + '<div class="conv-row">'
       + '<input type="checkbox" class="selection-check" data-selection-id="' + escAttr(c.id) + '" aria-label="Select session"' + checked + '>'
-      + '<div class="conv-body" onclick="selectSession(\'' + escAttr(c.id) + '\')">'
+      + '<div class="conv-body" onclick="selectSession(\'' + escJsAttr(c.id) + '\')">'
       + '<div class="conv-title">' + title + '</div>'
       + '<div class="conv-meta">'
       + '<span class="provider-dot" style="background:' + dotColor + '"></span>'
@@ -1562,7 +1579,7 @@ function renderOpenParentChainButton(c) {
   if (!hasAncestor && (data.nodes || []).length <= 1) return '';
   return '<button class="chip accent" style="cursor:pointer;border:1px solid var(--accent-soft);background:var(--accent-bg);color:var(--accent)" '
     + 'title="Open the root \u2192 sub-agent \u2192 continuation chain as a stack workspace" '
-    + 'onclick="openParentChainAsStack(\'' + escAttr(c.id) + '\')">open chain</button>';
+    + 'onclick="openParentChainAsStack(\'' + escJsAttr(c.id) + '\')">open chain</button>';
 }
 
 function openLineageInspector() {
@@ -1576,7 +1593,7 @@ function openLineageInspector() {
 
 function markButtonHtml(sessionId, markType, label, title) {
   var active = hasMark(sessionId, markType) ? ' active' : '';
-  return '<button class="mark-btn' + active + '" title="' + escAttr(title) + '" onclick="toggleMark(\'' + escAttr(markType) + '\')">' + esc(label) + '</button>';
+  return '<button class="mark-btn' + active + '" title="' + escAttr(title) + '" onclick="toggleMark(\'' + escJsAttr(markType) + '\')">' + esc(label) + '</button>';
 }
 
 function renderInspector() {
@@ -1643,7 +1660,7 @@ function insightSectionHeader(convId, kind, title, tag, count) {
   var collapsed = state.insightsCollapsed[insightSectionKey(convId, kind)];
   var arrow = collapsed ? '+' : '&minus;';
   var meta = (count != null) ? ' <span class="muted">(' + esc(String(count)) + ')</span>' : '';
-  return '<h4 class="insight-section-header" onclick="toggleInsightSection(\'' + escAttr(kind) + '\')">'
+  return '<h4 class="insight-section-header" onclick="toggleInsightSection(\'' + escJsAttr(kind) + '\')">'
     + '<span class="insight-toggle">' + arrow + '</span> '
     + esc(title) + ' ' + readinessChip(tag) + meta + '</h4>';
 }
@@ -2038,8 +2055,8 @@ function renderInspectorNotes(el, c) {
       html += '<div class="saved-view-item" data-view-id="' + escAttr(v.view_id) + '"><div><div>' + esc(v.name || v.view_id) + '</div>'
         + '<div class="value">' + esc(bits.join(' / ') || 'all sessions') + '</div></div>'
         + '<div style="display:flex;gap:4px;flex-shrink:0">'
-        + '<button class="user-action" onclick="applySavedView(\'' + escAttr(v.view_id) + '\')">Open</button>'
-        + '<button class="user-action" title="Delete saved view" onclick="deleteSavedView(\'' + escAttr(v.view_id) + '\')">Delete</button>'
+        + '<button class="user-action" onclick="applySavedView(\'' + escJsAttr(v.view_id) + '\')">Open</button>'
+        + '<button class="user-action" title="Delete saved view" onclick="deleteSavedView(\'' + escJsAttr(v.view_id) + '\')">Delete</button>'
         + '</div></div>';
     });
     html += '</div>';
@@ -2060,8 +2077,8 @@ function renderInspectorNotes(el, c) {
         + '<div class="meta">' + esc(target) + '</div>'
         + '<div class="note">' + esc(a.note_text || '') + '</div>'
         + '<div class="annotation-actions">'
-        + '<button class="user-action" onclick="editAnnotation(\'' + escAttr(a.annotation_id) + '\')">Edit</button>'
-        + '<button class="user-action" onclick="deleteAnnotation(\'' + escAttr(a.annotation_id) + '\')">Delete</button>'
+        + '<button class="user-action" onclick="editAnnotation(\'' + escJsAttr(a.annotation_id) + '\')">Edit</button>'
+        + '<button class="user-action" onclick="deleteAnnotation(\'' + escJsAttr(a.annotation_id) + '\')">Delete</button>'
         + '</div></div>';
     });
     html += '</div>';

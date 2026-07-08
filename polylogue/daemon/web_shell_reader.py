@@ -207,17 +207,17 @@ function _polyActionRailHtml(m, sessionId) {
   return ''
     + '<div class="msg-actions" data-anchor="' + escAttr(anchor) + '">'
     +   '<button class="act-btn" data-act="copy-text" title="Copy message text (c)" '
-    +           'onclick="copyMessageById(\'' + escAttr(String(m.id || '')) + '\')">copy</button>'
+    +           'onclick="copyMessageById(\'' + escJsAttr(String(m.id || '')) + '\')">copy</button>'
     +   '<button class="act-btn" data-act="copy-link" title="Copy anchor link" '
-    +           'onclick="copyMessageLink(\'' + escAttr(anchor) + '\')">link</button>'
+    +           'onclick="copyMessageLink(\'' + escJsAttr(anchor) + '\')">link</button>'
     +   '<a class="act-btn" data-act="open-raw" target="_blank" rel="noopener" '
     +     'title="Open raw session JSON" href="' + escAttr(rawHref) + '">raw</a>'
     +   '<button class="act-btn" data-act="view-provenance" title="View provenance (Raw tab)" '
     +           'onclick="openProvenanceTab()">prov</button>'
     +   '<button class="act-btn" data-act="jump-anchor" title="Jump to anchor in URL" '
-    +           'onclick="jumpToAnchor(\'' + escAttr(anchor) + '\')">#</button>'
+    +           'onclick="jumpToAnchor(\'' + escJsAttr(anchor) + '\')">#</button>'
     +   '<button class="act-btn" data-act="continue-thread" title="Continue this thread in another agent (#1203)" '
-    +           'onclick="openThreadContinueMenu(\'' + escAttr(sessionId) + '\', \'' + escAttr(String(m.id || '')) + '\', this)">continue</button>'
+    +           'onclick="openThreadContinueMenu(\'' + escJsAttr(sessionId) + '\', \'' + escJsAttr(String(m.id || '')) + '\', this)">continue</button>'
     +   (typeof _polyCopyActionRailHtml === 'function' ? _polyCopyActionRailHtml(m) : '')
     + '</div>';
 }
@@ -436,7 +436,7 @@ function renderMessageBlocks(messages) {
       +   '<a id="' + escAttr(anchor) + '" class="msg-anchor-target"></a>'
       +   '<div class="msg-header">'
       +     '<span class="msg-anchor-link" title="Copy anchor link" '
-      +       'onclick="copyMessageAnchor(\'' + escAttr(anchor) + '\')">#</span>'
+      +       'onclick="copyMessageAnchor(\'' + escJsAttr(anchor) + '\')">#</span>'
       +     '<span class="' + roleClass + '">' + esc(role || '?') + '</span>'
       +     typeTag + tsHtml + rail
       +   '</div>'

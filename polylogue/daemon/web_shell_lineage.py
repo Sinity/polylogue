@@ -80,7 +80,7 @@ function renderLineageNodeRow(node, edgeKindByChild, focusedId) {
   }
   var btn = focused
     ? '<span class="value" style="color:var(--accent)">' + esc(lineageNodeLabel(node)) + '</span>'
-    : '<button class="user-action" style="padding:0;border:none;background:none;color:var(--accent);cursor:pointer;text-align:left" onclick="selectSession(\'' + escAttr(node.session_id) + '\', true)">' + esc(lineageNodeLabel(node)) + '</button>';
+    : '<button class="user-action" style="padding:0;border:none;background:none;color:var(--accent);cursor:pointer;text-align:left" onclick="selectSession(\'' + escJsAttr(node.session_id) + '\', true)">' + esc(lineageNodeLabel(node)) + '</button>';
   return '<div class="inspector-field" style="' + indent + ';' + bg + '">'
     + '<span class="label">d' + depth + '</span>'
     + '<span class="value">' + btn + chip + '</span>'
@@ -153,12 +153,12 @@ function renderInspectorLineage(el, c) {
       var kindChip = '<span class="chip ' + esc(lineageEdgeKindClass(edge.kind)) + '">' + esc(edge.kind) + '</span>';
       var sourceText = (edge.child_id) ? String(edge.child_id).substring(0, 12) + '…' : '?';
       var sourceLink = (edge.child_id)
-        ? '<button class="user-action" style="padding:0 4px;font-size:10px;border:none;background:none;color:var(--accent);cursor:pointer" onclick="selectSession(\'' + escAttr(edge.child_id) + '\', true)">' + esc(sourceText) + '</button>'
+        ? '<button class="user-action" style="padding:0 4px;font-size:10px;border:none;background:none;color:var(--accent);cursor:pointer" onclick="selectSession(\'' + escJsAttr(edge.child_id) + '\', true)">' + esc(sourceText) + '</button>'
         : '<span style="color:var(--text-dim)">?</span>';
       var targetLink;
       if (edge.resolved && edge.parent_id) {
         var parentText = String(edge.parent_id).substring(0, 12) + '…';
-        targetLink = '<button class="user-action" style="padding:0 4px;font-size:10px;border:none;background:none;color:var(--accent);cursor:pointer" onclick="selectSession(\'' + escAttr(edge.parent_id) + '\', true)">' + esc(parentText) + '</button>';
+        targetLink = '<button class="user-action" style="padding:0 4px;font-size:10px;border:none;background:none;color:var(--accent);cursor:pointer" onclick="selectSession(\'' + escJsAttr(edge.parent_id) + '\', true)">' + esc(parentText) + '</button>';
       } else if (edge.parent_native_id) {
         // Unresolved edge — render placeholder with provider-native ID (#1518 slice 4c).
         targetLink = '<span class="chip q-unresolved" title="Not yet ingested">' + esc(String(edge.parent_native_id).substring(0, 30)) + '</span>';
@@ -210,11 +210,11 @@ function renderInspectorLineage(el, c) {
   var hasChain = (data.nodes || []).length > 1;
   html += '<div class="inspector-section"><h4>Actions</h4>';
   if (parentId) {
-    html += '<button class="user-action" style="margin-right:6px" onclick="selectSession(\'' + escAttr(parentId) + '\', true)">Open parent</button>';
+    html += '<button class="user-action" style="margin-right:6px" onclick="selectSession(\'' + escJsAttr(parentId) + '\', true)">Open parent</button>';
     html += '<button class="user-action" style="margin-right:6px" onclick="openCompareWithParent()">Compare with parent</button>';
   }
   if (hasChain) {
-    html += '<button class="user-action" onclick="openParentChainAsStack(\'' + escAttr(c.id) + '\')">Open chain as stack</button>';
+    html += '<button class="user-action" onclick="openParentChainAsStack(\'' + escJsAttr(c.id) + '\')">Open chain as stack</button>';
   }
   if (!parentId && !hasChain) {
     html += '<div style="font-size:var(--small);color:var(--text-dim)">No resolved parent to open or compare against.</div>';

@@ -307,7 +307,7 @@ function _polyAttachmentInspectorHtml(c) {
     }
     var nameHtml = anchorHref
       ? '<a class="att-name" href="' + anchorHref + '" '
-        + 'onclick="event.preventDefault();jumpToAnchor(\'message-' + escAttr(String(att.message_id)) + '\')">'
+        + 'onclick="event.preventDefault();jumpToAnchor(\'message-' + escJsAttr(String(att.message_id)) + '\')">'
         + esc(name) + '</a>'
       : '<span class="att-name">' + esc(name) + '</span>';
     return ''
@@ -379,22 +379,21 @@ function _polyAttachmentLibraryRender() {
       var meta = [];
       if (it.mime_type) meta.push(it.mime_type);
       if (sizeStr) meta.push(sizeStr);
-      var name = (it.name || it.attachment_id || 'attachment')
-        .replace(/[<&]/g, function(c) { return c === '<' ? '&lt;' : '&amp;'; });
+      var name = it.name || it.attachment_id || 'attachment';
       return ''
-        + '<a class="att-row state-' + (it.state || 'unknown') + '" href="' + href + '">'
-        +   '<span class="att-name">' + name + '</span>'
-        +   '<span class="att-meta">' + meta.join(' \u00B7 ') + '</span>'
-        +   '<span class="att-state">' + _polyAttachmentStateLabel(it.state || 'unknown') + '</span>'
+        + '<a class="att-row state-' + escAttr(it.state || 'unknown') + '" href="' + href + '">'
+        +   '<span class="att-name">' + esc(name) + '</span>'
+        +   '<span class="att-meta">' + esc(meta.join(' \u00B7 ')) + '</span>'
+        +   '<span class="att-state">' + esc(_polyAttachmentStateLabel(it.state || 'unknown')) + '</span>'
         + '</a>';
     }).join('');
     return ''
       + '<div class="att-group">'
       +   '<div class="att-group-title">'
       +     '<a href="/s/' + encodeURIComponent(cid) + '">'
-      +     (g.title || cid).replace(/[<&]/g, function(c) { return c === '<' ? '&lt;' : '&amp;'; })
+      +     esc(g.title || cid)
       +     '</a>'
-      +     '<span class="att-origin">' + (g.origin || '') + '</span>'
+      +     '<span class="att-origin">' + esc(g.origin || '') + '</span>'
       +   '</div>'
       +   rows
       + '</div>';
