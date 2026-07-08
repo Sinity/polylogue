@@ -90,34 +90,46 @@ def count_orphaned_blobs_sync(conn: sqlite3.Connection, *, db_path: Path | str |
 
 
 def repair_orphaned_blobs_data(config: Config, dry_run: bool = False) -> BlobRepairOutcome:
-    from polylogue.storage.blob_store import get_blob_store
+    """Delete orphaned blobs via the lease/ref/generation-safe GC planner.
 
-    blob_store = get_blob_store()
-    with sqlite3.connect(f"file:{config.db_path}?mode=ro", uri=True) as conn:
-        referenced_hashes, surfaces = _referenced_blob_hashes(conn, db_path=config.db_path)
+    Previously this called ``BlobStore.detect_orphans``/``cleanup_orphans``
+    directly, comparing disk hashes only against committed ``raw_sessions``/
+    ``blob_refs`` rows. A blob with an active operation lease
+    (``pending_blob_refs`` — acquired but not yet committed) has no
+    committed reference yet by design, so it was misclassified as an
+    orphan and deleted: the exact in-flight-ingest race the lease
+    mechanism exists to close (polylogue-8jg9.4). ``run_blob_gc_report``
+    already applies all three safety invariants (committed reference,
+    active lease, generation-age floor); routing the doctor repair path
+    through it closes the race without duplicating that safety logic.
+    """
+    from polylogue.paths import blob_store_root
+    from polylogue.storage.blob_gc import run_blob_gc_report
 
-    surface_detail = _surface_detail(surfaces)
-    detect_result = blob_store.detect_orphans(referenced_hashes)
-    if detect_result.orphan_count == 0:
-        return BlobRepairOutcome(0, True, f"No orphaned blobs found ({surface_detail})")
-
-    orphan_hashes = {h for h in blob_store.iter_all() if h not in referenced_hashes}
-    cleanup_result = blob_store.cleanup_orphans(orphan_hashes, dry_run=dry_run)
+    report = run_blob_gc_report(
+        config.db_path,
+        blob_store_root(),
+        max_batch=100_000,
+        dry_run=dry_run,
+    )
+    protected_detail = (
+        f"; skipped {report.skipped_referenced} referenced, {report.skipped_leased} leased"
+        if (report.skipped_referenced or report.skipped_leased)
+        else ""
+    )
     if dry_run:
         return BlobRepairOutcome(
-            cleanup_result.would_delete_count,
+            report.would_delete_count,
             True,
-            (
-                f"Would: delete {cleanup_result.would_delete_count} orphaned blobs "
-                f"({cleanup_result.would_delete_bytes:,} bytes; {surface_detail})"
-            ),
+            f"Would: delete {report.would_delete_count} orphaned blobs{protected_detail}",
         )
+    errors = report.skipped_unlink_error
     return BlobRepairOutcome(
-        cleanup_result.deleted_count,
-        cleanup_result.errors == 0,
+        report.deleted_count,
+        errors == 0,
         (
-            f"Deleted {cleanup_result.deleted_count} orphaned blobs ({cleanup_result.deleted_bytes:,} bytes)"
-            f" ({surface_detail})" + (f" with {cleanup_result.errors} errors" if cleanup_result.errors else "")
+            f"Deleted {report.deleted_count} orphaned blobs ({report.reclaimed_bytes:,} bytes)"
+            f"{protected_detail}" + (f" with {errors} errors" if errors else "")
         ),
     )
 

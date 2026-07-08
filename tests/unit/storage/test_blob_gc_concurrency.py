@@ -353,3 +353,89 @@ def test_helpers_reflect_lease_lifecycle(tmp_path: Path) -> None:
         assert _has_active_lease(conn, blob) is False
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Ops-doctor repair path (polylogue-8jg9.4)
+# ---------------------------------------------------------------------------
+#
+# repair_orphaned_blobs_data previously called BlobStore.detect_orphans /
+# cleanup_orphans directly, comparing disk hashes only against committed
+# raw_sessions/blob_refs rows — with zero awareness of pending_blob_refs
+# (leases) or the generation-age floor. A blob acquired-but-not-yet-committed
+# has no committed reference yet by design, so the doctor path classified it
+# an orphan and deleted it: the exact in-flight-ingest race the lease
+# mechanism exists to close. The fix routes the doctor path through
+# run_blob_gc_report, the same safe planner run_blob_gc already uses.
+
+
+def test_doctor_repair_path_respects_active_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A leased-uncommitted blob survives the ops-doctor repair path."""
+    from polylogue.config import Config
+    from polylogue.storage.blob_repair import repair_orphaned_blobs_data
+
+    db_path = tmp_path / "archive.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+    _make_db(db_path).close()
+
+    blob_hash, _ = blob_store.write_from_bytes(b"in-flight doctor payload")
+    _age_blob(blob_store, blob_hash, seconds=MIN_AGE_S + 5)
+    acquire_blob_leases(db_path, [blob_hash], operation_id="op-doctor-write")
+
+    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: blob_root)
+    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=db_path)
+
+    outcome = repair_orphaned_blobs_data(config, dry_run=False)
+
+    assert blob_store.exists(blob_hash), (
+        "ops-doctor repair deleted a blob held by an in-flight lease — "
+        "the acquire-then-commit window is no longer protected on this path"
+    )
+    assert outcome.repaired_count == 0
+
+
+def test_doctor_repair_path_deletes_unreferenced_unleased_blob(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An old, unreferenced, lease-free blob is still collectable via the doctor path."""
+    from polylogue.config import Config
+    from polylogue.storage.blob_repair import repair_orphaned_blobs_data
+
+    db_path = tmp_path / "archive.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+    _make_db(db_path).close()
+
+    blob_hash, _ = blob_store.write_from_bytes(b"truly abandoned payload")
+    _age_blob(blob_store, blob_hash, seconds=MIN_AGE_S + 5)
+
+    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: blob_root)
+    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=db_path)
+
+    outcome = repair_orphaned_blobs_data(config, dry_run=False)
+
+    assert not blob_store.exists(blob_hash)
+    assert outcome.repaired_count == 1
+    assert outcome.success is True
+
+
+def test_doctor_repair_path_dry_run_never_deletes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """dry_run=True reports the count without touching disk, on the doctor path too."""
+    from polylogue.config import Config
+    from polylogue.storage.blob_repair import repair_orphaned_blobs_data
+
+    db_path = tmp_path / "archive.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+    _make_db(db_path).close()
+
+    blob_hash, _ = blob_store.write_from_bytes(b"dry run candidate")
+    _age_blob(blob_store, blob_hash, seconds=MIN_AGE_S + 5)
+
+    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: blob_root)
+    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=db_path)
+
+    outcome = repair_orphaned_blobs_data(config, dry_run=True)
+
+    assert blob_store.exists(blob_hash)
+    assert outcome.repaired_count == 1
+    assert outcome.success is True
