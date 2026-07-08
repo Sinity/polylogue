@@ -71,7 +71,10 @@ async def test_post_mirrors_agent_metadata_into_assertion(workspace_env: dict[st
     assert assertion.author_kind == "agent"
     assert assertion.evidence_refs == ["message:m1", "block:m1:2"]
     assert assertion.staleness == {"expires_after_days": 7}
-    assert assertion.context_policy == {"inject": False}
+    # Non-user author_kind is coerced to a non-injected candidate regardless
+    # of the caller-supplied context_policy (37t.15 chokepoint).
+    assert assertion.status == "candidate"
+    assert assertion.context_policy == {"inject": False, "promotion_required": True}
 
 
 @pytest.mark.asyncio

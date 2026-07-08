@@ -381,7 +381,9 @@ are rejected instead of silently coercing row queries back to session queries.
 
 ## Assertion Candidate Judgment
 
-Transform and session-analysis jobs may emit assertion rows with `status:candidate`.
+Any non-user-authored assertion write (agent, transform, detector, blackboard
+post, or any future automated writer) lands with `status:candidate` --
+enforced once, inside `upsert_assertion` itself, not per-writer (37t.15).
 Candidate rows are private, carry `context_policy.inject=false`, and keep
 `promotion_required=true` until an operator makes an explicit judgment. They
 can be inspected like any other assertion row, or through the review list that

@@ -364,7 +364,11 @@ def seed_reader_assertion_claims(workspace: ReaderWorkspace) -> None:
             kind=AssertionKind.DECISION,
             body_text="The evidence tab renders shared assertion claims.",
             author_ref="agent:poly-07",
-            author_kind="agent",
+            # author_kind="user": an active/promoted decision is always
+            # user-authored in production (37t.15) -- non-user writes land
+            # as candidates, never active, regardless of the caller-supplied
+            # status/context_policy above.
+            author_kind="user",
             evidence_refs=[f"message:{READER_C1_M1}"],
             status="active",
             visibility="private",

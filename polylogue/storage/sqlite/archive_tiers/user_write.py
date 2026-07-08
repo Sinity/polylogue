@@ -34,6 +34,25 @@ ASSERTION_DEFAULT_AUTHOR_KIND: Final = "user"
 ASSERTION_DEFAULT_AUTHOR_REF: Final = "user:local"
 ASSERTION_DEFAULT_CONTEXT_POLICY: Final[dict[str, JSONValue]] = AssertionContextPolicy.default().as_json_document()
 
+#: Candidate-lifecycle terminal outcomes (set only by ``judge_assertion_candidate``
+#: via ``mark_assertion_status``, never by ``upsert_assertion`` itself). A
+#: non-user-authored write that lands on an assertion_id already in one of
+#: these states must not resurrect it back to candidate/active (37t.15).
+_ASSERTION_TERMINAL_JUDGED_STATUSES: Final[frozenset[AssertionStatus]] = frozenset(
+    {
+        AssertionStatus.ACCEPTED,
+        AssertionStatus.REJECTED,
+        AssertionStatus.DEFERRED,
+        AssertionStatus.SUPERSEDED,
+        AssertionStatus.DELETED,
+    }
+)
+
+#: Non-injected candidate context policy every non-user-authored write is
+#: coerced to unless it is already terminal-judged (37t.15). Matches the
+#: shape existing candidate writers (transform/pathology) already set by hand.
+_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY: Final[dict[str, JSONValue]] = {"inject": False, "promotion_required": True}
+
 
 def _default_context_policy() -> dict[str, JSONValue]:
     return dict(ASSERTION_DEFAULT_CONTEXT_POLICY)
@@ -481,6 +500,12 @@ def upsert_session_tag_assertion(
         author_kind=author_kind,
         confidence=confidence,
         now_ms=timestamp,
+        # Session tags are categorization, not epistemic claims -- no
+        # judgment-queue path exists for TAG, and add_user_tags' existing-row
+        # short-circuit would strand an agent-tagged session as a permanently
+        # unreachable candidate (37t.15 chokepoint carve-out; see
+        # upsert_assertion's require_promotion docstring).
+        require_promotion=False,
     )
 
 
@@ -918,15 +943,43 @@ def upsert_assertion(
     context_policy: Mapping[str, object] | AssertionContextPolicy | None = None,
     supersedes: Sequence[str] | None = None,
     now_ms: int | None = None,
+    require_promotion: bool = True,
 ) -> ArchiveAssertionEnvelope:
-    """Insert-or-update one assertion row keyed by caller-supplied ``assertion_id``."""
+    """Insert-or-update one assertion row keyed by caller-supplied ``assertion_id``.
+
+    Single write chokepoint for the QUOTED->OPERATOR promotion gate (37t.15):
+    any non-``user`` ``author_kind`` (agent, transform, detector, or any
+    future automated writer) is coerced to ``status=CANDIDATE`` with a
+    non-injected ``{"inject": False, "promotion_required": True}`` context
+    policy, overriding whatever the caller requested -- an automated writer
+    cannot self-promote a claim to authoritative/injectable. If the
+    assertion_id already carries a terminal judgment outcome (accepted,
+    rejected, deferred, superseded, or deleted -- set only by
+    ``judge_assertion_candidate`` via ``mark_assertion_status``, never by this
+    function), that outcome is preserved instead: a later automated write to
+    the same id must not resurrect a judged-rejected row back to candidate.
+
+    ``require_promotion=False`` is the sole, explicit escape hatch (the design
+    note's "allowlist argument, not author_kind sniffing"): a handful of
+    overlay kinds (session tags today) are categorization, not epistemic
+    claims -- they have no judgment-queue/review path
+    (:data:`ASSERTION_CLAIM_KINDS`) and their idempotent add/remove semantics
+    would strand an agent-authored row as a permanently-unreachable candidate
+    (the existing-row short-circuit in callers like ``add_user_tags`` never
+    re-upserts once any non-deleted row exists). Callers must set this
+    per-call-site deliberately; it is never inferred from ``kind``/
+    ``author_kind`` inside this function.
+    """
     conn.execute("PRAGMA foreign_keys = ON")
     timestamp = now_ms if now_ms is not None else _now_ms()
     existing = conn.execute(
-        "SELECT created_at_ms FROM assertions WHERE assertion_id = ?",
+        "SELECT created_at_ms, status FROM assertions WHERE assertion_id = ?",
         (assertion_id,),
     ).fetchone()
     created_at_ms = int(existing[0]) if existing is not None else timestamp
+    existing_status = (
+        _normalize_assertion_status(existing[1]) if existing is not None and existing[1] is not None else None
+    )
 
     normalized_target_ref = normalize_object_ref_text(target_ref)
     normalized_scope_ref = normalize_object_ref_text(scope_ref) if scope_ref is not None else None
@@ -943,6 +996,14 @@ def upsert_assertion(
     resolved_visibility = _normalize_assertion_visibility(visibility)
     resolved_author_kind = _normalize_assertion_author_kind(author_kind)
     resolved_context_policy = _normalize_assertion_context_policy(context_policy)
+
+    if require_promotion and resolved_author_kind != ASSERTION_DEFAULT_AUTHOR_KIND:
+        if existing_status is not None and existing_status in _ASSERTION_TERMINAL_JUDGED_STATUSES:
+            resolved_status = existing_status
+        else:
+            resolved_status = AssertionStatus.CANDIDATE
+            resolved_context_policy = AssertionContextPolicy.from_raw(_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY)
+
     evidence_refs_json = _dumps_optional(normalized_evidence_refs)
     supersedes_json = _dumps_optional(list(supersedes or ()))
 
