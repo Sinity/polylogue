@@ -568,14 +568,44 @@ def _run_pytest_with_heartbeat(
     last_output = last_sample
     last_resource_sample = last_sample
     termination_reason: str | None = None
+    # Test-event progress, not raw output bytes: an xdist master can keep
+    # emitting output (its own heartbeat chatter) while every worker is
+    # wedged (e.g. a D-state deadlock), so output-silence alone never fires
+    # the stall detector (polylogue-27rb). last_progress_marker tracks the
+    # latest test event's own updated_at timestamp across all workers
+    # (devtools/pytest_progress_plugin.py); last_progress_at is the local
+    # monotonic time that marker was last seen to change.
+    initial_event = _read_latest_pytest_event()
+    last_progress_marker: str | None = initial_event.get("updated_at") if initial_event is not None else None
+    last_progress_at = last_sample
+    seen_any_progress_event = initial_event is not None
+
+    def _refresh_progress_marker(at: float, latest: dict[str, Any] | None = None) -> None:
+        nonlocal last_progress_marker, last_progress_at, seen_any_progress_event
+        if latest is None:
+            latest = _read_latest_pytest_event()
+        if latest is None:
+            return
+        marker = latest.get("updated_at")
+        seen_any_progress_event = True
+        if marker != last_progress_marker:
+            last_progress_marker = marker
+            last_progress_at = at
+
     while True:
         now = time.monotonic()
         elapsed = now - t0
         idle = now - last_output
+        progress_idle = now - last_progress_at
         if timeout_s > 0 and elapsed >= timeout_s:
             termination_reason = f"pytest runtime exceeded {timeout_s:g}s"
         elif stall_timeout_s > 0 and idle >= stall_timeout_s:
             termination_reason = f"pytest produced no output for {stall_timeout_s:g}s"
+        elif stall_timeout_s > 0 and seen_any_progress_event and progress_idle >= stall_timeout_s:
+            termination_reason = (
+                f"pytest reported no test progress for {stall_timeout_s:g}s "
+                f"(output kept flowing; last progress marker: {last_progress_marker})"
+            )
         if termination_reason is not None:
             _terminate_process_group(process)
             break
@@ -587,6 +617,8 @@ def _run_pytest_with_heartbeat(
             deadlines.append(max(timeout_s - elapsed, 0.0))
         if stall_timeout_s > 0:
             deadlines.append(max(stall_timeout_s - idle, 0.0))
+        if stall_timeout_s > 0 and seen_any_progress_event:
+            deadlines.append(max(stall_timeout_s - progress_idle, 0.0))
         timeout = min(deadlines) if deadlines else None
         events = selector.select(timeout=timeout)
         if events:
@@ -599,12 +631,13 @@ def _run_pytest_with_heartbeat(
                     sys.stderr.write(chunk.decode(errors="replace"))
                     sys.stderr.flush()
                     last_output = time.monotonic()
+                    _refresh_progress_marker(last_output)
                     _write_pytest_progress(
                         event="output",
                         cmd=cmd,
                         started_at=t0,
                         pid=process.pid,
-                        idle_s=0.0,
+                        idle_s=last_output - last_progress_at,
                         output_bytes=output_bytes,
                         status=_process_status(process.pid),
                         run_id=run.run_id if run is not None else None,
@@ -626,15 +659,19 @@ def _run_pytest_with_heartbeat(
             cpu_text = f", cpu={cpu_pct:.0f}%" if cpu_pct is not None else ""
             state_text = f", state={status['state']}" if status["state"] is not None else ""
             latest_event = _read_latest_pytest_event()
+            _refresh_progress_marker(sample_now, latest_event)
             if latest_event is not None:
                 event = latest_event.get("event")
                 nodeid = latest_event.get("nodeid")
                 node_text = f", latest={event}:{nodeid}" if isinstance(event, str) and isinstance(nodeid, str) else ""
             else:
                 node_text = ""
+            progress_idle_text = (
+                f", progress_idle={sample_now - last_progress_at:.0f}s" if seen_any_progress_event else ""
+            )
             sys.stderr.write(
                 f"    still running: pid={process.pid}, elapsed={sample_now - t0:.0f}s, "
-                f"idle={sample_now - last_output:.0f}s{state_text}{cpu_text}{rss_text}{node_text}\n"
+                f"idle={sample_now - last_output:.0f}s{progress_idle_text}{state_text}{cpu_text}{rss_text}{node_text}\n"
             )
             sys.stderr.flush()
             _write_pytest_progress(
@@ -643,7 +680,7 @@ def _run_pytest_with_heartbeat(
                 started_at=t0,
                 pid=process.pid,
                 elapsed_s=sample_now - t0,
-                idle_s=sample_now - last_output,
+                idle_s=sample_now - last_progress_at,
                 output_bytes=output_bytes,
                 status=status,
                 cpu_pct=cpu_pct,
