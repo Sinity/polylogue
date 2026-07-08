@@ -43,6 +43,40 @@ class RigorVersionField(ArchiveInsightModel):
     payload_path: tuple[str, ...] = ()
 
 
+class RigorFieldContract(ArchiveInsightModel):
+    """Evidence contract for one quantitative (number-bearing) field (9e5.29).
+
+    A rendered number is a claim. This contract makes the claim's grounding
+    explicit so renderers and the audit can tell "true zero" (denominator
+    present, value genuinely zero), "not-applicable" (no denominator to
+    compute over -- e.g. an average with zero backing rows), and "absent"
+    (evidence was never gathered) apart instead of collapsing all three to
+    ``0.0``.
+
+    Fields:
+        field_path: dotted path to the numeric field on the insight payload.
+        provenance_class: ``counted`` (direct SQL COUNT/SUM), ``derived``
+            (computed from other counted fields, e.g. an average or ratio),
+            or ``estimated`` (catalog/heuristic pricing or inference).
+        denominator_field: dotted path to the field whose zero-ness makes
+            this field not-applicable (e.g. ``session_count`` for an
+            average-per-session field). Empty tuple means the field has
+            no denominator (a plain count/sum, where zero is always a
+            true measured zero).
+        nullable_when_ungrounded: when True, the field must render ``None``
+            (never ``0``/``0.0``) when its denominator is zero or its
+            backing frame is empty.
+        evidence_tier: short label for what grounds the field, e.g.
+            ``"sql-aggregate"``, ``"catalog-priced"``, ``"heuristic"``.
+    """
+
+    field_path: tuple[str, ...]
+    provenance_class: str
+    denominator_field: tuple[str, ...] = ()
+    nullable_when_ungrounded: bool = True
+    evidence_tier: str = "sql-aggregate"
+
+
 class RigorContract(ArchiveInsightModel):
     """Per-product rigor contract matrix entry.
 
@@ -67,6 +101,12 @@ class RigorContract(ArchiveInsightModel):
             enforced at runtime.
         version_fields: materialization version fields the row carries.
             Used by the audit runner to count stale-version rows.
+        field_contracts: per-field evidence contracts (9e5.29) for this
+            product's quantitative fields. Not required to cover every
+            numeric field on day one -- coverage grows incrementally --
+            but any field listed here is a committed promise: it must
+            render ``None``, never ``0``/``0.0``, when its declared
+            denominator is zero or ungrounded.
         notes: optional free-form notes (deprecated fields, transition
             anchors, etc.).
     """
@@ -80,6 +120,7 @@ class RigorContract(ArchiveInsightModel):
     readiness_semantics: str = ""
     consumer_fields: tuple[str, ...] = ()
     version_fields: tuple[RigorVersionField, ...] = ()
+    field_contracts: tuple[RigorFieldContract, ...] = ()
     notes: str = ""
 
 
@@ -242,11 +283,48 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "repos_active",
         ),
         version_fields=(),
+        field_contracts=(
+            RigorFieldContract(
+                field_path=("avg_messages_per_session",),
+                provenance_class="derived",
+                denominator_field=("session_count",),
+            ),
+            RigorFieldContract(
+                field_path=("avg_user_words",),
+                provenance_class="derived",
+                denominator_field=("user_message_count",),
+            ),
+            RigorFieldContract(
+                field_path=("avg_authored_user_words",),
+                provenance_class="derived",
+                denominator_field=("authored_user_message_count",),
+            ),
+            RigorFieldContract(
+                field_path=("avg_assistant_words",),
+                provenance_class="derived",
+                denominator_field=("assistant_message_count",),
+            ),
+            RigorFieldContract(
+                field_path=("tool_use_percentage",),
+                provenance_class="derived",
+                denominator_field=("session_count",),
+            ),
+            RigorFieldContract(
+                field_path=("thinking_percentage",),
+                provenance_class="derived",
+                denominator_field=("session_count",),
+            ),
+        ),
         notes=(
             "provenance.materializer_version is a hardcoded literal 1 for day/week grouping "
             "(archive.py) with no dedicated store_constants entry, and absent entirely for "
             "provider grouping -- not declared as a version_field to avoid implying a real "
-            "materialized-artifact version exists."
+            "materialized-artifact version exists. The six field_contracts entries above "
+            "(9e5.29) render None -- never 0.0 -- whenever their declared denominator is zero; "
+            "day/week grouping does not compute avg_user_words/avg_authored_user_words/"
+            "avg_assistant_words/tool_use_percentage/thinking_percentage at all (no per-type "
+            "message counts fetched there), so those five render None for every day/week row "
+            "today, not just zero-denominator ones -- a real, documented coverage gap, not a bug."
         ),
     ),
     RigorContract(
@@ -459,6 +537,7 @@ def resolve_payload(obj: object, path: Sequence[str]) -> object | None:
 __all__ = [
     "RIGOR_EXEMPT",
     "RigorContract",
+    "RigorFieldContract",
     "RigorVersionField",
     "get_rigor_contract",
     "list_rigor_contracts",

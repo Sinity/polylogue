@@ -146,22 +146,24 @@ def print_summary_impl(
                 ui.console.print("[bold]Deep Dive:[/bold]")
                 for metric in metrics:
                     ui.console.print(f"[bold]{metric.source_name}[/bold]")
-                    ui.console.print(
-                        f"  Messages: {metric.message_count:,} (avg {metric.avg_messages_per_session:.1f}/conv)"
+                    avg_msgs = (
+                        "n/a" if metric.avg_messages_per_session is None else f"{metric.avg_messages_per_session:.1f}"
                     )
-                    ui.console.print(
-                        f"  Words: {int(metric.avg_user_words)} user / {int(metric.avg_assistant_words)} asst (avg)"
-                    )
-                    if int(metric.avg_authored_user_words) != int(metric.avg_user_words):
+                    ui.console.print(f"  Messages: {metric.message_count:,} (avg {avg_msgs}/conv)")
+                    avg_user = "n/a" if metric.avg_user_words is None else str(int(metric.avg_user_words))
+                    avg_asst = "n/a" if metric.avg_assistant_words is None else str(int(metric.avg_assistant_words))
+                    ui.console.print(f"  Words: {avg_user} user / {avg_asst} asst (avg)")
+                    if metric.avg_authored_user_words is not None and (
+                        metric.avg_user_words is None
+                        or int(metric.avg_authored_user_words) != int(metric.avg_user_words)
+                    ):
                         ui.console.print(f"  Authored user words: {int(metric.avg_authored_user_words)} (avg)")
                     if metric.tool_use_count > 0:
-                        ui.console.print(
-                            f"  Tool Use: {metric.tool_use_count:,} ({metric.tool_use_percentage:.1f}% of convs)"
-                        )
+                        tool_pct = "n/a" if metric.tool_use_percentage is None else f"{metric.tool_use_percentage:.1f}"
+                        ui.console.print(f"  Tool Use: {metric.tool_use_count:,} ({tool_pct}% of convs)")
                     if metric.thinking_count > 0:
-                        ui.console.print(
-                            f"  Thinking: {metric.thinking_count:,} ({metric.thinking_percentage:.1f}% of convs)"
-                        )
+                        think_pct = "n/a" if metric.thinking_percentage is None else f"{metric.thinking_percentage:.1f}"
+                        ui.console.print(f"  Thinking: {metric.thinking_count:,} ({think_pct}% of convs)")
                     ui.console.print()
 
     except Exception:

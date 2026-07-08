@@ -3240,6 +3240,11 @@ class ArchiveStore:
                 total_duration_ms=int(row["total_duration_ms"] or 0),
                 total_wall_duration_ms=int(row["total_wall_duration_ms"] or 0),
                 total_words=int(row["total_words"] or 0),
+                avg_messages_per_session=(
+                    int(row["message_count"] or 0) / int(row["session_count"])
+                    if int(row["session_count"] or 0)
+                    else None
+                ),
                 work_event_breakdown=_coverage_work_event_breakdown(
                     self._conn,
                     str(row["bucket"]),
@@ -8323,18 +8328,18 @@ def _provider_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsi
         user_message_count=user_message_count,
         authored_user_message_count=authored_user_message_count,
         assistant_message_count=assistant_message_count,
-        avg_messages_per_session=(message_count / session_count if session_count else 0.0),
-        avg_user_words=(user_word_sum / user_message_count if user_message_count else 0.0),
+        avg_messages_per_session=(message_count / session_count if session_count else None),
+        avg_user_words=(user_word_sum / user_message_count if user_message_count else None),
         avg_authored_user_words=(
-            authored_user_word_sum / authored_user_message_count if authored_user_message_count else 0.0
+            authored_user_word_sum / authored_user_message_count if authored_user_message_count else None
         ),
-        avg_assistant_words=(assistant_word_sum / assistant_message_count if assistant_message_count else 0.0),
+        avg_assistant_words=(assistant_word_sum / assistant_message_count if assistant_message_count else None),
         tool_use_count=int(row["tool_use_count"] or 0),
         thinking_count=int(row["thinking_count"] or 0),
         total_sessions_with_tools=sessions_with_tools,
         total_sessions_with_thinking=sessions_with_thinking,
-        tool_use_percentage=(sessions_with_tools / session_count) * 100 if session_count else 0.0,
-        thinking_percentage=((sessions_with_thinking / session_count) * 100 if session_count else 0.0),
+        tool_use_percentage=((sessions_with_tools / session_count) * 100 if session_count else None),
+        thinking_percentage=((sessions_with_thinking / session_count) * 100 if session_count else None),
     )
 
 

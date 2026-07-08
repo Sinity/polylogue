@@ -361,7 +361,7 @@ class TestListArchiveCoverageInsights:
 
     @pytest.mark.asyncio
     async def test_division_by_zero_protection(self: object, tmp_path: Path) -> None:
-        """Metrics handle zero counts gracefully."""
+        """Zero-denominator averages render None (not-applicable), never a crash or a lying 0.0 (9e5.29)."""
         archive = _archive(tmp_path)
         db_path = archive.archive_root / "index.db"
 
@@ -377,9 +377,12 @@ class TestListArchiveCoverageInsights:
         result = await _coverage(archive)
 
         assert len(result) == 1
-        # Should not raise division by zero
-        assert result[0].avg_user_words == 0.0
-        assert result[0].avg_assistant_words == 0.0
+        # Should not raise division by zero, and must not fabricate a 0.0
+        # over an empty (zero user/assistant message) denominator.
+        assert result[0].avg_user_words is None
+        assert result[0].avg_assistant_words is None
+        # session_count == 1 is a nonzero denominator here, so these are
+        # true measured zeros (no session used tools/thinking), not absent.
         assert result[0].tool_use_percentage == 0.0
         assert result[0].thinking_percentage == 0.0
 
