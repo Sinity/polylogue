@@ -27,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from polylogue.insights.archive_models import ArchiveInsightModel
+from polylogue.insights.tool_usage import TOOL_USAGE_INSIGHT_VERSION
 from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_VERSION,
@@ -210,7 +211,204 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
         ),
     ),
+    RigorContract(
+        insight_name="archive_coverage",
+        display_name="Archive Coverage",
+        evidence_payload=(),
+        inference_payload=("work_event_breakdown",),
+        fallback_markers=(),
+        confidence_field=(),
+        readiness_semantics=(
+            "Session/message/word/cost/duration counts and origin/repo breakdowns are "
+            "deterministic SQL aggregates over sessions, session_profiles, session_repos, "
+            "and session_work_events. ``work_event_breakdown`` is the one probabilistic "
+            "field: its keys are the heuristic ``work_event_type`` labels the session_work_events "
+            "materializer assigns (see that contract's fallback_inference marker), so it is an "
+            "aggregation over inferred labels, not raw evidence. ``provenance`` is only populated "
+            "for day/week grouping (never for the default provider grouping), so consumers must "
+            "not assume a materialization timestamp/version is always present."
+        ),
+        consumer_fields=(
+            "bucket",
+            "group_by",
+            "source_name",
+            "session_count",
+            "message_count",
+            "total_cost_usd",
+            "tool_use_percentage",
+            "thinking_percentage",
+            "work_event_breakdown",
+            "origin_breakdown",
+            "repos_active",
+        ),
+        version_fields=(),
+        notes=(
+            "provenance.materializer_version is a hardcoded literal 1 for day/week grouping "
+            "(archive.py) with no dedicated store_constants entry, and absent entirely for "
+            "provider grouping -- not declared as a version_field to avoid implying a real "
+            "materialized-artifact version exists."
+        ),
+    ),
+    RigorContract(
+        insight_name="tool_usage",
+        display_name="Tool Usage",
+        evidence_payload=(),
+        inference_payload=(),
+        fallback_markers=(("has_coverage_gaps",),),
+        confidence_field=(),
+        readiness_semantics=(
+            "Every field is a deterministic count, distinct-value count, or presence flag "
+            "read straight from the canonical actions view; there is no heuristic/estimate "
+            "layer. ``mcp_server`` is a deterministic string parse, not an inference. Consumers "
+            "should check ``has_coverage_gaps`` (or the per-entry "
+            "``provider_coverage[].data_available``) to distinguish a genuine zero tool-use "
+            "count from an origin with no ingested action data at all."
+        ),
+        consumer_fields=(
+            "entries",
+            "provider_coverage",
+            "total_call_count",
+            "total_distinct_tools",
+            "providers_with_data",
+            "providers_without_data",
+            "has_coverage_gaps",
+        ),
+        version_fields=(RigorVersionField(name="materializer_version", current_version=TOOL_USAGE_INSIGHT_VERSION),),
+    ),
+    RigorContract(
+        insight_name="session_costs",
+        display_name="Session Costs",
+        evidence_payload=(),
+        inference_payload=("estimate",),
+        fallback_markers=(
+            ("estimate", "missing_reasons"),
+            ("estimate", "unavailable_reason"),
+        ),
+        confidence_field=("estimate", "confidence"),
+        readiness_semantics=(
+            "session_id/source_name/title/timestamps are direct archive facts. The nested "
+            "``estimate`` payload carries the pricing outcome: ``estimate.status`` is one of "
+            "exact/priced/partial/unavailable, ``estimate.confidence`` quantifies trust in a "
+            "non-exact price (1.0 exact, 0.9 priced, 0.7 priced-and-flagged-estimated, 0.0 "
+            "unavailable), and a non-empty ``estimate.missing_reasons`` or a set "
+            "``estimate.unavailable_reason`` flags a fallback/unpriced row."
+        ),
+        consumer_fields=("session_id", "source_name", "title", "created_at", "updated_at", "estimate", "provenance"),
+        version_fields=(
+            RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
+        ),
+    ),
+    RigorContract(
+        insight_name="cost_rollups",
+        display_name="Cost Rollups",
+        evidence_payload=(),
+        inference_payload=(),
+        fallback_markers=(("unavailable_session_count",),),
+        confidence_field=("confidence",),
+        readiness_semantics=(
+            "session/priced/unavailable counts, status_counts, total_usd, basis, and usage are "
+            "grounded SQL sums/counts over stored per-session cost/usage rows. ``confidence`` is "
+            "the one probabilistic signal -- a session-count-weighted average of the same "
+            "per-row confidence heuristic session_costs uses -- and should be read alongside "
+            "``unavailable_session_count``/``status_counts`` to judge how much of the rollup "
+            "rests on exact vs. estimated pricing."
+        ),
+        consumer_fields=(
+            "source_name",
+            "model_name",
+            "normalized_model",
+            "session_count",
+            "priced_session_count",
+            "unavailable_session_count",
+            "status_counts",
+            "total_usd",
+            "basis",
+            "usage",
+            "confidence",
+            "per_model_breakdown",
+        ),
+        version_fields=(),
+        notes=(
+            "provenance.materializer_version is a hardcoded literal 0 (archive.py), a sentinel "
+            "for 'computed live at query time', not a stored materialized artifact -- not "
+            "declared as a version_field."
+        ),
+    ),
+    RigorContract(
+        insight_name="usage_timeline",
+        display_name="Usage Timeline",
+        evidence_payload=(),
+        inference_payload=(),
+        fallback_markers=(),
+        confidence_field=(),
+        readiness_semantics=(
+            "session/event counts, token usage, and stored_cost_usd are grounded SQL sums over "
+            "usage-event rows. ``subscription_credits`` is a catalog-rate estimate "
+            "(compute_credit_cost) whenever stored credits are absent, indistinguishable in the "
+            "payload from a genuinely stored credit figure -- inspect ``cost_provenance_counts`` "
+            "(a count-of-labels dict: exact/priced/estimated/unknown) to judge how much of the "
+            "bucket's cost basis is exact vs. estimated. Not declared as a fallback_markers entry "
+            "since it does not follow the empty-then-truthy-on-fallback convention other "
+            "contracts use."
+        ),
+        consumer_fields=(
+            "bucket",
+            "group_by",
+            "source_name",
+            "model_name",
+            "normalized_model",
+            "session_count",
+            "event_count",
+            "usage",
+            "reasoning_output_tokens",
+            "stored_cost_usd",
+            "subscription_credits",
+            "cost_provenance_counts",
+        ),
+        version_fields=(),
+        notes=(
+            "provenance.materializer_version is a hardcoded literal 0 (archive.py), the same "
+            "live-aggregation sentinel as cost_rollups -- not declared as a version_field."
+        ),
+    ),
+    RigorContract(
+        insight_name="archive_debt",
+        display_name="Archive Debt",
+        evidence_payload=(),
+        inference_payload=(),
+        fallback_markers=(),
+        confidence_field=(),
+        readiness_semantics=(
+            "Every row is a live, deterministic health-check result over current archive "
+            "tables (FTS sync, orphaned profile rows, materialization staleness, etc.) with no "
+            "inference or fallback layer. ``healthy`` is literally ``issue_count == 0``, not an "
+            "estimate, and can be trusted at face value with no confidence caveat."
+        ),
+        consumer_fields=(
+            "debt_name",
+            "category",
+            "maintenance_target",
+            "issue_count",
+            "healthy",
+            "destructive",
+            "detail",
+        ),
+        version_fields=(),
+        notes=(
+            "No materializer/inference/enrichment version field exists on this model at all -- "
+            "every row is computed live from current archive tables, not read from a "
+            "materialized artifact with a version to track."
+        ),
+    ),
 )
+
+#: Registered insight products deliberately excluded from the rigor matrix
+#: because they carry no number-bearing/quantitative fields at all (37t.15
+#: sibling, 9e5.28). Every entry needs an inline justification string; a
+#: number-bearing product belongs in ``_RIGOR_MATRIX`` above, not here --
+#: ``devtools lab policy insight-honesty`` fails on any registered insight
+#: that is in neither set.
+RIGOR_EXEMPT: dict[str, str] = {}
 
 
 def list_rigor_contracts() -> tuple[RigorContract, ...]:
@@ -234,6 +432,12 @@ def rigor_contract_names() -> tuple[str, ...]:
     return tuple(contract.insight_name for contract in _RIGOR_MATRIX)
 
 
+def rigor_exemption_reason(insight_name: str) -> str | None:
+    """Return the justification for exempting ``insight_name``, or ``None``."""
+
+    return RIGOR_EXEMPT.get(insight_name)
+
+
 def resolve_payload(obj: object, path: Sequence[str]) -> object | None:
     """Walk a dotted attribute/key path against an insight item.
 
@@ -253,10 +457,12 @@ def resolve_payload(obj: object, path: Sequence[str]) -> object | None:
 
 
 __all__ = [
+    "RIGOR_EXEMPT",
     "RigorContract",
     "RigorVersionField",
     "get_rigor_contract",
     "list_rigor_contracts",
     "resolve_payload",
     "rigor_contract_names",
+    "rigor_exemption_reason",
 ]

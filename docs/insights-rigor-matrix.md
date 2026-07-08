@@ -118,6 +118,127 @@ API.
   `explicit_count`, `auto_count`, `provider_breakdown`,
   `repo_breakdown`.
 
+### `archive_coverage` — Archive Coverage
+
+- Evidence payload: _(none — aggregate)_
+- Inference payload: `work_event_breakdown`
+- Fallback markers: _(none)_
+- Confidence field: _(none)_
+- Versions: _(none — see notes)_
+- Readiness: Session/message/word/cost/duration counts and origin/repo
+  breakdowns are deterministic SQL aggregates. `work_event_breakdown` is
+  the one probabilistic field: its keys are the heuristic
+  `work_event_type` labels the session_work_events materializer assigns,
+  so it is an aggregation over inferred labels, not raw evidence.
+  `provenance` is only populated for day/week grouping (never for the
+  default provider grouping).
+- Notes: `provenance.materializer_version` is a hardcoded literal `1` for
+  day/week grouping with no dedicated version constant, and absent
+  entirely for provider grouping — not declared as a version field.
+- Consumer-facing fields: `bucket`, `group_by`, `source_name`,
+  `session_count`, `message_count`, `total_cost_usd`,
+  `tool_use_percentage`, `thinking_percentage`, `work_event_breakdown`,
+  `origin_breakdown`, `repos_active`.
+
+### `tool_usage` — Tool Usage
+
+- Evidence payload: _(none — aggregate)_
+- Inference payload: _(none)_
+- Fallback markers: `has_coverage_gaps`
+- Confidence field: _(none)_
+- Versions: `materializer_version`
+- Readiness: Every field is a deterministic count, distinct-value count,
+  or presence flag read from the canonical actions view; there is no
+  heuristic/estimate layer. Check `has_coverage_gaps` (or the per-entry
+  `provider_coverage[].data_available`) to distinguish a genuine zero
+  tool-use count from an origin with no ingested action data at all.
+- Consumer-facing fields: `entries`, `provider_coverage`,
+  `total_call_count`, `total_distinct_tools`, `providers_with_data`,
+  `providers_without_data`, `has_coverage_gaps`.
+
+### `session_costs` — Session Costs
+
+- Evidence payload: _(none)_
+- Inference payload: `estimate`
+- Fallback markers: `estimate.missing_reasons`, `estimate.unavailable_reason`
+- Confidence field: `estimate.confidence`
+- Versions: `materializer_version`
+- Readiness: `session_id`/`source_name`/`title`/timestamps are direct
+  archive facts. The nested `estimate` payload carries the pricing
+  outcome: `estimate.status` is one of exact/priced/partial/unavailable,
+  `estimate.confidence` quantifies trust in a non-exact price, and a
+  non-empty `estimate.missing_reasons` or a set
+  `estimate.unavailable_reason` flags a fallback/unpriced row.
+- Consumer-facing fields: `session_id`, `source_name`, `title`,
+  `created_at`, `updated_at`, `estimate`, `provenance`.
+
+### `cost_rollups` — Cost Rollups
+
+- Evidence payload: _(none — aggregate)_
+- Inference payload: _(none)_
+- Fallback markers: `unavailable_session_count`
+- Confidence field: `confidence`
+- Versions: _(none — see notes)_
+- Readiness: session/priced/unavailable counts, `status_counts`,
+  `total_usd`, `basis`, and `usage` are grounded SQL sums/counts.
+  `confidence` is the one probabilistic signal — a session-count-weighted
+  average of the same per-row confidence heuristic `session_costs` uses.
+- Notes: `provenance.materializer_version` is a hardcoded literal `0`, a
+  sentinel for "computed live at query time", not a stored materialized
+  artifact — not declared as a version field.
+- Consumer-facing fields: `source_name`, `model_name`,
+  `normalized_model`, `session_count`, `priced_session_count`,
+  `unavailable_session_count`, `status_counts`, `total_usd`, `basis`,
+  `usage`, `confidence`, `per_model_breakdown`.
+
+### `usage_timeline` — Usage Timeline
+
+- Evidence payload: _(none — aggregate)_
+- Inference payload: _(none)_
+- Fallback markers: _(none)_
+- Confidence field: _(none)_
+- Versions: _(none — see notes)_
+- Readiness: session/event counts, token usage, and `stored_cost_usd` are
+  grounded SQL sums. `subscription_credits` is a catalog-rate estimate
+  whenever stored credits are absent, indistinguishable in the payload
+  from a genuinely stored credit figure — inspect `cost_provenance_counts`
+  (exact/priced/estimated/unknown label counts) to judge how much of the
+  bucket's cost basis is exact vs. estimated.
+- Notes: `provenance.materializer_version` is the same hardcoded literal
+  `0` live-aggregation sentinel as `cost_rollups` — not declared as a
+  version field.
+- Consumer-facing fields: `bucket`, `group_by`, `source_name`,
+  `model_name`, `normalized_model`, `session_count`, `event_count`,
+  `usage`, `reasoning_output_tokens`, `stored_cost_usd`,
+  `subscription_credits`, `cost_provenance_counts`.
+
+### `archive_debt` — Archive Debt
+
+- Evidence payload: _(none)_
+- Inference payload: _(none)_
+- Fallback markers: _(none)_
+- Confidence field: _(none)_
+- Versions: _(none — see notes)_
+- Readiness: Every row is a live, deterministic health-check result over
+  current archive tables (FTS sync, orphaned profile rows, materialization
+  staleness, etc.) with no inference or fallback layer. `healthy` is
+  literally `issue_count == 0`, not an estimate.
+- Notes: no materializer/inference/enrichment version field exists on
+  this model at all — every row is computed live, not read from a
+  materialized artifact with a version to track.
+- Consumer-facing fields: `debt_name`, `category`, `maintenance_target`,
+  `issue_count`, `healthy`, `destructive`, `detail`.
+
+## Coverage policy
+
+Every insight product registered in
+`polylogue/insights/registry.py:INSIGHT_REGISTRY` must appear above or in
+`polylogue/insights/rigor.py:RIGOR_EXEMPT` with an inline justification
+(genuinely non-number-bearing products only). `devtools lab policy
+insight-honesty` enforces this statically; the audit runner reports an
+uncovered product's `coverage_status` as `"uncovered"` rather than
+silently omitting it (9e5.28).
+
 ## Audit CLI
 
 ```bash
@@ -127,7 +248,8 @@ polylogue ops insights audit --insight session_work_events
 polylogue ops insights audit --sample-limit 2000
 ```
 
-For each contracted product, the audit reports:
+Every registered product appears in the report. A product with a contract
+reports:
 
 - `sample_size` — rows inspected (bounded by `--sample-limit`)
 - `evidence_count`, `inference_count`, `fallback_count` — number of

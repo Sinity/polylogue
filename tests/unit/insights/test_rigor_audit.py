@@ -141,6 +141,21 @@ def test_rigor_matrix_covers_all_session_products() -> None:
     assert required.issubset(actual), f"missing contracts: {required - actual}"
 
 
+def test_rigor_matrix_or_exemption_covers_every_registered_insight() -> None:
+    """No registered insight product may fall through both the matrix and the
+    exemption list (9e5.28) -- every product is either contracted or an
+    explicitly justified exemption."""
+
+    from polylogue.insights.rigor import RIGOR_EXEMPT
+
+    registry_names = set(INSIGHT_REGISTRY.keys())
+    contracted = set(rigor_contract_names())
+    exempt = set(RIGOR_EXEMPT.keys())
+    uncovered = registry_names - contracted - exempt
+    assert not uncovered, f"registered insights with neither a contract nor an exemption: {uncovered}"
+    assert contracted.isdisjoint(exempt), f"insights in both the matrix and the exemption list: {contracted & exempt}"
+
+
 def test_rigor_matrix_entries_reference_registry_names() -> None:
     """Every rigor contract name must map to a registered insight type."""
 
@@ -328,8 +343,18 @@ def test_audit_runner_respects_insight_filter() -> None:
     assert names == ["session_profiles"]
 
 
+#: Products whose backing rows genuinely carry no reliable materialization
+#: version (live query-time aggregates over a hardcoded/sentinel value, or no
+#: provenance field at all) -- see each contract's ``notes`` for why.
+_PRODUCTS_WITHOUT_VERSION_FIELDS = frozenset({"archive_coverage", "cost_rollups", "usage_timeline", "archive_debt"})
+
+
 @pytest.mark.parametrize("contract", list_rigor_contracts(), ids=lambda c: c.insight_name)
 def test_each_contract_declares_at_least_one_version_field(contract) -> None:  # type: ignore[no-untyped-def]
+    if contract.insight_name in _PRODUCTS_WITHOUT_VERSION_FIELDS:
+        assert contract.notes, f"{contract.insight_name} needs notes justifying the missing version field"
+        assert contract.version_fields == ()
+        return
     assert len(contract.version_fields) >= 1, contract.insight_name
 
 
@@ -341,6 +366,54 @@ class _BrokenOperations:
             raise RuntimeError(f"simulated failure in {name}")
 
         return _call
+
+
+def test_build_report_covers_every_registered_insight_not_just_contracted_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The audit iterates INSIGHT_REGISTRY, not list_rigor_contracts() (9e5.28):
+    a registered product with no contract must appear as coverage_status
+    "uncovered", never silently vanish from the report."""
+    import polylogue.insights.audit as audit_mod
+
+    operations = _FakeOperations(profiles=[_profile("c1")], work_events=[], phases=[], tags=[])
+    monkeypatch.setattr(audit_mod, "get_rigor_contract", lambda name: None)
+    report = asyncio.run(
+        build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(insights=("session_profiles",)))
+    )
+    [entry] = report.entries
+    assert entry.insight_name == "session_profiles"
+    assert entry.coverage_status == "uncovered"
+    assert entry.sample_size == 0
+    assert entry.error is None
+
+
+def test_build_report_marks_exempt_products_distinctly_from_uncovered(monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.insights.audit as audit_mod
+
+    operations = _FakeOperations(profiles=[], work_events=[], phases=[], tags=[])
+    monkeypatch.setattr(audit_mod, "get_rigor_contract", lambda name: None)
+    monkeypatch.setattr(audit_mod, "rigor_exemption_reason", lambda name: "test-only exemption justification")
+    report = asyncio.run(
+        build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(insights=("session_profiles",)))
+    )
+    [entry] = report.entries
+    assert entry.coverage_status == "exempt"
+    assert entry.notes == ("test-only exemption justification",)
+
+
+def test_build_report_covers_all_11_registered_insights_by_default() -> None:
+    """Every currently-registered insight shows up in an unfiltered report,
+    each either genuinely audited (covered, has a contract) or a stub
+    (uncovered/exempt) -- none are silently skipped."""
+    operations = _FakeOperations(profiles=[], work_events=[], phases=[], tags=[])
+    report = asyncio.run(build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(sample_limit=1)))
+    names = {entry.insight_name for entry in report.entries}
+    assert names == set(INSIGHT_REGISTRY.keys())
+    for entry in report.entries:
+        assert entry.coverage_status in ("covered", "uncovered", "exempt")
+        if entry.coverage_status != "covered":
+            assert entry.sample_size == 0
 
 
 def test_build_report_records_per_product_error_without_aborting() -> None:

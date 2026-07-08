@@ -12,6 +12,7 @@ CONTROL_PLANE = "devtools"
 VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab graph",
     "lab lanes",
+    "lab policy insight-honesty",
     "lab policy schema-versioning",
     "lab provider completeness",
     "lab probe capture-regression",
@@ -722,6 +723,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "blue-green replaced from source evidence."
         ),
         examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
+    ),
+    CommandSpec(
+        "lab policy insight-honesty",
+        "verification lab",
+        "Verify every registered insight product is rigor-contracted or exempt.",
+        "devtools.verify_insight_rigor_honesty",
+        use_when=(
+            "Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and "
+            "polylogue.insights.rigor's contract matrix/exemption list never drift apart "
+            "(9e5.28) -- a registered product with neither a RigorContract nor a "
+            "RIGOR_EXEMPT entry used to silently vanish from `polylogue insights audit` "
+            "instead of showing as uncovered."
+        ),
+        examples=("devtools lab policy insight-honesty", "devtools lab policy insight-honesty --json"),
     ),
     CommandSpec(
         "verify test-clock-hygiene",
