@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
+from polylogue.config import load_polylogue_config
+
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
     from polylogue.protocols import VectorProvider
@@ -992,6 +994,7 @@ def embed_archive_session_sync(
             session_id=session_id,
             origin=str(session["origin"]),
             message_count=len(embeddable),
+            model=text_provider.model,
         )
     except Exception as exc:
         try:
@@ -1033,22 +1036,50 @@ def _record_archive_embedding_success(
     session_id: str,
     origin: str,
     message_count: int,
+    model: str | None = None,
 ) -> None:
+    """Record the terminal write of one archive-session embed pass.
+
+    ``model`` is the model the embed pass actually used (``text_provider.model``
+    at the call site), when the pass computed any embeddings. It is compared
+    against the *currently* configured model to close a race with
+    ``_reconcile_embedding_config_change`` (``daemon/convergence_stages.py``):
+    that function can bulk-mark ``needs_reindex = 1`` on every session while
+    an embed pass for this session is already mid-flight under the
+    previously-configured model. If this terminal write blindly cleared
+    ``needs_reindex``, it would silently clobber that reindex request and
+    leave the session marked "fresh" while holding stale-model embeddings.
+
+    So: only clear ``needs_reindex`` when the model used for this pass still
+    matches what's configured *now*. A mismatch means the configuration
+    moved on since this pass started reading messages — its embeddings are
+    already superseded, so ``needs_reindex`` is left set (or forced back to 1)
+    so the session gets picked up again under the new model.
+
+    ``model=None`` covers the "nothing to embed" outcomes (no messages / no
+    embeddable messages): no embedding was computed, so there is nothing that
+    can be stale, and the clear is unconditionally safe.
+    """
     now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    if model is None:
+        needs_reindex = 0
+    else:
+        configured_model = load_polylogue_config().embedding_model
+        needs_reindex = 0 if model == configured_model else 1
     with conn:
         conn.execute(
             """
             INSERT INTO embedding_status (
                 session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
-            ) VALUES (?, ?, ?, ?, 0, NULL)
+            ) VALUES (?, ?, ?, ?, ?, NULL)
             ON CONFLICT(session_id) DO UPDATE SET
                 origin = excluded.origin,
                 message_count_embedded = excluded.message_count_embedded,
                 last_embedded_at_ms = excluded.last_embedded_at_ms,
-                needs_reindex = 0,
+                needs_reindex = excluded.needs_reindex,
                 error_message = NULL
             """,
-            (session_id, origin, message_count, now_ms),
+            (session_id, origin, message_count, now_ms, needs_reindex),
         )
 
 
