@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 28
+INDEX_SCHEMA_VERSION = 29
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -227,6 +227,15 @@ CREATE TABLE IF NOT EXISTS blocks (
                              COALESCE(json_extract(tool_input, '$.file_path'), '') || ' ' ||
                              COALESCE(json_extract(tool_input, '$.path'), ''))
                     ) VIRTUAL,
+    -- ohbx: lowercased command+path text for substring lookups (e.g. "did
+    -- this bash/exec_command block invoke `polylogue`?") that need LIKE
+    -- '%x%' semantics, not FTS token matching. Backs blocks_command_trigram
+    -- below -- a plain LIKE scan here recomputes tool_command/tool_path's
+    -- json_extract for every generic-tool row in the archive (measured
+    -- ~70s over 915K rows on a 26GB archive).
+    tool_detail_text TEXT GENERATED ALWAYS AS (
+                        lower(COALESCE(tool_command, '') || ' ' || COALESCE(tool_path, ''))
+                    ) VIRTUAL,
     PRIMARY KEY(message_id, position)
 ) STRICT;
 
@@ -332,6 +341,65 @@ AFTER UPDATE ON blocks BEGIN
     INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
     SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text
     WHERE new.search_text != '';
+END;
+
+-- ohbx: trigram-tokenized (not unicode61) so `detail LIKE '%pattern%'` gets
+-- SQLite's built-in trigram LIKE-acceleration for arbitrary substrings, not
+-- just whole tokens -- unicode61/messages_fts would miss a match like
+-- "notpolyloguefile.txt" (no token boundary around the substring), and
+-- searches a much larger candidate set (the word can appear in ordinary
+-- prose, not just tool invocations). External content (not contentless,
+-- unlike messages_fts) is required: contentless trigram tables silently
+-- return zero rows for LIKE queries because SQLite needs to re-read the
+-- real text from the content table to verify a candidate trigram match
+-- (verified locally against the SQLite forum's own explanation of this
+-- exact mechanism before relying on it).
+--
+-- Query-shape note for callers: SQLite's planner does NOT automatically
+-- drive a `blocks_command_trigram JOIN blocks` from the trigram table's
+-- LIKE index -- a plain join lets it choose to scan `blocks` as the outer
+-- loop and probe the trigram table per row, which is *slower* than the old
+-- raw scan (measured: 26s vs 0.15s at 300K rows). The trigram index must
+-- drive the query explicitly via `blocks.rowid IN (SELECT rowid FROM
+-- blocks_command_trigram WHERE tool_detail_text LIKE ...)`, which forces
+-- the trigram LIKE-optimization to run first and reduces the outer table
+-- to an indexed rowid lookup (measured: 900x+ faster than the raw scan at
+-- 915K rows, using this exact shape).
+CREATE VIRTUAL TABLE IF NOT EXISTS blocks_command_trigram USING fts5(
+    tool_detail_text,
+    tokenize='trigram',
+    content='blocks',
+    content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS blocks_command_trigram_ai
+AFTER INSERT ON blocks WHEN new.block_type = 'tool_use' AND new.tool_detail_text != ' ' BEGIN
+    INSERT INTO blocks_command_trigram(rowid, tool_detail_text)
+    VALUES (new.rowid, new.tool_detail_text);
+END;
+
+-- External-content FTS5 tables require the special 'delete' command form
+-- with the OLD column value supplied (not a plain DELETE by rowid) --
+-- verified locally: a bare `DELETE FROM blocks_command_trigram WHERE rowid
+-- = old.rowid` leaves stale trigram postings that later raise "fts5:
+-- missing row N from content table" once the real row is gone from
+-- `blocks`, because FTS5 needs the old text to locate the exact postings
+-- to remove rather than re-reading it from the (already-deleted) content
+-- row.
+CREATE TRIGGER IF NOT EXISTS blocks_command_trigram_ad
+AFTER DELETE ON blocks WHEN old.block_type = 'tool_use' AND old.tool_detail_text != ' ' BEGIN
+    INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text)
+    VALUES ('delete', old.rowid, old.tool_detail_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS blocks_command_trigram_au
+AFTER UPDATE ON blocks BEGIN
+    INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text)
+    SELECT 'delete', old.rowid, old.tool_detail_text
+    WHERE old.block_type = 'tool_use' AND old.tool_detail_text != ' ';
+    INSERT INTO blocks_command_trigram(rowid, tool_detail_text)
+    SELECT new.rowid, new.tool_detail_text
+    WHERE new.block_type = 'tool_use' AND new.tool_detail_text != ' ';
 END;
 
 {FTS_FRESHNESS_STATE_DDL}

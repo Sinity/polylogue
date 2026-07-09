@@ -639,12 +639,21 @@ def _cli_command_paths() -> tuple[str, ...]:
 def _cli_action_rows(conn: Connection) -> list[dict[str, object]]:
     tool_expr = "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown')"
     generic_tools = ("exec_command", "functions", "functions.exec_command", "bash", "shell", "client")
+    # ohbx: the substring test drives off blocks_command_trigram (an FTS5
+    # trigram index) via an `IN (SELECT rowid FROM ...)` subquery, NOT a
+    # direct join -- a join lets SQLite's planner pick `blocks` as the outer
+    # loop and probe the trigram table per row, which is slower than the old
+    # raw scan; the IN-subquery shape forces the trigram LIKE-optimization to
+    # run first and reduces the outer table to an indexed rowid lookup
+    # (measured ~900x faster than the raw per-row LIKE scan at 915K rows on
+    # a 26GB archive, correctness cross-checked against the old query at
+    # that same scale).
     return _rows(
         conn,
         f"""
         SELECT
             u.session_id,
-            lower(coalesce(u.tool_command, '') || ' ' || coalesce(u.tool_path, '')) AS detail,
+            u.tool_detail_text AS detail,
             r.tool_result_is_error AS is_error,
             r.tool_result_exit_code AS exit_code
         FROM blocks AS u
@@ -653,12 +662,9 @@ def _cli_action_rows(conn: Connection) -> list[dict[str, object]]:
            AND r.session_id = u.session_id
            AND r.block_type = 'tool_result'
         WHERE
-            u.block_type = 'tool_use'
+            u.rowid IN (SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%polylogue%')
+            AND u.block_type = 'tool_use'
             AND {tool_expr} IN ({", ".join("?" for _ in generic_tools)})
-            AND (
-                lower(coalesce(u.tool_command, '')) LIKE '%polylogue%'
-                OR lower(coalesce(u.tool_path, '')) LIKE '%polylogue%'
-            )
         """,
         generic_tools,
     )

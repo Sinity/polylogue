@@ -45,9 +45,20 @@ def _make_index_db(root: Path) -> Path:
                 tool_path TEXT,
                 tool_input TEXT,
                 tool_result_is_error INTEGER,
-                tool_result_exit_code INTEGER
+                tool_result_exit_code INTEGER,
+                tool_detail_text TEXT GENERATED ALWAYS AS (
+                    lower(coalesce(tool_command, '') || ' ' || coalesce(tool_path, ''))
+                ) VIRTUAL
             );
             CREATE INDEX idx_blocks_session_position ON blocks(session_id, message_id);
+            CREATE VIRTUAL TABLE blocks_command_trigram USING fts5(
+                tool_detail_text, tokenize='trigram', content='blocks', content_rowid='rowid'
+            );
+            CREATE TRIGGER blocks_command_trigram_ai
+            AFTER INSERT ON blocks WHEN new.block_type = 'tool_use' AND new.tool_detail_text != ' ' BEGIN
+                INSERT INTO blocks_command_trigram(rowid, tool_detail_text)
+                VALUES (new.rowid, new.tool_detail_text);
+            END;
             CREATE VIEW actions AS
             SELECT
                 u.session_id,
