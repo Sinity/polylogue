@@ -584,6 +584,17 @@ user tiers migrate additively after a verified backup manifest; fresh user
 tiers create the table directly.</p>
 </li>
 <li>
+<p>Source schema version 3 drops <code>pending_blob_refs</code> (polylogue-v7e0). The
+table backed a blob-GC lease mechanism (<code>acquire_blob_leases</code>/
+<code>release_operation_leases</code>) that a race-window audit found no production
+ingest caller ever populated — the table was provably empty in every real
+deployment (zero writers anywhere in the write path) — see &quot;GC concurrency
+model&quot; below for the current, lease-free contract. Existing v2 source
+tiers migrate via
+<code>storage/sqlite/migrations/source/003_drop_pending_blob_refs.sql</code> after a
+verified backup manifest; fresh source tiers never create the table.</p>
+</li>
+<li>
 <p>Index schema version 28 adds the <code>delegations</code> VIEW, derived from
 <code>session_links</code> (<code>link_type='subagent'</code>) LEFT JOIN'd to the parent's Task
 dispatch <code>actions</code> row and both sessions' <code>session_profiles</code> — no
@@ -869,7 +880,7 @@ child's edge flips to <code>resolved</code> the moment its parent's native id ap
 <code>sessions</code>.</li>
 <li><strong>Hash boundary:</strong> these links are derived per ingest and are NOT part
 of <code>sessions.content_hash</code> — mirrors the same boundary as user correction
-assertions (#1131) and the blob lease tables.</li>
+assertions (#1131).</li>
 </ul>
 <h2>Logical Session Identity (#866)</h2>
 <p><code>session_profiles.logical_session_id</code> materializes the resolved root of a
@@ -1054,60 +1065,66 @@ rows in <code>raw_artifacts</code> keyed by <code>raw_id</code> with a shared
 <code>link_group_key</code>. (There is no separate <code>blob_links</code> table; the name is a
 historical alias for this row-group view of <code>raw_artifacts</code>.)</li>
 <li><strong>Operations</strong>: Blobs are write-once, read-many. No in-place modification.
-GC identifies unreferenced blobs via a snapshot reference check plus a
-pending-lease check (see GC concurrency model below), not simple link
-counting.</li>
+GC identifies unreferenced blobs via a snapshot reference check plus an
+age floor (see GC concurrency model below), not simple link counting.</li>
 </ul>
-<h3>GC concurrency model — leases plus snapshot reference check</h3>
+<h3>GC concurrency model — snapshot reference check plus age floor</h3>
 <p><code>run_blob_gc</code> deletes orphan blob files using two independent safety
 invariants combined:</p>
 <ol>
-<li><strong>DB reference check</strong> — <code>_still_referenced</code> queries
-<code>raw_sessions</code> for the blob's <code>raw_id</code>. If a raw record points at
-the blob, GC skips it. This is the snapshot/mark-and-sweep view of
-&quot;this blob is in active use right now.&quot;</li>
-<li><strong>Pending lease check</strong> — <code>_has_active_lease</code> queries
-<code>pending_blob_refs</code> for an in-flight operation that has <em>announced</em>
-it intends to reference the blob but hasn't committed yet. If a write
-path acquired a lease but its transaction hasn't yet inserted the
-<code>raw_sessions</code> row, the snapshot check alone would
-misclassify the blob as orphan and delete it.</li>
+<li><strong>DB reference check</strong> — <code>_still_referenced</code> queries <code>raw_sessions</code> for
+the blob's <code>raw_id</code>. If a raw record points at the blob, GC skips it.
+This is the snapshot/mark-and-sweep view of &quot;this blob is in active use
+right now.&quot; It only sees <em>committed</em> rows: a blob whose referencing
+ingest has written the bytes to disk but not yet committed the row is,
+by SQLite's isolation, indistinguishable from a true orphan to this
+check alone.</li>
+<li><strong>Age floor</strong> — a candidate must be older than
+<code>max(MIN_AGE_S, now - prev_generation.completed_at)</code>
+(<code>polylogue/storage/blob_gc.py:run_blob_gc_report</code>). <code>MIN_AGE_S</code> is 60
+seconds; <code>gc_generations</code> tracks the high-water mark of completed GC
+runs so a blob created during the same window as the previous pass is
+never reclaimed before its eventual reference can land. With no prior
+generation recorded, the static <code>MIN_AGE_S</code> floor applies on its own.</li>
 </ol>
-<p>The lease tables (<code>pending_blob_refs</code>, <code>gc_generations</code>) are therefore
-load-bearing — they exist specifically to bridge the
-acquire-blob → write-DB-row commit window. Removing them would
-re-open the exact race the lease design was added to close: a GC pass
-running between blob materialization and the corresponding archive
-write would delete blobs the write was about to reference.</p>
-<p>The write path that exercises the leases is
-<code>polylogue/archive/write_effects.py:commit_archive_write_effects</code> —
-calls <code>acquire_blob_leases(db_path, blob_hashes, operation_id)</code> on a
-separate immediate-commit connection so the lease is visible to a
-concurrent GC before the main transaction commits, then calls
-<code>release_operation_leases(conn, operation_id)</code> after the commit so
-the blob is now durably referenced by <code>raw_sessions</code> and the
-lease can drop.</p>
-<p>The acquire/release pair is wrapped in <code>try/finally</code> keyed by
-<code>operation_id</code> (#1746). The lease is committed on its own connection,
-so rolling back the main transaction on failure does NOT undo it — if
-FTS repair or the commit raises, the <code>finally</code> opens a fresh
-immediate-commit connection and releases the lease anyway. Without this
-the lease row would leak into <code>pending_blob_refs</code> permanently and the
-blob it named could never be GC'd.</p>
-<p>The durable backstop is <code>sweep_orphaned_blob_leases</code>, run at daemon
-startup (<code>polylogue/daemon/cli.py:_sweep_orphaned_blob_leases</code>,
-mirroring <code>CursorStore._mark_interrupted_attempts</code> for
-<code>live_ingest_attempt</code>). A writer SIGKILLed between acquire and release
-cannot run its <code>finally</code>; the sweep deletes any <code>pending_blob_refs</code>
-row older than <code>ORPHAN_LEASE_MAX_AGE_S</code> (3600 s), a bound generous
-enough that a slow-but-live ingest is never swept out from under
-itself.</p>
-<p><code>gc_generations</code> tracks the high-water mark of completed GC runs. The
-&quot;defense-in-depth&quot; age gate is enforced in <code>run_blob_gc</code> (#1746): a
-candidate blob must be older than <code>max(MIN_AGE_S, now - prev_generation.completed_at)</code>. The generation term means a blob
-created during the same window as the previous GC pass is never
-reclaimed before its eventual reference can land. With no prior
-generation recorded, the static <code>MIN_AGE_S</code> floor applies on its own.</p>
+<p><strong>This age floor is the SOLE defense</strong> against the race the reference check
+cannot see: blob written to disk at T0, referencing row commits at T1, GC
+runs somewhere in <code>(T0, T1)</code>. A prior revision of this module carried a
+second invariant — a lease mechanism (<code>pending_blob_refs</code>,
+<code>acquire_blob_leases</code>/<code>release_operation_leases</code>) meant to make that window
+explicit rather than relying on a timing heuristic. It was fully
+implemented and unit-tested but <strong>never reachable in production</strong>: the only
+call site that could have populated the lease payload keys
+(<code>commit_archive_write_effects</code>'s <code>_blob_hashes</code>/<code>_operation_id</code>) was never
+given them by any real ingest caller (<code>_commit_sync_ingest_side_effects</code>
+built its payload without them). A race-window audit
+(<code>docs/audits/2026-07-09-race-window-audit.md</code>, rows 1a/1b) confirmed zero
+production callers across the whole write path, so <code>has_lease</code> was always
+<code>False</code> and the acquire/release calls never ran. The mechanism was removed
+rather than left as dead code implying a protection that did not exist
+(polylogue-v7e0).</p>
+<p><strong>Why <code>MIN_AGE_S = 60</code> is judged sufficient today</strong>: it must outlast the
+span from blob-write-to-disk to referencing-row-commit for one ingest
+operation. Ordinary ingest batches clear this comfortably — parse,
+materialize, and FTS repair for a normal session count run in low hundreds
+of milliseconds to a few seconds (<code>commit_archive_write_effects</code> only logs
+<code>slow_archive_write_effects</code> above 1.0s total). The known risk class is the
+memory-bounded streaming path for multi-GiB Claude Code JSONL
+(<code>sources/dispatch.py</code>), where a single session's parse+materialize could
+plausibly exceed 60s. <strong>The residual exposure</strong>: an operator who runs
+<code>polylogue maintenance blob-gc --yes</code> manually, concurrently with such a
+long-running ingest, inside that window, could still race a genuinely
+in-flight write. There is currently no lease-based (or other exact) closure
+of that window — the mitigation is operational (avoid running blob-gc
+manually during a large corpus import) rather than mechanical. Re-closing
+this precisely would require acquiring a lease at blob-write time (inside
+<code>acquisition_records.py</code>/<code>source_acquisition_components.py</code>/attachment
+writes), not merely at the end of an ingest batch just before commit — a
+lease acquired that late provides no additional coverage over what the age
+floor already gives, since the row is about to become visible anyway.
+Any future attempt at a real per-write lease should account for this,
+and for the fact that acquire and materialize can be separated across
+daemon batching/quiet-window deferral, not just within one call stack.</p>
 <ul>
 <li><strong>Known issues</strong>: GC has bugs with orphan detection and integrity
 verification (<a href="https://github.com/Sinity/polylogue/issues/818">#818</a>)
@@ -1166,8 +1183,7 @@ small/core archive cardinality tables and maintained rollups such as
 planner-estimated counts only where exact counting would scan large derived
 tables (<code>blocks</code>, <code>messages_fts_docsize</code>, <code>message_embeddings</code>,
 <code>session_events</code>, <code>session_links</code>, <code>repos</code>, <code>session_repos</code>,
-<code>session_commits</code>, <code>live_ingest_attempt</code>, <code>convergence_debt</code>,
-<code>pending_blob_refs</code>).
+<code>session_commits</code>, <code>live_ingest_attempt</code>, <code>convergence_debt</code>).
 Missing tables surface as <code>-1</code> and expensive tables without SQLite planner
 statistics surface as <code>-2</code> rather than crashing the probe. Pass
 <code>--exact-derived-counts</code> when a before/after evidence run needs exact
@@ -1184,8 +1200,6 @@ on large archives; pass <code>--integrity-check</code> when the workload snapsho
 include that expensive evidence. It also avoids exact generated-text
 reconciliation by default; pass <code>--exact-derived-counts</code> when diagnosing
 FTS/source-row drift and the archive can afford the scan.</li>
-<li><code>blob_lease_state</code> — pending lease count, distinct lease operations,
-oldest <code>acquired_at</code>. See the lease/GC concurrency model above.</li>
 <li><code>blob_reference_debt</code> — skipped by default so routine workload snapshots do
 not stat every referenced blob path on large archives. Pass
 <code>--blob-reference-debt</code> when diagnosing backup/integrity incidents; the
@@ -1233,8 +1247,7 @@ daemon binds to loopback by default).</p>
 <p>Series are derived from existing daemon state tables via
 <code>open_readonly_connection</code> — <code>live_ingest_attempt</code> (totals by status,
 in-flight gauge, recent-attempt duration min/mean/max), unresolved
-<code>live_convergence_debt</code> grouped by stage, <code>pending_blob_refs</code> (pending
-count, distinct operations), and the expected FTS sync triggers
+<code>live_convergence_debt</code> grouped by stage, and the expected FTS sync triggers
 from <code>active_fts_triggers_sync</code>. The same scrape also exposes embedding
 backlog counts and the latest <code>embedding_catchup_runs</code> progress row so
 semantic-search catch-up is visible in normal daemon dashboards without

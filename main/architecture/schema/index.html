@@ -419,8 +419,8 @@ from this tier, so it is the durable record of <em>what was ingested</em>.</p>
 <p>Core tables: <code>raw_sessions</code> (one row per acquired payload, keyed by <code>raw_id</code>,
 carrying <code>origin</code>, <code>native_id</code>, <code>blob_hash</code>, and parse/validation state),
 <code>raw_artifacts</code> (artifact-taxonomy classification per acquired file),
-<code>blob_refs</code> / <code>pending_blob_refs</code> / <code>gc_generations</code> (content-addressed blob
-references and the lease/GC bookkeeping described in
+<code>blob_refs</code> / <code>gc_generations</code> (content-addressed blob references and the
+GC bookkeeping described in
 <a href="../internals/#blob-store-model">Internals § Blob Store Model</a>),
 <code>raw_hook_events</code>, and <code>history_sidecars</code>.</p>
 <h3><code>index.db</code> — parsed tree, search, and insights (rebuildable)</h3>
