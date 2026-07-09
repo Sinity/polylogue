@@ -1,0 +1,11 @@
+{
+  "written_before_arms_ran": true,
+  "checkpoint": "immediately after PR #2592 (212.8 honesty anti-demo bead close) merged, before 1vpm.1/4ts.4 work began",
+  "checkpoint_commit": "64c079d6e",
+  "ground_truth_next_action": "Investigate polylogue-1vpm.1 (delegation derived unit) -- claimed, investigated, found existing session_runs/build_run_projection infrastructure covers most of the hard part, left unclaimed pending a fresh session's fuller implementation.",
+  "ground_truth_open_threads": [
+    "polylogue-4ts.4 (torn-transcript transaction race) -- not yet started at this checkpoint, becomes the very next shipped item",
+    "polylogue-xnkf (actions view duplicate-tool_id fan-out) -- not yet started, ships several items later",
+    "the standing /bead-loop goal's demo-unlock chain: 212.1-212.6 parallel set still has 4 unclaimed items after 212.4/212.8"
+  ]
+}

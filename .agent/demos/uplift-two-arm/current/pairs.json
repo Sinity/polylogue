@@ -1,0 +1,18 @@
+{
+  "n": 5,
+  "protocol": "identical paired two-arm design per pair: raw-ref arm (session ref + live query access only, forbidden from any pre-built summary) vs handoff-pack arm (a bounded pre-built context summary + live query access), same task, same checkpoint commit, isolated worktree subagents. Ground truth for each pair written before either arm ran.",
+  "pairs": [
+    {"pair": 1, "checkpoint_commit": "6c12e9234", "raw_ref_score": 29, "handoff_pack_score": 33, "winner": "handoff_pack", "note": "blinding compromised (pack arm self-referenced 'the pack'); scored by 2 independent judges, both favored pack (33/29 and 35/22)"},
+    {"pair": 2, "checkpoint_commit": "64c079d6e", "raw_ref_score": 25, "handoff_pack_score": 31, "winner": "handoff_pack", "note": "both arms converged on the same real next action under different bead-id labels"},
+    {"pair": 3, "checkpoint_commit": "01592e5e9", "raw_ref_score": 31, "handoff_pack_score": 19, "winner": "raw_ref", "note": "pack arm confidently misstated two beads as already-closed when they were not yet at this checkpoint"},
+    {"pair": 4, "checkpoint_commit": "a2ee55ec4", "raw_ref_score": 17, "handoff_pack_score": 32, "winner": "handoff_pack", "note": "ground truth verified via git log; pack arm correctly identified the literal in-progress bead, raw-ref missed it"},
+    {"pair": 5, "checkpoint_commit": "697470661", "raw_ref_score": 12, "handoff_pack_score": 36, "winner": "handoff_pack", "note": "raw-ref arm mischaracterized the checkpoint commit itself as unrelated"}
+  ],
+  "aggregate": {
+    "pairs_won_by_handoff_pack": 4,
+    "pairs_won_by_raw_ref": 1,
+    "sign_test": "4/5 -- directionally favors handoff_pack but NOT statistically significant at n=5 (binomial p~0.375 two-tailed under a null of no difference)",
+    "mean_raw_ref": 22.8,
+    "mean_handoff_pack": 30.2
+  }
+}

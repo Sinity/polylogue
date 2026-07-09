@@ -1,0 +1,10 @@
+{
+  "checkpoint": "immediately after PR #2584 (bead priority/gate-order reconciliation) merged, before 9e5.29 work began",
+  "checkpoint_commit": "a2ee55ec4",
+  "ground_truth_next_action": "Claim and implement polylogue-9e5.29 (number-over-empty gates / RigorFieldContract mechanism).",
+  "ground_truth_open_threads": [
+    "the just-merged priority reconciliation repriced 288 beads to track the delivery-gate order",
+    "83u.4/83u.6 attachment acquisition work not yet started at this checkpoint",
+    "svfj/212.7/212.4/212.8/4ts.4/xnkf/jsy/cpf.1/4ts.6 all still fully in the future from this checkpoint"
+  ]
+}

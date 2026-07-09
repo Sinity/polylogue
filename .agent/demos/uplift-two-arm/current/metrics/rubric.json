@@ -1,0 +1,10 @@
+{
+  "scoring": "0-10 per arm, integer",
+  "criteria": [
+    "answer_correctness_against_ground_truth: does the reconstructed state summary match what actually happened?",
+    "open_thread_coverage: how many of the real open threads did it find?",
+    "next_action_specificity: did it name a specific, defensible next bead, not a vague direction?",
+    "caveat_honesty: did it flag its own confidence limits and evidence basis rather than overclaiming?"
+  ],
+  "note_to_judge": "Score each arm independently against the ground truth file. Do not assume either arm is the 'better' one by construction -- judge only on the merits of what's written. If both arms recommend a different but individually well-justified next action, note that explicitly rather than penalizing divergence from the ground truth's own next_action pick, since the ground truth's pick is one reasonable answer, not the only correct one."
+}
