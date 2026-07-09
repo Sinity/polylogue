@@ -906,6 +906,41 @@ def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch
     assert sessions[0].messages == sentinel_messages
 
 
+@pytest.mark.parametrize(
+    ("created_key", "updated_key"),
+    [
+        ("created_at", "updated_at"),
+        ("create_time", "update_time"),
+        ("created", "updated"),
+        ("createdAt", "updatedAt"),
+        ("createdAt", "modified"),
+    ],
+)
+def test_parse_payload_generic_messages_keeps_timestamps(
+    monkeypatch: pytest.MonkeyPatch, created_key: str, updated_key: str
+) -> None:
+    """tf0e: the generic-messages fallback must not silently drop available
+    created_at/updated_at -- it should extract them from whichever key name
+    variant the source payload actually uses."""
+    monkeypatch.setattr(dispatch_module, "extract_messages_from_list", lambda messages: [])
+
+    sessions = parse_payload(
+        Provider.DRIVE.value,
+        {
+            "id": "conv-1",
+            "name": "Named",
+            "messages": [{"ignored": True}],
+            created_key: "2026-07-01T00:00:00Z",
+            updated_key: "2026-07-02T00:00:00Z",
+        },
+        "fallback",
+    )
+
+    assert len(sessions) == 1
+    assert sessions[0].created_at == "2026-07-01T00:00:00Z"
+    assert sessions[0].updated_at == "2026-07-02T00:00:00Z"
+
+
 def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[object, str]] = []
 
