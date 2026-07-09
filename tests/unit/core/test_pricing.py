@@ -7,6 +7,7 @@ import pytest
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.semantic.pricing import (
     _normalize_model,
+    canonical_model_family,
     estimate_cost,
     estimate_message_cost,
     estimate_session_cost,
@@ -246,3 +247,20 @@ def test_paid_model_with_cache_rate_is_not_flagged(monkeypatch: pytest.MonkeyPat
     )
     assert estimate.status == "priced"
     assert estimate.missing_reasons == ()
+
+
+def test_canonical_model_family_maps_known_models() -> None:
+    """1vpm.1: the enabling primitive for the delegations view's model
+    identity -- reuses the catalog's own source_name, so it never drifts
+    from the catalog's actual model coverage."""
+    assert canonical_model_family("claude-opus-4-8") == "anthropic"
+    assert canonical_model_family("gpt-4o") == "openai"
+
+
+def test_canonical_model_family_returns_none_for_unknown_model() -> None:
+    assert canonical_model_family("some-totally-unknown-model-xyz") is None
+
+
+def test_canonical_model_family_returns_none_for_empty_or_none() -> None:
+    assert canonical_model_family(None) is None
+    assert canonical_model_family("") is None

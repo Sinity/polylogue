@@ -73,6 +73,8 @@ class SessionProfileRecord(BaseModel):
     total_credit_cost: float = 0.0
     cost_provenance: str = "unknown"
     per_model_cost_json: str = "{}"
+    primary_model_name: str | None = None
+    primary_model_family: str | None = None
     evidence_payload: SessionEvidencePayload
     inference_payload: SessionInferencePayload
     search_text: str

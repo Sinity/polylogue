@@ -347,6 +347,19 @@ def _normalize_model(model: str) -> str:
     return lowered
 
 
+def canonical_model_family(model_name: str | None) -> str | None:
+    """Map a raw provider model name to its canonical family (anthropic,
+    openai, deepseek, ...) via the same normalized-lookup path the pricing
+    catalog uses, so the mapping never drifts from the catalog's own model
+    coverage (1vpm.1: the enabling primitive for the `delegations` view's
+    orchestrator/subagent model identity)."""
+    if not model_name:
+        return None
+    normalized = _normalize_model(model_name)
+    pricing = PRICING.get(normalized)
+    return pricing.source_name if pricing is not None else None
+
+
 def _usage_payload(value: object) -> CostUsagePayload:
     usage = _record(value)
     input_tokens = _coerce_int(
