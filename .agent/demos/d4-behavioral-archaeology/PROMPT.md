@@ -27,7 +27,7 @@ While authoring query 1 for this specific seeded fixture, running the exact
 same predicate as a bare `find` (no `then` verb) vs `find ... then select`
 produced DIFFERENT results — the bare form silently ignored the filter. This
 is documented as a real finding in `report.md` (counterexamples) and filed
-as its own bug (polylogue-<see finding for the exact id>), not hidden. This
+as its own bug (polylogue-70qb), not hidden. This
 IS the point of the demo: a DSL query surfaces things a chat transcript
 never could — including, in this case, a defect in the query surface
 itself.
