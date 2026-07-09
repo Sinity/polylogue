@@ -37,6 +37,11 @@ from polylogue.storage.fts.fts_lifecycle import (
     suspend_message_fts_triggers_sync,
 )
 from polylogue.storage.fts.sql import delete_session_rows_sql, insert_session_rows_sql
+from polylogue.storage.runtime import (
+    LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
+    LINEAGE_TRUNCATION_DEPTH_LIMIT,
+    LineageTruncationReason,
+)
 from polylogue.storage.search.query_support import normalize_fts5_query
 
 logger = get_logger(__name__)
@@ -161,7 +166,7 @@ class ArchiveSessionEnvelope:
     # ancestors past a recursion depth limit, or return only its own
     # divergent tail when the parent's branch point was hard-deleted.
     lineage_complete: bool = True
-    lineage_truncation_reason: str | None = None
+    lineage_truncation_reason: LineageTruncationReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1304,12 +1309,12 @@ def read_archive_session_envelope(
     # DEEPER recursion level) also propagates up, since this session's
     # composed view includes that parent's transcript.
     lineage_complete = True
-    lineage_truncation_reason: str | None = None
+    lineage_truncation_reason: LineageTruncationReason | None = None
     edge = _prefix_sharing_edge_sync(conn, str(session["session_id"]))
     if edge is not None:
         if _depth >= _MAX_LINEAGE_DEPTH:
             lineage_complete = False
-            lineage_truncation_reason = "depth_limit"
+            lineage_truncation_reason = LINEAGE_TRUNCATION_DEPTH_LIMIT
             logger.warning(
                 "lineage composition hit depth limit (%d) for session %s; ancestors beyond this depth are dropped",
                 _MAX_LINEAGE_DEPTH,
@@ -1342,7 +1347,7 @@ def read_archive_session_envelope(
                 lineage_truncation_reason = parent_envelope.lineage_truncation_reason
             elif not found:
                 lineage_complete = False
-                lineage_truncation_reason = "dangling_branch_point"
+                lineage_truncation_reason = LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
 
     return ArchiveSessionEnvelope(
         session_id=session["session_id"],

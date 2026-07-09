@@ -11,7 +11,12 @@ from polylogue.archive.message.roles import MessageRoleFilter, message_role_sql_
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.core.enums import MaterialOrigin
 from polylogue.logging import get_logger
-from polylogue.storage.runtime import LineageCompleteness, MessageRecord
+from polylogue.storage.runtime import (
+    LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
+    LINEAGE_TRUNCATION_DEPTH_LIMIT,
+    LineageCompleteness,
+    MessageRecord,
+)
 from polylogue.storage.sqlite.queries.mappers import _row_to_message
 
 logger = get_logger(__name__)
@@ -222,7 +227,11 @@ async def get_messages_with_lineage_completeness(
         else:
             composed = own
             dangling = True
-    reason = "depth_limit" if depth_limited else ("dangling_branch_point" if dangling else None)
+    reason = (
+        LINEAGE_TRUNCATION_DEPTH_LIMIT
+        if depth_limited
+        else (LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT if dangling else None)
+    )
     return composed, LineageCompleteness(complete=not (depth_limited or dangling), truncation_reason=reason)
 
 

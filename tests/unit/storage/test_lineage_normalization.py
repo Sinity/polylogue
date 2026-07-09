@@ -1160,7 +1160,7 @@ def test_async_composition_holds_one_snapshot_across_concurrent_parent_write(
     assert texts == ["hello", "hi there", "child diverges"]
 
 
-def test_sync_envelope_reports_incomplete_on_dangling_branch_point(tmp_path: Path) -> None:
+def test_sync_and_async_report_incomplete_on_dangling_branch_point(tmp_path: Path) -> None:
     """4ts.6: a dangling branch point (parent message hard-deleted) must
     report lineage_complete=False, not silently serve the child's own tail
     as if it were the whole transcript."""
@@ -1221,7 +1221,7 @@ def test_sync_envelope_reports_incomplete_on_dangling_branch_point(tmp_path: Pat
     assert completeness.truncation_reason == "dangling_branch_point"
 
 
-def test_sync_and_async_report_incomplete_at_depth_limit(tmp_path: Path) -> None:
+def test_sync_report_incomplete_at_depth_limit(tmp_path: Path) -> None:
     """4ts.6: a lineage chain deeper than _MAX_LINEAGE_DEPTH must report
     lineage_complete=False with reason depth_limit -- ancestors beyond the
     cutoff are silently dropped otherwise."""

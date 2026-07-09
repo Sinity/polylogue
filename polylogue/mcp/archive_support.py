@@ -455,6 +455,8 @@ def archive_messages_payload(
         next_offset=next_offset,
         suggested_tail_offset=suggested_tail_offset,
         offset_note=offset_note,
+        lineage_complete=session.lineage_complete,
+        lineage_truncation_reason=session.lineage_truncation_reason,
     )
 
 
