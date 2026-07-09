@@ -3,9 +3,44 @@
   "root": "/realm/project/polylogue/.agent/demos",
   "packaging": "Use devtools workspace read-package for portable readable bundles; this helper only writes indexes.",
   "curation_policy": "This is not append-only. Keep the best current demos here; replace, consolidate, or move stale demos out.",
-  "file_count": 143,
-  "readable_count": 115,
+  "file_count": 158,
+  "readable_count": 124,
   "files": [
+    {
+      "path": "_packet-contract-stub/PROMPT.md",
+      "bytes": 1035,
+      "readable": true
+    },
+    {
+      "path": "_packet-contract-stub/checks.json",
+      "bytes": 151,
+      "readable": true
+    },
+    {
+      "path": "_packet-contract-stub/evidence.ndjson",
+      "bytes": 119,
+      "readable": false
+    },
+    {
+      "path": "_packet-contract-stub/finding.yaml",
+      "bytes": 275,
+      "readable": true
+    },
+    {
+      "path": "_packet-contract-stub/queries.ndjson",
+      "bytes": 74,
+      "readable": false
+    },
+    {
+      "path": "_packet-contract-stub/report.md",
+      "bytes": 897,
+      "readable": true
+    },
+    {
+      "path": "_packet-contract-stub/run.log",
+      "bytes": 132,
+      "readable": false
+    },
     {
       "path": "agent-affordance-usage/ANALYSIS.md",
       "bytes": 3153,
@@ -328,7 +363,7 @@
     },
     {
       "path": "attachment-acquisition-census/ANALYSIS.md",
-      "bytes": 1299,
+      "bytes": 1370,
       "readable": true
     },
     {
@@ -338,7 +373,7 @@
     },
     {
       "path": "attachment-acquisition-census/census.json",
-      "bytes": 12609,
+      "bytes": 12985,
       "readable": true
     },
     {
@@ -348,7 +383,7 @@
     },
     {
       "path": "attachment-acquisition-census/regenerate.sh",
-      "bytes": 6880,
+      "bytes": 7687,
       "readable": false
     },
     {
@@ -647,6 +682,41 @@
       "readable": false
     },
     {
+      "path": "d4-behavioral-archaeology/PROMPT.md",
+      "bytes": 1748,
+      "readable": true
+    },
+    {
+      "path": "d4-behavioral-archaeology/checks.json",
+      "bytes": 659,
+      "readable": true
+    },
+    {
+      "path": "d4-behavioral-archaeology/evidence.ndjson",
+      "bytes": 1382,
+      "readable": false
+    },
+    {
+      "path": "d4-behavioral-archaeology/finding.yaml",
+      "bytes": 410,
+      "readable": true
+    },
+    {
+      "path": "d4-behavioral-archaeology/queries.ndjson",
+      "bytes": 794,
+      "readable": false
+    },
+    {
+      "path": "d4-behavioral-archaeology/report.md",
+      "bytes": 5263,
+      "readable": true
+    },
+    {
+      "path": "d4-behavioral-archaeology/run.log",
+      "bytes": 5483,
+      "readable": false
+    },
+    {
       "path": "degraded-archive-proof/current/degraded-archive-proof.json",
       "bytes": 1516,
       "readable": true
@@ -684,6 +754,11 @@
     {
       "path": "query-runtime-projections/source-derived-run-context/session-start-context-polylogue.json",
       "bytes": 3789,
+      "readable": true
+    },
+    {
+      "path": "registry.json",
+      "bytes": 632,
       "readable": true
     },
     {

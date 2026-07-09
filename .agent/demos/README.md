@@ -8,6 +8,8 @@ better demo supersedes them.
 
 ## Current Entries
 
+- `_packet-contract-stub` — _Packet Contract Stub
+  - files: 7 (4 readable)
 - `agent-affordance-usage` — Agent Affordance Usage
   - readme: `agent-affordance-usage/README.md`
   - analysis: `agent-affordance-usage/ANALYSIS.md`
@@ -32,6 +34,8 @@ better demo supersedes them.
 - `cli-surface-audit` — CLI Surface Audit
   - readme: `cli-surface-audit/current/README.md`
   - files: 24 (2 readable)
+- `d4-behavioral-archaeology` — D4 Behavioral Archaeology
+  - files: 7 (4 readable)
 - `degraded-archive-proof` — Degraded Archive Proof
   - files: 2 (2 readable)
 - `lineage-validation` — Lineage Validation

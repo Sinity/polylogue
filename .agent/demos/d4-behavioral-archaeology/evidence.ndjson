@@ -1,0 +1,9 @@
+{"ref": "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6", "cited_for": "Q1 SEQ thrash-loop match (repeated shell action)", "verified_via": "then select --json"}
+{"ref": "codex-session:demo-00", "cited_for": "Q1 SEQ thrash-loop match (repeated shell action)", "verified_via": "then select --json"}
+{"ref": "actions.group_by=tool", "cited_for": "Q2 tool call volume: Bash=9, Read=8, Task=1, Write=1, exec_command=1", "verified_via": "actions where exit_code:>=0 | group by tool | count"}
+{"ref": "actions.group_by=tool.is_error", "cited_for": "Q3 tool failure count: Bash=4, exec_command=1", "verified_via": "actions where is_error:true | group by tool | count"}
+{"ref": "embeddings.db:message_embeddings_meta", "cited_for": "Q4 embedding coverage numerator: 2 messages embedded", "verified_via": "sqlite3 embeddings.db 'SELECT COUNT(*) FROM message_embeddings_meta'"}
+{"ref": "index.db:messages", "cited_for": "Q4 embedding coverage denominator: 43 total messages (2/43 ratio)", "verified_via": "sqlite3 index.db 'SELECT COUNT(*) FROM messages'"}
+{"ref": "since:2y", "cited_for": "Q5 time-scoped population: 9 of 11 sessions", "verified_via": "find 'since:2y'"}
+{"ref": "codex-session:demo-terminal-error", "cited_for": "Q6 piped-read specimen: a real captured tool error (exit_code 4)", "verified_via": "find 'origin:codex-session' then read --first --view messages"}
+{"ref": "polylogue-70qb", "cited_for": "counterexample: bare find ignoring sessions-where predicates", "verified_via": "bare find vs then-select vs compact-form total comparison"}
