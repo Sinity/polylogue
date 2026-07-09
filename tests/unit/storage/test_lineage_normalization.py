@@ -11,6 +11,7 @@ import sqlite3
 from pathlib import Path
 
 import aiosqlite
+import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
@@ -21,6 +22,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -29,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     repair_stale_prefix_branch_points,
     write_parsed_session_to_archive,
 )
+from polylogue.storage.sqlite.queries import message_query_reads as _message_query_reads_module
 from polylogue.storage.sqlite.queries.message_query_reads import (
     get_messages,
     get_messages_batch,
@@ -1011,3 +1014,144 @@ def test_shared_signature_cache_composes_correctly(tmp_path: Path) -> None:
     assert _composed(fork_b_id) == ["hello", "hi there", "fork B diverges", "fork B reply"]
 
     conn.close()
+
+
+def _setup_interleaving_fixture(db: Path) -> tuple[sqlite3.Connection, str, str]:
+    """A parent+prefix-sharing-child pair on a WAL-mode file DB, so a second
+    connection can commit a concurrent write without blocking the reader
+    (4ts.4 regression harness)."""
+    conn = _connect(db)
+    conn.execute("PRAGMA journal_mode=WAL")
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+            _msg("cx", Role.USER, "child diverges", 2),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    return conn, parent_id, child_id
+
+
+def _concurrently_mutate_parent_block_text(db: Path, parent_id: str) -> None:
+    """Simulate a concurrent writer editing the parent's shared-prefix content
+    mid-composition, via a second connection to the same WAL-mode file."""
+    writer = sqlite3.connect(db)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute(
+        """
+        UPDATE blocks SET text = 'hi there (concurrently edited)'
+        WHERE message_id = (
+            SELECT message_id FROM messages
+            WHERE session_id = ? AND position = 1
+        )
+        """,
+        (parent_id,),
+    )
+    writer.commit()
+    writer.close()
+
+
+def test_sync_composition_holds_one_snapshot_across_concurrent_parent_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """4ts.4: read_archive_session_envelope must not tear when a concurrent
+    writer edits the parent's shared prefix mid-composition. A hook fires the
+    concurrent edit right when the child's own edge lookup runs (after the
+    child's own read, before the recursive parent read) -- if the composition
+    were not held in one transaction, the parent read below would observe the
+    mid-flight edit and the composed transcript would mix stale and fresh
+    parent content with the (unaffected) child's own tail."""
+    db = tmp_path / "index.db"
+    conn, parent_id, child_id = _setup_interleaving_fixture(db)
+    conn.close()
+
+    # Re-open on a fresh connection so the read below starts a clean snapshot,
+    # matching how a live reader (CLI/MCP/API) connects independently of the
+    # writer/daemon connection.
+    reader = _connect(db)
+    reader.execute("PRAGMA journal_mode=WAL")
+
+    real_edge_lookup = _write_module._prefix_sharing_edge_sync
+    fired = {"count": 0}
+
+    def _hook(conn_inner: sqlite3.Connection, session_id: str) -> tuple[str, str] | None:
+        if session_id == child_id and fired["count"] == 0:
+            fired["count"] += 1
+            assert conn_inner.in_transaction, "composition must already hold a transaction before this hook fires"
+            _concurrently_mutate_parent_block_text(db, parent_id)
+        return real_edge_lookup(conn_inner, session_id)
+
+    monkeypatch.setattr(_write_module, "_prefix_sharing_edge_sync", _hook)
+
+    envelope = read_archive_session_envelope(reader, child_id)
+    texts = ["".join(block.text or "" for block in message.blocks) for message in envelope.messages]
+
+    assert fired["count"] == 1, "the interleaving hook never fired -- test is not exercising the race"
+    # Old-consistent: the reader's held snapshot predates the concurrent edit,
+    # so it must see the ORIGINAL parent text, not a torn mix.
+    assert texts == ["hello", "hi there", "child diverges"]
+
+    reader.close()
+
+    # The concurrent edit itself did land (proving it wasn't silently a no-op) --
+    # a fresh read afterwards sees the new text.
+    post = _connect(db)
+    post_envelope = read_archive_session_envelope(post, child_id)
+    post_texts = ["".join(block.text or "" for block in message.blocks) for message in post_envelope.messages]
+    assert post_texts == ["hello", "hi there (concurrently edited)", "child diverges"]
+    post.close()
+
+
+def test_async_composition_holds_one_snapshot_across_concurrent_parent_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Async twin of the sync 4ts.4 regression above: get_messages must not
+    tear when a concurrent writer edits the parent's shared prefix mid-walk."""
+    db = tmp_path / "index.db"
+    conn, parent_id, child_id = _setup_interleaving_fixture(db)
+    conn.close()
+
+    real_edge_lookup = _message_query_reads_module._prefix_sharing_edge
+    fired = {"count": 0}
+
+    async def _hook(conn_inner: aiosqlite.Connection, session_id: str) -> tuple[str, str] | None:
+        if session_id == child_id and fired["count"] == 0:
+            fired["count"] += 1
+            assert conn_inner.in_transaction, "composition must already hold a transaction before this hook fires"
+            _concurrently_mutate_parent_block_text(db, parent_id)
+        return await real_edge_lookup(conn_inner, session_id)
+
+    monkeypatch.setattr(_message_query_reads_module, "_prefix_sharing_edge", _hook)
+
+    async def _run() -> list[str | None]:
+        reader = await aiosqlite.connect(db)
+        try:
+            reader.row_factory = aiosqlite.Row
+            await reader.execute("PRAGMA journal_mode=WAL")
+            records = await get_messages(reader, child_id)
+            return [r.text for r in records]
+        finally:
+            await reader.close()
+
+    texts = asyncio.run(_run())
+
+    assert fired["count"] == 1, "the interleaving hook never fired -- test is not exercising the race"
+    assert texts == ["hello", "hi there", "child diverges"]

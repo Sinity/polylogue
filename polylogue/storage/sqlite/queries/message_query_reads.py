@@ -114,6 +114,21 @@ async def get_messages(
     *,
     _compose_in_position_order: bool = False,
 ) -> list[MessageRecord]:
+    """Compose a session's full message transcript, holding one read snapshot.
+
+    Composition issues multiple autocommit SELECTs while walking the lineage
+    chain (edge reads, then a read per ancestor/descendant). Without a held
+    transaction, a concurrent parent re-ingest between those reads can yield a
+    torn transcript (4ts.4). If ``conn`` is not already inside a transaction
+    (e.g. a caller-held write transaction), this wraps the whole composition
+    in one deferred read transaction so every SELECT sees the same snapshot.
+    """
+    if not conn.in_transaction:
+        await conn.execute("BEGIN DEFERRED")
+        try:
+            return await get_messages(conn, session_id, _compose_in_position_order=_compose_in_position_order)
+        finally:
+            await conn.execute("ROLLBACK")
     session_id = await _resolve_session_id(conn, session_id)
 
     # Lineage composition (#2467): a prefix-sharing child stores only its own
