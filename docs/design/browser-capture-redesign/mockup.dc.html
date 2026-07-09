@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; background: #0b0e13; }
+  * { box-sizing: border-box; }
+  body { font-family: "IBM Plex Sans", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: #a99bf7; text-decoration: none; }
+  a:hover { color: #c3b8fb; }
+  ::selection { background: rgba(139,123,242,0.35); }
+  @keyframes plg-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.82); } }
+  @keyframes plg-spin { to { transform: rotate(360deg); } }
+  @keyframes plg-sheen { 0% { background-position: -140% 0; } 100% { background-position: 240% 0; } }
+</style>
+</helmet>
+
+<div style="min-width: 4400px; padding: 64px 72px 120px; background:
+  radial-gradient(1200px 600px at 20% -5%, rgba(139,123,242,0.10), transparent 60%),
+  radial-gradient(900px 500px at 95% 0%, rgba(16,163,127,0.06), transparent 55%),
+  #0b0e13;
+  background-image:
+  radial-gradient(1200px 600px at 20% -5%, rgba(139,123,242,0.10), transparent 60%),
+  radial-gradient(900px 500px at 95% 0%, rgba(16,163,127,0.06), transparent 55%),
+  radial-gradient(rgba(255,255,255,0.028) 1px, transparent 1px);
+  background-size: auto, auto, 26px 26px;">
+
+  <!-- ============ MASTHEAD ============ -->
+  <div style="max-width: 1180px; margin-bottom: 56px;">
+    <div style="display:flex; align-items:center; gap:14px; margin-bottom:20px;">
+      <div style="width:44px; height:44px; border-radius:12px; display:grid; place-items:center; background: linear-gradient(150deg,#8b7bf2,#6d5ae0); box-shadow: 0 6px 22px rgba(109,90,224,0.45), inset 0 1px 0 rgba(255,255,255,0.25);">
+        <div style="width:16px; height:16px; border-radius:5px; border:2.5px solid #fff; position:relative;">
+          <div style="position:absolute; inset:3px; border-radius:1px; background:#fff; opacity:.9;"></div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:13px; letter-spacing:.22em; text-transform:uppercase; color:#7d8797; font-weight:600;">Redesign proposal</div>
+        <div style="font-size:30px; font-weight:700; color:#eef1f6; letter-spacing:-0.01em;">Polylogue — Capture, Recall &amp; Control</div>
+      </div>
+    </div>
+    <p style="max-width:760px; font-size:16px; line-height:1.6; color:#9aa4b2; margin:0 0 26px;">
+      Not a polish pass on the popup. The core problem is <strong style="color:#d7dce4; font-weight:600;">trust and legibility</strong>, not visuals — so the design moves the everyday signal <em style="color:#c3b8fb; font-style:normal;">onto the page you're already reading</em>, and rebuilds the popup as a multi-tab mission-control that can never fail silently. Dark-first. Everything below is buildable as a Manifest&nbsp;V3 popup + shadow-DOM content overlay, no remote assets, daemon-offline treated as a calm normal state.
+    </p>
+
+    <!-- system legend -->
+    <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
+      <span style="font-size:12px; color:#6b7482; letter-spacing:.08em; text-transform:uppercase; margin-right:4px;">Status language →</span>
+      <span style="display:inline-flex; align-items:center; gap:7px; font-size:13px; color:#cdd3dc; background:#12161d; border:1px solid #262d38; border-radius:999px; padding:6px 12px;"><span style="width:8px;height:8px;border-radius:50%;background:#4ec98f;"></span>Safe</span>
+      <span style="display:inline-flex; align-items:center; gap:7px; font-size:13px; color:#cdd3dc; background:#12161d; border:1px solid #262d38; border-radius:999px; padding:6px 12px;"><span style="width:8px;height:8px;border-radius:50%;background:#5fb0e8;"></span>Catching up</span>
+      <span style="display:inline-flex; align-items:center; gap:7px; font-size:13px; color:#cdd3dc; background:#12161d; border:1px solid #262d38; border-radius:999px; padding:6px 12px;"><span style="width:8px;height:8px;border-radius:50%;background:#e6b552;"></span>Needs attention</span>
+      <span style="display:inline-flex; align-items:center; gap:7px; font-size:13px; color:#cdd3dc; background:#12161d; border:1px solid #262d38; border-radius:999px; padding:6px 12px;"><span style="width:8px;height:8px;border-radius:50%;background:#f06a6a;"></span>Failed</span>
+      <span style="display:inline-flex; align-items:center; gap:7px; font-size:13px; color:#cdd3dc; background:#12161d; border:1px solid #262d38; border-radius:999px; padding:6px 12px;"><span style="width:8px;height:8px;border-radius:50%;background:#6b7482;"></span>Not captured</span>
+      <span style="width:1px; height:22px; background:#262d38; margin:0 6px;"></span>
+      <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#6b7482;">IBM&nbsp;Plex&nbsp;Sans / Mono · violet #8b7bf2</span>
+    </div>
+  </div>
+
+  <!-- ============ CANVAS ROWS ============ -->
+  <div style="display:flex; flex-wrap:wrap; gap:56px; align-items:flex-start;">
+
+    <!-- ================= F1: EXPANDED POPUP ================= -->
+    <div id="F1" style="flex:0 0 auto;">
+      <div style="display:flex; align-items:baseline; gap:12px; margin-bottom:16px;">
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; color:#0b0e13; background:#8b7bf2; border-radius:6px; padding:3px 8px;">F1</span>
+        <span style="font-size:18px; font-weight:600; color:#eef1f6;">Popup — mission control</span>
+        <span style="font-size:14px; color:#7d8797;">multi-tab health · the "why nothing happened" timeline · agent control</span>
+      </div>
+
+      <!-- popup shell -->
+      <div style="width:460px; border-radius:16px; overflow:hidden; background:#0e1219; border:1px solid #2a323d; box-shadow: 0 30px 70px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.02) inset;">
+
+        <!-- header -->
+        <div style="padding:16px 18px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #1c222c; background: linear-gradient(180deg, rgba(139,123,242,0.07), transparent);">
+          <div style="display:flex; align-items:center; gap:11px;">
+            <div style="width:32px; height:32px; border-radius:9px; display:grid; place-items:center; background: linear-gradient(150deg,#8b7bf2,#6d5ae0); box-shadow: inset 0 1px 0 rgba(255,255,255,0.25);">
+              <div style="width:12px; height:12px; border-radius:4px; border:2px solid #fff;"></div>
+            </div>
+            <div>
+              <div style="font-size:15px; font-weight:700; color:#eef1f6; line-height:1.1;">Polylogue</div>
+              <div style="font-size:11.5px; color:#7d8797;">Capture · Recall · Post</div>
+            </div>
+          </div>
+          <div style="display:inline-flex; align-items:center; gap:7px; background:rgba(78,201,143,0.12); border:1px solid rgba(78,201,143,0.3); border-radius:999px; padding:6px 11px;">
+            <span style="width:8px; height:8px; border-radius:50%; background:#4ec98f; box-shadow:0 0 8px #4ec98f; animation:plg-pulse 2.4s ease-in-out infinite;"></span>
+            <span style="font-size:12.5px; font-weight:600; color:#a7e6c6;">4 tabs · all safe</span>
+          </div>
+        </div>
+
+        <!-- receiver strip -->
+        <div style="padding:10px 18px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #1c222c; background:#0c1017;">
+          <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:#9aa4b2;">
+            <span style="width:7px; height:7px; border-radius:50%; background:#4ec98f;"></span>
+            Receiver connected
+            <span style="font-family:'IBM Plex Mono',monospace; color:#6b7482;">127.0.0.1:8765</span>
+          </div>
+          <span style="font-size:11.5px; color:#6b7482;">last contact 2s ago</span>
+        </div>
+
+        <!-- open conversations list -->
+        <div style="padding:14px 14px 4px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; padding:0 4px 10px;">
+            <span style="font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:#6b7482; font-weight:600;">Open conversations</span>
+            <span style="font-size:11.5px; color:#6b7482; font-family:'IBM Plex Mono',monospace;">4 tabs</span>
+          </div>
+
+          <!-- active row -->
+          <div style="position:relative; display:flex; align-items:center; gap:11px; padding:11px 12px 11px 13px; border-radius:11px; background:#171c25; border:1px solid #2d3646; margin-bottom:6px;">
+            <div style="position:absolute; left:0; top:9px; bottom:9px; width:3px; border-radius:3px; background:#8b7bf2;"></div>
+            <span style="width:22px; height:22px; border-radius:6px; display:grid; place-items:center; background:#10a37f; color:#fff; font-size:11px; font-weight:700; font-family:'IBM Plex Mono',monospace; flex:0 0 auto;">G</span>
+            <div style="min-width:0; flex:1;">
+              <div style="font-size:13.5px; color:#eef1f6; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">SQLite locking under concurrent writers</div>
+              <div style="font-size:11.5px; color:#7d8797;">active tab · ChatGPT</div>
+            </div>
+            <span style="display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; color:#a7e6c6; background:rgba(78,201,143,0.12); border-radius:999px; padding:4px 9px;"><span style="width:6px;height:6px;border-radius:50%;background:#4ec98f;"></span>Safe</span>
+          </div>
+
+          <!-- catching up -->
+          <div style="display:flex; align-items:center; gap:11px; padding:11px 12px; border-radius:11px; background:transparent; border:1px solid transparent; margin-bottom:2px;" style-hover="background:#12161d; border:1px solid #232a33;">
+            <span style="width:22px; height:22px; border-radius:6px; display:grid; place-items:center; background:#d97745; color:#fff; font-size:11px; font-weight:700; font-family:'IBM Plex Mono',monospace; flex:0 0 auto;">C</span>
+            <div style="min-width:0; flex:1;">
+              <div style="font-size:13.5px; color:#d7dce4; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Refactoring the ingest watcher</div>
+              <div style="font-size:11.5px; color:#7d8797;">Claude.ai</div>
+            </div>
+            <span style="display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; color:#bcd8ee; background:rgba(95,176,232,0.12); border-radius:999px; padding:4px 9px;"><span style="width:9px;height:9px;border-radius:50%;border:1.6px solid #5fb0e8; border-top-color:transparent; animation:plg-spin .9s linear infinite;"></span>Indexing</span>
+          </div>
+
+          <!-- partial fidelity -->
+          <div style="display:flex; align-items:center; gap:11px; padding:11px 12px; border-radius:11px; margin-bottom:2px;" style-hover="background:#12161d;">
+            <span style="width:22px; height:22px; border-radius:6px; display:grid; place-items:center; background:#20242c; color:#c9cdd4; font-size:11px; font-weight:700; font-family:'IBM Plex Mono',monospace; flex:0 0 auto; border:1px solid #333c49;">X</span>
+            <div style="min-width:0; flex:1;">
+              <div style="font-size:13.5px; color:#d7dce4; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Grok — thread on RL reward hacking</div>
+              <div style="font-size:11.5px; color:#e6b552;">Text-only capture · attachments may be missing</div>
+            </div>
+            <span style="display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; color:#f0d59a; background:rgba(230,181,82,0.12); border-radius:999px; padding:4px 9px;"><span style="width:6px;height:6px;border-radius:50%;background:#e6b552;"></span>Partial</span>
+          </div>
+
+          <!-- not captured (the silent-failure case, now visible) -->
+          <div style="display:flex; align-items:center; gap:11px; padding:11px 12px; border-radius:11px;" style-hover="background:#12161d;">
+            <span style="width:22px; height:22px; border-radius:6px; display:grid; place-items:center; background:#10a37f; color:#fff; font-size:11px; font-weight:700; font-family:'IBM Plex Mono',monospace; flex:0 0 auto;">G</span>
+            <div style="min-width:0; flex:1;">
+              <div style="font-size:13.5px; color:#d7dce4; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Cost accounting for Codex sessions</div>
+              <div style="font-size:11.5px; color:#7d8797;">seen 4m ago · auto-capture skipped</div>
+            </div>
+            <span style="display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; color:#aab3c0; background:rgba(107,116,130,0.14); border-radius:999px; padding:4px 9px;"><span style="width:6px;height:6px;border-radius:50%;background:#6b7482;"></span>Not saved</span>
+          </div>
+        </div>
+
+        <div style="height:1px; background:#1c222c; margin:10px 0 0;"></div>
+
+        <!-- ACTIVE CONVERSATION DETAIL -->
+        <div style="padding:16px 18px;">
+          <div style="font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:#6b7482; font-weight:600; margin-bottom:12px;">Active conversation</div>
+
+          <!-- headline state -->
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+            <div style="width:38px; height:38px; border-radius:11px; display:grid; place-items:center; background:rgba(78,201,143,0.14); border:1px solid rgba(78,201,143,0.32); flex:0 0 auto;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ec98f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            </div>
+            <div>
+              <div style="font-size:15px; font-weight:600; color:#eef1f6;">Archived — safe &amp; searchable</div>
+              <div style="font-size:12.5px; color:#8b95a3;">Full fidelity · native app data · branches &amp; attachments preserved</div>
+            </div>
+          </div>
+
+          <!-- metrics -->
+          <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:14px;">
+            <div style="background:#12161d; border:1px solid #232a33; border-radius:10px; padding:11px 12px;">
+              <div style="font-size:11px; color:#6b7482; margin-bottom:4px;">Cost so far</div>
+              <div style="font-size:16px; font-weight:600; color:#eef1f6; font-family:'IBM Plex Mono',monospace;">$0.42</div>
+            </div>
+            <div style="background:#12161d; border:1px solid #232a33; border-radius:10px; padding:11px 12px;">
+              <div style="font-size:11px; color:#6b7482; margin-bottom:4px;">Tokens</div>
+              <div style="font-size:16px; font-weight:600; color:#eef1f6; font-family:'IBM Plex Mono',monospace;">128k</div>
+            </div>
+            <div style="background:#12161d; border:1px solid #232a33; border-radius:10px; padding:11px 12px;">
+              <div style="font-size:11px; color:#6b7482; margin-bottom:4px;">Captured</div>
+              <div style="font-size:16px; font-weight:600; color:#4ec98f; font-family:'IBM Plex Mono',monospace;">24<span style="color:#6b7482;">/24</span></div>
+            </div>
+          </div>
+
+          <!-- ACTIVITY / WHY TIMELINE -->
+          <div style="background:#0c1017; border:1px solid #1c222c; border-radius:12px; padding:13px 14px; margin-bottom:14px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:11px;">
+              <span style="font-size:12px; font-weight:600; color:#cdd3dc;">What Polylogue did here</span>
+              <span style="font-size:11px; color:#6b7482;">newest first</span>
+            </div>
+            <!-- item -->
+            <div style="display:flex; gap:11px; padding-bottom:12px; position:relative;">
+              <div style="display:flex; flex-direction:column; align-items:center; flex:0 0 auto;">
+                <span style="width:9px; height:9px; border-radius:50%; background:#4ec98f; margin-top:3px;"></span>
+                <span style="width:1.5px; flex:1; background:#232a33; margin-top:3px;"></span>
+              </div>
+              <div style="min-width:0;">
+                <div style="font-size:12.5px; color:#d7dce4;"><strong style="font-weight:600;">Captured 24 turns</strong> · full fidelity</div>
+                <div style="font-size:11px; color:#6b7482; font-family:'IBM Plex Mono',monospace;">12:04:11 · req 3f9a · spooled → archived in 1.8s</div>
+              </div>
+            </div>
+            <div style="display:flex; gap:11px; padding-bottom:12px; position:relative;">
+              <div style="display:flex; flex-direction:column; align-items:center; flex:0 0 auto;">
+                <span style="width:9px; height:9px; border-radius:50%; background:#5fb0e8; margin-top:3px;"></span>
+                <span style="width:1.5px; flex:1; background:#232a33; margin-top:3px;"></span>
+              </div>
+              <div style="min-width:0;">
+                <div style="font-size:12.5px; color:#d7dce4;">Detected 2 new messages since last capture</div>
+                <div style="font-size:11px; color:#6b7482; font-family:'IBM Plex Mono',monospace;">12:03:58 · page 24 vs archive 22</div>
+              </div>
+            </div>
+            <!-- the important one: a DECISION, not silence -->
+            <div style="display:flex; gap:11px; padding-bottom:12px; position:relative;">
+              <div style="display:flex; flex-direction:column; align-items:center; flex:0 0 auto;">
+                <span style="width:9px; height:9px; border-radius:50%; background:#e6b552; margin-top:3px;"></span>
+                <span style="width:1.5px; flex:1; background:#232a33; margin-top:3px;"></span>
+              </div>
+              <div style="min-width:0;">
+                <div style="font-size:12.5px; color:#d7dce4;">Held auto-capture — <span style="color:#e6b552;">receiver was mid-ingest</span></div>
+                <div style="font-size:11px; color:#6b7482; font-family:'IBM Plex Mono',monospace;">11:20:02 · retried automatically after 3s</div>
+              </div>
+            </div>
+            <div style="display:flex; gap:11px; position:relative;">
+              <div style="display:flex; flex-direction:column; align-items:center; flex:0 0 auto;">
+                <span style="width:9px; height:9px; border-radius:50%; background:#6b7482; margin-top:3px;"></span>
+              </div>
+              <div style="min-width:0;">
+                <div style="font-size:12.5px; color:#aab3c0;">First saw this conversation</div>
+                <div style="font-size:11px; color:#6b7482; font-family:'IBM Plex Mono',monospace;">11:19:47 · not yet archived</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- actions -->
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:9px;">
+            <button style="grid-column:1 / -1; height:44px; border:0; border-radius:10px; background:linear-gradient(180deg,#8b7bf2,#6d5ae0); color:#fff; font:600 14px 'IBM Plex Sans',sans-serif; cursor:pointer; box-shadow:0 6px 18px rgba(109,90,224,0.4);" style-hover="filter:brightness(1.08);">Re-capture now</button>
+            <button style="height:40px; border:1px solid #2d3646; border-radius:10px; background:#171c25; color:#d7dce4; font:500 13px 'IBM Plex Sans',sans-serif; cursor:pointer;" style-hover="border-color:#3a4657; background:#1c2230;">Recall from archive</button>
+            <button style="height:40px; border:1px solid #2d3646; border-radius:10px; background:#171c25; color:#d7dce4; font:500 13px 'IBM Plex Sans',sans-serif; cursor:pointer;" style-hover="border-color:#3a4657; background:#1c2230;">Open in Polylogue ↗</button>
+          </div>
+        </div>
+
+        <div style="height:1px; background:#1c222c;"></div>
+
+        <!-- AGENT CONTROL (reverse channel) -->
+        <div style="padding:16px 18px; background:#0c1017;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+            <div style="display:flex; align-items:center; gap:9px;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8b7bf2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <span style="font-size:13px; font-weight:600; color:#d7dce4;">Agent control</span>
+              <span style="font-size:10.5px; font-weight:600; color:#f0d59a; background:rgba(230,181,82,0.12); border:1px solid rgba(230,181,82,0.25); border-radius:999px; padding:2px 8px;">OFF — safe</span>
+            </div>
+            <!-- toggle -->
+            <div style="width:40px; height:23px; border-radius:999px; background:#20242c; border:1px solid #333c49; position:relative;">
+              <span style="position:absolute; top:2px; left:2px; width:17px; height:17px; border-radius:50%; background:#6b7482;"></span>
+            </div>
+          </div>
+          <p style="margin:2px 0 0; font-size:11.5px; line-height:1.5; color:#7d8797;">
+            When enabled, the daemon can draft or send replies into a chat you opt in per-session. Ships off, double-gated, and every command lands as a <span style="color:#a99bf7;">dry-run draft</span> first — never an auto-send.
+          </p>
+        </div>
+
+        <!-- settings footer -->
+        <div style="padding:12px 18px; display:flex; align-items:center; justify-content:space-between; border-top:1px solid #1c222c;">
+          <div style="display:flex; gap:6px;">
+            <span style="font-size:11px; color:#8b95a3; background:#12161d; border:1px solid #232a33; border-radius:6px; padding:4px 8px;">ChatGPT ✓</span>
+            <span style="font-size:11px; color:#8b95a3; background:#12161d; border:1px solid #232a33; border-radius:6px; padding:4px 8px;">Claude ✓</span>
+            <span style="font-size:11px; color:#8b95a3; background:#12161d; border:1px solid #232a33; border-radius:6px; padding:4px 8px;">Grok ✓</span>
+            <span style="font-size:11px; color:#6b7482; background:#0e1219; border:1px dashed #2d3646; border-radius:6px; padding:4px 8px;">Gemini ·</span>
+          </div>
+          <span style="font-size:11.5px; color:#8b95a3; cursor:pointer;" style-hover="color:#d7dce4;">Settings ⚙</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= F2 + F3: IN-PAGE OVERLAY on host chat ================= -->
+    <div id="F2" style="flex:0 0 auto;">
+      <div style="display:flex; align-items:baseline; gap:12px; margin-bottom:16px;">
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; color:#0b0e13; background:#8b7bf2; border-radius:6px; padding:3px 8px;">F2</span>
+        <span style="font-size:18px; font-weight:600; color:#eef1f6;">In-page — ambient chip &amp; slide-over</span>
+        <span style="font-size:14px; color:#7d8797;">shadow-DOM · zero layout shift · Alt+P summons</span>
+      </div>
+
+      <!-- host chat window mock -->
+      <div style="position:relative; width:880px; height:600px; border-radius:14px; overflow:hidden; background:#0f0f10; border:1px solid #2a2a2c; box-shadow:0 30px 70px rgba(0,0,0,0.5);">
+        <!-- host chrome -->
+        <div style="height:46px; display:flex; align-items:center; gap:10px; padding:0 16px; border-bottom:1px solid #232324; background:#141415;">
+          <span style="width:24px; height:24px; border-radius:7px; background:#10a37f; display:grid; place-items:center; color:#fff; font:700 11px 'IBM Plex Mono',monospace;">G</span>
+          <span style="font-size:13px; color:#b7bcc4;">SQLite locking under concurrent writers</span>
+          <span style="margin-left:auto; font-size:12px; color:#5f6570;">a chat page · host UI</span>
+        </div>
+        <!-- host conversation -->
+        <div style="padding:26px 120px 26px 34px; display:flex; flex-direction:column; gap:22px;">
+          <div style="align-self:flex-end; max-width:70%; background:#2a2b32; color:#e6e8ec; border-radius:16px 16px 4px 16px; padding:12px 15px; font-size:13.5px; line-height:1.55;">Why does my writer hit "database is locked" only under load?</div>
+          <div style="max-width:82%; color:#c7ccd3; font-size:13.5px; line-height:1.62;">SQLite serializes writes with a single write lock. Under concurrent writers the second one waits up to <code style="font-family:'IBM Plex Mono',monospace; background:#1b1b1d; padding:1px 5px; border-radius:4px;">busy_timeout</code>, then throws. Switching to WAL mode and setting a busy timeout usually resolves it…</div>
+        </div>
+
+        <!-- AMBIENT CHIP (bottom-right, fixed, zero layout shift) -->
+        <div style="position:absolute; right:18px; bottom:18px; display:flex; align-items:center; gap:9px; background:rgba(16,18,25,0.92); backdrop-filter:blur(8px); border:1px solid #2d3646; border-radius:999px; padding:8px 13px 8px 11px; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
+          <span style="width:24px; height:24px; border-radius:7px; background:linear-gradient(150deg,#8b7bf2,#6d5ae0); display:grid; place-items:center;"><span style="width:9px;height:9px;border-radius:3px;border:1.6px solid #fff;"></span></span>
+          <span style="width:8px; height:8px; border-radius:50%; background:#4ec98f; box-shadow:0 0 8px #4ec98f; animation:plg-pulse 2.4s ease-in-out infinite;"></span>
+          <span style="font-size:12.5px; font-weight:600; color:#dfe3ea;">Archived</span>
+          <span style="font-size:11px; color:#7d8797; font-family:'IBM Plex Mono',monospace; padding-left:2px;">$0.42</span>
+          <span style="width:1px; height:16px; background:#2d3646; margin:0 2px;"></span>
+          <span style="font-size:11px; color:#8b95a3; font-family:'IBM Plex Mono',monospace;">⌥P</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- F3 slide-over -->
+    <div id="F3" style="flex:0 0 auto;">
+      <div style="display:flex; align-items:baseline; gap:12px; margin-bottom:16px;">
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; color:#0b0e13; background:#8b7bf2; border-radius:6px; padding:3px 8px;">F3</span>
+        <span style="font-size:18px; font-weight:600; color:#eef1f6;">In-page — slide-over deep-dive</span>
+        <span style="font-size:14px; color:#7d8797;">"what the archive already knows" · relevant judged assertions</span>
+      </div>
+
+      <div style="position:relative; width:880px; height:600px; border-radius:14px; overflow:hidden; background:#0f0f10; border:1px solid #2a2a2c; box-shadow:0 30px 70px rgba(0,0,0,0.5);">
+        <!-- dimmed host behind -->
+        <div style="height:46px; display:flex; align-items:center; gap:10px; padding:0 16px; border-bottom:1px solid #232324; background:#141415; opacity:.5;">
+          <span style="width:24px; height:24px; border-radius:7px; background:#10a37f; display:grid; place-items:center; color:#fff; font:700 11px 'IBM Plex Mono',monospace;">G</span>
+          <span style="font-size:13px; color:#b7bcc4;">SQLite locking under concurrent writers</span>
+        </div>
+        <div style="padding:26px 34px; opacity:.4;">
+          <div style="max-width:60%; color:#c7ccd3; font-size:13.5px; line-height:1.6;">SQLite serializes writes with a single write lock…</div>
+        </div>
+
+        <!-- SLIDE-OVER PANEL -->
+        <div style="position:absolute; top:0; right:0; bottom:0; width:360px; background:#0d1119; border-left:1px solid #2a323d; box-shadow:-24px 0 50px rgba(0,0,0,0.5); display:flex; flex-direction:column;">
+          <!-- panel header -->
+          <div style="padding:15px 16px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #1c222c;">
+            <div style="display:flex; align-items:center; gap:9px;">
+              <span style="width:26px; height:26px; border-radius:7px; background:linear-gradient(150deg,#8b7bf2,#6d5ae0); display:grid; place-items:center;"><span style="width:9px;height:9px;border-radius:3px;border:1.6px solid #fff;"></span></span>
+              <span style="font-size:14px; font-weight:700; color:#eef1f6;">Polylogue</span>
+            </div>
+            <span style="font-size:16px; color:#6b7482; cursor:pointer;" style-hover="color:#d7dce4;">✕</span>
+          </div>
+
+          <div style="padding:16px; overflow:auto;">
+            <!-- state -->
+            <div style="display:flex; align-items:center; gap:10px; padding:12px; background:rgba(78,201,143,0.09); border:1px solid rgba(78,201,143,0.25); border-radius:11px; margin-bottom:14px;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ec98f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+              <div>
+                <div style="font-size:13.5px; font-weight:600; color:#eef1f6;">Archived &amp; searchable</div>
+                <div style="font-size:11.5px; color:#8b95a3;">through message 24 · full fidelity</div>
+              </div>
+            </div>
+
+            <!-- cost strip -->
+            <div style="display:flex; gap:8px; margin-bottom:18px;">
+              <div style="flex:1; background:#12161d; border:1px solid #232a33; border-radius:9px; padding:9px 11px;">
+                <div style="font-size:10.5px; color:#6b7482;">This session</div>
+                <div style="font-size:15px; font-weight:600; color:#eef1f6; font-family:'IBM Plex Mono',monospace;">$0.42</div>
+              </div>
+              <div style="flex:1; background:#12161d; border:1px solid #232a33; border-radius:9px; padding:9px 11px;">
+                <div style="font-size:10.5px; color:#6b7482;">Tokens</div>
+                <div style="font-size:15px; font-weight:600; color:#eef1f6; font-family:'IBM Plex Mono',monospace;">128k</div>
+              </div>
+            </div>
+
+            <!-- archive knows -->
+            <div style="font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:#6b7482; font-weight:600; margin-bottom:10px;">The archive already knows</div>
+            <div style="display:flex; flex-direction:column; gap:8px;">
+              <!-- assertion -->
+              <div style="background:#12161d; border:1px solid #232a33; border-radius:10px; padding:11px 12px;" style-hover="border-color:#3a4657;">
+                <div style="display:flex; align-items:center; gap:7px; margin-bottom:5px;">
+                  <span style="font-size:10px; font-weight:600; color:#a7e6c6; background:rgba(78,201,143,0.13); border-radius:5px; padding:2px 6px;">claim</span>
+                  <span style="font-size:10.5px; color:#6b7482; font-family:'IBM Plex Mono',monospace;">ref a1b2 · 89% match</span>
+                </div>
+                <div style="font-size:12.5px; line-height:1.5; color:#cdd3dc;">WAL mode fixed the locking in the ingest daemon — verified against exit codes, not prose.</div>
+              </div>
+              <div style="background:#12161d; border:1px solid #232a33; border-radius:10px; padding:11px 12px;" style-hover="border-color:#3a4657;">
+                <div style="display:flex; align-items:center; gap:7px; margin-bottom:5px;">
+                  <span style="font-size:10px; font-weight:600; color:#f0d59a; background:rgba(230,181,82,0.13); border-radius:5px; padding:2px 6px;">correction</span>
+                  <span style="font-size:10.5px; color:#6b7482; font-family:'IBM Plex Mono',monospace;">ref 7c3e · 76% match</span>
+                </div>
+                <div style="font-size:12.5px; line-height:1.5; color:#cdd3dc;"><code style="font-family:'IBM Plex Mono',monospace; background:#1c222c; padding:1px 4px; border-radius:3px;">busy_timeout</code> alone wasn't enough under 8+ writers — needed a write queue.</div>
+              </div>
+              <div style="text-align:center; font-size:11.5px; color:#7d8797; padding:6px;">+ 3 more relevant · <a href="#F3">expand all</a></div>
+            </div>
+          </div>
+
+          <!-- footer -->
+          <div style="margin-top:auto; padding:12px 16px; border-top:1px solid #1c222c; display:flex; gap:8px;">
+            <button style="flex:1; height:38px; border:1px solid #2d3646; border-radius:9px; background:#171c25; color:#d7dce4; font:500 12.5px 'IBM Plex Sans',sans-serif; cursor:pointer;" style-hover="border-color:#3a4657;">Recall more ↗</button>
+            <button style="flex:1; height:38px; border:0; border-radius:9px; background:linear-gradient(180deg,#8b7bf2,#6d5ae0); color:#fff; font:600 12.5px 'IBM Plex Sans',sans-serif; cursor:pointer;" style-hover="filter:brightness(1.08);">Open archive</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= F4: NATIVE-BLENDED INLINE ================= -->
+    <div id="F4" style="flex:0 0 auto;">
+      <div style="display:flex; align-items:baseline; gap:12px; margin-bottom:16px;">
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; color:#0b0e13; background:#8b7bf2; border-radius:6px; padding:3px 8px;">F4</span>
+        <span style="font-size:18px; font-weight:600; color:#eef1f6;">In-page — woven into the message</span>
+        <span style="font-size:14px; color:#7d8797;">per-message status · actions beside the host's own copy/edit · composer line</span>
+      </div>
+
+      <div style="width:640px; border-radius:14px; overflow:hidden; background:#0f0f10; border:1px solid #2a2a2c; box-shadow:0 24px 60px rgba(0,0,0,0.5);">
+        <div style="padding:24px 24px 8px;">
+          <!-- assistant message with subtle capture gutter -->
+          <div style="display:flex; gap:12px;">
+            <!-- polylogue gutter marker -->
+            <div style="flex:0 0 auto; display:flex; flex-direction:column; align-items:center; padding-top:3px;">
+              <span title="Captured · full fidelity" style="width:8px; height:8px; border-radius:50%; background:#4ec98f; box-shadow:0 0 7px rgba(78,201,143,0.6);"></span>
+              <span style="width:1.5px; flex:1; background:linear-gradient(#232a33, transparent); margin-top:6px;"></span>
+            </div>
+            <div style="min-width:0;">
+              <div style="color:#c7ccd3; font-size:13.5px; line-height:1.62;">Switch the connection to WAL mode with <code style="font-family:'IBM Plex Mono',monospace; background:#1b1b1d; padding:1px 5px; border-radius:4px;">PRAGMA journal_mode=WAL</code> and set a busy timeout. Writers then append to a log instead of blocking readers.</div>
+              <!-- action row: host icons + polylogue actions, same visual weight -->
+              <div style="display:flex; align-items:center; gap:4px; margin-top:12px;">
+                <!-- host-native buttons -->
+                <span style="width:30px; height:30px; border-radius:7px; display:grid; place-items:center; color:#6f757e;" style-hover="background:#1b1b1d; color:#b7bcc4;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></span>
+                <span style="width:30px; height:30px; border-radius:7px; display:grid; place-items:center; color:#6f757e;" style-hover="background:#1b1b1d; color:#b7bcc4;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg></span>
+                <span style="width:1px; height:18px; background:#26262a; margin:0 5px;"></span>
+                <!-- polylogue-native, blended -->
+                <span style="display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 10px; border-radius:7px; color:#a99bf7;" style-hover="background:rgba(139,123,242,0.12);"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg><span style="font-size:12px; font-weight:500;">Save to Polylogue</span></span>
+                <span style="display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 8px 0 9px; border-radius:7px; color:#7d8797;"><span style="width:6px; height:6px; border-radius:50%; background:#4ec98f;"></span><span style="font-size:11.5px; font-family:'IBM Plex Mono',monospace;">msg 23 archived</span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- composer with session status line -->
+        <div style="margin:14px 20px 20px; border:1px solid #2a2a2c; border-radius:14px; background:#161617; overflow:hidden;">
+          <!-- polylogue status line above the input -->
+          <div style="display:flex; align-items:center; gap:8px; padding:8px 14px; border-bottom:1px solid #232324; background:#131314;">
+            <span style="width:7px; height:7px; border-radius:50%; background:#4ec98f;"></span>
+            <span style="font-size:11.5px; color:#8b95a3;">Polylogue — <span style="color:#b7bcc4;">archived through this message</span>, full fidelity</span>
+            <span style="margin-left:auto; font-size:11px; color:#6b7482; font-family:'IBM Plex Mono',monospace;">auto-captures on reply</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px; padding:13px 14px;">
+            <span style="flex:1; font-size:13.5px; color:#5f6570;">Message…</span>
+            <span style="width:32px; height:32px; border-radius:9px; background:#3a3a3d; display:grid; place-items:center;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c7ccd3" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= F5: SELECTION → ASSERTION ================= -->
+    <div id="F5" style="flex:0 0 auto;">
+      <div style="display:flex; align-items:baseline; gap:12px; margin-bottom:16px;">
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; color:#0b0e13; background:#8b7bf2; border-radius:6px; padding:3px 8px;">F5</span>
+        <span style="font-size:18px; font-weight:600; color:#eef1f6;">Selection → assertion — the killer feature</span>
+        <span style="font-size:14px; color:#7d8797;">select any passage · save as note / claim / correction · evidence auto-attached</span>
+      </div>
+
+      <div style="width:640px; display:flex; flex-direction:column; gap:20px;">
+        <!-- selection + pill -->
+        <div style="position:relative; border-radius:14px; background:#0f0f10; border:1px solid #2a2a2c; padding:24px; box-shadow:0 20px 50px rgba(0,0,0,0.45);">
+          <div style="color:#c7ccd3; font-size:13.5px; line-height:1.7;">Writers then append to a log instead of blocking readers, so <span style="background:rgba(139,123,242,0.32); color:#f2f0fe; border-radius:3px; padding:1px 2px;">WAL mode lets one writer and many readers proceed concurrently without the "database is locked" error</span>, which is why it resolves your load spikes.</div>
+          <!-- floating pill -->
+          <div style="position:absolute; left:120px; top:82px; display:inline-flex; align-items:center; gap:8px; background:#171a24; border:1px solid #3a3560; border-radius:9px; padding:7px 11px; box-shadow:0 12px 30px rgba(0,0,0,0.55);">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#a99bf7" stroke-width="2.2"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
+            <span style="font-size:12.5px; font-weight:600; color:#e6e3f8;">Save to Polylogue</span>
+            <span style="font-size:11px; color:#8b95a3;">▾</span>
+          </div>
+        </div>
+
+        <!-- editor popover -->
+        <div style="border-radius:14px; background:#0d1119; border:1px solid #2a323d; box-shadow:0 24px 60px rgba(0,0,0,0.5); overflow:hidden;">
+          <div style="padding:13px 16px; display:flex; align-items:center; gap:9px; border-bottom:1px solid #1c222c;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a99bf7" stroke-width="2.2"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
+            <span style="font-size:13.5px; font-weight:600; color:#eef1f6;">New assertion</span>
+            <span style="margin-left:auto; font-size:16px; color:#6b7482; cursor:pointer;">✕</span>
+          </div>
+          <div style="padding:16px;">
+            <!-- kind segmented -->
+            <div style="display:flex; gap:6px; margin-bottom:13px; background:#0c1017; border:1px solid #232a33; border-radius:10px; padding:4px;">
+              <span style="flex:1; text-align:center; font-size:12.5px; font-weight:600; color:#e6e3f8; background:rgba(139,123,242,0.18); border:1px solid rgba(139,123,242,0.4); border-radius:7px; padding:7px 0;">Claim</span>
+              <span style="flex:1; text-align:center; font-size:12.5px; font-weight:500; color:#8b95a3; padding:7px 0;">Note</span>
+              <span style="flex:1; text-align:center; font-size:12.5px; font-weight:500; color:#8b95a3; padding:7px 0;">Correction</span>
+            </div>
+            <!-- body prefilled -->
+            <div style="background:#12161d; border:1px solid #2d3646; border-radius:10px; padding:12px 13px; min-height:78px; font-size:13px; line-height:1.55; color:#cdd3dc; margin-bottom:12px;">WAL mode lets one writer and many readers proceed concurrently without the "database is locked" error<span style="display:inline-block; width:1.5px; height:15px; background:#8b7bf2; vertical-align:-3px; margin-left:1px; animation:plg-pulse 1.1s step-end infinite;"></span></div>
+            <!-- evidence auto-attached -->
+            <div style="display:flex; align-items:center; gap:9px; background:rgba(78,201,143,0.07); border:1px solid rgba(78,201,143,0.2); border-radius:9px; padding:9px 11px; margin-bottom:16px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ec98f" stroke-width="2.2" stroke-linecap="round"><path d="m9 12 2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+              <span style="font-size:12px; color:#a7e6c6;">Evidence attached</span>
+              <span style="font-size:11.5px; color:#7d8797; font-family:'IBM Plex Mono',monospace;">msg&nbsp;#a1b2 › this passage</span>
+            </div>
+            <div style="display:flex; gap:9px; justify-content:flex-end;">
+              <button style="height:38px; padding:0 16px; border:1px solid #2d3646; border-radius:9px; background:transparent; color:#9aa4b2; font:500 13px 'IBM Plex Sans',sans-serif; cursor:pointer;" style-hover="border-color:#3a4657; color:#d7dce4;">Cancel</button>
+              <button style="height:38px; padding:0 20px; border:0; border-radius:9px; background:linear-gradient(180deg,#8b7bf2,#6d5ae0); color:#fff; font:600 13px 'IBM Plex Sans',sans-serif; cursor:pointer; box-shadow:0 6px 16px rgba(109,90,224,0.4);" style-hover="filter:brightness(1.08);">Save assertion</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= F6: STATES GALLERY ================= -->
+    <div id="F6" style="flex:0 0 auto; width:640px;">
+      <div style="display:flex; align-items:baseline; gap:12px; margin-bottom:16px;">
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; color:#0b0e13; background:#8b7bf2; border-radius:6px; padding:3px 8px;">F6</span>
+        <span style="font-size:18px; font-weight:600; color:#eef1f6;">The states — legible, never silent</span>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+        <!-- offline (calm) -->
+        <div style="background:#0e1219; border:1px solid #262d38; border-radius:12px; padding:15px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:9px;">
+            <span style="width:9px; height:9px; border-radius:50%; background:#6b7482;"></span>
+            <span style="font-size:13px; font-weight:600; color:#d7dce4;">Receiver asleep</span>
+          </div>
+          <p style="margin:0; font-size:12px; line-height:1.55; color:#8b95a3;">Not an error. Captures queue locally and sync the moment it's back.</p>
+          <div style="margin-top:11px; font-size:11.5px; color:#7d8797; font-family:'IBM Plex Mono',monospace;">2 queued · will drain on reconnect</div>
+        </div>
+
+        <!-- partial -->
+        <div style="background:#0e1219; border:1px solid rgba(230,181,82,0.28); border-radius:12px; padding:15px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:9px;">
+            <span style="width:9px; height:9px; border-radius:50%; background:#e6b552;"></span>
+            <span style="font-size:13px; font-weight:600; color:#f0d59a;">Partial fidelity</span>
+          </div>
+          <p style="margin:0; font-size:12px; line-height:1.55; color:#8b95a3;">Captured visible text only — the app's native data wasn't available. Branches &amp; attachments may be missing.</p>
+          <div style="margin-top:11px; font-size:11.5px; color:#e6b552; cursor:pointer;">Reload page &amp; re-capture for full fidelity →</div>
+        </div>
+
+        <!-- failed with reason -->
+        <div style="background:#0e1219; border:1px solid rgba(240,106,106,0.28); border-radius:12px; padding:15px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:9px;">
+            <span style="width:9px; height:9px; border-radius:50%; background:#f06a6a;"></span>
+            <span style="font-size:13px; font-weight:600; color:#f6a3a3;">Capture failed</span>
+          </div>
+          <p style="margin:0; font-size:12px; line-height:1.55; color:#8b95a3;">Receiver rejected the envelope — <span style="color:#f6a3a3;">bearer token invalid</span>.</p>
+          <div style="margin-top:11px; display:flex; gap:8px;">
+            <span style="font-size:11.5px; color:#d7dce4; background:#171c25; border:1px solid #2d3646; border-radius:7px; padding:5px 10px; cursor:pointer;">Fix token</span>
+            <span style="font-size:11.5px; color:#d7dce4; background:#171c25; border:1px solid #2d3646; border-radius:7px; padding:5px 10px; cursor:pointer;">Retry</span>
+          </div>
+        </div>
+
+        <!-- stale / update available -->
+        <div style="background:#0e1219; border:1px solid rgba(95,176,232,0.28); border-radius:12px; padding:15px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:9px;">
+            <span style="width:9px; height:9px; border-radius:50%; background:#5fb0e8;"></span>
+            <span style="font-size:13px; font-weight:600; color:#bcd8ee;">3 new messages</span>
+          </div>
+          <p style="margin:0; font-size:12px; line-height:1.55; color:#8b95a3;">The page has moved past what's archived. Nothing lost — just newer.</p>
+          <div style="margin-top:11px; font-size:11.5px; color:#5fb0e8; cursor:pointer;">Capture the latest →</div>
+        </div>
+      </div>
+
+      <!-- silent-failure banner (the headline fix) -->
+      <div style="margin-top:14px; background:linear-gradient(180deg, rgba(230,181,82,0.09), transparent); border:1px solid rgba(230,181,82,0.3); border-radius:12px; padding:15px 16px; display:flex; gap:13px;">
+        <div style="flex:0 0 auto; width:34px; height:34px; border-radius:9px; background:rgba(230,181,82,0.14); display:grid; place-items:center;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#e6b552" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.42 0Z"/></svg>
+        </div>
+        <div>
+          <div style="font-size:13.5px; font-weight:600; color:#f0d59a; margin-bottom:3px;">Silent failure is designed out</div>
+          <p style="margin:0; font-size:12px; line-height:1.55; color:#9aa4b2;">Every conversation Polylogue <em style="font-style:normal; color:#cdd3dc;">sees</em> gets a timeline entry — capture, decision, or skip-with-reason. "Saw it and did nothing" is impossible: doing nothing is itself a logged, visible event. No more reading 160 lines of debug JSON by hand.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</x-dc>
+</body>
+</html>
