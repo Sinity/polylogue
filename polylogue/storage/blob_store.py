@@ -31,8 +31,12 @@ logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB
 
-# Valid blob hash: lowercase hex only
-_VALID_HEX = re.compile(r"^[0-9a-f]+$")
+# Valid blob hash: exactly 64 lowercase hex chars (a SHA-256 digest). Matched
+# with fullmatch (not the former match() + trailing-`$`, which also accepts a
+# trailing newline and any length >=1) so a truncated, over-long, or
+# newline-suffixed hash is rejected at the boundary rather than silently
+# accepted (jsy).
+_VALID_HEX = re.compile(r"[0-9a-f]{64}")
 
 Heartbeat = Callable[[], None]
 
@@ -55,7 +59,7 @@ class BlobStore:
 
     def blob_path(self, hash_hex: str) -> Path:
         """Return the filesystem path for a blob by its hex digest."""
-        if not _VALID_HEX.match(hash_hex):
+        if not _VALID_HEX.fullmatch(hash_hex):
             raise ValueError(f"invalid blob hash: {hash_hex!r} — expected lowercase hex string")
         return self.root / hash_hex[:2] / hash_hex[2:]
 
@@ -403,7 +407,7 @@ class BlobStore:
             would_delete_count = 0
             would_delete_bytes = 0
             for hash_hex in orphan_hashes:
-                if not _VALID_HEX.match(hash_hex):
+                if not _VALID_HEX.fullmatch(hash_hex):
                     continue
                 path = self.blob_path(hash_hex)
                 if path.exists():
@@ -426,7 +430,7 @@ class BlobStore:
         error_details: list[str] = []
 
         for hash_hex in orphan_hashes:
-            if not _VALID_HEX.match(hash_hex):
+            if not _VALID_HEX.fullmatch(hash_hex):
                 errors += 1
                 error_details.append(f"invalid hash: {hash_hex[:32]}...")
                 continue

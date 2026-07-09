@@ -84,16 +84,24 @@ class TestSanitizePathTraversal:
     def test_none_returns_none(self) -> None:
         assert sanitize_path(None) is None
 
-    def test_symlink_check_oserror_treats_path_as_suspicious(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Filesystem errors during symlink probing must not silently bypass the guard."""
+    def test_relative_path_is_not_symlink_probed_against_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """jsy: sanitize_path no longer probes Path(v).is_symlink() against the
+        process CWD -- that check tested an unrelated filesystem location
+        (the value is provider-reported attachment metadata, never opened
+        relative to CWD) and could never catch a real traversal-via-symlink.
+        A relative path that happens to collide with a real symlink under the
+        process's actual CWD is no longer specially blocked for that reason;
+        only traversal (..) and absolute-path rules apply."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "real_target").mkdir()
+        (tmp_path / "sessions").symlink_to(tmp_path / "real_target")
 
-        def _raise_permission_error(self: Path) -> bool:
-            raise PermissionError("simulated unreadable directory")
-
-        monkeypatch.setattr(Path, "is_symlink", _raise_permission_error)
-        result = sanitize_path("/some/safe/looking/path")
+        result = sanitize_path("sessions/chatgpt/export.json")
         assert result is not None
-        assert result.startswith("_blocked_")
+        assert not result.startswith("_blocked_")
+        assert "sessions" in result
 
 
 # =============================================================================
