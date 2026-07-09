@@ -141,16 +141,16 @@ convergence stages.
 
 | Provider | Detected by | Parser |
 |----------|-------------|--------|
-| ChatGPT | `mapping` dict with message graph | `parsers/chatgpt.py` |
-| Claude web | `chat_messages` list | `parsers/claude.py` |
-| Claude Code | `parentUuid`/`sessionId` in record array | `parsers/claude.py` (code path) |
-| Codex | Session envelope structure | `parsers/codex.py` |
-| Gemini | `chunkedPrompt.chunks` structure | `parsers/drive.py` |
-| Drive | Google Takeout format with OAuth | `parsers/drive.py` |
-| Gemini CLI | `local_agent.looks_like_gemini_cli()` document shape | `parsers/local_agent.py` |
-| Hermes | state-db payload or hermes agent document | `parsers/hermes_state.py`, `parsers/local_agent.py` |
-| Antigravity | Brain artifact metadata (`*.metadata.json`) or language-server Markdown export envelope | `parsers/antigravity.py` |
-| Browser capture | capture envelope wrapping a native provider payload | `parsers/browser_capture.py` |
+| ChatGPT | `mapping` dict with message graph | `sources/parsers/chatgpt.py` |
+| Claude web | `chat_messages` list | `sources/parsers/claude/ai_parser.py` |
+| Claude Code | `parentUuid`/`sessionId` in record array | `sources/parsers/claude/code_parser.py` (code path) |
+| Codex | Session envelope structure | `sources/parsers/codex.py` |
+| Gemini | `chunkedPrompt.chunks` structure | `sources/parsers/drive.py` |
+| Drive | Google Takeout format with OAuth | `sources/parsers/drive.py` |
+| Gemini CLI | `local_agent.looks_like_gemini_cli()` document shape | `sources/parsers/local_agent.py` |
+| Hermes | state-db payload or hermes agent document | `sources/parsers/hermes_state.py`, `sources/parsers/local_agent.py` |
+| Antigravity | Brain artifact metadata (`*.metadata.json`) or language-server Markdown export envelope | `sources/parsers/antigravity.py` |
+| Browser capture | capture envelope wrapping a native provider payload | `sources/parsers/browser_capture.py` |
 
 `detect_provider()` (in `sources/dispatch.py`) runs `looks_like()` checks in a
 tightness order, not filename order: structural/document detectors first
@@ -356,9 +356,9 @@ attachments, exports):
   subdirectories (`blob/ab/cdef...`)
 - **Dedup**: Identical content produces identical hashes — automatic
   deduplication
-- **Linking**: `artifact_observations.link_group_key` groups blobs by session
+- **Linking**: `raw_artifacts.link_group_key` groups blobs by session
   for lifecycle management (there is no separate `blob_links` table; the name
-  is a historical alias for this row-group view of `artifact_observations`)
+  is a historical alias for this row-group view of `raw_artifacts`)
 - **Scale**: ~24K blobs, ~42 GB in production archive
 - **GC**: Blob garbage collection is tracked in
   [#818](https://github.com/Sinity/polylogue/issues/818)
