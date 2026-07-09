@@ -65,6 +65,7 @@ MutationOperation: TypeAlias = Literal[
     "correction.save",
     "correction.delete",
     "correction.clear",
+    "reset",
 ]
 
 if TYPE_CHECKING:
