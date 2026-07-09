@@ -373,6 +373,8 @@ def build_session_profile_record(
         total_credit_cost=profile.total_credit_cost,
         cost_provenance=profile.cost_provenance,
         per_model_cost_json=profile.per_model_cost_json,
+        primary_model_name=profile.primary_model_name,
+        primary_model_family=profile.primary_model_family,
         thinking_duration_ms=profile.thinking_duration_ms,
         output_duration_ms=profile.output_duration_ms,
         tool_duration_ms=profile.tool_duration_ms,
@@ -461,6 +463,8 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
         "total_credit_cost": record.total_credit_cost,
         "cost_provenance": record.cost_provenance,
         "per_model_cost_json": record.per_model_cost_json,
+        "primary_model_name": record.primary_model_name,
+        "primary_model_family": record.primary_model_family,
     }
     return SessionProfile.from_dict(merged_payload)
 

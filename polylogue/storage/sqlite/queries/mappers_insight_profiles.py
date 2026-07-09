@@ -117,6 +117,8 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         total_credit_cost=float(_row_float(row, "total_credit_cost", 0.0) or 0.0),
         cost_provenance=_row_text(row, "cost_provenance") or "unknown",
         per_model_cost_json=_row_text(row, "per_model_cost_json") or "{}",
+        primary_model_name=_row_text(row, "primary_model_name"),
+        primary_model_family=_row_text(row, "primary_model_family"),
         evidence_payload=evidence_payload,
         inference_payload=inference_payload,
         enrichment_payload=enrichment_payload,

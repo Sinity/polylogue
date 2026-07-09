@@ -165,6 +165,12 @@ class SessionProfile:
     total_credit_cost: float = 0.0
     cost_provenance: str = "unknown"
     per_model_cost_json: str = "{}"
+    # 1vpm.1: the dominant model by assistant output-token share, and its
+    # canonical family (anthropic/openai/deepseek/...) via
+    # core.sources.canonical_model_family -- the enabling primitive for the
+    # `delegations` view (orchestrator/subagent model identity).
+    primary_model_name: str | None = None
+    primary_model_family: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.latency_percentiles_ms, dict):
@@ -236,6 +242,8 @@ class SessionProfile:
             "total_credit_cost": self.total_credit_cost,
             "cost_provenance": self.cost_provenance,
             "per_model_cost_json": self.per_model_cost_json,
+            "primary_model_name": self.primary_model_name,
+            "primary_model_family": self.primary_model_family,
         }
 
     @classmethod
@@ -320,6 +328,8 @@ class SessionProfile:
             total_credit_cost=coerce_float(payload.get("total_credit_cost"), 0.0),
             cost_provenance=optional_string(payload.get("cost_provenance")) or "unknown",
             per_model_cost_json=optional_string(payload.get("per_model_cost_json")) or "{}",
+            primary_model_name=optional_string(payload.get("primary_model_name")),
+            primary_model_family=optional_string(payload.get("primary_model_family")),
         )
 
 

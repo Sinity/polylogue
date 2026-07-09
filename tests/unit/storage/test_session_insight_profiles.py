@@ -339,6 +339,85 @@ def test_session_profile_evidence_payload_exposes_token_cost_fields() -> None:
     assert record.evidence_payload.cost_provenance == "provider_reported"
 
 
+def test_session_profile_record_exposes_primary_model_fields() -> None:
+    """1vpm.1: primary_model_name/primary_model_family must flow through the
+    record layer (INSERT columns + hydrate) unmodified -- these are the
+    enabling primitive for the `delegations` view's model identity."""
+    profile = build_session_profile(_enrichment_session())
+    profile = profile.__class__.from_dict(
+        {
+            **profile.to_dict(),
+            "primary_model_name": "claude-opus-4-8",
+            "primary_model_family": "anthropic",
+        }
+    )
+
+    record = build_session_profile_record(profile)
+
+    assert record.primary_model_name == "claude-opus-4-8"
+    assert record.primary_model_family == "anthropic"
+
+    from polylogue.storage.insights.session.profiles import hydrate_session_profile
+
+    rehydrated = hydrate_session_profile(record)
+    assert rehydrated.primary_model_name == "claude-opus-4-8"
+    assert rehydrated.primary_model_family == "anthropic"
+
+
+def test_session_profile_record_defaults_primary_model_fields_to_none() -> None:
+    profile = build_session_profile(_enrichment_session())
+    record = build_session_profile_record(profile)
+    assert record.primary_model_name is None
+    assert record.primary_model_family is None
+
+
+def test_build_session_profile_derives_primary_model_by_output_token_share() -> None:
+    """1vpm.1: the dominant model is the one with the most assistant
+    OUTPUT tokens, not the first/last one seen or the one with the most
+    input tokens."""
+    session = make_conv(
+        id="conv-multi-model",
+        provider=Provider.CLAUDE_CODE,
+        title="Multi-model session",
+        created_at=datetime(2026, 4, 2, 10, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 4, 2, 10, 3, tzinfo=timezone.utc),
+        messages=[
+            make_msg(
+                id="u1",
+                role="user",
+                provider=Provider.CLAUDE_CODE,
+                text="hello",
+                timestamp=datetime(2026, 4, 2, 10, 0, tzinfo=timezone.utc),
+            ),
+            make_msg(
+                id="a1",
+                role="assistant",
+                provider=Provider.CLAUDE_CODE,
+                text="a minor reply",
+                model_name="gpt-4o",
+                input_tokens=5000,
+                output_tokens=50,
+                timestamp=datetime(2026, 4, 2, 10, 1, tzinfo=timezone.utc),
+            ),
+            make_msg(
+                id="a2",
+                role="assistant",
+                provider=Provider.CLAUDE_CODE,
+                text="the dominant reply",
+                model_name="claude-opus-4-8",
+                input_tokens=100,
+                output_tokens=2000,
+                timestamp=datetime(2026, 4, 2, 10, 2, tzinfo=timezone.utc),
+            ),
+        ],
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.primary_model_name == "claude-opus-4-8"
+    assert profile.primary_model_family == "anthropic"
+
+
 def test_session_profile_record_exposes_shape_and_terminal_state() -> None:
     profile = build_session_profile(_enrichment_session())
     profile = profile.__class__.from_dict(

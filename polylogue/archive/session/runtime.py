@@ -20,7 +20,26 @@ from polylogue.core.enums import Origin
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
+    from polylogue.archive.semantic.cost_records import SessionCostBreakdown, SessionCostSummary
     from polylogue.archive.semantic.facts import SessionSemanticFacts
+
+
+def _primary_model(cost_summary: SessionCostSummary) -> tuple[str | None, str | None]:
+    """Return (primary_model_name, primary_model_family): the dominant model
+    by assistant output-token share, and its canonical family. 1vpm.1: the
+    enabling primitive for the `delegations` view's orchestrator/subagent
+    model identity. Reuses the per-model tally cost_compute already builds --
+    no separate pass over messages."""
+    from polylogue.archive.semantic.pricing import canonical_model_family
+
+    dominant: SessionCostBreakdown | None = None
+    for breakdown in cost_summary.per_model:
+        if dominant is None or breakdown.output_tokens > dominant.output_tokens:
+            dominant = breakdown
+    if dominant is None or dominant.output_tokens <= 0:
+        return None, None
+    model_name = dominant.provider_model_name or dominant.normalized_model
+    return model_name, canonical_model_family(model_name)
 
 
 def _profile_timestamp_bounds(
@@ -344,6 +363,7 @@ def build_session_profile(
     add_timing("profile.cost_summary", t0)
     cost_usd = cost_summary.total_api_cost_usd
     cost_is_estimated = cost_summary.cost_confidence != "reported"
+    primary_model_name, primary_model_family = _primary_model(cost_summary)
     t0 = time.perf_counter()
     resolved_compaction_count = (
         compaction_count
@@ -441,6 +461,8 @@ def build_session_profile(
             [b.model_dump(mode="json") for b in cost_summary.per_model] if cost_summary.per_model else [],
             default=str,
         ),
+        primary_model_name=primary_model_name,
+        primary_model_family=primary_model_family,
         compaction_count=resolved_compaction_count,
         tags=tuple(session.tags),
         is_continuation=session.is_continuation,

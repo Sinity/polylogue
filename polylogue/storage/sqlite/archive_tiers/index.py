@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 26
+INDEX_SCHEMA_VERSION = 27
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -948,7 +948,12 @@ CREATE TABLE IF NOT EXISTS session_profiles (
     cost_credits                    REAL,
     cost_usd                        REAL,
     priced_with                     TEXT,
-    priced_at_ms                    INTEGER
+    priced_at_ms                    INTEGER,
+    -- 1vpm.1: dominant model by assistant output-token share + its canonical
+    -- family (anthropic/openai/deepseek/...) -- the enabling primitive for
+    -- the `delegations` view's orchestrator/subagent model identity.
+    primary_model_name              TEXT,
+    primary_model_family            TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_profiles_provider
