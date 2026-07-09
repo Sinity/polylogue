@@ -7,6 +7,7 @@ Runs as part of devtools verify.
 
 from __future__ import annotations
 
+import re
 import shlex
 import sys
 from datetime import UTC, date, datetime, timedelta
@@ -141,8 +142,9 @@ def check_coverage_gaps(plans_dir: Path) -> list[str]:
                     errors.append(f"{label} missing or invalid {field}")
             issue = gap.get("issue")
             suppression = gap.get("suppression")
-            if not _valid_issue_ref(issue) and not _valid_suppression_ref(suppression):
-                errors.append(f"{label} missing issue or suppression")
+            bead = gap.get("bead")
+            if not _valid_issue_ref(issue) and not _valid_suppression_ref(suppression) and not _valid_bead_ref(bead):
+                errors.append(f"{label} missing issue, bead, or suppression")
             next_evidence = gap.get("next_evidence")
             if not isinstance(next_evidence, str) or not next_evidence.strip():
                 errors.append(f"{label} missing next_evidence")
@@ -530,6 +532,13 @@ def _valid_issue_ref(value: object) -> bool:
 
 def _valid_suppression_ref(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+_BEAD_REF_PATTERN = re.compile(r"^polylogue-[a-z0-9]+(\.[0-9]+)?$")
+
+
+def _valid_bead_ref(value: object) -> bool:
+    return isinstance(value, str) and bool(_BEAD_REF_PATTERN.match(value.strip()))
 
 
 def _resolvable_next_evidence(value: str) -> bool:

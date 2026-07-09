@@ -28,7 +28,7 @@ Cost flows through four substrate-owned stages:
    (`polylogue/cost/outlook.py`).
 
 Each stage is pure-function-shaped on its inputs. The CLI (`polylogue
-cost outlook`), MCP tool (`cost_outlook`), and Python API
+analyze --cost-outlook`), MCP tool (`cost_outlook`), and Python API
 (`Polylogue.cost_outlook`) are leaf adapters over the same typed
 `CycleOutlook` envelope.
 
@@ -38,7 +38,7 @@ cost outlook`), MCP tool (`cost_outlook`), and Python API
 Provider usage accounting is distinct from cost estimation. The authoritative
 provider evidence, when present, lives in `session_provider_usage_events`;
 `session_model_usage` is a rebuildable rollup/read model; transcript words and
-text length are estimate-only signals. `polylogue diagnostics usage` reports all
+text length are estimate-only signals. `polylogue analyze usage` reports all
 three streams separately so a missing provider counter does not appear as a
 provider-reported zero.
 

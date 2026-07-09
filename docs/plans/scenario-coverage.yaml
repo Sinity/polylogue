@@ -98,7 +98,7 @@ coverage_gaps:
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
-    issue: 590
+    bead: polylogue-9e5.19
     next_evidence: devtools lab projections
   - id: scenario.performance
     subject: performance
@@ -107,7 +107,7 @@ coverage_gaps:
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
-    issue: 590
+    bead: polylogue-20d.16
     next_evidence: devtools lab projections
   - id: scenario.security-privacy
     subject: security_privacy
@@ -116,7 +116,7 @@ coverage_gaps:
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
-    issue: 590
+    bead: polylogue-kwsb
     next_evidence: devtools lab projections
   - id: scenario.distribution
     subject: distribution
@@ -125,7 +125,7 @@ coverage_gaps:
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
-    issue: 590
+    bead: polylogue-3tl.7
     next_evidence: devtools lab projections
   - id: scenario.schema-rebuild-safety
     subject: schema_rebuild_safety
@@ -134,5 +134,5 @@ coverage_gaps:
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
-    issue: 590
+    bead: polylogue-1xc.8
     next_evidence: devtools lab projections

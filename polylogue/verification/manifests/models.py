@@ -94,6 +94,7 @@ class CoverageGap(BaseModel):
     review_after: str  # ISO-8601 date
     issue: int | str | None = None
     suppression: str | None = None
+    bead: str | None = None
     next_evidence: str | None = None
     subject: str | None = None
     dimension: str | None = None
