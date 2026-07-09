@@ -15,6 +15,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab policy demo-packet-registry",
     "lab policy insight-honesty",
     "lab policy schema-versioning",
+    "lab policy timestamp-doctrine",
     "lab provider completeness",
     "lab probe capture-regression",
     "lab probe cost-reconciliation",
@@ -738,6 +739,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "or malformed packet before it silently drops out of the demo shelf."
         ),
         examples=("devtools lab policy demo-packet-registry", "devtools lab policy demo-packet-registry --json"),
+    ),
+    CommandSpec(
+        "lab policy timestamp-doctrine",
+        "verification lab",
+        "Verify durable-tier DDL never stores a timestamp column as TEXT.",
+        "devtools.verify_timestamp_doctrine",
+        use_when=(
+            "Enforce the time doctrine (UTC epoch-ms canon, docs/internals.md) at DDL-review "
+            "time (cpf.1): a TEXT timestamp in source.db/user.db re-introduces tz-unknown "
+            "ambiguity and lexicographic-vs-temporal sort divergence, and durable tiers need "
+            "an explicit additive migration to fix later -- catching it before merge is orders "
+            "cheaper than a copy-forward migration after."
+        ),
+        examples=("devtools lab policy timestamp-doctrine", "devtools lab policy timestamp-doctrine --json"),
     ),
     CommandSpec(
         "lab policy insight-honesty",
