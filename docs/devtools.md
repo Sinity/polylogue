@@ -50,6 +50,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab policy demo-packet-registry` | Enforce the 212 portfolio contract (polylogue-212.7): every demo prompt in .agent/demos/registry.json must have a packet directory carrying PROMPT.md, finding.yaml (five-part provenance stanza), report.md (fixed section order), evidence.ndjson, queries.ndjson, checks.json, and run.log. Catches a missing or malformed packet before it silently drops out of the demo shelf. |
 | `devtools lab policy insight-honesty` | Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and polylogue.insights.rigor's contract matrix/exemption list never drift apart (9e5.28) -- a registered product with neither a RigorContract nor a RIGOR_EXEMPT entry used to silently vanish from `polylogue insights audit` instead of showing as uncovered. |
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
+| `devtools lab policy timestamp-doctrine` | Enforce the time doctrine (UTC epoch-ms canon, docs/internals.md) at DDL-review time (cpf.1): a TEXT timestamp in source.db/user.db re-introduces tz-unknown ambiguity and lexicographic-vs-temporal sort divergence, and durable tiers need an explicit additive migration to fix later -- catching it before merge is orders cheaper than a copy-forward migration after. |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
 | `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
 | `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
@@ -124,6 +125,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab policy demo-packet-registry` | Verify every registered 212 demo has a conforming Demo Finding Packet. |
 | `devtools lab policy insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
+| `devtools lab policy timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
 | `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
 | `devtools lab probe pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |

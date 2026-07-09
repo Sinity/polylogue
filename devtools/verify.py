@@ -1042,6 +1042,7 @@ def build_verify_steps(
         steps.append(("lab smoke", _devtools_cmd("lab smoke", "run", "archive-smoke", "--tier", "0")))
         steps.append(("bench slo", _devtools_cmd("bench slo", "--include-lab")))
         steps.append(("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")))
+        steps.append(("lab policy timestamp-doctrine", _devtools_cmd("lab policy timestamp-doctrine")))
         steps.append(("lab policy insight-honesty", _devtools_cmd("lab policy insight-honesty")))
         steps.append(("lab policy demo-packet-registry", _devtools_cmd("lab policy demo-packet-registry")))
     return steps
