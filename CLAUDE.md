@@ -264,6 +264,47 @@ follow-up work rather than leaving markdown TODOs as the source of truth.
 `bd dolt push` follows the same policy as `git push` (feature branches / PR
 updates after verification; no direct push to protected default).
 
+**Branch-switching resets bd's live query state — this is bd's correct,
+documented behavior, not a bug, but it actively fights a workflow that spins
+up many short-lived branches.** `post-checkout`/`post-merge` hooks
+(`.beads-hooks/`, `bd hooks run ...`) re-import whichever `.beads/issues.jsonl`
+is committed on the branch you just checked out into the live database. If
+branch A has a bead closed and branch B (checked out later, created earlier
+from an older `master`) doesn't have that commit yet, `bd show`/`bd ready` on
+branch B will report the bead as still open — nothing is lost (the close is
+safe in branch A's git history), but the live query layer is stale until a
+commit carrying that state lands on whatever branch you're now on. Concretely
+seen this session: a bead closed, then re-opened by a later unrelated
+checkout, three separate times, before being caught.
+
+To avoid this:
+- **Don't spin up a new dedicated `chore(beads): ...` branch while one is
+  already open and unmerged.** Merge (or rebase onto) it first, or add commits
+  to the same branch, rather than creating a sibling branch from a
+  possibly-stale `master`.
+- **Merge bd-only bookkeeping branches immediately** — they are small and
+  fast to verify; don't let one sit open while starting unrelated work on
+  other branches, since every branch created off `master` in the meantime
+  will diverge from it and need its own conflict resolution later.
+- **Prefer folding a `bd claim`/`bd close` into the same commit/branch as the
+  actual code change** it accompanies, rather than a separate tiny branch per
+  mutation — this was the single biggest source of divergent branches this
+  session. Reserve a dedicated bookkeeping branch for bd-only changes that
+  don't accompany code (e.g. batching several investigation closes together).
+- **After any `git checkout`/`git merge`/`git worktree add`, re-verify with
+  `bd show <id> --json` before trusting `bd ready`/`bd show` output for a bead
+  you just mutated** — treat it as possibly stale relative to your last
+  action, the same as any other memory-recalled fact.
+- **When resolving a `.beads/*.jsonl` merge conflict, do not run `bd export`
+  to "fix" it.** `bd export` (and the pre-commit hook that calls it) writes to
+  a FIXED path resolved from bd's own database location, independent of the
+  invoking shell's cwd — inside a temporary conflict-resolution worktree this
+  silently no-ops on that worktree's own file, leaving literal `<<<<<<<`
+  conflict markers in place. Extract both sides directly (`git show
+  :2:.beads/issues.jsonl` / `:3:...`), hand-merge bead-by-id preferring
+  whichever side has the later `updated_at`, write the result back, then
+  `git add`. Verify every line parses as JSON before committing.
+
 ### Issue-first for non-trivial work
 
 Open an issue before work that is non-trivial, spans multiple PRs, or introduces
