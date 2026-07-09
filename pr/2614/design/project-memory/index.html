@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Memory — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+        .home-hero .tagline { font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 2rem; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2rem; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="../../" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="../../docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="../../docs/search/" >
+                    Search
+                </a>
+                
+                <a href="../../docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="../../docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="../../docs/export/" >
+                    Export
+                </a>
+                
+                <a href="../../docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="../../reference/cli/" >
+                    CLI
+                </a>
+                
+                <a href="../../reference/mcp/" >
+                    MCP
+                </a>
+                
+                <a href="../../reference/api/" >
+                    API
+                </a>
+                
+                <a href="../../reference/config/" >
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="../../architecture/rings/" >
+                    Rings
+                </a>
+                
+                <a href="../../architecture/internals/" >
+                    Internals
+                </a>
+                
+                <a href="../../architecture/schema/" >
+                    Schema
+                </a>
+                
+                <a href="../../architecture/contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="../../verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="../../verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="../../verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="../../verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="../second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="../time-machine/" >
+                    Time Machine
+                </a>
+                
+                <a href="./" class="active">
+                    Project Memory
+                </a>
+                
+                <a href="../agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="../archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="../whole-product/" >
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<h1>Project Memory</h1>
+<p>Machine-observed knowledge about a project, accumulated from AI coding sessions.
+Complements CLAUDE.md — CLAUDE.md is what humans declare; project memory is what
+agents actually do.</p>
+<h2>Design Properties</h2>
+<p>Four properties guide the design:</p>
+<ol>
+<li><strong>Proactive</strong> — injected at SessionStart without the agent asking. The agent
+shouldn't need to know what questions to ask.</li>
+<li><strong>Visible degradation</strong> — stale entries visibly decay rather than silently
+becoming wrong. Freshness is a first-class property, not an afterthought.</li>
+<li><strong>Provenance</strong> — every entry cites the session that produced it. Agents can
+judge credibility from source context.</li>
+<li><strong>Queryability</strong> — agents can search project memory via MCP tools, not just
+receive the injected summary.</li>
+</ol>
+<h2>Record Types</h2>
+<p>Five kinds of knowledge, each with a distinct schema:</p>
+<h3>Decision</h3>
+<p>A design choice with rationale and context. Example: &quot;Chose WAL mode over
+rollback journal because concurrent reads during ingestion are required.&quot;
+Fields: <code>summary</code>, <code>rationale</code>, <code>alternatives_rejected</code>, <code>session_id</code>,
+<code>recorded_at</code>, <code>freshness_decay_days</code>.</p>
+<h3>Trial</h3>
+<p>Something that was tried and failed. Prevents re-litigation. Example:
+&quot;Tried sqlite-vec 0.1.0 but it crashed on vector dims &gt; 1024.&quot;
+Fields: <code>summary</code>, <code>failure_mode</code>, <code>session_id</code>, <code>recorded_at</code>.</p>
+<h3>HotFile</h3>
+<p>A file that consistently causes issues or is central to the architecture.
+Example: &quot;archive_tiers/index.py — changing this requires index-tier version bump and
+regenerating all test fixtures.&quot;
+Fields: <code>path</code>, <code>why_hot</code>, <code>last_modified_session_id</code>, <code>recorded_at</code>.</p>
+<h3>Pattern</h3>
+<p>A recurring code pattern with its rationale. Example: &quot;All SQLite writes use
+BEGIN IMMEDIATE to avoid SQLITE_BUSY on concurrent access.&quot;
+Fields: <code>pattern_name</code>, <code>description</code>, <code>examples</code>, <code>session_ids[]</code>,
+<code>recorded_at</code>.</p>
+<h3>IssueNote</h3>
+<p>A durable observation about an open issue. Supplements the issue body with
+machine-observed context. Example: &quot;The concurrency test fails only on Python
+3.11, not 3.12+. Possibly a sqlite3 module bug.&quot;
+Fields: <code>issue_number</code>, <code>observation</code>, <code>session_id</code>, <code>recorded_at</code>.</p>
+<h2>Freshness Model</h2>
+<p>Entries decay on a per-type schedule:</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Default decay</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Decision</td>
+<td>90 days</td>
+<td>Architecture decisions age slowly</td>
+</tr>
+<tr>
+<td>Trial</td>
+<td>180 days</td>
+<td>Failed approaches stay failed</td>
+</tr>
+<tr>
+<td>HotFile</td>
+<td>30 days</td>
+<td>File importance shifts with codebase</td>
+</tr>
+<tr>
+<td>Pattern</td>
+<td>60 days</td>
+<td>Patterns persist but can become anti-patterns</td>
+</tr>
+<tr>
+<td>IssueNote</td>
+<td>14 days</td>
+<td>Issue context changes rapidly</td>
+</tr>
+</tbody>
+</table>
+<p>Decay is not deletion. Stale entries remain queryable but are excluded from
+SessionStart injection. An entry is &quot;stale&quot; when <code>recorded_at + decay_days &lt; now</code>.</p>
+<p>Entries can be refreshed: if a new session confirms a Decision or Pattern, its
+<code>recorded_at</code> is bumped. Conflicts (new session contradicts an old entry) are
+surfaced, not silently resolved.</p>
+<h2>SessionStart Injection</h2>
+<p>The hook injects project memory into <code>additionalContext</code>:</p>
+<pre><code>[Project Memory — polylogue]
+Recent decisions (2):
+- Chose WAL mode over rollback journal (2026-04-15)
+- Schema is fresh-only, no in-place upgrade chain (2026-03-10)
+
+Active patterns (3):
+- All SQLite writes use BEGIN IMMEDIATE
+- Content hash excludes user metadata
+- ...
+
+Hot files (3):
+- polylogue/storage/sqlite/archive_tiers/index.py — index-tier schema authority
+- ...
+
+Stale warnings (1):
+- &quot;Use the root batch command for all pipeline operations&quot; — daemon replaced this in #717
+</code></pre>
+<p>The injection is capped at 250 tokens. Ranking formula:</p>
+<pre><code>score = file_match(4.0) + recency_decay(0.9^days) + event_match(2.0)
+</code></pre>
+<ul>
+<li><code>file_match</code>: if the entry references files touched in the current session</li>
+<li><code>recency_decay</code>: exponential decay since <code>recorded_at</code></li>
+<li><code>event_match</code>: if the entry's session touched similar files to current session</li>
+</ul>
+<p>Top 3 entries by score are injected.</p>
+<h2>Storage</h2>
+<p>A <code>project_memory</code> table in the archive database. Not a separate file — it lives
+with the rest of polylogue's data so it benefits from FTS5 search, backup, and
+the existing query infrastructure.</p>
+<pre><code class="language-sql">CREATE TABLE project_memory (
+    id TEXT PRIMARY KEY,
+    project_path TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('decision','trial','hotfile','pattern','issuenote')),
+    summary TEXT NOT NULL,
+    detail TEXT,
+    session_ids TEXT NOT NULL,  -- JSON array
+    recorded_at TEXT NOT NULL,
+    refreshed_at TEXT,
+    freshness_decay_days INTEGER NOT NULL DEFAULT 30,
+    file_refs TEXT  -- JSON array of paths
+);
+</code></pre>
+<h2>MCP Surface</h2>
+<p>Three tools:</p>
+<ul>
+<li><code>get_project_memory(project_path, kind=None)</code> — returns all entries, optionally filtered by kind</li>
+<li><code>search_project_memory(query, project_path)</code> — FTS5 search across summaries and details</li>
+<li><code>record_project_memory(kind, summary, detail, file_refs)</code> — agent-initiated recording (requires write role)</li>
+</ul>
+<h2>Relationship to CLAUDE.md</h2>
+<p>CLAUDE.md is human-curated and checked into the repo. Project memory is
+machine-observed and stored in the archive. They serve different needs:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>CLAUDE.md</th>
+<th>Project Memory</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Author</td>
+<td>Human</td>
+<td>Agent (observed)</td>
+</tr>
+<tr>
+<td>Content</td>
+<td>Declared conventions</td>
+<td>Revealed behavior</td>
+</tr>
+<tr>
+<td>Freshness</td>
+<td>Manual updates</td>
+<td>Automatic decay</td>
+</tr>
+<tr>
+<td>Scope</td>
+<td>What should be true</td>
+<td>What actually happens</td>
+</tr>
+<tr>
+<td>Verification</td>
+<td>Code review</td>
+<td>Session evidence</td>
+</tr>
+</tbody>
+</table>
+<p>Neither replaces the other. CLAUDE.md says &quot;we use WAL mode.&quot; Project memory
+says &quot;we tried switching to rollback journal in session X and it caused Y.&quot;</p>
+<h2>Build Order</h2>
+<ol>
+<li><code>project_memory</code> table + backfill</li>
+<li>MCP tools (read-only first: search + get)</li>
+<li>SessionStart hook injection with ranking formula</li>
+<li>Agent-initiated recording (write tool)</li>
+<li>Freshness decay + conflict detection</li>
+<li>Automated capture heuristics (detect Decisions from session patterns)</li>
+</ol>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="../time-machine/">← Time Machine</a>
+    <a href="../agent-first-mcp/">Agent-First MCP →</a>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — your AI memory</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>
