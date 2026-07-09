@@ -288,6 +288,107 @@ def test_actions_view_pairs_reemitted_tool_id_by_transcript_rank_not_cross_produ
     ]
 
 
+def test_actions_view_ranks_variant_messages_deterministically(tmp_path: Path) -> None:
+    """CodeRabbit (#2597): two messages sharing the same `position` (variant
+    siblings, disambiguated only by variant_index) must not tie in the rank
+    ORDER BY -- a tie would let SQLite assign use_rank/result_rank
+    independently across the two CTEs and cross-pair the wrong use with the
+    wrong result, re-introducing the exact fanout/mismatch class this view
+    fix targets. variant_index must break the tie."""
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            native_id, origin, title, content_hash, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("variant-session", "claude-code-session", "Variant tie", _HASH, 1_767_225_600_000, 1_767_225_601_000),
+    )
+    session_id = conn.execute("SELECT session_id FROM sessions WHERE native_id = ?", ("variant-session",)).fetchone()[
+        "session_id"
+    ]
+
+    # Two variant siblings at the SAME position (0), variant_index 0 and 1.
+    for variant_index in (0, 1):
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, variant_index, role, message_type, content_hash, occurred_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                f"msg-variant-{variant_index}",
+                0,
+                variant_index,
+                "assistant",
+                "message",
+                _HASH,
+                1_767_225_600_000 + variant_index,
+            ),
+        )
+    message_ids = [
+        row["message_id"]
+        for row in conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? ORDER BY variant_index", (session_id,)
+        ).fetchall()
+    ]
+
+    # Insert all uses in variant order, THEN all results in REVERSED variant
+    # order. Without a variant_index tie-breaker, SQLite's ROW_NUMBER over a
+    # tied ORDER BY commonly falls back to physical/rowid (insertion) order --
+    # which would rank uses as [variant-0, variant-1] but results as
+    # [variant-1, variant-0], cross-pairing rank 1 (variant-0's use) with
+    # variant-1's result. This insertion order is what actually reproduces
+    # that mismatch; inserting use+result together per variant does not, since
+    # both CTEs then happen to tie-break in the same coincidental order.
+    for variant_index, message_id in enumerate(message_ids):
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_id,
+                session_id,
+                0,
+                "tool_use",
+                "shell",
+                "toolu_variant_tied",
+                f'{{"command": "variant-cmd-{variant_index}"}}',
+            ),
+        )
+    for variant_index, message_id in reversed(list(enumerate(message_ids))):
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, text, tool_id, tool_result_is_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, 1, "tool_result", f"variant-output-{variant_index}", "toolu_variant_tied", 0),
+        )
+
+    actions = conn.execute(
+        """
+        SELECT tool_command, output_text
+        FROM actions
+        WHERE session_id = ?
+        ORDER BY tool_command
+        """,
+        (session_id,),
+    ).fetchall()
+
+    # Each variant's use pairs with ITS OWN result (rank order follows
+    # variant_index), never cross-paired with the other variant's result.
+    assert [dict(row) for row in actions] == [
+        {"tool_command": "variant-cmd-0", "output_text": "variant-output-0"},
+        {"tool_command": "variant-cmd-1", "output_text": "variant-output-1"},
+    ]
+
+
 def test_actions_view_never_cross_pairs_empty_string_tool_id(tmp_path: Path) -> None:
     """Defends the cross-product class the fix guards against: an empty-string
     tool_id (never emitted by current parsers, which use NULL) must not match

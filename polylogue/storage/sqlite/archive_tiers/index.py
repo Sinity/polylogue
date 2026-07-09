@@ -339,8 +339,12 @@ END;
 -- xnkf: a plain equality join on tool_id fans out when a provider re-emits
 -- the same tool_id on distinct messages (verified live: identical toolu_
 -- ids as 2 tool_use + 2 tool_result blocks at different positions, NOT
--- variants). Rank each side by transcript order (message position, then
--- block position) within (session_id, tool_id) and pair same-rank rows --
+-- variants). Rank each side by transcript order (message position, THEN
+-- variant_index, then block position -- messages are only unique on
+-- (position, variant_index), so omitting variant_index would leave ties
+-- between regenerated variant messages, letting SQLite assign ranks
+-- independently/arbitrarily across the two CTEs and re-introduce
+-- cross-pairing) within (session_id, tool_id), and pair same-rank rows --
 -- the Nth use in the transcript gets the Nth result, never a cross
 -- product. Uses with no tool_id (NULL or '') are never rank-paired -- SQL
 -- equality never matches NULL, so a NULL tool_id use was already always
@@ -362,7 +366,7 @@ WITH ranked_uses AS (
         u.tool_id,
         ROW_NUMBER() OVER (
             PARTITION BY u.session_id, u.tool_id
-            ORDER BY um.position, u.position
+            ORDER BY um.position, um.variant_index, u.position
         ) AS use_rank
     FROM blocks u
     JOIN messages um ON um.message_id = u.message_id
@@ -378,7 +382,7 @@ ranked_results AS (
         r.tool_result_exit_code AS exit_code,
         ROW_NUMBER() OVER (
             PARTITION BY r.session_id, r.tool_id
-            ORDER BY rm.position, r.position
+            ORDER BY rm.position, rm.variant_index, r.position
         ) AS result_rank
     FROM blocks r
     JOIN messages rm ON rm.message_id = r.message_id
