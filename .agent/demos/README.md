@@ -17,6 +17,8 @@ better demo supersedes them.
 - `agent-forensics` — Agent Forensics
   - readme: `agent-forensics/README.md`
   - files: 9 (9 readable)
+- `anti-demo-multi-source-reconstruction` — Anti Demo Multi Source Reconstruction
+  - files: 7 (4 readable)
 - `archive-debt-summary` — Archive Debt Summary Demo
   - readme: `archive-debt-summary/README.md`
   - analysis: `archive-debt-summary/ANALYSIS.md`

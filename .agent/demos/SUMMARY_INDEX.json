@@ -8,6 +8,7 @@
     "without_caveat_fields": [],
     "unsummarized_demos": [
       "_packet-contract-stub",
+      "anti-demo-multi-source-reconstruction",
       "attachment-acquisition-census",
       "chatlog-exports",
       "cli-surface-audit",

@@ -1,0 +1,25 @@
+=== Step 1: what session-to-external-activity correlation actually exists ===
+$ grep -n "CREATE TABLE" polylogue/storage/sqlite/archive_tiers/index.py | grep -iE "session_commits|session_repos"
+506:CREATE TABLE IF NOT EXISTS session_repos (
+517:CREATE TABLE IF NOT EXISTS session_commits (
+
+session_commits columns (per-session git correlation, confidence-scored, NOT minute-level):
+517:CREATE TABLE IF NOT EXISTS session_commits (
+518-    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+519-    commit_sha      TEXT NOT NULL,
+520-    repo_id         TEXT REFERENCES repos(repo_id) ON DELETE CASCADE,
+521-    detection_type  TEXT NOT NULL CHECK(detection_type IN ('time_window', 'file_overlap', 'explicit_ref', 'origin_reported')),
+522-    method          TEXT,
+523-    confidence      REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+524-    evidence_json   TEXT NOT NULL DEFAULT '{{}}',
+525-    created_at_ms   INTEGER NOT NULL,
+526-    PRIMARY KEY(session_id, commit_sha)
+527-) STRICT;
+
+=== Step 2: search for any desktop/shell/browser telemetry table in Polylogue's own schema ===
+$ grep -n "CREATE TABLE" polylogue/storage/sqlite/archive_tiers/index.py | grep -iE "window|focus|shell_history|browser_tab|activitywatch"
+(no output above: no such table exists in polylogue/storage/sqlite/archive_tiers/index.py)
+
+=== Step 3: confirm no other tier (source/embeddings/user/ops) carries this either ===
+$ grep -rln "window_focus\|shell_history\|browser_tab\|activitywatch" polylogue/storage/sqlite/archive_tiers/*.py
+(no matches -- confirmed absent across all tiers)

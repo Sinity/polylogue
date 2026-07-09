@@ -1,0 +1,8 @@
+{
+  "pass": true,
+  "verdict": "not_supported",
+  "unsupported_claims": [
+    "minute-by-minute cross-source (chat + desktop window focus + shell history + browser tabs) reconstruction of operator activity for a given day"
+  ],
+  "coverage_notes": "pass=true means the refusal itself is correctly evidenced (schema-grep confirms no window-focus/shell-history/browser-tab table exists in any Polylogue tier), not that the analytical claim succeeded. No bead currently owns cross-system (Polylogue+Lynchpin) timeline fusion -- stated plainly rather than citing an invented or loosely-related bead ref."
+}
