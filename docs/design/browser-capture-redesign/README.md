@@ -1,5 +1,13 @@
 # Browser-capture extension redesign (Claude Design output, 2026-07-09)
 
+**Status: resolved.** A follow-up pass grounded in real authenticated
+ChatGPT/Claude.ai screenshots resolved the one open question the first pass
+left (F2/F3 vs. F4 placement, see below). `mockup.dc.html` is the current
+(second-pass) version; `f2-fixed-verification.png` is a rendered check of
+the resolved layers against ChatGPT's real layout. The original brief that
+produced the first pass is reproduced in full in each bead's design notes
+(`polylogue-90y`, `polylogue-3v1`, `polylogue-ptx`).
+
 Source: operator-commissioned redesign via the "Claude Design" tool, seeded
 with a comprehensive context brief covering the extension's architecture,
 existing internal design work (`polylogue-90y`, `polylogue-3v1`,
@@ -58,16 +66,35 @@ Visual language: dark-first, IBM Plex Sans/Mono, violet (`#8b7bf2`) accent —
 deliberately distinct from ChatGPT's and Claude.ai's own palettes (confirmed
 against the real screenshots, not just asserted).
 
-## Open question this pack doesn't resolve
+## Resolved: F2/F3 vs. F4 placement
 
-F2/F3 (fully separate shadow-DOM chip + slide-over) and F4 (blended into the
-host's existing per-message action row) are two different placement
-strategies for overlapping capability, presented in parallel rather than
-reconciled. A follow-up brief requesting a single recommended direction
-(or an explicit division of responsibility between the two) has been
-prepared, grounded in real host screenshots (kept local, not committed —
-see above) — see the bead notes on `polylogue-90y` for the exact follow-up
-prompt.
+The first pass presented F2/F3 (shadow-DOM chip + slide-over) and F4
+(blended into the host's per-message action row) as parallel alternatives.
+A follow-up pass, grounded in real authenticated ChatGPT/Claude.ai
+screenshots (kept local, not committed), resolved this: **they aren't
+alternatives, they're a two-layer split with one boundary rule** —
+
+> Per-message state blends in. Cross-conversation intelligence floats.
+
+- **Layer 1 — ambient, blended (F4)**: a capture-status dot + "save to
+  Polylogue" action woven into the host's *existing* per-message action row
+  (copy/feedback/regenerate), matched to its exact icon size (~30px),
+  ghost/hover style, and placement — both ChatGPT and Claude.ai already have
+  this pattern, this extends it rather than inventing something new. Always
+  present, answers "is *this* captured?" without a click.
+- **Layer 2 — deep-dive, separate (F2/F3)**: the corner chip (⌥P) + 360px
+  slide-over, holding everything with *no host equivalent* — session cost,
+  archive recall, relevant judged assertions, the "what Polylogue did"
+  timeline. Deliberately its own surface; inventing host-blended UI for
+  this would read as foreign.
+
+`f2-fixed-verification.png` shows both layers rendered together against
+ChatGPT's real sidebar/composer/message-action-row layout (sanitized
+content, not real chat data) — confirming no visual collision with what the
+host already docks near the composer.
+
+Recorded verbatim on `polylogue-90y`'s design notes and folded into its
+acceptance criteria.
 
 ## Beads updated with this design as concrete implementation input
 
