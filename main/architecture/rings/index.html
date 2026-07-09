@@ -493,52 +493,52 @@ convergence stages.</p>
 <tr>
 <td>ChatGPT</td>
 <td><code>mapping</code> dict with message graph</td>
-<td><code>parsers/chatgpt.py</code></td>
+<td><code>sources/parsers/chatgpt.py</code></td>
 </tr>
 <tr>
 <td>Claude web</td>
 <td><code>chat_messages</code> list</td>
-<td><code>parsers/claude.py</code></td>
+<td><code>sources/parsers/claude/ai_parser.py</code></td>
 </tr>
 <tr>
 <td>Claude Code</td>
 <td><code>parentUuid</code>/<code>sessionId</code> in record array</td>
-<td><code>parsers/claude.py</code> (code path)</td>
+<td><code>sources/parsers/claude/code_parser.py</code> (code path)</td>
 </tr>
 <tr>
 <td>Codex</td>
 <td>Session envelope structure</td>
-<td><code>parsers/codex.py</code></td>
+<td><code>sources/parsers/codex.py</code></td>
 </tr>
 <tr>
 <td>Gemini</td>
 <td><code>chunkedPrompt.chunks</code> structure</td>
-<td><code>parsers/drive.py</code></td>
+<td><code>sources/parsers/drive.py</code></td>
 </tr>
 <tr>
 <td>Drive</td>
 <td>Google Takeout format with OAuth</td>
-<td><code>parsers/drive.py</code></td>
+<td><code>sources/parsers/drive.py</code></td>
 </tr>
 <tr>
 <td>Gemini CLI</td>
 <td><code>local_agent.looks_like_gemini_cli()</code> document shape</td>
-<td><code>parsers/local_agent.py</code></td>
+<td><code>sources/parsers/local_agent.py</code></td>
 </tr>
 <tr>
 <td>Hermes</td>
 <td>state-db payload or hermes agent document</td>
-<td><code>parsers/hermes_state.py</code>, <code>parsers/local_agent.py</code></td>
+<td><code>sources/parsers/hermes_state.py</code>, <code>sources/parsers/local_agent.py</code></td>
 </tr>
 <tr>
 <td>Antigravity</td>
 <td>Brain artifact metadata (<code>*.metadata.json</code>) or language-server Markdown export envelope</td>
-<td><code>parsers/antigravity.py</code></td>
+<td><code>sources/parsers/antigravity.py</code></td>
 </tr>
 <tr>
 <td>Browser capture</td>
 <td>capture envelope wrapping a native provider payload</td>
-<td><code>parsers/browser_capture.py</code></td>
+<td><code>sources/parsers/browser_capture.py</code></td>
 </tr>
 </tbody>
 </table>
@@ -843,9 +843,9 @@ attachments, exports):</p>
 subdirectories (<code>blob/ab/cdef...</code>)</li>
 <li><strong>Dedup</strong>: Identical content produces identical hashes — automatic
 deduplication</li>
-<li><strong>Linking</strong>: <code>artifact_observations.link_group_key</code> groups blobs by session
+<li><strong>Linking</strong>: <code>raw_artifacts.link_group_key</code> groups blobs by session
 for lifecycle management (there is no separate <code>blob_links</code> table; the name
-is a historical alias for this row-group view of <code>artifact_observations</code>)</li>
+is a historical alias for this row-group view of <code>raw_artifacts</code>)</li>
 <li><strong>Scale</strong>: ~24K blobs, ~42 GB in production archive</li>
 <li><strong>GC</strong>: Blob garbage collection is tracked in
 <a href="https://github.com/Sinity/polylogue/issues/818">#818</a></li>

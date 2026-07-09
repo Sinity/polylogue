@@ -370,7 +370,7 @@ debugging landmarks. For the conceptual system shape, see
 <tbody>
 <tr>
 <td>Archive writes are idempotent by content hash</td>
-<td><code>pipeline/ids.py</code>, <code>pipeline/prepare_enrichment.py</code></td>
+<td><code>pipeline/ids.py</code>, <code>pipeline/services/ingest_batch/_core.py</code></td>
 </tr>
 <tr>
 <td>Content hash excludes user metadata (tags, summaries)</td>
@@ -382,7 +382,7 @@ debugging landmarks. For the conceptual system shape, see
 </tr>
 <tr>
 <td>Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths</td>
-<td><code>storage/sqlite/async_sqlite.py</code>, <code>storage/sqlite/connection.py</code>, <code>pipeline/services/ingest_batch.py</code></td>
+<td><code>storage/sqlite/async_sqlite.py</code>, <code>storage/sqlite/connection.py</code>, <code>pipeline/services/ingest_batch/_core.py</code></td>
 </tr>
 <tr>
 <td>SQLite read/write tuning is profile-driven, not backend-local</td>
@@ -495,7 +495,7 @@ debugging landmarks. For the conceptual system shape, see
 <td>Content hashing and ID generation</td>
 </tr>
 <tr>
-<td><code>pipeline/services/ingest_batch.py</code></td>
+<td><code>pipeline/services/ingest_batch/_core.py</code></td>
 <td>Batch ingest (largest pipeline file)</td>
 </tr>
 </tbody>
@@ -582,6 +582,33 @@ derived-tier upgrade helpers remain forbidden.</p>
 workspace/settings state that is not an epistemic assertion. Existing v3
 user tiers migrate additively after a verified backup manifest; fresh user
 tiers create the table directly.</p>
+</li>
+<li>
+<p>Index schema version 28 adds the <code>delegations</code> VIEW, derived from
+<code>session_links</code> (<code>link_type='subagent'</code>) LEFT JOIN'd to the parent's Task
+dispatch <code>actions</code> row and both sessions' <code>session_profiles</code> — no
+convergence stage needed, matching the <code>actions</code> view's own derived-tier
+precedent. <code>result_status</code> (<code>ok</code>/<code>error</code>/<code>unknown</code>) is derived only from
+<code>actions.is_error</code>/<code>exit_code</code>, never guessed.</p>
+</li>
+<li>
+<p>Index schema version 27 adds <code>session_profiles.primary_model_name</code> and
+<code>primary_model_family</code>, the dominant model per session by assistant
+OUTPUT-token share, backing the <code>delegations</code> view above.</p>
+</li>
+<li>
+<p>Index schema version 26 rewrites the <code>actions</code> view to pair <code>tool_use</code>/
+<code>tool_result</code> blocks by transcript rank within <code>(session_id, tool_id)</code>
+instead of a plain <code>tool_id</code> equality join, which fanned out N*M when a
+provider re-emitted the same <code>tool_id</code> on distinct messages.</p>
+</li>
+<li>
+<p>Index schema version 25 adds <code>blocks.content_hash</code>, a SHA-256 over
+canonical block evidence (type, text, tool_name, canonical tool_input,
+semantic/media/language, is_error, exit_code — excluding
+session_id/message_id/position/tool_id) so a stored block citation anchor
+survives fork-position shift, re-ingest renumbering, and provider tool-id
+regeneration. See <code>polylogue/storage/block_anchor.py</code>.</p>
 </li>
 <li>
 <p>Index schema version 24 admits <code>capture_gap</code> rows in <code>session_events</code>. These
@@ -782,7 +809,8 @@ manifest</strong> for the affected tier. Additive means <code>CREATE TABLE</code
 <code>ADD COLUMN</code>/bounded backfill; destructive durable-tier changes require a
 copy-forward design and explicit operator consent, never a routine migration.</p>
 <p><code>ops.db</code> (disposable daemon telemetry) may additionally use narrowly scoped
-<code>ALTER TABLE ... ADD COLUMN</code> bootstrap helpers in <code>archive_tiers/bootstrap.py</code>
+<code>ALTER TABLE ... ADD COLUMN</code> bootstrap helpers in
+<code>storage/sqlite/archive_tiers/bootstrap.py</code>
 (ingest-cursor runtime fields, cursor-lag rollups). The
 <code>devtools lab policy schema-versioning</code> lint enforces the whole boundary:
 numbered durable-tier migrations are allowed; derived-tier upgrade helpers are
@@ -1018,15 +1046,17 @@ directly exposed; use CLI/MCP filters instead.</li>
 Identical content → identical hash → automatic deduplication.</li>
 <li><strong>Prefix sharding</strong>: 256 subdirectories (<code>blob/00/</code> through <code>blob/ff/</code>),
 each containing blobs keyed by the remaining 62 hex characters of the hash.</li>
-<li><strong>Linking</strong>: <code>artifact_observations.link_group_key</code> groups related blobs
+<li><strong>Linking</strong>: <code>raw_artifacts.link_group_key</code> groups related blobs
 (e.g., all blobs belonging to one session). The blob store itself
 (<code>polylogue/storage/blob_store.py</code>) is a pure content-addressed store with
 no notion of grouping; session-to-blob association is recorded as
-rows in <code>artifact_observations</code> keyed by <code>raw_id</code> with a shared
+rows in <code>raw_artifacts</code> keyed by <code>raw_id</code> with a shared
 <code>link_group_key</code>. (There is no separate <code>blob_links</code> table; the name is a
-historical alias for this row-group view of <code>artifact_observations</code>.)</li>
+historical alias for this row-group view of <code>raw_artifacts</code>.)</li>
 <li><strong>Operations</strong>: Blobs are write-once, read-many. No in-place modification.
-GC identifies unreferenced blobs via link counting.</li>
+GC identifies unreferenced blobs via a snapshot reference check plus a
+pending-lease check (see GC concurrency model below), not simple link
+counting.</li>
 </ul>
 <h3>GC concurrency model — leases plus snapshot reference check</h3>
 <p><code>run_blob_gc</code> deletes orphan blob files using two independent safety
@@ -1128,18 +1158,19 @@ rows plus <code>stale_cursor_writes</code> and overlapping running source paths.
 parse/convergence timings, and source-path bundles.</li>
 <li><code>convergence_stage_timings</code> — min/max/sum/mean parse/convergence/read-
 amplification stats over completed attempts.</li>
-<li><code>boundary_table_counts</code> — mixed cheap evidence for the
-daemon-relevant tables by default: exact counts for small/core archive
-cardinality tables and maintained rollups such as <code>sessions</code>, <code>raw_sessions</code>,
-<code>messages</code>, and <code>session_profiles</code>; planner-estimated counts only where exact
-counting would scan large derived tables
-(<code>raw_sessions</code>, <code>sessions</code>, <code>messages</code>, <code>blocks</code>,
-<code>artifact_observations</code>, <code>messages_fts_docsize</code>, <code>actions</code>,
-<code>message_embeddings</code>, <code>session_profile</code>,
-<code>live_ingest_attempt</code>, <code>live_convergence_debt</code>, <code>pending_blob_refs</code>).
+<li><code>boundary_table_counts</code> — mixed cheap evidence for the tables in
+<code>_BOUNDARY_TABLES</code>/<code>_OPS_BOUNDARY_TABLES</code>
+(<code>devtools/daemon_workload_probe.py</code>, non-exhaustive here): exact counts for
+small/core archive cardinality tables and maintained rollups such as
+<code>sessions</code>, <code>raw_sessions</code>, <code>messages</code>, and <code>session_profiles</code>;
+planner-estimated counts only where exact counting would scan large derived
+tables (<code>blocks</code>, <code>messages_fts_docsize</code>, <code>message_embeddings</code>,
+<code>session_events</code>, <code>session_links</code>, <code>repos</code>, <code>session_repos</code>,
+<code>session_commits</code>, <code>live_ingest_attempt</code>, <code>convergence_debt</code>,
+<code>pending_blob_refs</code>).
 Missing tables surface as <code>-1</code> and expensive tables without SQLite planner
 statistics surface as <code>-2</code> rather than crashing the probe. Pass
-<code>--exact-table-counts</code> when a before/after evidence run needs exact
+<code>--exact-derived-counts</code> when a before/after evidence run needs exact
 arithmetic and the archive can afford the scans. The companion
 <code>boundary_table_count_precision</code> map labels each value as <code>exact</code>,
 <code>estimate</code>, <code>unavailable</code>, or <code>missing</code>.</li>

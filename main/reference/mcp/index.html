@@ -357,29 +357,59 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             
 <h1>MCP Reference</h1>
 <p>Polylogue exposes an MCP (Model Context Protocol) server that coding agents can use to query
-AI chat archives during sessions.</p>
+AI chat archives during sessions. This is the primary continuity surface — richer than the
+CLI or Python API for agent-facing recall, corrections, and context assembly.</p>
 <h2>Tools</h2>
+<p>~100 tools registered across <code>polylogue/mcp/server_*.py</code>, gated by capability role (see
+Configuration below). A representative sample by category:</p>
 <ul>
-<li><code>list_sessions</code> — List recent sessions, filterable by path and sort order.</li>
-<li><code>get_session</code> — Retrieve a full session by ID with optional prose-only projection.</li>
-<li><code>search</code> — Full-text search across sessions with filter chains.</li>
+<li><strong>Search / list / get</strong>: <code>search</code>, <code>list_sessions</code>, <code>get_session</code>, <code>get_messages</code>,
+<code>get_session_tree</code>, <code>get_session_summary</code>, <code>get_logical_session</code>, <code>facets</code>.</li>
+<li><strong>Insights</strong>: <code>get_stats_by</code>, <code>session_costs</code>, <code>cost_rollups</code>, <code>usage_timeline</code>,
+<code>tool_usage</code>, <code>workflow_shape_distribution</code>, <code>session_latency_profile</code>.</li>
+<li><strong>Continuity / recall</strong>: <code>compile_context</code>, <code>build_context_image</code>,
+<code>compose_context_preamble</code>, <code>get_resume_brief</code>, <code>find_resume_candidates</code>,
+<code>find_abandoned_sessions</code>, <code>find_stuck_sessions</code>.</li>
+<li><strong>Correlation / topology</strong>: <code>correlate_session</code>, <code>correlate_sessions</code>,
+<code>get_session_topology</code>, <code>neighbor_candidates</code>, <code>find_similar_sessions</code>,
+<code>compare_sessions</code>.</li>
+<li><strong>Postmortem / pathology</strong>: <code>get_postmortem_bundle</code>, <code>get_pathologies</code>,
+<code>insight_rigor_audit</code>.</li>
+<li><strong>Corrections / assertions</strong> (write role): <code>add_tag</code>, <code>bulk_tag_sessions</code>,
+<code>blackboard_post</code>.</li>
+<li><strong>Maintenance</strong> (admin role): <code>maintenance_preview</code>, <code>maintenance_execute</code>,
+<code>rebuild_index</code>, <code>update_index</code>, <code>rebuild_session_insights</code>.</li>
 </ul>
+<p>The exhaustive, currently-registered tool name set is a test-enforced contract, not hand
+duplicated here: <code>tests/infra/mcp.py:EXPECTED_TOOL_NAMES</code>. Adding a tool requires updating
+that set plus its tool contract (see <code>CLAUDE.md</code> § MCP gotchas).</p>
 <h2>Resources</h2>
 <ul>
-<li><code>polylogue://sessions/recent</code> — URI-addressable recent session list.</li>
-<li><code>polylogue://sessions/{id}</code> — URI-addressable individual session.</li>
+<li><code>polylogue://stats</code> — Archive-wide summary stats.</li>
+<li><code>polylogue://sessions</code> — Recent session list.</li>
+<li><code>polylogue://session/{conv_id}</code> — Individual session by ID.</li>
+<li><code>polylogue://tags</code> — Known tag vocabulary.</li>
+<li><code>polylogue://messages/{conv_id}</code> — Messages for a session.</li>
+<li><code>polylogue://session-tree/{conv_id}</code> — Lineage-composed session tree.</li>
+<li><code>polylogue://origin/{name}/recent</code> — Recent sessions for one origin.</li>
+<li><code>polylogue://readiness</code> — Daemon/archive readiness snapshot.</li>
 </ul>
 <h2>Configuration</h2>
+<p>The MCP server is a standalone console script (<code>polylogue.mcp.cli:main</code>), not a <code>polylogue</code>
+subcommand. <code>--role</code> gates capability: <code>read</code> (default, omits mutation/maintenance tools),
+<code>write</code> (adds corrections/tagging), or <code>admin</code> (adds maintenance/rebuild tools).</p>
 <p>Add to your Claude Code <code>.mcp.json</code>:</p>
 <pre><code class="language-json">{
   &quot;mcpServers&quot;: {
     &quot;polylogue&quot;: {
-      &quot;command&quot;: &quot;uv&quot;,
-      &quot;args&quot;: [&quot;run&quot;, &quot;polylogue&quot;, &quot;mcp&quot;]
+      &quot;command&quot;: &quot;polylogue-mcp&quot;,
+      &quot;args&quot;: [&quot;--role&quot;, &quot;read&quot;]
     }
   }
 }
 </code></pre>
+<p>See <code>docs/mcp-integration.md</code> for the full client-integration walkthrough
+(Claude Code, Codex, other MCP clients).</p>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
