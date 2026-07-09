@@ -302,13 +302,17 @@ strings. `polylogue ops doctor` reports a `messages_fts` discrepancy.
 `polylogue ops diagnostics workload`
 shows non-empty `fts_trigger_state.missing` or `regressed` triggers.
 
-**Root cause.** FTS5 uses `content='messages'` content-rowid
-triggers. Bulk operations suspend those triggers for speed and
-rebuild the index afterward. A SIGKILL during the suspension window
-leaves FTS out of sync. The daemon startup check and FTS convergence
-loop normally restore the triggers, but a long-running operation
-that suspends them and dies without re-enabling them will leave the
-index stale across daemon restarts.
+**Root cause.** `messages_fts` is a contentless FTS5 table
+(`content=''`, `contentless_delete=1`) indexing `blocks.search_text`,
+kept in sync by three rowid-keyed triggers on `blocks`
+(`messages_fts_ai`/`_ad`/`_au`) — there is no bulk-suspend/rebuild step to
+interrupt (an earlier design that suspended these triggers during bulk
+writes was removed; SQLite DDL is transactional, so that suspension
+window never actually produced committed drift). A missing or regressed
+trigger today means schema corruption or an incomplete/partial schema
+application, not an interrupted suspension window. The daemon startup
+check and FTS convergence loop restore a missing trigger by re-running
+the canonical DDL, which is idempotent (`CREATE TRIGGER IF NOT EXISTS`).
 
 **Recovery.**
 

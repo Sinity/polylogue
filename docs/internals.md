@@ -524,19 +524,30 @@ Full-text search uses SQLite FTS5:
 
 - **Tokenizer**: `unicode61` (no porter stemmer — this SQLite build doesn't
   include it). Case-insensitive for ASCII. Unicode-aware tokenization.
-- **Content sync**: FTS5 indexes use `content='messages'` to stay in sync with
-  the source table. Triggers handle INSERT/UPDATE/DELETE.
-- **Trigger suspension (atomic, #1242)**: During bulk operations the writer
-  drops the FTS triggers, bulk-writes, then re-creates the triggers and rebuilds
-  the index (`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`) — all
-  inside the single ingest transaction (`commit_archive_write_effects`). SQLite
-  DDL is transactional, so the drop/restore is atomic with the commit: the
-  committed state always has triggers, and a SIGKILL mid-batch rolls back to
-  the triggers-present state on the next connection. The dropped-trigger state
-  is therefore only ever observable by the writer's own connection mid-batch and
-  never lands as committed drift. There is no separate FTS-trigger-drift health
-  check or auto-restore loop — that machinery guarded a state nothing can
-  commit (removed; the readiness/freshness check below is the real FTS net).
+- **Contentless, not external-content**: `messages_fts` is declared
+  `content=''` with `contentless_delete=1` — it does NOT sync against a
+  `messages` (or any other) source table by re-reading it. The indexed text
+  is `blocks.search_text`, a `VIRTUAL` generated column (`trim(text || ' ' ||
+  tool_name || ' ' || tool_input.command/file_path/path)`), supplied
+  explicitly at insert time by three rowid-keyed triggers
+  (`messages_fts_ai`/`_ad`/`_au`) on `blocks`, not read back from any content
+  table. Practical consequence: `snippet()`/`highlight()` return `NULL`
+  (contentless tables have no stored text for FTS5 to slice), so every read
+  path that needs the actual text joins `blocks` by `rowid` and uses
+  `b.search_text` directly instead.
+- **No trigger-suspension/rebuild loop**: an earlier design (#1242) dropped
+  the FTS triggers during bulk writes and rebuilt the index afterward
+  (`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`); that
+  auto-restore loop has been removed — it guarded a mid-batch state that
+  never actually landed as committed drift (SQLite DDL is transactional, so
+  a SIGKILL mid-batch always rolled back to the triggers-present state
+  anyway). The real net today is the freshness/repair machinery: the
+  `fts_freshness_state` durable marker plus the `idx_blocks_search_text_populated`
+  partial index, which message-search readiness consults against
+  `messages_fts_docsize` before running a user FTS query (index schema
+  version 23, see the schema-version-history note above), and the
+  per-session repair path (#1851) that reconciles a specific session's FTS
+  rows against `blocks.search_text` on demand.
 - **Query syntax**: FTS5 boolean operators (AND/OR/NOT), phrase search
   (`"exact phrase"`), prefix search (`prefix*`). Column filters are not
   directly exposed; use CLI/MCP filters instead.

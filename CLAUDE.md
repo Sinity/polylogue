@@ -31,7 +31,7 @@ Package sizes (rough): `storage/` (largest), `daemon/`, `cli/`, `archive/`,
 | `polylogue/api/__init__.py` | Async library facade (`Polylogue`) — deliberately thin |
 | `polylogue/config.py` | 5-layer config resolution + inventory-driven diagnostics |
 | `polylogue/cli/click_app.py` | Root query-first CLI dispatch |
-| `polylogue/operations/archive.py` | High-level archive operations |
+| `polylogue/operations/specs.py` | High-level archive operations (`operations/archive.py` is just `ArchiveStats`; the real operation logic lives here + `import_operations.py` + contracts) |
 | `polylogue/daemon/cli.py` | Daemon runner (`polylogued run`) |
 
 **Working rule:** new semantics go into the substrate (`storage`/`insights`) or
@@ -468,8 +468,8 @@ Well-suited to cloud sandboxes: pure Python, all paths overridable via
   breaks `render all --check` (see [Schema regimes](#schema-regimes-durability-keyed)).
 - New Click params on query verbs must go **last** — a positional shift silently
   reroutes args.
-- New MCP tool → update `EXPECTED_TOOL_NAMES` + tool contract, or discovery tests
-  fail.
+- New MCP tool → update `EXPECTED_TOOL_NAMES` (lives in `tests/infra/mcp.py`,
+  96 tools currently) + tool contract, or discovery tests fail.
 - New `AssertionKind` is schema-free (`TEXT`, no CHECK) but its enum is embedded
   in `render openapi` + `render cli-output-schemas` — regenerate them.
 - Per-PR CI **skips the heavy `test` suite** (runs post-merge on master). A green
