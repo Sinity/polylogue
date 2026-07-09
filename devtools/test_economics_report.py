@@ -403,6 +403,49 @@ def render_markdown(metrics: dict[str, PackageMetrics], warnings: list[str]) -> 
         "the package number to ~100%)."
     )
     lines.append("")
+
+    zero_coverage = sorted(
+        m.package for m in metrics.values() if m.coverage_percent == 0.0 and m.coverage_statements > 0
+    )
+    if zero_coverage:
+        lines.append(
+            "**Zero-coverage packages (real statements, none executed by the suite):** "
+            + ", ".join(f"`{pkg}`" for pkg in zero_coverage)
+            + ". Confirm these are genuinely unused (candidates for removal, per "
+            "the repo's 'reference-count is not legitimacy' doctrine) rather than an "
+            "unwired feature, before writing tests for them."
+        )
+        lines.append("")
+
+    lines.append(
+        "**Findings from the polylogue-9e5.11 baseline run (2026-07-09), not "
+        "necessarily still true on a later regeneration:**"
+    )
+    lines.append(
+        "- Four files are testmon dependency hubs touched by ~every test -- "
+        "`polylogue/storage/sqlite/connection.py`, `polylogue/mcp/server_support.py`, "
+        "`polylogue/schemas/validator_resolution.py`, `polylogue/daemon/status_snapshot.py` "
+        "-- each carries a docstring note now; see polylogue-9e5.11."
+    )
+    lines.append(
+        "- `verification` shows 0 tests touching it in testmon's graph but 84.6% real "
+        "coverage from a fresh instrumented run -- a testmon fingerprint-graph staleness "
+        "gap, not an actual coverage hole. Tracked as polylogue-csg7."
+    )
+    lines.append(
+        "- `paths` classifies as 'over-tested mechanical surface' (low fix-density, high "
+        "fan-out) but is foundational, stable plumbing at 98.2% coverage -- a case the "
+        "bead explicitly asks to flag as not fitting cleanly rather than a real pruning "
+        "target."
+    )
+    lines.append(
+        "- Five follow-up actions filed from this run: polylogue-znwj (daemon/cli.py + "
+        "status.py coverage), polylogue-c52g (cli/query_verbs.py + commands/status.py "
+        "coverage), polylogue-csg7 (testmon staleness), polylogue-ixqt (surfaces "
+        "mechanical-overcoverage review), polylogue-w9wt (pre-existing test-failure "
+        "triage discovered while generating this report)."
+    )
+    lines.append("")
     return "\n".join(lines) + "\n"
 
 
