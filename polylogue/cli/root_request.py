@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -11,6 +12,22 @@ from polylogue.cli.query_contracts import coerce_query_terms
 
 if TYPE_CHECKING:
     import click
+
+# Matches the start of a `name:value` token so its field name can be looked
+# up against the registry of *actually recognized* DSL fields below. A bare
+# regex without that registry check would misfire on ordinary text containing
+# a colon (a URL like `http://host`, a timestamp, a log label), see
+# _is_shell_quoted_structured_query.
+_FIELD_CLAUSE_START_RE = re.compile(r"^-?([a-zA-Z_][a-zA-Z0-9_.]*):")
+
+
+def _looks_like_known_field_clause(piece: str) -> bool:
+    match = _FIELD_CLAUSE_START_RE.match(piece)
+    if match is None:
+        return False
+    from polylogue.archive.query.metadata import EXPRESSION_FIELD_REGISTRY
+
+    return match.group(1).lower() in EXPRESSION_FIELD_REGISTRY
 
 
 def _is_shell_quoted_structured_query(term: str) -> bool:
@@ -27,7 +44,18 @@ def _is_shell_quoted_structured_query(term: str) -> bool:
 
         prefixes = tuple(f"{source} where " for source in terminal_query_sources()) + ("sessions where ",)
         return lowered.startswith(prefixes)
-    return False
+    # Compact multi-clause DSL, e.g. `repo:polylogue since:7d`, arriving as a
+    # single shell-quoted argv token because it contains a space. The generic
+    # quoting fallback below would wrap the whole string as one escaped
+    # literal, turning two ANDed field filters into a single meaningless FTS
+    # phrase search (polylogue-zrdp). Detect this by checking whether any
+    # whitespace-separated piece names a *registered* field (not just any
+    # colon-containing word -- a shell-quoted phrase like `"http://host
+    # failed"` must stay a literal phrase, not get parsed as an unknown
+    # `http` field, #2626 review). The actual DSL grammar (which correctly
+    # handles quoted/paren values containing spaces) does the real parsing
+    # once this returns True.
+    return any(_looks_like_known_field_clause(piece) for piece in stripped.split())
 
 
 def _expression_from_query_terms(query_terms: tuple[str, ...]) -> str:
