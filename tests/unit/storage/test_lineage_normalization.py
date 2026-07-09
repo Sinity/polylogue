@@ -22,10 +22,12 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.storage.runtime import LineageCompleteness
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
+    _MAX_LINEAGE_DEPTH,
     _provider_usage_cumulative_baseline,
     read_archive_session_envelope,
     repair_stale_prefix_branch_points,
@@ -36,6 +38,7 @@ from polylogue.storage.sqlite.queries.message_query_reads import (
     get_messages,
     get_messages_batch,
     get_messages_paginated,
+    get_messages_with_lineage_completeness,
     iter_messages,
 )
 
@@ -1155,3 +1158,201 @@ def test_async_composition_holds_one_snapshot_across_concurrent_parent_write(
 
     assert fired["count"] == 1, "the interleaving hook never fired -- test is not exercising the race"
     assert texts == ["hello", "hi there", "child diverges"]
+
+
+def test_sync_envelope_reports_incomplete_on_dangling_branch_point(tmp_path: Path) -> None:
+    """4ts.6: a dangling branch point (parent message hard-deleted) must
+    report lineage_complete=False, not silently serve the child's own tail
+    as if it were the whole transcript."""
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent)
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+            _msg("cx", Role.USER, "child diverges", 2),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+
+    # Hard-delete the parent's messages, leaving a dangling branch point --
+    # session_links.branch_point_message_id is deliberately not a FK (see
+    # module docstring), so this doesn't cascade-null the link.
+    conn.execute("DELETE FROM messages WHERE session_id = (SELECT session_id FROM sessions WHERE native_id = 'parent')")
+    conn.commit()
+
+    envelope = read_archive_session_envelope(conn, child_id)
+    assert envelope.lineage_complete is False
+    assert envelope.lineage_truncation_reason == "dangling_branch_point"
+    # The child's own tail is still returned, just flagged incomplete.
+    assert ["".join(b.text or "" for b in m.blocks) for m in envelope.messages] == ["child diverges"]
+
+    conn.close()
+
+    async def _run() -> tuple[list[str | None], LineageCompleteness]:
+        reader = await aiosqlite.connect(db)
+        try:
+            reader.row_factory = aiosqlite.Row
+            records, completeness = await get_messages_with_lineage_completeness(reader, child_id)
+            return [r.text for r in records], completeness
+        finally:
+            await reader.close()
+
+    texts, completeness = asyncio.run(_run())
+    assert texts == ["child diverges"]
+    assert completeness.complete is False
+    assert completeness.truncation_reason == "dangling_branch_point"
+
+
+def test_sync_and_async_report_incomplete_at_depth_limit(tmp_path: Path) -> None:
+    """4ts.6: a lineage chain deeper than _MAX_LINEAGE_DEPTH must report
+    lineage_complete=False with reason depth_limit -- ancestors beyond the
+    cutoff are silently dropped otherwise."""
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    # Build a chain of _MAX_LINEAGE_DEPTH + 1 sessions, each forking from the
+    # previous with a one-message divergent tail. The leaf is beyond the cutoff.
+    provider_session_id = "root"
+    write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=provider_session_id,
+            title="root",
+            messages=[_msg("root-0", Role.USER, "root message", 0)],
+        ),
+    )
+    leaf_id = None
+    for level in range(_MAX_LINEAGE_DEPTH + 1):
+        child_provider_id = f"level-{level}"
+        leaf_id = write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=child_provider_id,
+                title=child_provider_id,
+                parent_session_provider_id=provider_session_id,
+                branch_type=BranchType.FORK,
+                messages=[
+                    _msg("root-0", Role.USER, "root message", 0),
+                    _msg(f"tail-{level}", Role.ASSISTANT, f"level {level} tail", 1),
+                ],
+            ),
+        )
+        provider_session_id = child_provider_id
+    assert leaf_id is not None
+
+    envelope = read_archive_session_envelope(conn, leaf_id)
+    assert envelope.lineage_complete is False
+    assert envelope.lineage_truncation_reason == "depth_limit"
+
+    conn.close()
+
+
+def test_async_reports_incomplete_at_its_own_depth_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """4ts.6, async twin: get_messages_with_lineage_completeness is ITERATIVE
+    (not recursive), so it has its own, much larger _MAX_LINEAGE_DEPTH (1024)
+    than the sync recursive path's 64 -- a chain that trips the sync limit
+    does NOT trip the async one. Patch the async limit down so a small,
+    fast chain exercises its own depth-limit detection directly."""
+    monkeypatch.setattr(_message_query_reads_module, "_MAX_LINEAGE_DEPTH", 3)
+
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    provider_session_id = "root"
+    write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=provider_session_id,
+            title="root",
+            messages=[_msg("root-0", Role.USER, "root message", 0)],
+        ),
+    )
+    leaf_id = None
+    for level in range(4):  # one more hop than the patched limit of 3
+        child_provider_id = f"level-{level}"
+        leaf_id = write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=child_provider_id,
+                title=child_provider_id,
+                parent_session_provider_id=provider_session_id,
+                branch_type=BranchType.FORK,
+                messages=[
+                    _msg("root-0", Role.USER, "root message", 0),
+                    _msg(f"tail-{level}", Role.ASSISTANT, f"level {level} tail", 1),
+                ],
+            ),
+        )
+        provider_session_id = child_provider_id
+    assert leaf_id is not None
+    conn.close()
+
+    async def _run() -> LineageCompleteness:
+        reader = await aiosqlite.connect(db)
+        try:
+            reader.row_factory = aiosqlite.Row
+            _records, completeness = await get_messages_with_lineage_completeness(reader, leaf_id)
+            return completeness
+        finally:
+            await reader.close()
+
+    completeness = asyncio.run(_run())
+    assert completeness.complete is False
+    assert completeness.truncation_reason == "depth_limit"
+
+
+def test_shallow_chain_reports_complete(tmp_path: Path) -> None:
+    """Sanity check: a normal, shallow fork reports lineage_complete=True --
+    the completeness signal must not be trivially always-false."""
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="parent",
+            title="parent",
+            messages=[_msg("p0", Role.USER, "hello", 0)],
+        ),
+    )
+    child_id = write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="child",
+            title="child",
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=[
+                _msg("p0", Role.USER, "hello", 0),
+                _msg("cx", Role.USER, "child diverges", 1),
+            ],
+        ),
+    )
+
+    envelope = read_archive_session_envelope(conn, child_id)
+    assert envelope.lineage_complete is True
+    assert envelope.lineage_truncation_reason is None
+    conn.close()

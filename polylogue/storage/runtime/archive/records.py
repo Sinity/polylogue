@@ -187,6 +187,17 @@ class MessageRecord(BaseModel):
         return v
 
 
+class LineageCompleteness(BaseModel):
+    """Whether a composed transcript is the FULL logical transcript, or a
+    silently truncated one (4ts.6). A prefix-sharing child composition can
+    drop ancestors past a recursion depth limit, or return only its own
+    divergent tail when the parent's branch point was hard-deleted -- both
+    are construct-validity holes if served without a signal."""
+
+    complete: bool = True
+    truncation_reason: str | None = None
+
+
 class AttachmentRecord(BaseModel):
     attachment_id: AttachmentId
     session_id: SessionId

@@ -27,6 +27,7 @@ from polylogue.storage.insights.timeline.records import (
 from polylogue.storage.runtime.archive.records import (
     AttachmentRecord,
     BlockRecord,
+    LineageCompleteness,
     MessageRecord,
     SessionEventRecord,
     SessionRecord,
@@ -72,6 +73,7 @@ __all__ = [
     "BlockRecord",
     "SessionRecord",
     "DaySessionSummaryRecord",
+    "LineageCompleteness",
     "MessageRecord",
     "SESSION_EVENT_MATERIALIZER_VERSION",
     "SessionEventRecord",
