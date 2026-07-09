@@ -19,8 +19,7 @@ but never landed as a final acceptance test. The shape proved here:
      deltas (no silently dropped sessions);
    - zero ``failed`` / ``running`` live-ingest attempts remain;
    - zero ``live_convergence_debt`` rows remain;
-   - all six FTS sync triggers are present;
-   - blob leases drained (no stuck ``pending_blob_refs``).
+   - all six FTS sync triggers are present.
 
 3. The ``compare()`` diff between the two probe snapshots is the
    structured evidence artifact requested by the issue and is written
@@ -267,14 +266,6 @@ def test_daemon_convergence_evidence_full_archive_state(
     fts_state = after["fts_trigger_state"]
     assert fts_state["all_present"] is True, f"FTS trigger drift after convergence: {fts_state}"
     assert not fts_state["missing"], f"missing FTS triggers post-convergence: {fts_state['missing']}"
-
-    # ── Blob leases drained ─────────────────────────────────────────
-    # Every acquired lease must have been released after its
-    # corresponding write committed (see write_effects.py).
-    blob_state = after["blob_lease_state"]
-    assert blob_state["pending_lease_count"] == 0, (
-        f"convergence left {blob_state['pending_lease_count']} pending blob leases: {blob_state}"
-    )
 
     # ── FTS sanity: searchable content lands in the index ──────────
     # The strongest end-to-end signal that the write path stayed

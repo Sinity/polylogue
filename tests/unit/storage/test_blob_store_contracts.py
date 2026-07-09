@@ -7,9 +7,15 @@ coverage in ``test_blob_store.py`` and the GC regression coverage in
 
 The invariants pinned here are sourced from
 ``docs/internals.md`` § "Blob Store Model" and § "GC concurrency model
-— leases plus snapshot reference check".  Each test references the
+— snapshot reference check plus age floor".  Each test references the
 invariant it pins in its docstring so a future doc/code drift is
 attributable.
+
+A prior revision of this suite also pinned a blob-GC lease mechanism
+(``acquire_blob_leases``/``release_operation_leases``/``_has_active_lease``);
+that mechanism was removed as unreachable dead code (polylogue-v7e0 — no
+production ingest caller ever populated the lease payload keys) and its
+tests were removed with it.
 
 The blob store on disk (``polylogue/storage/blob_store.py``) is a pure
 content-addressed store with no notion of grouping. The grouping the
@@ -32,13 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.blob_gc import (
-    _has_active_lease,
-    _still_referenced,
-    acquire_blob_leases,
-    release_operation_leases,
-    run_blob_gc,
-)
+from polylogue.storage.blob_gc import run_blob_gc
 from polylogue.storage.blob_store import BlobStore
 
 # ---------------------------------------------------------------------------
@@ -48,8 +48,7 @@ from polylogue.storage.blob_store import BlobStore
 
 
 def _make_gc_db(path: Path) -> sqlite3.Connection:
-    """Create the minimum schema needed by ``run_blob_gc`` and the lease
-    helpers."""
+    """Create the minimum schema needed by ``run_blob_gc``."""
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(
@@ -70,14 +69,6 @@ def _make_gc_db(path: Path) -> sqlite3.Connection:
             size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
             acquired_at_ms INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (blob_hash, ref_type, ref_id)
-        );
-        CREATE TABLE pending_blob_refs (
-            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
-            operation_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL,
-            ref_id TEXT NOT NULL,
-            acquired_at_ms INTEGER NOT NULL,
-            PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
         );
         -- gc_generations matches the split-file source.db DDL: typed reclaim
         -- counters keyed by a TEXT generation_id (#1743).
@@ -302,7 +293,7 @@ def test_orphan_detection_only_surfaces_unreferenced_blobs(tmp_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
-# § "GC concurrency model — leases plus snapshot reference check"
+# § "GC concurrency model — snapshot reference check plus age floor"
 # ---------------------------------------------------------------------------
 
 
@@ -333,48 +324,6 @@ def test_gc_skips_blobs_with_db_reference(tmp_path: Path) -> None:
 
     assert deleted == 0
     assert store.exists(h), "GC must never delete a blob that is still referenced"
-
-
-def test_gc_skips_blobs_with_active_lease(tmp_path: Path) -> None:
-    """docs/internals.md § GC concurrency model — invariant 2
-    (Pending lease check): ``_has_active_lease`` queries
-    ``pending_blob_refs``; if a lease exists, GC must skip the blob
-    even when the snapshot DB-reference check says "orphan".
-
-    This is the exact race the lease design was added to close:
-    acquire-blob → GC-pass → write-DB-row.
-    """
-    blob_root = tmp_path / "blobs"
-    store = BlobStore(blob_root)
-    db_path = tmp_path / "archive.db"
-    conn = _make_gc_db(db_path)
-    conn.close()
-
-    h, _ = store.write_from_bytes(b"freshly-uploaded-not-yet-committed")
-    _backdate_blobs(store)
-
-    # Simulate the in-flight ingest: lease acquired on the blob,
-    # but the ``raw_sessions`` row has not yet been written.
-    acquire_blob_leases(db_path, [h], operation_id="op-in-flight")
-
-    deleted = run_blob_gc(db_path, blob_root)
-
-    assert deleted == 0, (
-        "GC must skip blobs whose write transaction has acquired a lease but not yet committed the raw_sessions row"
-    )
-    assert store.exists(h), (
-        "An in-flight, leased blob must survive GC even when its raw_sessions row has not been written yet"
-    )
-
-    # Confirm the protection was lease-driven rather than something
-    # incidental: with the lease released and still no DB reference, GC
-    # is now allowed to consider the blob for deletion.
-    conn = sqlite3.connect(str(db_path))
-    release_operation_leases(conn, "op-in-flight")
-    conn.commit()
-    assert not _has_active_lease(conn, h)
-    assert not _still_referenced(conn, h)
-    conn.close()
 
 
 def test_gc_records_a_new_generation_when_it_runs(tmp_path: Path) -> None:
@@ -409,78 +358,6 @@ def test_gc_records_a_new_generation_when_it_runs(tmp_path: Path) -> None:
         # One durable generation row accumulates per executed cycle.
         assert count == cycle + 1
         assert latest[0] is not None
-
-
-def test_lease_predicate_and_reference_predicate_are_independent(tmp_path: Path) -> None:
-    """docs/internals.md § GC concurrency model: leases and DB references
-    are "two independent safety invariants combined". A blob protected
-    by *either* must not be deleted; only when *both* are absent is GC
-    allowed to reclaim.
-    """
-    db_path = tmp_path / "archive.db"
-    conn = _make_gc_db(db_path)
-
-    blob = "a" * 64
-
-    # 1. No reference, no lease → unprotected.
-    assert not _still_referenced(conn, blob)
-    assert not _has_active_lease(conn, blob)
-
-    # 2. Reference only.
-    conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES (?, 'p', 's', 0, 't')",
-        (blob,),
-    )
-    conn.commit()
-    assert _still_referenced(conn, blob)
-    assert not _has_active_lease(conn, blob)
-
-    # 3. Reference + lease.
-    conn.execute(
-        "INSERT INTO pending_blob_refs (blob_hash, operation_id, ref_type, ref_id, acquired_at_ms) "
-        "VALUES (?, 'op', 'raw_payload', 'op', 0)",
-        (bytes.fromhex(blob),),
-    )
-    conn.commit()
-    assert _still_referenced(conn, blob)
-    assert _has_active_lease(conn, blob)
-
-    # 4. Lease only — the race window the lease design closes.
-    conn.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (blob,))
-    conn.commit()
-    assert not _still_referenced(conn, blob)
-    assert _has_active_lease(conn, blob)
-
-    conn.close()
-
-
-def test_acquire_blob_leases_is_durable_immediately(tmp_path: Path) -> None:
-    """docs/internals.md § GC concurrency model: leases are taken on a
-    "separate immediate-commit connection so the lease is visible to a
-    concurrent GC before the main transaction commits".
-
-    ``acquire_blob_leases`` opens its own connection and commits. After
-    the call returns, an independent reader sees the lease without
-    needing any further commit on the caller's side.
-    """
-    db_path = tmp_path / "archive.db"
-    _make_gc_db(db_path).close()
-
-    blob = "b" * 64
-    acquire_blob_leases(db_path, [blob], operation_id="op-vis")
-
-    # Fresh reader connection — must see the lease.
-    reader = sqlite3.connect(str(db_path))
-    reader.row_factory = sqlite3.Row
-    row = reader.execute(
-        "SELECT operation_id FROM pending_blob_refs WHERE blob_hash = ?",
-        (bytes.fromhex(blob),),
-    ).fetchone()
-    reader.close()
-
-    assert row is not None
-    assert row["operation_id"] == "op-vis"
 
 
 # ---------------------------------------------------------------------------

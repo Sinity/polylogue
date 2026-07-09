@@ -13,8 +13,8 @@ Pins:
 4. **Unauthenticated** — same posture as ``/healthz/*``; scrapers do
    not carry credentials.
 5. **State observation** — counts derived from ``live_ingest_attempt``,
-   ``live_convergence_debt``, ``pending_blob_refs``, and FTS triggers
-   round-trip through the exposition format.
+   ``live_convergence_debt``, and FTS triggers round-trip through the
+   exposition format.
 """
 
 from __future__ import annotations
@@ -52,8 +52,6 @@ EXPECTED_SERIES: frozenset[str] = frozenset(
         "polylogue_live_ingest_storage_route_total",
         "polylogue_live_ingest_attempt_duration_seconds",
         "polylogue_convergence_debt_count",
-        "polylogue_blob_lease_pending_count",
-        "polylogue_blob_lease_distinct_operations",
         "polylogue_fts_trigger_present",
         "polylogue_fts_triggers_all_present",
         "polylogue_fts_freshness_ready",
@@ -308,11 +306,6 @@ class TestFormatMetricsReadsArchiveState:
                     stage TEXT NOT NULL,
                     status TEXT NOT NULL
                 );
-                CREATE TABLE pending_blob_refs (
-                    blob_hash TEXT,
-                    operation_id TEXT,
-                    acquired_at INTEGER
-                );
                 CREATE TABLE blocks (
                     block_id TEXT PRIMARY KEY,
                     message_id TEXT NOT NULL,
@@ -378,14 +371,6 @@ class TestFormatMetricsReadsArchiveState:
                     ("d2", "parse", "failed"),
                     ("d3", "convergence", "failed"),
                     ("d4", "convergence", "resolved"),  # filtered
-                ],
-            )
-            conn.executemany(
-                "INSERT INTO pending_blob_refs (blob_hash, operation_id, acquired_at) VALUES (?, ?, ?)",
-                [
-                    ("hash_a", "op1", 100),
-                    ("hash_b", "op1", 101),
-                    ("hash_c", "op2", 102),
                 ],
             )
             conn.executemany(
@@ -606,11 +591,6 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_live_ingest_attempts_total{status="running"} 1' in body
         assert "polylogue_live_ingest_attempts_in_flight 1" in body
         assert 'polylogue_convergence_debt_count{stage="session_profile"} 1' in body
-
-    def test_blob_lease_state(self, tmp_path: Path) -> None:
-        body = format_metrics(self._make_db(tmp_path))
-        assert "polylogue_blob_lease_pending_count 3" in body
-        assert "polylogue_blob_lease_distinct_operations 2" in body
 
     def test_fts_trigger_presence_partial(self, tmp_path: Path) -> None:
         body = format_metrics(self._make_db(tmp_path))

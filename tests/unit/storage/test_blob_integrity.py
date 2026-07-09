@@ -47,30 +47,29 @@ def _make_db(path: Path) -> sqlite3.Connection:
             raw_id TEXT NOT NULL,
             ref_type TEXT NOT NULL DEFAULT 'raw_payload'
         );
-        CREATE TABLE pending_blob_refs (
-            blob_hash TEXT NOT NULL,
-            operation_id TEXT NOT NULL,
-            acquired_at INTEGER NOT NULL,
-            PRIMARY KEY (blob_hash, operation_id)
-        );
         """
     )
     conn.commit()
     return conn
 
 
-def test_scan_blob_integrity_classifies_missing_orphan_hash_mismatch_and_stale_lease(tmp_path: Path) -> None:
+def test_scan_blob_integrity_classifies_missing_orphan_and_hash_mismatch(tmp_path: Path) -> None:
+    """Covers the three findings ``scan_blob_integrity`` still classifies.
+
+    A prior revision of this test also covered ``stale_leases``/leased-blob
+    classification via ``pending_blob_refs``; that table and the lease
+    mechanism it backed were removed as unreachable dead code
+    (polylogue-v7e0 — no production ingest caller ever populated the lease
+    payload keys), so the leased-blob assertions were removed with it.
+    """
     db_path = tmp_path / "archive.db"
     store = BlobStore(tmp_path / "blob")
     conn = _make_db(db_path)
-    active_lease_time = 4_000_000_000
 
     referenced_ok, ok_size = store.write_from_bytes(b"referenced")
     orphan_hash, _ = store.write_from_bytes(b"orphan")
     corrupt_hash, corrupt_size = store.write_from_bytes(b"original")
     store.blob_path(corrupt_hash).write_bytes(b"corrupted")
-    leased_hash, _ = store.write_from_bytes(b"leased but not committed")
-    stale_lease_hash, _ = store.write_from_bytes(b"stale lease")
     missing_hash = "0" * 64
 
     for blob_hash, size in ((referenced_ok, ok_size), (missing_hash, 128), (corrupt_hash, corrupt_size)):
@@ -78,26 +77,15 @@ def test_scan_blob_integrity_classifies_missing_orphan_hash_mismatch_and_stale_l
             "INSERT INTO raw_sessions (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
             (blob_hash, size, "2026-05-24T00:00:00+00:00"),
         )
-    conn.execute(
-        "INSERT INTO pending_blob_refs (blob_hash, operation_id, acquired_at) VALUES (?, ?, ?)",
-        (leased_hash, "active-op", active_lease_time),
-    )
-    conn.execute(
-        "INSERT INTO pending_blob_refs (blob_hash, operation_id, acquired_at) VALUES (?, ?, ?)",
-        (stale_lease_hash, "stale-op", 1),
-    )
     conn.commit()
     conn.close()
 
-    report = scan_blob_integrity(db_path, store=store, full=True, stale_lease_s=3600)
+    report = scan_blob_integrity(db_path, store=store, full=True)
 
     by_kind = {finding.kind: finding for finding in report.findings}
     assert by_kind["missing_referenced_blobs"].sample == (missing_hash,)
     assert by_kind["orphan_blobs"].sample == (orphan_hash,)
     assert by_kind["hash_mismatch"].sample == (corrupt_hash,)
-    assert by_kind["stale_leases"].sample == (stale_lease_hash,)
-    assert leased_hash not in by_kind["orphan_blobs"].sample
-    assert stale_lease_hash not in by_kind["orphan_blobs"].sample
 
 
 def test_scan_blob_integrity_bounds_default_probe_but_full_scans_everything(tmp_path: Path) -> None:

@@ -466,9 +466,10 @@ blob that was still referenced.
 # 1. Stop the daemon to halt new writes.
 systemctl --user stop polylogued.service
 
-# 2. Snapshot the lease state to capture what GC believed was in
-#    flight at the time.
-polylogue ops diagnostics workload --json | jq '{lease: .blob_lease_state, gc: .gc_state}'
+# 2. Snapshot the GC generation state to capture the age-floor gate's
+#    high-water mark at the time (GC has no lease state — see
+#    docs/internals.md "GC concurrency model").
+polylogue ops diagnostics workload --json | jq '{gc: .gc_state}'
 
 # 3. Identify the affected sessions.
 polylogue ops doctor --schemas --blob-integrity --format json \

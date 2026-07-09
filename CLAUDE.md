@@ -90,7 +90,7 @@ unresolved/resolved/repaired/**quarantined** (cycle-break).
 
 | Tier | ver | durability | holds |
 | --- | --- | --- | --- |
-| `source.db` | 2 | durable | raw acquired bytes (`raw_sessions`), artifact taxonomy, blob lease/GC substrate (`blob_refs`, `pending_blob_refs`, `gc_generations`), hook events, sidecars |
+| `source.db` | 3 | durable | raw acquired bytes (`raw_sessions`), artifact taxonomy, blob/GC substrate (`blob_refs`, `gc_generations`), hook events, sidecars |
 | `index.db` | 24 | **rebuildable** | the whole parsed tree, FTS, `session_links`, cost tables, and all materialized insights |
 | `embeddings.db` | 1 | rebuildable | `vec0` virtual table (Voyage 1024-dim), meta, status |
 | `user.db` | 4 | **durable, irreplaceable** | unified `assertions` + `user_settings` |

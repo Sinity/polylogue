@@ -171,8 +171,6 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
             "scanned_references": 2,
             "total_blobs_seen": 2,
             "total_references_seen": 2,
-            "active_lease_count": 0,
-            "stale_lease_count": 0,
             "findings": [{"kind": "orphan_blobs", "severity": "warning", "count": 1, "sample": ["orphan-c"]}],
         }
         payload = check_workflow._run_blob_store_check(config, full=True)

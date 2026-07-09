@@ -38,11 +38,6 @@ def _seed_gc_db(path: Path) -> None:
             """
             CREATE TABLE raw_sessions(raw_id TEXT PRIMARY KEY, blob_hash BLOB);
             CREATE TABLE blob_refs(blob_hash BLOB PRIMARY KEY);
-            CREATE TABLE pending_blob_refs(
-                operation_id TEXT NOT NULL,
-                blob_hash BLOB NOT NULL,
-                acquired_at_ms INTEGER NOT NULL
-            );
             CREATE TABLE gc_generations(
                 generation_id TEXT PRIMARY KEY,
                 started_at_ms INTEGER NOT NULL,

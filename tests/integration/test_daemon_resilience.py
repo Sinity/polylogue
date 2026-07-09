@@ -292,20 +292,6 @@ def _content_hashes(db: Path, limit: int = 10) -> list[tuple[str, str]]:
     return [(r[0], r[1]) for r in rows]
 
 
-def _pending_blob_refs(db: Path) -> int:
-    """Return count of pending blob references (leaked leases)."""
-    try:
-        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
-            cur = conn.execute("SELECT COUNT(*) FROM pending_blob_refs")
-            row = cur.fetchone()
-            return int(row[0]) if row else 0
-    except sqlite3.OperationalError as exc:
-        msg = str(exc).lower()
-        if any(token in msg for token in ("locked", "no such table")):
-            return 0
-        raise
-
-
 def _wal_size(db: Path) -> int:
     """Return WAL file size in bytes (0 if absent)."""
     wal = db.with_suffix(".db-wal")
@@ -371,7 +357,6 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
     - FTS triggers are present after restart.
     - No sessions lost (count before == count after).
     - Content hashes unchanged.
-    - Pending blob refs drained (no leaked leases).
     - Daemon reaches ready state within timeout.
     """
     archive_root = workspace_env["archive_root"]
@@ -469,10 +454,6 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             for conv_id, h in pre_hashes:
                 if conv_id in post_hashes:
                     assert post_hashes[conv_id] == h, f"Content hash changed for {conv_id}"
-
-            # No leaked blob refs.
-            leaked = _pending_blob_refs(db)
-            assert leaked == 0, f"Leaked blob references: {leaked}"
 
             # Daemon alive.
             assert restart.poll() is None, "Daemon should still be alive after recovery"
