@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
@@ -24,6 +25,8 @@ from polylogue.insights.archive import (
     SessionLatencyProfileInsightQuery,
     SessionPhaseInsight,
     SessionPhaseInsightQuery,
+    SessionProfileInsight,
+    SessionProfileInsightQuery,
     SessionTagRollupInsight,
     SessionTagRollupQuery,
     SessionWorkEventInsight,
@@ -289,6 +292,21 @@ class PolylogueInsightsMixin:
 
         @property
         def repository(self) -> _RepositorySurface: ...
+
+        # Cross-mixin members from ``PolylogueArchiveMixin`` (api/archive.py),
+        # a sibling in the composed ``Polylogue`` facade -- see #1691/9e5.24
+        # analysis primitives, which read session profiles fetched there.
+        async def list_session_profile_insights(
+            self,
+            query: SessionProfileInsightQuery | None = None,
+        ) -> list[SessionProfileInsight]: ...
+
+        async def get_session_profile_insight(
+            self,
+            session_id: str,
+            *,
+            tier: str = "merged",
+        ) -> SessionProfileInsight | None: ...
 
     async def list_session_tag_rollup_insights(
         self,
@@ -576,6 +594,175 @@ class PolylogueInsightsMixin:
         session_costs = await self.list_session_cost_insights()
         daily = session_costs_to_daily_usd(session_costs)
         return build_cycle_outlook(plan, daily, now=when, method=method)
+
+    # ------------------------------------------------------------------
+    # Session analysis primitives (#1691 / polylogue-9e5.24)
+    #
+    # These were originally inline MCP-only math in
+    # ``mcp/server_insight_tools.py`` -- unreachable from the CLI or this
+    # library facade. The reducers/heuristics themselves live in
+    # ``insights/archive_rollups.py`` and ``insights/session_analytics.py``;
+    # these methods are the fetch-then-reduce composition so MCP and any
+    # other caller share one definition of the math.
+    # ------------------------------------------------------------------
+
+    async def aggregate_sessions(
+        self,
+        *,
+        group_by: str = "workflow_shape",
+        since: str | None = None,
+        until: str | None = None,
+        provider: str | None = None,
+    ) -> dict[str, object]:
+        """GROUP BY session counts over workflow_shape/terminal_state/origin.
+
+        Raises ``ValueError`` for an unsupported ``group_by``.
+        """
+        from polylogue.insights.archive_rollups import aggregate_session_profiles_by_dimension
+
+        profiles = await self.list_session_profile_insights(
+            SessionProfileInsightQuery(provider=provider, since=since, until=until, limit=None)
+        )
+        buckets = aggregate_session_profiles_by_dimension(profiles, group_by)
+        return {"group_by": group_by, "total_sessions": len(profiles), "buckets": buckets}
+
+    async def workflow_shape_distribution(
+        self,
+        *,
+        group_by: str = "week",
+        since: str | None = None,
+        until: str | None = None,
+        provider: str | None = None,
+    ) -> dict[str, object]:
+        """Histogram session workflow shapes by week, origin, or project.
+
+        Raises ``ValueError`` when ``group_by`` is not one of
+        ``week``, ``origin``, ``project``.
+        """
+        from polylogue.insights.archive_rollups import workflow_shape_distribution_buckets
+
+        profiles = await self.list_session_profile_insights(
+            SessionProfileInsightQuery(provider=provider, since=since, until=until, limit=None)
+        )
+        buckets = workflow_shape_distribution_buckets(profiles, group_by)
+        return {"group_by": group_by, "total_sessions": len(profiles), "buckets": buckets}
+
+    async def find_abandoned_sessions(
+        self,
+        *,
+        since: str | None = None,
+        repo_path: str | None = None,
+        min_severity: str = "question_left",
+        limit: int = 20,
+    ) -> dict[str, object]:
+        """Sessions whose terminal state indicates dangling work.
+
+        Raises ``ValueError`` for an unknown ``min_severity``.
+        """
+        from polylogue.insights.archive_rollups import abandoned_session_items
+
+        profiles = await self.list_session_profile_insights(SessionProfileInsightQuery(since=since, limit=None))
+        items = abandoned_session_items(profiles, min_severity=min_severity, repo_path=repo_path)
+        return {"total": len(items), "items": items[:limit]}
+
+    async def tool_call_latency_distribution(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        provider: str | None = None,
+        tool_category: str | None = None,
+        limit: int = 500,
+    ) -> dict[str, object]:
+        """Distribution of materialized per-session tool-call latency."""
+        from polylogue.insights.archive_rollups import tool_call_latency_distribution_payload
+
+        insights = await self.list_session_latency_profile_insights(
+            SessionLatencyProfileInsightQuery(provider=provider, since=since, until=until, limit=limit)
+        )
+        return tool_call_latency_distribution_payload(insights, tool_category=tool_category)
+
+    async def compare_sessions(self, session_ids: Sequence[str]) -> dict[str, object]:
+        """Compare 2-10 session profiles side by side.
+
+        Raises ``ValueError`` when ``session_ids`` has fewer than 2 or more
+        than 10 entries.
+        """
+        from polylogue.insights.session_analytics import build_session_comparison_row, diff_session_comparison_rows
+
+        if len(session_ids) < 2:
+            raise ValueError(f"Need at least 2 session IDs to compare. Got {len(session_ids)} ID(s); expected 2-10.")
+        if len(session_ids) > 10:
+            raise ValueError(f"Too many session IDs. Got {len(session_ids)} IDs; maximum is 10.")
+
+        sessions: list[dict[str, object]] = []
+        not_found: list[str] = []
+        for session_id in session_ids:
+            profile = await self.get_session_profile_insight(session_id)
+            if profile is None:
+                not_found.append(session_id)
+                continue
+            sessions.append(build_session_comparison_row(profile))
+
+        return {
+            "sessions": sessions,
+            "differences": diff_session_comparison_rows(sessions),
+            "not_found": not_found,
+            "total_requested": len(session_ids),
+            "total_found": len(sessions),
+        }
+
+    async def find_similar_sessions_by_metadata(
+        self,
+        session_id: str,
+        *,
+        limit: int = 10,
+        candidate_pool_limit: int = 200,
+    ) -> dict[str, object] | None:
+        """Metadata-similarity fallback for ``find_similar_sessions``.
+
+        Used when embeddings are unavailable or the caller explicitly asks
+        for ``similarity_dimension="metadata"``. Returns ``None`` when
+        ``session_id`` does not resolve to a session profile.
+        """
+        from polylogue.insights.session_analytics import compute_metadata_similarity_candidates
+
+        ref_profile = await self.get_session_profile_insight(session_id)
+        if ref_profile is None:
+            return None
+        candidates = await self.list_session_profile_insights(
+            SessionProfileInsightQuery(provider=ref_profile.source_name, limit=candidate_pool_limit)
+        )
+        scored = compute_metadata_similarity_candidates(ref_profile, candidates, exclude_session_id=session_id)
+        return {
+            "source_session_id": session_id,
+            "method": "metadata",
+            "similar": scored[:limit],
+        }
+
+    async def correlate_sessions(
+        self,
+        *,
+        metric_x: str,
+        metric_y: str,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, object]:
+        """Pearson correlation between two numeric session metrics.
+
+        Raises ``ValueError`` for an unknown metric name (validated before
+        fetching profiles).
+        """
+        from polylogue.insights.session_analytics import ensure_known_session_metric, pearson_session_correlation
+
+        ensure_known_session_metric(metric_x, "metric_x")
+        ensure_known_session_metric(metric_y, "metric_y")
+
+        profiles = await self.list_session_profile_insights(
+            SessionProfileInsightQuery(provider=provider, since=since, until=until, limit=None)
+        )
+        return pearson_session_correlation(profiles, metric_x=metric_x, metric_y=metric_y)
 
     # ------------------------------------------------------------------
     # Topology read API (#1261 / #866 slice D)

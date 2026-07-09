@@ -9,16 +9,12 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import replace
-from datetime import date
-from math import ceil
 from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.core.enums import Origin
-from polylogue.core.sources import provider_from_origin, source_name_to_origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.insights.archive import (
     SessionLatencyProfileInsightQuery,
-    SessionProfileInsight,
-    SessionProfileInsightQuery,
 )
 from polylogue.insights.registry import (
     INSIGHT_REGISTRY,
@@ -138,50 +134,16 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     ) -> str:
         """Distribution of materialized per-session tool-call latency."""
 
-        def percentile(values: list[int], p: float) -> int:
-            if not values:
-                return 0
-            sorted_values = sorted(values)
-            rank = max(0, ceil(p / 100.0 * len(sorted_values)) - 1)
-            return sorted_values[rank]
-
         async def run() -> str:
             poly = hooks.get_polylogue()
-            insights = await poly.list_session_latency_profile_insights(
-                SessionLatencyProfileInsightQuery(
-                    provider=_origin_to_provider_token(origin),
-                    since=since,
-                    until=until,
-                    limit=hooks.clamp_limit(limit),
-                )
+            result = await poly.tool_call_latency_distribution(
+                since=since,
+                until=until,
+                provider=_origin_to_provider_token(origin),
+                tool_category=tool_category,
+                limit=hooks.clamp_limit(limit),
             )
-            if tool_category:
-                insights = [
-                    insight
-                    for insight in insights
-                    if insight.latency.tool_call_count_by_category.get(tool_category, 0) > 0
-                ]
-            medians = [
-                insight.latency.median_tool_call_ms for insight in insights if insight.latency.median_tool_call_ms
-            ]
-            p90s = [insight.latency.p90_tool_call_ms for insight in insights if insight.latency.p90_tool_call_ms]
-            maxes = [insight.latency.max_tool_call_ms for insight in insights if insight.latency.max_tool_call_ms]
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root={
-                        "total_sessions": len(insights),
-                        "tool_category": tool_category,
-                        "median_tool_call_ms": percentile(medians, 50),
-                        "p90_tool_call_ms": percentile(p90s, 90),
-                        "max_tool_call_ms": max(maxes) if maxes else 0,
-                        "stuck_tool_count": sum(insight.latency.stuck_tool_count for insight in insights),
-                        "construct_boundary": (
-                            "distribution is over materialized per-session aggregates; "
-                            "agent-response time includes both LLM inference and tool execution"
-                        ),
-                    }
-                )
-            )
+            return hooks.json_payload(MCPRootPayload(root=result))
 
         return await hooks.async_safe_call("tool_call_latency_distribution", run)
 
@@ -241,57 +203,21 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         async def run() -> str:
             poly = hooks.get_polylogue()
-            profiles = await poly.list_session_profile_insights(
-                SessionProfileInsightQuery(
-                    provider=_origin_to_provider_token(origin),
+            try:
+                result = await poly.workflow_shape_distribution(
+                    group_by=group_by,
                     since=since,
                     until=until,
-                    limit=None,
+                    provider=_origin_to_provider_token(origin),
                 )
-            )
-            allowed_group_by = {"week", "origin", "project"}
-            if group_by not in allowed_group_by:
+            except ValueError:
                 return hooks.error_json(
                     "Invalid group_by.",
                     code="invalid_argument",
                     detail="group_by must be one of week, origin, project",
                     tool="workflow_shape_distribution",
                 )
-            buckets: dict[str, dict[str, int]] = {}
-            for profile in profiles:
-                evidence = profile.evidence
-                inference = profile.inference
-                shape = inference.workflow_shape if inference is not None else "unknown"
-                keys: tuple[str, ...]
-                if group_by == "origin":
-                    keys = (source_name_to_origin(profile.source_name),)
-                elif group_by == "project":
-                    paths = evidence.cwd_paths if evidence is not None else ()
-                    keys = tuple(paths) or ("unattributed",)
-                else:
-                    date_value = evidence.canonical_session_date if evidence is not None else None
-                    if date_value:
-                        try:
-                            parsed = date.fromisoformat(date_value)
-                            iso_year, iso_week, _ = parsed.isocalendar()
-                            week_key = f"{iso_year}-W{iso_week:02d}"
-                        except ValueError:
-                            week_key = date_value[:7]
-                    else:
-                        week_key = "undated"
-                    keys = (week_key,)
-                for key in keys:
-                    bucket = buckets.setdefault(key, {})
-                    bucket[shape] = bucket.get(shape, 0) + 1
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root={
-                        "group_by": group_by,
-                        "total_sessions": len(profiles),
-                        "buckets": buckets,
-                    }
-                )
-            )
+            return hooks.json_payload(MCPRootPayload(root=result))
 
         return await hooks.async_safe_call("workflow_shape_distribution", run)
 
@@ -305,61 +231,22 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         """Find sessions whose terminal state indicates dangling work."""
 
         async def run() -> str:
-            severity = {
-                "question_left": 1,
-                "error_left": 2,
-                "tool_left": 3,
-                "agent_hanging": 4,
-            }
-            if min_severity not in severity:
+            poly = hooks.get_polylogue()
+            try:
+                result = await poly.find_abandoned_sessions(
+                    since=since,
+                    repo_path=repo_path,
+                    min_severity=min_severity,
+                    limit=hooks.clamp_limit(limit),
+                )
+            except ValueError:
                 return hooks.error_json(
                     "Invalid min_severity.",
                     code="invalid_argument",
                     detail="min_severity must be one of question_left, error_left, tool_left, agent_hanging",
                     tool="find_abandoned_sessions",
                 )
-            poly = hooks.get_polylogue()
-            profiles = await poly.list_session_profile_insights(
-                SessionProfileInsightQuery(
-                    since=since,
-                    limit=None,
-                )
-            )
-            min_rank = severity[min_severity]
-            items: list[dict[str, object]] = []
-            for profile in profiles:
-                inference = profile.inference
-                evidence = profile.evidence
-                state = inference.terminal_state if inference is not None else "unknown"
-                if severity.get(state, 0) < min_rank:
-                    continue
-                cwd_paths = evidence.cwd_paths if evidence is not None else ()
-                if repo_path and not any(repo_path in path for path in cwd_paths):
-                    continue
-                items.append(
-                    {
-                        "session_id": profile.session_id,
-                        "origin": source_name_to_origin(profile.source_name),
-                        "title": profile.title,
-                        "terminal_state": state,
-                        "terminal_state_confidence": (
-                            inference.terminal_state_confidence if inference is not None else 0.0
-                        ),
-                        "workflow_shape": inference.workflow_shape if inference is not None else "unknown",
-                        "canonical_session_date": evidence.canonical_session_date if evidence is not None else None,
-                        "evidence": evidence.terminal_state_evidence if evidence is not None else {},
-                    }
-                )
-            items.sort(key=lambda item: str(item.get("canonical_session_date") or ""), reverse=True)
-            capped = items[: hooks.clamp_limit(limit)]
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root={
-                        "total": len(items),
-                        "items": capped,
-                    }
-                )
-            )
+            return hooks.json_payload(MCPRootPayload(root=result))
 
         return await hooks.async_safe_call("find_abandoned_sessions", run)
 
@@ -521,38 +408,20 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         async def run() -> str:
             poly = hooks.get_polylogue()
-            profiles = await poly.list_session_profile_insights(
-                SessionProfileInsightQuery(
-                    provider=_origin_to_provider_token(origin),
+            try:
+                result = await poly.aggregate_sessions(
+                    group_by=group_by,
                     since=since,
                     until=until,
-                    limit=None,
+                    provider=_origin_to_provider_token(origin),
                 )
-            )
-            buckets: dict[str, int] = {}
-            for p in profiles:
-                if group_by == "workflow_shape":
-                    key = (p.inference.workflow_shape if p.inference else None) or "unknown"
-                elif group_by == "terminal_state":
-                    key = (p.inference.terminal_state if p.inference else None) or "unknown"
-                elif group_by == "origin":
-                    key = source_name_to_origin(p.source_name)
-                else:
-                    return hooks.error_json(
-                        f"Unknown group_by: {group_by!r}. Supported: workflow_shape, terminal_state, origin.",
-                        code="invalid_argument",
-                        tool="aggregate_sessions",
-                    )
-                buckets[key] = buckets.get(key, 0) + 1
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root={
-                        "group_by": group_by,
-                        "total_sessions": len(profiles),
-                        "buckets": buckets,
-                    }
+            except ValueError as exc:
+                return hooks.error_json(
+                    str(exc),
+                    code="invalid_argument",
+                    tool="aggregate_sessions",
                 )
-            )
+            return hooks.json_payload(MCPRootPayload(root=result))
 
         return await hooks.async_safe_call("aggregate_sessions", run)
 
@@ -591,61 +460,8 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     tool="compare_sessions",
                 )
             poly = hooks.get_polylogue()
-            sessions: list[dict[str, object]] = []
-            not_found: list[str] = []
-            for conv_id in ids:
-                profile = await poly.get_session_profile_insight(conv_id)
-                if profile is None:
-                    not_found.append(conv_id)
-                    continue
-                evidence = profile.evidence
-                inference = profile.inference
-                sessions.append(
-                    {
-                        "id": profile.session_id,
-                        "origin": source_name_to_origin(profile.source_name),
-                        "title": profile.title,
-                        "workflow_shape": inference.workflow_shape if inference else "unknown",
-                        "terminal_state": inference.terminal_state if inference else "unknown",
-                        "message_count": evidence.message_count if evidence else 0,
-                        "tool_call_count": evidence.tool_use_count if evidence else 0,
-                        "engaged_duration_ms": inference.engaged_duration_ms if inference else 0,
-                        "tool_active_duration_ms": evidence.tool_active_duration_ms if evidence else 0,
-                        "word_count": evidence.word_count if evidence else 0,
-                        "tags": list(evidence.tags) if evidence else [],
-                        "auto_tags": list(inference.auto_tags) if inference else [],
-                    }
-                )
-
-            # Collect per-key value sets across found sessions to surface differences.
-            diff_keys = (
-                "origin",
-                "workflow_shape",
-                "terminal_state",
-                "message_count",
-                "tool_call_count",
-                "engaged_duration_ms",
-                "tool_active_duration_ms",
-                "word_count",
-            )
-            differences: dict[str, list[object]] = {}
-            for key in diff_keys:
-                vals = {s.get(key) for s in sessions}
-                if len(vals) > 1:
-                    differences[key] = sorted(vals, key=str)
-
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root={
-                        "sessions": sessions,
-                        "differences": differences,
-                        "not_found": not_found,
-                        "total_requested": len(ids),
-                        "total_found": len(sessions),
-                    }
-                ),
-                exclude_none=True,
-            )
+            result = await poly.compare_sessions(ids)
+            return hooks.json_payload(MCPRootPayload(root=result), exclude_none=True)
 
         return await hooks.async_safe_call("compare_sessions", run)
 
@@ -725,101 +541,20 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     tool="find_similar_sessions",
                 )
 
-            # Metadata-based similarity fallback.
-            ref_profile = await poly.get_session_profile_insight(session_id)
-            if ref_profile is None:
+            # Metadata-based similarity fallback (#1691 / polylogue-9e5.24).
+            result = await poly.find_similar_sessions_by_metadata(
+                session_id,
+                limit=capped_limit,
+                candidate_pool_limit=hooks.clamp_limit(200),
+            )
+            if result is None:
                 return hooks.error_json(
                     "Session not found.",
                     code="not_found",
                     session_id=session_id,
                     tool="find_similar_sessions",
                 )
-
-            ref_evidence = ref_profile.evidence
-            ref_inference = ref_profile.inference
-            ref_shape = ref_inference.workflow_shape if ref_inference else None
-            ref_source = ref_profile.source_name
-            ref_origin = source_name_to_origin(ref_source)
-            ref_date = ref_evidence.canonical_session_date if ref_evidence else None
-            ref_tags = set(ref_evidence.tags) if ref_evidence else set()
-
-            candidates = await poly.list_session_profile_insights(
-                SessionProfileInsightQuery(
-                    provider=ref_source,
-                    limit=hooks.clamp_limit(200),
-                )
-            )
-
-            scored: list[tuple[int, dict[str, object]]] = []
-            for profile in candidates:
-                if profile.session_id == session_id:
-                    continue
-                evidence = profile.evidence
-                inference = profile.inference
-                score = 0
-                reasons: list[str] = []
-
-                cand_shape = inference.workflow_shape if inference else None
-                if ref_shape and cand_shape == ref_shape:
-                    score += 3
-                    reasons.append(f"same workflow_shape: {ref_shape}")
-
-                cand_source = profile.source_name
-                if ref_source and cand_source == ref_source:
-                    score += 1
-                    reasons.append(f"same origin: {ref_origin}")
-
-                cand_date = evidence.canonical_session_date if evidence else None
-                if ref_date and cand_date:
-                    try:
-                        ref_d = date.fromisoformat(ref_date)
-                        cand_d = date.fromisoformat(cand_date)
-                        delta = abs((ref_d - cand_d).days)
-                        if delta <= 3:
-                            score += 2
-                            reasons.append(f"within 3 days (delta={delta})")
-                        elif delta <= 14:
-                            score += 1
-                            reasons.append(f"within 14 days (delta={delta})")
-                    except (ValueError, TypeError):
-                        pass
-
-                cand_tags = set(evidence.tags) if evidence else set()
-                overlap = ref_tags & cand_tags
-                if overlap:
-                    score += len(overlap)
-                    reasons.append(f"{len(overlap)} overlapping tags: {sorted(overlap)}")
-
-                if score > 0:
-                    scored.append(
-                        (
-                            -score,
-                            {
-                                "session_id": profile.session_id,
-                                "title": profile.title,
-                                "origin": source_name_to_origin(profile.source_name),
-                                "workflow_shape": cand_shape or "unknown",
-                                "terminal_state": inference.terminal_state if inference else "unknown",
-                                "canonical_session_date": cand_date,
-                                "similarity_score": score,
-                                "similarity_reasons": reasons,
-                            },
-                        )
-                    )
-
-            scored.sort(key=lambda x: x[0])
-            top = [item for _, item in scored[:capped_limit]]
-
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root={
-                        "source_session_id": session_id,
-                        "method": "metadata",
-                        "similar": top,
-                    }
-                ),
-                exclude_none=True,
-            )
+            return hooks.json_payload(MCPRootPayload(root=result), exclude_none=True)
 
         return await hooks.async_safe_call("find_similar_sessions", run)
 
@@ -844,139 +579,26 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         #1691: programmatic session analysis primitives.
         """
 
-        import math
-
-        _numeric_metrics: set[str] = {
-            "message_count",
-            "word_count",
-            "tool_use_count",
-            "thinking_count",
-            "engaged_duration_ms",
-            "tool_active_duration_ms",
-            "wall_duration_ms",
-            "total_cost_usd",
-            "total_duration_ms",
-            "substantive_count",
-        }
+        from polylogue.insights.session_analytics import CORRELATABLE_SESSION_METRICS
 
         async def run() -> str:
-            if metric_x not in _numeric_metrics:
-                return hooks.error_json(
-                    f"Unknown metric_x: {metric_x!r}",
-                    code="invalid_argument",
-                    detail=f"Supported metrics: {sorted(_numeric_metrics)}",
-                    tool="correlate_sessions",
-                )
-            if metric_y not in _numeric_metrics:
-                return hooks.error_json(
-                    f"Unknown metric_y: {metric_y!r}",
-                    code="invalid_argument",
-                    detail=f"Supported metrics: {sorted(_numeric_metrics)}",
-                    tool="correlate_sessions",
-                )
-
             poly = hooks.get_polylogue()
-            profiles = await poly.list_session_profile_insights(
-                SessionProfileInsightQuery(
+            try:
+                result = await poly.correlate_sessions(
+                    metric_x=metric_x,
+                    metric_y=metric_y,
                     provider=_origin_to_provider_token(origin),
                     since=since,
                     until=until,
-                    limit=None,
                 )
-            )
-
-            # Extract (x, y) pairs, resolving from evidence/inference.
-            def _get_metric(profile: SessionProfileInsight, key: str) -> float | None:
-                evidence = profile.evidence
-                inference = profile.inference
-                if key == "message_count":
-                    return float(evidence.message_count) if evidence else None
-                if key == "word_count":
-                    return float(evidence.word_count) if evidence else None
-                if key == "tool_use_count":
-                    return float(evidence.tool_use_count) if evidence else None
-                if key == "thinking_count":
-                    return float(evidence.thinking_count) if evidence else None
-                if key == "engaged_duration_ms":
-                    return float(inference.engaged_duration_ms) if inference else None
-                if key == "tool_active_duration_ms":
-                    return float(evidence.tool_active_duration_ms) if evidence else None
-                if key == "wall_duration_ms":
-                    return float(evidence.wall_duration_ms) if evidence else None
-                if key == "total_cost_usd":
-                    return float(evidence.total_cost_usd) if evidence else None
-                if key == "total_duration_ms":
-                    return float(evidence.total_duration_ms) if evidence else None
-                if key == "substantive_count":
-                    return float(evidence.substantive_count) if evidence else None
-                return None
-
-            pairs: list[tuple[float, float]] = []
-            for p in profiles:
-                x = _get_metric(p, metric_x)
-                y = _get_metric(p, metric_y)
-                if x is not None and y is not None:
-                    pairs.append((x, y))
-
-            n = len(pairs)
-            if n < 3:
-                return hooks.json_payload(
-                    MCPRootPayload(
-                        root={
-                            "metric_x": metric_x,
-                            "metric_y": metric_y,
-                            "pearson_r": None,
-                            "sample_count": n,
-                            "interpretation": "insufficient data (need at least 3 samples)",
-                        }
-                    )
+            except ValueError as exc:
+                return hooks.error_json(
+                    str(exc),
+                    code="invalid_argument",
+                    detail=f"Supported metrics: {sorted(CORRELATABLE_SESSION_METRICS)}",
+                    tool="correlate_sessions",
                 )
-
-            sum_x = sum(p[0] for p in pairs)
-            sum_y = sum(p[1] for p in pairs)
-            sum_xy = sum(p[0] * p[1] for p in pairs)
-            sum_x2 = sum(p[0] * p[0] for p in pairs)
-            sum_y2 = sum(p[1] * p[1] for p in pairs)
-
-            denominator = math.sqrt((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y))
-            if denominator == 0:
-                return hooks.json_payload(
-                    MCPRootPayload(
-                        root={
-                            "metric_x": metric_x,
-                            "metric_y": metric_y,
-                            "pearson_r": None,
-                            "sample_count": n,
-                            "interpretation": "constant metric — zero variance, correlation undefined",
-                        }
-                    )
-                )
-
-            r = (n * sum_xy - sum_x * sum_y) / denominator
-            r = max(-1.0, min(1.0, r))
-
-            if abs(r) >= 0.7:
-                direction = "strong positive" if r > 0 else "strong negative"
-            elif abs(r) >= 0.4:
-                direction = "moderate positive" if r > 0 else "moderate negative"
-            elif abs(r) >= 0.2:
-                direction = "weak positive" if r > 0 else "weak negative"
-            else:
-                direction = "negligible"
-
-            interpretation = f"{direction} correlation (r={r:.3f})"
-
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root={
-                        "metric_x": metric_x,
-                        "metric_y": metric_y,
-                        "pearson_r": round(r, 4),
-                        "sample_count": n,
-                        "interpretation": interpretation,
-                    }
-                )
-            )
+            return hooks.json_payload(MCPRootPayload(root=result))
 
         return await hooks.async_safe_call("correlate_sessions", run)
 
