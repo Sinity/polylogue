@@ -213,6 +213,151 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
     assert fts_row["block_id"] == "codex-session:native-session:native-message:0"
 
 
+def test_actions_view_pairs_reemitted_tool_id_by_transcript_rank_not_cross_product(tmp_path: Path) -> None:
+    """xnkf: a provider can re-emit the same tool_id on distinct messages (verified
+    live, not a variant). A plain equality join on tool_id fans out N uses x M
+    results into N*M rows for one logical action stream; the view must instead
+    pair the Nth use (by transcript position) with the Nth result."""
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            native_id, origin, title, content_hash, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("reemit-session", "claude-code-session", "Re-emitted tool_id", _HASH, 1_767_225_600_000, 1_767_225_601_000),
+    )
+    session_id = conn.execute("SELECT session_id FROM sessions WHERE native_id = ?", ("reemit-session",)).fetchone()[
+        "session_id"
+    ]
+
+    # Two messages, each with a tool_use then a tool_result sharing the SAME
+    # tool_id -- exactly the live-verified re-emission shape (not variants:
+    # distinct messages, same tool_id, different content).
+    for i in range(2):
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, message_type, content_hash, occurred_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, f"msg-{i}", i, "assistant", "message", _HASH, 1_767_225_600_000 + i),
+        )
+    message_ids = [
+        row["message_id"]
+        for row in conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position", (session_id,)
+        ).fetchall()
+    ]
+
+    for i, message_id in enumerate(message_ids):
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, 0, "tool_use", "shell", "toolu_reemitted", f'{{"command": "cmd-{i}"}}'),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, text, tool_id, tool_result_is_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, 1, "tool_result", f"output-{i}", "toolu_reemitted", 0),
+        )
+
+    actions = conn.execute(
+        """
+        SELECT tool_command, output_text
+        FROM actions
+        WHERE session_id = ?
+        ORDER BY message_id
+        """,
+        (session_id,),
+    ).fetchall()
+
+    # Exactly one action row per logical use (2, not 2*2=4), each paired with
+    # the result at the SAME transcript rank -- never cross-paired.
+    assert [dict(row) for row in actions] == [
+        {"tool_command": "cmd-0", "output_text": "output-0"},
+        {"tool_command": "cmd-1", "output_text": "output-1"},
+    ]
+
+
+def test_actions_view_never_cross_pairs_empty_string_tool_id(tmp_path: Path) -> None:
+    """Defends the cross-product class the fix guards against: an empty-string
+    tool_id (never emitted by current parsers, which use NULL) must not match
+    another block's empty-string tool_id as if they shared a real id. Both
+    uses still surface as actions (unpaired), matching the pre-fix behavior
+    where a tool_id that never SQL-equality-matches anything was still shown."""
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            native_id, origin, title, content_hash, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("empty-tool-id-session", "codex-session", "Empty tool_id", _HASH, 1_767_225_600_000, 1_767_225_601_000),
+    )
+    session_id = conn.execute(
+        "SELECT session_id FROM sessions WHERE native_id = ?", ("empty-tool-id-session",)
+    ).fetchone()["session_id"]
+    conn.execute(
+        """
+        INSERT INTO messages (
+            session_id, native_id, position, role, message_type, content_hash, occurred_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (session_id, "msg-0", 0, "assistant", "message", _HASH, 1_767_225_600_000),
+    )
+    message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[
+        "message_id"
+    ]
+    conn.execute(
+        """
+        INSERT INTO blocks (
+            message_id, session_id, position, block_type, tool_name, tool_id, tool_input
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (message_id, session_id, 0, "tool_use", "shell", "", '{"command": "unlinked-1"}'),
+    )
+    conn.execute(
+        """
+        INSERT INTO blocks (
+            message_id, session_id, position, block_type, tool_name, tool_id, tool_input
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (message_id, session_id, 1, "tool_use", "shell", "", '{"command": "unlinked-2"}'),
+    )
+    # An empty-string tool_result too -- if the guard were missing, this could
+    # cross-pair with EITHER use above since both share tool_id=''.
+    conn.execute(
+        """
+        INSERT INTO blocks (
+            message_id, session_id, position, block_type, text, tool_id
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (message_id, session_id, 2, "tool_result", "unrelated output", ""),
+    )
+
+    actions = conn.execute(
+        "SELECT tool_command, output_text FROM actions WHERE session_id = ? ORDER BY tool_command",
+        (session_id,),
+    ).fetchall()
+    # Both uses still surface (unpaired) -- none cross-paired with the
+    # unrelated empty-string tool_result.
+    assert [dict(row) for row in actions] == [
+        {"tool_command": "unlinked-1", "output_text": None},
+        {"tool_command": "unlinked-2", "output_text": None},
+    ]
+
+
 def test_archive_tiers_user_ops_and_embeddings_do_not_reference_index_tables() -> None:
     non_index = (
         ARCHIVE_DDL_BY_TIER[ArchiveTier.EMBEDDINGS],
