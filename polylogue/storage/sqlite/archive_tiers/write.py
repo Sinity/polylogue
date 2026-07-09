@@ -1144,13 +1144,28 @@ def read_session_phases(
 def read_archive_session_envelope(
     conn: sqlite3.Connection, session_id: str, *, _depth: int = 0
 ) -> ArchiveSessionEnvelope:
-    """Read a compact archive envelope.
+    """Read a compact archive envelope, holding one read snapshot across composition.
 
     For a prefix-sharing lineage child (#2467) the inherited prefix is not stored
     under this session; the returned ``messages`` compose the parent's transcript
     up to the branch point followed by this session's own messages, so reads see
     the full logical transcript while storage holds each message once.
+
+    Composition issues multiple autocommit SELECTs across a recursive parent
+    walk (own read -> edge read -> recursive parent read). Without a held
+    transaction, a concurrent parent re-ingest between those reads can yield a
+    torn transcript (4ts.4). If ``conn`` is not already inside a transaction
+    (e.g. a caller-held write transaction), this wraps the whole composition
+    in one deferred read transaction so every SELECT sees the same snapshot;
+    recursive calls see ``conn.in_transaction`` already true and skip
+    re-wrapping.
     """
+    if not conn.in_transaction:
+        conn.execute("BEGIN DEFERRED")
+        try:
+            return read_archive_session_envelope(conn, session_id, _depth=_depth)
+        finally:
+            conn.execute("ROLLBACK")
     conn.row_factory = sqlite3.Row
     session = conn.execute(
         """
@@ -3469,7 +3484,18 @@ def _composed_db_signatures(
     supplied, composed (prefix+own) results are memoized only for one graph
     resolution operation; that avoids cross-write stale ancestors while letting
     sibling delayed-tail repairs share the same parent composition.
+
+    Callers typically already hold a write transaction (single-writer ingest),
+    but if ``conn`` is not already inside one this wraps the whole recursive
+    composition in one deferred read transaction (4ts.4), matching
+    ``read_archive_session_envelope``'s guard against a torn read.
     """
+    if not conn.in_transaction:
+        conn.execute("BEGIN DEFERRED")
+        try:
+            return _composed_db_signatures(conn, session_id, cache=cache, composed_cache=composed_cache, _depth=_depth)
+        finally:
+            conn.execute("ROLLBACK")
     if composed_cache is not None:
         composed = composed_cache.get(session_id)
         if composed is not None:
