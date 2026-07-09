@@ -5,39 +5,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polylogue.insights.archive import SessionLatencyProfileInsight, SessionProfileInsight
-from polylogue.insights.archive_models import (
-    SessionEvidencePayload,
-    SessionInferencePayload,
-    SessionLatencyProfilePayload,
-)
+from polylogue.insights.archive import SessionLatencyProfileInsight
+from polylogue.insights.archive_models import SessionLatencyProfilePayload
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
-from tests.unit.mcp.test_tool_contracts import _inference_provenance, _provenance
-
-
-def _profile() -> SessionProfileInsight:
-    return SessionProfileInsight(
-        session_id="conv-1",
-        logical_session_id="conv-1",
-        source_name="claude-code",
-        title="Profiled Session",
-        semantic_tier="merged",
-        provenance=_provenance(),
-        evidence=SessionEvidencePayload(
-            canonical_session_date="2026-03-24",
-            message_count=2,
-            cwd_paths=("/realm/project/polylogue",),
-            terminal_state_evidence={"message_id": "u1"},
-        ),
-        inference_provenance=_inference_provenance(),
-        inference=SessionInferencePayload(
-            engaged_duration_ms=120000,
-            workflow_shape="agentic_loop",
-            workflow_shape_confidence=0.86,
-            terminal_state="question_left",
-            terminal_state_confidence=0.72,
-        ),
-    )
+from tests.unit.mcp.test_tool_contracts import _provenance
 
 
 def _latency_profile() -> SessionLatencyProfileInsight:
@@ -59,12 +30,22 @@ def _latency_profile() -> SessionLatencyProfileInsight:
 
 
 @pytest.mark.asyncio
-async def test_workflow_shape_distribution_groups_materialized_profiles(
+async def test_workflow_shape_distribution_delegates_to_facade_method(
     mcp_server: MCPServerUnderTest,
 ) -> None:
+    """The GROUP BY/week-bucketing math is pinned directly against
+    ``workflow_shape_distribution_buckets`` in
+    tests/unit/insights/test_archive_rollups.py; this only proves the MCP
+    tool calls the facade method and passes its result through."""
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
-        mock_poly.list_session_profile_insights = AsyncMock(return_value=[_profile()])
+        mock_poly.workflow_shape_distribution = AsyncMock(
+            return_value={
+                "group_by": "origin",
+                "total_sessions": 1,
+                "buckets": {"claude-code-session": {"agentic_loop": 1}},
+            }
+        )
         mock_get_polylogue.return_value = mock_poly
 
         raw = await invoke_surface_async(
@@ -74,15 +55,34 @@ async def test_workflow_shape_distribution_groups_materialized_profiles(
 
     payload = json.loads(raw)
     assert payload["buckets"]["claude-code-session"]["agentic_loop"] == 1
+    mock_poly.workflow_shape_distribution.assert_awaited_once_with(
+        group_by="origin", since=None, until=None, provider=None
+    )
 
 
 @pytest.mark.asyncio
-async def test_find_abandoned_sessions_filters_and_cites_terminal_evidence(
+async def test_find_abandoned_sessions_delegates_to_facade_method(
     mcp_server: MCPServerUnderTest,
 ) -> None:
+    """The severity-rank/filter math is pinned directly against
+    ``abandoned_session_items`` in
+    tests/unit/insights/test_archive_rollups.py; this only proves the MCP
+    tool calls the facade method and passes its result through."""
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
-        mock_poly.list_session_profile_insights = AsyncMock(return_value=[_profile()])
+        mock_poly.find_abandoned_sessions = AsyncMock(
+            return_value={
+                "total": 1,
+                "items": [
+                    {
+                        "session_id": "conv-1",
+                        "origin": "claude-code-session",
+                        "terminal_state": "question_left",
+                        "evidence": {"message_id": "u1"},
+                    }
+                ],
+            }
+        )
         mock_get_polylogue.return_value = mock_poly
 
         raw = await invoke_surface_async(
@@ -97,6 +97,9 @@ async def test_find_abandoned_sessions_filters_and_cites_terminal_evidence(
     assert payload["items"][0]["origin"] == "claude-code-session"
     assert payload["items"][0]["terminal_state"] == "question_left"
     assert payload["items"][0]["evidence"] == {"message_id": "u1"}
+    mock_poly.find_abandoned_sessions.assert_awaited_once_with(
+        since=None, repo_path="polylogue", min_severity="question_left", limit=5
+    )
 
 
 @pytest.mark.asyncio
@@ -120,12 +123,26 @@ async def test_session_latency_profile_returns_materialized_latency(
 
 
 @pytest.mark.asyncio
-async def test_tool_call_latency_distribution_aggregates_materialized_profiles(
+async def test_tool_call_latency_distribution_delegates_to_facade_method(
     mcp_server: MCPServerUnderTest,
 ) -> None:
+    """The nearest-rank percentile math is pinned directly against
+    ``tool_call_latency_distribution_payload`` in
+    tests/unit/insights/test_archive_rollups.py; this only proves the MCP
+    tool calls the facade method and passes its result through."""
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
-        mock_poly.list_session_latency_profile_insights = AsyncMock(return_value=[_latency_profile()])
+        mock_poly.tool_call_latency_distribution = AsyncMock(
+            return_value={
+                "total_sessions": 1,
+                "tool_category": "shell",
+                "median_tool_call_ms": 120_000,
+                "p90_tool_call_ms": 240_000,
+                "max_tool_call_ms": 300_000,
+                "stuck_tool_count": 1,
+                "construct_boundary": "distribution is over materialized per-session aggregates",
+            }
+        )
         mock_get_polylogue.return_value = mock_poly
 
         raw = await invoke_surface_async(
@@ -138,6 +155,9 @@ async def test_tool_call_latency_distribution_aggregates_materialized_profiles(
     assert payload["total_sessions"] == 1
     assert payload["median_tool_call_ms"] == 120_000
     assert payload["stuck_tool_count"] == 1
+    mock_poly.tool_call_latency_distribution.assert_awaited_once_with(
+        since=None, until=None, provider=None, tool_category="shell", limit=5
+    )
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
@@ -14,10 +14,13 @@ from polylogue.archive.semantic.pricing import (
 )
 from polylogue.archive.session.repo_identity import normalize_repo_names
 from polylogue.archive.session.session_profile import SessionProfile
+from polylogue.core.sources import source_name_to_origin
 from polylogue.insights.archive import (
     ArchiveInsightProvenance,
     CostRollupInsight,
     SessionCostInsight,
+    SessionLatencyProfileInsight,
+    SessionProfileInsight,
     SessionTagRollupInsight,
     profile_bucket_day,
     profile_timestamp_values,
@@ -26,6 +29,16 @@ from polylogue.insights.archive import (
 from polylogue.insights.temporal_source import TemporalSource, classify_aggregate_hwm_source
 from polylogue.storage.runtime import SessionTagRollupRecord
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
+
+# Severity rank for "how badly did this session get left hanging" (#1691).
+# Distinct vocabulary from portfolio.py's pathology _SEVERITY_RANK
+# (high/medium/low) -- this ranks terminal_state values.
+ABANDONMENT_SEVERITY_RANK: dict[str, int] = {
+    "question_left": 1,
+    "error_left": 2,
+    "tool_left": 3,
+    "agent_hanging": 4,
+}
 
 
 @dataclass(slots=True)
@@ -295,8 +308,166 @@ def aggregate_cost_rollup_insights(
     return rollups
 
 
+def iso_week_bucket_key(canonical_session_date: str | None) -> str:
+    """Bucket key for one session date: ISO year-week, or a fallback.
+
+    Returns ``"undated"`` when there is no date, ``"YYYY-Www"`` for a
+    parseable ISO date, or the first 7 characters of the raw string when
+    it fails to parse (matching the legacy MCP-inline behavior).
+    """
+    if not canonical_session_date:
+        return "undated"
+    try:
+        parsed = date.fromisoformat(canonical_session_date)
+        iso_year, iso_week, _ = parsed.isocalendar()
+        return f"{iso_year}-W{iso_week:02d}"
+    except ValueError:
+        return canonical_session_date[:7]
+
+
+def aggregate_session_profiles_by_dimension(
+    profiles: Sequence[SessionProfileInsight],
+    group_by: str,
+) -> dict[str, int]:
+    """GROUP BY session count over workflow_shape / terminal_state / origin (#1691).
+
+    Raises ``ValueError`` for an unsupported ``group_by``.
+    """
+    buckets: dict[str, int] = {}
+    for profile in profiles:
+        if group_by == "workflow_shape":
+            key = (profile.inference.workflow_shape if profile.inference else None) or "unknown"
+        elif group_by == "terminal_state":
+            key = (profile.inference.terminal_state if profile.inference else None) or "unknown"
+        elif group_by == "origin":
+            key = source_name_to_origin(profile.source_name)
+        else:
+            raise ValueError(f"Unknown group_by: {group_by!r}. Supported: workflow_shape, terminal_state, origin.")
+        buckets[key] = buckets.get(key, 0) + 1
+    return buckets
+
+
+def workflow_shape_distribution_buckets(
+    profiles: Sequence[SessionProfileInsight],
+    group_by: str,
+) -> dict[str, dict[str, int]]:
+    """Histogram session workflow shapes by week / origin / project (#1691).
+
+    Raises ``ValueError`` when ``group_by`` is not one of
+    ``week``, ``origin``, ``project``.
+    """
+    allowed_group_by = {"week", "origin", "project"}
+    if group_by not in allowed_group_by:
+        raise ValueError("group_by must be one of week, origin, project")
+    buckets: dict[str, dict[str, int]] = {}
+    for profile in profiles:
+        evidence = profile.evidence
+        inference = profile.inference
+        shape = inference.workflow_shape if inference is not None else "unknown"
+        keys: tuple[str, ...]
+        if group_by == "origin":
+            keys = (source_name_to_origin(profile.source_name),)
+        elif group_by == "project":
+            paths = evidence.cwd_paths if evidence is not None else ()
+            keys = tuple(paths) or ("unattributed",)
+        else:
+            date_value = evidence.canonical_session_date if evidence is not None else None
+            keys = (iso_week_bucket_key(date_value),)
+        for key in keys:
+            bucket = buckets.setdefault(key, {})
+            bucket[shape] = bucket.get(shape, 0) + 1
+    return buckets
+
+
+def abandoned_session_items(
+    profiles: Sequence[SessionProfileInsight],
+    *,
+    min_severity: str,
+    repo_path: str | None = None,
+) -> list[dict[str, object]]:
+    """Sessions whose terminal state indicates dangling work (#1691).
+
+    Sorted by ``canonical_session_date`` descending (uncapped -- callers
+    apply their own limit). Raises ``ValueError`` for an unknown
+    ``min_severity``.
+    """
+    if min_severity not in ABANDONMENT_SEVERITY_RANK:
+        raise ValueError("min_severity must be one of question_left, error_left, tool_left, agent_hanging")
+    min_rank = ABANDONMENT_SEVERITY_RANK[min_severity]
+    items: list[dict[str, object]] = []
+    for profile in profiles:
+        inference = profile.inference
+        evidence = profile.evidence
+        state = inference.terminal_state if inference is not None else "unknown"
+        if ABANDONMENT_SEVERITY_RANK.get(state, 0) < min_rank:
+            continue
+        cwd_paths = evidence.cwd_paths if evidence is not None else ()
+        if repo_path and not any(repo_path in path for path in cwd_paths):
+            continue
+        items.append(
+            {
+                "session_id": profile.session_id,
+                "origin": source_name_to_origin(profile.source_name),
+                "title": profile.title,
+                "terminal_state": state,
+                "terminal_state_confidence": (inference.terminal_state_confidence if inference is not None else 0.0),
+                "workflow_shape": inference.workflow_shape if inference is not None else "unknown",
+                "canonical_session_date": evidence.canonical_session_date if evidence is not None else None,
+                "evidence": evidence.terminal_state_evidence if evidence is not None else {},
+            }
+        )
+    items.sort(key=lambda item: str(item.get("canonical_session_date") or ""), reverse=True)
+    return items
+
+
+def tool_call_latency_distribution_payload(
+    insights: Sequence[SessionLatencyProfileInsight],
+    *,
+    tool_category: str | None = None,
+) -> dict[str, object]:
+    """Distribution of materialized per-session tool-call latency (#1691).
+
+    Reuses the nearest-rank percentile from
+    :mod:`polylogue.insights.portfolio` (``_percentile``/``DistributionStat``)
+    rather than a second percentile algorithm.
+    """
+    from polylogue.insights.portfolio import _percentile
+
+    def _nearest_rank(values: list[int], p: float) -> int:
+        if not values:
+            return 0
+        return int(_percentile(sorted(values), p / 100.0))
+
+    filtered = insights
+    if tool_category:
+        filtered = [
+            insight for insight in insights if insight.latency.tool_call_count_by_category.get(tool_category, 0) > 0
+        ]
+    medians = [insight.latency.median_tool_call_ms for insight in filtered if insight.latency.median_tool_call_ms]
+    p90s = [insight.latency.p90_tool_call_ms for insight in filtered if insight.latency.p90_tool_call_ms]
+    maxes = [insight.latency.max_tool_call_ms for insight in filtered if insight.latency.max_tool_call_ms]
+    return {
+        "total_sessions": len(filtered),
+        "tool_category": tool_category,
+        "median_tool_call_ms": _nearest_rank(medians, 50),
+        "p90_tool_call_ms": _nearest_rank(p90s, 90),
+        "max_tool_call_ms": max(maxes) if maxes else 0,
+        "stuck_tool_count": sum(insight.latency.stuck_tool_count for insight in filtered),
+        "construct_boundary": (
+            "distribution is over materialized per-session aggregates; "
+            "agent-response time includes both LLM inference and tool execution"
+        ),
+    }
+
+
 __all__ = [
+    "ABANDONMENT_SEVERITY_RANK",
+    "abandoned_session_items",
     "aggregate_cost_rollup_insights",
+    "aggregate_session_profiles_by_dimension",
     "aggregate_session_tag_rollup_insights",
     "build_session_tag_rollup_records",
+    "iso_week_bucket_key",
+    "tool_call_latency_distribution_payload",
+    "workflow_shape_distribution_buckets",
 ]
