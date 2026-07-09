@@ -404,6 +404,9 @@ class MCPArchiveSessionPayload(SurfacePayloadModel):
     canonical_url: str | None
     active_leaf_message_id: str | None
     messages: tuple[MCPArchiveMessagePayload, ...]
+    # 4ts.6: see MCPMessagesListPayload's matching fields.
+    lineage_complete: bool = True
+    lineage_truncation_reason: str | None = None
 
     @classmethod
     def from_session(cls, session: ArchiveSessionEnvelope) -> MCPArchiveSessionPayload:
@@ -416,6 +419,8 @@ class MCPArchiveSessionPayload(SurfacePayloadModel):
             canonical_url=canonical_session_url(session.origin, session.native_id),
             active_leaf_message_id=session.active_leaf_message_id,
             messages=tuple(MCPArchiveMessagePayload.from_message(message) for message in session.messages),
+            lineage_complete=session.lineage_complete,
+            lineage_truncation_reason=session.lineage_truncation_reason,
         )
 
 
@@ -783,6 +788,12 @@ class MCPMessagesListPayload(SurfacePayloadModel):
     next_offset: int | None = None
     suggested_tail_offset: int | None = None
     offset_note: str | None = None
+    # 4ts.6: whether the underlying session's composed transcript is the FULL
+    # logical transcript, or truncated by a lineage depth limit / dangling
+    # branch point -- surfaced so a consumer never mistakes a partial
+    # transcript for the whole thing.
+    lineage_complete: bool = True
+    lineage_truncation_reason: str | None = None
 
 
 class MCPRawArtifactPayload(SurfacePayloadModel):

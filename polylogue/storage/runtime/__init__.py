@@ -25,8 +25,12 @@ from polylogue.storage.insights.timeline.records import (
     SessionWorkEventRecord,
 )
 from polylogue.storage.runtime.archive.records import (
+    LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
+    LINEAGE_TRUNCATION_DEPTH_LIMIT,
     AttachmentRecord,
     BlockRecord,
+    LineageCompleteness,
+    LineageTruncationReason,
     MessageRecord,
     SessionEventRecord,
     SessionRecord,
@@ -72,6 +76,10 @@ __all__ = [
     "BlockRecord",
     "SessionRecord",
     "DaySessionSummaryRecord",
+    "LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT",
+    "LINEAGE_TRUNCATION_DEPTH_LIMIT",
+    "LineageCompleteness",
+    "LineageTruncationReason",
     "MessageRecord",
     "SESSION_EVENT_MATERIALIZER_VERSION",
     "SessionEventRecord",

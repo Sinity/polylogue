@@ -10,8 +10,16 @@ import aiosqlite
 from polylogue.archive.message.roles import MessageRoleFilter, message_role_sql_values
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.core.enums import MaterialOrigin
-from polylogue.storage.runtime import MessageRecord
+from polylogue.logging import get_logger
+from polylogue.storage.runtime import (
+    LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
+    LINEAGE_TRUNCATION_DEPTH_LIMIT,
+    LineageCompleteness,
+    MessageRecord,
+)
 from polylogue.storage.sqlite.queries.mappers import _row_to_message
+
+logger = get_logger(__name__)
 
 MessageTypeName = Literal["message", "summary", "tool_use", "tool_result", "thinking", "context", "protocol"]
 MaterialOriginFilter = MaterialOrigin | str | tuple[MaterialOrigin | str, ...] | list[MaterialOrigin | str]
@@ -116,17 +124,46 @@ async def get_messages(
 ) -> list[MessageRecord]:
     """Compose a session's full message transcript, holding one read snapshot.
 
+    Thin wrapper over ``get_messages_with_lineage_completeness`` that drops
+    the completeness signal for callers that don't need it (single source of
+    truth for the composition logic -- see that function's docstring).
+    """
+    messages, _completeness = await get_messages_with_lineage_completeness(
+        conn, session_id, _compose_in_position_order=_compose_in_position_order
+    )
+    return messages
+
+
+async def get_messages_with_lineage_completeness(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    *,
+    _compose_in_position_order: bool = False,
+) -> tuple[list[MessageRecord], LineageCompleteness]:
+    """Compose a session's full message transcript, holding one read snapshot,
+    and report whether the composed transcript is complete (4ts.6).
+
     Composition issues multiple autocommit SELECTs while walking the lineage
     chain (edge reads, then a read per ancestor/descendant). Without a held
     transaction, a concurrent parent re-ingest between those reads can yield a
     torn transcript (4ts.4). If ``conn`` is not already inside a transaction
     (e.g. a caller-held write transaction), this wraps the whole composition
     in one deferred read transaction so every SELECT sees the same snapshot.
+
+    Two paths can silently return an INCOMPLETE transcript: a chain deeper
+    than ``_MAX_LINEAGE_DEPTH`` (ancestors beyond the cutoff are dropped), or
+    a dangling branch point (the parent message was hard-deleted, so only
+    this session's own divergent tail is returned starting mid-conversation).
+    Consumers that care (MCP get_messages, context-image) can distinguish a
+    complete logical transcript from a truncated one via the returned
+    ``LineageCompleteness``.
     """
     if not conn.in_transaction:
         await conn.execute("BEGIN DEFERRED")
         try:
-            return await get_messages(conn, session_id, _compose_in_position_order=_compose_in_position_order)
+            return await get_messages_with_lineage_completeness(
+                conn, session_id, _compose_in_position_order=_compose_in_position_order
+            )
         finally:
             await conn.execute("ROLLBACK")
     session_id = await _resolve_session_id(conn, session_id)
@@ -141,6 +178,7 @@ async def get_messages(
     chain: list[tuple[str, str]] = []  # (child_session_id, branch_point_message_id), leaf-first
     visited: set[str] = {session_id}
     cursor_session = session_id
+    depth_limited = False
     for _ in range(_MAX_LINEAGE_DEPTH):
         edge = await _prefix_sharing_edge(conn, cursor_session)
         if edge is None:
@@ -152,13 +190,27 @@ async def get_messages(
         chain.append((cursor_session, branch_point_message_id))
         visited.add(parent_session_id)
         cursor_session = parent_session_id
+    else:
+        # Loop exhausted _MAX_LINEAGE_DEPTH iterations without a break: there
+        # may be more ancestors beyond the cutoff we never walked to.
+        if await _prefix_sharing_edge(conn, cursor_session) is not None:
+            depth_limited = True
+            logger.warning(
+                "lineage composition hit depth limit (%d) for session %s; ancestors beyond this depth are dropped",
+                _MAX_LINEAGE_DEPTH,
+                session_id,
+            )
 
     if not chain:
-        return await _own_messages(conn, session_id, position_order=_compose_in_position_order)
+        # depth_limited can only be set inside the for-else branch below,
+        # which only runs after _MAX_LINEAGE_DEPTH non-empty chain entries --
+        # an empty chain means the very first edge check returned None.
+        return await _own_messages(conn, session_id, position_order=_compose_in_position_order), LineageCompleteness()
 
     # Compose from the root down: root's full transcript, then splice each
     # descendant's own tail at its branch point in the running composed view.
     composed = await _own_messages(conn, cursor_session, position_order=True)
+    dangling = False
     for child_session_id, branch_point_message_id in reversed(chain):
         own = await _own_messages(conn, child_session_id, position_order=True)
         prefix: list[MessageRecord] = []
@@ -170,8 +222,17 @@ async def get_messages(
                 break
         # Dangling branch point (e.g. the parent message was hard-deleted): return
         # this child's own tail rather than an over-long transcript (#2467 audit).
-        composed = prefix + own if found else own
-    return composed
+        if found:
+            composed = prefix + own
+        else:
+            composed = own
+            dangling = True
+    reason = (
+        LINEAGE_TRUNCATION_DEPTH_LIMIT
+        if depth_limited
+        else (LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT if dangling else None)
+    )
+    return composed, LineageCompleteness(complete=not (depth_limited or dangling), truncation_reason=reason)
 
 
 def _filter_composed(

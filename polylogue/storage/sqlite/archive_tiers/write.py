@@ -23,6 +23,7 @@ from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.logging import get_logger
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -36,7 +37,14 @@ from polylogue.storage.fts.fts_lifecycle import (
     suspend_message_fts_triggers_sync,
 )
 from polylogue.storage.fts.sql import delete_session_rows_sql, insert_session_rows_sql
+from polylogue.storage.runtime import (
+    LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
+    LINEAGE_TRUNCATION_DEPTH_LIMIT,
+    LineageTruncationReason,
+)
 from polylogue.storage.search.query_support import normalize_fts5_query
+
+logger = get_logger(__name__)
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
@@ -153,6 +161,12 @@ class ArchiveSessionEnvelope:
     git_repository_url: str | None = None
     provider_project_ref: str | None = None
     orphan_attachments: tuple[ArchiveAttachmentRow, ...] = ()
+    # 4ts.6: whether ``messages`` is the FULL logical transcript, or a
+    # silently truncated one -- a prefix-sharing child composition can drop
+    # ancestors past a recursion depth limit, or return only its own
+    # divergent tail when the parent's branch point was hard-deleted.
+    lineage_complete: bool = True
+    lineage_truncation_reason: LineageTruncationReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1285,11 +1299,31 @@ def read_archive_session_envelope(
     # Lineage composition (#2467): prepend the parent's composed transcript up to
     # and including the branch point. The parent envelope is itself composed via
     # this same recursion, so nested lineages resolve correctly.
-    if _depth < _MAX_LINEAGE_DEPTH:
-        edge = _prefix_sharing_edge_sync(conn, str(session["session_id"]))
-        if edge is not None:
+    #
+    # 4ts.6: two paths silently return an INCOMPLETE transcript with no signal
+    # -- a depth-limit cutoff (a chain deeper than _MAX_LINEAGE_DEPTH) and a
+    # dangling branch point (the parent message was hard-deleted, so the
+    # child's own tail is returned starting mid-conversation). Track both and
+    # surface them on the envelope rather than silently serving a partial
+    # transcript as if it were whole. A parent's own incompleteness (from a
+    # DEEPER recursion level) also propagates up, since this session's
+    # composed view includes that parent's transcript.
+    lineage_complete = True
+    lineage_truncation_reason: LineageTruncationReason | None = None
+    edge = _prefix_sharing_edge_sync(conn, str(session["session_id"]))
+    if edge is not None:
+        if _depth >= _MAX_LINEAGE_DEPTH:
+            lineage_complete = False
+            lineage_truncation_reason = LINEAGE_TRUNCATION_DEPTH_LIMIT
+            logger.warning(
+                "lineage composition hit depth limit (%d) for session %s; ancestors beyond this depth are dropped",
+                _MAX_LINEAGE_DEPTH,
+                session["session_id"],
+            )
+        else:
             parent_session_id, branch_point_message_id = edge
-            parent_messages = read_archive_session_envelope(conn, parent_session_id, _depth=_depth + 1).messages
+            parent_envelope = read_archive_session_envelope(conn, parent_session_id, _depth=_depth + 1)
+            parent_messages = parent_envelope.messages
             prefix: list[ArchiveMessageRow] = []
             found = False
             for parent_message in parent_messages:
@@ -1301,6 +1335,19 @@ def read_archive_session_envelope(
             # session's own tail rather than splice the entire parent (#2467 audit).
             if found:
                 messages = prefix + messages
+            # Check the parent's OWN incompleteness first: if the parent was
+            # already truncated (e.g. by the depth limit), its composed
+            # messages may not include its own inherited prefix, so a
+            # not-found branch point here is a SYMPTOM of that truncation,
+            # not an independent dangling-branch-point condition. Surfacing
+            # the parent's real reason (not a locally-derived one) avoids
+            # masking the root cause one level up.
+            if not parent_envelope.lineage_complete:
+                lineage_complete = False
+                lineage_truncation_reason = parent_envelope.lineage_truncation_reason
+            elif not found:
+                lineage_complete = False
+                lineage_truncation_reason = LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
 
     return ArchiveSessionEnvelope(
         session_id=session["session_id"],
@@ -1310,6 +1357,8 @@ def read_archive_session_envelope(
         session_kind=session["session_kind"],
         active_leaf_message_id=session["active_leaf_message_id"],
         messages=tuple(messages),
+        lineage_complete=lineage_complete,
+        lineage_truncation_reason=lineage_truncation_reason,
         parent_session_id=session["parent_session_id"],
         root_session_id=session["root_session_id"],
         branch_type=session["branch_type"],

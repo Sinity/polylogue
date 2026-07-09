@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -185,6 +186,27 @@ class MessageRecord(BaseModel):
         if not v or not v.strip():
             raise ValueError("Field cannot be empty")
         return v
+
+
+LineageTruncationReason = Literal["depth_limit", "dangling_branch_point"]
+
+# Shared between the sync (archive_tiers/write.py) and async
+# (sqlite/queries/message_query_reads.py) composition paths -- both must
+# emit identical reason strings for downstream consumers to branch on, so
+# they import these rather than each hardcoding their own literals.
+LINEAGE_TRUNCATION_DEPTH_LIMIT: LineageTruncationReason = "depth_limit"
+LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT: LineageTruncationReason = "dangling_branch_point"
+
+
+class LineageCompleteness(BaseModel):
+    """Whether a composed transcript is the FULL logical transcript, or a
+    silently truncated one (4ts.6). A prefix-sharing child composition can
+    drop ancestors past a recursion depth limit, or return only its own
+    divergent tail when the parent's branch point was hard-deleted -- both
+    are construct-validity holes if served without a signal."""
+
+    complete: bool = True
+    truncation_reason: LineageTruncationReason | None = None
 
 
 class AttachmentRecord(BaseModel):
