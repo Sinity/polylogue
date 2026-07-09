@@ -1337,6 +1337,56 @@ def test_async_execute_query_archive_count_uses_query_match_scope(
     assert payload == {"mode": "count", "origin": "codex-session", "count": 2}
 
 
+def test_async_execute_query_archive_count_applies_boolean_predicate(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for polylogue-70qb: `then analyze --count` on a boolean
+    (`sessions where <predicate>`) query must apply the compiled predicate,
+    not fall back to the unfiltered archive count."""
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def count_search_sessions(self, query: str, **kwargs: object) -> int:
+            raise AssertionError("boolean-only query must not take the FTS-search count path")
+
+        def count_sessions(self, **kwargs: object) -> int:
+            assert kwargs.get("boolean_predicate") is not None
+            return 5
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("sessions where origin:codex-session",),
+                "count_only": True,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["count"] == 5
+
+
 def test_async_execute_query_archive_search_stats_are_not_page_capped_by_default(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

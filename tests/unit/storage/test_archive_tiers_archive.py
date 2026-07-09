@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
@@ -719,6 +721,12 @@ def test_archive_tiers_archive_facade_resolves_exact_and_prefix_session_ids(tmp_
         # Suffix fallback: a bare native id (no origin prefix) — e.g. the UUID
         # that appears as a session's source filename — resolves uniquely.
         assert facade.resolve_session_id("codex-resolve-1") == session_id
+        # Regression for polylogue-7q16: a *prefix* of the bare native id
+        # (e.g. what `find` listings display as the short id) must also
+        # resolve, not just the byte-for-byte full native id.
+        assert facade.resolve_session_id("codex-resolve") == session_id
+        with pytest.raises(KeyError):
+            facade.resolve_session_id("codex-resolve-1-nonexistent-suffix")
 
 
 def test_archive_tiers_archive_facade_filters_since_session_scope(tmp_path: Path) -> None:

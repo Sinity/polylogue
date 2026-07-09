@@ -2399,17 +2399,20 @@ class ArchiveStore:
         ).fetchall()
         if not rows:
             # Suffix fallback: a bare native id (e.g. the UUID that appears as
-            # the session's source filename, ``1944721d-...``) resolves to the
-            # stored ``<origin>:<native_id>``. Provider native ids are globally
-            # unique, so a single suffix match is unambiguous; multiple matches
-            # raise just like the prefix path rather than guessing.
+            # the session's source filename, ``1944721d-...``), full or a
+            # prefix of it, resolves to the stored ``<origin>:<native_id>``.
+            # The trailing ``%`` allows a truncated prefix to match (#7q16);
+            # the leading ``:`` anchors the match to right after the origin
+            # separator so it can't match mid-native-id. Provider native ids
+            # are globally unique, so a single match is unambiguous; multiple
+            # matches raise just like the prefix path rather than guessing.
             if ":" not in token:
                 like_token = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 suffix_rows = self._conn.execute(
                     """
                     SELECT session_id
                     FROM sessions
-                    WHERE session_id LIKE '%:' || ? ESCAPE '\\'
+                    WHERE session_id LIKE '%:' || ? || '%' ESCAPE '\\'
                     ORDER BY session_id
                     LIMIT 2
                     """,
@@ -2418,7 +2421,7 @@ class ArchiveStore:
                 if len(suffix_rows) == 1:
                     return str(suffix_rows[0]["session_id"])
                 if len(suffix_rows) > 1:
-                    raise ValueError(f"session id suffix {token!r} is ambiguous")
+                    raise ValueError(f"session id prefix {token!r} is ambiguous")
             raise KeyError(token)
         if len(rows) > 1:
             raise ValueError(f"session id prefix {token!r} is ambiguous")

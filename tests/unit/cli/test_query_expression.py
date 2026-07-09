@@ -5381,6 +5381,31 @@ class TestCLIRootRequestWiring:
         assert spec.since is not None
         assert "json" in spec.query_terms
 
+    def test_dsl_multi_field_clause_single_shell_quoted_token(self) -> None:
+        """Regression for polylogue-zrdp.
+
+        `polylogue find "repo:polylogue since:7d"` arrives as ONE query_term
+        containing a space (the shell already stripped the outer quotes).
+        This must be parsed as two ANDed field clauses, not wrapped whole as
+        a single literal FTS phrase.
+        """
+        from polylogue.cli.root_request import RootModeRequest
+
+        request = RootModeRequest(params={}, query_terms=("repo:polylogue since:7d",))
+        spec = request.query_spec()
+        assert spec.repo_names == ("polylogue",)
+        assert spec.since is not None
+        assert spec.query_terms == ()
+
+    def test_dsl_multi_field_clause_matches_split_token_form(self) -> None:
+        """The single-quoted-token and pre-split-token forms must compile identically."""
+        from polylogue.cli.root_request import RootModeRequest
+
+        quoted = RootModeRequest(params={}, query_terms=("repo:polylogue origin:claude-code-session",)).query_spec()
+        split = RootModeRequest(params={}, query_terms=("repo:polylogue", "origin:claude-code-session")).query_spec()
+        assert quoted.repo_names == split.repo_names == ("polylogue",)
+        assert quoted.origins == split.origins == ("claude-code-session",)
+
     def test_flags_and_expression_merged(self) -> None:
         from polylogue.cli.root_request import RootModeRequest
 

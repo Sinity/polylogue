@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -11,6 +12,12 @@ from polylogue.cli.query_contracts import coerce_query_terms
 
 if TYPE_CHECKING:
     import click
+
+# Matches the start of a compact DSL field:value clause (e.g. `repo:`,
+# `since:`, `-tag:`). Used to detect a space-separated run of field clauses
+# passed as one shell-quoted argv token (`find "repo:x since:7d"`) so it is
+# parsed as DSL, not wrapped as a literal free-text phrase (see below).
+_FIELD_CLAUSE_START_RE = re.compile(r"^-?[a-zA-Z_][a-zA-Z0-9_.]*:")
 
 
 def _is_shell_quoted_structured_query(term: str) -> bool:
@@ -27,7 +34,15 @@ def _is_shell_quoted_structured_query(term: str) -> bool:
 
         prefixes = tuple(f"{source} where " for source in terminal_query_sources()) + ("sessions where ",)
         return lowered.startswith(prefixes)
-    return False
+    # Compact multi-clause DSL, e.g. `repo:polylogue since:7d`, arriving as a
+    # single shell-quoted argv token because it contains a space. The generic
+    # quoting fallback below would wrap the whole string as one escaped
+    # literal, turning two ANDed field filters into a single meaningless FTS
+    # phrase search (polylogue-zrdp). Detect this by checking whether any
+    # whitespace-separated piece looks like a field:value clause; the actual
+    # DSL grammar (which correctly handles quoted/paren values containing
+    # spaces) does the real parsing once this returns True.
+    return any(_FIELD_CLAUSE_START_RE.match(piece) for piece in stripped.split())
 
 
 def _expression_from_query_terms(query_terms: tuple[str, ...]) -> str:
