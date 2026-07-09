@@ -44,7 +44,7 @@ def _category(name: str, object_type: str) -> str:
         return "insights"
     if name.startswith(("message_embeddings", "embedding_")):
         return "embeddings"
-    if name.startswith(("pending_blob_refs", "gc_generations")):
+    if name.startswith("gc_generations"):
         return "blob_gc"
     return "archive"
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 2
+SOURCE_SCHEMA_VERSION = 3
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -60,18 +60,6 @@ CREATE TABLE IF NOT EXISTS blob_refs (
 
 CREATE INDEX IF NOT EXISTS idx_blob_refs_ref_id
 ON blob_refs(ref_id);
-
-CREATE TABLE IF NOT EXISTS pending_blob_refs (
-    blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    operation_id    TEXT NOT NULL,
-    ref_type        TEXT NOT NULL,
-    ref_id          TEXT NOT NULL,
-    acquired_at_ms  INTEGER NOT NULL,
-    PRIMARY KEY(blob_hash, operation_id, ref_type, ref_id)
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_pending_blob_refs_operation
-ON pending_blob_refs(operation_id);
 
 CREATE TABLE IF NOT EXISTS gc_generations (
     generation_id    TEXT PRIMARY KEY,

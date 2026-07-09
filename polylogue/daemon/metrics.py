@@ -42,8 +42,6 @@ varies on a known-bounded dimension):
 - ``polylogue_live_ingest_attempt_duration_seconds`` (gauge buckets:
   min, mean, max derived from recent completed attempts)
 - ``polylogue_convergence_debt_count`` (gauge) — labels: stage
-- ``polylogue_blob_lease_pending_count`` (gauge)
-- ``polylogue_blob_lease_distinct_operations`` (gauge)
 - ``polylogue_fts_trigger_present`` (gauge) — labels: trigger
 - ``polylogue_fts_triggers_all_present`` (gauge, 0/1)
 - ``polylogue_fts_freshness_ready`` (gauge, 0/1) — labels: surface
@@ -409,15 +407,6 @@ def _ops_convergence_debt_by_stage(ops_db: Path | None) -> list[tuple[str, int]]
     except sqlite3.Error:
         return []
     return [(str(row[0] or "unknown"), int(row[1] or 0)) for row in rows]
-
-
-def _blob_lease_state(conn: sqlite3.Connection) -> tuple[int, int]:
-    """Return (pending_count, distinct_operations)."""
-    if not _table_exists(conn, "pending_blob_refs"):
-        return (0, 0)
-    pending = _scalar_int(conn, "SELECT COUNT(*) FROM pending_blob_refs")
-    operations = _scalar_int(conn, "SELECT COUNT(DISTINCT operation_id) FROM pending_blob_refs")
-    return (pending, operations)
 
 
 def _fts_trigger_presence(conn: sqlite3.Connection) -> dict[str, bool]:
@@ -992,8 +981,6 @@ def format_metrics(
                 "Convergence time (seconds) of recent completed ingest attempts.",
             ),
             ("polylogue_convergence_debt_count", "Unresolved convergence-debt rows by stage."),
-            ("polylogue_blob_lease_pending_count", "Pending blob leases in flight."),
-            ("polylogue_blob_lease_distinct_operations", "Distinct lease-holding operations."),
             (
                 "polylogue_fts_trigger_present",
                 "1 when the named FTS sync trigger is installed in index.db.",
@@ -1105,22 +1092,6 @@ def format_metrics(
                 metric_type="gauge",
                 samples=[(None, 0)],
             )
-
-        pending, ops = _blob_lease_state(conn)
-        _emit_metric(
-            lines,
-            name="polylogue_blob_lease_pending_count",
-            help_text="Pending blob leases awaiting commit.",
-            metric_type="gauge",
-            samples=[(None, pending)],
-        )
-        _emit_metric(
-            lines,
-            name="polylogue_blob_lease_distinct_operations",
-            help_text="Distinct operations currently holding at least one blob lease.",
-            metric_type="gauge",
-            samples=[(None, ops)],
-        )
 
         triggers = _fts_trigger_presence(conn)
         _emit_metric(
@@ -1235,8 +1206,6 @@ def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> str | None:
     )
     _emit_ops_throughput_metrics(lines, ops_db)
     for name, help_text in (
-        ("polylogue_blob_lease_pending_count", "Pending blob leases in flight."),
-        ("polylogue_blob_lease_distinct_operations", "Distinct lease-holding operations."),
         ("polylogue_fts_trigger_present", "1 when the named FTS sync trigger is installed in index.db."),
         ("polylogue_fts_triggers_all_present", "All expected FTS sync triggers are installed."),
         ("polylogue_fts_freshness_ready", "1 when the daemon freshness ledger marks an FTS surface ready."),

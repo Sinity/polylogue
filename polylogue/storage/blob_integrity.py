@@ -27,11 +27,10 @@ from polylogue.core.json import loads as json_loads
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.sqlite.connection import open_read_connection
 
-BlobIntegrityKind = Literal["orphan_blobs", "missing_referenced_blobs", "hash_mismatch", "stale_leases"]
+BlobIntegrityKind = Literal["orphan_blobs", "missing_referenced_blobs", "hash_mismatch"]
 BlobIntegritySeverity = Literal["warning", "critical"]
 
 _DEFAULT_SAMPLE_SIZE = 100
-_DEFAULT_STALE_LEASE_S = 3600
 _MAX_FINDING_SAMPLE = 10
 
 
@@ -65,8 +64,6 @@ class BlobIntegrityReport:
     scanned_references: int
     total_blobs_seen: int
     total_references_seen: int
-    active_lease_count: int
-    stale_lease_count: int
     findings: tuple[BlobIntegrityFinding, ...]
 
     @property
@@ -90,8 +87,6 @@ class BlobIntegrityReport:
             "scanned_references": self.scanned_references,
             "total_blobs_seen": self.total_blobs_seen,
             "total_references_seen": self.total_references_seen,
-            "active_lease_count": self.active_lease_count,
-            "stale_lease_count": self.stale_lease_count,
             "findings": [finding.to_dict() for finding in self.findings],
         }
 
@@ -1825,21 +1820,6 @@ def restore_direct_blob_reference_debt(
     )
 
 
-def _pending_blob_leases(conn: sqlite3.Connection) -> dict[str, int]:
-    if not _table_exists(conn, "pending_blob_refs"):
-        return {}
-    rows = conn.execute("SELECT blob_hash, MIN(acquired_at) FROM pending_blob_refs GROUP BY blob_hash").fetchall()
-    leases: dict[str, int] = {}
-    for blob_hash, acquired_at in rows:
-        if blob_hash is None:
-            continue
-        try:
-            leases[str(blob_hash)] = int(acquired_at)
-        except (TypeError, ValueError):
-            leases[str(blob_hash)] = 0
-    return leases
-
-
 def _sample(values: list[str], *, full: bool, sample_size: int) -> list[str]:
     if full:
         return values
@@ -1978,24 +1958,20 @@ def scan_blob_integrity(
     store: BlobStore | None = None,
     full: bool = False,
     sample_size: int = _DEFAULT_SAMPLE_SIZE,
-    stale_lease_s: int = _DEFAULT_STALE_LEASE_S,
 ) -> BlobIntegrityReport:
     """Classify blob-store integrity without mutating disk or database state.
 
     ``full=False`` bounds the filesystem and hash-verification scan to
-    ``sample_size`` blobs and references while still loading the reference and
-    lease sets needed to avoid false orphan reports. ``full=True`` scans every
-    blob and every raw-session reference.
+    ``sample_size`` blobs and references. ``full=True`` scans every blob and
+    every raw-session reference.
     """
 
     blob_store = store if store is not None else get_blob_store()
     resolved_db_path = Path(db_path)
     with open_read_connection(resolved_db_path) as conn:
         referenced = _referenced_blob_hashes(resolved_db_path, conn)
-        leases = _pending_blob_leases(conn)
 
     referenced_set = set(referenced)
-    active_lease_hashes = set(leases)
     disk_sample = _blob_sample(blob_store, full=full, sample_size=sample_size)
     reference_sample = _sample(referenced, full=full, sample_size=sample_size)
 
@@ -2013,11 +1989,7 @@ def scan_blob_integrity(
             )
         )
 
-    orphan_hashes = [
-        blob_hash
-        for blob_hash in disk_sample
-        if blob_hash not in referenced_set and blob_hash not in active_lease_hashes
-    ]
+    orphan_hashes = [blob_hash for blob_hash in disk_sample if blob_hash not in referenced_set]
     if orphan_hashes:
         findings.append(
             BlobIntegrityFinding(
@@ -2044,23 +2016,6 @@ def scan_blob_integrity(
             )
         )
 
-    now = int(time.time())
-    stale_leases = [
-        blob_hash
-        for blob_hash, acquired_at in leases.items()
-        if acquired_at <= 0 or now - acquired_at >= max(0, stale_lease_s)
-    ]
-    if stale_leases:
-        findings.append(
-            BlobIntegrityFinding(
-                kind="stale_leases",
-                severity="warning",
-                count=len(stale_leases),
-                sample=tuple(stale_leases[:_MAX_FINDING_SAMPLE]),
-                suggested_action="inspect the owning ingest process; stale pending_blob_refs usually indicate an interrupted write",
-            )
-        )
-
     return BlobIntegrityReport(
         full_scan=full,
         sample_size=sample_size,
@@ -2068,8 +2023,6 @@ def scan_blob_integrity(
         scanned_references=len(reference_sample),
         total_blobs_seen=len(disk_sample),
         total_references_seen=len(referenced),
-        active_lease_count=len(leases),
-        stale_lease_count=len(stale_leases),
         findings=tuple(findings),
     )
 

@@ -52,6 +52,17 @@ def commit_archive_write_effects(
         Returns
         -------
         WriteResult with status, rows_affected, and operation_id.
+
+    Note
+    ----
+    An earlier revision of this function also acquired/released a blob-GC
+    lease here, keyed by ``_blob_hashes``/``_operation_id`` payload entries.
+    No production caller ever populated those keys (polylogue-v7e0), so the
+    branch never executed; it was removed rather than left as unreachable
+    code. GC's sole defense against a blob write racing a concurrent
+    ``blob-gc`` run is now the age floor documented on
+    ``polylogue.storage.blob_gc.MIN_AGE_S`` — see ``docs/internals.md``
+    "GC concurrency model" for the current, lease-free contract.
     """
     from polylogue.storage.fts.fts_lifecycle import (
         ensure_fts_triggers_sync,
@@ -60,111 +71,41 @@ def commit_archive_write_effects(
 
     changed_ids: Sequence[str] = payload.get("changed_session_ids", [])
     sorted_ids = sorted(set(changed_ids)) if changed_ids else []
-    blob_hashes: list[str] = payload.get("_blob_hashes", [])
-    operation_id: str = payload.get("_operation_id", "")
-    db_path: str | None = payload.get("_db_path")
     repair_message_fts = bool(payload.get("repair_message_fts", True))
 
-    # Acquire blob GC leases before the main data commit so a concurrent GC
-    # run sees them. Uses a separate connection (immediate commit) because
-    # leases must be visible to other connections before *this* transaction
-    # commits its blob references.
-    has_lease = bool(blob_hashes and operation_id)
-    if has_lease and db_path:
-        from polylogue.storage.blob_gc import acquire_blob_leases
-
-        acquire_blob_leases(db_path, blob_hashes, operation_id)
-
-    # The lease was committed on its own connection, so rolling back ``conn``
-    # on failure does NOT undo it. It must be released on every exit path or
-    # the row leaks into ``pending_blob_refs`` forever and the blob it names
-    # can never be GC'd (#1746). ``lease_released`` tracks the success path so
-    # the ``finally`` only runs the recovery release after a failure.
-    lease_released = False
-    try:
-        t_trigger = time.perf_counter()
-        ensure_fts_triggers_sync(conn)
-        trigger_elapsed_s = time.perf_counter() - t_trigger
-        message_fts_elapsed_s = 0.0
-        if sorted_ids and repair_message_fts:
-            t_message = time.perf_counter()
-            repair_message_fts_index_sync(conn, sorted_ids, record_exact_snapshot=False)
-            message_fts_elapsed_s = time.perf_counter() - t_message
-        t_commit = time.perf_counter()
-        conn.commit()
-        commit_elapsed_s = time.perf_counter() - t_commit
-        total_effect_elapsed_s = trigger_elapsed_s + message_fts_elapsed_s + commit_elapsed_s
-        if total_effect_elapsed_s >= 1.0:
-            logger.info(
-                "slow_archive_write_effects operation=%s sessions=%d ensure_fts_triggers_s=%.3f "
-                "message_fts_s=%.3f commit_s=%.3f total_s=%.3f",
-                op.value,
-                len(sorted_ids),
-                trigger_elapsed_s,
-                message_fts_elapsed_s,
-                commit_elapsed_s,
-                total_effect_elapsed_s,
-            )
-
-        # Release blob GC leases after successful commit — the blob references
-        # are now durable and the GC can safely clean unreferenced blobs.
-        if has_lease:
-            from polylogue.storage.blob_gc import release_operation_leases
-
-            release_operation_leases(conn, operation_id)
-            conn.commit()
-            lease_released = True
-    finally:
-        if has_lease and not lease_released:
-            _release_leases_on_failure(db_path, operation_id)
+    t_trigger = time.perf_counter()
+    ensure_fts_triggers_sync(conn)
+    trigger_elapsed_s = time.perf_counter() - t_trigger
+    message_fts_elapsed_s = 0.0
+    if sorted_ids and repair_message_fts:
+        t_message = time.perf_counter()
+        repair_message_fts_index_sync(conn, sorted_ids, record_exact_snapshot=False)
+        message_fts_elapsed_s = time.perf_counter() - t_message
+    t_commit = time.perf_counter()
+    conn.commit()
+    commit_elapsed_s = time.perf_counter() - t_commit
+    total_effect_elapsed_s = trigger_elapsed_s + message_fts_elapsed_s + commit_elapsed_s
+    if total_effect_elapsed_s >= 1.0:
+        logger.info(
+            "slow_archive_write_effects operation=%s sessions=%d ensure_fts_triggers_s=%.3f "
+            "message_fts_s=%.3f commit_s=%.3f total_s=%.3f",
+            op.value,
+            len(sorted_ids),
+            trigger_elapsed_s,
+            message_fts_elapsed_s,
+            commit_elapsed_s,
+            total_effect_elapsed_s,
+        )
 
     if sorted_ids:
         _invalidate_search_cache()
 
     return WriteResult(
-        # Return the operation's real id (the one used for blob leases/telemetry)
-        # so callers can correlate the result; fall back to a fresh id only when
-        # the caller supplied none.
-        operation_id=operation_id or str(uuid4()),
+        operation_id=str(uuid4()),
         operation=op,
         rows_affected=len(sorted_ids),
         status="committed",
     )
-
-
-def _release_leases_on_failure(db_path: str | None, operation_id: str) -> None:
-    """Release leaked blob leases after a failed write-effects pass.
-
-    The leases were committed on a separate connection, so the failing
-    transaction's rollback cannot undo them. Open a fresh immediate-commit
-    connection to drop them, mirroring ``acquire_blob_leases``. Any error here
-    is logged and suppressed so it never masks the original failure that is
-    propagating out of the ``finally``; the daemon-startup
-    ``sweep_orphaned_blob_leases`` is the durable backstop if this best-effort
-    release also fails.
-    """
-    if not db_path:
-        return
-    try:
-        from polylogue.storage.blob_gc import release_operation_leases
-        from polylogue.storage.sqlite.connection_profile import open_connection
-
-        conn = open_connection(db_path)
-        try:
-            release_operation_leases(conn, operation_id)
-            conn.commit()
-        finally:
-            conn.close()
-        logger.warning(
-            "Released leaked blob leases for operation %s after write-effects failure",
-            operation_id,
-        )
-    except Exception:  # pragma: no cover - defensive: never mask the original error
-        logger.warning(
-            "Failed to release leaked blob leases for operation %s after write-effects failure",
-            operation_id,
-            exc_info=True,
-        )
 
 
 def _invalidate_search_cache() -> None:

@@ -1,4 +1,4 @@
-"""Blob garbage collection with lease safety.
+"""Blob garbage collection.
 
 Blobs are content-addressed files stored under the blob store directory.
 The GC runs periodically to reclaim disk space from blobs that are no
@@ -8,12 +8,23 @@ Safety invariants
 -----------------
 1. Never delete a blob that still has a DB reference (message text,
    content_blocks, attachments).
-2. Never delete a blob with an active lease (in-flight ingest that has
-   not yet committed its blob references).
-3. Only delete blobs older than the previous completed GC generation
-   plus MIN_AGE seconds (defense-in-depth against clockskew).
-4. Bound each run to ``max_batch`` deletions so GC does not monopolise
+2. Only delete blobs older than the previous completed GC generation
+   plus MIN_AGE seconds (defense-in-depth against clockskew and any
+   acquire-blob -> commit-row window a slow ingest leaves open — see
+   ``MIN_AGE_S`` below for the sizing rationale).
+3. Bound each run to ``max_batch`` deletions so GC does not monopolise
    I/O.
+
+A prior revision of this module also carried a lease mechanism
+(``pending_blob_refs``, ``acquire_blob_leases``/``release_operation_leases``)
+intended to bridge the acquire-blob -> write-DB-row commit window more
+tightly than a timing heuristic. It was removed (polylogue-v7e0) after a
+race-window audit found no production caller ever populated the lease
+payload keys (``_blob_hashes``/``_operation_id`` on
+``commit_archive_write_effects``) — the mechanism was fully wired end to
+end but never reachable, so the invariant it described never actually
+engaged. See ``docs/internals.md`` "GC concurrency model" for the current,
+lease-free contract and why ``MIN_AGE_S`` alone is judged sufficient.
 """
 
 from __future__ import annotations
@@ -44,7 +55,6 @@ class GCRunEvidence:
     inspected: int = 0
     deleted: int = 0
     skipped_referenced: int = 0
-    skipped_leased: int = 0
     skipped_missing: int = 0
     skipped_unlink_error: int = 0
     dry_run: bool = False
@@ -65,7 +75,6 @@ class BlobGCResult:
     deleted_count: int = 0
     reclaimed_bytes: int = 0
     skipped_referenced: int = 0
-    skipped_leased: int = 0
     skipped_missing: int = 0
     skipped_unlink_error: int = 0
     generation_id: str | None = None
@@ -84,7 +93,6 @@ class BlobGCResult:
             "deleted_count": self.deleted_count,
             "reclaimed_bytes": self.reclaimed_bytes,
             "skipped_referenced": self.skipped_referenced,
-            "skipped_leased": self.skipped_leased,
             "skipped_missing": self.skipped_missing,
             "skipped_unlink_error": self.skipped_unlink_error,
             "generation_id": self.generation_id,
@@ -94,24 +102,33 @@ class BlobGCResult:
 
 
 # Minimum age in seconds for a blob to be eligible for deletion.
-# Provides defense-in-depth against clockskew and delayed lease writes
-# beyond the lease-based safety mechanism.
+#
+# This is the SOLE defense-in-depth mechanism protecting an in-flight
+# ingest's blob from a concurrent GC pass (polylogue-v7e0 removed the
+# never-reachable lease mechanism that this comment used to describe as
+# a second layer). The exposure window this must outlast is
+# blob-write-to-disk -> referencing-row-commit for a single ingest
+# operation. 60s comfortably covers ordinary ingest batches (parse +
+# materialize + FTS repair for a normal session count in the low
+# hundreds of ms to a few seconds per CLAUDE.md's convergence docs). The
+# documented risk class is the memory-bounded streaming path for
+# multi-GiB Claude Code JSONL (`sources/dispatch.py`), where a single
+# session's parse+materialize could plausibly exceed 60s; an operator
+# who runs `polylogue maintenance blob-gc --yes` concurrently with such
+# an ingest, within that window, is the one scenario this floor does not
+# fully cover. Mitigation until a real per-write lease lands: avoid
+# running blob-gc manually while a large corpus import is active; the
+# generation-age gate below (`gc_generations`) adds a second, independent
+# margin on top of this floor.
 MIN_AGE_S = 60
-
-# Orphaned-lease sweep bound. A lease whose owning operation crashed before
-# release (see ``commit_archive_write_effects``) is reclaimed once it is older
-# than this many seconds, mirroring ``_mark_interrupted_attempts`` for
-# ``live_ingest_attempt``. Generous so a slow-but-live ingest is never swept
-# out from under itself.
-ORPHAN_LEASE_MAX_AGE_S = 3600
 
 
 def _previous_generation_completed_at(conn: sqlite3.Connection) -> int | None:
     """Return the completion epoch (seconds) of the latest completed generation.
 
-    Used by ``run_blob_gc`` to enforce safety invariant #3: a blob must be
+    Used by ``run_blob_gc`` to enforce safety invariant #2: a blob must be
     older than the previous generation's completion before it is eligible for
-    deletion (defense-in-depth against clock skew and delayed lease writes).
+    deletion (defense-in-depth against clock skew).
 
     The durable column is ``completed_at_ms``; this returns whole seconds so the
     age gate can compare directly against ``time.time()``. In-progress
@@ -126,50 +143,6 @@ def _previous_generation_completed_at(conn: sqlite3.Connection) -> int | None:
         return None
     completed_at_ms = row[0]
     return int(completed_at_ms) // 1000 if completed_at_ms is not None else None
-
-
-def sweep_orphaned_blob_leases(
-    db_path: str | Path,
-    *,
-    max_age_s: int = ORPHAN_LEASE_MAX_AGE_S,
-) -> int:
-    """Remove ``pending_blob_refs`` rows older than ``max_age_s`` seconds.
-
-    A lease is acquired before the data transaction commits and released on
-    every exit path of ``commit_archive_write_effects``. If the owning process
-    is SIGKILLed between acquire and release, the lease row leaks and
-    permanently blocks GC of the blob it names. This sweep is the daemon
-    startup counterpart to ``CursorStore._mark_interrupted_attempts``: it
-    reclaims leases that no live operation could still own.
-
-    Returns the number of orphaned lease rows removed.
-    """
-    cutoff_ms = (int(time.time()) - int(max_age_s)) * 1000
-    conn = open_connection(db_path)
-    try:
-        cursor = conn.execute(
-            "DELETE FROM pending_blob_refs WHERE acquired_at_ms < ?",
-            (cutoff_ms,),
-        )
-        removed = max(cursor.rowcount, 0)
-        conn.commit()
-        if removed:
-            logger.info("Swept %d orphaned blob lease(s) older than %ds", removed, max_age_s)
-        return removed
-    finally:
-        conn.close()
-
-
-def _has_active_lease(conn: sqlite3.Connection, blob_hash: str) -> bool:
-    """Check if a blob hash has any active lease."""
-    blob_bytes = _blob_hash_bytes(blob_hash)
-    if blob_bytes is None:
-        return False
-    row = conn.execute(
-        "SELECT 1 FROM pending_blob_refs WHERE blob_hash = ? LIMIT 1",
-        (blob_bytes,),
-    ).fetchone()
-    return row is not None
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -311,15 +284,15 @@ def run_blob_gc(
     *,
     dry_run: bool = False,
 ) -> int:
-    """Delete unreferenced blobs that are lease-free and from prior generations.
+    """Delete unreferenced blobs old enough to clear the generation-age gate.
 
     Safety invariants
     -----------------
     1. Never delete a blob that still has a DB reference.
-    2. Never delete a blob with an active lease (in-flight ingest).
-    3. Only delete blobs older than the previous completed GC generation
-       plus MIN_AGE_S (defense-in-depth).
-    4. Bound each run to ``max_batch`` deletions.
+    2. Only delete blobs older than the previous completed GC generation
+       plus MIN_AGE_S (defense-in-depth; the sole protection against an
+       in-flight ingest, see the ``MIN_AGE_S`` docstring).
+    3. Bound each run to ``max_batch`` deletions.
 
     Parameters
     ----------
@@ -391,12 +364,12 @@ def run_blob_gc_report(
                 logger.warning("Could not inspect archive source blob references in %s: %s", source_db_path, exc)
 
         started_at_ms = int(time.time() * 1000)
-        # Safety invariant #3: a candidate must be older than BOTH the static
+        # Safety invariant #2: a candidate must be older than BOTH the static
         # MIN_AGE_S floor AND the previous completed GC generation. The
         # generation high-water mark prevents a blob created during the same
         # window as the previous GC pass from being reclaimed before its
-        # eventual reference can land (defense-in-depth against clock skew and
-        # delayed lease writes). Without a prior generation the floor applies.
+        # eventual reference can land (defense-in-depth against clock skew).
+        # Without a prior generation the floor applies.
         prev_completed_at = _previous_generation_completed_at(conn)
         older_than = float(MIN_AGE_S)
         if prev_completed_at is not None:
@@ -425,11 +398,6 @@ def run_blob_gc_report(
                 source_conn=source_conn,
             ):
                 evidence.skipped_referenced += 1
-                continue
-
-            # Safety check 2: has active lease
-            if _has_active_lease(conn, blob_hash):
-                evidence.skipped_leased += 1
                 continue
 
             target = _sharded_blob_path(blob_path, blob_hash)
@@ -475,17 +443,15 @@ def run_blob_gc_report(
             # Dry run does not consume a generation slot — no row written,
             # no commit needed. The caller still gets the would-be count.
             logger.info(
-                "Blob GC dry-run: would delete %d blob(s); inspected=%d skipped_ref=%d skipped_leased=%d skipped_missing=%d",
+                "Blob GC dry-run: would delete %d blob(s); inspected=%d skipped_ref=%d skipped_missing=%d",
                 evidence.deleted,
                 evidence.inspected,
                 evidence.skipped_referenced,
-                evidence.skipped_leased,
                 evidence.skipped_missing,
             )
             report.inspected_count = evidence.inspected
             report.would_delete_count = evidence.deleted
             report.skipped_referenced = evidence.skipped_referenced
-            report.skipped_leased = evidence.skipped_leased
             report.skipped_missing = evidence.skipped_missing
             report.skipped_unlink_error = evidence.skipped_unlink_error
             return report
@@ -516,7 +482,6 @@ def run_blob_gc_report(
         report.reclaimed_bytes = reclaimed_bytes
         report.deleted_count = deleted
         report.skipped_referenced = evidence.skipped_referenced
-        report.skipped_leased = evidence.skipped_leased
         report.skipped_missing = evidence.skipped_missing
         report.skipped_unlink_error = evidence.skipped_unlink_error
         return report
@@ -570,72 +535,12 @@ def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRo
     ]
 
 
-def acquire_blob_leases(
-    db_path: str | Path,
-    blob_hashes: list[str],
-    operation_id: str,
-) -> None:
-    """Acquire leases on blob hashes to prevent GC during active operations.
-
-    The lease tables are deliberately retained alongside the
-    snapshot-based reference check in ``_still_referenced`` (audited in
-    #1000). They bridge the acquire-blob → write-DB-row commit window:
-    without leases, a GC pass running between blob materialization and
-    the corresponding ``raw_sessions`` write would misclassify the
-    blob as orphan.
-
-    Uses a fresh connection that commits immediately so leases are
-    visible to concurrent GC runs before the main data transaction
-    commits.
-
-    See ``docs/internals.md`` ("GC concurrency model") for the full
-    contract.
-    """
-    if not blob_hashes:
-        return
-    conn = open_connection(db_path)
-    try:
-        now_ms = int(time.time() * 1000)
-        for blob_hash in blob_hashes:
-            blob_bytes = _blob_hash_bytes(blob_hash)
-            if blob_bytes is None:
-                continue
-            conn.execute(
-                "INSERT OR IGNORE INTO pending_blob_refs "
-                "(blob_hash, operation_id, ref_type, ref_id, acquired_at_ms) "
-                "VALUES (?, ?, 'raw_payload', ?, ?)",
-                (blob_bytes, operation_id, operation_id, now_ms),
-            )
-        conn.commit()
-        logger.debug("Acquired %d blob lease(s) for operation %s", len(blob_hashes), operation_id)
-    finally:
-        conn.close()
-
-
-def release_operation_leases(
-    conn: sqlite3.Connection,
-    operation_id: str,
-) -> None:
-    """Release all blob leases for an operation.
-
-    Call after the data transaction that references blob hashes has been committed.
-    Uses the provided connection (within the same transaction as the release, if desired,
-    or called immediately post-commit).
-    """
-    conn.execute("DELETE FROM pending_blob_refs WHERE operation_id = ?", (operation_id,))
-    logger.debug("Released blob leases for operation %s", operation_id)
-
-
 __all__ = [
     "BlobGCResult",
     "MIN_AGE_S",
-    "ORPHAN_LEASE_MAX_AGE_S",
     "GCHistoryRow",
     "GCRunEvidence",
-    "acquire_blob_leases",
     "read_gc_history",
-    "release_operation_leases",
     "run_blob_gc",
     "run_blob_gc_report",
-    "sweep_orphaned_blob_leases",
 ]
