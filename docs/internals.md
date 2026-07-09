@@ -8,10 +8,10 @@ debugging landmarks. For the conceptual system shape, see
 
 | Invariant | Enforced in |
 | --- | --- |
-| Archive writes are idempotent by content hash | `pipeline/ids.py`, `pipeline/prepare_enrichment.py` |
+| Archive writes are idempotent by content hash | `pipeline/ids.py`, `pipeline/services/ingest_batch/_core.py` |
 | Content hash excludes user metadata (tags, summaries) | `pipeline/ids.py:session_content_hash()` |
 | Content hash uses NFC normalization | `core/hashing.py:hash_text()` |
-| Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch.py` |
+| Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch/_core.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
 | FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/archive_tiers/index.py` |
 | Schema bootstrap branching is shared across sync and async backends | `storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()` |
@@ -48,7 +48,7 @@ debugging landmarks. For the conceptual system shape, see
 | `sources/parsers/*.py` | Per-provider parsing |
 | `pipeline/ingest_support.py` | Ingest stage definitions and source selection helpers |
 | `pipeline/ids.py` | Content hashing and ID generation |
-| `pipeline/services/ingest_batch.py` | Batch ingest (largest pipeline file) |
+| `pipeline/services/ingest_batch/_core.py` | Batch ingest (largest pipeline file) |
 
 ## Extension Points
 
@@ -124,6 +124,25 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   workspace/settings state that is not an epistemic assertion. Existing v3
   user tiers migrate additively after a verified backup manifest; fresh user
   tiers create the table directly.
+- Index schema version 28 adds the `delegations` VIEW, derived from
+  `session_links` (`link_type='subagent'`) LEFT JOIN'd to the parent's Task
+  dispatch `actions` row and both sessions' `session_profiles` — no
+  convergence stage needed, matching the `actions` view's own derived-tier
+  precedent. `result_status` (`ok`/`error`/`unknown`) is derived only from
+  `actions.is_error`/`exit_code`, never guessed.
+- Index schema version 27 adds `session_profiles.primary_model_name` and
+  `primary_model_family`, the dominant model per session by assistant
+  OUTPUT-token share, backing the `delegations` view above.
+- Index schema version 26 rewrites the `actions` view to pair `tool_use`/
+  `tool_result` blocks by transcript rank within `(session_id, tool_id)`
+  instead of a plain `tool_id` equality join, which fanned out N*M when a
+  provider re-emitted the same `tool_id` on distinct messages.
+- Index schema version 25 adds `blocks.content_hash`, a SHA-256 over
+  canonical block evidence (type, text, tool_name, canonical tool_input,
+  semantic/media/language, is_error, exit_code — excluding
+  session_id/message_id/position/tool_id) so a stored block citation anchor
+  survives fork-position shift, re-ingest renumbering, and provider tool-id
+  regeneration. See `polylogue/storage/block_anchor.py`.
 - Index schema version 24 admits `capture_gap` rows in `session_events`. These
   are narrow lifecycle evidence events emitted when ingest rejects a lower-
   precedence DOM browser-capture fallback because a richer source row already
@@ -292,7 +311,8 @@ manifest** for the affected tier. Additive means `CREATE TABLE`/`CREATE INDEX`/
 copy-forward design and explicit operator consent, never a routine migration.
 
 `ops.db` (disposable daemon telemetry) may additionally use narrowly scoped
-`ALTER TABLE ... ADD COLUMN` bootstrap helpers in `archive_tiers/bootstrap.py`
+`ALTER TABLE ... ADD COLUMN` bootstrap helpers in
+`storage/sqlite/archive_tiers/bootstrap.py`
 (ingest-cursor runtime fields, cursor-lag rollups). The
 `devtools lab policy schema-versioning` lint enforces the whole boundary:
 numbered durable-tier migrations are allowed; derived-tier upgrade helpers are
@@ -520,15 +540,17 @@ Content-addressed blob storage for large binary data:
   Identical content → identical hash → automatic deduplication.
 - **Prefix sharding**: 256 subdirectories (`blob/00/` through `blob/ff/`),
   each containing blobs keyed by the remaining 62 hex characters of the hash.
-- **Linking**: `artifact_observations.link_group_key` groups related blobs
+- **Linking**: `raw_artifacts.link_group_key` groups related blobs
   (e.g., all blobs belonging to one session). The blob store itself
   (`polylogue/storage/blob_store.py`) is a pure content-addressed store with
   no notion of grouping; session-to-blob association is recorded as
-  rows in `artifact_observations` keyed by `raw_id` with a shared
+  rows in `raw_artifacts` keyed by `raw_id` with a shared
   `link_group_key`. (There is no separate `blob_links` table; the name is a
-  historical alias for this row-group view of `artifact_observations`.)
+  historical alias for this row-group view of `raw_artifacts`.)
 - **Operations**: Blobs are write-once, read-many. No in-place modification.
-  GC identifies unreferenced blobs via link counting.
+  GC identifies unreferenced blobs via a snapshot reference check plus a
+  pending-lease check (see GC concurrency model below), not simple link
+  counting.
 
 ### GC concurrency model — leases plus snapshot reference check
 
@@ -644,18 +666,19 @@ The report has a stable top-level shape carrying its `report_version`,
   parse/convergence timings, and source-path bundles.
 - `convergence_stage_timings` — min/max/sum/mean parse/convergence/read-
   amplification stats over completed attempts.
-- `boundary_table_counts` — mixed cheap evidence for the
-  daemon-relevant tables by default: exact counts for small/core archive
-  cardinality tables and maintained rollups such as `sessions`, `raw_sessions`,
-  `messages`, and `session_profiles`; planner-estimated counts only where exact
-  counting would scan large derived tables
-  (`raw_sessions`, `sessions`, `messages`, `blocks`,
-  `artifact_observations`, `messages_fts_docsize`, `actions`,
-  `message_embeddings`, `session_profile`,
-  `live_ingest_attempt`, `live_convergence_debt`, `pending_blob_refs`).
+- `boundary_table_counts` — mixed cheap evidence for the tables in
+  `_BOUNDARY_TABLES`/`_OPS_BOUNDARY_TABLES`
+  (`devtools/daemon_workload_probe.py`, non-exhaustive here): exact counts for
+  small/core archive cardinality tables and maintained rollups such as
+  `sessions`, `raw_sessions`, `messages`, and `session_profiles`;
+  planner-estimated counts only where exact counting would scan large derived
+  tables (`blocks`, `messages_fts_docsize`, `message_embeddings`,
+  `session_events`, `session_links`, `repos`, `session_repos`,
+  `session_commits`, `live_ingest_attempt`, `convergence_debt`,
+  `pending_blob_refs`).
   Missing tables surface as `-1` and expensive tables without SQLite planner
   statistics surface as `-2` rather than crashing the probe. Pass
-  `--exact-table-counts` when a before/after evidence run needs exact
+  `--exact-derived-counts` when a before/after evidence run needs exact
   arithmetic and the archive can afford the scans. The companion
   `boundary_table_count_precision` map labels each value as `exact`,
   `estimate`, `unavailable`, or `missing`.

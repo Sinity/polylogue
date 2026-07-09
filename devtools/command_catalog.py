@@ -13,6 +13,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab graph",
     "lab lanes",
     "lab policy demo-packet-registry",
+    "lab policy docs-drift",
     "lab policy insight-honesty",
     "lab policy schema-versioning",
     "lab policy timestamp-doctrine",
@@ -741,6 +742,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools lab policy demo-packet-registry", "devtools lab policy demo-packet-registry --json"),
     ),
     CommandSpec(
+        "lab policy docs-drift",
+        "verification lab",
+        "Verify checkable factual claims in the Reference-docs table against current source.",
+        "devtools.verify_docs_drift",
+        use_when=(
+            "Catch doc-vs-code drift in the hand-maintained Reference-docs table "
+            "(CLAUDE.md): a backtick-quoted file path that no longer exists, a "
+            "'<Tier> schema version N' claim ahead of the tier's current constant, or "
+            "a watchlisted table name renamed to a different current name (e.g. "
+            "`artifact_observations` renamed to `raw_artifacts`) still asserted as "
+            "current (polylogue-9e5.13)."
+        ),
+        examples=("devtools lab policy docs-drift", "devtools lab policy docs-drift --json"),
+    ),
+    CommandSpec(
         "lab policy timestamp-doctrine",
         "verification lab",
         "Verify durable-tier DDL never stores a timestamp column as TEXT.",
@@ -763,7 +779,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and "
             "polylogue.insights.rigor's contract matrix/exemption list never drift apart "
             "(9e5.28) -- a registered product with neither a RigorContract nor a "
-            "RIGOR_EXEMPT entry used to silently vanish from `polylogue insights audit` "
+            "RIGOR_EXEMPT entry used to silently vanish from `polylogue ops insights audit` "
             "instead of showing as uncovered."
         ),
         examples=("devtools lab policy insight-honesty", "devtools lab policy insight-honesty --json"),
