@@ -1,0 +1,55 @@
+{
+  "pair_1": {
+    "checkpoint_commit": "6c12e9234",
+    "blinding_compromised": true,
+    "blinding_compromise_reason": "Arm B (pack) self-referentially wrote 'This matches the pack's shipped-work list exactly', revealing its own identity to the judge",
+    "judge_1": {
+      "raw_ref_total": 29,
+      "handoff_pack_total": 33,
+      "winner": "handoff_pack",
+      "primary_differentiator": "open_thread_coverage -- pack arm surfaced pj8/3tl/cfk/212.x chain explicitly named in ground truth; raw-ref arm did not"
+    },
+    "judge_2": {
+      "raw_ref_total": 22,
+      "handoff_pack_total": 35,
+      "winner": "handoff_pack",
+      "note": "explicitly checked for blinding leak, found none"
+    }
+  },
+  "pair_2": {
+    "checkpoint_commit": "64c079d6e",
+    "note": "both arms converged on the same real next action (D1 receipts) under different bead-id labels (xyel vs 212.2)",
+    "judge": {
+      "raw_ref_total": 25,
+      "handoff_pack_total": 31,
+      "winner": "handoff_pack"
+    }
+  },
+  "pair_3": {
+    "checkpoint_commit": "01592e5e9",
+    "judge": {
+      "raw_ref_total": 31,
+      "handoff_pack_total": 19,
+      "winner": "raw_ref",
+      "note": "pack arm confidently misstated 4ts.4/xnkf as already closed at this checkpoint (they were not yet), and missed the cpf epic entirely"
+    }
+  },
+  "pair_5": {
+    "checkpoint_commit": "697470661",
+    "judge": {
+      "raw_ref_total": 12,
+      "handoff_pack_total": 36,
+      "winner": "handoff_pack",
+      "note": "raw-ref arm mischaracterized the checkpoint commit itself (svfj) as unrelated, missing the entire demo-unlock chain thread; pack arm correctly honest about reasoning past its own checkpoint"
+    }
+  },
+  "pair_4": {
+    "checkpoint_commit": "a2ee55ec4",
+    "judge": {
+      "raw_ref_total": 17,
+      "handoff_pack_total": 32,
+      "winner": "handoff_pack",
+      "note": "ground truth verified via git log: 9e5.29 was indeed claimed/in-progress at this exact checkpoint and is the literal next thing worked; pack arm caught this exactly, raw-ref arm missed it entirely and recommended an unrelated bead"
+    }
+  }
+}

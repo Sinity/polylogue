@@ -1,0 +1,18 @@
+{
+  "written_before_arms_ran": true,
+  "written_at": "2026-07-09T03:20:00Z",
+  "checkpoint": "immediately after PR #2601 (cpf.1 timestamp-doctrine lint) merged to master, before 4ts.6 work began",
+  "checkpoint_commit": "6c12e9234",
+  "ground_truth_next_action": "Claim and implement polylogue-4ts.6 (lineage composition silently truncates transcripts; surface a completeness signal) -- add lineage_complete/lineage_truncation_reason to ArchiveSessionEnvelope and a matching async LineageCompleteness return type, with regression tests for depth-limit and dangling-branch-point cases.",
+  "ground_truth_open_threads": [
+    "polylogue-4ts.3 (subagent auto-compaction misclassification) -- investigated, correctly scoped as needing dispatch-layer surgery (polylogue/sources/dispatch.py), left unclaimed",
+    "polylogue-1vpm.1 (delegation derived unit) -- investigated, found existing session_runs/build_run_projection infrastructure covers most of the hard part, left unclaimed as still a real multi-file feature",
+    "polylogue-83u.2 (attachment re-acquisition) -- investigated, found the static prework packet had wrong anchors, left unclaimed",
+    "the standing /bead-loop goal explicitly lists: trust-floor/storage-identity P1s, lineage epic (4ts), pj8, 3tl, cfk, plus a demo-unlock chain (9e5.29 -> svfj -> 212.7 -> 212.1-212.6/212.8 -> 1vpm.1 -> 212.9)"
+  ],
+  "ground_truth_caveats": [
+    "This is a live, still-running session -- the 'subject' and the ground-truth author are the same agent, which is a real construct-validity limit (matches jxe's own documented limit: 'hidden prior knowledge and tool availability are not fully controlled').",
+    "Both arms are dispatched as isolated Agent-tool subagents from within the same session, not fully separate Claude Code processes like the original jxe pilot's agent_id-tracked arms -- a weaker isolation guarantee than the original protocol.",
+    "n=1 pilot; cannot estimate general uplift, matching jxe.2's own caveat."
+  ]
+}

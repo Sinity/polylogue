@@ -1,0 +1,10 @@
+{
+  "checkpoint": "immediately after PR #2588 (svfj block content-hash citation anchors) merged, before its bead-close/212.7 work began",
+  "checkpoint_commit": "697470661",
+  "ground_truth_next_action": "Close polylogue-svfj bead (file relocated_lineage/quarantined follow-up), then claim and implement polylogue-212.7 (Demo Finding Packet contract + registry lint).",
+  "ground_truth_open_threads": [
+    "svfj just shipped: block content-hash citation anchors + typed resolver, index schema v24->v25",
+    "the demo-unlock chain (9e5.29 -> svfj -> 212.7 -> 212.1-212.6/212.8 parallel -> 1vpm.1 -> 212.9) has 9e5.29 and svfj done, 212.7 is next",
+    "83u.2 was just corrected/unclaimed with verified findings one commit prior"
+  ]
+}

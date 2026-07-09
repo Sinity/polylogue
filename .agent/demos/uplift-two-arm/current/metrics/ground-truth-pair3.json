@@ -1,0 +1,11 @@
+{
+  "written_before_arms_ran": true,
+  "checkpoint": "immediately after PR #2600 (jsy blob hash validation bead close) merged, before cpf.1 work began",
+  "checkpoint_commit": "01592e5e9",
+  "ground_truth_next_action": "Claim and implement polylogue-cpf.1 (doctrine lint: reject TEXT timestamps in new durable DDL) -- a new devtools lab policy check.",
+  "ground_truth_open_threads": [
+    "polylogue-jsy just shipped (blob hash hardening + symlink check removal)",
+    "the cpf epic (doctrine landing) has several sibling lints not yet started: cpf.2 (writer-class docstring), cpf.3 (deny-lexicon tripwire)",
+    "4ts.4/4ts.6/xnkf lineage and storage fixes have not yet happened at this checkpoint"
+  ]
+}
