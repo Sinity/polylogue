@@ -1,4 +1,11 @@
-"""Schema resolution helpers for validator cache keys and schema loading."""
+"""Schema resolution helpers for validator cache keys and schema loading.
+
+Testmon fan-out note (polylogue-9e5.11): this file is a testmon dependency
+"hub" -- its recorded fingerprint touches essentially every test in the
+suite, so a change here gets no narrowing benefit from testmon (expect a
+full-suite-equivalent selection regardless of edit size). Review changes
+with that blast radius in mind; see docs/test-economics.md.
+"""
 
 from __future__ import annotations
 

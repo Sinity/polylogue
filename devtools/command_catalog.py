@@ -32,6 +32,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab schema promote",
     "lab schema roundtrip",
     "lab snapshot read-surface",
+    "lab test-economics",
 )
 
 CATEGORY_ORDER: tuple[str, ...] = (
@@ -292,6 +293,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools lab graph",
             "devtools lab graph --json",
             "devtools lab graph --strict",
+        ),
+    ),
+    CommandSpec(
+        "lab test-economics",
+        "verification lab",
+        "Report per-package coverage/fix-density/test-cost economics (polylogue-9e5.11).",
+        "devtools.test_economics_report",
+        use_when=(
+            "Decide where test-writing effort or test-suite pruning actually pays off, by "
+            "cross-referencing coverage percent, historical fix-commit density, testmon "
+            "wall-time cost exposure, and testmon selection fan-out per top-level package."
+        ),
+        examples=(
+            "devtools lab test-economics",
+            "devtools lab test-economics --json",
+            "devtools lab test-economics --write docs/test-economics.md",
         ),
     ),
     CommandSpec(
