@@ -10,9 +10,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -288,35 +288,62 @@ class CursorStore:
 
         best_effort_cursor_write("archive ops interrupted attempt recovery", write)
 
-    def _write_cursor_record_to_ops(self, record: CursorRecord) -> None:
+    @staticmethod
+    def _write_cursor_record_on_conn(conn: sqlite3.Connection, record: CursorRecord) -> None:
         origin = _origin_value_for_source_name(record.source_name)
+        upsert_archive_ingest_cursor(
+            conn,
+            source_path=record.source_path,
+            updated_at_ms=_required_epoch_ms(record.updated_at),
+            origin=origin,
+            stat_size=record.byte_size,
+            byte_offset=record.byte_offset,
+            last_complete_newline=record.last_complete_newline,
+            record_count=record.record_count,
+            last_record_ts_ms=_epoch_ms(record.last_record_ts),
+            parser_fingerprint=record.parser_fingerprint,
+            content_fingerprint=record.content_fingerprint,
+            tail_hash=record.tail_hash,
+            st_dev=record.st_dev,
+            st_ino=record.st_ino,
+            mtime_ns=record.mtime_ns,
+            failure_count=record.failure_count,
+            next_retry_at=record.next_retry_at,
+            excluded=bool(record.excluded),
+        )
+
+    def _write_cursor_record_to_ops(self, record: CursorRecord) -> None:
         with self._connect_ops() as conn:
-            upsert_archive_ingest_cursor(
-                conn,
-                source_path=record.source_path,
-                updated_at_ms=_required_epoch_ms(record.updated_at),
-                origin=origin,
-                stat_size=record.byte_size,
-                byte_offset=record.byte_offset,
-                last_complete_newline=record.last_complete_newline,
-                record_count=record.record_count,
-                last_record_ts_ms=_epoch_ms(record.last_record_ts),
-                parser_fingerprint=record.parser_fingerprint,
-                content_fingerprint=record.content_fingerprint,
-                tail_hash=record.tail_hash,
-                st_dev=record.st_dev,
-                st_ino=record.st_ino,
-                mtime_ns=record.mtime_ns,
-                failure_count=record.failure_count,
-                next_retry_at=record.next_retry_at,
-                excluded=bool(record.excluded),
-            )
+            self._write_cursor_record_on_conn(conn, record)
 
     def _sync_cursor_record_to_ops(self, record: CursorRecord) -> None:
         def write() -> None:
             self._write_cursor_record_to_ops(record)
 
         best_effort_cursor_write("archive ops cursor sync", write)
+
+    def _read_modify_write_cursor_record(
+        self, path: Path, mutate: Callable[[CursorRecord | None], CursorRecord | None]
+    ) -> None:
+        """Read the current record and write the mutated result inside ONE
+        connection/transaction, so no other writer can observe or clobber the
+        intermediate state (#2467-class lost-update race, polylogue-qug2).
+
+        ``BEGIN IMMEDIATE`` takes the write lock before the read, closing the
+        window ``get_record`` + ``set`` used to leave open across two
+        connections. ``mutate`` returns ``None`` to skip the write entirely
+        (e.g. there is no existing record to mutate).
+        """
+
+        def write() -> None:
+            with self._connect_ops() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                current = self._get_record_on_conn(conn, path)
+                updated = mutate(current)
+                if updated is not None:
+                    self._write_cursor_record_on_conn(conn, updated)
+
+        best_effort_cursor_write("archive ops cursor read-modify-write", write)
 
     def _sync_convergence_debt_to_ops(
         self,
@@ -328,42 +355,49 @@ class CursorStore:
         materializer_version: str | None,
         now: str,
     ) -> None:
+        """Read the current debt row and write the updated one inside ONE
+        connection/transaction (``BEGIN IMMEDIATE`` before the read), so a
+        concurrent caller for the same (stage, target_type, target_id) can't
+        base its own attempts_delta/same-pending decision on a stale read
+        that a second in-flight writer is about to invalidate -- the sibling
+        race to polylogue-qug2's cursor lost-update, same root cause.
+        """
         now_ms = _required_epoch_ms(now)
-        with self._connect_ops() as conn:
-            row = conn.execute(
-                """
-                SELECT attempts, next_retry_at, last_error
-                FROM convergence_debt
-                WHERE stage = ? AND target_type = ? AND target_id = ?
-                """,
-                (stage, subject_type, subject_id),
-            ).fetchone()
-            existing_attempts = int(row[0]) if row is not None else 0
-            retry_at = convergence_debt_retry_at(
-                conn,
-                failure_count=max(existing_attempts, 1),
-                error=error,
-                subject_type=subject_type,
-                subject_id=subject_id,
-                archive_root=self._db_path.parent,
-            )
-            if row is not None and same_pending_convergence_debt(
-                row[1], row[2], error=error, now=now, retry_at=retry_at
-            ):
-                return
-            attempts_delta = 0 if row is not None and retry_is_future(row[1], now=now) and row[2] == error else 1
-            failure_count = existing_attempts + attempts_delta
-            retry_at = convergence_debt_retry_at(
-                conn,
-                failure_count=max(failure_count, 1),
-                error=error,
-                subject_type=subject_type,
-                subject_id=subject_id,
-                archive_root=self._db_path.parent,
-            )
 
         def write() -> None:
             with self._connect_ops() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    """
+                    SELECT attempts, next_retry_at, last_error
+                    FROM convergence_debt
+                    WHERE stage = ? AND target_type = ? AND target_id = ?
+                    """,
+                    (stage, subject_type, subject_id),
+                ).fetchone()
+                existing_attempts = int(row[0]) if row is not None else 0
+                retry_at = convergence_debt_retry_at(
+                    conn,
+                    failure_count=max(existing_attempts, 1),
+                    error=error,
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                    archive_root=self._db_path.parent,
+                )
+                if row is not None and same_pending_convergence_debt(
+                    row[1], row[2], error=error, now=now, retry_at=retry_at
+                ):
+                    return
+                attempts_delta = 0 if row is not None and retry_is_future(row[1], now=now) and row[2] == error else 1
+                failure_count = existing_attempts + attempts_delta
+                retry_at = convergence_debt_retry_at(
+                    conn,
+                    failure_count=max(failure_count, 1),
+                    error=error,
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                    archive_root=self._db_path.parent,
+                )
                 add_archive_convergence_debt(
                     conn,
                     stage=stage,
@@ -855,31 +889,35 @@ class CursorStore:
 
     def get_record(self, path: Path) -> CursorRecord | None:
         with self._connect_ops() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    source_path,
-                    stat_size,
-                    byte_offset,
-                    last_complete_newline,
-                    record_count,
-                    last_record_ts_ms,
-                    parser_fingerprint,
-                    content_fingerprint,
-                    tail_hash,
-                    st_dev,
-                    st_ino,
-                    mtime_ns,
-                    failure_count,
-                    next_retry_at,
-                    origin,
-                    updated_at_ms,
-                    excluded
-                FROM ingest_cursor
-                WHERE source_path = ?
-                """,
-                (str(path),),
-            ).fetchone()
+            return self._get_record_on_conn(conn, path)
+
+    @staticmethod
+    def _get_record_on_conn(conn: sqlite3.Connection, path: Path) -> CursorRecord | None:
+        row = conn.execute(
+            """
+            SELECT
+                source_path,
+                stat_size,
+                byte_offset,
+                last_complete_newline,
+                record_count,
+                last_record_ts_ms,
+                parser_fingerprint,
+                content_fingerprint,
+                tail_hash,
+                st_dev,
+                st_ino,
+                mtime_ns,
+                failure_count,
+                next_retry_at,
+                origin,
+                updated_at_ms,
+                excluded
+            FROM ingest_cursor
+            WHERE source_path = ?
+            """,
+            (str(path),),
+        ).fetchone()
         if row is None:
             return None
         return _cursor_record_from_ops_row(row)
@@ -983,121 +1021,85 @@ class CursorStore:
         return True
 
     def mark_failed(self, path: Path) -> None:
-        """Increment failure count and set exponential backoff."""
-        record = self.get_record(path)
-        if record is None:
-            try:
-                stat = path.stat()
-                byte_size = stat.st_size
-                st_dev = stat.st_dev
-                st_ino = stat.st_ino
-                mtime_ns = stat.st_mtime_ns
-            except FileNotFoundError:
-                byte_size = 0
-                st_dev = None
-                st_ino = None
-                mtime_ns = None
-            self.set(
-                path,
-                byte_size,
-                st_dev=st_dev,
-                st_ino=st_ino,
-                mtime_ns=mtime_ns,
-            )
-            record = self.get_record(path)
+        """Increment failure count and set exponential backoff.
+
+        Read-modify-write against ``failure_count`` happens inside one
+        connection/transaction (``_read_modify_write_cursor_record``) so a
+        second concurrent caller (e.g. the daemon watcher racing a CLI
+        reprocess batch on the same ``source_path``) cannot silently clobber
+        this increment with a stale read of its own — see polylogue-qug2.
+        """
+
+        def mutate(current: CursorRecord | None) -> CursorRecord | None:
+            record = current
             if record is None:
-                return
-        failures = record.failure_count + 1
-        if failures >= _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE:
-            self.set(
-                path,
-                record.byte_size,
-                byte_offset=record.byte_offset,
-                last_complete_newline=record.last_complete_newline,
-                record_count=record.record_count,
-                last_record_ts=record.last_record_ts,
-                parser_fingerprint=record.parser_fingerprint,
-                content_fingerprint=record.content_fingerprint,
-                tail_hash=record.tail_hash,
-                source_name=record.source_name,
-                st_dev=record.st_dev,
-                st_ino=record.st_ino,
-                mtime_ns=record.mtime_ns,
+                try:
+                    stat = path.stat()
+                    byte_size = stat.st_size
+                    st_dev: int | None = stat.st_dev
+                    st_ino: int | None = stat.st_ino
+                    mtime_ns: int | None = stat.st_mtime_ns
+                except FileNotFoundError:
+                    byte_size = 0
+                    st_dev = None
+                    st_ino = None
+                    mtime_ns = None
+                record = CursorRecord(
+                    source_path=str(path),
+                    byte_size=byte_size,
+                    byte_offset=byte_size,
+                    last_complete_newline=byte_size,
+                    record_count=0,
+                    updated_at=datetime.now(UTC).isoformat(),
+                    st_dev=st_dev,
+                    st_ino=st_ino,
+                    mtime_ns=mtime_ns,
+                )
+            failures = record.failure_count + 1
+            now = datetime.now(UTC).isoformat()
+            if failures >= _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE:
+                return replace(
+                    record,
+                    updated_at=now,
+                    failure_count=failures,
+                    next_retry_at=None,
+                    excluded=True,
+                )
+            delay_s = min(60 * (2 ** (failures - 1)), 3600)  # cap at 1 hour
+            retry_at = datetime.now(UTC).timestamp() + delay_s
+            return replace(
+                record,
+                updated_at=now,
                 failure_count=failures,
-                next_retry_at=None,
-                excluded=True,
-                allow_backward=True,
+                next_retry_at=datetime.fromtimestamp(retry_at, tz=UTC).isoformat(),
             )
-            return
-        delay_s = min(60 * (2 ** (failures - 1)), 3600)  # cap at 1 hour
-        retry_at = datetime.now(UTC).timestamp() + delay_s
-        self.set(
-            path,
-            record.byte_size,
-            byte_offset=record.byte_offset,
-            last_complete_newline=record.last_complete_newline,
-            record_count=record.record_count,
-            last_record_ts=record.last_record_ts,
-            parser_fingerprint=record.parser_fingerprint,
-            content_fingerprint=record.content_fingerprint,
-            tail_hash=record.tail_hash,
-            source_name=record.source_name,
-            st_dev=record.st_dev,
-            st_ino=record.st_ino,
-            mtime_ns=record.mtime_ns,
-            failure_count=failures,
-            next_retry_at=datetime.fromtimestamp(retry_at, tz=UTC).isoformat(),
-            excluded=bool(record.excluded),
-            allow_backward=True,
-        )
+
+        self._read_modify_write_cursor_record(path, mutate)
 
     def mark_excluded(self, path: Path) -> None:
         """Quarantine a source file (poison pill)."""
-        record = self.get_record(path)
-        if record is not None:
-            self.set(
-                path,
-                record.byte_size,
-                byte_offset=record.byte_offset,
-                last_complete_newline=record.last_complete_newline,
-                record_count=record.record_count,
-                last_record_ts=record.last_record_ts,
-                parser_fingerprint=record.parser_fingerprint,
-                content_fingerprint=record.content_fingerprint,
-                tail_hash=record.tail_hash,
-                source_name=record.source_name,
-                st_dev=record.st_dev,
-                st_ino=record.st_ino,
-                mtime_ns=record.mtime_ns,
-                failure_count=record.failure_count,
-                next_retry_at=record.next_retry_at,
-                excluded=True,
-                allow_backward=True,
-            )
+
+        def mutate(current: CursorRecord | None) -> CursorRecord | None:
+            if current is None:
+                return None
+            return replace(current, updated_at=datetime.now(UTC).isoformat(), excluded=True)
+
+        self._read_modify_write_cursor_record(path, mutate)
 
     def reset_failures(self, path: Path) -> None:
         """Clear failure count and backoff after a successful parse."""
-        record = self.get_record(path)
-        if record is not None:
-            self.set(
-                path,
-                record.byte_size,
-                byte_offset=record.byte_offset,
-                last_complete_newline=record.last_complete_newline,
-                record_count=record.record_count,
-                last_record_ts=record.last_record_ts,
-                parser_fingerprint=record.parser_fingerprint,
-                content_fingerprint=record.content_fingerprint,
-                tail_hash=record.tail_hash,
-                source_name=record.source_name,
-                st_dev=record.st_dev,
-                st_ino=record.st_ino,
-                mtime_ns=record.mtime_ns,
+
+        def mutate(current: CursorRecord | None) -> CursorRecord | None:
+            if current is None:
+                return None
+            return replace(
+                current,
+                updated_at=datetime.now(UTC).isoformat(),
                 failure_count=0,
                 next_retry_at=None,
-                excluded=bool(record.excluded),
-                allow_backward=True,
             )
+
+        self._read_modify_write_cursor_record(path, mutate)
 
     def list_excluded(self) -> list[str]:
         """Return quarantined source paths."""
