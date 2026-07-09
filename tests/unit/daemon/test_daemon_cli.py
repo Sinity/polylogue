@@ -2279,9 +2279,6 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         events.append("lineage")
         return 0
 
-    async def fake_sweep_orphaned_blob_leases() -> None:
-        events.append("sweep")
-
     async def fake_drive_catchup() -> int:
         events.append("drive-once")
         return 0
@@ -2316,7 +2313,6 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(patch("polylogue.paths.archive_root", return_value=Path("/tmp/polylogue-test-archive")))
         stack.enter_context(patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup))
         stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", fake_configure_fts_automerge))
-        stack.enter_context(patch.object(daemon_cli, "_sweep_orphaned_blob_leases", fake_sweep_orphaned_blob_leases))
         stack.enter_context(patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_fts_merge", lambda: fake_loop("fts-merge")))
         stack.enter_context(
@@ -2607,7 +2603,6 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
         patch.object(daemon_cli, "_periodic_db_optimize", wait_forever),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", wait_forever),
         patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: wait_forever()),
-        patch.object(daemon_cli, "_sweep_orphaned_blob_leases", wait_forever),
         patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown", mark_interrupted_cleanup),
         patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", lambda **_kwargs: wait_forever()),
         patch("polylogue.daemon.convergence.DaemonConverger", return_value=FakeConverger()),

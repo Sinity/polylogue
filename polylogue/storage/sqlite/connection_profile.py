@@ -158,9 +158,9 @@ def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
     """Attach sibling archive tiers to an ``index.db`` connection (idempotent).
 
     Lets one-shot sync connections resolve cross-tier tables (e.g. source.db's
-    ``raw_sessions``/``blob_refs``/``pending_blob_refs``) by unqualified name.
-    SQLite resolves unqualified names to ``main`` first, so index-tier tables
-    are unaffected; only sibling-only tables resolve to their attached tier.
+    ``raw_sessions``/``blob_refs``) by unqualified name. SQLite resolves
+    unqualified names to ``main`` first, so index-tier tables are unaffected;
+    only sibling-only tables resolve to their attached tier.
     """
     main_path: str | None = None
     attached: set[str] = set()

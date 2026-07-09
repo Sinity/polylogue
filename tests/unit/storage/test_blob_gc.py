@@ -13,7 +13,6 @@ from pathlib import Path
 
 from polylogue.storage.blob_gc import (
     _candidate_blobs,
-    _has_active_lease,
     _reference_surfaces,
     _still_referenced,
     read_gc_history,
@@ -50,16 +49,6 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
             size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
             acquired_at_ms INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (blob_hash, ref_type, ref_id)
-        )"""
-    )
-    conn.execute(
-        """CREATE TABLE pending_blob_refs (
-            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
-            operation_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL,
-            ref_id TEXT NOT NULL,
-            acquired_at_ms INTEGER NOT NULL,
-            PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
         )"""
     )
     # gc_generations carries the typed reclaim counters that production
@@ -227,31 +216,6 @@ def test_candidate_blobs_skips_non_two_char_prefix_dirs(tmp_path: Path) -> None:
     found = {h for h, _ in candidates}
     assert "abcdef1234" in found
     assert not any(h.startswith("not") for h in found)
-
-
-# ---------------------------------------------------------------------------
-# Lease safety
-# ---------------------------------------------------------------------------
-
-
-def test_has_active_lease() -> None:
-    conn = _make_db()
-    leased = "a" * 64
-    conn.execute(
-        "INSERT INTO pending_blob_refs (blob_hash, operation_id, ref_type, ref_id, acquired_at_ms) "
-        "VALUES (?, 'op-001', 'raw_payload', 'op-001', 1000)",
-        (bytes.fromhex(leased),),
-    )
-    conn.commit()
-    assert _has_active_lease(conn, leased) is True
-    assert _has_active_lease(conn, "b" * 64) is False
-    conn.close()
-
-
-def test_has_active_lease_empty_table() -> None:
-    conn = _make_db()
-    assert _has_active_lease(conn, "any-hash") is False
-    conn.close()
 
 
 # ---------------------------------------------------------------------------

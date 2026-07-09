@@ -106,7 +106,6 @@ def _minimal_compare_payload() -> dict[str, Any]:
         "attempt_counts": {},
         "storage_route_counts": {},
         "boundary_table_counts": {},
-        "blob_lease_state": {},
         "gc_state": {},
         "fts_trigger_state": {},
         "convergence_debt": {},
@@ -856,7 +855,6 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
         "boundary_table_counts",
         "boundary_table_count_precision",
         "archive_tiers",
-        "blob_lease_state",
         "gc_state",
         "fts_trigger_state",
         "daemon_resource_signal",
@@ -894,9 +892,7 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
     assert set(fts["present"]) == set(fts["expected"])
     assert fts["missing"] == []
 
-    # GC / lease tables are present after fresh schema init even if empty.
-    assert payload["blob_lease_state"]["table_present"] is True
-    assert payload["blob_lease_state"]["pending_lease_count"] == 0
+    # GC generation table is present after fresh schema init even if empty.
     assert payload["gc_state"]["table_present"] is True
     assert payload["gc_state"]["high_water_generation"] == 0
 

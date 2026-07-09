@@ -408,34 +408,6 @@ async def _periodic_db_optimize() -> None:
             logger.warning("daemon: DB optimize failed", exc_info=True)
 
 
-def _sweep_orphaned_blob_leases_sync() -> None:
-    """Remove blob leases leaked by writers killed mid-commit (#1746).
-
-    ``commit_archive_write_effects`` acquires a blob lease on a separate
-    immediate-commit connection before the data transaction. If the process is
-    SIGKILLed between acquire and release, the lease row leaks into
-    ``pending_blob_refs`` and permanently blocks GC of that blob. This is the
-    startup counterpart to ``CursorStore._mark_interrupted_attempts`` for
-    ``live_ingest_attempt``.
-    """
-    from polylogue.storage.blob_gc import sweep_orphaned_blob_leases
-
-    db = _active_index_db_path()
-    if not db.exists():
-        return
-    try:
-        removed = sweep_orphaned_blob_leases(db)
-        if removed:
-            logger.info("daemon: swept %d orphaned blob lease(s) on startup", removed)
-    except Exception:
-        logger.warning("daemon: orphaned blob lease sweep failed", exc_info=True)
-
-
-async def _sweep_orphaned_blob_leases() -> None:
-    """Run the orphaned blob-lease startup sweep without blocking the loop."""
-    await asyncio.to_thread(_sweep_orphaned_blob_leases_sync)
-
-
 async def _periodic_convergence_check(
     sources: tuple[WatchSource, ...],
     *,
@@ -1068,9 +1040,6 @@ async def run_daemon_services(
             if enable_source_catchup:
                 periodic_loops.append(_periodic_drive_source_catchup())
             maintenance_tasks.extend(asyncio.create_task(loop) for loop in periodic_loops)
-            # Reclaim blob leases leaked by a previously SIGKILLed writer so a
-            # later GC pass is not blocked indefinitely (#1746).
-            maintenance_tasks.append(asyncio.create_task(_sweep_orphaned_blob_leases()))
             _db = _active_index_db_path()
             converger = DaemonConverger(
                 stages=make_default_convergence_stages(_db),

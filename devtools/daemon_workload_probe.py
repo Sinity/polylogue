@@ -58,7 +58,6 @@ _BOUNDARY_TABLES: tuple[str, ...] = (
     "session_profiles",
     "live_ingest_attempt",
     "convergence_debt",
-    "pending_blob_refs",
     "repos",
     "session_repos",
     "session_commits",
@@ -185,7 +184,6 @@ def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> int | No
         "daemon_stage_events",
         "daemon_events",
         "embedding_status",
-        "pending_blob_refs",
         "gc_generations",
     }:
         return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}")
@@ -1085,7 +1083,6 @@ def _observability_locations(
         "messages": _location_entry(index_db, table="messages", tier="index"),
         "blocks": _location_entry(index_db, table="blocks", tier="index"),
         "messages_fts": _location_entry(index_db, table="messages_fts", tier="index"),
-        "pending_blob_refs": _location_entry(source_db, table="pending_blob_refs", tier="source"),
     }
     return {
         "archive_root": str(db.parent),
@@ -1937,26 +1934,6 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def _blob_lease_state(conn: sqlite3.Connection) -> dict[str, Any]:
-    if not _table_exists(conn, "pending_blob_refs"):
-        return {
-            "table_present": False,
-            "pending_lease_count": 0,
-            "distinct_operations": 0,
-            "oldest_acquired_at": None,
-        }
-    pending = _scalar_int(conn, "SELECT COUNT(*) FROM pending_blob_refs")
-    operations = _scalar_int(conn, "SELECT COUNT(DISTINCT operation_id) FROM pending_blob_refs")
-    oldest_row = conn.execute("SELECT MIN(acquired_at_ms) FROM pending_blob_refs").fetchone()
-    oldest = int(oldest_row[0]) if oldest_row is not None and oldest_row[0] is not None else None
-    return {
-        "table_present": True,
-        "pending_lease_count": pending,
-        "distinct_operations": operations,
-        "oldest_acquired_at": oldest,
-    }
-
-
 def _blob_reference_debt_state(db: Path, *, enabled: bool) -> dict[str, Any]:
     if not enabled:
         return {
@@ -2423,7 +2400,6 @@ def probe(
             "automatic_convergence_backlog": _automatic_convergence_backlog(archive_tiers, convergence_debt),
             "sqlite_maintenance": _sqlite_maintenance_state(db, observed_db),
             "topology_quarantine_state": _topology_quarantine_state(conn),
-            "blob_lease_state": _tier_state_or_current(conn, db.with_name("source.db"), _blob_lease_state),
             "blob_reference_debt": _blob_reference_debt_state(db, enabled=blob_reference_debt),
             "gc_state": _tier_state_or_current(conn, db.with_name("source.db"), _gc_state),
             "fts_trigger_state": _fts_trigger_state(conn),
@@ -2495,23 +2471,6 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     before_routes = _coerce_int_map(before.get("storage_route_counts") or {})
     after_routes = _coerce_int_map(after.get("storage_route_counts") or {})
     route_delta = _int_map_delta(before_routes, after_routes)
-
-    before_leases = before.get("blob_lease_state") or {}
-    after_leases = after.get("blob_lease_state") or {}
-    lease_delta = {
-        "pending_lease_count": {
-            "before": int(before_leases.get("pending_lease_count") or 0),
-            "after": int(after_leases.get("pending_lease_count") or 0),
-            "delta": int(after_leases.get("pending_lease_count") or 0)
-            - int(before_leases.get("pending_lease_count") or 0),
-        },
-        "distinct_operations": {
-            "before": int(before_leases.get("distinct_operations") or 0),
-            "after": int(after_leases.get("distinct_operations") or 0),
-            "delta": int(after_leases.get("distinct_operations") or 0)
-            - int(before_leases.get("distinct_operations") or 0),
-        },
-    }
 
     before_gc = before.get("gc_state") or {}
     after_gc = after.get("gc_state") or {}
@@ -2597,7 +2556,6 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         "boundary_table_counts": table_delta,
         "archive_tiers": _archive_tier_delta(before, after),
         "source_path_churn": _source_path_churn_delta(before, after),
-        "blob_lease_state": lease_delta,
         "gc_state": gc_delta,
         "fts_trigger_state": fts_delta,
         "automatic_convergence_backlog": {
@@ -2894,11 +2852,6 @@ def _format_compare_human(diff: dict[str, Any]) -> str:
                 f"  {tier}: exists {info.get('exists_before')} -> {info.get('exists_after')}, "
                 f"user_version {info.get('user_version_before')} -> {info.get('user_version_after')}"
             )
-    leases = diff["blob_lease_state"]
-    lines.append("")
-    lines.append("Blob lease state:")
-    for key, entry in leases.items():
-        lines.append(f"  {key}: {entry['before']} -> {entry['after']} (Δ {entry['delta']:+d})")
     gc = diff["gc_state"]
     lines.append("")
     lines.append("GC state:")
@@ -3125,12 +3078,6 @@ def main(argv: list[str] | None = None) -> int:
                 f"    {tier}: user_version={info.get('user_version')} "
                 f"integrity={info.get('integrity')} size={info.get('size_bytes')} bytes"
             )
-    leases = payload.get("blob_lease_state") or {}
-    print(
-        "  blob leases: "
-        f"{leases.get('pending_lease_count', 0)} pending across "
-        f"{leases.get('distinct_operations', 0)} operations"
-    )
     gc = payload.get("gc_state") or {}
     print(f"  gc: high-water generation {gc.get('high_water_generation', 0)} (count {gc.get('generation_count', 0)})")
     fts = payload.get("fts_trigger_state") or {}

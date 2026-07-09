@@ -59,12 +59,12 @@ files:
     reason: "Resilience harness sets acquired_at to now() as opaque metadata; no production timing comparison."
   - path: tests/unit/storage/test_store_ops.py
     reason: "Backend round-trip tests use now() to label a row; storage echoes it back without comparison."
-  - path: tests/unit/storage/test_blob_gc_concurrency.py
-    reason: "Blob aging uses time.time() to backdate file mtime; production GC reads file mtime, not datetime.now."
   - path: tests/unit/storage/test_blob_store_contracts.py
-    reason: "Same as test_blob_gc_concurrency: time.time() backdates file mtime."
-  - path: tests/unit/storage/test_blob_gc_lease_recovery.py
-    reason: "#1746 lease/GC tests backdate blob mtime and pending_blob_refs.acquired_at with time.time(); production GC reads file mtime and integer acquired_at, not datetime.now()."
+    reason: "Blob aging uses time.time() to backdate file mtime; production GC reads file mtime, not datetime.now."
+  - path: tests/unit/storage/test_blob_gc_generation_gate.py
+    reason: "#1746/#1830 GC generation-gate tests backdate blob mtime with time.time(); production GC reads file mtime, not datetime.now()."
+  - path: tests/unit/storage/test_blob_repair.py
+    reason: "Same as test_blob_store_contracts: time.time() backdates file mtime for GC-eligibility, this time via the ops-doctor repair path (moved out of the removed test_blob_gc_concurrency.py, polylogue-v7e0)."
   - path: tests/unit/storage/test_raw_ingest_artifacts.py
     reason: "Raw-ingest test uses now() as opaque acquired_at metadata."
   - path: tests/unit/daemon/test_metrics_endpoint.py

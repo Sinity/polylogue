@@ -90,18 +90,17 @@ def count_orphaned_blobs_sync(conn: sqlite3.Connection, *, db_path: Path | str |
 
 
 def repair_orphaned_blobs_data(config: Config, dry_run: bool = False) -> BlobRepairOutcome:
-    """Delete orphaned blobs via the lease/ref/generation-safe GC planner.
+    """Delete orphaned blobs via the reference/generation-safe GC planner.
 
     Previously this called ``BlobStore.detect_orphans``/``cleanup_orphans``
     directly, comparing disk hashes only against committed ``raw_sessions``/
-    ``blob_refs`` rows. A blob with an active operation lease
-    (``pending_blob_refs`` — acquired but not yet committed) has no
-    committed reference yet by design, so it was misclassified as an
-    orphan and deleted: the exact in-flight-ingest race the lease
-    mechanism exists to close (polylogue-8jg9.4). ``run_blob_gc_report``
-    already applies all three safety invariants (committed reference,
-    active lease, generation-age floor); routing the doctor repair path
-    through it closes the race without duplicating that safety logic.
+    ``blob_refs`` rows, with no generation-age floor. ``run_blob_gc_report``
+    already applies both safety invariants that still apply (committed
+    reference, generation-age floor); routing the doctor repair path
+    through it avoids duplicating that safety logic. (A lease-based third
+    invariant was removed in polylogue-v7e0 — it was never reachable from
+    any production ingest path; see ``docs/internals.md`` "GC concurrency
+    model".)
     """
     from polylogue.paths import blob_store_root
     from polylogue.storage.blob_gc import run_blob_gc_report
@@ -112,11 +111,7 @@ def repair_orphaned_blobs_data(config: Config, dry_run: bool = False) -> BlobRep
         max_batch=100_000,
         dry_run=dry_run,
     )
-    protected_detail = (
-        f"; skipped {report.skipped_referenced} referenced, {report.skipped_leased} leased"
-        if (report.skipped_referenced or report.skipped_leased)
-        else ""
-    )
+    protected_detail = f"; skipped {report.skipped_referenced} referenced" if report.skipped_referenced else ""
     if dry_run:
         return BlobRepairOutcome(
             report.would_delete_count,

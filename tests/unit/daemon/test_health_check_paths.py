@@ -677,8 +677,6 @@ def test_blob_integrity_ok(
             scanned_references=10,
             total_blobs_seen=10,
             total_references_seen=10,
-            active_lease_count=0,
-            stale_lease_count=0,
             findings=(),
         ),
         raising=False,
@@ -702,8 +700,6 @@ def test_blob_integrity_warning_when_failures_present(
             scanned_references=10,
             total_blobs_seen=10,
             total_references_seen=10,
-            active_lease_count=0,
-            stale_lease_count=0,
             findings=(
                 BlobIntegrityFinding(
                     kind="hash_mismatch",
@@ -730,8 +726,6 @@ def test_blob_integrity_alert_renderer_emits_one_alert_per_finding() -> None:
         scanned_references=10,
         total_blobs_seen=10,
         total_references_seen=10,
-        active_lease_count=0,
-        stale_lease_count=0,
         findings=(
             BlobIntegrityFinding(
                 kind="orphan_blobs",

@@ -45,8 +45,8 @@ from this tier, so it is the durable record of *what was ingested*.
 Core tables: `raw_sessions` (one row per acquired payload, keyed by `raw_id`,
 carrying `origin`, `native_id`, `blob_hash`, and parse/validation state),
 `raw_artifacts` (artifact-taxonomy classification per acquired file),
-`blob_refs` / `pending_blob_refs` / `gc_generations` (content-addressed blob
-references and the lease/GC bookkeeping described in
+`blob_refs` / `gc_generations` (content-addressed blob references and the
+GC bookkeeping described in
 [Internals § Blob Store Model](internals.md#blob-store-model)),
 `raw_hook_events`, and `history_sidecars`.
 

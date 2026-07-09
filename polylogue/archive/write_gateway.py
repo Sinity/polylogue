@@ -27,7 +27,6 @@ class WriteOperation(Enum):
     DELETE = "delete"
     TAG_UPDATE = "tag_update"
     METADATA_UPDATE = "metadata_update"
-    BLOB_STORE = "blob_store"
 
 
 WriteResultStatus = Literal["committed", "rejected", "deferred"]

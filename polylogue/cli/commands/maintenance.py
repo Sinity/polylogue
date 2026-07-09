@@ -605,7 +605,7 @@ def _backup_plan_payload(root: Path) -> dict[str, Any]:
             "path": str(blob_root),
             "present": blob_root.exists(),
             "backup_policy": "back_up_referenced_blobs_with_source_and_user_tiers",
-            "gc_safety_boundary": "source.db raw references plus pending_blob_refs leases are authoritative",
+            "gc_safety_boundary": "source.db raw references plus the gc_generations age floor are authoritative",
         },
         "profiles": list(_BACKUP_PROFILES),
         "warnings": wal_warnings,
@@ -1815,7 +1815,6 @@ def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
     click.echo(
         "Skipped:    "
         f"referenced={result.skipped_referenced:,} "
-        f"leased={result.skipped_leased:,} "
         f"missing={result.skipped_missing:,} "
         f"unlink_error={result.skipped_unlink_error:,}"
     )

@@ -78,10 +78,10 @@ Restore expectations:
 Blob garbage collection is dry-run-first work. A safe GC report must prove:
 
 - the candidate blob is not referenced by `source.db.raw_sessions`;
-- no active row in `pending_blob_refs` is announcing an in-flight reference;
-- the candidate is older than the generation/age gate;
+- the candidate is older than the generation/age gate (`MIN_AGE_S`, the sole
+  defense against a blob write racing a concurrent GC pass — see
+  `docs/internals.md` "GC concurrency model");
 - the report names exact candidate counts and references before deletion.
 
 Do not delete blobs based only on filesystem age, directory mtime, or absence
-from `index.db`. `source.db` and pending leases are the authority for raw
-evidence reachability.
+from `index.db`. `source.db` is the authority for raw evidence reachability.
