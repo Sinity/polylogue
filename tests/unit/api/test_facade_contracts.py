@@ -247,6 +247,18 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "pathology_report",
         "materialize_pathology_assertions",
         "portfolio_bundle",
+        # Session analysis primitives sunk from the MCP-only surface into the
+        # shared facade (#1691 / polylogue-9e5.24) -- covered by
+        # tests/unit/insights/test_archive_rollups.py,
+        # tests/unit/insights/test_session_analytics.py, and
+        # tests/unit/api/test_session_analytics_facade.py.
+        "aggregate_sessions",
+        "workflow_shape_distribution",
+        "find_abandoned_sessions",
+        "tool_call_latency_distribution",
+        "compare_sessions",
+        "find_similar_sessions_by_metadata",
+        "correlate_sessions",
     }
 )
 
