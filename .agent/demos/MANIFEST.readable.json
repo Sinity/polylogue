@@ -3,8 +3,8 @@
   "root": "/realm/project/polylogue/.agent/demos",
   "packaging": "Use devtools workspace read-package for portable readable bundles; this helper only writes indexes.",
   "curation_policy": "This is not append-only. Keep the best current demos here; replace, consolidate, or move stale demos out.",
-  "file_count": 158,
-  "readable_count": 124,
+  "file_count": 165,
+  "readable_count": 128,
   "files": [
     {
       "path": "_packet-contract-stub/PROMPT.md",
@@ -315,6 +315,41 @@
       "path": "agent-forensics/current/usage-timeline-month-origin-model.json",
       "bytes": 316289,
       "readable": true
+    },
+    {
+      "path": "anti-demo-multi-source-reconstruction/PROMPT.md",
+      "bytes": 1624,
+      "readable": true
+    },
+    {
+      "path": "anti-demo-multi-source-reconstruction/checks.json",
+      "bytes": 603,
+      "readable": true
+    },
+    {
+      "path": "anti-demo-multi-source-reconstruction/evidence.ndjson",
+      "bytes": 879,
+      "readable": false
+    },
+    {
+      "path": "anti-demo-multi-source-reconstruction/finding.yaml",
+      "bytes": 538,
+      "readable": true
+    },
+    {
+      "path": "anti-demo-multi-source-reconstruction/queries.ndjson",
+      "bytes": 713,
+      "readable": false
+    },
+    {
+      "path": "anti-demo-multi-source-reconstruction/report.md",
+      "bytes": 3947,
+      "readable": true
+    },
+    {
+      "path": "anti-demo-multi-source-reconstruction/run.log",
+      "bytes": 1600,
+      "readable": false
     },
     {
       "path": "archive-debt-summary/ANALYSIS.md",
@@ -683,7 +718,7 @@
     },
     {
       "path": "d4-behavioral-archaeology/PROMPT.md",
-      "bytes": 1748,
+      "bytes": 1722,
       "readable": true
     },
     {
@@ -693,7 +728,7 @@
     },
     {
       "path": "d4-behavioral-archaeology/evidence.ndjson",
-      "bytes": 1382,
+      "bytes": 1558,
       "readable": false
     },
     {
@@ -758,7 +793,7 @@
     },
     {
       "path": "registry.json",
-      "bytes": 632,
+      "bytes": 950,
       "readable": true
     },
     {

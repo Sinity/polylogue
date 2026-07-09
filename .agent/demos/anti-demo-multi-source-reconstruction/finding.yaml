@@ -1,0 +1,7 @@
+archive_cursor: polylogue-demo-seed-fixture-world
+measure_version: devtools.demo_packet-v1
+commit_sha: e5a68ec51
+sample_frame_predicate: "polylogue archive schema (source/index/embeddings/user/ops tiers) plus the seeded demo corpus; the claim is refused on structural schema grounds, not corpus size"
+run_date: "2026-07-09"
+claim: "REFUSED: a minute-by-minute, cross-source (chat + desktop window focus + shell + browser) reconstruction of operator activity for a given day is not supported by the current archive"
+verdict: not_supported

@@ -1,0 +1,3 @@
+{"text": "grep -n \"CREATE TABLE\" polylogue/storage/sqlite/archive_tiers/index.py | grep -iE \"session_commits|session_repos\"", "lowered_spec": {"kind": "schema-grep", "target": "session-to-external-activity correlation tables"}}
+{"text": "grep -n \"CREATE TABLE\" polylogue/storage/sqlite/archive_tiers/index.py | grep -iE \"window|focus|shell_history|browser_tab|activitywatch\"", "lowered_spec": {"kind": "schema-grep", "target": "desktop/shell/browser telemetry tables (expected: none)"}}
+{"text": "grep -rln \"window_focus|shell_history|browser_tab|activitywatch\" polylogue/storage/sqlite/archive_tiers/*.py", "lowered_spec": {"kind": "schema-grep", "target": "cross-tier confirmation (expected: none)"}}

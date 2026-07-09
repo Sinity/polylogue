@@ -18,5 +18,12 @@
       "polylogue read",
       "polylogue select"
     ]
+  },
+  {
+    "slug": "anti-demo-multi-source-reconstruction",
+    "prompt_path": ".agent/demos/anti-demo-multi-source-reconstruction/PROMPT.md",
+    "packet_dir": ".agent/demos/anti-demo-multi-source-reconstruction",
+    "mode": "public",
+    "required_primitives": ["schema inspection (grep over archive_tiers DDL)"]
   }
 ]
