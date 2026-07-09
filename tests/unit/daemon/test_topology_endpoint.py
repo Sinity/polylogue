@@ -18,6 +18,7 @@ asserted here pin the same three states at the bytes-on-the-wire level.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -55,6 +56,7 @@ from tests.infra.storage_records import SessionBuilder, db_setup
 class _MockServer:
     auth_token = ""
     api_host = "127.0.0.1"
+    archive_query_executor = ThreadPoolExecutor(max_workers=1)
 
 
 class _MockHeaders:

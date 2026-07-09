@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -116,6 +117,7 @@ REQUIRED_HEALTH_KEYS: frozenset[str] = frozenset(
 class _MockServer:
     auth_token = ""  # local-dev default: no auth needed for these contracts
     api_host = "127.0.0.1"
+    archive_query_executor = ThreadPoolExecutor(max_workers=1)
 
 
 class _MockHeaders:
@@ -892,3 +894,74 @@ class TestErrorEnvelopeContract:
         assert "status" not in error_keys
         assert "alerts" not in error_keys
         assert "quick_check" not in error_keys
+
+
+# ---------------------------------------------------------------------------
+# Bounded archive-query executor / timeout contract (polylogue-0hqs)
+# ---------------------------------------------------------------------------
+
+
+class TestBoundedArchiveQueryExecutor:
+    """A stalled archive query returns an honest, bounded error.
+
+    Regression for polylogue-0hqs: a request thread previously blocked
+    forever on a stuck archive query (observed live: 43 threads
+    permanently stuck at the same SQL fetch, daemon RSS/thread count
+    growing unboundedly). ``_sync_run`` now routes through the server's
+    bounded ``archive_query_executor`` and gives up after
+    ``_ARCHIVE_QUERY_TIMEOUT_S``, so a request that cannot complete in
+    bounded time raises rather than hanging the calling thread forever.
+    """
+
+    def test_sync_run_raises_timeout_error_when_handler_exceeds_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import time as time_module
+
+        import polylogue.daemon.http as daemon_http
+
+        monkeypatch.setattr(daemon_http, "_ARCHIVE_QUERY_TIMEOUT_S", 0.05)
+        handler = _make_handler("GET", "/api/facets")
+
+        async def _slow_handler(poly: object) -> object:
+            time_module.sleep(0.5)
+            return {"never": "reached"}
+
+        with pytest.raises(TimeoutError, match="did not complete within"):
+            handler._sync_run(_slow_handler)
+
+    def test_daemon_safe_handler_maps_timeout_to_503_with_retry_after(self) -> None:
+        from polylogue.daemon.http import daemon_safe_handler
+
+        handler = _make_handler("GET", "/api/facets")
+        _, send_json = _capture_responses(handler)
+
+        @daemon_safe_handler
+        def _raises_timeout(self: object) -> None:
+            raise TimeoutError("archive query did not complete within 30s; the daemon may be busy")
+
+        _raises_timeout(handler)
+
+        send_json.assert_called_once()
+        status = send_json.call_args.args[0]
+        payload = send_json.call_args.args[1]
+        kwargs = send_json.call_args.kwargs
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+        assert payload["error"] == "archive_query_timeout"
+        assert kwargs.get("extra_headers") == {"Retry-After": "2"}
+
+    def test_archive_query_executor_is_bounded(self) -> None:
+        """The server caps concurrent archive-query workers, not one-per-connection."""
+        from polylogue.daemon.http import _ARCHIVE_QUERY_MAX_WORKERS
+
+        assert _ARCHIVE_QUERY_MAX_WORKERS > 0
+        assert _ARCHIVE_QUERY_MAX_WORKERS < 100  # sanity: a bound, not effectively unbounded
+
+    def test_server_close_shuts_down_archive_query_executor(self) -> None:
+        from polylogue.daemon.http import DaemonAPIHTTPServer
+
+        server = DaemonAPIHTTPServer.__new__(DaemonAPIHTTPServer)
+        server.archive_query_executor = ThreadPoolExecutor(max_workers=1)
+        # Avoid binding a real socket; only server_close()'s own body runs.
+        server.socket = MagicMock()
+        server.server_close()
+        with pytest.raises(RuntimeError, match="cannot schedule new futures"):
+            server.archive_query_executor.submit(lambda: None)

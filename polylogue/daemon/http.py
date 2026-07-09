@@ -12,6 +12,8 @@ import select
 import socket
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -893,6 +895,13 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 QueryErrorPayload(error="sqlite_error").model_dump(mode="json"),
             )
+        except TimeoutError as exc:
+            logger.warning("archive query timed out in %s: %s", fn.__name__, exc)
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                QueryErrorPayload(error="archive_query_timeout", detail=str(exc)).model_dump(mode="json"),
+                extra_headers={"Retry-After": "2"},
+            )
         except _CLIENT_DISCONNECT_ERRORS:
             logger.debug("daemon http client disconnected in %s", fn.__name__)
         except Exception:
@@ -1243,7 +1252,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return await handler(polylogue)
 
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
-        return asyncio.run(self._run_archive_query(handler))
+        # Route through the server's bounded archive-query executor (#0hqs)
+        # rather than running asyncio.run() directly on this connection's own
+        # thread: caps concurrent DB work at _ARCHIVE_QUERY_MAX_WORKERS
+        # regardless of how many connections are open, and the timeout below
+        # means a stalled query returns an honest error instead of blocking
+        # this thread (and the client) forever.
+        future = self.server.archive_query_executor.submit(lambda: asyncio.run(self._run_archive_query(handler)))
+        try:
+            return future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
+        except FutureTimeoutError as exc:
+            raise TimeoutError(
+                f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
+                "the daemon may be busy with catch-up ingestion/embedding"
+            ) from exc
 
     def do_OPTIONS(self) -> None:
         self._send_error(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
@@ -3718,6 +3740,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         handle_operations(self)
 
 
+# Bound for concurrent archive-query execution (polylogue-0hqs). ThreadingHTTPServer
+# spawns one raw OS thread per accepted connection with no cap; under sustained
+# concurrent load (or a query that stalls) that grows unbounded (64+ threads
+# observed live, py-spy showing dozens permanently stuck at the same SQL fetch).
+# Routing the actual archive-query work through a small, fixed-size executor
+# caps concurrent DB work regardless of connection volume, and _ARCHIVE_QUERY_TIMEOUT_S
+# below bounds each request's wait so a stalled query returns an honest error
+# instead of occupying a connection thread forever.
+_ARCHIVE_QUERY_MAX_WORKERS = 8
+_ARCHIVE_QUERY_TIMEOUT_S = 30.0
+
+
 class DaemonAPIHTTPServer(ThreadingHTTPServer):
     """Threading HTTP server for the daemon API."""
 
@@ -3735,3 +3769,18 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         super().__init__(server_address, handler_class)
         self.auth_token = auth_token
         self.api_host = api_host
+        self.archive_query_executor = ThreadPoolExecutor(
+            max_workers=_ARCHIVE_QUERY_MAX_WORKERS, thread_name_prefix="archive-query"
+        )
+
+    def server_close(self) -> None:
+        # cancel_futures=True drops any still-queued (not yet started) work
+        # and wait=False means this call itself does not block on a wedged
+        # in-flight query. A worker already stuck in one keeps running as an
+        # orphaned thread; concurrent.futures registers its own atexit hook
+        # that would otherwise join it at interpreter exit, so a genuinely
+        # wedged query can still delay process exit until systemd's
+        # TimeoutStopSec forces a SIGKILL -- acceptable (bounded, not
+        # unbounded) and unchanged from today's plain-thread behavior.
+        self.archive_query_executor.shutdown(wait=False, cancel_futures=True)
+        super().server_close()
