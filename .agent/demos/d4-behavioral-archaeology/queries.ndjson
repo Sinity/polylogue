@@ -1,0 +1,6 @@
+{"text": "sessions where seq(action:shell -> action:shell)", "then": "select --json", "lowered_spec": {"unit": "session", "entry": "boolean", "predicate_kind": "sequence"}}
+{"text": "actions where exit_code:>=0 | group by tool | count", "lowered_spec": {"unit": "action", "pipeline_stages": ["group:tool", "count"]}}
+{"text": "actions where is_error:true | group by tool | count", "lowered_spec": {"unit": "action", "pipeline_stages": ["group:tool", "count"]}}
+{"text": "near:\"flaky async test\"", "lowered_spec": {"unit": "session", "entry": "compact", "retrieval_lane": "dialogue"}}
+{"text": "since:2y", "lowered_spec": {"unit": "session", "entry": "compact"}}
+{"text": "origin:codex-session", "then": "read --first --view messages", "lowered_spec": {"unit": "session", "entry": "compact"}}

@@ -1,0 +1,5 @@
+{
+  "pass": true,
+  "unsupported_claims": [],
+  "coverage_notes": "All 6 queries executed and produced verifiable output against the seeded demo corpus (11 sessions, 43 messages). Query 4's zero-result outcome is attributed honestly to sparse embedding coverage in the fixture (2/43 messages), not claimed as a semantic-search failure. Query 5 is scoped explicitly as a time-filter demonstration, not a claim of abandonment-classification parity with find_abandoned_sessions. A real defect (bare find ignoring an explicit 'sessions where' predicate) was discovered during authoring and filed as polylogue-70qb rather than hidden or silently worked around."
+}

@@ -5,5 +5,18 @@
     "packet_dir": ".agent/demos/_packet-contract-stub",
     "mode": "private",
     "required_primitives": ["polylogue demo seed", "polylogue find"]
+  },
+  {
+    "slug": "d4-behavioral-archaeology",
+    "prompt_path": ".agent/demos/d4-behavioral-archaeology/PROMPT.md",
+    "packet_dir": ".agent/demos/d4-behavioral-archaeology",
+    "mode": "public",
+    "required_primitives": [
+      "polylogue demo seed",
+      "polylogue find",
+      "polylogue --explain",
+      "polylogue read",
+      "polylogue select"
+    ]
   }
 ]

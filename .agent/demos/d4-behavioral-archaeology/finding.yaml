@@ -1,0 +1,6 @@
+archive_cursor: polylogue-demo-seed-fixture-world
+measure_version: devtools.demo_packet-v1
+commit_sha: fdd5ea848
+sample_frame_predicate: "all 11 sessions in the polylogue demo seed fixture (polylogue demo seed --force)"
+run_date: "2026-07-09"
+claim: "six DSL queries answer engineering-lead questions about AI coding sessions that no chat UI transcript view can answer, using only existing product primitives"

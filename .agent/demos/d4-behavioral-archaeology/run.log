@@ -1,0 +1,251 @@
+=== Q1: SEQ thrash-loop hunt (repeated shell calls) ===
+$ polylogue find "sessions where seq(action:shell -> action:shell)" then select --json
+[{"id":"claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6","origin":"claude-code-session","title":"63705dcc-f3e5-4378-8118-8bc21e53bbb6","date":"2024-11-02"},{"id":"codex-session:demo-00","origin":"codex-session","title":"Could you review this code for potential issues?","date":"2024-01-23"}]
+
+Bare 'find' (no then-verb) on the SAME predicate incorrectly shows an unfiltered total -- see report.md counterexamples / filed bug:
+$ polylogue find "sessions where seq(action:shell -> action:shell)"
+mode: list total: 11 (should be 2, matching then-select above)
+
+=== Q2: tool call volume by tool ===
+$ polylogue "actions where exit_code:>=0 | group by tool | count"
+{
+  "items": [
+    {
+      "count": 9,
+      "group_by": "tool",
+      "group_key": "Bash",
+      "unit": "action"
+    },
+    {
+      "count": 8,
+      "group_by": "tool",
+      "group_key": "Read",
+      "unit": "action"
+    },
+    {
+      "count": 1,
+      "group_by": "tool",
+      "group_key": "Task",
+      "unit": "action"
+    },
+    {
+      "count": 1,
+      "group_by": "tool",
+      "group_key": "Write",
+      "unit": "action"
+    },
+    {
+      "count": 1,
+      "group_by": "tool",
+      "group_key": "exec_command",
+      "unit": "action"
+    }
+  ],
+  "limit": 20,
+  "mode": "query-unit-aggregate",
+  "next_offset": null,
+  "offset": 0,
+  "pipeline": {
+    "result": {
+      "aggregate": "count",
+      "group_by": "tool"
+    },
+    "source": {
+      "predicate": {
+        "field": "exit_code",
+        "field_ref": {
+          "name": "exit_code",
+          "scope": "unit",
+          "source_name": "exit_code",
+          "unit": "action"
+        },
+        "kind": "field",
+        "op": ">=",
+        "values": [
+          "0"
+        ]
+      },
+      "unit": "action"
+    },
+    "stages": [
+      {
+        "field": "tool",
+        "kind": "group"
+      },
+      {
+        "kind": "count",
+        "metric": "count"
+      },
+      {
+        "action": "count",
+        "kind": "terminal"
+      }
+    ]
+  },
+  "pipeline_stages": [
+    {
+      "field": "tool",
+      "kind": "group"
+    },
+    {
+      "kind": "count",
+      "metric": "count"
+    },
+    {
+      "action": "count",
+      "kind": "terminal"
+    }
+  ],
+  "query": "actions where exit_code:>=0 | group by tool | count",
+  "total": 5,
+  "unit": "action"
+}
+
+=== Q3: which tools break (failure count by tool) ===
+$ polylogue "actions where is_error:true | group by tool | count"
+{
+  "items": [
+    {
+      "count": 4,
+      "group_by": "tool",
+      "group_key": "Bash",
+      "unit": "action"
+    },
+    {
+      "count": 1,
+      "group_by": "tool",
+      "group_key": "exec_command",
+      "unit": "action"
+    }
+  ],
+  "limit": 20,
+  "mode": "query-unit-aggregate",
+  "next_offset": null,
+  "offset": 0,
+  "pipeline": {
+    "result": {
+      "aggregate": "count",
+      "group_by": "tool"
+    },
+    "source": {
+      "predicate": {
+        "field": "is_error",
+        "field_ref": {
+          "name": "is_error",
+          "scope": "unit",
+          "source_name": "is_error",
+          "unit": "action"
+        },
+        "kind": "field",
+        "op": "=",
+        "values": [
+          "true"
+        ]
+      },
+      "unit": "action"
+    },
+    "stages": [
+      {
+        "field": "tool",
+        "kind": "group"
+      },
+      {
+        "kind": "count",
+        "metric": "count"
+      },
+      {
+        "action": "count",
+        "kind": "terminal"
+      }
+    ]
+  },
+  "pipeline_stages": [
+    {
+      "field": "tool",
+      "kind": "group"
+    },
+    {
+      "kind": "count",
+      "metric": "count"
+    },
+    {
+      "action": "count",
+      "kind": "terminal"
+    }
+  ],
+  "query": "actions where is_error:true | group by tool | count",
+  "total": 2,
+  "unit": "action"
+}
+
+=== Q4: near: semantic probe across providers ===
+$ polylogue find 'near:"flaky async test"'
+{
+  "items": [],
+  "limit": 20,
+  "mode": "search",
+  "next_cursor": null,
+  "next_offset": null,
+  "offset": 0,
+  "origin": null,
+  "query": "near:\"flaky async test\"",
+  "retrieval_lane": "dialogue",
+  "total": 0
+}
+
+=== Q5: time-scoped sessions (last 2 years) ===
+$ polylogue find "since:2y"
+mode: list total: 9
+
+=== Q6: query piped into read ===
+$ polylogue find "origin:codex-session" then read --first --view messages
+ Run the command and stop if it fails.
+---
+ {"metadata": {"exit_code": 4}, "output": "ERROR: file or directory not found: tests/missing_test.py"}
+---
+ I hit an error and need the missing test path corrected before continuing.
+---
+
+=== --explain demonstration (Q1) ===
+$ polylogue --explain find "sessions where seq(action:shell -> action:shell)"
+{
+  "entry": "boolean",
+  "predicate": {
+    "actions": [
+      "shell",
+      "shell"
+    ],
+    "kind": "sequence",
+    "steps": [
+      {
+        "field": "action",
+        "field_ref": {
+          "name": "action",
+          "scope": "unit",
+          "source_name": "action",
+          "unit": "action"
+        },
+        "kind": "field",
+        "op": "=",
+        "values": [
+          "shell"
+        ]
+      },
+      {
+        "field": "action",
+        "field_ref": {
+          "name": "action",
+          "scope": "unit",
+          "source_name": "action",
+          "unit": "action"
+        },
+        "kind": "field",
+        "op": "=",
+        "values": [
+          "shell"
+        ]
+      }
+    ],
+    "unit": "action"
+  }
+}

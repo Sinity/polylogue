@@ -7,9 +7,11 @@
     "without_proof_fields": [],
     "without_caveat_fields": [],
     "unsummarized_demos": [
+      "_packet-contract-stub",
       "attachment-acquisition-census",
       "chatlog-exports",
       "cli-surface-audit",
+      "d4-behavioral-archaeology",
       "degraded-archive-proof",
       "query-runtime-projections",
       "temporal-archive-aggregates",
