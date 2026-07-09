@@ -629,6 +629,7 @@ Usage: polylogue ops reset [OPTIONS]
   Identity-preserving reset:
     --session ID  Tombstone a specific session (preserves user metadata)
     --source PATH      Tombstone all sessions from a source path
+    --dry-run     Preview exact target rows before any tombstone write
 
 Options:
   --index              Delete only the rebuildable index tier
@@ -646,6 +647,12 @@ Options:
   -y, --yes            Skip confirmation prompt
   --session TEXT       Tombstone a specific session by ID
   --source PATH        Tombstone all sessions from a source path
+  --dry-run            Preview --session/--source identity-reset targets
+                       without mutating anything
+  --json               Shortcut for --format json (applies to
+                       --session/--source).
+  --format [json]      Output format for --session/--source identity resets.
+                       JSON emits a MutationResultPayload.
   --help               Show this message and exit.
 ```
 

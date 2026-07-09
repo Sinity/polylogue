@@ -27,6 +27,7 @@ from polylogue.paths import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
+from polylogue.surfaces.payloads import MutationResultPayload, MutationStatus
 
 # Durable acquired source evidence. Deleting it means future rebuilds can only
 # recover rows whose original source files still exist.
@@ -172,7 +173,11 @@ def _resolve_archive_session_ids(tokens: list[str]) -> list[str]:
                 (f"{token}%",),
             ).fetchall()
             if not rows:
-                resolved.append(token)
+                # No match: the archive tier exists but this token does not
+                # name a real session (typo/nonexistent ref, #jnj.5). Drop it
+                # rather than passing the raw token through as a valid
+                # target -- a typo must resolve to zero targets, not
+                # silently tombstone a bogus id.
                 continue
             if len(rows) > 1:
                 raise click.ClickException(f"session id prefix {token!r} is ambiguous")
@@ -214,11 +219,43 @@ def _suppress_archive_sessions(session_ids: list[str], *, reason: str) -> int:
         conn.close()
 
 
-def _tombstone_archive_sessions(session_ids: list[str], *, reason: str) -> tuple[int, int]:
-    resolved = _resolve_archive_session_ids(session_ids)
-    suppressed = _suppress_archive_sessions(resolved, reason=reason)
-    deleted = _delete_archive_sessions(resolved)
-    return suppressed, deleted
+def _identity_reset_targets(*, conv_id: str | None, source_path: Path | None) -> tuple[list[str], str]:
+    """Resolve the exact archive session ids targeted by an identity reset.
+
+    Resolution happens once, up front, so the dry-run preview and the real
+    mutation act on the identical id set (mirrors the ``delete`` verb's
+    preview/mutate consistency fix, #1873). A ref that matches nothing
+    (typo/nonexistent) resolves to an empty list -- see
+    ``_resolve_archive_session_ids`` -- rather than being treated as a
+    literal target.
+    """
+    if conv_id:
+        return _resolve_archive_session_ids([conv_id]), f"session {conv_id!r}"
+    assert source_path is not None
+    return _archive_session_ids_from_source(source_path), f"source {source_path}"
+
+
+def _emit_identity_reset_result(
+    env: AppEnv,
+    *,
+    status: MutationStatus,
+    session_ids: list[str],
+    affected_count: int,
+    output_format: str | None,
+    plain_message: str,
+) -> None:
+    if output_format == "json":
+        click.echo(
+            MutationResultPayload(
+                status=status,
+                operation="reset",
+                session_count=len(session_ids),
+                affected_count=affected_count,
+                session_ids=tuple(session_ids),
+            ).to_json(exclude_none=True)
+        )
+        return
+    env.ui.console.print(plain_message)
 
 
 def _archive_session_ids_from_source(source_path: Path) -> list[str]:
@@ -277,6 +314,25 @@ def _archive_session_ids_from_source(source_path: Path) -> list[str]:
     default=None,
     help="Tombstone all sessions from a source path",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Preview --session/--source identity-reset targets without mutating anything",
+)
+@click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json (applies to --session/--source).",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["json"]),
+    default=None,
+    help="Output format for --session/--source identity resets. JSON emits a MutationResultPayload.",
+)
 @click.pass_obj
 def reset_command(
     env: AppEnv,
@@ -292,6 +348,8 @@ def reset_command(
     yes: bool,
     conv_id: str | None,
     source_path: Path | None,
+    dry_run: bool,
+    output_format: str | None,
 ) -> None:
     """Reset database, blob store, assets, cache, or auth state.
 
@@ -302,39 +360,87 @@ def reset_command(
     Identity-preserving reset:
       --session ID  Tombstone a specific session (preserves user metadata)
       --source PATH      Tombstone all sessions from a source path
+      --dry-run     Preview exact target rows before any tombstone write
     """
     if reset_all:
         database = blob = assets = cache = auth = True
 
-    # Identity-preserving soft-delete paths. Archive rows are
-    # rebuildable and user suppressions as the durable tombstone.
-    if conv_id:
-        if not yes and not click.confirm(
-            f"Tombstone session {conv_id}? This suppresses it and deletes its (rebuildable) archive rows"
-        ):
-            env.ui.console.print("Aborted.")
-            return
-        suppressed, deleted = _tombstone_archive_sessions([conv_id], reason="reset --session")
-        env.ui.console.print(
-            f"Tombstoned session {conv_id}: {suppressed} suppression(s), {deleted} archive row(s) deleted."
-        )
-        return
+    if dry_run and not (conv_id or source_path):
+        raise click.UsageError("--dry-run is only supported with --session/--source.")
+    if output_format and not (conv_id or source_path):
+        raise click.UsageError("--format/--json is only supported with --session/--source.")
 
-    if source_path:
-        session_ids = _archive_session_ids_from_source(source_path)
-        if not session_ids:
-            env.ui.console.print(f"No sessions found for source {source_path}.")
+    # Identity-preserving soft-delete paths. Archive rows are rebuildable;
+    # user suppressions are the durable tombstone. Targets are resolved once
+    # up front so the dry-run preview and the real mutation act on the
+    # identical id set (#jnj.5).
+    if conv_id or source_path:
+        session_ids, label = _identity_reset_targets(conv_id=conv_id, source_path=source_path)
+        reason = "reset --session" if conv_id else f"reset --source {source_path}"
+        count = len(session_ids)
+
+        if dry_run:
+            _emit_identity_reset_result(
+                env,
+                status="preview",
+                session_ids=session_ids,
+                affected_count=0,
+                output_format=output_format,
+                plain_message=(
+                    f"Would tombstone {count} session(s) for {label}: "
+                    + (", ".join(session_ids) if session_ids else "(no matching sessions)")
+                ),
+            )
             return
-        if not yes and not click.confirm(
-            f"Tombstone {len(session_ids)} session(s) from {source_path}? "
-            "This suppresses them and deletes their (rebuildable) archive rows"
-        ):
-            env.ui.console.print("Aborted.")
+
+        if count == 0:
+            _emit_identity_reset_result(
+                env,
+                status="ok",
+                session_ids=[],
+                affected_count=0,
+                output_format=output_format,
+                plain_message=f"No sessions found for {label}.",
+            )
             return
-        suppressed, deleted = _tombstone_archive_sessions(session_ids, reason=f"reset --source {source_path}")
-        env.ui.console.print(
-            f"Tombstoned {len(session_ids)} session(s) from {source_path}: "
-            f"{suppressed} suppression(s), {deleted} archive row(s) deleted."
+
+        if not yes:
+            if output_format == "json" or env.ui.plain:
+                _emit_identity_reset_result(
+                    env,
+                    status="aborted",
+                    session_ids=session_ids,
+                    affected_count=0,
+                    output_format=output_format,
+                    plain_message="Use --yes to confirm deletion.",
+                )
+                return
+            if not env.ui.confirm(
+                f"Tombstone {count} session(s) for {label}? "
+                "This suppresses them and deletes their (rebuildable) archive rows",
+                default=False,
+            ):
+                env.ui.console.print("Aborted.")
+                return
+
+        suppressed = _suppress_archive_sessions(session_ids, reason=reason)
+        deleted = _delete_archive_sessions(session_ids)
+        if conv_id:
+            plain_message = (
+                f"Tombstoned session {conv_id}: {suppressed} suppression(s), {deleted} archive row(s) deleted."
+            )
+        else:
+            plain_message = (
+                f"Tombstoned {count} session(s) from {source_path}: "
+                f"{suppressed} suppression(s), {deleted} archive row(s) deleted."
+            )
+        _emit_identity_reset_result(
+            env,
+            status="ok",
+            session_ids=session_ids,
+            affected_count=suppressed,
+            output_format=output_format,
+            plain_message=plain_message,
         )
         return
 

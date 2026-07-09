@@ -120,7 +120,8 @@
             "workspace.delete",
             "correction.save",
             "correction.delete",
-            "correction.clear"
+            "correction.clear",
+            "reset"
           ],
           "type": "string"
         },

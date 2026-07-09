@@ -433,6 +433,115 @@ class TestResetCommandDeletion:
             )
 
 
+class TestResetIdentityMutationContract:
+    """Regression tests for polylogue-jnj.5.
+
+    Identity resets (--session/--source) must route through the same
+    mutation contract as other destructive ops: a dry-run preview of the
+    exact target rows before any tombstone write, no mutation without
+    --yes, and a stable JSON envelope for both.
+    """
+
+    def test_nonexistent_session_ref_mutates_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A typo'd/nonexistent session ref must resolve to zero targets, not a literal tombstone."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="real-one")
+
+        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(
+                cli, ["ops", "reset", "--session", "codex-session:totally-nonexistent-typo", "--yes"]
+            )
+
+        assert result.exit_code == 0
+        assert "No sessions found" in result.output
+        # No mutation happened at all -- user.db was never even created.
+        assert not (archive_root / "user.db").exists()
+
+    def test_session_dry_run_previews_without_mutating(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """--dry-run prints the resolved target and performs no mutation."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="preview-only")
+
+        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["ops", "reset", "--session", session_id, "--dry-run"])
+
+        assert result.exit_code == 0
+        assert session_id in result.output
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
+        assert not (archive_root / "user.db").exists()
+
+    def test_session_dry_run_json_envelope(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """--dry-run --json emits a stable MutationResultPayload preview."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="json-preview")
+
+        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["ops", "reset", "--session", session_id, "--dry-run", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["status"] == "preview"
+        assert payload["operation"] == "reset"
+        assert payload["session_count"] == 1
+        assert payload["affected_count"] == 0
+        assert payload["session_ids"] == [session_id]
+
+    def test_session_without_yes_or_dry_run_aborts_in_plain_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No mutation happens without --yes, even outside JSON mode."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="no-yes")
+
+        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["ops", "reset", "--session", session_id])
+
+        assert result.exit_code == 0
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
+        assert not (archive_root / "user.db").exists()
+
+    def test_session_yes_json_envelope_matches_mutation(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """--yes --json emits a stable envelope for the real mutation, matching dry-run's shape."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="json-mutate")
+
+        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["ops", "reset", "--session", session_id, "--yes", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["status"] == "ok"
+        assert payload["operation"] == "reset"
+        assert payload["session_count"] == 1
+        assert payload["affected_count"] == 1
+        assert payload["session_ids"] == [session_id]
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            row = conn.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'suppression'").fetchone()
+        assert row[0] == 1
+
+
 class TestResetConfirmation:
     """Tests for reset confirmation flow."""
 
