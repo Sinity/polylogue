@@ -5406,6 +5406,18 @@ class TestCLIRootRequestWiring:
         assert quoted.repo_names == split.repo_names == ("polylogue",)
         assert quoted.origins == split.origins == ("claude-code-session",)
 
+    def test_colon_containing_phrase_stays_literal_text(self) -> None:
+        """Regression for the zrdp fix's own review (#2626): a shell-quoted
+        phrase containing an unregistered colon-word (a URL, a log label)
+        must stay literal FTS text, not get parsed as an unknown DSL field.
+        """
+        from polylogue.cli.root_request import RootModeRequest
+
+        request = RootModeRequest(params={}, query_terms=("http://host failed",))
+        spec = request.query_spec()
+        assert any("http://host failed" in t for t in spec.query_terms)
+        assert not spec.repo_names
+
     def test_flags_and_expression_merged(self) -> None:
         from polylogue.cli.root_request import RootModeRequest
 

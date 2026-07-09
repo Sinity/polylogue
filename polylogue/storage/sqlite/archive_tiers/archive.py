@@ -2401,13 +2401,35 @@ class ArchiveStore:
             # Suffix fallback: a bare native id (e.g. the UUID that appears as
             # the session's source filename, ``1944721d-...``), full or a
             # prefix of it, resolves to the stored ``<origin>:<native_id>``.
-            # The trailing ``%`` allows a truncated prefix to match (#7q16);
-            # the leading ``:`` anchors the match to right after the origin
-            # separator so it can't match mid-native-id. Provider native ids
-            # are globally unique, so a single match is unambiguous; multiple
-            # matches raise just like the prefix path rather than guessing.
+            # Try the EXACT native id first (no trailing ``%``): in an
+            # archive with sibling native ids where one is a prefix of
+            # another (``abc`` and ``abcd``), an exact lookup for ``abc``
+            # must still return only the ``abc`` row, not raise ambiguous
+            # just because ``abcd`` also matches the widened prefix pattern
+            # below (#2626 review). Only fall through to the prefix-widened
+            # (trailing ``%``) match -- which allows a truncated prefix to
+            # resolve, #7q16 -- when the exact lookup finds nothing. The
+            # leading ``:`` anchors both patterns to right after the origin
+            # separator so neither can match mid-native-id. Provider native
+            # ids are globally unique, so a single match is unambiguous;
+            # multiple matches raise just like the prefix path rather than
+            # guessing.
             if ":" not in token:
                 like_token = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                exact_suffix_rows = self._conn.execute(
+                    """
+                    SELECT session_id
+                    FROM sessions
+                    WHERE session_id LIKE '%:' || ? ESCAPE '\\'
+                    ORDER BY session_id
+                    LIMIT 2
+                    """,
+                    (like_token,),
+                ).fetchall()
+                if len(exact_suffix_rows) == 1:
+                    return str(exact_suffix_rows[0]["session_id"])
+                if len(exact_suffix_rows) > 1:
+                    raise ValueError(f"session id suffix {token!r} is ambiguous")
                 suffix_rows = self._conn.execute(
                     """
                     SELECT session_id

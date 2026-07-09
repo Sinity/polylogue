@@ -729,6 +729,54 @@ def test_archive_tiers_archive_facade_resolves_exact_and_prefix_session_ids(tmp_
             facade.resolve_session_id("codex-resolve-1-nonexistent-suffix")
 
 
+def test_archive_tiers_archive_facade_exact_bare_native_id_not_shadowed_by_prefix_sibling(
+    tmp_path: Path,
+) -> None:
+    """Regression for the #7q16 fix's own review (#2626).
+
+    In an archive containing native ids ``dup`` and ``dup-extra`` (one a
+    prefix of the other), resolving the *exact* bare native id ``dup`` must
+    return only that session, not raise ambiguous just because the widened
+    prefix pattern that supports truncated-prefix lookups also matches the
+    sibling.
+    """
+    short = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="dup",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="short")],
+            )
+        ],
+    )
+    long = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="dup-extra",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="long")],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        short_id = facade.write_parsed(short)
+        long_id = facade.write_parsed(long)
+
+    with ArchiveStore.open_existing(root) as facade:
+        assert facade.resolve_session_id("dup") == short_id
+        assert facade.resolve_session_id("dup-extra") == long_id
+        # A genuine shared prefix (of BOTH native ids, unlike "dup" itself,
+        # which is the exact/full id of one and merely a prefix of the
+        # other) is still ambiguous.
+        with pytest.raises(ValueError, match="ambiguous"):
+            facade.resolve_session_id("du")
+
+
 def test_archive_tiers_archive_facade_filters_since_session_scope(tmp_path: Path) -> None:
     anchor = ParsedSession(
         source_name=Provider.CODEX,
