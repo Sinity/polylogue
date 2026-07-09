@@ -140,7 +140,7 @@ coverage_gaps:
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
-    issue: 590
+    bead: polylogue-9e5.20
     next_evidence: devtools lab lanes --list
   - id: test-quality.mock-depth
     dimension: mock_depth
@@ -149,7 +149,7 @@ coverage_gaps:
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
-    issue: 590
+    bead: polylogue-9e5.21
     next_evidence: devtools lab lanes --list
   - id: test-quality.fuzz-ci
     dimension: fuzz
@@ -158,7 +158,7 @@ coverage_gaps:
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
-    issue: 590
+    bead: polylogue-9e5.18
     next_evidence: devtools lab lanes --list
   - id: test-quality.per-module-coverage
     dimension: direct_coverage
@@ -167,5 +167,5 @@ coverage_gaps:
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
-    issue: 590
+    bead: polylogue-9e5.22
     next_evidence: devtools verify coverage
