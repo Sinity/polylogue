@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 25
+INDEX_SCHEMA_VERSION = 26
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -336,7 +336,79 @@ END;
 
 {FTS_FRESHNESS_STATE_DDL}
 
+-- xnkf: a plain equality join on tool_id fans out when a provider re-emits
+-- the same tool_id on distinct messages (verified live: identical toolu_
+-- ids as 2 tool_use + 2 tool_result blocks at different positions, NOT
+-- variants). Rank each side by transcript order (message position, THEN
+-- variant_index, then block position -- messages are only unique on
+-- (position, variant_index), so omitting variant_index would leave ties
+-- between regenerated variant messages, letting SQLite assign ranks
+-- independently/arbitrarily across the two CTEs and re-introduce
+-- cross-pairing) within (session_id, tool_id), and pair same-rank rows --
+-- the Nth use in the transcript gets the Nth result, never a cross
+-- product. Uses with no tool_id (NULL or '') are never rank-paired -- SQL
+-- equality never matches NULL, so a NULL tool_id use was already always
+-- unpaired under the old plain-equality join; the second branch below
+-- preserves that (still surfaced, just with NULL result columns) while the
+-- empty-string guard stops '' specifically from cross-joining as if it
+-- were a real shared id (parsers currently only ever emit NULL, not '').
 CREATE VIEW IF NOT EXISTS actions AS
+WITH ranked_uses AS (
+    SELECT
+        u.session_id,
+        u.message_id,
+        u.block_id AS tool_use_block_id,
+        u.tool_name,
+        u.semantic_type,
+        u.tool_command,
+        u.tool_path,
+        u.tool_input,
+        u.tool_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY u.session_id, u.tool_id
+            ORDER BY um.position, um.variant_index, u.position
+        ) AS use_rank
+    FROM blocks u
+    JOIN messages um ON um.message_id = u.message_id
+    WHERE u.block_type = 'tool_use' AND u.tool_id IS NOT NULL AND u.tool_id != ''
+),
+ranked_results AS (
+    SELECT
+        r.session_id,
+        r.tool_id,
+        r.block_id AS tool_result_block_id,
+        r.text AS output_text,
+        r.tool_result_is_error AS is_error,
+        r.tool_result_exit_code AS exit_code,
+        ROW_NUMBER() OVER (
+            PARTITION BY r.session_id, r.tool_id
+            ORDER BY rm.position, rm.variant_index, r.position
+        ) AS result_rank
+    FROM blocks r
+    JOIN messages rm ON rm.message_id = r.message_id
+    WHERE r.block_type = 'tool_result' AND r.tool_id IS NOT NULL AND r.tool_id != ''
+)
+SELECT
+    ranked_uses.session_id,
+    ranked_uses.message_id,
+    ranked_uses.tool_use_block_id,
+    ranked_uses.tool_name,
+    ranked_uses.semantic_type,
+    ranked_uses.tool_command,
+    ranked_uses.tool_path,
+    ranked_uses.tool_input,
+    ranked_results.output_text,
+    ranked_results.is_error,
+    ranked_results.exit_code,
+    ranked_results.tool_result_block_id
+FROM ranked_uses
+LEFT JOIN ranked_results
+    ON ranked_results.session_id = ranked_uses.session_id
+   AND ranked_results.tool_id = ranked_uses.tool_id
+   AND ranked_results.result_rank = ranked_uses.use_rank
+
+UNION ALL
+
 SELECT
     u.session_id,
     u.message_id,
@@ -346,16 +418,12 @@ SELECT
     u.tool_command,
     u.tool_path,
     u.tool_input,
-    r.text AS output_text,
-    r.tool_result_is_error AS is_error,
-    r.tool_result_exit_code AS exit_code,
-    r.block_id AS tool_result_block_id
+    NULL AS output_text,
+    NULL AS is_error,
+    NULL AS exit_code,
+    NULL AS tool_result_block_id
 FROM blocks u
-LEFT JOIN blocks r
-    ON r.tool_id = u.tool_id
-   AND r.session_id = u.session_id
-   AND r.block_type = 'tool_result'
-WHERE u.block_type = 'tool_use';
+WHERE u.block_type = 'tool_use' AND (u.tool_id IS NULL OR u.tool_id = '');
 
 CREATE TABLE IF NOT EXISTS session_events (
     event_id          TEXT GENERATED ALWAYS AS (session_id || ':' || position) STORED UNIQUE,
