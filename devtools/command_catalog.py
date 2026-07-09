@@ -12,6 +12,7 @@ CONTROL_PLANE = "devtools"
 VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab graph",
     "lab lanes",
+    "lab policy demo-packet-registry",
     "lab policy insight-honesty",
     "lab policy schema-versioning",
     "lab provider completeness",
@@ -723,6 +724,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "blue-green replaced from source evidence."
         ),
         examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
+    ),
+    CommandSpec(
+        "lab policy demo-packet-registry",
+        "verification lab",
+        "Verify every registered 212 demo has a conforming Demo Finding Packet.",
+        "devtools.verify_demo_packet_registry",
+        use_when=(
+            "Enforce the 212 portfolio contract (polylogue-212.7): every demo prompt in "
+            ".agent/demos/registry.json must have a packet directory carrying PROMPT.md, "
+            "finding.yaml (five-part provenance stanza), report.md (fixed section order), "
+            "evidence.ndjson, queries.ndjson, checks.json, and run.log. Catches a missing "
+            "or malformed packet before it silently drops out of the demo shelf."
+        ),
+        examples=("devtools lab policy demo-packet-registry", "devtools lab policy demo-packet-registry --json"),
     ),
     CommandSpec(
         "lab policy insight-honesty",

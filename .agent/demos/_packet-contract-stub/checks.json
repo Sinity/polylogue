@@ -1,0 +1,5 @@
+{
+  "pass": true,
+  "unsupported_claims": [],
+  "coverage_notes": "fixture packet for the demo-packet-registry contract; not a real analytical demo"
+}

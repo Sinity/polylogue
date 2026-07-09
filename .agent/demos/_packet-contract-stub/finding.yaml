@@ -1,0 +1,6 @@
+archive_cursor: seeded-corpus-seed-1843
+measure_version: devtools.demo_packet-v1
+commit_sha: ffba3ec0c
+sample_frame_predicate: "all sessions in the seeded demo corpus (seed 1843)"
+run_date: "2026-07-08"
+claim: "the seeded demo corpus has a fixed, reproducible session count"
