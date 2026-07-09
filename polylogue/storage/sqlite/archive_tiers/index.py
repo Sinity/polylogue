@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 27
+INDEX_SCHEMA_VERSION = 28
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -970,6 +970,62 @@ ON session_profiles(first_message_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_session_profiles_canonical_date
 ON session_profiles(canonical_session_date DESC);
+
+-- 1vpm.1: a delegation is a parent-dispatched subagent edge -- a
+-- session_links row with link_type='subagent' that ALSO has a parent-side
+-- Task dispatch action (an `actions` row at the branch point, semantic_type
+-- 'subagent'). Not every subagent link is a delegation: Codex async
+-- subagents/sidechains with no parent Task action have no dispatch action to
+-- join, so they surface with result_status='unknown' and stay OUT of any
+-- ROI/yield denominator built on top of this view (never guessed). 100%
+-- derivable from existing tables -- VIEW, not a table, matching the `actions`
+-- precedent (derived tier, no convergence stage needed).
+CREATE VIEW IF NOT EXISTS delegations AS
+SELECT
+    l.src_session_id                       AS parent_session_id,
+    l.resolved_dst_session_id              AS child_session_id,
+    l.branch_point_message_id              AS dispatch_message_id,
+    l.confidence                           AS link_confidence,
+    l.method                               AS link_method,
+    l.inheritance                          AS inheritance,
+    pp.primary_model_name                  AS orchestrator_model,
+    pp.primary_model_family                AS orchestrator_model_family,
+    p.origin                               AS orchestrator_origin,
+    -- repo_id intentionally omitted: session_profiles has no single-repo
+    -- column (a session can touch multiple repos via session_repos); repo
+    -- pushdown for `delegations where session.repo:X` composes through the
+    -- generic query-unit session join, not a raw column here.
+    pp.terminal_state                      AS parent_terminal_state,
+    cp.primary_model_name                  AS subagent_model,
+    cp.primary_model_family                AS subagent_model_family,
+    cp.total_cost_usd                      AS child_cost_usd,
+    cp.cost_is_estimated                   AS child_cost_is_estimated,
+    (COALESCE(cp.total_input_tokens, 0) + COALESCE(cp.total_output_tokens, 0)
+       + COALESCE(cp.total_cache_read_tokens, 0) + COALESCE(cp.total_cache_write_tokens, 0)) AS child_tokens,
+    cp.wall_duration_ms                    AS child_wall_ms,
+    cp.terminal_state                      AS child_terminal_state,
+    a.tool_use_block_id                    AS instruction_block_id,
+    a.tool_input                           AS instruction_payload,
+    a.tool_result_block_id                 AS artifact_block_id,
+    a.output_text                          AS artifact_text,
+    a.is_error                             AS result_is_error,
+    a.exit_code                            AS result_exit_code,
+    CASE
+        WHEN a.tool_use_block_id IS NULL THEN 'unknown'
+        WHEN a.is_error IS NULL          THEN 'unknown'
+        WHEN a.is_error = 1              THEN 'error'
+        ELSE 'ok'
+    END                                    AS result_status
+FROM session_links l
+JOIN sessions p ON p.session_id = l.src_session_id
+LEFT JOIN session_profiles pp ON pp.session_id = l.src_session_id
+LEFT JOIN session_profiles cp ON cp.session_id = l.resolved_dst_session_id
+LEFT JOIN actions a
+       ON a.session_id = l.src_session_id
+      AND a.message_id = l.branch_point_message_id
+      AND a.semantic_type = 'subagent'
+WHERE l.link_type = 'subagent'
+  AND (l.status IS NULL OR l.status != 'quarantined');
 
 CREATE TABLE IF NOT EXISTS session_tag_rollups (
     tag                          TEXT NOT NULL,
