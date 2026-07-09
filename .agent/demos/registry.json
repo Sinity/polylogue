@@ -1,0 +1,9 @@
+[
+  {
+    "slug": "packet-contract-stub",
+    "prompt_path": ".agent/demos/_packet-contract-stub/PROMPT.md",
+    "packet_dir": ".agent/demos/_packet-contract-stub",
+    "mode": "private",
+    "required_primitives": ["polylogue demo seed", "polylogue find"]
+  }
+]
