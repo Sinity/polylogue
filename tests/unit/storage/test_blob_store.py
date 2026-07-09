@@ -414,6 +414,42 @@ def test_blob_path_rejects_uppercase(tmp_path: Path) -> None:
         blob.blob_path("AABBCCDDEEFF0011223344556677889900AABBCCDD")
 
 
+def test_blob_path_rejects_truncated_hash(tmp_path: Path) -> None:
+    """jsy: a 63-char (one short of a real SHA-256 digest) hash must be
+    rejected, not silently accepted as if length didn't matter."""
+    blob = BlobStore(tmp_path)
+    import pytest
+
+    with pytest.raises(ValueError, match="invalid blob hash"):
+        blob.blob_path("a" * 63)
+
+
+def test_blob_path_rejects_over_long_hash(tmp_path: Path) -> None:
+    """jsy: a 65-char hash (one over) must be rejected, not truncated/accepted."""
+    blob = BlobStore(tmp_path)
+    import pytest
+
+    with pytest.raises(ValueError, match="invalid blob hash"):
+        blob.blob_path("a" * 65)
+
+
+def test_blob_path_rejects_trailing_newline(tmp_path: Path) -> None:
+    """jsy: the former `^[0-9a-f]+$` pattern (via .match, not .fullmatch)
+    accepted a trailing newline since bare `$` matches just before one --
+    fullmatch on a fixed-length pattern must reject it."""
+    blob = BlobStore(tmp_path)
+    import pytest
+
+    with pytest.raises(ValueError, match="invalid blob hash"):
+        blob.blob_path("a" * 64 + "\n")
+
+
+def test_blob_path_accepts_exactly_64_hex_chars(tmp_path: Path) -> None:
+    blob = BlobStore(tmp_path)
+    path = blob.blob_path("a" * 64)
+    assert path == tmp_path / "aa" / ("a" * 62)
+
+
 # ---------------------------------------------------------------------------
 # Content-addressing invariant
 # ---------------------------------------------------------------------------
