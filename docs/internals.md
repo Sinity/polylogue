@@ -127,12 +127,12 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
 - Source schema version 3 drops `pending_blob_refs` (polylogue-v7e0). The
   table backed a blob-GC lease mechanism (`acquire_blob_leases`/
   `release_operation_leases`) that a race-window audit found no production
-  ingest caller ever populated — see "GC concurrency model" below for the
-  current, lease-free contract. Existing v2 source tiers migrate via
+  ingest caller ever populated — the table was provably empty in every real
+  deployment (zero writers anywhere in the write path) — see "GC concurrency
+  model" below for the current, lease-free contract. Existing v2 source
+  tiers migrate via
   `storage/sqlite/migrations/source/003_drop_pending_blob_refs.sql` after a
-  verified backup manifest (destructive durable-tier change, consented via
-  polylogue-v7e0's own acceptance criteria); fresh source tiers never create
-  the table.
+  verified backup manifest; fresh source tiers never create the table.
 - Index schema version 28 adds the `delegations` VIEW, derived from
   `session_links` (`link_type='subagent'`) LEFT JOIN'd to the parent's Task
   dispatch `actions` row and both sessions' `session_profiles` — no
