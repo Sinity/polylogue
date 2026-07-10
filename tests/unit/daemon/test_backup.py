@@ -184,6 +184,11 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         "user.db",
         "embeddings.db",
     }
+    for artifact in receipt["tier_artifacts"]:
+        fingerprint = artifact["source_fingerprint"]
+        copied_tier = backup_root / artifact["path"]
+        assert fingerprint["sha256"] == hashlib.sha256(copied_tier.read_bytes()).hexdigest()
+        assert fingerprint["size_bytes"] == copied_tier.stat().st_size
     assert receipt["blobs"] == [
         {
             "blob_hash": blob_hash,
@@ -573,4 +578,53 @@ def test_backup_archive_verify_marks_failed_artifact_unhealthy(
     assert result.verified is False
     assert result.error == "bad"
     assert result.output_path is not None
+    assert not (Path(result.output_path) / "verification-receipt.json").exists()
+
+
+def test_backup_verification_removes_stale_receipt_after_failure(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_setup(workspace_env)
+    result = backup_archive(output_dir=tmp_path / "backups", verify=False)
+    assert result.output_path is not None
+    receipt = Path(result.output_path) / "verification-receipt.json"
+    receipt.write_text('{"verdict":"success"}', encoding="utf-8")
+    monkeypatch.setattr(
+        backup_mod,
+        "_verify_archive_file_set_backup",
+        lambda _path: {"ok": False, "error": "forced verification failure"},
+    )
+
+    backup_mod._verify_backup_result(result)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert not receipt.exists()
+
+
+def test_backup_verification_refuses_receipt_when_backup_changes_after_scratch_restore(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_setup(workspace_env)
+    result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=False)
+    assert result.output_path is not None
+    original_verify = backup_mod._verify_archive_file_set_backup
+
+    def verify_then_mutate(path: Path) -> dict[str, object]:
+        verification = original_verify(path)
+        copied_tier = path / "user.db"
+        copied_tier.write_bytes(copied_tier.read_bytes() + b"x")
+        return verification
+
+    monkeypatch.setattr(backup_mod, "_verify_archive_file_set_backup", verify_then_mutate)
+
+    backup_mod._verify_backup_result(result)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert "backup changed after scratch verification" in str(result.error)
     assert not (Path(result.output_path) / "verification-receipt.json").exists()

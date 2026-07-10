@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 
 from polylogue.daemon.backup import BackupProfile, backup_archive
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite import migration_runner
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -494,7 +496,7 @@ def test_failed_backup_verification_cannot_authorize_user_migration(
 @pytest.mark.parametrize(
     ("label", "mutate", "match"),
     [
-        ("manifest", _tamper_manifest, "does not match manifest bytes"),
+        ("manifest", _tamper_manifest, "does not match manifest"),
         ("receipt", _tamper_receipt, "unsupported format"),
         ("backup-tier", _tamper_backup_tier, "tier artifact .* mismatch"),
     ],
@@ -523,6 +525,29 @@ def test_migration_receipt_detects_manifest_receipt_and_backup_db_mutations(
         conn.close()
 
 
+def test_migration_rejects_receipt_transplanted_from_another_verified_backup(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = workspace_env["archive_root"] / "user.db"
+    _create_user_v3(db_path)
+    first_manifest = _verified_backup_manifest(tmp_path / "backup-first", profile="user_overlays")
+    second_manifest = _verified_backup_manifest(tmp_path / "backup-second", profile="user_overlays")
+    shutil.copy2(
+        first_manifest.with_name("verification-receipt.json"), second_manifest.with_name("verification-receipt.json")
+    )
+    _block_migration_sql(monkeypatch)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(MigrationError, match="does not match manifest"):
+            migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=second_manifest)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+    finally:
+        conn.close()
+
+
 def test_migration_receipt_detects_stale_live_tier_bytes(
     workspace_env: dict[str, Path],
     tmp_path: Path,
@@ -540,6 +565,51 @@ def test_migration_receipt_detects_stale_live_tier_bytes(
         with pytest.raises(MigrationError, match="live tier .* mismatch"):
             migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+    finally:
+        conn.close()
+
+
+def test_migration_rejects_live_writes_committed_after_receipt_validation(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = workspace_env["archive_root"] / "user.db"
+    _create_user_v3(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+    manifest = _verified_backup_manifest(tmp_path / "backup-race", profile="user_overlays")
+    original_validate = migration_runner.validate_migration_backup_manifest
+    validation_count = 0
+
+    def validate_then_commit(
+        path: Path,
+        tier: ArchiveTier,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> Path:
+        nonlocal validation_count
+        receipt = original_validate(path, tier, connection=connection)
+        validation_count += 1
+        if validation_count == 1:
+            with sqlite3.connect(db_path) as concurrent_writer:
+                concurrent_writer.execute("CREATE TABLE committed_after_validation (value TEXT)")
+        return receipt
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.migration_runner.validate_migration_backup_manifest",
+        validate_then_commit,
+    )
+    _block_migration_sql(monkeypatch)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(MigrationError, match="changed before the migration lock"):
+            migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'committed_after_validation'"
+        ).fetchone()
     finally:
         conn.close()
 

@@ -5,8 +5,8 @@ Backups copy only the precious tiers plus referenced blobs: source.db, user.db,
 embeddings.db, and blob files. Rebuildable index.db and disposable ops.db are
 omitted by design.
 
-Uses SQLite VACUUM INTO when available (SQLite >= 3.27.0) for a clean,
-defragmented copy. Falls back to a file copy with WAL checkpoint first.
+Each SQLite tier is checkpointed and copied while its write lock is held, so
+the copied bytes and recorded source fingerprint describe the same state.
 """
 
 from __future__ import annotations
@@ -66,26 +66,6 @@ class BackupResult(BaseModel):
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _backup_db_vacuum_into(src: Path, dst: Path) -> None:
-    """Backup using VACUUM INTO (SQLite >= 3.27.0)."""
-    conn = sqlite3.connect(str(src))
-    try:
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.execute("VACUUM INTO ?", (str(dst),))
-    finally:
-        conn.close()
-
-
-def _backup_db_copy(src: Path, dst: Path) -> None:
-    """Backup using file copy after WAL checkpoint."""
-    conn = sqlite3.connect(str(src))
-    try:
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    finally:
-        conn.close()
-    shutil.copy2(src, dst)
 
 
 def _sha256_file(path: Path) -> str:
@@ -236,12 +216,33 @@ def _has_backup_error(warnings: list[str]) -> bool:
     return any("not found" in warning or "not readable" in warning for warning in warnings)
 
 
-def _backup_sqlite(src: Path, dst: Path) -> int:
+def _checkpoint_sqlite_for_snapshot(conn: sqlite3.Connection, path: Path) -> None:
+    row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    if row is None:
+        raise RuntimeError(f"could not checkpoint {path} before backup")
+    busy, log_frames, checkpointed_frames = (int(value) for value in row)
+    if busy or log_frames != checkpointed_frames:
+        raise RuntimeError(f"could not quiesce {path} before backup")
+
+
+def _backup_sqlite(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
+    """Copy a checkpointed tier while excluding concurrent SQLite writers."""
+    conn = sqlite3.connect(str(src), timeout=30.0)
     try:
-        _backup_db_vacuum_into(src, dst)
-    except sqlite3.OperationalError:
-        _backup_db_copy(src, dst)
-    return dst.stat().st_size if dst.exists() else 0
+        conn.execute("PRAGMA busy_timeout = 30000")
+        _checkpoint_sqlite_for_snapshot(conn, src)
+        conn.execute("BEGIN IMMEDIATE")
+        fingerprint = _sqlite_source_fingerprint(src)
+        try:
+            shutil.copy2(src, dst)
+        except Exception:
+            dst.unlink(missing_ok=True)
+            raise
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
+    return dst.stat().st_size, fingerprint
 
 
 def _source_blob_inventory(source_db: Path) -> dict[str, set[str]]:
@@ -482,8 +483,9 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
     with source_exclusion:
         for tier, src in included_tiers.items():
             dst = backup_root / f"{tier}.db"
-            db_size += _backup_sqlite(src, dst)
-            tier_source_fingerprints[f"{tier}.db"] = _sqlite_source_fingerprint(src)
+            copied_size, fingerprint = _backup_sqlite(src, dst)
+            db_size += copied_size
+            tier_source_fingerprints[f"{tier}.db"] = fingerprint
             backed_up_files.append(str(dst))
 
         blob_reference_debt: BlobReferenceDebtReport | None = None
@@ -553,6 +555,7 @@ def _verify_backup_result(result: BackupResult) -> None:
         return
 
     output_path = Path(result.output_path)
+    _remove_verification_receipt(output_path)
     try:
         verification = _verify_archive_file_set_backup(output_path)
     except Exception as exc:
@@ -567,12 +570,16 @@ def _verify_backup_result(result: BackupResult) -> None:
     try:
         receipt_path = _write_successful_verification_receipt(output_path, verification)
     except Exception as exc:
+        _remove_verification_receipt(output_path)
         result.ok = False
         result.verified = False
         result.error = f"backup verification receipt write failed: {exc}"
         result.verification = {**verification, "ok": False, "error": result.error}
         return
-    result.verification = {**verification, "receipt_path": str(receipt_path)}
+    result.verification = {
+        **{key: value for key, value in verification.items() if key != "receipt_evidence"},
+        "receipt_path": str(receipt_path),
+    }
     result.backed_up_files.append(str(receipt_path))
 
 
@@ -600,6 +607,10 @@ def _copy_backup_artifact_to_scratch(source: Path, scratch_root: Path) -> Path:
     restore_root.mkdir()
     shutil.copy2(source, restore_root / source.name)
     return restore_root / source.name
+
+
+def _remove_verification_receipt(backup_root: Path) -> None:
+    (backup_root / _VERIFICATION_RECEIPT_FILE).unlink(missing_ok=True)
 
 
 def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
@@ -661,6 +672,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             and source_blobs_resolved
             and index_attachment_blobs_resolved
         )
+        receipt_evidence = _receipt_evidence(restored) if ok else None
         return {
             "ok": ok,
             "mode": "archive_file_set",
@@ -676,6 +688,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "missing_index_attachment_blob_count": len(missing_index_attachment_blobs),
             "scratch_restore": "temporary",
             "scratch_parent": str(Path(raw_tmp).parent),
+            "receipt_evidence": receipt_evidence,
         }
 
 
@@ -734,11 +747,44 @@ def _receipt_blob_inventory(backup_root: Path, manifest: dict[str, object]) -> t
     return rows, _canonical_json_sha256(rows)
 
 
-def _write_successful_verification_receipt(backup_root: Path, verification: dict[str, object]) -> Path:
+def _inventory_file_evidence(backup_root: Path, manifest: dict[str, object]) -> dict[str, object]:
+    filename = str(manifest.get("blob_inventory_file", "blob-inventory.json"))
+    path = backup_root / filename
+    if not path.exists():
+        return {"path": filename, "present": False, "size_bytes": 0, "sha256": None}
+    return {
+        "path": filename,
+        "present": True,
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256_file(path),
+    }
+
+
+def _receipt_evidence(backup_root: Path) -> dict[str, object]:
     manifest_path = backup_root / "manifest.json"
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes.decode("utf-8"))
     blobs, blob_inventory_root_sha256 = _receipt_blob_inventory(backup_root, manifest)
+    return {
+        "manifest_size_bytes": len(manifest_bytes),
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "included_tiers": _json_str_list(manifest.get("included_tiers")),
+        "tier_artifacts": _receipt_tier_artifacts(backup_root, manifest),
+        "blob_inventory_file": _inventory_file_evidence(backup_root, manifest),
+        "blob_inventory_root_sha256": blob_inventory_root_sha256,
+        "blobs": blobs,
+    }
+
+
+def _write_successful_verification_receipt(backup_root: Path, verification: dict[str, object]) -> Path:
+    manifest_path = backup_root / "manifest.json"
+    verified_evidence = verification.get("receipt_evidence")
+    if not isinstance(verified_evidence, dict):
+        raise RuntimeError("scratch verification did not produce receipt evidence")
+    current_evidence = _receipt_evidence(backup_root)
+    if current_evidence != verified_evidence:
+        raise RuntimeError("backup changed after scratch verification")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     receipt = {
         "format": _VERIFICATION_RECEIPT_FORMAT,
         "verdict": "success",
@@ -746,19 +792,30 @@ def _write_successful_verification_receipt(backup_root: Path, verification: dict
         "mode": "archive_file_set",
         "profile": manifest.get("profile", "rebuildable_cache_exclude"),
         "manifest_path": "manifest.json",
-        "manifest_size_bytes": len(manifest_bytes),
-        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-        "included_tiers": _json_str_list(manifest.get("included_tiers")),
-        "tier_artifacts": _receipt_tier_artifacts(backup_root, manifest),
-        "blob_inventory_file": str(manifest.get("blob_inventory_file", "blob-inventory.json")),
-        "blob_inventory_root_sha256": blob_inventory_root_sha256,
-        "blobs": blobs,
+        **verified_evidence,
         "verification": {
-            key: value for key, value in verification.items() if key not in {"scratch_parent", "scratch_restore"}
+            key: value
+            for key, value in verification.items()
+            if key not in {"scratch_parent", "scratch_restore", "receipt_evidence"}
         },
     }
     receipt_path = backup_root / _VERIFICATION_RECEIPT_FILE
-    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=backup_root,
+        prefix=f".{_VERIFICATION_RECEIPT_FILE}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        json.dump(receipt, handle, indent=2, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary_path = Path(handle.name)
+    try:
+        os.replace(temporary_path, receipt_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return receipt_path
 
 

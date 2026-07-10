@@ -865,6 +865,87 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
         assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
 
 
+def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    user_db = cli_workspace["archive_root"] / "user.db"
+    _create_user_v3(user_db)
+    backup = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "backup",
+            "--output-dir",
+            str(tmp_path / "backup"),
+            "--profile",
+            "user_overlays",
+        ],
+        catch_exceptions=False,
+    )
+    assert backup.exit_code == 0, backup.output
+    backup_line = next(line for line in backup.output.splitlines() if line.startswith("Backup complete: "))
+    backup_root = Path(backup_line.removeprefix("Backup complete: "))
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "user",
+            "--backup-manifest",
+            str(backup_root / "manifest.json"),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "successful backup verification receipt" in json.loads(result.output)["error"]
+    with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+
+
+def test_migrate_tier_cli_rejects_one_byte_tampered_backup_before_user_version_changes(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    user_db = cli_workspace["archive_root"] / "user.db"
+    _create_user_v3(user_db)
+    manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="user_overlays")
+    copied_tier = manifest.with_name("user.db")
+    copied_bytes = bytearray(copied_tier.read_bytes())
+    copied_bytes[-1] ^= 1
+    copied_tier.write_bytes(copied_bytes)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "user",
+            "--backup-manifest",
+            str(manifest),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "tier artifact hash mismatch" in json.loads(result.output)["error"]
+    with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+
+
 def test_migrate_tier_cli_refuses_manifest_missing_target_tier(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
