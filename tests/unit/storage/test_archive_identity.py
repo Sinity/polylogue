@@ -93,3 +93,21 @@ def test_archive_store_writer_route_enforces_identity_preflight(
         ArchiveStore.open_existing(active, read_only=False)
 
     assert (active / "index.db").stat().st_size == 0
+
+
+@pytest.mark.parametrize("missing_side", ["active", "configured"])
+def test_missing_index_cannot_bypass_split_root_preflight(tmp_path: Path, missing_side: str) -> None:
+    configured = tmp_path / "configured"
+    active = tmp_path / "active"
+    _touch_tiers(configured)
+    _touch_tiers(active)
+    for name in ("source.db", "user.db"):
+        (active / name).unlink()
+        (active / name).symlink_to(configured / name)
+    missing_root = active if missing_side == "active" else configured
+    (missing_root / "index.db").unlink()
+
+    with pytest.raises(ArchiveIdentityConflictError):
+        assert_writable_archive_identity(configured_root=configured, active_root=active)
+
+    assert not (missing_root / "index.db").exists()

@@ -98,7 +98,10 @@ class ArchiveIdentity:
             other.tier("user")
         )
         distinct_indexes = not self.tier("index").same_file(other.tier("index"))
-        return shared_durable and distinct_indexes and self.tier("index").exists and other.tier("index").exists
+        # A missing index is not an exemption: writable bootstrap would create
+        # it immediately after preflight and produce the second generation we
+        # are trying to prevent.
+        return shared_durable and distinct_indexes
 
     def as_dict(self, *, unit: str | None = None) -> dict[str, object]:
         return {
