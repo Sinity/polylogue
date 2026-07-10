@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.coordination.envelope import CommandResult, build_coordination_envelope
+from polylogue.coordination.envelope import CommandResult, _session_ref, build_coordination_envelope
 
 
 def _seed_coordination_archive(index: Path) -> None:
@@ -518,10 +518,92 @@ def test_caller_identity_prefers_session_environment_and_resolves_owner_process(
     assert payload.self.agent_kind == "codex"
     assert payload.self.logical_id == "codex:thread-stable"
     assert payload.self.session_ref == "thread-stable"
-    assert payload.self.owner_pid == 100
+    assert payload.self.owner_pid == 101
     assert payload.self.invocation_pid == 303
     assert payload.self.provenance.source == "caller-environment"
     assert payload.peers == ()
+
+
+def test_nested_same_provider_caller_uses_inner_owner_and_keeps_outer_peer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    index.touch()
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.os.getpid", lambda: 400)
+    monkeypatch.setenv("CODEX_THREAD_ID", "inner-thread")
+    rows = "\n".join(
+        (
+            "100 1 codex 0::/user.slice/outer.scope codex --session-id outer-thread",
+            "200 100 codex 0::/user.slice/inner.scope codex --session-id inner-thread",
+            "300 200 sh 0::/user.slice/inner.scope sh -c tool-host",
+            "400 300 polylogue 0::/user.slice/inner.scope polylogue agents status --json",
+        )
+    )
+
+    payload = build_coordination_envelope(
+        cwd=root,
+        runner=FakeRunner(root, beads_rows=None, process_rows=rows),
+        detail=True,
+    )
+
+    assert payload.self.owner_pid == 200
+    assert payload.self.logical_id == "codex:inner-thread"
+    assert [(peer.pid, peer.logical_id) for peer in payload.peers] == [(100, "codex:outer-thread")]
+    assert not ({200, 300, 400} & set(payload.peers[0].component_pids))
+
+
+def test_canonical_session_ref_joins_peer_logical_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    index.touch()
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.os.getpid", lambda: 400)
+    monkeypatch.setenv("POLYLOGUE_SESSION_REF", "codex-session:abc")
+    rows = "\n".join(
+        (
+            "200 1 codex 0::/user.slice/self.scope codex --profile lean",
+            "300 200 sh 0::/user.slice/self.scope sh -c tool-host",
+            "400 300 polylogue 0::/user.slice/self.scope polylogue agents status --json",
+            "500 1 codex 0::/user.slice/peer.scope codex --session-id abc",
+        )
+    )
+
+    payload = build_coordination_envelope(
+        cwd=root,
+        runner=FakeRunner(root, beads_rows=None, process_rows=rows),
+        detail=True,
+    )
+
+    assert payload.self.session_ref == "codex-session:abc"
+    assert payload.self.logical_id == "codex:abc"
+    assert payload.peers[0].logical_id == payload.self.logical_id
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    (
+        ("claude --resume --model sonnet", None),
+        ("claude --resume session-123 --model sonnet", "session-123"),
+        ("codex --session-id thread-123", "thread-123"),
+        ("codex --thread-id=thread-456", "thread-456"),
+    ),
+)
+def test_session_ref_parses_structured_option_values(command: str, expected: str | None) -> None:
+    assert _session_ref(command) == expected
 
 
 def test_caller_identity_falls_back_to_agent_ancestor_without_guessing_invocation(
@@ -679,6 +761,47 @@ def test_compact_projection_keeps_active_archive_writers_before_other_resources(
     assert [episode.pid for episode in compact.resource_episodes[:2]] == [901, 902]
     assert compact.archive is not None
     assert [episode.pid for episode in compact.archive.daemon_processes] == [901, 902]
+
+
+def test_compact_projection_bounds_adversarial_beads_fields_without_erasing_control_facts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".beads").mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    index.touch()
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    enormous_gate_title = "gate-" + "x" * 20_000
+    enormous_holder = "holder-" + "y" * 20_000
+    runner = FakeRunner(
+        root,
+        beads_rows=[{"id": "polylogue-8k91", "status": "in_progress"}],
+        gates=[{"id": "gate-1", "title": enormous_gate_title, "status": "open"}],
+        merge_slot={"id": "merge-slot", "available": False, "holder": enormous_holder},
+    )
+
+    compact = build_coordination_envelope(cwd=root, runner=runner)
+
+    compact_bytes = len(compact.to_json(exclude_none=True).encode())
+    assert compact.projection.byte_budget is not None
+    assert compact_bytes <= compact.projection.byte_budget
+    assert compact.beads is not None
+    assert compact.beads.gates
+    assert compact.beads.gates[0].title is not None
+    assert len(compact.beads.gates[0].title) < len(enormous_gate_title)
+    assert compact.beads.merge_slot is not None
+    assert compact.beads.merge_slot.holder is not None
+    assert len(compact.beads.merge_slot.holder) < len(enormous_holder)
+    assert compact.projection.omitted_counts["beads_gate_text_chars"] > 0
+    assert compact.projection.omitted_counts["beads_merge_text_chars"] > 0
+    assert compact.resource_episodes[0].kind == "daemon"
+    assert compact.archive is not None
+    assert compact.archive.daemon_processes
 
 
 def test_handoff_projection_uses_supported_live_sources_or_empty_list(
