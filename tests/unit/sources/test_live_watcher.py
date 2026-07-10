@@ -33,6 +33,7 @@ from polylogue.sources.live.batch import (
 )
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
+from polylogue.sources.sqlite_snapshot import sqlite_source_revision
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from tests.infra.frozen_clock import FrozenClock
@@ -929,6 +930,76 @@ def test_full_cursor_uses_batch_raw_fingerprint_without_db_lookup(
     assert bytes_read == f.stat().st_size
     assert record is not None
     assert record.content_fingerprint == "raw-sha256"
+
+
+def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path: Path) -> None:
+    root = tmp_path / "hermes"
+    root.mkdir()
+    state_db = root / "state.db"
+    writer = sqlite3.connect(state_db)
+    try:
+        writer.execute("CREATE TABLE turns(id INTEGER PRIMARY KEY, text TEXT)")
+        writer.commit()
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+        watcher, _full_ingest = _make_watcher(
+            tmp_path,
+            root,
+            sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
+        )
+        initial_revision = sqlite_source_revision(state_db)
+        stat = state_db.stat()
+        watcher._cursor.set(
+            state_db,
+            stat.st_size,
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+            content_fingerprint="snapshot-hash",
+            tail_hash=initial_revision,
+            st_dev=stat.st_dev,
+            st_ino=stat.st_ino,
+            mtime_ns=stat.st_mtime_ns,
+        )
+        assert watcher._needs_work(state_db) is False
+
+        writer.execute("INSERT INTO turns(text) VALUES ('WAL-only turn')")
+        writer.commit()
+        wal_path = state_db.with_name("state.db-wal")
+
+        assert wal_path.stat().st_size > 0
+        assert watcher._watch_filter(object(), str(wal_path)) is True
+        assert watcher._canonical_watch_path(wal_path) == state_db
+        assert watcher._needs_work(state_db) is True
+    finally:
+        writer.close()
+
+
+def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path) -> None:
+    root = tmp_path / "hermes"
+    root.mkdir()
+    state_db = root / "state.db"
+    with sqlite3.connect(state_db) as conn:
+        conn.execute("CREATE TABLE turns(id INTEGER PRIMARY KEY)")
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        root,
+        sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
+    )
+
+    bytes_read = watcher._batch_processor._record_full_cursor(
+        state_db,
+        raw_fingerprint="snapshot-hash",
+        raw_byte_size=999_999,
+        source_revision="acquisition-revision",
+    )
+    record = watcher._cursor.get_record(state_db)
+
+    assert bytes_read == 0
+    assert record is not None
+    assert record.byte_size == state_db.stat().st_size
+    assert record.content_fingerprint == "snapshot-hash"
+    assert record.tail_hash == "acquisition-revision"
 
 
 def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:

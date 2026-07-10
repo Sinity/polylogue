@@ -98,6 +98,7 @@ from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
 )
+from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -459,6 +460,7 @@ class LiveBatchProcessor:
                         raw_fingerprint=full_result.raw_fingerprints.get(path),
                         raw_byte_size=full_result.raw_byte_sizes.get(path),
                         source_name=full_result.raw_source_names.get(path),
+                        source_revision=full_result.raw_source_revisions.get(path),
                     )
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
@@ -681,19 +683,27 @@ class LiveBatchProcessor:
         raw_fingerprint: str | None = None,
         raw_byte_size: int | None = None,
         source_name: str | None = None,
+        source_revision: str | None = None,
     ) -> int:
         self._last_cursor_write_stale = False
         try:
             stat = path.stat()
         except FileNotFoundError:
             return 0
-        byte_size = stat.st_size if raw_byte_size is None else raw_byte_size
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
-        fp, last_nl, tail_hash, bytes_read = cursor_state_after_full_ingest(
-            path,
-            byte_size,
-            raw_fingerprint=raw_fingerprint,
-        )
+        if source_revision is not None:
+            byte_size = stat.st_size
+            fp = raw_fingerprint or ""
+            last_nl = byte_size
+            tail_hash = source_revision
+            bytes_read = 0
+        else:
+            byte_size = stat.st_size if raw_byte_size is None else raw_byte_size
+            fp, last_nl, tail_hash, bytes_read = cursor_state_after_full_ingest(
+                path,
+                byte_size,
+                raw_fingerprint=raw_fingerprint,
+            )
         updated = self._cursor.set(
             path,
             byte_size,
@@ -860,6 +870,7 @@ class LiveBatchProcessor:
         raw_byte_sizes: dict[Path, int] = {}
         raw_payloads: dict[str, bytes] = {}
         raw_source_names: dict[Path, str] = {}
+        raw_source_revisions: dict[Path, str] = {}
         failed: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
@@ -928,14 +939,17 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = blob_store.write_from_path(
+                    snapshot = snapshot_sqlite_to_blob(
                         path,
+                        blob_store,
                         heartbeat=_blob_copy_heartbeat(
                             heartbeat,
                             path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
+                    raw_id, blob_size = snapshot.blob_hash, snapshot.blob_size
+                    raw_source_revisions[path] = snapshot.source_revision
                 except OSError:
                     failed.append(path)
                     continue
@@ -1138,6 +1152,7 @@ class LiveBatchProcessor:
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
             raw_source_names=raw_source_names,
+            raw_source_revisions=raw_source_revisions,
             summary=summary,
         )
         raw_records.clear()
@@ -1206,6 +1221,7 @@ class LiveBatchProcessor:
                         sessions = hermes_state.parse_state_db(
                             blob_store.blob_path(record.raw_id),
                             fallback_id=fallback_id,
+                            profile_root=Path(record.source_path).parent,
                         )
                     elif is_stream_record_provider(record.source_path, str(provider)):
                         if payload is None:

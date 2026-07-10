@@ -153,9 +153,16 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
             INSERT INTO messages(session_id, role, content, timestamp) VALUES ('h1', 'user', 'hello', 1.0);
             """
         )
-        # Leave a committed WAL-capable database; the staging path should still
-        # create a coherent independent SQLite file.
         conn.execute("PRAGMA journal_mode=WAL")
+
+    writer = sqlite3.connect(source)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    writer.execute(
+        "INSERT INTO messages(session_id, role, content, timestamp) VALUES ('h1', 'assistant', 'WAL turn', 2.0)"
+    )
+    writer.commit()
 
     captured: dict[str, Any] = {}
 
@@ -175,13 +182,17 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
             }
         )
 
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
-        result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"])
+    try:
+        with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+            result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"])
+    finally:
+        writer.close()
 
     assert result.exit_code == 0, result.output
     staged = workspace_env["archive_root"] / "inbox" / "state.db"
     with sqlite3.connect(staged) as conn:
         assert conn.execute("SELECT title FROM sessions WHERE id = 'h1'").fetchone()[0] == "Hermes"
+        assert conn.execute("SELECT content FROM messages ORDER BY id DESC LIMIT 1").fetchone()[0] == "WAL turn"
     assert json.loads(cast("bytes", cast("Request", captured["request"]).data).decode("utf-8")) == {"path": str(staged)}
 
 

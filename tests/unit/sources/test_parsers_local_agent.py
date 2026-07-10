@@ -16,6 +16,7 @@ from polylogue.sources.live.batch_support import _detect_provider_from_path_samp
 from polylogue.sources.parsers import antigravity, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions, iter_source_sessions_with_raw
+from polylogue.storage.blob_store import BlobStore
 
 
 def _write_hermes_state_db(path: Path) -> None:
@@ -554,6 +555,49 @@ def test_hermes_state_db_source_iterator_captures_raw_blob(tmp_path: Path) -> No
     assert raw.blob_size and raw.blob_size > 0
 
 
+def test_hermes_state_db_source_iterator_snapshots_wal_before_parsing(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    blob_root = tmp_path / "blob"
+    _write_hermes_state_db(db_path)
+
+    writer = sqlite3.connect(db_path)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("hermes-root", "assistant", "committed only in WAL", 1_775_000_004.0),
+        )
+        writer.commit()
+        assert db_path.with_name("state.db-wal").stat().st_size > 0
+
+        rows = list(
+            iter_source_sessions_with_raw(
+                Source(name="hermes", path=db_path),
+                capture_raw=True,
+                blob_root=blob_root,
+            )
+        )
+        root = next(session for _raw, session in rows if session.provider_session_id.split("@", 1)[0] == "hermes-root")
+        raw = rows[0][0]
+        assert raw is not None and raw.blob_hash is not None
+        retained_path = BlobStore(blob_root).blob_path(raw.blob_hash)
+        assert root.messages[-1].text == "committed only in WAL"
+    finally:
+        writer.close()
+
+    db_path.unlink()
+    db_path.with_name("state.db-wal").unlink(missing_ok=True)
+    db_path.with_name("state.db-shm").unlink(missing_ok=True)
+    reparsed = hermes_state.parse_state_db(retained_path, profile_root=db_path.parent)
+    reparsed_root = next(
+        session for session in reparsed if session.provider_session_id.split("@", 1)[0] == "hermes-root"
+    )
+    assert reparsed_root.provider_session_id == root.provider_session_id
+    assert reparsed_root.messages[-1].text == "committed only in WAL"
+
+
 def test_hermes_state_db_raw_payload_envelope_uses_marker(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)
@@ -562,7 +606,7 @@ def test_hermes_state_db_raw_payload_envelope_uses_marker(tmp_path: Path) -> Non
 
     assert envelope.provider is Provider.HERMES
     assert envelope.artifact.parse_as_session is True
-    assert envelope.payload == hermes_state.marker_payload(db_path)
+    assert envelope.payload == hermes_state.marker_payload(db_path, profile_root=db_path.parent)
 
 
 def test_hermes_state_db_live_batch_classifies_as_session_artifact(tmp_path: Path) -> None:

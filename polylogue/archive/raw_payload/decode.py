@@ -266,6 +266,8 @@ def build_raw_payload_envelope(
     """
     if isinstance(raw_content, Path) and _looks_like_hermes_state_db(raw_content):
         marker: JSONDocument = {"polylogue_artifact": _HERMES_STATE_DB_MARKER, "state_db_path": str(raw_content)}
+        if source_path is not None:
+            marker["profile_root"] = str(Path(source_path).parent)
         provider = Provider.HERMES
         return RawPayloadEnvelope(
             payload=marker,

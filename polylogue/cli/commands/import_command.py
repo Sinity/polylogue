@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sqlite3
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -41,6 +40,7 @@ from polylogue.operations.import_contracts import ImportOperation
 from polylogue.paths import archive_root
 from polylogue.sources.import_explain import explain_import_path
 from polylogue.sources.parsers import hermes_state
+from polylogue.sources.sqlite_snapshot import snapshot_sqlite_database
 from polylogue.surfaces.payloads import model_json_document
 
 _DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
@@ -75,7 +75,7 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
             else:
                 dest.unlink()
         if hermes_state.looks_like_state_db_path(resolved):
-            _backup_sqlite_database(resolved, dest)
+            snapshot_sqlite_database(resolved, dest)
             return dest
         if resolved.is_dir():
             shutil.copytree(resolved, dest, dirs_exist_ok=True)
@@ -85,18 +85,6 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
         fail("import", f"Could not stage {resolved} in daemon inbox: {exc}")
 
     return dest
-
-
-def _backup_sqlite_database(source: Path, dest: Path) -> None:
-    """Snapshot a live SQLite database into the daemon inbox."""
-    if dest.exists():
-        if dest.is_dir():
-            shutil.rmtree(dest)
-        else:
-            dest.unlink()
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as src, sqlite3.connect(dest) as dst:
-        src.backup(dst)
 
 
 def _materialize_demo_source() -> Path:
