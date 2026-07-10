@@ -15,6 +15,7 @@ import threading
 import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterator
+from concurrent.futures import CancelledError
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal, ParamSpec, TypeVar
@@ -334,7 +335,11 @@ class DaemonWriteThreadBridge:
 
         future = asyncio.run_coroutine_threadsafe(hold_lease(), self._loop)
         if not settled.wait(self._timeout):
+            if release_holder:
+                self._loop.call_soon_threadsafe(release_holder[0].set)
             future.cancel()
+            with contextlib.suppress(TimeoutError, CancelledError):
+                future.result(timeout=self._timeout)
             raise TimeoutError(f"timed out waiting for daemon write gate actor={actor}")
         if not entered.is_set():
             future.result(timeout=self._timeout)

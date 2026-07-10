@@ -359,6 +359,59 @@ def test_thread_bridge_serializes_sync_request_bodies_without_overlap() -> None:
     loop_thread.join(timeout=1.0)
 
 
+def test_thread_bridge_timeout_releases_a_racing_acquisition() -> None:
+    loop = asyncio.new_event_loop()
+    loop_ready = threading.Event()
+    acquired = threading.Event()
+    unblock_observer = threading.Event()
+    coordinator_holder: list[DaemonWriteCoordinator] = []
+
+    def observe(event: DaemonWriteEvent) -> None:
+        if event.phase == "acquired" and event.actor == "http.timeout-race":
+            acquired.set()
+            assert unblock_observer.wait(timeout=1.0)
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        coordinator_holder.append(DaemonWriteCoordinator(observer=observe))
+        loop_ready.set()
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread.start()
+    assert loop_ready.wait(timeout=1.0)
+    coordinator = coordinator_holder[0]
+    bridge = DaemonWriteThreadBridge(coordinator, loop, timeout=0.05)
+    errors: list[BaseException] = []
+
+    def timed_request() -> None:
+        try:
+            with bridge.hold("http.timeout-race"):
+                raise AssertionError("timed-out bridge must not enter the request body")
+        except BaseException as exc:
+            errors.append(exc)
+
+    request = threading.Thread(target=timed_request)
+    request.start()
+    assert acquired.wait(timeout=1.0)
+    request.join(timeout=1.0)
+    assert not request.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], TimeoutError)
+
+    unblock_observer.set()
+
+    async def successor() -> str:
+        return "entered"
+
+    future = asyncio.run_coroutine_threadsafe(coordinator.run("successor", successor), loop)
+    assert future.result(timeout=1.0) == "entered"
+    shutdown = asyncio.run_coroutine_threadsafe(coordinator.shutdown(timeout=1.0), loop)
+    assert shutdown.result(timeout=1.0)
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=1.0)
+
+
 async def _unexpected_operation() -> None:
     raise AssertionError("cancelled queued writer must not enter")
 

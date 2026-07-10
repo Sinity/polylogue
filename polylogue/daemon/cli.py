@@ -843,6 +843,18 @@ def _acquire_pidfile(pidfile: Path) -> int:
     return fd
 
 
+def _release_pidfile_after_writer_drain(pidfile_fd: int | None, *, writer_drained: bool) -> int | None:
+    """Release daemon ownership only after every admitted writer is idle."""
+    if not writer_drained:
+        logger.error("daemon: writer coordinator remains active; retaining pidfile ownership until process exit")
+        return pidfile_fd
+    if pidfile_fd is not None:
+        with contextlib.suppress(OSError):
+            os.close(pidfile_fd)
+    _cleanup_pidfile()
+    return None
+
+
 def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     """Persist a live-ingest batch event and fan out granular #1204 topics.
 
@@ -886,7 +898,7 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     )
 
 
-def _emit_daemon_lifecycle_event(
+async def _emit_daemon_lifecycle_event(
     phase: str,
     *,
     archive_root_path: Path,
@@ -915,7 +927,13 @@ def _emit_daemon_lifecycle_event(
     if payload:
         event_payload.update(payload)
     try:
-        emit_daemon_event("daemon.lifecycle", operation_id=run_id, payload=event_payload)
+        await daemon_write_coordinator().run_sync(
+            f"daemon.lifecycle.{phase}",
+            emit_daemon_event,
+            "daemon.lifecycle",
+            operation_id=run_id,
+            payload=event_payload,
+        )
     except Exception:
         logger.warning("daemon: failed to emit lifecycle event %s", phase, exc_info=True)
 
@@ -1044,8 +1062,10 @@ async def run_daemon_services(
     for src in sources:
         src.root.mkdir(parents=True, exist_ok=True)
 
+    write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
+
     if lifecycle_events_enabled:
-        _emit_daemon_lifecycle_event(
+        await _emit_daemon_lifecycle_event(
             "startup",
             archive_root_path=archive_root_path,
             status="starting",
@@ -1084,8 +1104,6 @@ async def run_daemon_services(
     tasks: list[asyncio.Task[None]] = []
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
-    write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
-
     try:
         if enable_browser_capture:
             resolved_browser_capture_auth_token = resolve_receiver_auth_token(
@@ -1102,7 +1120,7 @@ async def run_daemon_services(
             server_task = asyncio.create_task(asyncio.to_thread(server.serve_forever, 0.5))
             tasks.append(server_task)
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "component_started",
                     archive_root_path=archive_root_path,
                     component="browser_capture",
@@ -1132,7 +1150,7 @@ async def run_daemon_services(
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "component_started",
                     archive_root_path=archive_root_path,
                     component="api",
@@ -1150,14 +1168,14 @@ async def run_daemon_services(
 
             await write_coordinator.run("startup.fts_readiness", _ensure_fts_startup_readiness)
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "component_ready",
                     archive_root_path=archive_root_path,
                     component="fts_startup",
                 )
             await write_coordinator.run("startup.lineage_readiness", _ensure_lineage_startup_readiness)
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "component_ready",
                     archive_root_path=archive_root_path,
                     component="lineage_startup",
@@ -1199,7 +1217,7 @@ async def run_daemon_services(
             )
             await converger.start()
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "component_started",
                     archive_root_path=archive_root_path,
                     component="converger",
@@ -1231,7 +1249,7 @@ async def run_daemon_services(
                     watcher_task = asyncio.create_task(watcher.run())
                     tasks.append(watcher_task)
                     if lifecycle_events_enabled:
-                        _emit_daemon_lifecycle_event(
+                        await _emit_daemon_lifecycle_event(
                             "component_started",
                             archive_root_path=archive_root_path,
                             component="watcher",
@@ -1243,7 +1261,7 @@ async def run_daemon_services(
                 # Watcher disabled or preflight-blocked: keep HTTP/health and
                 # other components serving so operators see the degraded state.
                 if lifecycle_events_enabled:
-                    _emit_daemon_lifecycle_event(
+                    await _emit_daemon_lifecycle_event(
                         "component_skipped",
                         archive_root_path=archive_root_path,
                         component="watcher",
@@ -1256,7 +1274,7 @@ async def run_daemon_services(
                 await asyncio.gather(*all_tasks)
             else:
                 if lifecycle_events_enabled:
-                    _emit_daemon_lifecycle_event(
+                    await _emit_daemon_lifecycle_event(
                         "component_skipped",
                         archive_root_path=archive_root_path,
                         component="watcher",
@@ -1278,7 +1296,7 @@ async def run_daemon_services(
                 cleanup_task.uncancel()
         try:
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "shutdown_started",
                     archive_root_path=archive_root_path,
                     status="stopping",
@@ -1286,7 +1304,11 @@ async def run_daemon_services(
             if watcher is not None:
                 watcher.stop()
             if converger is not None:
-                await converger.stop()
+                try:
+                    async with asyncio.timeout(5.0):
+                        await converger.stop()
+                except TimeoutError:
+                    logger.warning("daemon: timed out stopping convergence executor")
             if server is not None:
                 await _shutdown_server_if_serving(server, server_task, label="browser-capture")
             if api_server is not None:
@@ -1321,20 +1343,16 @@ async def run_daemon_services(
                     )
             except TimeoutError:
                 logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
-            if not await write_coordinator.shutdown(timeout=5.0):
-                logger.warning("daemon: writer coordinator remained active after bounded shutdown drain")
 
-            # Clean up pidfile and release advisory lock.
-            if pidfile_fd is not None:
-                with contextlib.suppress(OSError):
-                    os.close(pidfile_fd)
-            _cleanup_pidfile()
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "shutdown_complete",
                     archive_root_path=archive_root_path,
                     status="stopped",
                 )
+
+            writer_drained = await write_coordinator.shutdown(timeout=5.0)
+            pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         finally:
             if server is not None:
                 with contextlib.suppress(Exception):

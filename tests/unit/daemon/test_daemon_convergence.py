@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import Sequence
 from concurrent.futures import Future
 from pathlib import Path
@@ -311,3 +313,35 @@ async def test_converger_start_creates_process_pool_for_cpu_bound_stages(monkeyp
 
     factory.assert_called_once_with(max_workers=3)
     assert fake_executor.shutdown_called is True
+
+
+@pytest.mark.asyncio
+async def test_converger_stop_does_not_block_the_event_loop() -> None:
+    shutdown_started = threading.Event()
+    release_shutdown = threading.Event()
+
+    class BlockingExecutor:
+        def shutdown(self, *, wait: bool = True) -> None:
+            assert wait is True
+            shutdown_started.set()
+            assert release_shutdown.wait(timeout=1.0)
+
+    converger = DaemonConverger([])
+    converger._executor = BlockingExecutor()  # type: ignore[assignment]
+
+    stop_task = asyncio.create_task(converger.stop())
+    assert await asyncio.to_thread(shutdown_started.wait, 1.0)
+
+    loop_progressed = False
+
+    async def mark_progress() -> None:
+        nonlocal loop_progressed
+        await asyncio.sleep(0)
+        loop_progressed = True
+
+    await mark_progress()
+    assert loop_progressed
+    assert not stop_task.done()
+
+    release_shutdown.set()
+    await stop_task

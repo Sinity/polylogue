@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -2346,22 +2347,34 @@ def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
     from polylogue.daemon import cli as daemon_cli
 
     calls: list[tuple[str, dict[str, object]]] = []
+    actors: list[str] = []
 
     def fake_emit(kind: str, **kwargs: object) -> None:
         calls.append((kind, kwargs))
 
+    class FakeCoordinator:
+        async def run_sync(self, actor: str, function: Any, /, *args: object, **kwargs: object) -> None:
+            actors.append(actor)
+            function(*args, **kwargs)
+
     monkeypatch.setenv("POLYLOGUE_DEV_LOOP_RUN_ID", "dev-loop-run")
     monkeypatch.setenv("POLYLOGUE_DEV_LOOP_LOG_DIR", str(tmp_path / "logs"))
 
-    with patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit):
-        daemon_cli._emit_daemon_lifecycle_event(
-            "component_started",
-            archive_root_path=tmp_path / "archive",
-            component="api",
-            payload={"port": 8766},
+    with (
+        patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit),
+        patch.object(daemon_cli, "daemon_write_coordinator", return_value=FakeCoordinator()),
+    ):
+        asyncio.run(
+            daemon_cli._emit_daemon_lifecycle_event(
+                "component_started",
+                archive_root_path=tmp_path / "archive",
+                component="api",
+                payload={"port": 8766},
+            )
         )
 
     assert len(calls) == 1
+    assert actors == ["daemon.lifecycle.component_started"]
     kind, kwargs = calls[0]
     assert kind == "daemon.lifecycle"
     assert kwargs["operation_id"] == "dev-loop-run"
@@ -2372,6 +2385,27 @@ def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
     assert payload["archive_root"] == str(tmp_path / "archive")
     assert payload["dev_loop_run_id"] == "dev-loop-run"
     assert payload["dev_loop_log_dir"] == str(tmp_path / "logs")
+
+
+def test_pidfile_remains_locked_until_admitted_writers_are_drained(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    pidfile = tmp_path / "daemon.pid"
+    owner_fd = daemon_cli._acquire_pidfile(pidfile)
+    monkeypatch.setattr(daemon_cli, "_pidfile_path", pidfile)
+
+    retained_fd = daemon_cli._release_pidfile_after_writer_drain(owner_fd, writer_drained=False)
+
+    assert retained_fd == owner_fd
+    with pytest.raises(RuntimeError, match="another daemon may be running"):
+        daemon_cli._acquire_pidfile(pidfile)
+
+    assert daemon_cli._release_pidfile_after_writer_drain(retained_fd, writer_drained=True) is None
+    successor_fd = daemon_cli._acquire_pidfile(pidfile)
+    os.close(successor_fd)
 
 
 def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:

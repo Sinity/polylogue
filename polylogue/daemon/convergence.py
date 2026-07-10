@@ -14,6 +14,7 @@ so we skip unchanged files entirely.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -199,9 +200,10 @@ class DaemonConverger:
         )
 
     async def stop(self) -> None:
-        if self._executor is not None:
-            self._executor.shutdown(wait=True)
-            self._executor = None
+        executor = self._executor
+        self._executor = None
+        if executor is not None:
+            await asyncio.to_thread(executor.shutdown, wait=True)
         logger.info("converger: stopped")
 
     def converge_file(self, path: Path) -> FileState:
