@@ -46,7 +46,8 @@ def render_coordination_text(payload: AgentCoordinationPayload) -> str:
         f"Agent coordination ({payload.view})",
         f"  repo: {payload.repo.root or payload.repo.cwd}",
         f"  branch: {payload.repo.branch or 'n/a'} head={payload.repo.head or 'n/a'} dirty={payload.repo.dirty}",
-        f"  self: {payload.self.agent_kind} pid={payload.self.pid}",
+        f"  self: {payload.self.agent_kind} owner={payload.self.owner_pid or 'unknown'} "
+        f"invocation={payload.self.invocation_pid}",
         "  work item: " + _work_item_label(payload),
         "  projection: " + _projection_summary(payload),
     ]
@@ -130,7 +131,8 @@ def render_coordination_markdown(payload: AgentCoordinationPayload) -> str:
         f"- Repo: `{payload.repo.root or payload.repo.cwd}`",
         f"- Branch: `{payload.repo.branch or 'n/a'}` at `{payload.repo.head or 'n/a'}`",
         f"- Dirty: `{str(payload.repo.dirty).lower()}`",
-        f"- Agent: `{payload.self.agent_kind}` pid `{payload.self.pid}`",
+        f"- Agent: `{payload.self.agent_kind}` owner `{payload.self.owner_pid or 'unknown'}` "
+        f"invocation `{payload.self.invocation_pid}`",
         f"- Work item: `{_work_item_label(payload)}`",
         f"- Beads: `{_beads_summary(payload)}`",
         f"- Projection: `{_projection_summary(payload)}`",
@@ -242,7 +244,8 @@ def render_coordination_tree(payload: AgentCoordinationPayload) -> str:
     lines = [
         "coordination",
         f"+- repo {payload.repo.branch or 'n/a'}@{payload.repo.head or 'n/a'} dirty={payload.repo.dirty}",
-        f"+- self {payload.self.agent_kind} pid={payload.self.pid}",
+        f"+- self {payload.self.agent_kind} owner={payload.self.owner_pid or 'unknown'} "
+        f"invocation={payload.self.invocation_pid}",
         f"+- work {payload.work_item.ref or 'none'} source={payload.work_item.source} confidence={payload.work_item.confidence:.2f}",
         f"+- beads {_beads_summary(payload)}",
         f"+- projection {_projection_summary(payload)}",

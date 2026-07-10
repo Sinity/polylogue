@@ -31,8 +31,11 @@ class CoordinationRepoPayload(SurfacePayloadModel):
 
 
 class CoordinationSelfPayload(SurfacePayloadModel):
+    identity_status: Literal["resolved", "unknown"]
     agent_kind: str
-    pid: int
+    logical_id: str | None = None
+    owner_pid: int | None = None
+    invocation_pid: int
     cwd: str
     branch: str | None = None
     session_ref: str | None = None

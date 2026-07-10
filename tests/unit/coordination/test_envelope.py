@@ -485,6 +485,133 @@ def test_process_projection_collapses_components_and_uses_real_work_scopes(
     assert compact.resource_episodes[0].resources[0] == str(archive)
 
 
+def test_caller_identity_prefers_session_environment_and_resolves_owner_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    index.touch()
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.os.getpid", lambda: 303)
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-stable")
+    rows = "\n".join(
+        (
+            "100 1 node 0::/user.slice/codex.scope node /opt/@openai/codex --profile lean",
+            "101 100 codex 0::/user.slice/codex.scope codex --profile lean",
+            "202 101 zsh 0::/user.slice/codex.scope zsh -lc tool-host",
+            "303 202 polylogue 0::/user.slice/codex.scope polylogue agents status --json",
+        )
+    )
+
+    payload = build_coordination_envelope(
+        cwd=root,
+        runner=FakeRunner(root, beads_rows=None, process_rows=rows),
+        detail=True,
+    )
+
+    assert payload.self.identity_status == "resolved"
+    assert payload.self.agent_kind == "codex"
+    assert payload.self.logical_id == "codex:thread-stable"
+    assert payload.self.session_ref == "thread-stable"
+    assert payload.self.owner_pid == 100
+    assert payload.self.invocation_pid == 303
+    assert payload.self.provenance.source == "caller-environment"
+    assert payload.peers == ()
+
+
+def test_caller_identity_falls_back_to_agent_ancestor_without_guessing_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    index.touch()
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.os.getpid", lambda: 303)
+    for name in (
+        "POLYLOGUE_SESSION_REF",
+        "CODEX_THREAD_ID",
+        "CODEX_SESSION_ID",
+        "CLAUDE_SESSION_ID",
+        "GEMINI_SESSION_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    rows = "\n".join(
+        (
+            "101 1 claude 0::/user.slice/claude.scope claude --session-id session-from-parent",
+            "202 101 sh 0::/user.slice/claude.scope sh -c tool-host",
+            "303 202 polylogue 0::/user.slice/claude.scope polylogue agents status --json",
+        )
+    )
+
+    payload = build_coordination_envelope(
+        cwd=root,
+        runner=FakeRunner(root, beads_rows=None, process_rows=rows),
+        detail=True,
+    )
+
+    assert payload.self.identity_status == "resolved"
+    assert payload.self.agent_kind == "claude"
+    assert payload.self.logical_id == "claude:session-from-parent"
+    assert payload.self.session_ref == "session-from-parent"
+    assert payload.self.owner_pid == 101
+    assert payload.self.invocation_pid == 303
+    assert payload.self.provenance.source == "process-tree"
+
+
+def test_caller_identity_is_typed_unknown_without_session_or_agent_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    index.touch()
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.os.getpid", lambda: 303)
+    for name in (
+        "POLYLOGUE_SESSION_REF",
+        "CODEX_THREAD_ID",
+        "CODEX_SESSION_ID",
+        "CLAUDE_SESSION_ID",
+        "GEMINI_SESSION_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    rows = "\n".join(
+        (
+            "202 1 sh 0::/user.slice/tool.scope sh -c tool-host",
+            "303 202 polylogue 0::/user.slice/tool.scope polylogue agents status --json",
+        )
+    )
+
+    payload = build_coordination_envelope(
+        cwd=root,
+        runner=FakeRunner(root, beads_rows=None, process_rows=rows),
+        detail=True,
+    )
+
+    assert payload.self.identity_status == "unknown"
+    assert payload.self.agent_kind == "unknown"
+    assert payload.self.logical_id is None
+    assert payload.self.session_ref is None
+    assert payload.self.owner_pid is None
+    assert payload.self.invocation_pid == 303
+    assert payload.self.provenance.source == "caller-identity"
+    assert payload.self.provenance.confidence == 0.0
+
+
 def test_compact_projection_is_byte_bounded_and_detail_recovers_omitted_peers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -516,6 +643,42 @@ def test_compact_projection_is_byte_bounded_and_detail_recovers_omitted_peers(
     assert detailed.projection.detail is True
     assert detailed.projection.omitted_counts == {}
     assert len(detailed.to_json(exclude_none=True).encode()) > compact_bytes
+
+
+def test_compact_projection_keeps_active_archive_writers_before_other_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    index.touch()
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    peer_rows = tuple(
+        f"{100 + index} 1 codex 0::/user.slice/codex-{index}.scope "
+        f"codex --session-id session-{index} --config {'x' * 180}"
+        for index in range(20)
+    )
+    build_rows = tuple(
+        f"{300 + index} 1 cargo 0::/user.slice/sinnix-build-{index}.scope cargo build {'y' * 180}" for index in range(5)
+    )
+    daemon_rows = (
+        "901 1 polylogued 0::/user.slice/zz-polylogued-a.service polylogued run --api-port 8766",
+        "902 1 polylogued 0::/user.slice/zz-polylogued-b.service polylogued run --api-port 8767",
+    )
+    runner = FakeRunner(root, beads_rows=None, process_rows="\n".join((*peer_rows, *build_rows, *daemon_rows)))
+
+    compact = build_coordination_envelope(cwd=root, runner=runner, limit=20)
+
+    compact_bytes = len(compact.to_json(exclude_none=True).encode())
+    assert compact.projection.byte_budget is not None
+    assert compact_bytes <= compact.projection.byte_budget
+    assert [episode.pid for episode in compact.resource_episodes[:2]] == [901, 902]
+    assert compact.archive is not None
+    assert [episode.pid for episode in compact.archive.daemon_processes] == [901, 902]
 
 
 def test_handoff_projection_uses_supported_live_sources_or_empty_list(
