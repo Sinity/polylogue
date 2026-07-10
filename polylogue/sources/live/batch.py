@@ -32,7 +32,6 @@ from polylogue.core.metrics import (
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.logging import get_logger
-from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
@@ -867,7 +866,7 @@ class LiveBatchProcessor:
         if not paths:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-        blob_root = blob_store_root()
+        blob_root = archive_root / "blob"
         from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
         blob_store = ArchiveBlobPublisher(archive_root / "source.db", blob_root)

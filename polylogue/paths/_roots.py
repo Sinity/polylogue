@@ -159,7 +159,7 @@ GEMINI_DRIVE_FOLDER = "Google AI Studio"
 
 def blob_store_root() -> Path:
     """Content-addressed blob store root directory."""
-    return data_home() / "blob"
+    return archive_root() / "blob"
 
 
 def hooks_sidecar_dir() -> Path:
