@@ -6,394 +6,135 @@
   <a href="https://github.com/sinity/polylogue/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/ci.yml?branch=master&label=ci" alt="CI status"></a>
 </p>
 
-**Polylogue is the system of record for AI work.** It keeps ChatGPT, Claude,
-Codex, Gemini, Antigravity, Hermes, and coding-agent sessions in one local
-archive, then lets you search, analyze, audit, and remember what actually
-happened.
+**Polylogue is the local flight recorder and system of record for AI work.** It turns ChatGPT, Claude, Codex, Gemini, Antigravity, Hermes, and coding-agent histories into one evidence-addressable archive: search what happened, read tool activity as work rather than chat, audit claims against structural outcomes, understand cost and lineage, and give the next agent reviewed context.
 
-> **Skim this in 7 minutes.** Polylogue is not a chat export viewer. It is
-> closer to git for the work around your code: prompts, tool calls, test runs,
-> costs, dead ends, and resume points that otherwise disappear into vendor
-> silos. It reads the files your tools already write, adds a browser-capture
-> path for web chats, and keeps raw evidence next to every derived claim.
->
-> - **30 seconds** — read the headline and the five questions below.
-> - **3 minutes** — run the [demo](#try-it-without-private-data) and read
->   [Why you can trust it](#why-you-can-trust-it).
-> - **30 minutes** — use [proof artifacts](docs/proof-artifacts.md),
->   [search](docs/search.md), [architecture](docs/architecture.md), and
->   [internals](docs/internals.md) to inspect the claims.
+<p align="center">
+  <img src="docs/examples/visual-tapes/query-tour.gif" alt="Polylogue query and evidence drilldown" width="900">
+</p>
 
-Polylogue answers questions ordinary transcript folders cannot:
+Polylogue answers questions that transcript folders and vendor chat history do not:
 
-- **What did the agent do?** Search sessions, messages, tool calls, files,
-  observed events, costs, and outcomes with one query surface.
-- **What failed?** Audit claims against structured evidence such as exit codes
-  and tool-result metadata, not assistant prose saying "done".
-- **What did it cost?** Keep provider-reported usage, catalog estimates, cache
-  lanes, subscription-credit views, and coverage caveats separate.
-- **What should resume?** Find interrupted work and assemble evidence-backed
-  context bundles for the next agent.
-- **Where is the raw evidence?** Keep parsed sessions, generated analytics,
-  user notes, embeddings, daemon telemetry, and source bytes in inspectable
-  local evidence stores.
+- **What did the agent actually do?** Read prompts, tool calls, tool results, file operations, subagents, and context boundaries through one provider-independent model.
+- **Did the evidence support the claim?** Resolve “tests pass” to the test command, exit status, duration, and raw tool-result block instead of trusting assistant prose.
+- **What did the work cost?** Keep provider-reported usage, cache lanes, reasoning tokens, catalog estimates, and subscription-credit views separate.
+- **Am I counting the same work twice?** Compose forks, continuations, subagents, and copied prefixes into logical sessions without deleting physical evidence.
+- **What should happen next?** Find unfinished work and compile a bounded context bundle from evidence and reviewed notes.
 
-The archive is local-first. It lives under your XDG data directory. There is no
-upload and no API key unless you opt into semantic embeddings. Lexical search
-and the core archive stay fully local; semantic search currently uses Voyage AI
-when enabled. Re-ingesting the same source is idempotent by content hash, so
-repeated imports coalesce instead of duplicating your history.
+Polylogue is local-first. Lexical search and the core archive stay on your machine. Optional semantic search is disabled by default and sends selected text only to the embedding provider you configure.
 
-## Try it without private data
+## Run the private-data-free tour
 
-No real data and no API key required. This runs a one-command tour against a
-throwaway deterministic archive, prints the first result, and writes a report,
-transcript, and recording tape:
+The deterministic tour creates a throwaway archive, imports synthetic provider artifacts through the normal parsers, verifies the expected constructs, runs canonical queries, and writes a report and transcript.
 
 ```bash
-polylogue demo tour
+nix run github:Sinity/polylogue -- demo tour
 ```
 
-The current demo corpus has 11 sessions, 43 indexed messages, five origins,
-attachments with acquired bytes, browser-capture coalescing, lineage links,
-subagent runs, terminal-state examples, synthetic embeddings, and user overlays.
-The generated construct datasheet is tracked at
-[docs/plans/demo-corpus-construct-audit.md](docs/plans/demo-corpus-construct-audit.md).
-
-The tour seeds and verifies the same semantic facts used by CI. It then runs
-the canonical query/read path:
+From a source checkout:
 
 ```bash
-polylogue analyze --facets
-polylogue find "pytest" then read --view messages
-polylogue find "pytest" then analyze --facets
-```
-
-Screencast media for public flows is regenerable from committed tape specs with
-`devtools render visual-tapes --capture` (writes `.tape` files, and `.gif`s
-when `vhs` is present). The default inventory records the one-command demo
-tour, a query/read drilldown against the deterministic demo archive, the
-browserless reader evidence lane, and a browser-backed extension capture proof
-against deterministic ChatGPT/Claude fixture pages; none of these tapes read
-your live archive.
-
-## Why this exists
-
-AI work is valuable but poorly instrumented. The transcript is the running
-notebook, the debug log, the design record, and often the only proof of what an
-agent actually did before it claimed success. Vendor memory is per-vendor,
-opaque, and non-portable by design. Polylogue makes that work cross-vendor,
-local, queryable, and auditable.
-
-The product is organized around four verbs:
-
-- **Search** every captured source with lexical FTS, optional semantic search,
-  and a query language that understands sessions, messages, tool calls,
-  actions, files, observed events, context snapshots, and reviewed notes.
-- **Analyze** costs, source coverage, model usage, work phases, tool families,
-  claim-vs-evidence gaps, and temporal patterns across the archive.
-- **Audit** every derived number back to source rows and blob-addressed raw
-  bytes where possible; unavailable evidence is reported as unavailable rather
-  than guessed.
-- **Remember** by turning reviewed findings and notes into context bundles that
-  future agents can read. Memory-benefit claims stay capability-phrased until
-  measured uplift experiments prove the effect.
-
-## Why you can trust it
-
-Polylogue is built for evidence over plausible prose:
-
-- Provider files are detected by shape, not by filenames or SDK wrappers.
-- FTS is an invariant, not a best-effort cache; stale search readiness blocks
-  user search until the index is demonstrably current.
-- Tool outcomes are read from provider structure, such as `is_error` and exit
-  codes, instead of regexing assistant text.
-- Source evidence and user-authored notes are durable; indexes, analytics,
-  embeddings, and daemon telemetry are rebuildable.
-- The project deletes features that guess too much. When an inference cannot be
-  supported by structure or review, the right output is a caveat, candidate, or
-  unavailable field.
-
-See [proof artifacts](docs/proof-artifacts.md) for the current claim-to-proof
-map. The short version: the demo corpus proves private-data-free coverage, the
-cost example proves disjoint token accounting, and the claim-vs-evidence packet
-shows structured failure follow-up without exposing private transcripts.
-
-## Archive model
-
-Polylogue is organized around one rule: source evidence and user-authored
-state are durable; search indexes, insight read models, embeddings, and daemon
-telemetry are rebuildable. The archive uses a split-tier SQLite file set so
-each class can be backed up, rebuilt, and inspected independently:
-
-- `source.db` — raw acquisition evidence and source artifacts;
-- `index.db` — parsed sessions, messages, FTS/search indexes, and derived
-  insight read models;
-- `embeddings.db` — opt-in vector rows and embedding catch-up state;
-- `user.db` — irreplaceable user assertions and authored overlays;
-- `ops.db` — disposable daemon telemetry, convergence debt, and local
-  operational state.
-
-Large binary content lives in a content-addressed blob store keyed by SHA-256.
-The CLI, MCP server, daemon reader, and Python API all read through the same
-archive/query substrate rather than maintaining separate stores.
-
-See [docs/architecture.md](docs/architecture.md) for the system rings and data
-flow, and [docs/internals.md](docs/internals.md) for hot files, invariants, and
-extension points.
-
-## Privacy and local-first
-
-Everything Polylogue stores stays under your XDG data directory. Nothing is
-uploaded, and no provider API key is needed unless you opt into semantic
-embeddings (Voyage AI), which is off by default. The only network calls the
-core makes are the ones you explicitly enable: Google Drive OAuth for Gemini
-export ingestion, the optional embedding backfill, and the optional GitHub
-cross-reference in `read --view correlation`.
-
-If you run Polylogue inside a managed cloud-agent sandbox (Claude Code Web,
-Codex Cloud), the data-handling tier follows the account you run under — the
-repo cannot enforce it. The operator checklist, including which commands are
-safe in a sandbox and which must never touch your real corpus, is in
-[docs/cloud-agents.md](docs/cloud-agents.md).
-
-## CLI shape
-
-The root command is **query-first**. Use `find QUERY` for explicit searches,
-then route the matched set into `read`, `select`, `analyze`, `mark`, `delete`,
-or `continue`:
-
-```bash
-polylogue find "error handling"                  # search across all origins
-polylogue --origin claude-code-session --since "last week" find "pytest" then read --all
-polylogue --has-tool-use --typed-only read --all       # precomputed analytics
-polylogue --action file_edit --tool bash read --all    # semantic action filters
-polylogue --semantic find "sqlite locking" then read --all --limit 5
-polylogue --latest read                          # render the most recent session
-polylogue analyze --by origin                    # aggregates
-```
-
-You can also bind a query to an explicit verb with `find QUERY then VERB`. The
-verbs that act on a matched set are `read`, `select`, `analyze`, `mark`,
-`delete`, and `continue`:
-
-```bash
-polylogue find id:abc then read --view messages
-polylogue find 'repo:polylogue since:7d' then analyze --facets
-polylogue find 'repo:polylogue' then read --view correlation --since-hours 4
-polylogue find 'repo:polylogue since:7d' then delete --dry-run
-```
-
-`analyze` folds the statistics and facet surfaces over the matched result set
-(`--by <dimension>`, `--facets`). `read --view correlation` cross-references a
-session against the git commits it produced; `read --view neighbors` shows the
-sessions around it in time.
-
-Pipeline and maintenance verbs are explicit:
-
-```bash
-polylogue init                       # first-run setup (writes polylogue.toml)
-polylogue config completions --shell zsh
-polylogue import ~/.claude/projects  # ingest sessions from a source path
-polylogue ops doctor                 # FTS coverage, blob store, daemon liveness
-polylogue ops status                 # daemon + archive status
-polylogue config paths               # canonical archive paths
-polylogue config --format json       # redacted effective config + source layers
-polylogued run                       # daemon: convergence + insights + HTTP reader
-polylogued watch                     # watch source dirs and ingest live
-polylogue-mcp --role read            # MCP stdio bridge for AI assistants
-```
-
-See [docs/cli-reference.md](docs/cli-reference.md) for the full generated
-command reference and [docs/search.md](docs/search.md) for the query grammar,
-retrieval lanes, and ranking policy.
-
-## Surfaces
-
-### CLI
-
-`polylogue` (aliases `plg`, `plog`) is the primary surface — query-first
-search plus the verbs and maintenance commands above.
-
-### Daemon HTTP reader
-
-`polylogued run` starts the ingest daemon and an HTTP reader on `127.0.0.1`
-that serves live archive search, session rendering, and insight views. It
-uses the same query layer as the CLI, plus health checks
-(`polylogued health`) and a Prometheus `/metrics` endpoint. See
-[docs/daemon.md](docs/daemon.md). Agent runs project into
-OpenTelemetry-shaped traces too: terminal query-unit rows map to spans, log
-records, and Polylogue refs via the outbound OTel projection, so an external
-observability tool can read session/cost/tool structure without copying message
-text or local paths.
-
-### MCP bridge
-
-`polylogue-mcp --role read` exposes the archive as a Model Context Protocol
-server so AI assistants can search, list, and retrieve sessions, insights, and
-context images from their own sessions. See
-[docs/mcp-integration.md](docs/mcp-integration.md). It also composes a context
-preamble from the archive — recent lineage, project state, and resume guidance
-for a seed session — so a coding agent can inject prior memory at SessionStart
-via `compose_context_preamble` and `compile_context` (the same payload backs
-`read --view context`).
-
-### Browser capture
-
-For ChatGPT and Claude.ai web sessions that have no on-disk export,
-`polylogued browser-capture serve` runs a local receiver (`browser-capture
-status` reports its state). The unpacked extension
-lives in [`browser-extension/`](browser-extension/) and POSTs captured
-sessions to the receiver as you browse. See
-[docs/browser-capture.md](docs/browser-capture.md).
-
-### Python API
-
-Polylogue is library-first; the CLI wraps the Python API. The `Polylogue`
-context manager owns the archive connection and exposes its repository's
-async query methods:
-
-```python
-from polylogue import Polylogue
-
-async with Polylogue.open() as archive:
-    summaries = await archive.repository.list_summaries(
-        title_contains="error handling",
-        has_tool_use=True,
-        limit=10,
-    )
-    for session in summaries:
-        print(session.id, session.display_title)
-```
-
-See [docs/library-api.md](docs/library-api.md) for the full query surface.
-
-## Installing from source
-
-For development or to track `master`:
-
-```bash
-git clone https://github.com/sinity/polylogue
+git clone https://github.com/Sinity/polylogue.git
 cd polylogue
-direnv allow   # or: nix develop
+nix develop -c polylogue demo tour
 ```
 
-The devshell installs git hooks, regenerates `AGENTS.md` from `CLAUDE.md`,
-and provides the full toolchain (Python 3.13, mypy, ruff, pytest, mmdc).
+No provider account, API key, or private transcript is required.
 
-To try the CLI without committing to an install:
+The current fixture world includes five origins, tool calls and structural failures, acquired attachment bytes, browser-capture coalescing, forks and continuations, a subagent, a compaction boundary, context snapshots, user overlays, and deterministic synthetic embeddings. Its generated construct audit lives at [docs/plans/demo-corpus-construct-audit.md](docs/plans/demo-corpus-construct-audit.md).
+
+## A concrete evidence chain
+
+Search for a session, render its messages, and inspect the tool outcome:
 
 ```bash
-nix run github:Sinity/polylogue -- --help
+polylogue find 'origin:codex-session' then read --first --view messages
 ```
 
-### Synthetic demo data
+The important distinction is not lexical search. `grep` can find the word `pytest`; Polylogue can pair a provider-native tool call with its result, classify failure from `exit_code` or `is_error`, identify whether a later assistant turn acknowledged it, compose copied lineage without double-counting it, and resolve a derived result to source evidence.
 
-To explore features without importing real exports, use an isolated archive
-root and schedule the approved deterministic demo fixture world:
+See [Proof Artifacts](docs/proof-artifacts.md) for bounded claims and their evidence. Current examples include:
+
+- a deterministic private-data-free corpus and one-command tour;
+- a crafted cross-provider cost-accounting proof;
+- a private-archive claim-versus-evidence field finding with its sampling and calibration caveats;
+- an honesty anti-demo that returns `not_supported` for evidence the archive does not contain.
+
+## The model
+
+```mermaid
+flowchart LR
+    A[Provider exports\nagent files\nhooks\nbrowser capture\nOTLP] --> B[Raw evidence\nsource.db + blobs]
+    B --> C[Normalized AI-work model\nsessions · messages · blocks · actions · lineage]
+    C --> D[Rebuildable projections\nFTS · profiles · costs · phases · vectors]
+    C --> E[Reviewed user state\nassertions · corrections · handoffs]
+    D --> F[CLI · MCP · Python API · daemon/web]
+    E --> F
+    F --> G[Search · analyze · audit · resume]
+```
+
+One rule governs the archive:
+
+> **Source evidence and irreplaceable user judgment are durable. Search indexes, analytics, embeddings, and operational telemetry are rebuildable.**
+
+The local archive is split accordingly:
+
+| Tier | Responsibility | Durability |
+|---|---|---|
+| `source.db` | Acquired artifacts, raw sessions, hook events, source evidence | Durable evidence |
+| `index.db` | Normalized sessions, messages, blocks, actions, topology, FTS, analytics | Rebuildable |
+| `embeddings.db` | Optional vectors and catch-up state | Rebuildable |
+| `user.db` | Notes, corrections, judgments, assertions, saved views | Irreplaceable |
+| `ops.db` | Cursors, attempts, convergence debt, daemon telemetry | Disposable |
+
+Large content is stored in a SHA-256 content-addressed blob store.
+
+## Why the evidence model matters
+
+### Structured outcomes beat plausible prose
+
+A nonzero shell exit, provider `is_error` flag, or typed tool result is evidence. The word “error” in a paragraph is not. Polylogue deliberately removes or marks unsupported inferences rather than turning them into authoritative analytics.
+
+### Role is not authoredness
+
+A provider may encode injected runtime context as a `user` message. Polylogue records conversational role separately from whether material was human-authored, assistant-authored, runtime protocol, tool output, or generated context.
+
+### Physical sessions are not logical work
+
+Provider forks and resumptions can copy large transcript prefixes. Polylogue retains the physical artifacts while materializing logical lineage so copied history can be stored, read, and accounted for without pretending it was new work.
+
+### Memory requires judgment
+
+Agent-authored observations enter as candidates with context injection disabled. Human or declared-policy judgment can accept, reject, defer, or supersede them. The context compiler records selected evidence, omissions, caveats, lossiness, and the exact context delivered to a later agent.
+
+## Query and read surfaces
+
+The CLI is query-first:
 
 ```bash
-export POLYLOGUE_DEMO_HOME="$(mktemp -d)"
-export POLYLOGUE_ARCHIVE_ROOT="$POLYLOGUE_DEMO_HOME/archive"
-export XDG_CONFIG_HOME="$POLYLOGUE_DEMO_HOME/config"
-
-polylogue init
-polylogued run
+polylogue find "sqlite locking"
+polylogue find 'repo:polylogue since:7d' then analyze --facets
+polylogue find 'origin:claude-code-session' then read --first --view messages
+polylogue 'actions where is_error:true | group by tool | count'
+polylogue --semantic find "flaky async pipeline" then read --all --limit 5
 ```
 
-In a second terminal with the same environment:
+Other surfaces use the same archive and query substrate:
 
-```bash
-polylogue import --demo --wait --timeout 30 --with-overlays
-polylogue ops status
-polylogue analyze
-polylogue find "pytest" then read --all --limit 5
-polylogue find "pytest" then read --view messages
-polylogue find "pytest" then analyze --facets
-```
+- `polylogued run` — ingestion, convergence, local HTTP reader, metrics;
+- `polylogue-mcp --role read` — MCP access for agents;
+- Python async API — archive and query integration;
+- browser-capture extension and local receiver — opt-in capture for supported web chats;
+- OpenTelemetry-shaped import and export projections.
 
-`polylogue import --demo` writes only approved synthetic source files and asks
-the running daemon to ingest them. Add `--wait` to block until the daemon-built
-archive passes the same semantic demo checks used by `polylogue demo verify`;
-`--with-overlays` then attaches the deterministic user-tier overlays for the
-`pytest-triage` tag, mark, note, saved query, and typed assertions.
+References:
 
-For source-only or CI/cloud verification without a daemon, use the direct demo
-fixture commands:
-
-```bash
-polylogue demo tour --out-dir polylogue-demo-tour --force
-polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
-polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
-polylogue demo script --shell bash
-```
-
-## Developer tools
-
-Repository maintenance, generated-surface rendering, validation lanes, and
-verification all live behind `devtools`:
-
-```bash
-devtools --help
-devtools status                  # repo health, generated-surface drift
-devtools render all              # regenerate all generated docs and surfaces
-devtools verify                  # local baseline before pushing a PR
-```
-
-See [docs/devtools.md](docs/devtools.md) for the full command catalog and
-[CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow.
-
-## Verification lab
-
-Operators choose focused checks via the verification baseline:
-
-```bash
-devtools verify --quick
-devtools lab smoke run archive-smoke --tier 0
-devtools lab smoke run reader-visual-smoke
-```
-
-## Mining the archive
-
-Polylogue exposes usage forensics through the normal archive analysis surfaces:
-coverage, provider/model cost rollups, monthly usage timelines, and structured
-claim-vs-evidence packets. These commands read the archive without writing to
-it and keep stored/provider-priced cost, catalog API-equivalent estimates,
-subscription-credit views, cache amplification, model evolution, and adoption
-curves as separate evidence streams:
-
-```bash
-polylogue analyze insights coverage --group-by month --format json
-polylogue analyze insights cost-rollups --format json
-polylogue analyze usage --format json --limit 0
-polylogue analyze insights usage-timeline --group-by month-origin-model --format json
-
-devtools workspace claim-vs-evidence --limit 5000 \
-  --out-dir .agent/demos/claim-vs-evidence --json
-```
-
-See [docs/agent-forensics.md](docs/agent-forensics.md) for the supported
-queries and the token-accounting traps they handle: per-event deltas vs
-cumulative totals, physical-vs-logical token grain, stored-vs-catalog cost
-provenance, and subscription cache-read economics.
-
-`scripts/cost_accounting_demo.py` proves the cross-provider cost accounting end
-to end with no mocks: it ingests a crafted Codex session through Polylogue's
-real writer, reads the materialized rollup back, and shows the corrected
-disjoint billing lanes next to what the pre-fix code charged. Codex reports
-input *inclusive* of cached and output *inclusive* of reasoning; billing those
-naively double-counts, and because an agent re-sends its whole context each turn
-cached is ~96% of input — a 7.69x cost inflation on the real corpus.
-
-```bash
-uv run python scripts/cost_accounting_demo.py
-# operator cross-verify against Codex's authoritative token store (private):
-uv run python scripts/cost_accounting_demo.py \
-  --archive ~/.local/share/polylogue --codex-state ~/.codex/state_5.sqlite
-```
-
-See [docs/cost-model.md § Codex disjoint billing lanes](docs/cost-model.md#codex-disjoint-billing-lanes)
-for the token semantics and cross-verification result.
+- [Getting Started](docs/getting-started.md)
+- [Search and Query](docs/search.md)
+- [Architecture](docs/architecture.md)
+- [Internals](docs/internals.md)
+- [MCP Integration](docs/mcp-integration.md)
+- [Browser Capture](docs/browser-capture.md)
+- [Security](docs/security.md)
 
 <!-- BEGIN GENERATED: docs-surface -->
 ## Documentation
@@ -409,6 +150,9 @@ Start with the generated command and architecture references; use [docs/README.m
 | [Architecture Spine](docs/architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
 | [Design Direction](docs/design/README.md) | Beads-first design doctrine and the standing domain-model references that survive it. |
 | [Query-Action Workflows](docs/product/workflows.md) | Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths. |
+| [Demos and Proofs](docs/demos.md) | Current reproducible proofs, construct-valid demo doctrine, and flagship demonstrations under construction. |
+| [Public Claim: Structured Failure Follow-Up](docs/findings/claim-vs-evidence.md) | Bounded field finding with structural oracle, sample frame, calibration, reproduction, and caveats. |
+| [Polylogue on Sinex](docs/sinex-interop.md) | Current bridge, maximal Sinex-backed target, authority split, identity contract, and decisive rebuild proof. |
 | [Proof Artifacts](docs/proof-artifacts.md) | Claim-to-proof map for public-facing demo, cost, failure-follow-up, and affordance-analysis claims. |
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
 | [Search & Query](docs/search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
@@ -425,3 +169,62 @@ Start with the generated command and architecture references; use [docs/README.m
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
 
 <!-- END GENERATED: docs-surface -->
+
+## Current status
+
+Polylogue is pre-1.0 and under active dogfooding. The codebase already supports multi-origin ingestion, normalized tool-aware archives, typed refs, lineage, cost and usage projections, deterministic demos, CLI/MCP/Python/web surfaces, and reviewed context compilation. The active Beads backlog is currently hardening the trust floor and public product experience, particularly:
+
+- disjoint cross-provider token and cost accounting;
+- loud degraded-mode and readiness signals;
+- semantic transcript rendering shared by CLI and web;
+- public claims and findings with resolvable evidence;
+- install and release-channel verification;
+- memory and resumption experiments;
+- the long-term Sinex-backed evidence architecture.
+
+Roadmap authority lives in Beads:
+
+```bash
+bd ready
+bd list --status open
+```
+
+Do not infer roadmap state from GitHub Issues.
+
+## Installation
+
+Supported current paths are source checkout and Nix. PyPI, Homebrew, OCI images, and browser-store distribution remain release-channel targets until the release matrix proves them.
+
+```bash
+# One-shot CLI
+nix run github:Sinity/polylogue -- --help
+
+# Development checkout
+git clone https://github.com/Sinity/polylogue.git
+cd polylogue
+nix develop
+
+polylogue --help
+polylogued run
+polylogue-mcp --help
+```
+
+See [Installation](docs/installation.md) and [Release Readiness](docs/plans/release-readiness-gate.md).
+
+## Development
+
+```bash
+devtools status
+devtools render all
+devtools verify --quick
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [TESTING.md](TESTING.md), and [Developer Tools](docs/devtools.md).
+
+## Security
+
+Polylogue assumes a trusted single-user local host. The daemon binds to loopback by default, protected routes use bearer tokens, browser capture uses a distinct token, and mutating browser-accessible routes enforce Origin policy. Raw archives can contain source code, secrets, personal conversations, paths, and tool output; use host disk encryption and review [docs/security.md](docs/security.md) and [docs/daemon-threat-model.md](docs/daemon-threat-model.md).
+
+## License
+
+MIT.

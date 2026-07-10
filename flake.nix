@@ -1,5 +1,5 @@
 {
-  description = "Polylogue - AI session archive";
+  description = "Polylogue - local flight recorder and system of record for AI work";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -87,7 +87,7 @@
         '';
 
         meta = {
-          description = "Polylogue archive Python package and CLI";
+          description = "Polylogue evidence archive Python package and CLI";
           mainProgram = "polylogue";
           license = pkgs.lib.licenses.mit;
           homepage = "https://github.com/Sinity/polylogue";

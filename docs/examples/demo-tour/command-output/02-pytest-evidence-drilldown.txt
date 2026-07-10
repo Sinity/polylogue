@@ -1,6 +1,0 @@
- Inspecting generated workload record 1.
-read 4096 bytes
-AssertionError: generated fixture mismatch
----
- The pytest command failed with exit code 1; I will inspect the assertion before retrying.
----

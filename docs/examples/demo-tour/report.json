@@ -1,6 +1,6 @@
 {
   "archive_root": "archive",
-  "first_result_s": 7.956,
+  "first_result_s": 20.082,
   "ok": true,
   "output_dir": ".",
   "problems": [],
@@ -204,7 +204,7 @@
         "construct_id": "embedding_candidate_prose_messages",
         "label": "Embedding candidate prose messages",
         "minimum": 1,
-        "observed": 24,
+        "observed": 25,
         "ok": true
       },
       {
@@ -222,7 +222,7 @@
         "ok": true
       }
     ],
-    "message_count": 42,
+    "message_count": 43,
     "overlays_seeded": true,
     "session_count": 11,
     "session_ids": [
@@ -242,69 +242,62 @@
   },
   "steps": [
     {
+      "bytes_written": 230,
+      "command": [
+        "polylogue",
+        "--id",
+        "codex-session:demo-terminal-error",
+        "read",
+        "--view",
+        "messages",
+        "--limit",
+        "10"
+      ],
+      "duration_s": 2.158,
+      "exit_code": 0,
+      "name": "structural failure receipt",
+      "output_path": "command-output/01-structural-failure-receipt.txt"
+    },
+    {
+      "bytes_written": 44,
+      "command": [
+        "polylogue",
+        "actions where is_error:true | group by tool | count"
+      ],
+      "duration_s": 1.898,
+      "exit_code": 0,
+      "name": "failed actions aggregate",
+      "output_path": "command-output/02-failed-actions-aggregate.txt"
+    },
+    {
+      "bytes_written": 936,
+      "command": [
+        "polylogue",
+        "--id",
+        "codex-session:demo-lineage-fork",
+        "read",
+        "--view",
+        "chronicle"
+      ],
+      "duration_s": 2.084,
+      "exit_code": 0,
+      "name": "composed lineage",
+      "output_path": "command-output/03-composed-lineage.txt"
+    },
+    {
       "bytes_written": 1426,
       "command": [
         "polylogue",
         "analyze",
         "--facets"
       ],
-      "duration_s": 4.155,
+      "duration_s": 1.953,
       "exit_code": 0,
       "name": "archive facets",
-      "output_path": "command-output/01-archive-facets.txt"
-    },
-    {
-      "bytes_written": 199,
-      "command": [
-        "polylogue",
-        "find",
-        "pytest",
-        "then",
-        "read",
-        "--view",
-        "messages",
-        "--limit",
-        "3"
-      ],
-      "duration_s": 1.999,
-      "exit_code": 0,
-      "name": "pytest evidence drilldown",
-      "output_path": "command-output/02-pytest-evidence-drilldown.txt"
-    },
-    {
-      "bytes_written": 360,
-      "command": [
-        "polylogue",
-        "--id",
-        "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
-        "read",
-        "--view",
-        "messages",
-        "--limit",
-        "5"
-      ],
-      "duration_s": 1.883,
-      "exit_code": 0,
-      "name": "session evidence by id",
-      "output_path": "command-output/03-session-evidence-by-id.txt"
-    },
-    {
-      "bytes_written": 1357,
-      "command": [
-        "polylogue",
-        "find",
-        "pytest",
-        "then",
-        "analyze",
-        "--facets"
-      ],
-      "duration_s": 1.603,
-      "exit_code": 0,
-      "name": "query facets",
-      "output_path": "command-output/04-query-facets.txt"
+      "output_path": "command-output/04-archive-facets.txt"
     }
   ],
-  "total_duration_s": 13.442,
+  "total_duration_s": 26.018,
   "transcript_path": "transcript.txt",
   "verify": {
     "absolute_path_leaks": [],
@@ -503,7 +496,7 @@
         "construct_id": "embedding_candidate_prose_messages",
         "label": "Embedding candidate prose messages",
         "minimum": 1,
-        "observed": 24,
+        "observed": 25,
         "ok": true
       },
       {
@@ -521,7 +514,7 @@
         "ok": true
       }
     ],
-    "message_count": 42,
+    "message_count": 43,
     "ok": true,
     "overlays_present": true,
     "problems": [],

@@ -86,6 +86,21 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths.",
     ),
     DocsEntry(
+        "Demos and Proofs",
+        "docs/demos.md",
+        "Current reproducible proofs, construct-valid demo doctrine, and flagship demonstrations under construction.",
+    ),
+    DocsEntry(
+        "Public Claim: Structured Failure Follow-Up",
+        "docs/findings/claim-vs-evidence.md",
+        "Bounded field finding with structural oracle, sample frame, calibration, reproduction, and caveats.",
+    ),
+    DocsEntry(
+        "Polylogue on Sinex",
+        "docs/sinex-interop.md",
+        "Current bridge, maximal Sinex-backed target, authority split, identity contract, and decisive rebuild proof.",
+    ),
+    DocsEntry(
         "Proof Artifacts",
         "docs/proof-artifacts.md",
         "Claim-to-proof map for public-facing demo, cost, failure-follow-up, and affordance-analysis claims.",
@@ -134,6 +149,9 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Architecture Spine",
     "Design Direction",
     "Query-Action Workflows",
+    "Demos and Proofs",
+    "Public Claim: Structured Failure Follow-Up",
+    "Polylogue on Sinex",
     "Proof Artifacts",
     "CLI Reference",
     "Search & Query",

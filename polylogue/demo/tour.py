@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -12,7 +13,10 @@ import textwrap
 import time
 from pathlib import Path
 
-from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID
+from polylogue.scenarios import (
+    DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
+    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
+)
 
 from .models import DemoTourResult, DemoTourStep
 from .seed import seed_demo_archive
@@ -51,11 +55,15 @@ def run_demo_tour(
     seed_start = time.perf_counter()
     seed = asyncio.run(seed_demo_archive(resolved_archive, force=True, with_overlays=True))
     seed_duration = time.perf_counter() - seed_start
+    seed_passed = sum(row.ok for row in seed.construct_coverage)
     transcript_parts.append(
         _format_internal_step(
-            "seed demo archive",
-            f"seeded {seed.session_count} sessions and {seed.message_count} messages in {seed_duration:.3f}s",
-            _public_payload(seed.to_payload(), base_dir=resolved_output),
+            "prepare deterministic proof archive",
+            (
+                f"Seeded {seed.session_count} sessions, {seed.message_count} messages, "
+                f"and {seed.assertion_count} user-state assertions in {seed_duration:.3f}s. "
+                f"Fixture audit: {seed_passed}/{len(seed.construct_coverage)} declared constructs satisfied."
+            ),
         )
     )
 
@@ -64,9 +72,12 @@ def run_demo_tour(
     verify_duration = time.perf_counter() - verify_start
     transcript_parts.append(
         _format_internal_step(
-            "verify demo archive",
-            f"verification ok={verify.ok} in {verify_duration:.3f}s",
-            _public_payload(verify.to_payload(), base_dir=resolved_output),
+            "verify evidence before presenting it",
+            (
+                f"Verification {'passed' if verify.ok else 'failed'} in {verify_duration:.3f}s; "
+                f"{len(verify.absolute_path_leaks)} path leaks and {len(verify.problems)} semantic problems. "
+                "The complete fixture and verification audit remains in report.json."
+            ),
         )
     )
 
@@ -75,24 +86,36 @@ def run_demo_tour(
     env = _tour_env(resolved_archive)
     command_specs = (
         (
+            "structural failure receipt",
+            ("--id", DEMO_CODEX_TERMINAL_ERROR_SESSION_ID, "read", "--view", "messages", "--limit", "10"),
+            (
+                "Start with the receipt, not a dashboard: the assistant acknowledges a failed test run, "
+                "and the tool result retains exit_code=4 plus the exact error output."
+            ),
+        ),
+        (
+            "failed actions aggregate",
+            ("actions where is_error:true | group by tool | count",),
+            (
+                "Now aggregate the same structural field across providers. This query counts normalized "
+                "failed actions; it does not search prose for the word 'error'."
+            ),
+        ),
+        (
+            "composed lineage",
+            ("--id", DEMO_CODEX_LINEAGE_FORK_SESSION_ID, "read", "--view", "chronicle"),
+            (
+                "Read a fork as one logical chronicle: inherited parent messages remain attributable to "
+                "their origin while the fork contributes only its divergent tail."
+            ),
+        ),
+        (
             "archive facets",
             ("analyze", "--facets"),
-            "First result: a compact archive overview with source and role facets.",
-        ),
-        (
-            "pytest evidence drilldown",
-            ("find", "pytest", "then", "read", "--view", "messages", "--limit", "3"),
-            "Drilldown: show the exact transcript evidence behind a pytest failure.",
-        ),
-        (
-            "session evidence by id",
-            ("--id", DEMO_CLAUDE_CODE_SESSION_ID, "read", "--view", "messages", "--limit", "5"),
-            "Evidence ref: jump directly to the known demo Claude Code session.",
-        ),
-        (
-            "query facets",
-            ("find", "pytest", "then", "analyze", "--facets"),
-            "Follow-up: summarize facets for the same query.",
+            (
+                "Only after inspecting evidence, zoom out to the archive: eleven sessions across five "
+                "origins, with deferred families labeled rather than silently guessed."
+            ),
         ),
     )
     for index, (name, args, explanation) in enumerate(command_specs, start=1):
@@ -115,7 +138,7 @@ def run_demo_tour(
     ok = not problems
 
     transcript_path.write_text("\n".join(transcript_parts), encoding="utf-8")
-    _write_recording_tape(recording_tape_path)
+    _write_recording_tape(recording_tape_path, out_dir_name=resolved_output.name)
 
     result = DemoTourResult(
         archive_root=resolved_archive,
@@ -173,7 +196,7 @@ def _run_cli_step(
     )
     rendered = "\n".join(
         [
-            f"$ {' '.join(step.command)}",
+            f"$ {shlex.join(step.command)}",
             explanation,
             f"exit={step.exit_code} duration={step.duration_s:.3f}s bytes={step.bytes_written}",
             output.strip(),
@@ -183,15 +206,8 @@ def _run_cli_step(
     return step, rendered
 
 
-def _format_internal_step(name: str, summary: str, payload: object) -> str:
-    return "\n".join(
-        [
-            f"# {name}",
-            summary,
-            json.dumps(payload, indent=2, sort_keys=True),
-            "",
-        ]
-    )
+def _format_internal_step(name: str, summary: str) -> str:
+    return "\n".join([f"# {name}", summary, ""])
 
 
 def _tour_problems(
@@ -216,17 +232,36 @@ def _tour_problems(
 
 def _render_report_markdown(result: DemoTourResult) -> str:
     status = "passed" if result.ok else "failed"
+    construct_count = len(result.verify.construct_coverage)
+    constructs_passed = sum(row.ok for row in result.verify.construct_coverage)
     lines = [
         "# Polylogue Demo Tour Report",
         "",
         f"Status: **{status}**",
         "",
         "This report was produced by `polylogue demo tour` against the deterministic",
-        "private-data-free demo archive.",
+        "private-data-free demo archive. The transcript is ordered as an evidence story:",
+        "one receipt, a structural aggregate, copied-lineage composition, then archive scope.",
+        "",
+        "## What this tour proves",
+        "",
+        "- A provider-normalized tool result can retain structural failure evidence, including an exit code and output.",
+        "- The query surface can aggregate failed actions from structured fields rather than keyword matching assistant prose.",
+        "- A fork can be read as a logical chronicle while inherited messages keep their original refs.",
+        "- One deterministic archive can expose multiple provider origins through the same read and analysis surfaces.",
+        f"- The fixture verifier found {constructs_passed}/{construct_count} declared constructs and no absolute-path leaks.",
+        "",
+        "## What this tour does not prove",
+        "",
+        "- It is not a scale or latency claim for a private multi-million-message archive.",
+        "- It does not prove complete capture fidelity for every supported provider or every historical export variant.",
+        "- It does not prove that semantic retrieval, reviewed memory, or context injection improves agent outcomes.",
+        "- It does not prove the proposed Sinex-backed storage architecture or selective physical deletion.",
+        "- It is a deterministic product-contract demonstration, not a provider invoice or general model-behavior study.",
         "",
         "## Timings",
         "",
-        f"- First query result: {result.first_result_s:.3f}s (budget {FIRST_RESULT_BUDGET_S:.0f}s)",
+        f"- First evidence result: {result.first_result_s:.3f}s (budget {FIRST_RESULT_BUDGET_S:.0f}s)",
         f"- Full tour: {result.total_duration_s:.3f}s (budget {FULL_TOUR_BUDGET_S:.0f}s)",
         "",
         "## Archive",
@@ -235,6 +270,7 @@ def _render_report_markdown(result: DemoTourResult) -> str:
         f"- Sessions: {result.seed.session_count}",
         f"- Messages: {result.seed.message_count}",
         f"- User overlays: {'present' if result.verify.overlays_present else 'missing'}",
+        f"- Declared fixture constructs: {constructs_passed}/{construct_count} satisfied",
         "",
         "## Steps",
         "",
@@ -242,7 +278,7 @@ def _render_report_markdown(result: DemoTourResult) -> str:
         "| --- | ---: | ---: | ---: | --- |",
     ]
     lines.extend(
-        f"| {step.name} | {step.exit_code} | {step.duration_s:.3f}s | {step.bytes_written} | `{step.output_path.name}` |"
+        f"| {step.name} | {step.exit_code} | {step.duration_s:.3f}s | {step.bytes_written} | `command-output/{step.output_path.name}` |"
         for step in result.steps
     )
     lines.extend(["", "## Problems", ""])
@@ -255,29 +291,38 @@ def _render_report_markdown(result: DemoTourResult) -> str:
             "",
             "## Artifacts",
             "",
-            "- Transcript: `transcript.txt`",
-            "- JSON report: `report.json`",
-            "- Recording tape: `recording.tape`",
+            "- Human-readable evidence story: `transcript.txt`",
+            "- Complete machine-readable fixture, verification, timing, and command record: `report.json`",
+            "- This bounded scope statement: `report.md`",
+            "- VHS recording recipe: `recording.tape`",
+            "- Raw command outputs: `command-output/`",
             "",
         ]
     )
     return "\n".join(lines)
 
 
-def _write_recording_tape(path: Path) -> None:
+def _write_recording_tape(path: Path, *, out_dir_name: str) -> None:
+    # Reference the out-dir by basename only: the tape must reproduce the run
+    # it sits next to without baking a machine-local absolute path into a
+    # potentially committed artifact.
+    out_ref = shlex.quote(out_dir_name)
     path.write_text(
         textwrap.dedent(
-            """\
+            f"""\
             Output "demo-tour.gif"
             Set FontSize 18
             Set Width 1080
             Set Height 720
             Set Padding 18
             Set TypingSpeed 0.04
-            Type "polylogue demo tour"
+            Type "polylogue demo tour --out-dir {out_ref}"
             Enter
-            Sleep 500ms
-            Type "cat report.md"
+            Sleep 15s
+            Type "cat {out_ref}/transcript.txt"
+            Enter
+            Sleep 4s
+            Type "cat {out_ref}/report.md"
             Enter
             Sleep 2s
             """

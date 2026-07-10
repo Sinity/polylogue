@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "polylogue"
 version = "0.1.0"
-description = "Polylogue CLI for AI chat archives"
+description = "Local flight recorder and system of record for AI work"
 readme = "README.md"
 license = {text = "MIT"}
 keywords = ["ai", "chatgpt", "claude", "session", "archive", "llm"]

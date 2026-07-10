@@ -1,5 +1,5 @@
 Facets (global) — matched result set:
-  sessions: 11  messages: 42
+  sessions: 11  messages: 43
   Family states:
     total_counts: Total counts — complete
     origins: Provider origins — complete

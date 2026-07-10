@@ -11,6 +11,9 @@ Set Padding 18
 Type "polylogue demo tour --out-dir demo-tour --force"
 Enter
 Sleep 12s
+Type "cat demo-tour/transcript.txt"
+Enter
+Sleep 4s
 Type "cat demo-tour/report.md"
 Enter
 Sleep 2s
