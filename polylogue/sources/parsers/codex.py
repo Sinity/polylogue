@@ -182,19 +182,12 @@ def _turn_context_payload(payload: dict[str, object]) -> dict[str, object]:
 
 
 def _token_usage(record: dict[str, object]) -> dict[str, int]:
-    """Extract per-message token usage as disjoint, additive lanes.
+    """Extract per-message usage as disjoint additive pricing lanes.
 
-    Codex (OpenAI) reports ``input_tokens`` *inclusive* of the cached portion
-    (``cache_read_input_tokens``/``cached_input_tokens``/``cached_tokens``),
-    unlike Claude's native convention where ``input_tokens`` already excludes
-    cache. Cost computation (``estimate_message_cost``/``compute_session_cost``)
-    treats input and cache_read as separate additive billing lanes, so storing
-    the raw inclusive value here would double-bill the cached portion -- the
-    same 7.69x-class bug fixed for the session-wide token_count rollup by
-    commit 3938bc6c2 (see ``_provider_usage_disjoint_lanes`` in
-    storage/sqlite/archive_tiers/write.py). Subtract cache_read out of input
-    at the source so every downstream consumer sees a uniform disjoint-lane
-    contract without needing to know which provider's convention produced it.
+    Codex input includes cache reads, while message pricing bills fresh input
+    and cache reads separately. Normalize at the source; Claude already reports
+    these lanes disjointly. The event rollup applies the same rule in
+    ``_provider_usage_disjoint_lanes``.
     """
     usage = _dict_record(record.get("usage")) or _dict_record(record.get("tokens")) or record
     input_with_cached = _int_value(usage.get("input_tokens") or usage.get("inputTokenCount"))
