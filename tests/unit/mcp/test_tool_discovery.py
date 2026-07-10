@@ -31,7 +31,6 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "resolve_ref": {"ref": f"session:{_SYNTHETIC_CONV_ID}"},
     "compile_context": {"seed_ref": f"session:{_SYNTHETIC_CONV_ID}", "read_views": "messages"},
     "blackboard_list": {},
-    "get_session": {"id": _SYNTHETIC_CONV_ID},
     "get_session_summary": {"id": _SYNTHETIC_CONV_ID},
     "get_messages": {"session_id": _SYNTHETIC_CONV_ID, "limit": 1},
     "get_session_tree": {"session_id": _SYNTHETIC_CONV_ID},
@@ -159,7 +158,7 @@ def test_all_read_tools_discovered() -> None:
         "stats",
         "facets",
         "readiness_check",
-        "get_session",
+        "get_session_summary",
         "build_context_image",
     ]:
         assert expected in _READ_TOOL_NAMES, f"missing expected read tool: {expected}"

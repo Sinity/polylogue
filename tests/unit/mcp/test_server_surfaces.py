@@ -850,7 +850,7 @@ class TestArchiveGenericToolSurfaces:
         assert payload["tool"] == "query_units"
         assert payload["code"] == "invalid_query"
 
-    def test_get_session_tools_read_archive_file_set(
+    def test_get_session_summary_tool_reads_archive_file_set(
         self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
     ) -> None:
         archive_root = tmp_path / "archive"
@@ -869,17 +869,14 @@ class TestArchiveGenericToolSurfaces:
                 archive_root=archive_root,
                 db_path=archive_root / "index.db",
             )
-            mock_get_polylogue.side_effect = AssertionError("get tools must not open Polylogue facade")
-            result = invoke_surface(mcp_server._tool_manager._tools["get_session"].fn, id=session_id[:12])
-            summary_result = invoke_surface(
+            mock_get_polylogue.side_effect = AssertionError("get_session_summary must not open Polylogue facade")
+            result = invoke_surface(
                 mcp_server._tool_manager._tools["get_session_summary"].fn,
-                id=session_id,
+                id=session_id[:12],
             )
 
         payload = json.loads(result)
-        summary_payload = json.loads(summary_result)
         assert payload["id"] == session_id
-        assert summary_payload["id"] == session_id
 
     def test_get_messages_tool_reads_archive_file_set(
         self: object, mcp_server: MCPServerUnderTest, tmp_path: Path

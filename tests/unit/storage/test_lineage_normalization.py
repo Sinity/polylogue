@@ -136,7 +136,7 @@ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> N
     assert link["branch_point_message_id"] is not None
     assert link["resolved_dst_session_id"] == parent_id
 
-    # The sync envelope read (MCP get_session / CLI read) also composes.
+    # The sync envelope read (MCP get_session_summary / CLI read) also composes.
     envelope = read_archive_session_envelope(conn, child_id)
     assert ["".join(block.text or "" for block in message.blocks) for message in envelope.messages] == [
         "hello",

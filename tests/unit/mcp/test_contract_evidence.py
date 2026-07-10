@@ -145,7 +145,7 @@ class TestToolErrorEnvelopes:
         body = _structured_error(result)
         assert "requires id or query" in body["message"], f"unexpected error message: {body}"
 
-    def test_get_session_missing_returns_not_found_envelope(
+    def test_get_session_summary_missing_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
     ) -> None:
@@ -154,7 +154,7 @@ class TestToolErrorEnvelopes:
             mock_poly.get_session_summary = AsyncMock(return_value=None)
             mock_get_polylogue.return_value = mock_poly
 
-            result = invoke_surface(mcp_server._tool_manager._tools["get_session"].fn, id="missing")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_session_summary"].fn, id="missing")
 
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
@@ -190,23 +190,6 @@ class TestToolErrorEnvelopes:
             result = invoke_surface(
                 mcp_server._tool_manager._tools["raw_artifacts"].fn,
                 session_id="missing",
-            )
-
-        body = _structured_error(result)
-        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-
-    def test_get_session_summary_missing_returns_not_found_envelope(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.get_session_summary = AsyncMock(return_value=None)
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["get_session_summary"].fn,
-                id="missing",
             )
 
         body = _structured_error(result)

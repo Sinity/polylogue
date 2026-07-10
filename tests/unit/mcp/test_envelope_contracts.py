@@ -86,7 +86,6 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "list_recall_packs": ("envelope", frozenset({"items", "total"})),
     "list_workspaces": ("envelope", frozenset({"items", "total"})),
     # ------- single record -------
-    "get_session": "single_object",
     "get_session_summary": "single_object",
     "compile_context": "single_object",
     "archive_get_session": "single_object",
@@ -575,7 +574,6 @@ class TestNativeReadSurfaceHonorsContract:
             ("search", {"query": "needle", "limit": 10}),
             ("query_units", {"expression": "messages where text:needle", "limit": 10}),
             ("list_sessions", {"limit": 10}),
-            ("get_session", {}),  # id filled from seeded session
             ("get_session_summary", {}),
             ("get_messages", {}),  # session_id filled from seeded session
             ("stats", {}),
@@ -596,7 +594,7 @@ class TestNativeReadSurfaceHonorsContract:
         archive_root = tmp_path / "archive"
         session_id = self._seed(archive_root)
         call_kwargs = dict(kwargs)
-        if tool_name in {"get_session", "get_session_summary"}:
+        if tool_name == "get_session_summary":
             call_kwargs["id"] = session_id
         if tool_name == "get_messages":
             call_kwargs["session_id"] = session_id

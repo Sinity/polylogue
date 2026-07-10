@@ -9,7 +9,7 @@ CLI or Python API for agent-facing recall, corrections, and context assembly.
 ~100 tools registered across `polylogue/mcp/server_*.py`, gated by capability role (see
 Configuration below). A representative sample by category:
 
-- **Search / list / get**: `search`, `list_sessions`, `get_session`, `get_messages`,
+- **Search / list / get**: `search`, `list_sessions`, `get_messages`,
   `get_session_tree`, `get_session_summary`, `get_logical_session`, `facets`.
 - **Insights**: `get_stats_by`, `session_costs`, `cost_rollups`, `usage_timeline`,
   `tool_usage`, `workflow_shape_distribution`, `session_latency_profile`.
