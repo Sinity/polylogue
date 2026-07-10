@@ -9,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
+from polylogue.daemon.write_coordinator import (
+    DaemonWriteCoordinator,
+    DaemonWriteEvent,
+    daemon_write_telemetry_payload,
+)
 
 
 @pytest.mark.asyncio
@@ -174,20 +178,115 @@ async def test_sync_writer_cancellation_holds_gate_until_thread_finishes() -> No
     task = asyncio.create_task(coordinator.run_sync("raw", raw_writer))
     assert await asyncio.to_thread(worker_started.wait, 1.0)
     task.cancel()
-    loop_turn = asyncio.get_running_loop().create_future()
-    asyncio.get_running_loop().call_soon(loop_turn.set_result, None)
-    await loop_turn
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=0.1)
 
     assert coordinator.snapshot().active_actor == "raw"
     assert not released.is_set()
     allow_worker_finish.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=1.0)
+    assert await coordinator.shutdown(timeout=1.0)
     assert released.is_set()
     assert coordinator.snapshot().active_actor is None
     last_event = coordinator.snapshot().last_event
     assert last_event is not None
     assert last_event.outcome == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_child_task_cannot_inherit_reentrant_write_lease() -> None:
+    coordinator = DaemonWriteCoordinator()
+
+    async def parent_writer() -> str:
+        child = asyncio.create_task(coordinator.run("child", _return_ready))
+        with pytest.raises(RuntimeError, match="inherited by a child task"):
+            await child
+        return await coordinator.run("same-task", _return_ready)
+
+    assert await coordinator.run("parent", parent_writer) == "ready"
+    released = coordinator.snapshot().last_event
+    assert released is not None
+    assert released.actor == "parent"
+    assert released.outcome == "success"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_queued_writer_never_runs() -> None:
+    coordinator = DaemonWriteCoordinator()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    child_called = False
+
+    async def owner() -> None:
+        entered.set()
+        await release.wait()
+
+    async def queued() -> None:
+        nonlocal child_called
+        child_called = True
+
+    owner_task = asyncio.create_task(coordinator.run("owner", owner))
+    await entered.wait()
+    queued_task = asyncio.create_task(coordinator.run("queued", queued))
+    while coordinator.snapshot().queued_actors != ("queued",):
+        await asyncio.sleep(0)
+    queued_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued_task
+    release.set()
+    await owner_task
+    assert not child_called
+
+
+@pytest.mark.asyncio
+async def test_shutdown_is_bounded_without_releasing_active_sync_writer() -> None:
+    coordinator = DaemonWriteCoordinator()
+    worker_started = threading.Event()
+    worker_release = threading.Event()
+
+    def writer() -> None:
+        worker_started.set()
+        worker_release.wait()
+
+    task = asyncio.create_task(coordinator.run_sync("sync", writer))
+    assert await asyncio.to_thread(worker_started.wait, 1.0)
+    assert not await coordinator.shutdown(timeout=0.01)
+    assert coordinator.snapshot().active_actor == "sync"
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await coordinator.run("late", _return_ready)
+    worker_release.set()
+    await task
+    assert await coordinator.shutdown(timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_operational_telemetry_reports_actor_queue_wait_and_hold() -> None:
+    coordinator = DaemonWriteCoordinator()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def owner() -> None:
+        entered.set()
+        await release.wait()
+
+    owner_task = asyncio.create_task(coordinator.run("maintenance", owner))
+    await entered.wait()
+    queued_task = asyncio.create_task(coordinator.run("watcher", _return_ready))
+    while coordinator.snapshot().queued_actors != ("watcher",):
+        await asyncio.sleep(0)
+    payload = daemon_write_telemetry_payload()
+    assert payload["active_actor"] == "maintenance"
+    assert payload["queued_actors"] == ["watcher"]
+    assert payload["queue_depth"] == 1
+    release.set()
+    await asyncio.gather(owner_task, queued_task)
+    payload = daemon_write_telemetry_payload()
+    assert payload["active_actor"] is None
+    assert payload["queue_depth"] == 0
+    event = payload["last_event"]
+    assert isinstance(event, dict)
+    assert event["actor"] == "watcher"
+    assert isinstance(event["wait_seconds"], float)
+    assert isinstance(event["hold_seconds"], float)
 
 
 async def _unexpected_operation() -> None:

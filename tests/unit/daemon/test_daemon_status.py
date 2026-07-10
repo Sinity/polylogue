@@ -49,6 +49,10 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     snapshot = result["status_snapshot"]
     assert isinstance(snapshot, dict)
     assert snapshot["state"] == "fresh"
+    writer = result["daemon_write_coordinator"]
+    assert isinstance(writer, dict)
+    assert "active_actor" in writer
+    assert "queued_actors" in writer
 
 
 def test_status_snapshot_minimal_refresh_stays_request_safe(
