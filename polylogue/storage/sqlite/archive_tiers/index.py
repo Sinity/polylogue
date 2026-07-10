@@ -13,7 +13,6 @@ from polylogue.core.enums import (
     Origin,
     PasteBoundary,
     Role,
-    SessionEventType,
     SessionKind,
     WebConstructType,
 )
@@ -499,7 +498,7 @@ CREATE TABLE IF NOT EXISTS session_events (
     session_id        TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     source_message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
     position          INTEGER NOT NULL CHECK(position >= 0),
-    event_type        TEXT NOT NULL CHECK ({check("event_type", SessionEventType)}),
+    event_type        TEXT NOT NULL CHECK(length(trim(event_type)) > 0),
     summary           TEXT NOT NULL,
     payload_json      TEXT NOT NULL DEFAULT '{{}}' CHECK ({json_object_check("payload_json")}),
     occurred_at_ms    INTEGER,

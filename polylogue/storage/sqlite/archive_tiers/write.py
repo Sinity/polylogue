@@ -17,7 +17,7 @@ from typing import cast
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.topology.edge import TopologyEdgeType, branch_type_to_edge_type
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
-from polylogue.core.enums import BlockType, PasteBoundary, SessionEventType, SessionKind, enum_values
+from polylogue.core.enums import BlockType, PasteBoundary, SessionKind
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
@@ -47,7 +47,6 @@ from polylogue.storage.search.query_support import normalize_fts5_query
 logger = get_logger(__name__)
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
-_MATERIALIZED_SESSION_EVENT_TYPES = frozenset(enum_values(SessionEventType))
 
 
 @dataclass(frozen=True, slots=True)
@@ -2539,20 +2538,18 @@ def _write_session_events(
     provider_usage_rows: list[tuple[object, ...]] = []
     for event in events:
         source_message_id = by_native_id.get(event.source_message_provider_id or "")
-        if event.event_type in _MATERIALIZED_SESSION_EVENT_TYPES:
-            session_event_rows.append(
-                (
-                    session_id,
-                    source_message_id,
-                    position,
-                    _sqlite_text(event.event_type),
-                    _sqlite_text(_event_summary(event) or ""),
-                    _json_dumps(event.payload),
-                    _timestamp_ms(event.timestamp),
-                ),
-            )
-            position += 1
-        elif event.event_type == "agent_policy":
+        session_event_rows.append(
+            (
+                session_id,
+                source_message_id,
+                position,
+                _sqlite_text(event.event_type),
+                _sqlite_text(_event_summary(event) or ""),
+                _json_dumps(event.payload),
+                _timestamp_ms(event.timestamp),
+            ),
+        )
+        if event.event_type == "agent_policy":
             agent_policy_rows.append(
                 (
                     session_id,
@@ -2564,10 +2561,9 @@ def _write_session_events(
                     _timestamp_ms(event.timestamp),
                 ),
             )
-            position += 1
-        elif event.event_type in {"token_count", "message_usage"}:
-            if event.source_message_provider_id and source_message_id is None:
-                continue
+        elif event.event_type in {"token_count", "message_usage"} and (
+            not event.source_message_provider_id or source_message_id is not None
+        ):
             row = _provider_usage_event_row(
                 session_id,
                 source_message_id,
@@ -2578,7 +2574,7 @@ def _write_session_events(
             if _provider_usage_event_row_has_evidence(row, event):
                 provider_usage_rows.append(row)
                 wrote_provider_usage_events = True
-            position += 1
+        position += 1
     if session_event_rows:
         conn.executemany(
             """

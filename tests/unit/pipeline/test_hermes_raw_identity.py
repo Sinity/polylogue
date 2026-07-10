@@ -212,7 +212,18 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
             {key: payload[key] for key in expected_cost_provenance} == expected_cost_provenance
             for payload in cost_payloads
         )
-        assert all(payload["total_token_usage"]["total_tokens"] == 0 for payload in cost_payloads)
+        assert all(
+            payload.get("total_token_usage")
+            == {
+                "cached_input_tokens": 0,
+                "cache_write_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 0,
+            }
+            for payload in cost_payloads
+        )
 
         hermes_events = await durable_hermes_events()
         assert set(hermes_events) == set(session_ids)

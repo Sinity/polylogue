@@ -6,6 +6,7 @@ import json
 import sqlite3
 from collections import defaultdict
 from collections.abc import Sequence
+from datetime import datetime, timezone
 
 import aiosqlite
 
@@ -20,6 +21,12 @@ def _payload(value: object) -> dict[str, object]:
     return dict(parsed) if isinstance(parsed, dict) else {}
 
 
+def _timestamp(value: object) -> str | None:
+    if not isinstance(value, int):
+        return None
+    return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).isoformat()
+
+
 def _row_to_session_event(row: sqlite3.Row) -> SessionEventRecord:
     source_message_id = row["source_message_id"]
     return SessionEventRecord(
@@ -28,7 +35,7 @@ def _row_to_session_event(row: sqlite3.Row) -> SessionEventRecord:
         origin=str(row["origin"]),
         event_index=int(row["position"] or 0),
         event_type=str(row["event_type"]),
-        timestamp=None,
+        timestamp=_timestamp(row["occurred_at_ms"]),
         sort_key=(float(row["occurred_at_ms"]) / 1000.0 if row["occurred_at_ms"] is not None else None),
         payload=_payload(row["payload_json"]),
         source_message_id=MessageId(source_message_id) if source_message_id is not None else None,

@@ -133,6 +133,11 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   tiers migrate via
   `storage/sqlite/migrations/source/003_drop_pending_blob_refs.sql` after a
   verified backup manifest; fresh source tiers never create the table.
+- Index schema version 30 makes `session_events` the lossless generic relation
+  for every parsed non-message event. It retains open event types and structured
+  payloads in original positions while policy and usage tables remain typed
+  projections. Existing index tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`).
 - Index schema version 28 adds the `delegations` VIEW, derived from
   `session_links` (`link_type='subagent'`) LEFT JOIN'd to the parent's Task
   dispatch `actions` row and both sessions' `session_profiles` — no

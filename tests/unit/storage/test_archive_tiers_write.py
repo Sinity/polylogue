@@ -1023,7 +1023,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
 
     rows = conn.execute(
         """
-        SELECT event_id, source_message_id, position, event_type, summary, occurred_at_ms
+        SELECT event_id, source_message_id, position, event_type, summary, payload_json, occurred_at_ms
         FROM session_events
         WHERE session_id = ?
         ORDER BY position
@@ -1037,6 +1037,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             "position": 0,
             "event_type": "compaction",
             "summary": "compressed context",
+            "payload_json": '{"summary":"compressed context"}',
             "occurred_at_ms": 1_767_225_601_000,
         },
         {
@@ -1045,9 +1046,31 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             "position": 1,
             "event_type": "capture_gap",
             "summary": "DOM fallback skipped; richer capture already exists",
+            "payload_json": '{"summary":"DOM fallback skipped; richer capture already exists"}',
             "occurred_at_ms": 1_767_225_602_000,
         },
+        {
+            "event_id": f"{session_id}:2",
+            "source_message_id": None,
+            "position": 2,
+            "event_type": "turn_context",
+            "summary": "",
+            "payload_json": '{"cwd":"/tmp"}',
+            "occurred_at_ms": None,
+        },
+        {
+            "event_id": f"{session_id}:3",
+            "source_message_id": None,
+            "position": 3,
+            "event_type": "agent_policy",
+            "summary": "",
+            "payload_json": '{"approval":"on-request"}',
+            "occurred_at_ms": 1_767_225_603_000,
+        },
     ]
+    hydrated = sync_session_events_batch(conn, [session_id])[session_id]
+    assert hydrated[0].timestamp == "2026-01-01T00:00:01+00:00"
+    assert hydrated[2].payload == {"cwd": "/tmp"}
     policies = conn.execute(
         """
         SELECT policy_id, source_message_id, position, approval_policy, sandbox_policy, network_policy, observed_at_ms
@@ -1059,9 +1082,9 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
     ).fetchall()
     assert [dict(row) for row in policies] == [
         {
-            "policy_id": f"{session_id}:2",
+            "policy_id": f"{session_id}:3",
             "source_message_id": None,
-            "position": 2,
+            "position": 3,
             "approval_policy": "on-request",
             "sandbox_policy": None,
             "network_policy": None,
