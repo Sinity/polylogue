@@ -85,6 +85,12 @@ surfaced a real product defect a chat transcript view never could.
   `then read` should expect an unfiltered list, not the intended filtered
   result, until that bug is fixed.
 
+## Non-claims
+
+- The fixture counts do not estimate production prevalence, archive scale, or provider-wide behavior.
+- The packet does not prove that semantic search is complete when embeddings are sparse.
+- The packet does not prove that a chat UI could never implement equivalent features.
+
 ## Reproduce
 
 ```bash

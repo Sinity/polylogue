@@ -1,0 +1,90 @@
+{
+  "baseline": {
+    "method": "Check filenames without epistemic fields.",
+    "name": "legacy shape-only packet",
+    "receipts": [
+      "artifact:fixture-receipt"
+    ],
+    "result": {
+      "detects_missing_falsifier": false
+    }
+  },
+  "claim": {
+    "declared_before_execution": true,
+    "scope": "this committed validator fixture only",
+    "statement": "A complete Demo Packet v2 passes schema validation.",
+    "status": "supported"
+  },
+  "falsifier": {
+    "condition": "The validator accepts a packet with a missing required field.",
+    "evaluation_method": "Run schema validation against the negative fixture.",
+    "receipts": [
+      "artifact:fixture-receipt"
+    ],
+    "result": "pass",
+    "triggered": false
+  },
+  "mode": "fixture",
+  "non_claims": [
+    "This fixture does not prove any Polylogue archive capability."
+  ],
+  "oracle": {
+    "description": "The hand-authored fixture contains every required field.",
+    "expected": {
+      "valid": true
+    },
+    "independent": true,
+    "method": "Compare required keys with the normative JSON Schema.",
+    "receipts": [
+      "artifact:fixture-receipt"
+    ]
+  },
+  "packet_id": "valid-minimal",
+  "primary_construct": {
+    "id": "fixture.contract",
+    "product_primitives": [
+      "demo packet validator"
+    ],
+    "statement": "The v2 gate accepts a complete epistemic contract."
+  },
+  "provenance": {
+    "archive_cursor": "none-validator-fixture",
+    "commit_sha": "fixture0",
+    "measure_version": "demo-packet-v2",
+    "run_date": "2026-07-10",
+    "sample_frame_predicate": "the committed validator fixture"
+  },
+  "receipts": [
+    {
+      "artifact_path": "receipt.json",
+      "description": "The fixture receipt used by validator tests.",
+      "kind": "artifact",
+      "ref": "artifact:fixture-receipt",
+      "resolved": true
+    }
+  ],
+  "reproduction": {
+    "commands": [
+      "pytest tests/unit/devtools/test_demo_packet.py"
+    ],
+    "deterministic": true,
+    "fixture": "validator fixture",
+    "private_data": false
+  },
+  "results": {
+    "measurements": [
+      {
+        "name": "schema_errors",
+        "receipts": [
+          "artifact:fixture-receipt"
+        ],
+        "unit": "errors",
+        "value": 0
+      }
+    ],
+    "status": "pass",
+    "summary": "The complete fixture satisfies the v2 schema."
+  },
+  "schema_version": "2.0.0",
+  "title": "Valid minimal packet"
+}

@@ -1,0 +1,86 @@
+{
+  "schema_version": "2.0.0",
+  "packet_id": "valid-minimal",
+  "title": "Valid minimal packet",
+  "mode": "fixture",
+  "primary_construct": {
+    "id": "fixture.contract",
+    "statement": "The v2 gate accepts a complete epistemic contract.",
+    "product_primitives": ["demo packet validator"]
+  },
+  "claim": {
+    "statement": "A complete Demo Packet v2 passes schema validation.",
+    "declared_before_execution": true,
+    "scope": "this committed validator fixture only",
+    "status": "supported"
+  },
+  "oracle": {
+    "independent": true,
+    "description": "The hand-authored fixture contains every required field.",
+    "method": "Compare required keys with the normative JSON Schema.",
+    "expected": {"valid": true},
+    "receipts": ["artifact:fixture-receipt"]
+  },
+  "baseline": {
+    "name": "legacy shape-only packet",
+    "method": "Check filenames without epistemic fields.",
+    "result": {"detects_missing_falsifier": false},
+    "receipts": ["artifact:fixture-receipt"]
+  },
+  "controls": {
+    "negative": [{
+      "id": "invalid-packet",
+      "purpose": "A packet missing its falsifier must be rejected.",
+      "expected": {"valid": false},
+      "observed": {"valid": false},
+      "passed": true,
+      "receipts": ["artifact:fixture-receipt"]
+    }],
+    "missing_evidence": [{
+      "id": "missing-receipt",
+      "purpose": "A receipt whose artifact is absent must be rejected.",
+      "expected": {"valid": false},
+      "observed": {"valid": false},
+      "passed": true,
+      "receipts": ["artifact:fixture-receipt"]
+    }]
+  },
+  "falsifier": {
+    "condition": "The validator accepts a packet with a missing required field.",
+    "evaluation_method": "Run schema validation against the negative fixture.",
+    "triggered": false,
+    "result": "pass",
+    "receipts": ["artifact:fixture-receipt"]
+  },
+  "results": {
+    "status": "pass",
+    "summary": "The complete fixture satisfies the v2 schema.",
+    "measurements": [{
+      "name": "schema_errors",
+      "value": 0,
+      "unit": "errors",
+      "receipts": ["artifact:fixture-receipt"]
+    }]
+  },
+  "receipts": [{
+    "ref": "artifact:fixture-receipt",
+    "kind": "artifact",
+    "description": "The fixture receipt used by validator tests.",
+    "artifact_path": "receipt.json",
+    "resolved": true
+  }],
+  "non_claims": ["This fixture does not prove any Polylogue archive capability."],
+  "reproduction": {
+    "fixture": "validator fixture",
+    "deterministic": true,
+    "private_data": false,
+    "commands": ["pytest tests/unit/devtools/test_demo_packet.py"]
+  },
+  "provenance": {
+    "archive_cursor": "none-validator-fixture",
+    "measure_version": "demo-packet-v2",
+    "commit_sha": "fixture0",
+    "sample_frame_predicate": "the committed validator fixture",
+    "run_date": "2026-07-10"
+  }
+}

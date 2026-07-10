@@ -1,1 +1,2 @@
+{"ref": "artifact:packet-contract-stub-evidence", "cited_for": "Demo Packet v2 receipt root", "verified_via": "committed evidence.ndjson"}
 {"ref": "seeded-corpus-seed-1843:session-count", "value": "stub", "note": "fixture row proving evidence.ndjson shape"}

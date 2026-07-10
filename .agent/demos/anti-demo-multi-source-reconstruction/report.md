@@ -74,6 +74,11 @@ minute multi-source" down to "session-to-commit" and declare success.
   reference for "the bead that supplies minute-by-minute cross-system
   reconstruction" because no such bead exists.
 
+## Non-claims
+
+- This refusal does not claim that cross-source reconstruction is impossible in a federated Sinex-backed architecture.
+- This packet does not measure production source coverage or the quality of any external activity system.
+
 ## Reproduce
 
 ```bash

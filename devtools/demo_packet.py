@@ -1,49 +1,23 @@
-"""Demo Finding Packet contract (polylogue-212.7).
+"""Demo Packet v2 validation and registry policy (polylogue-212.12).
 
-Background
-----------
+The original Demo Finding Packet established a uniform directory shape.  V2
+adds an epistemic contract: a demo is not conforming unless it predeclares one
+primary construct, an independently checkable oracle, a baseline, negative and
+missing-evidence controls, an explicit falsifier, resolvable receipts, and
+bounded non-claims.
 
-The 212 demo portfolio (polylogue-212) converts from "a shelf of named demo
-scripts" into a PORTFOLIO CONTRACT: every demo is an executable ``PROMPT.md``
-handed to a coding agent, and every run of that prompt emits an identical
-Demo Finding Packet — the same file shapes regardless of which demo produced
-them, so the portfolio is machine-checkable rather than hand-curated.
-
-A packet directory contains:
-
-- ``PROMPT.md`` — the executable prompt (product primitives only; shell/
-  python is glue, per the 212 compositionality rule).
-- ``finding.yaml`` — the five-part PROVENANCE STANZA (archive cursor,
-  measure/query version, commit SHA, sample-frame predicate, run date) plus
-  the finding's structural claim.
-- ``report.md`` — fixed section order: claim, corpus, method, findings,
-  specimens, counterexamples, limits, reproduce.
-- ``evidence.ndjson`` — one row per cited ref.
-- ``queries.ndjson`` — one row per query: text + lowered spec.
-- ``annotations.ndjson`` — optional; external-agent annotations, if any.
-- ``checks.json`` — pass/fail + unsupported-claim list + coverage notes.
-- ``run.log`` — the raw execution transcript/output.
-
-Provenance stanza note
------------------------
-
-The five-field shape (``archive_cursor``, ``measure_version``, ``commit_sha``,
-``sample_frame_predicate``, ``run_date``) is documented authoritatively by
-polylogue-3tl.4, which will also land the publishing pipeline (``devtools
-render findings``, ``docs/findings/<slug>/``, the provenance-refusal gate,
-living-page changelog semantics) and OWN this schema going forward. 3tl.4 is
-not yet implemented. This module inlines the same five fields as a
-provisional, self-contained copy so 212.7 does not block on 3tl.4's full
-publishing lane -- when 3tl.4 lands, its schema should absorb this one
-(matching field names deliberately) rather than diverge.
+The normative schema lives at ``docs/schemas/demo-packet-v2.schema.json``.
+This module intentionally keeps the existing human packet files too: JSON is
+the gate, Markdown/NDJSON are the inspectable publication surface.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 PROVENANCE_STANZA_FIELDS: tuple[str, ...] = (
     "archive_cursor",
@@ -61,20 +35,25 @@ REPORT_SECTION_ORDER: tuple[str, ...] = (
     "specimens",
     "counterexamples",
     "limits",
+    "non-claims",
     "reproduce",
 )
 
 PACKET_FILENAMES: tuple[str, ...] = (
     "PROMPT.md",
+    "packet.json",
     "finding.yaml",
     "report.md",
     "evidence.ndjson",
     "queries.ndjson",
     "checks.json",
+    "NON-CLAIMS.md",
     "run.log",
 )
 #: Optional -- present only when an external-agent annotation loop ran.
 OPTIONAL_PACKET_FILENAMES: tuple[str, ...] = ("annotations.ndjson",)
+DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "docs" / "schemas" / "demo-packet-v2.schema.json"
+DEFAULT_DEMO_ROOT = Path(".agent/demos")
 
 
 class DemoPacketValidationError(ValueError):
@@ -90,6 +69,8 @@ class PacketValidationResult:
     missing_files: tuple[str, ...] = ()
     missing_stanza_fields: tuple[str, ...] = ()
     malformed_sections: tuple[str, ...] = ()
+    schema_errors: tuple[str, ...] = ()
+    receipt_errors: tuple[str, ...] = ()
     errors: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, object]:
@@ -99,19 +80,14 @@ class PacketValidationResult:
             "missing_files": list(self.missing_files),
             "missing_stanza_fields": list(self.missing_stanza_fields),
             "malformed_sections": list(self.malformed_sections),
+            "schema_errors": list(self.schema_errors),
+            "receipt_errors": list(self.receipt_errors),
             "errors": list(self.errors),
         }
 
 
 def _parse_minimal_yaml_mapping(text: str) -> dict[str, str]:
-    """Parse a flat ``key: value`` mapping without a YAML dependency.
-
-    ``finding.yaml`` at the level this contract checks is a flat provenance
-    stanza plus a few scalar fields -- not a full YAML document. This avoids
-    adding a YAML parsing dependency for a shape this simple; a nested/complex
-    finding.yaml is out of scope for this validator (which only checks the
-    stanza fields are present and non-empty).
-    """
+    """Parse the packet's flat provenance stanza without a full YAML loader."""
 
     result: dict[str, str] = {}
     for raw_line in text.splitlines():
@@ -124,7 +100,7 @@ def _parse_minimal_yaml_mapping(text: str) -> dict[str, str]:
 
 
 def _validate_ndjson(path: Path) -> str | None:
-    """Return an error string if ``path`` is not valid line-delimited JSON, else None."""
+    """Return an error string if *path* is not valid line-delimited JSON."""
 
     for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
@@ -136,16 +112,142 @@ def _validate_ndjson(path: Path) -> str | None:
     return None
 
 
-def validate_packet(packet_dir: Path) -> PacketValidationResult:
-    """Validate a packet directory against the Demo Finding Packet contract.
+def _json_pointer(error: object) -> str:
+    absolute_path = getattr(error, "absolute_path", ())
+    parts = [str(part).replace("~", "~0").replace("/", "~1") for part in absolute_path]
+    return "/" + "/".join(parts) if parts else "/"
 
-    Read-only; never mutates ``packet_dir``.
+
+def _validate_schema(payload: object, *, schema_path: Path) -> tuple[str, ...]:
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return (f"schema unavailable at {schema_path}: {exc}",)
+
+    try:
+        from jsonschema import Draft202012Validator, FormatChecker
+    except ImportError:
+        return ("jsonschema is required for the Demo Packet v2 policy gate",)
+
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    errors = sorted(validator.iter_errors(payload), key=lambda item: (list(item.absolute_path), item.message))
+    return tuple(f"packet.json{_json_pointer(error)}: {error.message}" for error in errors)
+
+
+def _receipt_artifact_path(packet_dir: Path, raw_path: object) -> tuple[Path | None, str | None]:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None, "receipt artifact_path must be a non-empty string"
+    posix = PurePosixPath(raw_path)
+    if posix.is_absolute() or ".." in posix.parts:
+        return None, f"receipt artifact_path escapes packet directory: {raw_path!r}"
+    candidate = (packet_dir / Path(*posix.parts)).resolve()
+    packet_root = packet_dir.resolve()
+    if not candidate.is_relative_to(packet_root):
+        return None, f"receipt artifact_path escapes packet directory: {raw_path!r}"
+    return candidate, None
+
+
+def _iter_referenced_receipts(value: object, *, at_root: bool = True) -> Iterable[str]:
+    """Yield every receipt ref used by an epistemic field in *value*.
+
+    The top-level ``receipts`` member declares the resolver table and is not a
+    use site.  Nested members named ``receipts`` are citations and must resolve
+    to that table.  The recursive form keeps future packet sections honest
+    without requiring a second list of allowed citation locations.
+    """
+
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if key == "receipts" and not at_root and isinstance(child, list):
+                yield from (ref for ref in child if isinstance(ref, str))
+                continue
+            yield from _iter_referenced_receipts(child, at_root=False)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_referenced_receipts(child, at_root=False)
+
+
+def _validate_receipts(packet_dir: Path, payload: object) -> tuple[str, ...]:
+    if not isinstance(payload, Mapping):
+        return ()
+    raw_receipts = payload.get("receipts")
+    if not isinstance(raw_receipts, list):
+        return ()  # The schema reports this more precisely.
+
+    errors: list[str] = []
+    seen_refs: set[str] = set()
+    for index, raw_receipt in enumerate(raw_receipts):
+        if not isinstance(raw_receipt, Mapping):
+            continue
+        ref = raw_receipt.get("ref")
+        if isinstance(ref, str):
+            if ref in seen_refs:
+                errors.append(f"receipt[{index}] duplicates ref {ref!r}")
+            seen_refs.add(ref)
+            kind = raw_receipt.get("kind")
+            expected_kind = ref.partition(":")[0]
+            if isinstance(kind, str) and kind != expected_kind:
+                errors.append(f"receipt[{index}] kind {kind!r} does not match ref prefix {expected_kind!r}")
+        artifact, artifact_error = _receipt_artifact_path(packet_dir, raw_receipt.get("artifact_path"))
+        if artifact_error is not None:
+            errors.append(f"receipt[{index}]: {artifact_error}")
+            continue
+        assert artifact is not None
+        if not artifact.is_file():
+            errors.append(f"receipt[{index}] artifact missing: {artifact.relative_to(packet_dir.resolve())}")
+            continue
+        try:
+            content = artifact.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"receipt[{index}] artifact unreadable: {exc}")
+            continue
+        if isinstance(ref, str) and ref not in content:
+            errors.append(
+                f"receipt[{index}] ref {ref!r} is not present in {artifact.relative_to(packet_dir.resolve())}"
+            )
+        expected_sha = raw_receipt.get("sha256")
+        if isinstance(expected_sha, str):
+            actual_sha = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            if actual_sha != expected_sha:
+                errors.append(
+                    f"receipt[{index}] sha256 mismatch for {artifact.name}: expected {expected_sha}, got {actual_sha}"
+                )
+
+    undeclared = sorted(set(_iter_referenced_receipts(payload)) - seen_refs)
+    errors.extend(f"referenced receipt is not declared in packet.receipts: {ref!r}" for ref in undeclared)
+    return tuple(errors)
+
+
+def _report_has_section(report_text: str, section: str) -> bool:
+    normalized = report_text.casefold()
+    return f"## {section.casefold()}" in normalized or f"# {section.casefold()}" in normalized
+
+
+def validate_packet(packet_dir: Path, *, schema_path: Path = DEFAULT_SCHEMA_PATH) -> PacketValidationResult:
+    """Validate *packet_dir* against both the human and v2 machine contracts.
+
+    The function is read-only. Receipt resolution is intentionally bounded to
+    committed artifacts inside the packet directory; generation-time code may
+    additionally resolve the same refs against a live deterministic archive.
     """
 
     missing_files = tuple(name for name in PACKET_FILENAMES if not (packet_dir / name).exists())
     errors: list[str] = []
     missing_stanza_fields: tuple[str, ...] = ()
     malformed_sections: list[str] = []
+    schema_errors: tuple[str, ...] = ()
+    receipt_errors: tuple[str, ...] = ()
+    packet_payload: object = None
+
+    packet_path = packet_dir / "packet.json"
+    if packet_path.exists():
+        try:
+            packet_payload = json.loads(packet_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            errors.append(f"packet.json is not valid JSON: {exc}")
+        else:
+            schema_errors = _validate_schema(packet_payload, schema_path=schema_path)
+            receipt_errors = _validate_receipts(packet_dir, packet_payload)
 
     finding_path = packet_dir / "finding.yaml"
     if finding_path.exists():
@@ -155,9 +257,13 @@ def validate_packet(packet_dir: Path) -> PacketValidationResult:
     report_path = packet_dir / "report.md"
     if report_path.exists():
         report_text = report_path.read_text(encoding="utf-8")
-        for section in REPORT_SECTION_ORDER:
-            if f"## {section}" not in report_text.lower() and f"# {section}" not in report_text.lower():
-                malformed_sections.append(section)
+        malformed_sections.extend(
+            section for section in REPORT_SECTION_ORDER if not _report_has_section(report_text, section)
+        )
+
+    nonclaims_path = packet_dir / "NON-CLAIMS.md"
+    if nonclaims_path.exists() and not nonclaims_path.read_text(encoding="utf-8").strip():
+        errors.append("NON-CLAIMS.md must not be empty")
 
     checks_path = packet_dir / "checks.json"
     if checks_path.exists():
@@ -177,13 +283,15 @@ def validate_packet(packet_dir: Path) -> PacketValidationResult:
             if error is not None:
                 errors.append(error)
 
-    ok = not (missing_files or missing_stanza_fields or malformed_sections or errors)
+    ok = not (missing_files or missing_stanza_fields or malformed_sections or schema_errors or receipt_errors or errors)
     return PacketValidationResult(
         packet_dir=packet_dir,
         ok=ok,
         missing_files=missing_files,
         missing_stanza_fields=missing_stanza_fields,
         malformed_sections=tuple(malformed_sections),
+        schema_errors=schema_errors,
+        receipt_errors=receipt_errors,
         errors=tuple(errors),
     )
 
@@ -195,7 +303,7 @@ class DemoRegistryEntry:
     slug: str
     prompt_path: str
     packet_dir: str
-    mode: str  # "public" | "private"
+    mode: str  # public | private | fixture | anti-demo
     required_primitives: tuple[str, ...] = ()
 
     @staticmethod
@@ -228,11 +336,15 @@ class RegistryLintResult:
     registry_path: Path
     ok: bool
     entry_results: tuple[tuple[str, PacketValidationResult | None], ...]
+    registry_errors: tuple[str, ...] = ()
+    unregistered_packet_dirs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
             "registry_path": str(self.registry_path),
             "ok": self.ok,
+            "registry_errors": list(self.registry_errors),
+            "unregistered_packet_dirs": list(self.unregistered_packet_dirs),
             "entries": [
                 {
                     "slug": slug,
@@ -244,25 +356,58 @@ class RegistryLintResult:
         }
 
 
-def lint_demo_registry(registry_path: Path, *, repo_root: Path) -> RegistryLintResult:
-    """Validate every registered demo's packet exists and conforms.
+def _registered_packet_paths(entries: Iterable[DemoRegistryEntry], *, repo_root: Path) -> set[Path]:
+    return {(repo_root / entry.packet_dir).resolve() for entry in entries}
 
-    A registry entry whose ``packet_dir`` does not exist at all is reported
-    distinctly from one whose packet exists but fails validation -- catching
-    a missing packet is the registry lint's specific job (212.7 AC clause 3).
-    """
+
+def _discover_v2_packet_dirs(*, repo_root: Path) -> set[Path]:
+    demo_root = repo_root / DEFAULT_DEMO_ROOT
+    if not demo_root.is_dir():
+        return set()
+    return {path.parent.resolve() for path in demo_root.rglob("packet.json") if path.is_file()}
+
+
+def lint_demo_registry(
+    registry_path: Path,
+    *,
+    repo_root: Path,
+    schema_path: Path = DEFAULT_SCHEMA_PATH,
+) -> RegistryLintResult:
+    """Validate every registered packet and reject unregistered v2 packets."""
 
     entries = load_demo_registry(registry_path)
     results: list[tuple[str, PacketValidationResult | None]] = []
+    registry_errors: list[str] = []
+    slugs: set[str] = set()
+    packet_paths: set[Path] = set()
+
     for entry in entries:
-        packet_dir = repo_root / entry.packet_dir
+        if entry.slug in slugs:
+            registry_errors.append(f"duplicate registry slug: {entry.slug}")
+        slugs.add(entry.slug)
+        packet_dir = (repo_root / entry.packet_dir).resolve()
+        if packet_dir in packet_paths:
+            registry_errors.append(f"duplicate registry packet_dir: {entry.packet_dir}")
+        packet_paths.add(packet_dir)
+        prompt_path = (repo_root / entry.prompt_path).resolve()
+        if not prompt_path.is_file():
+            registry_errors.append(f"{entry.slug}: prompt missing at {entry.prompt_path}")
         if not packet_dir.is_dir():
             results.append((entry.slug, None))
             continue
-        results.append((entry.slug, validate_packet(packet_dir)))
+        results.append((entry.slug, validate_packet(packet_dir, schema_path=schema_path)))
 
-    ok = all(result is not None and result.ok for _, result in results)
-    return RegistryLintResult(registry_path=registry_path, ok=ok, entry_results=tuple(results))
+    discovered = _discover_v2_packet_dirs(repo_root=repo_root)
+    registered = _registered_packet_paths(entries, repo_root=repo_root)
+    unregistered = tuple(sorted(str(path.relative_to(repo_root.resolve())) for path in discovered - registered))
+    ok = not registry_errors and not unregistered and all(result is not None and result.ok for _, result in results)
+    return RegistryLintResult(
+        registry_path=registry_path,
+        ok=ok,
+        entry_results=tuple(results),
+        registry_errors=tuple(registry_errors),
+        unregistered_packet_dirs=unregistered,
+    )
 
 
 def iter_registry_slugs(entries: Iterable[DemoRegistryEntry]) -> tuple[str, ...]:
@@ -270,6 +415,7 @@ def iter_registry_slugs(entries: Iterable[DemoRegistryEntry]) -> tuple[str, ...]
 
 
 __all__ = [
+    "DEFAULT_SCHEMA_PATH",
     "OPTIONAL_PACKET_FILENAMES",
     "PACKET_FILENAMES",
     "PROVENANCE_STANZA_FIELDS",

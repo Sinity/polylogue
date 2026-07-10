@@ -1,5 +1,5 @@
 archive_cursor: seeded-corpus-seed-1843
-measure_version: devtools.demo_packet-v1
+measure_version: demo-packet-v2
 commit_sha: ffba3ec0c
 sample_frame_predicate: "all sessions in the seeded demo corpus (seed 1843)"
 run_date: "2026-07-08"
