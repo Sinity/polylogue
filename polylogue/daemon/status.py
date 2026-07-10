@@ -2380,6 +2380,9 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             if oversized:
                 line += f"; {oversized:,} oversized"
             lines.append(line)
+            block_reason = backlog.get("execution_block_reason")
+            if backlog.get("execution_blocked") and isinstance(block_reason, str) and block_reason:
+                lines.append(f"  {block_reason}")
 
             origins = backlog.get("origin_summary")
             if isinstance(origins, list) and origins:

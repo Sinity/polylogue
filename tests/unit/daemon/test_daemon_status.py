@@ -399,6 +399,8 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
         "polylogue.daemon.status._raw_replay_backlog_info",
         lambda: {
             "available": True,
+            "execution_blocked": True,
+            "execution_block_reason": "raw source-to-index replay is disabled pending revision authority",
             "candidate_count": 3,
             "missing_blob_count": 0,
             "already_parsed_count": 0,
@@ -450,6 +452,7 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     assert "Raw materialization: 62/300 materialized; 238 raw/index join gap(s) need classification" in lines
     assert raw_replay["candidate_count"] == 3
     assert "Raw replay backlog: 3 raw row(s), 15.0 MB pending; largest 10.0 MB" in lines
+    assert "  raw source-to-index replay is disabled pending revision authority" in lines
     assert "  weighted by origin: aistudio-drive=3/15.0 MB" in lines
 
 
