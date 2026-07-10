@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 
 from polylogue.config import Config
@@ -13,6 +12,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repair import repair_orphaned_blobs
 from polylogue.storage.sqlite.connection import connection_context
 from polylogue.storage.sqlite.connection_profile import open_connection
+from tests.infra.frozen_clock import FrozenClock
 from tests.infra.storage_records import db_setup
 
 
@@ -48,14 +48,15 @@ def _reference_blob_in_source_db(source_db_path: Path, blob_hash: str, blob_size
         conn.commit()
 
 
-def _make_gc_eligible(store: BlobStore, *blob_hashes: str) -> None:
-    eligible_mtime = time.time() - MIN_AGE_S - 5
+def _make_gc_eligible(store: BlobStore, *blob_hashes: str, now_s: float) -> None:
+    eligible_mtime = now_s - MIN_AGE_S - 5
     for blob_hash in blob_hashes:
         os.utime(store.blob_path(blob_hash), (eligible_mtime, eligible_mtime))
 
 
 def test_repair_orphaned_blobs_dry_run_accounts_full_orphan_set(
     workspace_env: dict[str, Path],
+    frozen_clock: FrozenClock,
 ) -> None:
     db_path = db_setup(workspace_env)
     with connection_context(db_path):
@@ -65,7 +66,7 @@ def test_repair_orphaned_blobs_dry_run_accounts_full_orphan_set(
     orphan_a, _ = store.write_from_bytes(b"orphan-a")
     orphan_b, _ = store.write_from_bytes(b"orphan-b")
     _reference_blob_in_source_db(db_path.with_name("source.db"), referenced_hash, referenced_size)
-    _make_gc_eligible(store, referenced_hash, orphan_a, orphan_b)
+    _make_gc_eligible(store, referenced_hash, orphan_a, orphan_b, now_s=frozen_clock.time())
 
     result = repair_orphaned_blobs(_config(workspace_env, db_path), dry_run=True)
 
@@ -79,6 +80,7 @@ def test_repair_orphaned_blobs_dry_run_accounts_full_orphan_set(
 
 def test_repair_orphaned_blobs_deletes_only_unreferenced_blobs(
     workspace_env: dict[str, Path],
+    frozen_clock: FrozenClock,
 ) -> None:
     db_path = db_setup(workspace_env)
     with connection_context(db_path):
@@ -87,7 +89,7 @@ def test_repair_orphaned_blobs_deletes_only_unreferenced_blobs(
     referenced_hash, referenced_size = store.write_from_bytes(b"referenced")
     orphan_hash, _ = store.write_from_bytes(b"orphan")
     _reference_blob_in_source_db(db_path.with_name("source.db"), referenced_hash, referenced_size)
-    _make_gc_eligible(store, referenced_hash, orphan_hash)
+    _make_gc_eligible(store, referenced_hash, orphan_hash, now_s=frozen_clock.time())
 
     result = repair_orphaned_blobs(_config(workspace_env, db_path), dry_run=False)
 
@@ -99,6 +101,7 @@ def test_repair_orphaned_blobs_deletes_only_unreferenced_blobs(
 
 def test_repair_orphaned_blobs_preserves_archive_source_references(
     workspace_env: dict[str, Path],
+    frozen_clock: FrozenClock,
 ) -> None:
     db_path = db_setup(workspace_env)
     with connection_context(db_path):
@@ -107,7 +110,7 @@ def test_repair_orphaned_blobs_preserves_archive_source_references(
     referenced_hash, referenced_size = store.write_from_bytes(b"archive referenced")
     orphan_hash, _ = store.write_from_bytes(b"archive orphan")
     _reference_blob_in_source_db(db_path.with_name("source.db"), referenced_hash, referenced_size)
-    _make_gc_eligible(store, referenced_hash, orphan_hash)
+    _make_gc_eligible(store, referenced_hash, orphan_hash, now_s=frozen_clock.time())
 
     result = repair_orphaned_blobs(_config(workspace_env, db_path), dry_run=False)
 
