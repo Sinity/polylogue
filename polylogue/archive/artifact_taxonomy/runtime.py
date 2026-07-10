@@ -203,7 +203,7 @@ def _classify_dict(
             provider=provider,
             kind=ArtifactKind.SESSION_DOCUMENT,
             parse_as_session=True,
-            schema_eligible=False,
+            schema_eligible=True,
             default_priority=120,
             reason="Hermes state.db SQLite archive marker",
         )

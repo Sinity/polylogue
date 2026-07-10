@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path
 from polylogue.archive.raw_payload import JSONValue, RawPayloadEnvelope, build_raw_payload_envelope
@@ -15,6 +20,10 @@ from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 
 _SCHEMA_REGISTRY = SchemaRegistry()
+_HERMES_STATE_DB_MARKER = "hermes_state_db"
+_HERMES_STATE_DB_CONTRACT = (
+    Path(__file__).parents[2] / "schemas" / "providers" / "hermes" / "state_db_v16.contract.json"
+)
 
 
 def artifact_observation_id(
@@ -42,7 +51,7 @@ def _link_group_key(source_path: str | None) -> str | None:
 
 
 def _build_payload_envelope(
-    raw_content: bytes,
+    raw_content: Path | bytes,
     record: RawSessionRecord,
 ) -> RawPayloadEnvelope:
     return build_raw_payload_envelope(
@@ -68,6 +77,10 @@ def _resolve_payload_support(
     payload: JSONValue,
     source_path: str | None,
 ) -> tuple[SchemaResolution | None, bool]:
+    hermes_resolution = _resolve_hermes_state_db_support(payload_provider, payload)
+    if hermes_resolution is not None:
+        return hermes_resolution
+
     resolution = registry.resolve_payload(
         payload_provider,
         payload,
@@ -84,18 +97,84 @@ def _resolve_payload_support(
     return resolution, True
 
 
+@lru_cache(maxsize=1)
+def _supported_hermes_state_db_schema_versions() -> frozenset[int]:
+    contract = json.loads(_HERMES_STATE_DB_CONTRACT.read_text(encoding="utf-8"))
+    if not isinstance(contract, dict):
+        return frozenset()
+    schema_version = contract.get("schema_version")
+    if not isinstance(schema_version, int) or schema_version < 0:
+        return frozenset()
+    return frozenset({schema_version})
+
+
+def _hermes_state_db_schema_version(path: Path) -> int | None:
+    try:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
+            row = conn.execute("SELECT version FROM schema_version ORDER BY rowid DESC LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None or isinstance(row[0], bool) or not isinstance(row[0], int):
+        return None
+    return row[0] if row[0] >= 0 else None
+
+
+def _resolve_hermes_state_db_support(
+    payload_provider: Provider,
+    payload: JSONValue,
+) -> tuple[SchemaResolution | None, bool] | None:
+    if (
+        payload_provider is not Provider.HERMES
+        or not isinstance(payload, dict)
+        or payload.get("polylogue_artifact") != _HERMES_STATE_DB_MARKER
+    ):
+        return None
+    path_value = payload.get("state_db_path")
+    if not isinstance(path_value, str) or not path_value:
+        return (None, False)
+    schema_version = _hermes_state_db_schema_version(Path(path_value))
+    if schema_version is None:
+        return (None, False)
+    resolution = SchemaResolution(
+        provider=Provider.HERMES.value,
+        package_version=f"state-db-v{schema_version}",
+        element_kind="state_db",
+        exact_structure_id=None,
+        bundle_scope=None,
+        reason="package_default",
+    )
+    return resolution, schema_version in _supported_hermes_state_db_schema_versions()
+
+
+def _record_blob_ref(record: RawSessionRecord) -> str:
+    return record.blob_hash or record.raw_id
+
+
+def _is_hermes_state_db_candidate(record: RawSessionRecord) -> bool:
+    provider = Provider.from_string(_normalize_payload_provider_hint(record) or "")
+    source_suffix = Path(record.source_path.replace("\\", "/")).suffix.lower()
+    return provider is Provider.HERMES and source_suffix in {".db", ".sqlite", ".sqlite3"}
+
+
 def _inspect_payload_envelope(record: RawSessionRecord) -> RawPayloadEnvelope:
     blob_store = get_blob_store()
+    blob_ref = _record_blob_ref(record)
+    blob_path = blob_store.blob_path(blob_ref)
+    # SQLite recognition needs a filesystem path. Passing the retained blob,
+    # rather than the mutable source path or an in-memory prefix, ensures the
+    # durable observation describes the exact acquired bytes.
+    if _is_hermes_state_db_candidate(record):
+        return _build_payload_envelope(blob_path, record)
     prefix = _inspection_prefix(record)
     try:
         envelope = _build_payload_envelope(prefix, record)
     except Exception:
         if not _full_json_inspection_allowed(record):
             raise
-        return _build_payload_envelope(blob_store.read_all(record.raw_id), record)
+        return _build_payload_envelope(blob_store.read_all(blob_ref), record)
 
     if _should_retry_full_json_inspection(record, wire_format=envelope.wire_format):
-        return _build_payload_envelope(blob_store.read_all(record.raw_id), record)
+        return _build_payload_envelope(blob_store.read_all(blob_ref), record)
     return envelope
 
 
@@ -163,7 +242,7 @@ def _inspection_prefix(record: RawSessionRecord) -> bytes:
     never loaded into memory.
     """
     blob_store = get_blob_store()
-    prefix = blob_store.read_prefix(record.raw_id, _INSPECTION_PREFIX_BYTES)
+    prefix = blob_store.read_prefix(_record_blob_ref(record), _INSPECTION_PREFIX_BYTES)
     normalized = (record.source_path or "").lower()
     is_jsonl = normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
     if is_jsonl and len(prefix) >= _INSPECTION_PREFIX_BYTES:
