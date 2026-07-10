@@ -35,7 +35,7 @@ from typing import Final, TypeAlias
 
 _STORAGE_ROOT: Final = Path("polylogue/storage")
 
-_AuditedSiteKey: TypeAlias = tuple[str, str, str]
+_AuditedSiteKey: TypeAlias = tuple[str, str, str, int]
 
 # Audited identifier-interpolation sites. The values document why the
 # interpolation is safe; keys survive line insertions and formatting changes.
@@ -53,66 +53,79 @@ _AUDITED_SITES: Final[dict[_AuditedSiteKey, str]] = {
         "polylogue/storage/embeddings/status_payload.py",
         "_archive_embedding_status_payload",
         "f425ee78aeaa43aa",
+        0,
     ): 'conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}") uses an internal integer constant.',
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
         "ArchiveStore.query_actions",
         "d23e920a2a302a20",
+        0,
     ): "query_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL plus closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
         "ArchiveStore.query_session_actions",
         "00e73501ef574c76",
+        0,
     ): "query_session_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL, placeholders, and closed order direction; ids are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
         "ArchiveStore.query_runs",
         "3654ef6dea2f1594",
+        0,
     ): "query_runs interpolates run_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
         "ArchiveStore.query_observed_events",
         "5ce5c9442c306377",
+        0,
     ): "query_observed_events interpolates observed_event_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
         "ArchiveStore.query_context_snapshots",
         "59d7f0d1698c6ebd",
+        0,
     ): "query_context_snapshots interpolates context_snapshot_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
         "ArchiveStore.list_cost_rollup_insights",
         "30b0c4c942f5755f",
+        0,
     ): "cost_rollup no-usage leg interpolates a closed WHERE fragment list built in-function; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/ops_write.py",
         "read_embedding_catchup_run",
         "4384d56aeed4ab93",
+        0,
     ): "read_embedding_catchup_run formats outcome column names from _embedding_catchup_run_outcome_columns(), a closed schema-shape helper.",
     (
         "polylogue/storage/sqlite/maintenance.py",
         "maybe_optimize_sqlite",
         "74e2a23591a87a48",
+        0,
     ): 'conn.execute(f"PRAGMA analysis_limit = {int(analysis_limit)}") casts the caller value to int before interpolation.',
     (
         "polylogue/storage/sqlite/migration_runner.py",
         "migrate_archive_tier",
         "de2f840618fb23dc",
+        0,
     ): 'conn.execute(f"PRAGMA user_version = {step.version}") uses the internal migration step integer version.',
     (
         "polylogue/storage/usage.py",
         "_provider_event_stats",
         "aa006dbcd45f6400",
+        0,
     ): "provider usage summary interpolates closed counter-column expressions and WHERE fragments; filter values are bound.",
     (
         "polylogue/storage/usage.py",
         "_provider_cumulative_usage",
         "ad7bb9d262cfceb3",
+        0,
     ): "provider cumulative usage interpolates closed counter-column expressions and origin SELECT/JOIN fragments; origin is bound.",
     (
         "polylogue/storage/usage.py",
         "_sample_event_sessions",
         "f437ad380e1b12d6",
+        0,
     ): "usage quality examples interpolate closed diagnostic predicates; origin and limit values are bound.",
 }
 
@@ -138,6 +151,7 @@ class _SqlExecuteVisitor(ast.NodeVisitor):
         self.audited_sites = audited_sites
         self.scope: list[str] = []
         self.sites: list[_InterpolatedSqlSite] = []
+        self.occurrences: dict[tuple[str, str, str], int] = {}
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.scope.append(node.name)
@@ -160,11 +174,14 @@ class _SqlExecuteVisitor(ast.NodeVisitor):
             first = node.args[0]
             violation = _classify_first_arg(first)
             if violation is not None:
-                key = (
+                base_key = (
                     self.relative_path,
                     ".".join(self.scope) or "<module>",
                     _statement_fingerprint(node),
                 )
+                occurrence = self.occurrences.get(base_key, 0)
+                self.occurrences[base_key] = occurrence + 1
+                key = (*base_key, occurrence)
                 self.sites.append(
                     _InterpolatedSqlSite(
                         key=key,
@@ -537,7 +554,7 @@ def _scan_path(
 
 
 def _format_site_key(key: _AuditedSiteKey) -> str:
-    return f"({key[0]!r}, {key[1]!r}, {key[2]!r})"
+    return f"({key[0]!r}, {key[1]!r}, {key[2]!r}, {key[3]})"
 
 
 def _format_violations(violations: list[_InterpolatedSqlSite]) -> str:
@@ -630,3 +647,27 @@ def test_new_interpolated_sql_expression_requires_a_fresh_audit_key(tmp_path: Pa
     new_site = changed.violations[0]
     assert new_site.key not in audited
     assert f"suggested _AUDITED_SITES key: {_format_site_key(new_site.key)}" in _format_violations(changed.violations)
+
+
+def test_duplicate_interpolated_sql_expression_requires_a_fresh_audit_key(tmp_path: Path) -> None:
+    relative_path = "polylogue/storage/example.py"
+    source = 'def query(conn, suffix):\n    return conn.execute(f"SELECT 1 {suffix}")\n'
+    path = tmp_path / "example.py"
+    path.write_text(source, encoding="utf-8")
+    original = _scan_path(path, relative_path=relative_path, audited_sites={})
+    original_key = original.violations[0].key
+
+    path.write_text(
+        "def query(conn, suffix):\n"
+        '    conn.execute(f"SELECT 1 {suffix}")\n'
+        '    return conn.execute(f"SELECT 1 {suffix}")\n',
+        encoding="utf-8",
+    )
+    changed = _scan_path(
+        path,
+        relative_path=relative_path,
+        audited_sites={original_key: "synthetic existing audit"},
+    )
+
+    assert [site.key[3] for site in changed.sites] == [0, 1]
+    assert [site.key for site in changed.violations] == [(*original_key[:3], 1)]
