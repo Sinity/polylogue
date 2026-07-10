@@ -89,6 +89,24 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .insight-section-header .insight-toggle { display: inline-block; width: 10px; color: var(--text-dim); }
 .inspector-field .value.muted { color: var(--text-dim); font-style: italic; }
 .muted { color: var(--text-dim); }
+/* Collapsed developer-idiom disclosure (polylogue-bby.1): the fallback curl
+   command is an escape hatch for operators comfortable outside the shell,
+   not primary product copy -- keep it out of the default reading flow. */
+.route-debug { margin-top: 4px; }
+.route-debug summary { cursor: pointer; color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+.route-debug code { display: block; margin-top: 2px; font-family: var(--font-mono); font-size: 10px;
+  color: var(--text-muted); word-break: break-all; white-space: pre-wrap; }
+/* Global daemon-liveness banner (polylogue-bby.1): one probe (/api/health)
+   gates a single, unmissable "everything you see may be stale/failed"
+   notice instead of forcing the operator to notice N independent per-panel
+   "Failed to fetch" strings scattered across the shell. */
+#daemon-banner { display: none; position: fixed; top: 36px; left: 0; right: 0; z-index: 60;
+  background: var(--err-bg); border-bottom: 1px solid var(--err); color: var(--err);
+  padding: 6px 12px; font-size: var(--small); align-items: center; gap: 10px; }
+#daemon-banner.visible { display: flex; }
+#daemon-banner .daemon-banner-msg { flex: 1; }
+#daemon-banner .route-debug { margin-top: 0; }
+#daemon-banner .route-debug summary { color: var(--err); opacity: 0.8; }
 
 #sidebar { grid-column: 1; grid-row: 2; display: flex; flex-direction: column;
   background: var(--panel); border-right: 1px solid var(--border); overflow: hidden; }
@@ -280,6 +298,7 @@ __COORDINATION_CSS__
     <span class="chip" id="status-api-debug" title="Latest API request" style="display:none">api: --</span>
     <span class="chip" id="status-live" title="Realtime channel">live: --</span>
   </div>
+  <div id="daemon-banner" role="alert"></div>
   <div id="sidebar">
     <div id="search-box">
       <input type="text" id="search" placeholder="Search sessions..." autofocus>
@@ -350,7 +369,7 @@ __SELECTION_PREVIEW_HTML__
 <script>
 var API = '';
 var state = {
-  sessions: [], selected: null, selectedRaw: null,
+  sessions: [], selected: null, selectedRaw: null, selectedRawError: null,
   origin: '', query: '', offset: 0, limit: 100, total: 0,
   status: {}, facets: null, inspectorTab: 'info',
   facetError: '',
@@ -548,6 +567,15 @@ function fallbackCommand(route) {
   return 'curl -fsS http://127.0.0.1:8766' + route;
 }
 
+// Operator escape hatch (polylogue-bby.1). The fallback curl command is a
+// developer idiom, not a primary product surface -- keep it behind a
+// collapsed <details> disclosure everywhere a route-state notice renders it,
+// rather than printing a literal shell command inline in the product panel.
+function debugDisclosure(cmd) {
+  if (!cmd) return '';
+  return '<details class="route-debug"><summary>debug</summary><code>' + esc(cmd) + '</code></details>';
+}
+
 function routeErrorDetails(e, route) {
   var message = String((e && (e.response_summary || e.message)) || e || 'unavailable');
   return {
@@ -590,7 +618,7 @@ function renderRouteStateNotice(name, label, retryJs) {
   var html = '<div class="sidebar-state q-' + escAttr(quality) + '" data-route-state-name="' + escAttr(name)
     + '" data-route-state="' + escAttr(rs.state || '') + '"><div class="state-icon">!</div>'
     + '<div><strong>' + esc(title) + '</strong><br>' + esc(parts.join(' · ') || 'checking route')
-    + '<br><code>' + esc(rs.fallback || (rs.route ? fallbackCommand(rs.route) : 'polylogue daemon status')) + '</code></div>';
+    + debugDisclosure(rs.fallback || (rs.route ? fallbackCommand(rs.route) : 'polylogue daemon status')) + '</div>';
   if (retryJs) html += '<button class="user-action" onclick="' + escAttr(retryJs) + '">Retry</button>';
   html += '</div>';
   return html;
@@ -606,8 +634,27 @@ function renderInlineRouteFailure(title, details, retryJs) {
   if (details.stale_available) bits.push('stale data available');
   var html = '<div class="main-empty q-unavailable"><h3>' + esc(title) + '</h3>'
     + '<p>' + esc(bits.join(' · ') || 'Route unavailable') + '</p>'
-    + '<p><code>' + esc(details.fallback || (route ? fallbackCommand(route) : 'polylogue daemon status')) + '</code></p>';
+    + debugDisclosure(details.fallback || (route ? fallbackCommand(route) : 'polylogue daemon status'))
+    + '</div>';
   if (retryJs) html += '<button class="user-action" onclick="' + escAttr(retryJs) + '">Retry</button>';
+  html += '</div>';
+  return html;
+}
+
+// Compact panel-scoped failure notice for inspector tabs (Insights/Cost/
+// Evidence/Raw) that previously collapsed every fetch failure into a
+// static "<X> surface unavailable" string with no reason, no route, and no
+// retry -- indistinguishable from a route that legitimately has zero rows.
+function renderInlinePanelFailure(title, details, retryJs) {
+  details = details || {};
+  var bits = [];
+  if (details.route) bits.push('route ' + details.route);
+  if (details.status) bits.push('status ' + details.status);
+  if (details.error) bits.push(details.error);
+  var html = '<div class="inspector-empty q-unavailable"><strong>' + esc(title) + '</strong><br>'
+    + esc(bits.join(' · ') || 'Route unavailable')
+    + debugDisclosure(details.fallback || (details.route ? fallbackCommand(details.route) : ''));
+  if (retryJs) html += '<br><button class="user-action" onclick="' + escAttr(retryJs) + '">Retry</button>';
   html += '</div>';
   return html;
 }
@@ -661,7 +708,7 @@ window.addEventListener('popstate', function() {
   if (route) { loadWorkspaceRoute(route, false); return; }
   var cid = getSessionIdFromURL();
   if (cid) selectSession(cid, false);
-  else { state.mode = 'single'; state.selected = null; state.selectedRaw = null; renderMain(); renderInspector(); renderSessions(); }
+  else { state.mode = 'single'; state.selected = null; state.selectedRaw = null; state.selectedRawError = null; renderMain(); renderInspector(); renderSessions(); }
 });
 
 async function loadSessions(opts) {
@@ -699,9 +746,14 @@ async function loadSessions(opts) {
     });
     if (state.routeStates.status && state.routeStates.status.state !== 'ready') updateStatusCountsUnknown('degraded');
   } catch(e) {
-    state.sessions = [];
-    state.total = null;
-    setRouteState('sessionList', Object.assign({state: 'failed', stale_available: false}, routeErrorDetails(e, route)));
+    // Preserve the last-known session rows and total (polylogue-bby.1): a
+    // failed refresh must never present as "0 conversations" when a prior
+    // successful load populated the list. The route-state banner rendered
+    // above the (still-stale) rows in renderSessions() carries the failure.
+    setRouteState('sessionList', Object.assign(
+      {state: 'failed', stale_available: !!(state.sessions && state.sessions.length)},
+      routeErrorDetails(e, route)
+    ));
   }
   renderSessions();
   // After render, animate rows that are newly present (either flagged by
@@ -796,10 +848,18 @@ function loadSessionFromError() {
 }
 
 async function loadSessionRaw(id) {
+  var route = '/api/sessions/' + encodeURIComponent(id) + '/provenance';
   try {
-    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/provenance', {timeoutMs: 5000});
+    var data = await fetchJSON(route, {timeoutMs: 5000});
     state.selectedRaw = data;
-  } catch(e) { state.selectedRaw = null; }
+    state.selectedRawError = null;
+  } catch(e) {
+    // Distinguish "the fetch failed" from "the fetch succeeded with
+    // genuinely zero raw artifacts" (polylogue-bby.1) -- loadRawData()
+    // previously collapsed both into the same generic empty message.
+    state.selectedRaw = null;
+    state.selectedRawError = routeErrorDetails(e, route);
+  }
 }
 
 async function loadFacets(opts) {
@@ -837,6 +897,52 @@ async function loadFacets(opts) {
   renderFacets();
 }
 
+// Global daemon-liveness gate (polylogue-bby.1). /api/health is the single
+// probe that decides whether the daemon is reachable at all; every other
+// panel's independent "Failed to fetch" is a symptom of the same root
+// cause, so this owns one visible banner plus an automatic reconnect loop
+// (exponential backoff, capped) instead of leaving the operator to notice
+// N separately-degraded widgets and manually refresh each one.
+var daemonRetryTimer = null;
+var daemonRetryDelayMs = 3000;
+var DAEMON_RETRY_MAX_MS = 30000;
+
+function renderDaemonBanner() {
+  var el = document.getElementById('daemon-banner');
+  if (!el) return;
+  var rs = state.routeStates.health;
+  if (!rs || rs.state !== 'error') {
+    el.classList.remove('visible');
+    el.innerHTML = '';
+    return;
+  }
+  var bits = ['daemon unreachable'];
+  if (rs.status) bits.push('status ' + rs.status);
+  if (rs.error) bits.push(rs.error);
+  var retryNote = daemonRetryTimer
+    ? ('retrying automatically in ' + Math.round(daemonRetryDelayMs / 1000) + 's')
+    : 'retrying now';
+  el.innerHTML = '<span class="daemon-banner-msg">' + esc(bits.join(' · '))
+    + ' — every panel below may show loading/stale/failed states until this clears (' + esc(retryNote) + ').</span>'
+    + debugDisclosure(rs.fallback || fallbackCommand(rs.route || '/api/health'))
+    + '<button class="user-action" onclick="retryDaemonHealth()">Retry now</button>';
+  el.classList.add('visible');
+}
+
+function retryDaemonHealth() {
+  if (daemonRetryTimer) { clearTimeout(daemonRetryTimer); daemonRetryTimer = null; }
+  loadStatus();
+}
+
+function scheduleDaemonRetry() {
+  if (daemonRetryTimer) clearTimeout(daemonRetryTimer);
+  daemonRetryTimer = setTimeout(function() {
+    daemonRetryTimer = null;
+    loadStatus();
+  }, daemonRetryDelayMs);
+  daemonRetryDelayMs = Math.min(daemonRetryDelayMs * 2, DAEMON_RETRY_MAX_MS);
+}
+
 async function loadStatus() {
   var healthRoute = '/api/health';
   setRouteState('health', {state: 'loading', route: healthRoute, error: '', status: ''});
@@ -848,11 +954,19 @@ async function loadStatus() {
     var dbGB = ((h.db_size_bytes || 0) / 1073741824).toFixed(1);
     document.getElementById('status-db').textContent = 'index DB: ' + dbGB + ' GB';
     setRouteState('health', {state: h.ok ? 'ready' : 'error', route: healthRoute, status: '200', error: h.ok ? '' : (h.quick_check || 'issues')});
+    if (h.ok) {
+      daemonRetryDelayMs = 3000;
+      if (daemonRetryTimer) { clearTimeout(daemonRetryTimer); daemonRetryTimer = null; }
+    } else {
+      scheduleDaemonRetry();
+    }
   } catch(e) {
     document.getElementById('status-dot').className = 'dot err';
     document.getElementById('status-label').textContent = 'offline';
     setRouteState('health', Object.assign({state: 'error'}, routeErrorDetails(e, healthRoute)));
+    scheduleDaemonRetry();
   }
+  renderDaemonBanner();
   var statusRoute = '/api/status';
   setRouteState('status', {state: 'loading', route: statusRoute, error: '', status: ''});
   try {
@@ -1114,7 +1228,14 @@ function renderSessions() {
     }
     return;
   }
-  el.innerHTML = items.map(function(c) {
+  // Rows exist (possibly stale from a prior successful load). If the most
+  // recent /api/sessions refresh is loading/degraded/failed, prepend a
+  // truthful banner above the still-visible rows instead of either hiding
+  // them or silently pretending the refresh succeeded (polylogue-bby.1).
+  // renderRouteStateNotice() is a no-op ('') for idle/ready, so this is
+  // safe to call unconditionally.
+  var staleBanner = renderRouteStateNotice('sessionList', 'Sessions', 'loadSessions()');
+  el.innerHTML = staleBanner + items.map(function(c) {
     var sel = state.selected && state.selected.id === c.id ? ' selected' : '';
     var selectionSel = isSelectionSelected(c.id) ? ' selection-selected' : '';
     var title = esc((c.title || 'Untitled').substring(0, 100));
@@ -1631,15 +1752,21 @@ function renderInspector() {
 // kind with no materialized row is rendered with an explicit q-missing
 // chip and a "no rows recorded" body.
 async function loadInsightsPanel(id) {
+  var route = '/api/insights/sessions/' + encodeURIComponent(id);
   try {
-    var data = await fetchJSON('/api/insights/sessions/' + encodeURIComponent(id), {timeoutMs: 8000});
+    var data = await fetchJSON(route, {timeoutMs: 8000});
     state.insightsPanels[id] = data;
   } catch(e) {
-    state.insightsPanels[id] = {error: String(e)};
+    state.insightsPanels[id] = {error: true, details: routeErrorDetails(e, route)};
   }
   if (state.selected && state.selected.id === id && state.inspectorTab === 'insights') {
     renderInspector();
   }
+}
+
+function retryInsightsPanel(id) {
+  delete state.insightsPanels[id];
+  renderInspector();
 }
 
 function insightSectionKey(convId, kind) { return convId + ':' + kind; }
@@ -1769,7 +1896,7 @@ function renderInspectorInsights(el, c) {
     return;
   }
   if (data && data.error) {
-    el.innerHTML = '<div class="inspector-empty">Insights surface unavailable</div>';
+    el.innerHTML = renderInlinePanelFailure('Insights unavailable', data.details, "retryInsightsPanel('" + escJsAttr(c.id) + "')");
     return;
   }
   var kinds = data.kinds || {};
@@ -1794,15 +1921,21 @@ function renderInspectorInsights(el, c) {
 // driven by the MK3 q-* vocabulary returned by the daemon (q-canonical /
 // q-estimated / q-heuristic / q-unavailable).
 async function loadCostPanel(id) {
+  var route = '/api/sessions/' + encodeURIComponent(id) + '/cost';
   try {
-    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/cost', {timeoutMs: 8000});
+    var data = await fetchJSON(route, {timeoutMs: 8000});
     state.costPanels[id] = data;
   } catch(e) {
-    state.costPanels[id] = {error: String(e)};
+    state.costPanels[id] = {error: true, details: routeErrorDetails(e, route)};
   }
   if (state.selected && state.selected.id === id && state.inspectorTab === 'cost') {
     renderInspector();
   }
+}
+
+function retryCostPanel(id) {
+  delete state.costPanels[id];
+  renderInspector();
 }
 
 function formatUsd(value) {
@@ -1825,7 +1958,7 @@ function renderInspectorCost(el, c) {
     return;
   }
   if (cost && cost.error) {
-    el.innerHTML = '<div class="inspector-empty">Cost surface unavailable</div>';
+    el.innerHTML = renderInlinePanelFailure('Cost unavailable', cost.details, "retryCostPanel('" + escJsAttr(c.id) + "')");
     return;
   }
   var tag = cost.confidence_tag || 'q-unavailable';
@@ -1905,16 +2038,23 @@ function renderInspectorCost(el, c) {
 }
 
 async function loadEvidencePanel(id) {
+  var route = '/api/sessions/' + encodeURIComponent(id) + '/read?view=context-image&format=json&include_messages=0';
   try {
-    var context = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/read?view=context-image&format=json&include_messages=0', {timeoutMs: 10000});
-    var assertions = await fetchJSON('/api/assertions?target_ref=' + encodeURIComponent('session:' + id) + '&limit=20', {timeoutMs: 10000});
+    var context = await fetchJSON(route, {timeoutMs: 10000});
+    route = '/api/assertions?target_ref=' + encodeURIComponent('session:' + id) + '&limit=20';
+    var assertions = await fetchJSON(route, {timeoutMs: 10000});
     state.evidencePanels[id] = {context: context, assertions: assertions};
   } catch(e) {
-    state.evidencePanels[id] = {error: String(e)};
+    state.evidencePanels[id] = {error: true, details: routeErrorDetails(e, route)};
   }
   if (state.selected && state.selected.id === id && state.inspectorTab === 'evidence') {
     renderInspector();
   }
+}
+
+function retryEvidencePanel(id) {
+  delete state.evidencePanels[id];
+  renderInspector();
 }
 
 function renderRefList(refs) {
@@ -1936,7 +2076,7 @@ function renderInspectorEvidence(el, c) {
     return;
   }
   if (!panel || panel.error) {
-    el.innerHTML = '<div class="inspector-empty">Evidence surface unavailable</div>';
+    el.innerHTML = renderInlinePanelFailure('Evidence unavailable', panel && panel.details, "retryEvidencePanel('" + escJsAttr(c.id) + "')");
     return;
   }
   var contextPayload = (panel.context && panel.context.payload) || {};
@@ -2244,6 +2384,10 @@ async function loadRawData() {
   area.innerHTML = '<div style="color:var(--text-dim);font-size:var(--small);padding:8px 0">Loading artifact list...</div>';
   try {
     await loadSessionRaw(id);
+    if (state.selectedRawError) {
+      area.innerHTML = renderInlinePanelFailure('Raw artifact list unavailable', state.selectedRawError, 'loadRawData()');
+      return;
+    }
     var raw = state.selectedRaw;
     if (!raw) { area.innerHTML = '<div class="inspector-empty">No raw artifact metadata available</div>'; return; }
     var artifacts = raw.raw_artifacts || ((raw.raw_id || raw.content_hash) ? [raw] : []);
