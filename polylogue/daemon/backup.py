@@ -11,12 +11,14 @@ defragmented copy. Falls back to a file copy with WAL checkpoint first.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import sqlite3
 import tempfile
 import time
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -209,8 +211,20 @@ def _backup_sqlite(src: Path, dst: Path) -> int:
     return dst.stat().st_size if dst.exists() else 0
 
 
+def _source_blob_inventory(source_db: Path) -> dict[str, set[str]]:
+    inventory = {blob_hash: {"referenced"} for blob_hash in referenced_blob_hashes(source_db)}
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+        has_reservations = conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'blob_publication_reservations'"
+        ).fetchone()
+        if has_reservations is not None:
+            for (blob_hash,) in conn.execute("SELECT DISTINCT blob_hash FROM blob_publication_reservations"):
+                inventory.setdefault(bytes(blob_hash).hex(), set()).add("reserved")
+    return inventory
+
+
 def _source_blob_hashes(source_db: Path) -> set[str]:
-    return set(referenced_blob_hashes(source_db))
+    return set(_source_blob_inventory(source_db))
 
 
 def _write_blob_reference_debt_report(backup_root: Path, report: BlobReferenceDebtReport) -> Path:
@@ -225,7 +239,8 @@ def _copy_referenced_blobs(
     backup_root: Path,
     warnings: list[str],
 ) -> tuple[int, int, BlobReferenceDebtReport]:
-    hashes = _source_blob_hashes(source_db)
+    inventory = _source_blob_inventory(source_db)
+    hashes = set(inventory)
     store = BlobStore(blob_store_root())
     debt_report = scan_blob_reference_debt(
         source_db,
@@ -238,15 +253,41 @@ def _copy_referenced_blobs(
     blob_dst_root = backup_root / "blob"
     count = 0
     size = 0
+    copied_inventory: list[dict[str, object]] = []
+    missing_reserved: list[str] = []
     for hash_hex in sorted(hashes):
         src = store.blob_path(hash_hex)
         if not src.exists():
+            if "reserved" in inventory[hash_hex]:
+                missing_reserved.append(hash_hex)
             continue
         dst = blob_dst_root / hash_hex[:2] / hash_hex[2:]
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         count += 1
-        size += dst.stat().st_size
+        copied_size = dst.stat().st_size
+        size += copied_size
+        copied_inventory.append(
+            {
+                "blob_hash": hash_hex,
+                "size_bytes": copied_size,
+                "protection": sorted(inventory[hash_hex]),
+            }
+        )
+    (backup_root / "blob-inventory.json").write_text(
+        json.dumps(copied_inventory, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    if missing_reserved:
+        warnings.append(
+            "source-tier publication receipts missing blob bytes: "
+            f"{len(missing_reserved)} total"
+            + (
+                f" (sample: {', '.join(missing_reserved[:_MISSING_BLOB_WARNING_SAMPLE_LIMIT])})"
+                if missing_reserved
+                else ""
+            )
+        )
     if debt_report.missing_referenced_blobs:
         _write_blob_reference_debt_report(backup_root, debt_report)
         sample = ", ".join(debt_report.sample)
@@ -286,6 +327,7 @@ def _write_manifest(
         "omitted_tiers": omitted_tiers,
         "blob_count": blob_count,
         "blob_size_bytes": blob_size,
+        "blob_inventory_file": "blob-inventory.json",
         "warnings": warnings,
     }
     if blob_reference_debt is not None:
@@ -364,21 +406,27 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
 
     db_size = 0
     backed_up_files: list[str] = []
-    for tier, src in included_tiers.items():
-        dst = backup_root / f"{tier}.db"
-        db_size += _backup_sqlite(src, dst)
-        backed_up_files.append(str(dst))
-
-    blob_reference_debt: BlobReferenceDebtReport | None = None
+    source_exclusion: AbstractContextManager[object] = nullcontext()
     if "source" in included_tiers:
-        blob_count, blob_size, blob_reference_debt = _copy_referenced_blobs(
-            source_db=included_tiers["source"],
-            backup_root=backup_root,
-            warnings=warnings,
-        )
-    else:
-        blob_count = 0
-        blob_size = 0
+        from polylogue.storage.blob_publication import exclude_archive_blob_publishers
+
+        source_exclusion = exclude_archive_blob_publishers(included_tiers["source"])
+    with source_exclusion:
+        for tier, src in included_tiers.items():
+            dst = backup_root / f"{tier}.db"
+            db_size += _backup_sqlite(src, dst)
+            backed_up_files.append(str(dst))
+
+        blob_reference_debt: BlobReferenceDebtReport | None = None
+        if "source" in included_tiers:
+            blob_count, blob_size, blob_reference_debt = _copy_referenced_blobs(
+                source_db=backup_root / "source.db",
+                backup_root=backup_root,
+                warnings=warnings,
+            )
+        else:
+            blob_count = 0
+            blob_size = 0
     if blob_count:
         backed_up_files.append(str(backup_root / "blob"))
 
@@ -396,6 +444,8 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         blob_reference_debt=blob_reference_debt,
     )
     backed_up_files.append(str(backup_root / "manifest.json"))
+    if (backup_root / "blob-inventory.json").exists():
+        backed_up_files.append(str(backup_root / "blob-inventory.json"))
     if blob_reference_debt is not None and blob_reference_debt.missing_referenced_blobs:
         backed_up_files.append(str(backup_root / "blob-reference-debt.json"))
 
@@ -492,8 +542,28 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
         }
         omitted_absent = all(not (restored / name).exists() for name in omitted_tiers)
         blob_count = int(manifest.get("blob_count", 0) or 0)
-        restored_blob_count = sum(1 for path_ in (restored / "blob").rglob("*") if path_.is_file()) if blob_count else 0
-        blobs_ok = restored_blob_count == blob_count
+        inventory_path = restored / str(manifest.get("blob_inventory_file", "blob-inventory.json"))
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8")) if inventory_path.exists() else []
+        expected_blobs = {
+            str(item["blob_hash"]): int(item["size_bytes"])
+            for item in inventory
+            if isinstance(item, dict) and "blob_hash" in item and "size_bytes" in item
+        }
+        restored_blob_paths = [path_ for path_ in (restored / "blob").rglob("*") if path_.is_file()]
+        restored_blob_count = len(restored_blob_paths)
+        restored_hashes: dict[str, int] = {}
+        hashes_valid = True
+        for blob_path in restored_blob_paths:
+            blob_hash = blob_path.parent.name + blob_path.name
+            payload = blob_path.read_bytes()
+            restored_hashes[blob_hash] = len(payload)
+            hashes_valid = hashes_valid and hashlib.sha256(payload).hexdigest() == blob_hash
+        blobs_ok = (
+            restored_blob_count == blob_count
+            and len(expected_blobs) == blob_count
+            and restored_hashes == expected_blobs
+            and hashes_valid
+        )
         ok = all(tier_integrity.values()) and omitted_absent and blobs_ok
         return {
             "ok": ok,
@@ -503,6 +573,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "omitted_tiers_absent": omitted_absent,
             "manifest_blob_count": blob_count,
             "restored_blob_count": restored_blob_count,
+            "blob_inventory_exact": blobs_ok,
             "scratch_restore": "temporary",
             "scratch_parent": str(Path(raw_tmp).parent),
         }

@@ -1569,27 +1569,47 @@ def replace_raw_backed_blob_reference_debt_from_source(
     written_blobs = 0
     written_bytes = 0
     if not dry_run and candidate_updates:
+        from polylogue.storage.blob_publication import (
+            ArchiveBlobPublisher,
+            consume_blob_publication_receipt,
+        )
+
         apply_source_bytes_cache: dict[str, bytes] = {}
         apply_decoded_payload_cache: dict[str, object] = {}
+        publisher = ArchiveBlobPublisher(source_db, blob_store.root, store=blob_store)
+        publication_receipts: list[str | None] = []
+        for row, new_blob_hash, _new_blob_size, _file_mtime_ms, _acquired_at_ms in candidate_updates:
+            receipt_id: str | None = None
+            if not blob_store.exists(new_blob_hash):
+                source_path = str(row["source_path"])
+                payload_bytes, _reason = _current_raw_payload_bytes(
+                    source_path,
+                    int(row["source_index"]) if row.get("source_index") is not None else None,
+                    source_bytes_cache=apply_source_bytes_cache,
+                    decoded_payload_cache=apply_decoded_payload_cache,
+                )
+                if payload_bytes is not None:
+                    published_hash, _published_size = publisher.write_from_bytes(payload_bytes)
+                    receipt_id = publisher.receipt_id(published_hash)
+                    written_blobs += 1
+                    written_bytes += len(payload_bytes)
+            publication_receipts.append(receipt_id)
+        publisher.flush()
         with sqlite3.connect(source_db) as conn:
             conn.execute("PRAGMA foreign_keys = ON")
             with conn:
-                for row, new_blob_hash, new_blob_size, file_mtime_ms, acquired_at_ms in candidate_updates:
+                for (
+                    row,
+                    new_blob_hash,
+                    new_blob_size,
+                    file_mtime_ms,
+                    acquired_at_ms,
+                ), publication_receipt_id in zip(candidate_updates, publication_receipts, strict=True):
                     raw_id = str(row["raw_id"])
                     source_path = str(row["source_path"])
                     if not blob_store.exists(new_blob_hash):
-                        payload_bytes, _reason = _current_raw_payload_bytes(
-                            source_path,
-                            int(row["source_index"]) if row.get("source_index") is not None else None,
-                            source_bytes_cache=apply_source_bytes_cache,
-                            decoded_payload_cache=apply_decoded_payload_cache,
-                        )
-                        if payload_bytes is None:
-                            skipped_error += 1
-                            continue
-                        blob_store.write_from_bytes(payload_bytes)
-                        written_blobs += 1
-                        written_bytes += len(payload_bytes)
+                        skipped_error += 1
+                        continue
                     _delete_blob_refs_for_raw_id(conn, raw_id)
                     _update_raw_session_blob_ref(
                         conn,
@@ -1606,6 +1626,11 @@ def replace_raw_backed_blob_reference_debt_from_source(
                         source_path=source_path,
                         size_bytes=new_blob_size,
                         acquired_at_ms=acquired_at_ms,
+                    )
+                    consume_blob_publication_receipt(
+                        conn,
+                        publication_receipt_id,
+                        bytes.fromhex(new_blob_hash),
                     )
                     replaced_rows += 1
 

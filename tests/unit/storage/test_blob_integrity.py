@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import zipfile
 from pathlib import Path
@@ -13,6 +14,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.blob_gc import run_blob_gc_report
 from polylogue.storage.blob_integrity import (
     classify_blob_reference_debt,
     plan_raw_backed_blob_reference_recovery,
@@ -25,7 +27,11 @@ from polylogue.storage.blob_integrity import (
     scan_blob_reference_debt,
 )
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    initialize_active_archive_root,
+    initialize_archive_database,
+    initialize_archive_tier,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
@@ -607,6 +613,13 @@ def test_prune_orphan_blob_reference_debt_quarantines_before_delete(tmp_path: Pa
                 acquired_at_ms INTEGER NOT NULL,
                 PRIMARY KEY(blob_hash, ref_type, ref_id)
             );
+            CREATE TABLE blob_publication_reservations (
+                publication_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                publisher_id TEXT NOT NULL,
+                reserved_at_ms INTEGER NOT NULL
+            );
             """
         )
         conn.execute(
@@ -815,6 +828,13 @@ def test_replace_raw_backed_blob_reference_debt_from_source_updates_raw_refs(tmp
                 acquired_at_ms INTEGER NOT NULL,
                 PRIMARY KEY(blob_hash, ref_type, ref_id)
             );
+            CREATE TABLE blob_publication_reservations (
+                publication_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                publisher_id TEXT NOT NULL,
+                reserved_at_ms INTEGER NOT NULL
+            );
             """
         )
         rows = [
@@ -890,6 +910,62 @@ def test_replace_raw_backed_blob_reference_debt_from_source_updates_raw_refs(tmp
     assert all(blob_hash not in {stale_direct_hash, stale_zip_hash} for _raw_id, blob_hash, _size in stored)
     assert refs == [(raw_id, blob_hash) for raw_id, blob_hash, _size in stored]
     assert all(store.exists(blob_hash) for _raw_id, blob_hash, _size in stored)
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+
+
+def test_source_replacement_publication_survives_gc_before_reference_commit(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
+    source_path = tmp_path / "replacement.json"
+    payload = b'{"id":"replacement"}'
+    source_path.write_bytes(payload)
+    stale_hash = bytes.fromhex("3" * 64)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms
+            ) VALUES ('raw-repair', 'chatgpt-export', ?, 0, ?, 1, 1)
+            """,
+            (str(source_path), stale_hash),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (
+                blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+            ) VALUES (?, 'raw-repair', 'raw_payload', ?, 1, 1)
+            """,
+            (stale_hash, str(source_path)),
+        )
+
+    gc_deleted: list[int] = []
+
+    class GCInjectingStore(BlobStore):
+        def publish_many(self, prepared):  # type: ignore[no-untyped-def]
+            batch = tuple(prepared)
+            result = super().publish_many(batch)
+            for item in batch:
+                os.utime(self.blob_path(item.hash_hex), (1_700_000_000, 1_700_000_000))
+            gc_deleted.append(run_blob_gc_report(source_db, self.root).deleted_count)
+            return result
+
+    store = GCInjectingStore(archive_root / "blob")
+    report = replace_raw_backed_blob_reference_debt_from_source(
+        source_db,
+        store=store,
+        dry_run=False,
+        manifest_path=tmp_path / "repair.jsonl",
+    )
+
+    expected_hash = hashlib.sha256(payload).hexdigest()
+    assert gc_deleted == [0]
+    assert report.replaced_rows == 1
+    assert store.exists(expected_hash)
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
 
 
 def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:

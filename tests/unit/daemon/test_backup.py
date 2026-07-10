@@ -10,6 +10,7 @@ import pytest
 
 from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import backup_archive
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -372,6 +373,40 @@ def test_backup_missing_blob_warnings_are_bounded(
     debt_payload = json.loads((backup_root / "blob-reference-debt.json").read_text())
     assert debt_payload["missing_referenced_blobs"] == 25
     assert debt_payload["sample"] == list(hashes[:10])
+
+
+def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    archive_root = workspace_env["archive_root"]
+    blob_root = workspace_env["data_root"] / "polylogue" / "blob"
+    publisher = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
+    payload = b"reservation-only backup evidence"
+    blob_hash, _ = publisher.write_from_bytes(payload)
+    publisher.flush()
+
+    result = backup_archive(output_dir=tmp_path / "backups", verify=True)
+
+    assert result.ok
+    assert result.verified
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    copied = backup_root / "blob" / blob_hash[:2] / blob_hash[2:]
+    assert copied.read_bytes() == payload
+    inventory = json.loads((backup_root / "blob-inventory.json").read_text(encoding="utf-8"))
+    assert inventory == [
+        {
+            "blob_hash": blob_hash,
+            "protection": ["reserved"],
+            "size_bytes": len(payload),
+        }
+    ]
+
+    copied.write_bytes(b"x" * len(payload))
+    verification = backup_mod._verify_archive_file_set_backup(backup_root)
+    assert verification["ok"] is False
+    assert verification["blob_inventory_exact"] is False
 
 
 def test_backup_archive_requires_precious_tiers(workspace_env: dict[str, Path], tmp_path: Path) -> None:

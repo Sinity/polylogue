@@ -72,6 +72,9 @@ Restore expectations:
   daemon history matters.
 - A restored blob store is valid only when referenced blobs still match their
   SHA-256 paths and `source.db`/`user.db` references.
+- Blob backup includes the exact union of referenced and publication-reserved
+  bytes. `blob-inventory.json` records every hash and size; verification
+  re-hashes restored bytes rather than accepting an equal file count.
 
 ## Blob GC Safety Boundary
 

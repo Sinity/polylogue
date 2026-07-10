@@ -18,6 +18,7 @@ from polylogue.core.enums import Provider
 from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_gc import read_gc_history
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitResult,
@@ -463,6 +464,58 @@ def test_blob_gc_cli_yes_deletes_and_records_generation(
     assert len(history) == 1
     assert history[0].generation_id == payload["generation_id"]
     assert history[0].reclaimed_count == 1
+
+
+def test_blob_publications_cli_requires_confirmation_to_abandon(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    archive_root = cli_workspace["archive_root"]
+    publisher = ArchiveBlobPublisher(
+        archive_root / "source.db",
+        cli_workspace["data_root"] / "polylogue" / "blob",
+    )
+    blob_hash, _ = publisher.write_from_bytes(b"operator-adjudicated receipt")
+    receipt_id = publisher.receipt_id(blob_hash)
+    publisher.flush()
+    assert receipt_id is not None
+
+    inspected = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "blob-publications", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+    assert inspected.exit_code == 0
+    payload = json.loads(inspected.output)
+    assert payload["mutates"] is False
+    assert payload["receipts"][0]["publication_id"] == receipt_id
+
+    refused = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "blob-publications", "--abandon", receipt_id],
+    )
+    assert refused.exit_code != 0
+    assert "--yes is required" in refused.output
+
+    abandoned = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-publications",
+            "--abandon",
+            receipt_id,
+            "--yes",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert abandoned.exit_code == 0
+    payload = json.loads(abandoned.output)
+    assert payload["abandonment"]["abandoned"] == 1
+    assert payload["receipts"] == []
 
 
 def test_blob_reference_debt_cli_classifies_missing_refs(

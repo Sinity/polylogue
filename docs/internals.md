@@ -135,7 +135,9 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   verified backup manifest; fresh source tiers never create the table.
 - Source schema version 4 adds `blob_publication_reservations`, an exact
   filesystem-publication boundary rather than the removed late write-effects
-  lease. Existing v3 tiers migrate additively through
+  lease. Rows are keyed by per-publication receipt ID and indexed by content
+  hash, so concurrent publishers of identical bytes remain independent.
+  Existing v3 tiers migrate additively through
   `004_blob_publication_reservations.sql` after a verified backup manifest.
 - Index schema version 30 makes `session_events` the lossless generic relation
   for every parsed non-message event. It retains open event types and structured
@@ -594,13 +596,16 @@ invariants combined:
    ingest has written the bytes to disk but not yet committed the row is,
    by SQLite's isolation, indistinguishable from a true orphan to this
    check alone.
-2. **Publication reservation** — archive-owned blob stores commit a
-   `blob_publication_reservations` row after hashing a temporary file and
-   before exposing its final content-addressed path. The raw/blob-reference
-   transaction consumes the reservation by hash in the same commit that makes
-   the reference durable. GC holds the source-tier write lock across its final
-   reference/reservation recheck and unlink, so GC-first and publisher-first
-   interleavings are both safe.
+2. **Publication receipt** — archive orchestration prepares a bounded batch of
+   private temporary files, commits every per-publication receipt in one
+   source-tier transaction, then publishes every final content-addressed path.
+   The exact source-reference transaction consumes its own receipt ID; an
+   index-only attachment consumes its receipt only after the index commit.
+   Same-hash publishers cannot consume one another. Pure parser/source APIs
+   receive an injected writer and remain independent of archive paths/schema.
+   GC enumerates outside its lock, then holds the source-tier write lock only
+   across the bounded final reference/receipt recheck and unlink. Dry-run is
+   read-only.
 3. **Age floor** — a candidate must be older than
    `max(MIN_AGE_S, now - prev_generation.completed_at)`
    (`polylogue/storage/blob_gc.py:run_blob_gc_report`). `MIN_AGE_S` is 60
@@ -628,10 +633,15 @@ and committed references in batches of 500, so a slow following artifact
 could age an earlier blob past 60 seconds. Source v4 therefore reserves at
 the only boundary that closes the race: before final-path visibility.
 
-Crash reconciliation has no TTL. Reservations with a durable reference or no
-blob are redundant and may be removed; blob-without-reference rows remain
-explicit recoverable acquisition debt until reacquisition or operator
-adjudication. Age is never treated as proof that a publisher is dead.
+Crash reconciliation has no TTL. It classifies and retains receipts by
+default, including missing-path receipts: absence is not proof that a paused
+publisher died. Automatic clearing requires archive-wide writer exclusion.
+Existing blob-without-reference rows remain explicit recoverable acquisition
+debt until reacquisition or confirmed operator abandonment through
+`polylogue ops maintenance blob-publications`. Age is never treated as proof
+that a publisher is dead. Archive backup holds the same writer exclusion and
+copies an exact hash/size inventory for the union of durable references and
+publication receipts.
 
 - **Known issues**: GC has bugs with orphan detection and integrity
   verification ([#818](https://github.com/Sinity/polylogue/issues/818))
