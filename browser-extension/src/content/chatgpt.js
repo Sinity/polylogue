@@ -359,6 +359,12 @@
   const assetFetchTimeoutMs = 35000;
   const assetMaxBytesPerFile = 25 * 1024 * 1024;
   const assetMaxBytesTotal = 75 * 1024 * 1024;
+  // Wall-clock budget for the WHOLE acquisition pass and a per-kind circuit
+  // breaker: a conversation can reference dozens of sandbox files, and once
+  // the sandbox container is gone every one of them fails the same way --
+  // without these bounds a capture could stall for minutes on dead links.
+  const assetTotalTimeBudgetMs = 45000;
+  const assetConsecutiveFailureLimit = 3;
   const assetResponses = new Map();
   const sandboxLinkPattern = /sandbox:(\/mnt\/data\/[^\s)\]"'>]+)/g;
 
@@ -465,12 +471,31 @@
 
   async function acquireAssets(payload, conversationId) {
     const descriptors = collectAssetDescriptors(payload);
-    const outcome = { attempted: descriptors.length, acquired: 0, failed: [], skipped_over_budget: 0 };
+    const outcome = {
+      attempted: descriptors.length,
+      acquired: 0,
+      failed: [],
+      skipped_over_budget: 0,
+      skipped_time_budget: 0,
+      skipped_circuit_breaker: 0
+    };
     const attachments = [];
     let totalBytes = 0;
+    const startedAt = Date.now();
+    const consecutiveFailuresByKind = { sandbox: 0, file: 0 };
     for (const descriptor of descriptors) {
       if (totalBytes >= assetMaxBytesTotal) {
         outcome.skipped_over_budget += 1;
+        continue;
+      }
+      if (Date.now() - startedAt >= assetTotalTimeBudgetMs) {
+        outcome.skipped_time_budget += 1;
+        continue;
+      }
+      if (consecutiveFailuresByKind[descriptor.kind] >= assetConsecutiveFailureLimit) {
+        // e.g. the sandbox container is dead: every sandbox link fails
+        // identically, so stop burning the time budget on the rest.
+        outcome.skipped_circuit_breaker += 1;
         continue;
       }
       const request = {
@@ -484,6 +509,7 @@
       const result = await requestAssetFromPage(request);
       if (result.asset && result.asset.base64) {
         totalBytes += result.asset.size_bytes || 0;
+        consecutiveFailuresByKind[descriptor.kind] = 0;
         outcome.acquired += 1;
         attachments.push({
           provider_attachment_id: descriptor.provider_attachment_id,
@@ -499,6 +525,7 @@
           }
         });
       } else {
+        consecutiveFailuresByKind[descriptor.kind] += 1;
         outcome.failed.push({
           provider_attachment_id: descriptor.provider_attachment_id,
           error: result.error || "unknown"
