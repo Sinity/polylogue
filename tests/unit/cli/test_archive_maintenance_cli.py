@@ -5,8 +5,6 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
 
 import pytest
 from click.testing import CliRunner
@@ -19,6 +17,7 @@ from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.repair import RAW_MATERIALIZATION_REPLAY_BLOCK_REASON
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitResult,
@@ -1114,34 +1113,30 @@ def test_archive_read_cli_searches_archive_blocks(
     assert payload["hits"][0]["snippet"] == "[needle]"
 
 
-def test_rebuild_index_replays_source_rows_with_materialization_controls(
+@pytest.mark.parametrize(
+    "selection_args",
+    [
+        [],
+        ["--only-missing"],
+        ["--raw-id", "raw-a", "--raw-id", "raw-b"],
+    ],
+    ids=["all", "only-missing", "explicit"],
+)
+def test_rebuild_index_source_replay_is_blocked_for_every_execution_selection(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
+    selection_args: list[str],
 ) -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_rebuild(config: SimpleNamespace, **kwargs: object) -> dict[str, object]:
-        captured["archive_root"] = config.archive_root
-        captured.update(kwargs)
-        return {
-            "parse_counts": {"sessions": 3, "messages": 9, "attachments": 0},
-            "changed_counts": {"sessions": 3, "messages": 9, "attachments": 0},
-            "processed_session_count": 3,
-            "parse_failure_count": 0,
-            "batch_count": 2,
-            "materialized": False,
-            "materialized_session_count": 0,
-            "materialized_rebuilt": False,
-            "materialize_observation": None,
-        }
-
     monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 4)
     monkeypatch.setattr(
         "polylogue.cli.commands.maintenance._all_index_rebuild_raw_ids",
         lambda _root: ["raw-parent", "raw-child"],
     )
-    monkeypatch.setattr("polylogue.cli.commands.maintenance.rebuild_index_from_source", fake_rebuild)
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._missing_index_raw_ids",
+        lambda _root: ["raw-parent", "raw-child"],
+    )
 
     result = cli_runner.invoke(
         cli,
@@ -1150,45 +1145,26 @@ def test_rebuild_index_replays_source_rows_with_materialization_controls(
             "ops",
             "maintenance",
             "rebuild-index",
-            "--batch-size",
-            "7",
-            "--workers",
-            "2",
-            "--force-write",
-            "--no-materialize",
-            "--output-format",
-            "json",
+            *selection_args,
         ],
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["archive_root"] == str(cli_workspace["archive_root"])
-    assert payload["raw_session_count"] == 4
-    assert payload["processed_session_count"] == 3
-    assert payload["materialized"] is False
-    assert payload["status"] == "ok"
+    assert result.exit_code == 1
+    assert RAW_MATERIALIZATION_REPLAY_BLOCK_REASON in result.output
     with sqlite3.connect(cli_workspace["archive_root"] / "ops.db") as conn:
-        row = conn.execute(
-            """
-            SELECT status, phase, storage_route, parsed_raw_count, materialized_count
-            FROM ingest_attempts
-            WHERE phase = 'rebuild-index'
-            ORDER BY started_at_ms DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    assert row == ("completed", "rebuild-index", "maintenance", 2, 0)
-    assert captured == {
-        "archive_root": cli_workspace["archive_root"],
-        "raw_ids": ["raw-parent", "raw-child"],
-        "raw_batch_size": 7,
-        "ingest_workers": 2,
-        "force_write": True,
-        "materialize": False,
-        "progress_callback": None,
-    }
+        assert conn.execute("SELECT COUNT(*) FROM ingest_attempts WHERE phase = 'rebuild-index'").fetchone() == (0,)
+
+
+def test_rebuild_index_force_write_option_is_retired(cli_runner: CliRunner) -> None:
+    help_result = cli_runner.invoke(cli, ["ops", "maintenance", "rebuild-index", "--help"])
+    result = cli_runner.invoke(cli, ["ops", "maintenance", "rebuild-index", "--force-write"])
+
+    assert help_result.exit_code == 0
+    assert "--force-write" not in help_result.output
+    assert result.exit_code == 2
+    assert "No such option" in result.output
+    assert "--force-write" in result.output
 
 
 def test_all_index_rebuild_raw_ids_uses_source_acquisition_order(
@@ -1222,159 +1198,35 @@ def test_all_index_rebuild_raw_ids_uses_source_acquisition_order(
     ]
 
 
-def test_rebuild_index_can_replay_only_missing_source_rows(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_rebuild(config: SimpleNamespace, **kwargs: object) -> dict[str, object]:
-        captured["archive_root"] = config.archive_root
-        captured.update(kwargs)
-        return {
-            "parse_counts": {"sessions": 2},
-            "changed_counts": {"sessions": 2},
-            "processed_session_count": 2,
-            "parse_failure_count": 0,
-            "batch_count": 1,
-            "materialized": True,
-            "materialized_session_count": 5,
-            "materialized_rebuilt": True,
-            "materialize_observation": None,
-        }
-
-    monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 10)
-    monkeypatch.setattr("polylogue.cli.commands.maintenance._missing_index_raw_ids", lambda _root: ["raw-a", "raw-b"])
-    monkeypatch.setattr("polylogue.cli.commands.maintenance.rebuild_index_from_source", fake_rebuild)
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "rebuild-index",
-            "--only-missing",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
+def test_rebuild_index_helper_fails_closed_before_opening_archive(tmp_path: Path) -> None:
+    config = Config(
+        archive_root=tmp_path,
+        render_root=tmp_path / "render",
+        sources=[],
+        db_path=tmp_path / "index.db",
     )
 
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["raw_session_count"] == 10
-    assert payload["selected_raw_count"] == 2
-    assert payload["only_missing"] is True
-    assert captured["raw_ids"] == ["raw-a", "raw-b"]
-
-
-def test_rebuild_index_selected_raw_ids_materialize_processed_sessions_only(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    class FakeBackend:
-        def __init__(self, *, db_path: Path) -> None:
-            self.db_path = db_path
-
-    class FakeRepository:
-        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
-            self.backend = backend
-            self.archive_root = archive_root
-
-        async def close(self) -> None:
-            captured["closed"] = True
-
-    class FakeParser:
-        def __init__(
-            self,
-            *,
-            repository: FakeRepository,
-            archive_root: Path,
-            config: object,
-            raw_batch_size: int,
-            ingest_workers: int | None,
-        ) -> None:
-            captured["parser_args"] = {
-                "repository": repository,
-                "archive_root": archive_root,
-                "config": config,
-                "raw_batch_size": raw_batch_size,
-                "ingest_workers": ingest_workers,
-            }
-
-        async def parse_from_raw(self, **kwargs: object) -> SimpleNamespace:
-            captured["parse_kwargs"] = kwargs
-            return SimpleNamespace(
-                counts={"sessions": 2},
-                changed_counts={"sessions": 2},
-                processed_ids={"session-a", "session-b"},
-                parse_failures=0,
-                batch_observations=[object()],
+    with pytest.raises(RuntimeError) as exc_info:
+        asyncio.run(
+            rebuild_index_from_source(
+                config,
+                raw_ids=["raw-a", "raw-b"],
+                raw_batch_size=7,
+                ingest_workers=1,
+                materialize=True,
+                progress_callback=None,
             )
-
-    async def fake_materialize(**kwargs: object) -> SimpleNamespace:
-        captured["materialize_kwargs"] = kwargs
-        return SimpleNamespace(item_count=2, rebuilt=False, observation={"mode": "incremental"})
-
-    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
-    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
-    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParser)
-    monkeypatch.setattr("polylogue.pipeline.run_stages.execute_materialize_stage", fake_materialize)
-
-    result = asyncio.run(
-        rebuild_index_from_source(
-            Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db"),
-            raw_ids=["raw-a", "raw-b"],
-            raw_batch_size=7,
-            ingest_workers=1,
-            force_write=False,
-            materialize=True,
-            progress_callback=None,
         )
-    )
 
-    assert result["materialized"] is True
-    assert result["materialized_session_count"] == 2
-    assert captured["parse_kwargs"] == {
-        "raw_ids": ["raw-a", "raw-b"],
-        "progress_callback": None,
-        "force_write": False,
-        "repair_message_fts": True,
-    }
-    materialize_kwargs = cast(dict[str, Any], captured["materialize_kwargs"])
-    assert materialize_kwargs["stage"] == "reprocess"
-    assert materialize_kwargs["processed_ids"] == {"session-a", "session-b"}
-    assert captured["closed"] is True
+    assert str(exc_info.value) == RAW_MATERIALIZATION_REPLAY_BLOCK_REASON
 
 
-def test_rebuild_index_can_replay_explicit_raw_ids(
+def test_rebuild_index_explicit_raw_ids_remain_inspectable_in_plan_mode(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_rebuild(config: SimpleNamespace, **kwargs: object) -> dict[str, object]:
-        captured["archive_root"] = config.archive_root
-        captured.update(kwargs)
-        return {
-            "parse_counts": {"sessions": 2},
-            "changed_counts": {"sessions": 2},
-            "processed_session_count": 2,
-            "parse_failure_count": 0,
-            "batch_count": 1,
-            "materialized": False,
-            "materialized_session_count": 0,
-            "materialized_rebuilt": False,
-            "materialize_observation": None,
-        }
-
     monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 10)
-    monkeypatch.setattr("polylogue.cli.commands.maintenance.rebuild_index_from_source", fake_rebuild)
 
     result = cli_runner.invoke(
         cli,
@@ -1389,7 +1241,7 @@ def test_rebuild_index_can_replay_explicit_raw_ids(
             "raw-b",
             "--raw-id",
             "raw-a",
-            "--no-materialize",
+            "--plan",
             "--output-format",
             "json",
         ],
@@ -1402,7 +1254,7 @@ def test_rebuild_index_can_replay_explicit_raw_ids(
     assert payload["selected_raw_count"] == 2
     assert payload["raw_id_count"] == 3
     assert payload["skipped_by_blob_limit_count"] == 0
-    assert captured["raw_ids"] == ["raw-a", "raw-b"]
+    assert payload["status"] == "ok"
 
 
 def test_rebuild_index_filters_selected_rows_by_blob_size(
@@ -1410,7 +1262,6 @@ def test_rebuild_index_filters_selected_rows_by_blob_size(
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, object] = {}
     archive_root = cli_workspace["archive_root"]
     source_db = archive_root / "source.db"
     with sqlite3.connect(source_db) as conn:
@@ -1431,28 +1282,11 @@ def test_rebuild_index_filters_selected_rows_by_blob_size(
                 (raw_id, raw_id, f"/tmp/{raw_id}.jsonl", blob_size, acquired_at_ms),
             )
 
-    async def fake_rebuild(config: SimpleNamespace, **kwargs: object) -> dict[str, object]:
-        captured["archive_root"] = config.archive_root
-        captured.update(kwargs)
-        return {
-            "parse_counts": {"sessions": 1},
-            "changed_counts": {"sessions": 1},
-            "processed_session_count": 1,
-            "parse_failure_count": 0,
-            "batch_count": 1,
-            "materialized": False,
-            "materialized_session_count": 0,
-            "materialized_rebuilt": False,
-            "materialize_observation": None,
-        }
-
     monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 2)
     monkeypatch.setattr(
         "polylogue.cli.commands.maintenance._missing_index_raw_ids",
         lambda _root: ["raw-large", "raw-small"],
     )
-    monkeypatch.setattr("polylogue.cli.commands.maintenance.rebuild_index_from_source", fake_rebuild)
-
     result = cli_runner.invoke(
         cli,
         [
@@ -1463,7 +1297,7 @@ def test_rebuild_index_filters_selected_rows_by_blob_size(
             "--only-missing",
             "--max-blob-mb",
             "2",
-            "--no-materialize",
+            "--plan",
             "--output-format",
             "json",
         ],
@@ -1473,10 +1307,10 @@ def test_rebuild_index_filters_selected_rows_by_blob_size(
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["selected_raw_count"] == 1
-    assert payload["selected_blob_bytes"] == 1 * 1024 * 1024
+    assert payload["totals"]["blob_bytes"] == 1 * 1024 * 1024
     assert payload["skipped_by_blob_limit_count"] == 1
     assert payload["max_blob_mb"] == 2.0
-    assert captured["raw_ids"] == ["raw-small"]
+    assert [row["raw_id"] for row in payload["top_rows"]] == ["raw-small"]
 
 
 def test_rebuild_index_plan_reports_weighted_top_rows(
