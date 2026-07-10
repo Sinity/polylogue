@@ -595,6 +595,15 @@ tiers migrate via
 verified backup manifest; fresh source tiers never create the table.</p>
 </li>
 <li>
+<p>Index schema version 30 makes <code>session_events</code> the lossless generic relation
+for every parsed non-message event. It retains open event types and structured
+payloads in original positions while policy and usage tables remain typed
+projections. The original provider-local source-message reference is stored
+independently from its nullable canonical <code>messages.message_id</code> resolution,
+so unresolved and lineage-normalized references remain auditable. Existing index tiers must be rebuilt from source evidence
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
 <p>Index schema version 28 adds the <code>delegations</code> VIEW, derived from
 <code>session_links</code> (<code>link_type='subagent'</code>) LEFT JOIN'd to the parent's Task
 dispatch <code>actions</code> row and both sessions' <code>session_profiles</code> — no
