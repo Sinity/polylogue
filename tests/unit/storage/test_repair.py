@@ -248,7 +248,10 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
         "raw_materialization_max_blob_bytes": float(replayable_size),
         "raw_materialization_selected_total_blob_bytes": float(replayable_size),
         "raw_materialization_selected_max_blob_bytes": float(replayable_size),
+        "raw_materialization_index_nonempty": 1.0,
+        "raw_materialization_replay_blocked_count": 1.0,
     }
+    assert "execution blocked until raw revision authority is available" in result.detail
     assert "selected raw payload bytes total=" in result.detail
     assert "largest=" in result.detail
     assert "1 raw rows blocked by missing blobs (1 with source paths missing)" in result.detail
@@ -563,11 +566,141 @@ def test_raw_materialization_replay_uses_batch_parse_call(
 
     monkeypatch.setattr(parsing_module, "ParsingService", FakeParsingService)
 
-    result = repair_mod.repair_raw_materialization(config)
+    result = repair_mod.repair_raw_materialization(
+        config,
+        replay_intent=repair_mod.RawMaterializationReplayIntent.EMPTY_INDEX_REBUILD,
+    )
 
     assert result.success is True
     assert result.repaired_count == 2
     assert calls == [([second_raw_id, first_raw_id], True)]
+
+
+def test_raw_materialization_ordinary_repair_preserves_newer_index_state(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    older_payload = b"""{
+      "id": "logical-session",
+      "title": "older raw snapshot",
+      "create_time": 1,
+      "update_time": 2,
+      "mapping": {
+        "old-message": {
+          "id": "old-message",
+          "parent": null,
+          "children": [],
+          "message": {
+            "id": "old-message",
+            "author": {"role": "user"},
+            "create_time": 2,
+            "content": {"content_type": "text", "parts": ["old content"]}
+          }
+        }
+      },
+      "current_node": "old-message"
+    }"""
+    raw_id, raw_size = BlobStore(tmp_path / "blob").write_from_bytes(older_payload)
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "chatgpt-export",
+                "logical-session",
+                "older.json",
+                0,
+                bytes.fromhex(raw_id),
+                raw_size,
+                1,
+            ),
+        )
+        source_conn.commit()
+    newer_hash = bytes.fromhex("ab" * 32)
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash, message_count)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("logical-session", "chatgpt-export", "newer-index-raw", "newer indexed state", newer_hash, 1),
+        )
+        session_id = "chatgpt-export:logical-session"
+        index_conn.execute(
+            """
+            INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, "newer-message", 0, "user", "message", newer_hash),
+        )
+        index_conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (f"{session_id}:newer-message", session_id, 0, "text", "newer content"),
+        )
+        index_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+
+    assert result.success is False
+    assert result.repaired_count == 0
+    assert result.metrics["raw_materialization_candidate_count"] == 1.0
+    assert result.metrics["raw_materialization_replay_blocked_count"] == 1.0
+    assert "cannot prove per-session raw revision authority" in result.detail
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        row = index_conn.execute(
+            "SELECT raw_id, title, content_hash, message_count FROM sessions WHERE native_id = 'logical-session'"
+        ).fetchone()
+        message_ids = [
+            str(message_id)
+            for (message_id,) in index_conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position",
+                ("chatgpt-export:logical-session",),
+            ).fetchall()
+        ]
+    assert row == ("newer-index-raw", "newer indexed state", newer_hash, 1)
+    assert message_ids == ["chatgpt-export:logical-session:newer-message"]
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        raw_state = source_conn.execute(
+            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+    assert raw_state == (None, None)
+
+
+def test_raw_materialization_empty_index_intent_rejects_populated_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
+            ("existing", "chatgpt-export", "existing", bytes(32)),
+        )
+        conn.commit()
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(["raw-1"], 0, 0),
+    )
+
+    result = repair_mod.repair_raw_materialization(
+        config,
+        replay_intent=repair_mod.RawMaterializationReplayIntent.EMPTY_INDEX_REBUILD,
+    )
+
+    assert result.success is False
+    assert result.repaired_count == 0
+    assert result.metrics["raw_materialization_replay_blocked_count"] == 1.0
+    assert "requires an empty index" in result.detail
 
 
 def test_raw_materialization_dry_run_reports_limited_selection(
@@ -660,6 +793,7 @@ def test_raw_materialization_execute_replays_only_limited_selection(
     result = repair_mod.repair_raw_materialization(
         config,
         raw_artifact_limit=2,
+        replay_intent=repair_mod.RawMaterializationReplayIntent.EMPTY_INDEX_REBUILD,
     )
 
     assert result.success is True
@@ -968,7 +1102,11 @@ def test_raw_materialization_leaves_fts_to_ingest_or_fts_stage(
     monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
     monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+    result = repair_mod.repair_raw_materialization(
+        config,
+        dry_run=False,
+        replay_intent=repair_mod.RawMaterializationReplayIntent.EMPTY_INDEX_REBUILD,
+    )
 
     assert result.success is True
     assert result.repaired_count == 2
@@ -1030,6 +1168,7 @@ def test_raw_materialization_progress_reports_raw_payload_size(
     result = repair_mod.repair_raw_materialization(
         config,
         dry_run=False,
+        replay_intent=repair_mod.RawMaterializationReplayIntent.EMPTY_INDEX_REBUILD,
         progress_callback=lambda _amount, desc=None: progress.append(desc or ""),
     )
 
@@ -1063,7 +1202,11 @@ def test_raw_materialization_blocks_oversized_actual_replay(
     )
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+    result = repair_mod.repair_raw_materialization(
+        config,
+        dry_run=False,
+        replay_intent=repair_mod.RawMaterializationReplayIntent.EMPTY_INDEX_REBUILD,
+    )
 
     assert result.success is False
     assert result.repaired_count == 0
@@ -1119,7 +1262,11 @@ def test_raw_materialization_allows_oversized_stream_record_replay(
     monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
     monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+    result = repair_mod.repair_raw_materialization(
+        config,
+        dry_run=False,
+        replay_intent=repair_mod.RawMaterializationReplayIntent.EMPTY_INDEX_REBUILD,
+    )
 
     assert result.success is True
     assert result.repaired_count == 1
@@ -1172,7 +1319,11 @@ def test_raw_materialization_reports_parse_write_failures(
     monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
     monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+    result = repair_mod.repair_raw_materialization(
+        config,
+        dry_run=False,
+        replay_intent=repair_mod.RawMaterializationReplayIntent.EMPTY_INDEX_REBUILD,
+    )
 
     assert result.success is False
     assert result.repaired_count == 0

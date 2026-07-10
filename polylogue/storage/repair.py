@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 from polylogue.archive.raw_materialization import parsed_non_session_artifact_reason
@@ -42,6 +43,13 @@ logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
+
+
+class RawMaterializationReplayIntent(StrEnum):
+    """Authority boundary for replaying durable raw evidence into index.db."""
+
+    ORDINARY_REPAIR = "ordinary-repair"
+    EMPTY_INDEX_REBUILD = "empty-index-rebuild"
 
 
 def _format_bytes(value: int) -> str:
@@ -92,6 +100,14 @@ def _raw_materialization_source_available(source_path: str) -> bool:
         outer, _inner = source_path.split(":", 1)
         return Path(outer).exists()
     return False
+
+
+def _raw_materialization_index_has_sessions(config: Config) -> bool:
+    index_db = config.archive_root / "index.db"
+    if not index_db.exists():
+        return False
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        return conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None
 
 
 def _raw_materialization_candidate_ids(
@@ -1440,9 +1456,15 @@ def repair_raw_materialization(
     source_family: str | None = None,
     source_root: Path | None = None,
     raw_artifact_limit: int | None = None,
+    replay_intent: RawMaterializationReplayIntent = RawMaterializationReplayIntent.ORDINARY_REPAIR,
     progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
-    """Materialize replayable raw evidence into the index tier."""
+    """Materialize raw evidence under an explicit revision-authority intent.
+
+    Ordinary convergence is intentionally fail-closed until per-session raw
+    revision authority exists.  A cold rebuild may replay only into an empty
+    index, where force-write cannot replace a newer accepted revision.
+    """
     candidates = _raw_materialization_candidate_ids(
         config,
         raw_artifact_id=raw_artifact_id,
@@ -1469,6 +1491,7 @@ def repair_raw_materialization(
         "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
         "raw_materialization_selected_total_blob_bytes": float(selected_total_bytes),
         "raw_materialization_selected_max_blob_bytes": float(selected_max_bytes),
+        "raw_materialization_index_nonempty": float(_raw_materialization_index_has_sessions(config)),
     }
     if raw_artifact_limit is not None:
         metrics["raw_materialization_limit"] = float(raw_artifact_limit)
@@ -1529,6 +1552,9 @@ def repair_raw_materialization(
                 f"Would: replay {len(raw_ids):,} of {len(candidate_raw_ids):,} "
                 "acquired-but-unparsed raw rows into index.db"
             )
+        if replay_intent is RawMaterializationReplayIntent.ORDINARY_REPAIR:
+            detail += "; execution blocked until raw revision authority is available"
+            metrics["raw_materialization_replay_blocked_count"] = float(len(raw_ids))
         detail += byte_detail
         detail += oversized_detail
         if missing_blobs:
@@ -1561,6 +1587,32 @@ def repair_raw_materialization(
                 f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}; "
                 f"largest={_format_bytes(candidates.max_blob_bytes)}. Use a streaming provider-specific "
                 "repair path before replaying these rows."
+            ),
+            metrics=metrics,
+        )
+
+    index_nonempty = bool(metrics["raw_materialization_index_nonempty"])
+    if replay_intent is RawMaterializationReplayIntent.ORDINARY_REPAIR:
+        metrics["raw_materialization_replay_blocked_count"] = float(len(executable_raw_ids))
+        return _internal_derived_repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=False,
+            detail=(
+                "Raw materialization blocked: ordinary repair cannot prove per-session raw revision authority; "
+                f"left {len(executable_raw_ids):,} replay candidate(s) pending (Ref polylogue-yla8)"
+            ),
+            metrics=metrics,
+        )
+    if index_nonempty:
+        metrics["raw_materialization_replay_blocked_count"] = float(len(executable_raw_ids))
+        return _internal_derived_repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=False,
+            detail=(
+                "Raw materialization blocked: empty-index rebuild intent requires an empty index; "
+                f"left {len(executable_raw_ids):,} replay candidate(s) pending"
             ),
             metrics=metrics,
         )

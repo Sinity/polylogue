@@ -462,6 +462,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     tmp_path: Path,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.repair import RawMaterializationReplayIntent
 
     calls: dict[str, object] = {}
     order: list[str] = []
@@ -488,12 +489,19 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["restore_sample_size"] = sample_size
         return FakeRestoreResult()
 
-    def fake_repair_raw_materialization(config: Config, *, dry_run: bool, raw_artifact_limit: int) -> FakeResult:
+    def fake_repair_raw_materialization(
+        config: Config,
+        *,
+        dry_run: bool,
+        raw_artifact_limit: int,
+        replay_intent: object,
+    ) -> FakeResult:
         order.append("materialize")
         calls["archive_root"] = config.archive_root
         calls["render_root"] = config.render_root
         calls["dry_run"] = dry_run
         calls["raw_artifact_limit"] = raw_artifact_limit
+        calls["replay_intent"] = replay_intent
         return FakeResult()
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
@@ -515,6 +523,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "render_root": tmp_path / "render",
         "dry_run": False,
         "raw_artifact_limit": 11,
+        "replay_intent": RawMaterializationReplayIntent.ORDINARY_REPAIR,
     }
 
 
