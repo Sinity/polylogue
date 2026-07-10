@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 
 from devtools import run_tests
 from devtools.verify import PYTEST_EVENTS_PATH, PYTEST_SELECTION_PATH, PYTEST_SUMMARY_PATH
+from devtools.verify_runs import git_head
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
@@ -57,11 +59,14 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run", _fake_run)
+    monkeypatch.setattr("devtools.run_tests.git_head", lambda _root: "abc123")
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
     assert "--json" not in captured["cmd"]
     assert "tests/unit/pipeline" in captured["cmd"]
     assert captured["label"] == "pytest focused"
     assert captured["run"].run_id
+    assert captured["run"]._payload["git_head"] == "abc123"
+    assert isinstance(captured["run"]._payload["git_dirty"], bool)
 
 
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,6 +77,33 @@ def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run", _fake_run)
     assert run_tests.main(["tests/unit/does_not_exist"]) == 5
+
+
+def test_git_head_records_checkout_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert cmd == ["git", "rev-parse", "HEAD"]
+        assert kwargs["cwd"] == tmp_path
+        assert kwargs["timeout"] == 5
+        return subprocess.CompletedProcess(cmd, 0, stdout="deadbeef\n", stderr="")
+
+    monkeypatch.setattr("devtools.verify_runs.subprocess.run", _fake_run)
+    assert git_head(tmp_path) == "deadbeef"
+
+
+def test_git_head_degrades_to_none_without_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="not a git repository")
+
+    monkeypatch.setattr("devtools.verify_runs.subprocess.run", _fake_run)
+    assert git_head(tmp_path) is None
+
+
+def test_git_head_degrades_to_none_when_probe_cannot_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise OSError("git missing")
+
+    monkeypatch.setattr("devtools.verify_runs.subprocess.run", _fake_run)
+    assert git_head(tmp_path) is None
 
 
 def test_managed_env_sets_repo_roots() -> None:

@@ -85,6 +85,29 @@ def git_dirty() -> bool:
     return bool(result.stdout.strip())
 
 
+def git_head(cwd: Path | None = None) -> str | None:
+    """Return the current checkout HEAD, or ``None`` when git is unavailable.
+
+    Verification artifacts are evidence, not a reason to fail the user's test
+    run. Keep the probe bounded and nullable so non-git archives, missing git
+    executables, and wedged git commands preserve honest ``null`` metadata.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    head = result.stdout.strip()
+    return head or None
+
+
 @dataclass(frozen=True)
 class PytestStepArtifacts:
     step_id: str
