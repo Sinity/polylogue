@@ -12,43 +12,20 @@ better demo supersedes them.
   - files: 7 (4 readable)
 - `agent-affordance-usage` — Agent Affordance Usage
   - readme: `agent-affordance-usage/README.md`
-  - analysis: `agent-affordance-usage/ANALYSIS.md`
-  - files: 46 (43 readable)
+  - files: 13 (13 readable)
 - `agent-forensics` — Agent Forensics
   - readme: `agent-forensics/README.md`
   - files: 9 (9 readable)
 - `anti-demo-multi-source-reconstruction` — Anti Demo Multi Source Reconstruction
   - files: 7 (4 readable)
-- `archive-debt-summary` — Archive Debt Summary Demo
-  - readme: `archive-debt-summary/README.md`
-  - analysis: `archive-debt-summary/ANALYSIS.md`
-  - files: 9 (8 readable)
 - `attachment-acquisition-census` — Attachment Acquisition Census
   - readme: `attachment-acquisition-census/README.md`
   - analysis: `attachment-acquisition-census/ANALYSIS.md`
   - files: 5 (4 readable)
-- `chatlog-exports` — Chatlog Export Demos
-  - readme: `chatlog-exports/README.md`
-  - files: 27 (26 readable)
-- `claim-vs-evidence` — Claim-vs-Evidence Failure Follow-Up
-  - readme: `claim-vs-evidence/README.md`
-  - files: 8 (8 readable)
-- `cli-surface-audit` — CLI Surface Audit
-  - readme: `cli-surface-audit/current/README.md`
-  - files: 24 (2 readable)
 - `d4-behavioral-archaeology` — D4 Behavioral Archaeology
   - files: 7 (4 readable)
-- `degraded-archive-proof` — Degraded Archive Proof
-  - files: 2 (2 readable)
-- `lineage-validation` — Lineage Validation
-  - readme: `lineage-validation/current/README.md`
-  - files: 3 (3 readable)
-- `query-runtime-projections` — Query Runtime Projections
-  - files: 3 (3 readable)
-- `temporal-archive-aggregates` — Temporal Archive Aggregates
-  - readme: `temporal-archive-aggregates/README.md`
-  - files: 6 (6 readable)
-- `temporal-devloop` — Temporal Devloop
-  - files: 1 (1 readable)
+- `uplift-two-arm` — Handoff-Pack Uplift Experiment
+  - readme: `uplift-two-arm/README.md`
+  - files: 20 (20 readable)
 
 Retired demo material belongs under `.agent/archive/retired-demos/`, not here.

@@ -1,10 +1,17 @@
 {
   "contract": "current-curated-demo-set",
-  "root": "/realm/project/polylogue/.agent/demos",
+  "root": ".agent/demos",
+  "input_closure": {
+    "mode": "git-tracked",
+    "included_count": 69,
+    "excluded_count": 0,
+    "exclusion_reason_counts": {},
+    "exclusion_samples": "bounded samples are emitted in the command JSON payload"
+  },
   "packaging": "Use devtools workspace read-package for portable readable bundles; this helper only writes indexes.",
   "curation_policy": "This is not append-only. Keep the best current demos here; replace, consolidate, or move stale demos out.",
-  "file_count": 165,
-  "readable_count": 128,
+  "file_count": 69,
+  "readable_count": 59,
   "files": [
     {
       "path": "_packet-contract-stub/PROMPT.md",
@@ -42,11 +49,6 @@
       "readable": false
     },
     {
-      "path": "agent-affordance-usage/ANALYSIS.md",
-      "bytes": 3153,
-      "readable": true
-    },
-    {
       "path": "agent-affordance-usage/README.md",
       "bytes": 4295,
       "readable": true
@@ -62,51 +64,6 @@
       "readable": true
     },
     {
-      "path": "agent-affordance-usage/codebase-detail-30d/README.md",
-      "bytes": 2058,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/codebase-detail-30d/affordance-usage.report.json",
-      "bytes": 105768,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/codebase-detail-30d/archive-origin-counts.csv",
-      "bytes": 171,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/codebase-detail-30d/evidence-kind-counts.csv",
-      "bytes": 256,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/codebase-detail-30d/family-counts.csv",
-      "bytes": 192,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/codebase-detail-30d/recent-30d-tool-counts.csv",
-      "bytes": 626,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/codebase-detail-30d/tool-by-origin.csv",
-      "bytes": 709,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/codebase-detail-30d/tool-counts.csv",
-      "bytes": 626,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/codebase-detail-30d/tool-samples.csv",
-      "bytes": 56160,
-      "readable": true
-    },
-    {
       "path": "agent-affordance-usage/evidence-kind-counts.csv",
       "bytes": 154,
       "readable": true
@@ -114,121 +71,6 @@
     {
       "path": "agent-affordance-usage/family-counts.csv",
       "bytes": 135,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/README.md",
-      "bytes": 2215,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/exit-code.txt",
-      "bytes": 2,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/handler-exit-code.txt",
-      "bytes": 2,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/handler-query-plan.txt",
-      "bytes": 117,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/observed-event-handler-counts.json",
-      "bytes": 1880,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/observed-event-handler-counts.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/observed-event-mcp-status-counts.json",
-      "bytes": 1624,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/observed-event-mcp-status-counts.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/observed-event-status-counts.json",
-      "bytes": 1499,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/observed-event-status-counts.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/run-context.jsonl",
-      "bytes": 1115,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/live-observed-event-aggregate/status-exit-code.txt",
-      "bytes": 2,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-analyze-tools/README.md",
-      "bytes": 3119,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-analyze-tools/archive-state.json",
-      "bytes": 276,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-analyze-tools/codebase-memory-action-evidence-30d.json",
-      "bytes": 659,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-analyze-tools/codebase-memory-family-comparison-all.json",
-      "bytes": 1882,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-analyze-tools/codebase-memory-family-comparison.json",
-      "bytes": 1942,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-analyze-tools/serena-family-comparison-all.json",
-      "bytes": 3234,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-analyze-tools/serena-family-comparison.json",
-      "bytes": 3402,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-analyze-tools/serena-observed-events-30d.json",
-      "bytes": 764,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-terminal-observed-events/README.md",
-      "bytes": 1148,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-terminal-observed-events/mcp-tool-finished-status-aggregate.json",
-      "bytes": 1870,
-      "readable": true
-    },
-    {
-      "path": "agent-affordance-usage/product-terminal-observed-events/serena-find-symbol-terminal-rows.json",
-      "bytes": 7711,
       "readable": true
     },
     {
@@ -352,51 +194,6 @@
       "readable": false
     },
     {
-      "path": "archive-debt-summary/ANALYSIS.md",
-      "bytes": 3098,
-      "readable": true
-    },
-    {
-      "path": "archive-debt-summary/README.md",
-      "bytes": 1287,
-      "readable": true
-    },
-    {
-      "path": "archive-debt-summary/daemon-status-raw-materialization.json",
-      "bytes": 680,
-      "readable": true
-    },
-    {
-      "path": "archive-debt-summary/parser-explain-samples.json",
-      "bytes": 3,
-      "readable": true
-    },
-    {
-      "path": "archive-debt-summary/raw-materialization-classified.json",
-      "bytes": 10678,
-      "readable": true
-    },
-    {
-      "path": "archive-debt-summary/raw-materialization-summary.csv",
-      "bytes": 900,
-      "readable": true
-    },
-    {
-      "path": "archive-debt-summary/raw-materialization-unresolved.json",
-      "bytes": 648,
-      "readable": true
-    },
-    {
-      "path": "archive-debt-summary/regenerate.sh",
-      "bytes": 13254,
-      "readable": false
-    },
-    {
-      "path": "archive-debt-summary/summary.json",
-      "bytes": 2148,
-      "readable": true
-    },
-    {
       "path": "attachment-acquisition-census/ANALYSIS.md",
       "bytes": 1370,
       "readable": true
@@ -419,301 +216,6 @@
     {
       "path": "attachment-acquisition-census/regenerate.sh",
       "bytes": 7687,
-      "readable": false
-    },
-    {
-      "path": "chatlog-exports/README.md",
-      "bytes": 4103,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/README.md",
-      "bytes": 2742,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/manifest.json",
-      "bytes": 1807,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/full-chatlog/dialogue-full.json",
-      "bytes": 18387,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/full-chatlog/dialogue-full.md",
-      "bytes": 12183,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/full-chatlog/messages-full.json",
-      "bytes": 274599,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/full-chatlog/temporal-chronicle-full.json",
-      "bytes": 21694,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/full-chatlog/transcript.md",
-      "bytes": 107003,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/product-read/dialogue.json",
-      "bytes": 18387,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/product-read/dialogue.md",
-      "bytes": 12183,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/product-read/messages.json",
-      "bytes": 144440,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/product-read/raw.json",
-      "bytes": 412,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/product-read/spec.json",
-      "bytes": 719,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/product-read/temporal-chronicle.json",
-      "bytes": 21689,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/full-chatlog/dialogue-full.json",
-      "bytes": 9887215,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/full-chatlog/dialogue-full.md",
-      "bytes": 6197379,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/full-chatlog/messages-full.json",
-      "bytes": 239844104,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/full-chatlog/temporal-chronicle-full.json",
-      "bytes": 23313,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/full-chatlog/transcript.md",
-      "bytes": 112768294,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/product-read/dialogue.json",
-      "bytes": 50035,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/product-read/dialogue.md",
-      "bytes": 37393,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/product-read/messages.json",
-      "bytes": 476592,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/product-read/raw.json",
-      "bytes": 415,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/product-read/spec.json",
-      "bytes": 715,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/current/sinex-devloop-019f12b5-1a85-7b42-858e-44eccf8469dc/product-read/temporal-chronicle.json",
-      "bytes": 23308,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/read-package.json",
-      "bytes": 2134,
-      "readable": true
-    },
-    {
-      "path": "chatlog-exports/regenerate.sh",
-      "bytes": 6538,
-      "readable": false
-    },
-    {
-      "path": "claim-vs-evidence/COLD_READER_GATE.md",
-      "bytes": 1199,
-      "readable": true
-    },
-    {
-      "path": "claim-vs-evidence/PUBLIC_REPRODUCTION.md",
-      "bytes": 2642,
-      "readable": true
-    },
-    {
-      "path": "claim-vs-evidence/README.md",
-      "bytes": 3535,
-      "readable": true
-    },
-    {
-      "path": "claim-vs-evidence/ack-marker-calibration.labels.csv",
-      "bytes": 31654,
-      "readable": true
-    },
-    {
-      "path": "claim-vs-evidence/ack-marker-calibration.sample.csv",
-      "bytes": 31097,
-      "readable": true
-    },
-    {
-      "path": "claim-vs-evidence/claim-vs-evidence.report.json",
-      "bytes": 551574,
-      "readable": true
-    },
-    {
-      "path": "claim-vs-evidence/public-summary.json",
-      "bytes": 2903,
-      "readable": true
-    },
-    {
-      "path": "claim-vs-evidence/summary.json",
-      "bytes": 4527,
-      "readable": true
-    },
-    {
-      "path": "cli-surface-audit/current/README.md",
-      "bytes": 3253,
-      "readable": true
-    },
-    {
-      "path": "cli-surface-audit/current/command-matrix.json",
-      "bytes": 7820,
-      "readable": true
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/facets_json.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/facets_json.stdout",
-      "bytes": 5185,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/find_explain_read_json.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/find_explain_read_json.stdout",
-      "bytes": 1508,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/find_help.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/find_help.stdout",
-      "bytes": 1214,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/find_select_json.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/find_select_json.stdout",
-      "bytes": 458,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/ops_status_json.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/ops_status_json.stdout",
-      "bytes": 87347,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/read_dialogue_bounded_json.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/read_dialogue_bounded_json.stdout",
-      "bytes": 1482,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/read_help.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/read_help.stdout",
-      "bytes": 5816,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/read_temporal_spec_json.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/read_temporal_spec_json.stdout",
-      "bytes": 624,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/read_views_json.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/read_views_json.stdout",
-      "bytes": 14289,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/root_help.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/root_help.stdout",
-      "bytes": 9815,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/status_plain.stderr",
-      "bytes": 0,
-      "readable": false
-    },
-    {
-      "path": "cli-surface-audit/current/outputs/status_plain.stdout",
-      "bytes": 115,
       "readable": false
     },
     {
@@ -752,83 +254,108 @@
       "readable": false
     },
     {
-      "path": "degraded-archive-proof/current/degraded-archive-proof.json",
-      "bytes": 1516,
-      "readable": true
-    },
-    {
-      "path": "degraded-archive-proof/current/degraded-archive-proof.md",
-      "bytes": 1262,
-      "readable": true
-    },
-    {
-      "path": "lineage-validation/current/README.md",
-      "bytes": 598,
-      "readable": true
-    },
-    {
-      "path": "lineage-validation/current/lineage-validation.report.json",
-      "bytes": 59750,
-      "readable": true
-    },
-    {
-      "path": "lineage-validation/current/summary.json",
-      "bytes": 59875,
-      "readable": true
-    },
-    {
-      "path": "query-runtime-projections/source-derived-run-context/README.md",
-      "bytes": 1292,
-      "readable": true
-    },
-    {
-      "path": "query-runtime-projections/source-derived-run-context/main-runs-claude-code.json",
-      "bytes": 4742,
-      "readable": true
-    },
-    {
-      "path": "query-runtime-projections/source-derived-run-context/session-start-context-polylogue.json",
-      "bytes": 3789,
-      "readable": true
-    },
-    {
       "path": "registry.json",
       "bytes": 950,
       "readable": true
     },
     {
-      "path": "temporal-archive-aggregates/README.md",
-      "bytes": 972,
+      "path": "uplift-two-arm/README.md",
+      "bytes": 864,
       "readable": true
     },
     {
-      "path": "temporal-archive-aggregates/current/archive-cardinality.json",
-      "bytes": 254,
+      "path": "uplift-two-arm/current/arms/pair1-handoff-pack-output.md",
+      "bytes": 7265,
       "readable": true
     },
     {
-      "path": "temporal-archive-aggregates/current/monthly-context-boundaries.csv",
-      "bytes": 1659,
+      "path": "uplift-two-arm/current/arms/pair1-raw-ref-output.md",
+      "bytes": 8123,
       "readable": true
     },
     {
-      "path": "temporal-archive-aggregates/current/monthly-observed-events-by-kind.csv",
-      "bytes": 3967,
+      "path": "uplift-two-arm/current/arms/pair2-handoff-pack-output.md",
+      "bytes": 2489,
       "readable": true
     },
     {
-      "path": "temporal-archive-aggregates/current/monthly-runs-by-harness-role-status.csv",
-      "bytes": 4588,
+      "path": "uplift-two-arm/current/arms/pair2-raw-ref-output.md",
+      "bytes": 2406,
       "readable": true
     },
     {
-      "path": "temporal-archive-aggregates/current/temporal-archive-aggregates.report.json",
-      "bytes": 38473,
+      "path": "uplift-two-arm/current/arms/pair3-handoff-pack-output.md",
+      "bytes": 2667,
       "readable": true
     },
     {
-      "path": "temporal-devloop/current/devloop-events.json",
-      "bytes": 23039,
+      "path": "uplift-two-arm/current/arms/pair3-raw-ref-output.md",
+      "bytes": 2262,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/arms/pair4-handoff-pack-output.md",
+      "bytes": 2236,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/arms/pair4-raw-ref-output.md",
+      "bytes": 2158,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/arms/pair5-handoff-pack-output.md",
+      "bytes": 2251,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/arms/pair5-raw-ref-output.md",
+      "bytes": 1987,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/metrics/ground-truth-pair1.json",
+      "bytes": 1989,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/metrics/ground-truth-pair2.json",
+      "bytes": 874,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/metrics/ground-truth-pair3.json",
+      "bytes": 706,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/metrics/ground-truth-pair4.json",
+      "bytes": 614,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/metrics/ground-truth-pair5.json",
+      "bytes": 736,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/metrics/rubric.json",
+      "bytes": 912,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/metrics/score.json",
+      "bytes": 2106,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/pairs.json",
+      "bytes": 1849,
+      "readable": true
+    },
+    {
+      "path": "uplift-two-arm/current/report.md",
+      "bytes": 7468,
       "readable": true
     }
   ]
