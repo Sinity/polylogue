@@ -82,6 +82,7 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert session.attachments[0].message_provider_id == "a1"
     assert session.attachments[0].source_url == "https://chatgpt.com/attachment/1"
     assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
+    assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in session.ingest_flags
 
 
 def test_browser_capture_embedded_attachment_payloads_become_inline_bytes() -> None:

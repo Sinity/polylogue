@@ -64,14 +64,17 @@ def _apply_browser_capture_session_kind(
     session: ParsedSession,
     envelope: BrowserCaptureEnvelope,
     provider_session_id: str,
+    *,
+    has_native_payload: bool,
 ) -> ParsedSession:
     session_kind = _session_kind_for_browser_capture(envelope, provider_session_id)
+    capture_flags = [NATIVE_BROWSER_CAPTURE_INGEST_FLAG] if has_native_payload else []
     ingest_flags = list(
         dict.fromkeys(
             [
                 *session.ingest_flags,
                 *_ingest_flags_for_browser_capture(envelope, provider_session_id),
-                NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+                *capture_flags,
             ]
         )
     )
@@ -152,13 +155,19 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
         return _apply_browser_capture_session_kind(
-            parse_chatgpt(raw_provider_payload, provider_session_id), envelope, provider_session_id
+            parse_chatgpt(raw_provider_payload, provider_session_id),
+            envelope,
+            provider_session_id,
+            has_native_payload=True,
         )
     if envelope.session.provider is Provider.CLAUDE_AI and _has_claude_ai_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.claude.ai_parser import parse_ai as parse_claude_ai
 
         return _apply_browser_capture_session_kind(
-            parse_claude_ai(raw_provider_payload, provider_session_id), envelope, provider_session_id
+            parse_claude_ai(raw_provider_payload, provider_session_id),
+            envelope,
+            provider_session_id,
+            has_native_payload=True,
         )
 
     seen_turns: set[str] = set()
