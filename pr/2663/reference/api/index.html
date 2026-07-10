@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Library API — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero .eyebrow { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); margin-bottom: 0.8rem; }
+        .home-hero h1 { font-size: clamp(2.4rem, 7vw, 4.5rem); line-height: 1.03; max-width: 820px; margin: 0 auto 1rem; letter-spacing: -0.04em; }
+        .home-hero .tagline { font-size: 1.18rem; color: var(--text-secondary); max-width: 760px; margin: 0 auto 1.3rem; }
+        .hero-command { margin: 0 auto 1rem; }
+        .hero-command code { display: inline-block; padding: 0.65rem 0.9rem; border: 1px solid var(--border); background: var(--bg-secondary); box-shadow: 0 10px 30px var(--shadow); }
+        .hero-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 0.45rem 1.2rem; margin: 0 auto 1.7rem; color: var(--text-tertiary); font-size: 0.8rem; }
+        .hero-stats strong { color: var(--text-primary); font-size: 0.92rem; margin-right: 0.18rem; }
+        .proof-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0 2rem; text-align: left; }
+        .proof-card { background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary)); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem; min-height: 155px; }
+        .proof-card strong { display: block; font-size: 1rem; margin: 0.35rem 0 0.5rem; }
+        .proof-card p { color: var(--text-secondary); font-size: 0.9rem; margin: 0; }
+        .proof-label { color: var(--accent); font-size: 0.73rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2.35rem; }
+            .proof-grid { grid-template-columns: 1fr; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="../../" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Start Here</div>
+                
+                <a href="../../demos/" >
+                    Demos
+                </a>
+                
+                <a href="../../findings/claim-vs-evidence/" >
+                    Finding: Structured Failure
+                </a>
+                
+                <a href="../../proof/" >
+                    Proof Artifacts
+                </a>
+                
+                <a href="../../architecture/sinex/" >
+                    Polylogue on Sinex
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="../../docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="../../docs/search/" >
+                    Search
+                </a>
+                
+                <a href="../../docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="../../docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="../../docs/export/" >
+                    Export
+                </a>
+                
+                <a href="../../docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="../cli/" >
+                    CLI
+                </a>
+                
+                <a href="../mcp/" >
+                    MCP
+                </a>
+                
+                <a href="./" class="active">
+                    API
+                </a>
+                
+                <a href="../config/" >
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="../../architecture/rings/" >
+                    Rings
+                </a>
+                
+                <a href="../../architecture/internals/" >
+                    Internals
+                </a>
+                
+                <a href="../../architecture/schema/" >
+                    Schema
+                </a>
+                
+                <a href="../../architecture/contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="../../verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="../../verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="../../verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="../../verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="../../design/second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="../../design/time-machine/" >
+                    Time Machine
+                </a>
+                
+                <a href="../../design/project-memory/" >
+                    Project Memory
+                </a>
+                
+                <a href="../../design/agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="../../design/archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="../../design/whole-product/" >
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<p><a href="https://github.com/Sinity/polylogue/blob/master/README.md">← Back to README</a></p>
+<h1>Library API</h1>
+<p>Polylogue is designed library-first. The CLI wraps the Python API.</p>
+<p>The public Python surface is split into:</p>
+<ul>
+<li><code>polylogue</code>: archive-core access (<code>Polylogue</code>, <code>SyncPolylogue</code>, <code>ArchiveStats</code>,
+<code>Session</code>, <code>Message</code>, <code>SearchResult</code>)</li>
+<li><code>polylogue.archive</code>: domain-model, query, projection, and semantic helpers</li>
+<li>precise modules for higher-order semantic analysis, storage, and reporting</li>
+</ul>
+<h2>Basic Usage</h2>
+<pre><code class="language-python">import asyncio
+
+from polylogue import Polylogue
+
+
+async def main() -&gt; None:
+    async with Polylogue.open() as archive:
+        # Full-text search (returns list[Session])
+        results = await archive.repository.search(&quot;error&quot;, limit=10)
+        for session in results:
+            print(f&quot;{session.id}: {session.display_title}&quot;)
+
+        # Fluent filter by origin (lazy; terminals are async)
+        recent = await archive.filter().origin(&quot;claude-ai-export&quot;).limit(10).list_summaries()
+        for summary in recent:
+            print(f&quot;{summary.id}: {summary.display_title}&quot;)
+
+        # Single session by id prefix
+        session = await archive.get_session(&quot;abc123&quot;)
+
+
+asyncio.run(main())
+</code></pre>
+<p><code>Polylogue.open()</code> is the async context manager; <code>archive.repository</code> is a
+<code>SessionRepository</code> and <code>archive.filter()</code> returns a <code>SessionFilter</code> already
+bound to the active archive — never construct <code>SessionFilter</code> directly.</p>
+<h2>Precise Module Imports</h2>
+<p>Semantic-analysis/reporting helpers are still public, but they are no longer
+re-exported from package roots. Import them from their actual modules:</p>
+<pre><code class="language-python">from polylogue.archive.session.session_profile import build_session_profile, infer_auto_tags
+from polylogue.archive.session.threads import build_session_threads
+</code></pre>
+<p>Durable archive insights are public too:</p>
+<pre><code class="language-python">from polylogue import Polylogue
+from polylogue.insights.archive import (
+    ArchiveCoverageInsightQuery,
+    ArchiveDebtInsightQuery,
+    SessionLatencyProfileInsightQuery,
+    SessionPhaseInsightQuery,
+    SessionProfileInsightQuery,
+    SessionTagRollupQuery,
+)
+
+async with Polylogue() as archive:
+    status = await archive.get_session_insight_status()
+    profiles = await archive.list_session_profile_insights(
+        SessionProfileInsightQuery(
+            provider=&quot;claude-code&quot;,
+            session_date_since=&quot;2026-03-16&quot;,
+            session_date_until=&quot;2026-03-16&quot;,
+            limit=25,
+        )
+    )
+    phases = await archive.list_session_phase_insights(
+        SessionPhaseInsightQuery(provider=&quot;claude-code&quot;, limit=25)
+    )
+    latency = await archive.list_session_latency_profile_insights(
+        SessionLatencyProfileInsightQuery(provider=&quot;claude-code&quot;, only_stuck=False, limit=25)
+    )
+    tags = await archive.list_session_tag_rollup_insights(
+        SessionTagRollupQuery(provider=&quot;claude-code&quot;, since=&quot;2026-01-01&quot;)
+    )
+    coverage = await archive.list_archive_coverage_insights(
+        ArchiveCoverageInsightQuery(provider=&quot;claude-code&quot;, group_by=&quot;day&quot;, since=&quot;2026-01-01&quot;)
+    )
+    debt = await archive.list_archive_debt_insights(
+        ArchiveDebtInsightQuery(only_actionable=True)
+    )
+</code></pre>
+<p><code>SessionProfileInsight</code> exposes stable session semantics directly:</p>
+<ul>
+<li><code>inferred_topic</code></li>
+<li><code>first_message_at</code></li>
+<li><code>canonical_session_date</code></li>
+<li><code>timestamp_source</code></li>
+<li><code>engaged_duration_ms</code></li>
+<li><code>engaged_minutes</code></li>
+<li><code>tool_active_duration_ms</code></li>
+<li><code>workflow_shape</code></li>
+<li><code>workflow_shape_confidence</code></li>
+<li><code>terminal_state</code></li>
+<li><code>terminal_state_confidence</code></li>
+<li><code>enrichment</code></li>
+<li><code>enrichment_provenance</code></li>
+<li><code>repo_names</code></li>
+<li><code>repo_paths</code></li>
+</ul>
+<p><code>SessionWorkEventInsight</code> and <code>SessionPhaseInsight</code> expose timestamped timeline
+rows that can be queried directly.</p>
+<p><code>SessionLatencyProfileInsight</code> exposes per-session runtime-shape signals:</p>
+<ul>
+<li><code>median_tool_call_ms</code></li>
+<li><code>p90_tool_call_ms</code></li>
+<li><code>max_tool_call_ms</code></li>
+<li><code>stuck_tool_count</code></li>
+<li><code>median_agent_response_ms</code></li>
+<li><code>median_user_response_ms</code></li>
+<li><code>tool_call_count_by_category</code></li>
+</ul>
+<p>The latency payload includes a construct-boundary string because these are
+archive-observed timing aggregates. They do not measure correctness, human
+attention, or total wall-clock productivity.</p>
+<p>The merged <code>SessionProfileInsight</code> tier exposes probabilistic enrichment:</p>
+<ul>
+<li><code>intent_summary</code></li>
+<li><code>outcome_summary</code></li>
+<li><code>blockers</code></li>
+<li><code>confidence</code></li>
+<li><code>support_level</code></li>
+<li><code>support_signals</code></li>
+<li><code>provenance</code></li>
+</ul>
+<p>The enrichment payload is intentionally folded into session profiles because it
+is derived from the same per-session materialization row. Request
+<code>SessionProfileInsightQuery(tier=&quot;merged&quot;)</code> when callers need both grounded
+profile evidence and probabilistic enrichment in one payload.</p>
+<p>Archive coverage and archive debt are public insights too:</p>
+<ul>
+<li><code>ArchiveCoverageInsight</code>: provider/day/week session, message, cost, and activity coverage rollups</li>
+<li><code>ArchiveDebtInsight</code>: governed cleanup/repair debt with maintenance targets plus preview/apply/validation lineage</li>
+</ul>
+<h2>Filter Chain API</h2>
+<p>All examples below assume an open archive, where <code>archive.filter()</code> yields a
+fresh <code>SessionFilter</code> bound to the active archive:</p>
+<pre><code class="language-python">async with Polylogue.open() as archive:
+    # Chainable, lazy evaluation (terminals are async)
+    results = await (archive.filter()
+        .contains(&quot;error&quot;)
+        .contains(&quot;python&quot;)                          # AND
+        .origin(&quot;claude-ai-export&quot;, &quot;chatgpt-export&quot;)  # OR
+        .since(&quot;2025-01-01&quot;)
+        .has(&quot;thinking&quot;)
+        .limit(10)
+        .list())                        # Terminal: await list(), first(), count(), delete()
+
+    # Exclusion filters
+    results = await (archive.filter()
+        .contains(&quot;error&quot;)
+        .exclude_text(&quot;warning&quot;)
+        .exclude_origin(&quot;gemini-cli-session&quot;)
+        .exclude_tag(&quot;archived&quot;)
+        .list())
+
+    # Lightweight summaries (no message loading)
+    summaries = await (archive.filter()
+        .origin(&quot;claude-ai-export&quot;)
+        .since(&quot;2025-01-01&quot;)
+        .list_summaries())              # Returns SessionSummary (no messages)
+
+    # Check if summaries are sufficient
+    f = archive.filter().origin(&quot;claude-ai-export&quot;)
+    if f.can_use_summaries():
+        results = await f.list_summaries()  # Fast path
+    else:
+        results = await f.list()            # Loads full sessions
+
+    # Custom predicates
+    results = await (archive.filter()
+        .where(lambda c: len(c.messages) &gt; 50)
+        .list())
+
+    # Sorting and sampling
+    results = await (archive.filter()
+        .sort(&quot;tokens&quot;)
+        .reverse()
+        .sample(10)
+        .list())
+
+    # Session structure filters
+    roots = await archive.filter().is_root().list()
+    continuations = await archive.filter().is_continuation().list()
+</code></pre>
+<h2>Available Filter Methods</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.contains(text)</code></td>
+<td>FTS term (chainable = AND)</td>
+</tr>
+<tr>
+<td><code>.exclude_text(text)</code></td>
+<td>Exclude FTS term</td>
+</tr>
+<tr>
+<td><code>.origin(*names)</code></td>
+<td>Include origins (e.g. <code>claude-ai-export</code>, <code>chatgpt-export</code>)</td>
+</tr>
+<tr>
+<td><code>.exclude_origin(*names)</code></td>
+<td>Exclude origins</td>
+</tr>
+<tr>
+<td><code>.repo(*names)</code></td>
+<td>Require repository names</td>
+</tr>
+<tr>
+<td><code>.tag(*tags)</code></td>
+<td>Include tags</td>
+</tr>
+<tr>
+<td><code>.exclude_tag(*tags)</code></td>
+<td>Exclude tags</td>
+</tr>
+<tr>
+<td><code>.referenced_path(pattern)</code></td>
+<td>Require a touched-path substring</td>
+</tr>
+<tr>
+<td><code>.cwd_prefix(prefix)</code></td>
+<td>Require a working-directory prefix</td>
+</tr>
+<tr>
+<td><code>.action(*kinds)</code></td>
+<td>Require semantic action kinds</td>
+</tr>
+<tr>
+<td><code>.exclude_action(*kinds)</code></td>
+<td>Exclude semantic action kinds</td>
+</tr>
+<tr>
+<td><code>.tool(*names)</code></td>
+<td>Require normalized tool names</td>
+</tr>
+<tr>
+<td><code>.exclude_tool(*names)</code></td>
+<td>Exclude normalized tool names</td>
+</tr>
+<tr>
+<td><code>.has(*types)</code></td>
+<td>Content types: <code>thinking</code>, <code>tools</code>, <code>summary</code>, <code>attachments</code></td>
+</tr>
+<tr>
+<td><code>.title(pattern)</code></td>
+<td>Title contains pattern</td>
+</tr>
+<tr>
+<td><code>.id(prefix)</code></td>
+<td>ID prefix match</td>
+</tr>
+<tr>
+<td><code>.since(date)</code></td>
+<td>After date (str or datetime)</td>
+</tr>
+<tr>
+<td><code>.until(date)</code></td>
+<td>Before date (str or datetime)</td>
+</tr>
+<tr>
+<td><code>.similar(text)</code></td>
+<td>Semantic similarity (requires vector index)</td>
+</tr>
+<tr>
+<td><code>.sort(field)</code></td>
+<td>Sort: <code>date</code>, <code>tokens</code>, <code>messages</code>, <code>words</code>, <code>longest</code>, <code>random</code></td>
+</tr>
+<tr>
+<td><code>.reverse()</code></td>
+<td>Reverse sort order</td>
+</tr>
+<tr>
+<td><code>.limit(n)</code></td>
+<td>Max results</td>
+</tr>
+<tr>
+<td><code>.sample(n)</code></td>
+<td>Random sample</td>
+</tr>
+<tr>
+<td><code>.where(predicate)</code></td>
+<td>Custom filter predicate</td>
+</tr>
+<tr>
+<td><code>.is_root()</code></td>
+<td>Root sessions only</td>
+</tr>
+<tr>
+<td><code>.is_continuation()</code></td>
+<td>Continuation sessions only</td>
+</tr>
+<tr>
+<td><code>.is_sidechain()</code></td>
+<td>Sidechain sessions only</td>
+</tr>
+<tr>
+<td><code>.has_branches()</code></td>
+<td>Sessions with branching messages</td>
+</tr>
+<tr>
+<td><code>.parent(id)</code></td>
+<td>Children of a given parent</td>
+</tr>
+</tbody>
+</table>
+<h2>Terminal Methods</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.list()</code></td>
+<td>Execute and return <code>list[Session]</code></td>
+</tr>
+<tr>
+<td><code>.list_summaries()</code></td>
+<td>Execute and return <code>list[SessionSummary]</code> (lightweight, no messages)</td>
+</tr>
+<tr>
+<td><code>.first()</code></td>
+<td>Execute and return first match or <code>None</code></td>
+</tr>
+<tr>
+<td><code>.count()</code></td>
+<td>Execute and return count (uses SQL fast path when possible)</td>
+</tr>
+<tr>
+<td><code>.delete()</code></td>
+<td>Delete matching sessions (returns count deleted)</td>
+</tr>
+<tr>
+<td><code>.can_use_summaries()</code></td>
+<td>Check if <code>list_summaries()</code> is valid for current filters</td>
+</tr>
+</tbody>
+</table>
+<h2>Ingestion</h2>
+<pre><code class="language-python">import asyncio
+from polylogue import Polylogue
+
+async def main():
+    async with Polylogue() as archive:
+        result = await archive.parse_sources()
+        return result.counts
+
+counts = asyncio.run(main())
+</code></pre>
+<h2>Async API</h2>
+<p>Polylogue provides a full async/await facade with concurrent operations:</p>
+<pre><code class="language-python">import asyncio
+from polylogue import Polylogue
+
+async def main():
+    async with Polylogue() as archive:
+        # Concurrent queries
+        stats, recent, claude = await asyncio.gather(
+            archive.stats(),
+            archive.list_sessions(limit=10),
+            archive.list_sessions(origin=&quot;claude-ai-export&quot;),
+        )
+
+        print(f&quot;Total: {stats.session_count} sessions&quot;)
+
+        # Parallel batch retrieval (5-10x faster than sequential)
+        ids = [c.id for c in recent]
+        convs = await archive.get_sessions(ids)
+
+        # Search with evidence snippets
+        results = await archive.search(&quot;error handling&quot;, limit=20)
+        for hit in results.hits:
+            print(f&quot;{hit.title}: {hit.snippet}&quot;)
+
+        # Parse files
+        result = await archive.parse_file(&quot;chatgpt_export.json&quot;)
+
+        # Explain import decisions without writing archive rows
+        explain = await archive.explain_import(&quot;chatgpt_export.json&quot;, source_name=&quot;chatgpt&quot;)
+        print(explain.produced.sessions, explain.entries[0].provider)
+
+        # Fluent filter (terminals are async)
+        convs = await archive.filter().origin(&quot;claude-ai-export&quot;).contains(&quot;error&quot;).limit(10).list()
+
+        # Rebuild search index
+        await archive.rebuild_index()
+
+asyncio.run(main())
+</code></pre>
+<h3>Async Methods</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_session(id)</code></td>
+<td>Get single session by ID</td>
+</tr>
+<tr>
+<td><code>get_sessions(ids)</code></td>
+<td>Parallel batch fetch (5-10x faster)</td>
+</tr>
+<tr>
+<td><code>list_sessions(origin, limit)</code></td>
+<td>List with optional filtering</td>
+</tr>
+<tr>
+<td><code>search(query, limit, source, since)</code></td>
+<td>Search returning evidence snippets; text matches report message evidence and Drive/Gemini <code>provider_id</code> / <code>id</code> / <code>fileId</code> / <code>driveId</code> attachment-id matches report attachment evidence</td>
+</tr>
+<tr>
+<td><code>parse_file(path, source_name)</code></td>
+<td>Parse a single export file</td>
+</tr>
+<tr>
+<td><code>parse_sources(sources, download_assets)</code></td>
+<td>Parse from configured sources</td>
+</tr>
+<tr>
+<td><code>explain_import(path, source_name, limit)</code></td>
+<td>Explain provider detection, artifact classification, parser mode, produced row counts, skips, and caveats without writing archive rows</td>
+</tr>
+<tr>
+<td><code>rebuild_index()</code></td>
+<td>Rebuild FTS5 search index</td>
+</tr>
+<tr>
+<td><code>stats()</code></td>
+<td>Archive statistics (returns <code>ArchiveStats</code>)</td>
+</tr>
+<tr>
+<td><code>filter()</code></td>
+<td>Fluent filter builder (sync, reuses <code>SessionFilter</code>)</td>
+</tr>
+<tr>
+<td><code>get_session_insight_status()</code></td>
+<td>Durable insight readiness/freshness summary</td>
+</tr>
+<tr>
+<td><code>get_session_profile_insight(id)</code></td>
+<td>Get one durable session-profile insight</td>
+</tr>
+<tr>
+<td><code>list_session_profile_insights(query)</code></td>
+<td>List durable session-profile insights</td>
+</tr>
+<tr>
+<td><code>get_session_latency_profile_insight(id)</code></td>
+<td>Get one durable session-latency insight</td>
+</tr>
+<tr>
+<td><code>list_session_latency_profile_insights(query)</code></td>
+<td>List durable session-latency insights</td>
+</tr>
+<tr>
+<td><code>find_stuck_session_latency_profile_insights(query)</code></td>
+<td>List sessions with stuck tool starts</td>
+</tr>
+<tr>
+<td><code>list_session_work_event_insights(query)</code></td>
+<td>List durable work-event insights</td>
+</tr>
+<tr>
+<td><code>list_thread_insights(query)</code></td>
+<td>List durable work-thread insights</td>
+</tr>
+<tr>
+<td><code>list_session_tag_rollup_insights(query)</code></td>
+<td>List durable tag-rollup insights</td>
+</tr>
+<tr>
+<td><code>list_archive_coverage_insights(query)</code></td>
+<td>List provider, day, or week archive coverage insights</td>
+</tr>
+<tr>
+<td><code>list_tool_usage_insights(query)</code></td>
+<td>Per-provider tool usage with explicit coverage gaps</td>
+</tr>
+<tr>
+<td><code>list_archive_debt_insights(query)</code></td>
+<td>List governed archive-debt insights</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<p><strong>See also:</strong> <a href="../cli/">CLI Reference</a> · <a href="https://github.com/Sinity/polylogue/blob/master/docs/data-model.md">Data Model</a> · <a href="../config/">Configuration</a></p>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="../mcp/">← MCP Reference</a>
+    <a href="../config/">Configuration →</a>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — the flight recorder for AI work</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>
