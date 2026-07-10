@@ -167,6 +167,31 @@ class TestLaneParsing:
             "ingest-archive-runtime",
         )
 
+    def test_storage_correctness_lane_carries_storage_scenario_metadata(self) -> None:
+        lane = LANES["storage-correctness"]
+
+        assert lane.family == "storage-correctness"
+        assert lane.path_targets == (
+            "raw-reparse-loop",
+            "raw-archive-ingest-loop",
+            "message-fts-readiness-loop",
+            "session-query-loop",
+        )
+        assert lane.artifact_targets == (
+            "source_payload_stream",
+            "archive_session_rows",
+            "message_source_rows",
+            "message_fts",
+            "session_query_results",
+        )
+        assert lane.operation_targets == (
+            "acquire-raw-sessions",
+            "ingest-archive-runtime",
+            "index-message-fts",
+            "query-sessions",
+        )
+        assert lane.tags == ("contract", "storage", "scenario", "fts", "lineage")
+
     def test_memory_budget_lane_preserves_wrapped_runtime_metadata(self) -> None:
         lane = LANES["memory-budget"]
 
@@ -205,6 +230,13 @@ class TestCommandConstruction:
         assert "chatgpt" in cmd
         assert "--max-total-ms" in cmd
         assert "--max-peak-rss-mb" in cmd
+
+    def test_storage_correctness_lane_uses_lab_smoke_scenario(self) -> None:
+        cmd = build_lane_command(LANES["storage-correctness"])
+
+        assert cmd[:4] == ["devtools", "lab", "smoke", "run"]
+        assert "storage-correctness" in cmd
+        assert "--json" in cmd
 
     def test_live_archive_subset_parse_probe_lane_uses_medium_archive_subset_probe(self) -> None:
         lane = LANES["live-archive-subset-parse-probe"]

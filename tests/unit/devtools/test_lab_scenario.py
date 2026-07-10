@@ -38,6 +38,7 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
     payload = json.loads(capsys.readouterr().out)
     archive = next(entry for entry in payload["scenarios"] if entry["name"] == "archive-smoke")
     visual = next(entry for entry in payload["scenarios"] if entry["name"] == "reader-visual-smoke")
+    storage = next(entry for entry in payload["scenarios"] if entry["name"] == "storage-correctness")
     assert archive == {
         "name": "archive-smoke",
         "kind": "cli-smoke",
@@ -46,6 +47,11 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
     assert archive["tier_0_check_count"] > 0
     assert visual["command"]
     assert visual["artifact_count"] > 0
+    assert storage == {
+        "name": "storage-correctness",
+        "kind": "archive-storage",
+        "check_count": 3,
+    }
 
 
 def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) -> None:
@@ -150,6 +156,43 @@ def test_reader_visual_smoke_json_reports_artifact_inventory(
         "polylogue.local_reader.workspace.stack",
     }
     assert run.call_args.kwargs["capture_output"] is True
+
+
+def test_storage_correctness_json_runs_archive_backed_checks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from devtools.lab_scenario import main
+
+    report_dir = tmp_path / "reports"
+
+    assert main(["run", "storage-correctness", "--json", "--report-dir", str(report_dir)]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    report_payload = json.loads((report_dir / "storage-correctness.json").read_text(encoding="utf-8"))
+    assert payload["scenario"] == "storage-correctness"
+    assert payload["ok"] is True
+    assert payload["failed_stages"] == []
+    assert set(payload["stages"]) == {"idempotent-reingest", "fts-trigger-drift", "lineage-composition"}
+    assert payload["checks"] == report_payload["checks"]
+    checks = {entry["name"]: entry for entry in payload["checks"]}
+    assert checks["idempotent-reingest"]["details"]["repeat_counts"]["skipped_sessions"] == 1
+    assert checks["idempotent-reingest"]["details"]["derived_counts"] == {
+        "sessions": 1,
+        "messages": 2,
+        "blocks": 2,
+        "message_fts": 2,
+    }
+    assert checks["fts-trigger-drift"]["details"]["drifted_fts_rows"] == 0
+    assert checks["fts-trigger-drift"]["details"]["after_fts_rows"] == 1
+    assert checks["fts-trigger-drift"]["details"]["repeat_counts"]["_fts_repair"] == 1
+    assert checks["lineage-composition"]["details"]["stored_child_positions"] == [2, 3]
+    assert checks["lineage-composition"]["details"]["composed_texts"] == [
+        "hello",
+        "hi there",
+        "child diverges here",
+        "child reply",
+    ]
+    assert checks["lineage-composition"]["details"]["lineage"]["inheritance"] == "prefix-sharing"
 
 
 def test_main_reports_unsupported_archive_smoke_tier(capsys: pytest.CaptureFixture[str]) -> None:

@@ -114,6 +114,7 @@ plog = "polylogue.cli:main"
 polylogue-hook = "polylogue.hooks:hook_main"
 polylogued = "polylogue.daemon.cli:main"
 polylogue-mcp = "polylogue.mcp.cli:main"
+devtools = "devtools.__main__:_entrypoint"
 
 [tool.hatch.build.targets.wheel]
 packages = ["polylogue", "devtools"]
