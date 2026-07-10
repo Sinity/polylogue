@@ -2340,6 +2340,36 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     assert stopped == [True]
 
 
+def test_run_daemon_services_checks_archive_identity_before_component_startup(tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.archive_identity import ArchiveIdentityConflictError
+
+    configure = Mock()
+    with (
+        patch("polylogue.paths.archive_root", return_value=tmp_path / "configured"),
+        patch("polylogue.paths.active_index_db_path", return_value=tmp_path / "active" / "index.db"),
+        patch(
+            "polylogue.storage.archive_identity.assert_writable_archive_identity",
+            side_effect=ArchiveIdentityConflictError("split root"),
+        ),
+        patch("polylogue.daemon.status_snapshot.configure_runtime_components", configure),
+        pytest.raises(ArchiveIdentityConflictError, match="split root"),
+    ):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    configure.assert_not_called()
+
+
 def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
