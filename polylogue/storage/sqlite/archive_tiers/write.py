@@ -4363,23 +4363,14 @@ def _acquire_attachment_blob(
     conn: sqlite3.Connection,
     attachment: ParsedAttachment,
 ) -> tuple[bytes | None, int, str]:
-    """Acquire an attachment's bytes when available (#2468).
+    """Describe an unfetched attachment without publishing bytes.
 
-    Returns ``(blob_hash, byte_count, acquisition_status)``. Inline bytes present
-    in the source export are written to the content-addressed blob store and the
-    true SHA-256 is returned with status ``acquired``. Otherwise no blob is
-    written: the hash is ``None`` and the status is ``unfetched`` (the bytes may
-    be re-acquired later from ``source_url`` / provider file id). The former
-    behavior — fabricating a 32-byte hash from the attachment id with no blob ever
-    stored — is gone.
+    Inline bytes must be published before this low-level index writer is called,
+    through an archive-owned publisher whose receipt spans the index commit.
     """
-    inline = attachment.inline_bytes
-    if inline:
-        from polylogue.storage.blob_store import get_blob_store
-
-        blob_store = get_blob_store()
-        hash_hex, size = blob_store.write_from_bytes(inline)
-        return (bytes.fromhex(hash_hex), size, "acquired")
+    del conn
+    if attachment.inline_bytes:
+        raise ValueError("inline attachment bytes require preacquired_attachment_blobs from an archive-owned publisher")
     return (None, attachment.size_bytes or 0, "unfetched")
 
 

@@ -301,22 +301,24 @@ def test_scan_attachment_acquisition_debt_flags_acquired_row_with_missing_blob_f
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
+    session = _session_with_attachment(
+        ParsedAttachment(
+            provider_attachment_id="att-acquired",
+            message_provider_id="m0",
+            name="note.txt",
+            mime_type="text/plain",
+            inline_bytes=payload,
+        )
+    )
+    blob_hash, blob_size = store.write_from_bytes(payload)
     write_parsed_session_to_archive(
         conn,
-        _session_with_attachment(
-            ParsedAttachment(
-                provider_attachment_id="att-acquired",
-                message_provider_id="m0",
-                name="note.txt",
-                mime_type="text/plain",
-                inline_bytes=payload,
-            )
-        ),
+        session,
+        preacquired_attachment_blobs={id(session.attachments[0]): (bytes.fromhex(blob_hash), blob_size, "acquired")},
     )
     expected_attachment_id = conn.execute("SELECT attachment_id FROM attachments").fetchone()["attachment_id"]
     conn.close()
 
-    blob_hash = hashlib.sha256(payload).hexdigest()
     store.blob_path(blob_hash).unlink()
 
     report = scan_attachment_acquisition_debt(index_db, store=store, sample_size=5)

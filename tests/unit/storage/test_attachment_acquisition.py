@@ -53,24 +53,32 @@ def _session_with_attachment(attachment: ParsedAttachment) -> ParsedSession:
     )
 
 
+def _preacquired(store: BlobStore, session: ParsedSession) -> dict[int, tuple[bytes | None, int, str]]:
+    acquired: dict[int, tuple[bytes | None, int, str]] = {}
+    for attachment in session.attachments:
+        if not attachment.inline_bytes:
+            continue
+        blob_hash, size = store.write_from_bytes(attachment.inline_bytes)
+        acquired[id(attachment)] = (bytes.fromhex(blob_hash), size, "acquired")
+    return acquired
+
+
 def test_inline_attachment_bytes_are_stored_with_true_hash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = BlobStore(tmp_path / "blob")
     monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
 
     payload = b"hello attachment bytes"
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(
-        conn,
-        _session_with_attachment(
-            ParsedAttachment(
-                provider_attachment_id="att-1",
-                message_provider_id="m0",
-                name="note.txt",
-                mime_type="text/plain",
-                inline_bytes=payload,
-            )
-        ),
+    session = _session_with_attachment(
+        ParsedAttachment(
+            provider_attachment_id="att-1",
+            message_provider_id="m0",
+            name="note.txt",
+            mime_type="text/plain",
+            inline_bytes=payload,
+        )
     )
+    write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
 
     row = conn.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
     assert row["acquisition_status"] == "acquired"
@@ -142,7 +150,7 @@ def test_claude_extracted_attachment_content_is_acquired(tmp_path: Path, monkeyp
     )
     conn = _connect(tmp_path / "index.db")
 
-    write_parsed_session_to_archive(conn, session)
+    write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
 
     rows = conn.execute(
         """
@@ -162,3 +170,17 @@ def test_claude_extracted_attachment_content_is_acquired(tmp_path: Path, monkeyp
     assert remote["acquisition_status"] == "unfetched"
     assert remote["blob_hash"] is None
     assert remote["byte_count"] == 1024
+
+
+def test_low_level_writer_rejects_inline_bytes_without_preacquisition(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = _session_with_attachment(
+        ParsedAttachment(
+            provider_attachment_id="att-unreserved",
+            message_provider_id="m0",
+            inline_bytes=b"must be reserved first",
+        )
+    )
+
+    with pytest.raises(ValueError, match="preacquired_attachment_blobs"):
+        write_parsed_session_to_archive(conn, session)
