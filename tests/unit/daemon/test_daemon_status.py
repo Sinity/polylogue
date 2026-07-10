@@ -958,6 +958,43 @@ def test_archive_storage_info_uses_configured_archive_root(tmp_path: Path) -> No
     assert storage.active_store == "empty"
     assert storage.present_tiers == ["ops"]
     assert storage.missing_tiers == ["source", "index", "embeddings", "user"]
+    assert storage.identity["active_generation"]
+    assert storage.identity["unit"] == "polylogued.service"
+    assert "invocation_id" in storage.identity
+    assert storage.identity["version"]
+    assert storage.identity["build_commit"]
+    assert isinstance(storage.identity["build_dirty"], bool)
+    ops = next(tier for tier in storage.tiers if tier.name == "ops")
+    assert ops.resolved_path == str(default_root / "ops.db")
+    assert ops.device is not None
+    assert ops.inode is not None
+
+
+def test_archive_storage_info_reports_split_root_identity_conflict(tmp_path: Path) -> None:
+    configured = tmp_path / "configured"
+    active = tmp_path / "active"
+    configured.mkdir()
+    active.mkdir()
+    for root in (configured, active):
+        for name in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db"):
+            (root / name).touch()
+    for name in ("source.db", "user.db", "ops.db", "embeddings.db"):
+        (active / name).unlink()
+        (active / name).symlink_to(configured / name)
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=configured),
+        patch("polylogue.daemon.status.db_path", return_value=active / "index.db"),
+        patch("polylogue.daemon.status.index_db_path", return_value=configured / "index.db"),
+    ):
+        storage = status_module._archive_storage_info()
+
+    assert storage.archive_ready is False
+    assert len(storage.identity_conflicts) == 1
+    assert storage.identity["active_generation"] != storage.identity_conflicts[0]["active_generation"]
+    tiers = {tier.name: tier for tier in storage.tiers}
+    assert tiers["source"].resolved_path == str(configured / "source.db")
+    assert tiers["index"].resolved_path == str(active / "index.db")
 
 
 def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_debt(tmp_path: Path) -> None:

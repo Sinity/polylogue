@@ -1002,6 +1002,14 @@ async def run_daemon_services(
     global _pidfile_path
     _process_start.started_at_wall()
     archive_root_path = Path(archive_root())
+    from polylogue.paths import active_index_db_path
+    from polylogue.storage.archive_identity import assert_writable_archive_identity
+
+    # Identity precedes schema checks, pidfiles, HTTP startup, and every other
+    # component: a split-root daemon must not become partially observable as a
+    # healthy writer before its first ArchiveStore happens to open.
+    active_root = active_index_db_path().parent
+    assert_writable_archive_identity(configured_root=archive_root_path, active_root=active_root)
 
     if (
         enable_api

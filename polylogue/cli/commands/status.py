@@ -1453,7 +1453,16 @@ def _compact_storage_status(status: dict[str, Any]) -> dict[str, Any]:
     storage: dict[str, Any] = {}
     archive_storage = status.get("archive_storage")
     if isinstance(archive_storage, dict):
-        for key in ("state", "active_store", "active_tier_role", "present_tiers", "missing_tiers", "blockers"):
+        for key in (
+            "state",
+            "active_store",
+            "active_tier_role",
+            "present_tiers",
+            "missing_tiers",
+            "blockers",
+            "identity",
+            "identity_conflicts",
+        ):
             if key in archive_storage:
                 storage[key] = archive_storage[key]
     for key in (

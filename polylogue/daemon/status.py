@@ -156,6 +156,10 @@ class RawMaterializationReadiness(BaseModel):
 class ArchiveTierStatus(BaseModel):
     name: Literal["source", "index", "embeddings", "user", "ops"]
     path: str
+    resolved_path: str = ""
+    device: int | None = None
+    inode: int | None = None
+    stable_id: str = ""
     exists: bool = False
     size_bytes: int = 0
     wal_size_bytes: int = 0
@@ -180,6 +184,8 @@ class ArchiveStorageStatus(BaseModel):
     present_tiers: list[str] = Field(default_factory=list)
     missing_tiers: list[str] = Field(default_factory=list)
     tiers: list[ArchiveTierStatus] = Field(default_factory=list)
+    identity: dict[str, object] = Field(default_factory=dict)
+    identity_conflicts: list[dict[str, object]] = Field(default_factory=list)
 
 
 class LiveCursorFileState(BaseModel):
@@ -390,6 +396,8 @@ def _blob_size_info() -> int:
 
 
 def _archive_storage_info() -> ArchiveStorageStatus:
+    from polylogue.storage.archive_identity import ArchiveIdentity, archive_identity_conflicts
+
     active_db = _active_status_db_path()
     configured_root = archive_root()
     root = _archive_storage_root(configured_root=configured_root, active_db=active_db)
@@ -400,7 +408,21 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         "user": root / "user.db",
         "ops": root / "ops.db",
     }
+    identity = ArchiveIdentity.resolve(root)
+    conflicts = archive_identity_conflicts(configured_root=configured_root, active_root=root)
     tiers = [_archive_tier_status(name, path) for name, path in tier_paths.items()]
+    identity_by_name = {tier.name: tier for tier in identity.tiers}
+    tiers = [
+        tier.model_copy(
+            update={
+                "resolved_path": str(identity_by_name[tier.name].resolved_path),
+                "device": identity_by_name[tier.name].device,
+                "inode": identity_by_name[tier.name].inode,
+                "stable_id": identity_by_name[tier.name].stable_id,
+            }
+        )
+        for tier in tiers
+    ]
     present_tiers = [str(tier.name) for tier in tiers if tier.exists]
     missing_tiers = [str(tier.name) for tier in tiers if not tier.exists]
     index_exists = "index" in present_tiers
@@ -409,7 +431,9 @@ def _archive_storage_info() -> ArchiveStorageStatus:
     final_shape_ready = not missing_tiers
     schema_mismatches = [str(tier.name) for tier in tiers if tier.exists and tier.version_status != "ok"]
     archive_schema_ready = final_shape_ready and not schema_mismatches
-    archive_ready = index_exists and source_exists and archive_schema_ready and not active_rebuild_attempts
+    archive_ready = (
+        index_exists and source_exists and archive_schema_ready and not active_rebuild_attempts and not conflicts
+    )
     if index_exists and source_exists:
         active_store: Literal["archive_file_set", "empty"] = "archive_file_set"
     else:
@@ -429,6 +453,8 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         present_tiers=present_tiers,
         missing_tiers=missing_tiers,
         tiers=tiers,
+        identity=identity.as_dict(unit="polylogued.service"),
+        identity_conflicts=[conflict.as_dict(unit="polylogued.service") for conflict in conflicts],
     )
 
 
