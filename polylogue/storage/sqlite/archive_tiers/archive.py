@@ -105,6 +105,7 @@ from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuer
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import (
     SESSION_INSIGHT_MATERIALIZATION_TYPES,
@@ -939,10 +940,12 @@ class ArchiveStore:
                     (raw_id, session_id, raw_id),
                 )
                 raw_link_changed = bool(cursor.rowcount)
+            fts_repaired = repair_session_fts_if_needed_sync(self._conn, session_id)
             if manage_transaction:
                 self._conn.commit()
             counts = self._skipped_counts(session)
             counts["raw_links"] = int(raw_link_changed)
+            counts["_fts_repair"] = int(fts_repaired)
             return ArchiveRawParsedWriteResult(
                 raw_id=raw_id,
                 session_id=session_id,

@@ -44,4 +44,14 @@ def session_fts_needs_repair_sync(conn: sqlite3.Connection, session_id: str) -> 
     return missing_blocks > 0
 
 
-__all__ = ["session_fts_needs_repair_sync"]
+def repair_session_fts_if_needed_sync(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Repair missing FTS rows for one session and report whether work ran."""
+    if not session_fts_needs_repair_sync(conn, session_id):
+        return False
+    from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
+
+    repair_message_fts_index_sync(conn, [session_id], record_exact_snapshot=False)
+    return True
+
+
+__all__ = ["repair_session_fts_if_needed_sync", "session_fts_needs_repair_sync"]

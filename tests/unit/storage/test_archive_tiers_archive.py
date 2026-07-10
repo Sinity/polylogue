@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,13 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import BlockType, Provider
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedPasteEvidence, ParsedSession
+from polylogue.sources.parsers.base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedPasteEvidence,
+    ParsedSession,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_metadata,
@@ -545,6 +552,109 @@ def test_archive_tiers_archive_facade_hash_skips_identical_content_and_refreshes
     assert second.counts["skipped_sessions"] == 1
     assert second.counts["raw_links"] == 1
     assert stored_raw_id == second.raw_id
+
+
+def test_archive_tiers_archive_facade_replaces_same_size_changed_attachment_bytes(tmp_path: Path) -> None:
+    def session(payload: bytes) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="changed-inline-attachment",
+            title="Stable content",
+            updated_at="2026-04-03T00:00:00Z",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="message-1",
+                    role=Role.USER,
+                    text="same parsed message",
+                )
+            ],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="attachment-1",
+                    message_provider_id="message-1",
+                    name="payload.bin",
+                    mime_type="application/octet-stream",
+                    size_bytes=len(payload),
+                    inline_bytes=payload,
+                )
+            ],
+        )
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            session(b"one"),
+            payload=b"first raw",
+            source_path="/tmp/first.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        second = facade.write_raw_and_parsed_result(
+            session(b"two"),
+            payload=b"second raw",
+            source_path="/tmp/second.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        stored_raw_id, stored_blob_hash = conn.execute(
+            "SELECT s.raw_id, a.blob_hash FROM sessions AS s CROSS JOIN attachments AS a WHERE s.session_id = ?",
+            (first.session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert second.content_changed is True
+    assert second.counts["attachments"] == 1
+    assert stored_raw_id == second.raw_id
+    assert bytes(stored_blob_hash) == sha256(b"two").digest()
+
+
+def test_archive_tiers_archive_facade_repairs_missing_fts_on_identical_repeat(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="identical-repeat-fts-repair",
+        title="Stable content",
+        updated_at="2026-04-03T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="message-1",
+                role=Role.USER,
+                text="searchable needle",
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            session,
+            payload=b"stable raw",
+            source_path="/tmp/stable.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+
+    with sqlite3.connect(root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 1
+        conn.execute("DELETE FROM messages_fts")
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+
+    with ArchiveStore(root) as facade:
+        repeated = facade.write_raw_and_parsed_result(
+            session,
+            payload=b"stable raw",
+            source_path="/tmp/stable.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    with sqlite3.connect(root / "index.db") as conn:
+        repaired_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+
+    assert repeated.session_id == first.session_id
+    assert repeated.content_changed is False
+    assert repeated.counts["skipped_sessions"] == 1
+    assert repeated.counts["_fts_repair"] == 1
+    assert repaired_count == 1
 
 
 def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:

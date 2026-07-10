@@ -240,6 +240,30 @@ def test_attachments_affect_session_hash() -> None:
     assert session_content_hash(conv_no_att) != session_content_hash(conv_with_att)
 
 
+def test_inline_attachment_bytes_affect_session_hash_even_when_size_is_unchanged() -> None:
+    """Transport bytes are part of attachment identity, not incidental metadata."""
+    msg = _msg("m1", "user", "here is a file")
+
+    def with_bytes(payload: bytes) -> ParsedSession:
+        return _conv(
+            "c1",
+            "Test",
+            [msg],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="att-1",
+                    message_provider_id="m1",
+                    name="file.bin",
+                    mime_type="application/octet-stream",
+                    size_bytes=len(payload),
+                    inline_bytes=payload,
+                )
+            ],
+        )
+
+    assert session_content_hash(with_bytes(b"one")) != session_content_hash(with_bytes(b"two"))
+
+
 # ── hash_payload determinism ──────────────────────────────────────────
 
 
