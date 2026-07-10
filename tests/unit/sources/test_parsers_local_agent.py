@@ -399,6 +399,60 @@ def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:
     assert child.branch_type.value == "subagent"
 
 
+def test_hermes_state_db_retains_empty_rows_and_their_state(tmp_path: Path) -> None:
+    from polylogue.pipeline.ids import session_content_hash
+
+    db_path = tmp_path / "state.db"
+    _write_hermes_state_db(db_path)
+    baseline = hermes_state.parse_state_db(db_path)[1]
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO messages(session_id, role, content, timestamp, observed, active, compacted)
+            VALUES ('hermes-child', ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("assistant", "", 1_775_000_103.0, 0, 1, 0),
+                ("user", None, 1_775_000_104.0, 1, 1, 0),
+                ("assistant", "", 1_775_000_105.0, 0, 0, 0),
+                ("assistant", None, 1_775_000_106.0, 0, 0, 1),
+            ],
+        )
+
+    child = hermes_state.parse_state_db(db_path)[1]
+
+    assert session_content_hash(child) != session_content_hash(baseline)
+    assert len(child.messages) == 5
+    empty_messages = child.messages[1:]
+    assert all(message.text is None for message in empty_messages)
+    assert all(message.blocks == [] for message in empty_messages)
+    assert [message.material_origin for message in empty_messages] == [
+        MaterialOrigin.ASSISTANT_AUTHORED,
+        MaterialOrigin.RUNTIME_CONTEXT,
+        MaterialOrigin.ASSISTANT_AUTHORED,
+        MaterialOrigin.ASSISTANT_AUTHORED,
+    ]
+    assert [message.is_active_path for message in empty_messages] == [True, True, False, False]
+    assert child.active_leaf_message_provider_id == empty_messages[1].provider_message_id
+    assert empty_messages[1].is_active_leaf is True
+    state_events = [event for event in child.session_events if event.event_type == "hermes_message_state"]
+    assert [event.payload["state"] for event in state_events] == [
+        "active",
+        "active",
+        "observed",
+        "rewound",
+        "compacted",
+    ]
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE messages SET observed = 1 WHERE session_id = 'hermes-child' AND timestamp = ?",
+            (1_775_000_103.0,),
+        )
+    state_changed = hermes_state.parse_state_db(db_path)[1]
+    assert session_content_hash(state_changed) != session_content_hash(child)
+
+
 def test_hermes_state_db_later_repository_capability_is_optional(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)

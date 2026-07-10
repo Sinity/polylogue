@@ -366,9 +366,8 @@ def _parse_session_row(
         (raw_session_id,),
     ).fetchall():
         parsed = _parse_message_row(message_row, position=len(messages), fallback_model=model_name)
-        if parsed is not None:
-            messages.append(parsed)
-            state_events.append(_message_state_event(message_row, parsed, message_columns=message_columns))
+        messages.append(parsed)
+        state_events.append(_message_state_event(message_row, parsed, message_columns=message_columns))
     messages = _mark_active_leaf(messages)
     parent_raw_id = _optional_text(_row_value(row, "parent_session_id"))
     parent_id = _qualified_session_id(parent_raw_id, profile_key) if parent_raw_id else None
@@ -414,7 +413,7 @@ def _parse_message_row(
     *,
     position: int,
     fallback_model: str | None,
-) -> ParsedMessage | None:
+) -> ParsedMessage:
     content = _decode_content(row["content"])
     text = _content_text(content)
     blocks = _content_blocks_from_content(content)
@@ -437,8 +436,6 @@ def _parse_message_row(
                 text=text,
             )
         )
-    if not text and not blocks:
-        return None
     token_count = _non_negative_int(_row_value(row, "token_count")) or 0
     observed = _sqlite_bool(_row_value(row, "observed"), default=False)
     active = _sqlite_bool(_row_value(row, "active"), default=True)
@@ -447,7 +444,7 @@ def _parse_message_row(
         role=role,
         text=text,
         timestamp=_epoch_iso(row["timestamp"]),
-        blocks=blocks or [ParsedContentBlock(type=BlockType.TEXT, text=text)],
+        blocks=blocks,
         position=position,
         variant_index=0,
         is_active_path=active,
