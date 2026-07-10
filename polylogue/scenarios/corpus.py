@@ -63,6 +63,11 @@ DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID = (
     "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo"
 )
 DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID = "claude-code-session:demo-lineage-sidechain"
+# Two materials (a direct export and a browser capture) reporting the same
+# logical conversation under unrelated native ids — the ambiguous
+# cross-material duplicate / occurrence-identity anchor (#polylogue-212.11).
+DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID = "chatgpt-export:cross-material-duplicate-01"
+DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID = "chatgpt-export:cross-material-duplicate-02"
 DEMO_EMBEDDING_PROSE_SESSION_ID = DEMO_CLAUDE_CODE_SESSION_ID
 DEMO_SESSION_IDS = (
     DEMO_CHATGPT_SESSION_ID,
@@ -78,6 +83,8 @@ DEMO_SESSION_IDS = (
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
+    DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID,
+    DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID,
 )
 
 
@@ -194,6 +201,22 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
         source_paths=(
             "browser-capture/chatgpt-raw-provider.json",
             "browser-capture/chatgpt-dom-fallback.json",
+        ),
+        synthetic=False,
+    ),
+    DemoCorpusFamily(
+        family_id="cross-material-duplicate",
+        label="Cross-material duplicate occurrence",
+        provider="chatgpt",
+        construct_ids=("ambiguous_cross_material_duplicate",),
+        description=(
+            "The same logical conversation content arrives through two independent materials — a "
+            "direct ChatGPT export and a browser capture with an unrelated native id — so occurrence-"
+            "identity tooling must resolve the duplicate from content, not from identity keys."
+        ),
+        source_paths=(
+            "chatgpt/duplicate-source-export.json",
+            "browser-capture/duplicate-capture.json",
         ),
         synthetic=False,
     ),

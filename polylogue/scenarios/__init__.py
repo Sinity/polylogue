@@ -10,6 +10,8 @@ from .cli_surfaces import (
     build_cli_surface_memory_budget_variants,
 )
 from .corpus import (
+    DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID,
+    DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID,
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
@@ -135,6 +137,8 @@ __all__ = [
     "DEMO_EMBEDDING_PROSE_SESSION_ID",
     "DEMO_GEMINI_SESSION_ID",
     "DEMO_CHATGPT_SESSION_ID",
+    "DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID",
+    "DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID",
     "DEMO_SESSION_IDS",
     "DemoUserOverlayResult",
     "compile_projection_entries",

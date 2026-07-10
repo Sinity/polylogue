@@ -162,6 +162,29 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         """,
     ),
     DemoConstruct(
+        construct_id="ambiguous_cross_material_duplicate",
+        label="Ambiguous cross-material duplicate",
+        description=(
+            "The same logical conversation content arrives via two materials that do not share a "
+            "native id, so occurrence-identity tooling must resolve the duplicate from content."
+        ),
+        sql="""
+            SELECT COUNT(*)
+            FROM (
+                SELECT DISTINCT b1.text
+                FROM blocks AS b1
+                JOIN messages AS m1 ON m1.message_id = b1.message_id AND m1.session_id = b1.session_id
+                JOIN blocks AS b2
+                  ON b2.text = b1.text
+                 AND b2.block_type = 'text'
+                JOIN messages AS m2 ON m2.message_id = b2.message_id AND m2.session_id = b2.session_id
+                WHERE b1.block_type = 'text'
+                  AND m1.session_id = 'chatgpt-export:cross-material-duplicate-01'
+                  AND m2.session_id = 'chatgpt-export:cross-material-duplicate-02'
+            )
+        """,
+    ),
+    DemoConstruct(
         construct_id="session_link_rows",
         label="Session-link rows",
         description="At least one parser-declared parent relationship is persisted.",

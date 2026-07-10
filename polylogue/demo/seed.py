@@ -66,6 +66,7 @@ def materialize_demo_source(root: Path, *, force: bool = False) -> Path:
     )
     _write_demo_temporary_sources(source_root)
     _write_demo_browser_capture_gap_sources(source_root)
+    _write_demo_cross_material_duplicate_sources(source_root)
     _write_demo_lineage_sources(source_root)
     _write_demo_receipts_sources(source_root)
     return source_root
@@ -243,6 +244,105 @@ def _write_demo_browser_capture_gap_sources(source_root: Path) -> None:
                     }
                 ],
             },
+        },
+    )
+
+
+def _write_demo_cross_material_duplicate_sources(source_root: Path) -> None:
+    """Write two materials reporting the same content under unrelated native ids.
+
+    A direct ChatGPT export and a browser capture of the same conversation
+    arrive with different native ids (the extension observed the page before
+    the provider had assigned the export's canonical conversation id), so the
+    archive keeps two distinct sessions instead of silently coalescing them.
+    This is the ambiguous cross-material duplicate / occurrence-identity
+    anchor: the duplication is only discoverable from content, not from the
+    origin/native-id identity key (#polylogue-212.11).
+    """
+
+    export_id = "cross-material-duplicate-01"
+    capture_id = "cross-material-duplicate-02"
+    title = "Flaky clock test fix summary"
+    shared_user_text = "Summarize the one-sentence fix for the flaky clock test."
+    shared_assistant_text = "The fixture used a shared clock instance; switching to an isolated clock fixed it."
+
+    def _mapping_payload(*, conversation_id: str, user_id: str, assistant_id: str) -> dict[str, object]:
+        return {
+            "conversation_id": conversation_id,
+            "title": title,
+            "create_time": 1783158900.0,
+            "update_time": 1783158903.0,
+            "current_node": "assistant-node",
+            "mapping": {
+                "root": {"id": "root", "message": None, "parent": None, "children": ["user-node"]},
+                "user-node": {
+                    "id": "user-node",
+                    "parent": "root",
+                    "children": ["assistant-node"],
+                    "message": {
+                        "id": user_id,
+                        "author": {"role": "user"},
+                        "create_time": 1783158901.0,
+                        "content": {"content_type": "text", "parts": [shared_user_text]},
+                        "metadata": {},
+                    },
+                },
+                "assistant-node": {
+                    "id": "assistant-node",
+                    "parent": "user-node",
+                    "children": [],
+                    "message": {
+                        "id": assistant_id,
+                        "author": {"role": "assistant"},
+                        "create_time": 1783158902.0,
+                        "content": {"content_type": "text", "parts": [shared_assistant_text]},
+                        "metadata": {"model_slug": "gpt-5-demo"},
+                    },
+                },
+            },
+        }
+
+    _write_json(
+        source_root / "chatgpt" / "duplicate-source-export.json",
+        _mapping_payload(
+            conversation_id=export_id,
+            user_id="duplicate-export-u0",
+            assistant_id="duplicate-export-a1",
+        ),
+    )
+    _write_json(
+        source_root / "browser-capture" / "duplicate-capture.json",
+        {
+            "polylogue_capture_kind": "browser_llm_session",
+            "schema_version": 1,
+            "capture_id": f"chatgpt:{capture_id}:ambiguous-material",
+            "provenance": {
+                "source_url": f"https://chatgpt.com/c/{capture_id}",
+                "page_title": title,
+                "captured_at": "2026-07-04T09:56:00Z",
+                "adapter_name": "chatgpt-browser-native-v1",
+                "capture_mode": "snapshot",
+            },
+            "session": {
+                "provider": "chatgpt",
+                "provider_session_id": capture_id,
+                "title": title,
+                "updated_at": "2026-07-04T09:56:00Z",
+                "model": "gpt-5-demo",
+                "turns": [
+                    {
+                        "provider_turn_id": "duplicate-capture-placeholder-u0",
+                        "role": "user",
+                        "text": shared_user_text,
+                        "ordinal": 0,
+                    }
+                ],
+            },
+            "raw_provider_payload": _mapping_payload(
+                conversation_id=capture_id,
+                user_id="duplicate-capture-u0",
+                assistant_id="duplicate-capture-a1",
+            ),
         },
     )
 

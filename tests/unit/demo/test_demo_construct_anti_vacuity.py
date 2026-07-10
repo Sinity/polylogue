@@ -18,6 +18,10 @@ from pathlib import Path
 import pytest
 
 from polylogue.demo import evaluate_demo_constructs, seed_demo_archive
+from polylogue.scenarios import (
+    DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID,
+    DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID,
+)
 
 
 def _coverage_for(archive_root: Path, construct_id: str) -> bool:
@@ -39,3 +43,35 @@ async def test_source_outage_interval_construct_goes_red_when_event_withheld(tmp
     assert deleted >= 1
 
     assert _coverage_for(archive_root, "source_outage_interval_events") is False
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_cross_material_duplicate_construct_goes_red_when_content_diverges(
+    tmp_path: Path,
+) -> None:
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+
+    assert _coverage_for(archive_root, "ambiguous_cross_material_duplicate") is True
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        updated = conn.execute(
+            """
+            UPDATE blocks SET text = 'no longer the same logical content'
+            WHERE session_id = ? AND block_type = 'text'
+            """,
+            (DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID,),
+        ).rowcount
+        conn.commit()
+    assert updated >= 1
+
+    assert _coverage_for(archive_root, "ambiguous_cross_material_duplicate") is False
+
+    # Sanity: the sibling material and its session both remain, proving the
+    # construct genuinely depends on content equality, not session presence.
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE session_id IN (?, ?)",
+            (DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID, DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID),
+        ).fetchone()[0]
+    assert remaining == 2
