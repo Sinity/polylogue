@@ -8,19 +8,19 @@ This reference is generated from the executable validation-lane, mutation-campai
 
 Current registry snapshot:
 
-- contract lanes: `27`
+- contract lanes: `28`
 - live lanes: `19`
 - composite lanes: `24`
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `110`
+- scenario projections: `111`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
-  - validation-lane: `70`
+  - validation-lane: `71`
 
 ## Runtime Coverage
 
@@ -174,6 +174,7 @@ Use the named lanes through the runner.
 | `semantic-insight-normalization` | 900 | Semantic/session insight normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup |
 | `semantic-stack` | 360 | Unified harmonization, semantic facts/profile convergence, and contract inventory coverage |
 | `source-provider-fidelity` | 420 | Source traversal, Drive/runtime source boundaries, parser decoding, and provider-ingest fidelity |
+| `storage-correctness` | 180 | Archive-backed storage correctness for idempotency, FTS drift, blob GC, and lineage composition |
 | `tui` | 240 | Textual dashboard screens and interaction-state coverage |
 | `verification-substrate-contracts` | 180 | Shared test fixture contracts for JSON metadata, scenario content blocks, and semantic facts |
 
@@ -412,6 +413,7 @@ These projections explain which executable lanes, inferred fixture scenarios, or
 | `validation-lane` | `semantic-stack` | — | — | — | — | — | Unified harmonization, semantic facts/profile convergence, and contract inventory coverage |
 | `validation-lane` | `source-provider-fidelity` | `source-acquisition-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows` | `acquire-raw-sessions` | — | `contract`<br>`sources`<br>`acquisition` | Source traversal, Drive/runtime source boundaries, parser decoding, and provider-ingest fidelity |
 | `validation-lane` | `source-runtime-alignment` | `source-acquisition-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows` | `acquire-raw-sessions` | — | `contract`<br>`sources`<br>`acquisition`<br>`maintenance` | Local source/provider fidelity plus runtime maintenance alignment |
+| `validation-lane` | `storage-correctness` | `raw-archive-ingest-loop`<br>`message-fts-readiness-loop`<br>`session-query-loop` | `archive_session_rows`<br>`message_source_rows`<br>`message_fts`<br>`session_query_results` | `ingest-archive-runtime`<br>`index-message-fts`<br>`query-sessions` | — | `contract`<br>`storage`<br>`scenario`<br>`fts`<br>`gc`<br>`lineage` | Archive-backed storage correctness for idempotency, FTS drift, blob GC, and lineage composition |
 | `validation-lane` | `tui` | — | — | — | — | — | Textual dashboard screens and interaction-state coverage |
 | `validation-lane` | `verification-substrate-contracts` | — | `archive_scenario_fixtures`<br>`storage_record_fixtures`<br>`json_contract_helpers` | `seed-archive-scenarios`<br>`build-storage-record-fixtures` | — | `contract`<br>`fixtures`<br>`semantic-precision` | Shared test fixture contracts for JSON metadata, scenario content blocks, and semantic facts |
 

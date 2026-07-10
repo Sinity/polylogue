@@ -6,6 +6,7 @@ from devtools.lane_models import LaneEntry
 from polylogue.scenarios import (
     CorpusRequest,
     PipelineProbeRequest,
+    ScenarioMetadata,
     composite_execution,
     devtools_execution,
     pipeline_probe_execution,
@@ -85,6 +86,43 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             stdout_min_lines=3,
             classification_override=AssertionClass.SMOKE_PROCESS,
         ),
+    ),
+    "storage-correctness": LaneEntry(
+        name="storage-correctness",
+        description="Archive-backed storage correctness for idempotency, FTS drift, blob GC, and lineage composition",
+        timeout_s=180,
+        category="contract",
+        execution=devtools_execution(
+            "lab smoke",
+            "run",
+            "storage-correctness",
+            "--json",
+            metadata=ScenarioMetadata(
+                path_targets=(
+                    "raw-archive-ingest-loop",
+                    "message-fts-readiness-loop",
+                    "session-query-loop",
+                ),
+                artifact_targets=(
+                    "archive_session_rows",
+                    "message_source_rows",
+                    "message_fts",
+                    "session_query_results",
+                ),
+                operation_targets=(
+                    "ingest-archive-runtime",
+                    "index-message-fts",
+                    "query-sessions",
+                ),
+            ),
+        ),
+        assertion=AssertionSpec(
+            stdout_is_valid_json=True,
+            stdout_contains=('"scenario": "storage-correctness"', '"ok": true'),
+            classification_override=AssertionClass.SMOKE_PROCESS,
+        ),
+        family="storage-correctness",
+        tags=("contract", "storage", "scenario", "fts", "gc", "lineage"),
     ),
     "semantic-stack": LaneEntry(
         name="semantic-stack",

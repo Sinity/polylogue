@@ -13,6 +13,11 @@ from typing import Protocol, TextIO
 
 from devtools import repo_root as _get_root
 from devtools.cli_boundary import invoke_polylogue_cli
+from devtools.storage_correctness_scenario import (
+    STORAGE_CORRECTNESS_SCENARIO_NAME,
+    run_storage_correctness,
+    storage_correctness_scenario_entry,
+)
 from devtools.visual_artifacts import (
     READER_VISUAL_SMOKE_PYTEST_COMMAND,
     reader_visual_artifact_payloads,
@@ -20,12 +25,15 @@ from devtools.visual_artifacts import (
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.scenarios import AssertionSpec, ExecutionSpec, polylogue_execution
 
-_SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke")
+_SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke", STORAGE_CORRECTNESS_SCENARIO_NAME)
 _ARCHIVE_SMOKE_TIER = 0
 
 
 class _ScenarioResult(Protocol):
     report_dir: Path | None
+
+    @property
+    def scenario_name(self) -> str: ...
 
     def stage_statuses(self) -> dict[str, OutcomeStatus]: ...
 
@@ -82,6 +90,10 @@ class ArchiveSmokeResult:
         self.check_results = check_results
         self.report_dir = report_dir
         self.unsupported_reason = unsupported_reason
+
+    @property
+    def scenario_name(self) -> str:
+        return "archive-smoke"
 
     @property
     def all_passed(self) -> bool:
@@ -158,6 +170,7 @@ def list_scenarios(*, as_json: bool) -> int:
             "command": " ".join((sys.executable, *READER_VISUAL_SMOKE_PYTEST_COMMAND[1:])),
             "artifact_count": len(reader_visual_artifact_payloads()),
         },
+        storage_correctness_scenario_entry(),
     ]
     payload = {"scenarios": scenarios}
     if as_json:
@@ -167,6 +180,9 @@ def list_scenarios(*, as_json: bool) -> int:
         name = str(entry["name"])
         if name == "reader-visual-smoke":
             print(f"{name:<20s}  command: {entry['command']}")
+            continue
+        if name == "storage-correctness":
+            print(f"{name:<20s}  checks: {entry['check_count']}")
             continue
         print(f"{name:<20s}  tier-0 checks: {entry['tier_0_check_count']}")
     return 0
@@ -254,13 +270,17 @@ def _scenario_payload(result: _ScenarioResult) -> dict[str, object]:
     """Return the direct lab smoke payload without report wrapping."""
     stage_statuses = result.stage_statuses()
     failed_stages = result.failed_stages()
-    return {
-        "scenario": "archive-smoke",
+    payload: dict[str, object] = {
+        "scenario": result.scenario_name,
         "stages": {name: status.value for name, status in stage_statuses.items()},
         "failed_stages": list(failed_stages),
         "ok": not failed_stages,
         "report_dir": str(result.report_dir) if result.report_dir is not None else None,
     }
+    extra_payload = getattr(result, "extra_payload", None)
+    if callable(extra_payload):
+        payload.update(extra_payload())
+    return payload
 
 
 def _run_archive_smoke_check(check: ArchiveSmokeCheck) -> ArchiveSmokeCheckResult:
@@ -356,14 +376,18 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown action: {args.action}")
     if args.scenario == "reader-visual-smoke":
         return run_reader_visual_smoke(report_dir=args.report_dir, as_json=bool(args.json))
-    result = run_archive_smoke(
-        live=bool(args.live),
-        tier=args.tier,
-        report_dir=args.report_dir,
-        verbose=bool(args.verbose),
-        fail_fast=bool(args.fail_fast),
-        as_json=bool(args.json),
-    )
+    result: _ScenarioResult
+    if args.scenario == "storage-correctness":
+        result = run_storage_correctness(report_dir=args.report_dir)
+    else:
+        result = run_archive_smoke(
+            live=bool(args.live),
+            tier=args.tier,
+            report_dir=args.report_dir,
+            verbose=bool(args.verbose),
+            fail_fast=bool(args.fail_fast),
+            as_json=bool(args.json),
+        )
     if args.json:
         print(json.dumps(_scenario_payload(result), indent=2))
     else:

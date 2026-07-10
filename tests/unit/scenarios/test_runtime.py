@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ import pytest
 
 from polylogue.scenarios import (
     RunnerInvocation,
+    devtools_execution,
     dispatch_execution,
     dispatch_runner_execution,
     polylogue_execution,
@@ -69,6 +71,31 @@ def test_run_execution_merges_env_and_captures_output(
     assert captured_kwargs["text"] is True
     env = _string_env(captured_kwargs["env"])
     assert env["POLYLOGUE_FORCE_PLAIN"] == "1"
+
+
+def test_run_execution_dispatches_devtools_through_the_checkout_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_command: list[str] | None = None
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        nonlocal captured_command
+        captured_command = command
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr("polylogue.scenarios.runtime.subprocess.run", fake_run)
+
+    result = run_execution(devtools_execution("lab smoke", "run", "storage-correctness", "--json"), capture_output=True)
+
+    assert captured_command == [
+        sys.executable,
+        "-m",
+        "devtools",
+        "lab",
+        "smoke",
+        "run",
+        "storage-correctness",
+        "--json",
+    ]
+    assert result.command == tuple(captured_command)
 
 
 def test_run_execution_rejects_composite_execution() -> None:

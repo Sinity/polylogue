@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 
 def test_module_imports() -> None:
@@ -38,6 +39,7 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
     payload = json.loads(capsys.readouterr().out)
     archive = next(entry for entry in payload["scenarios"] if entry["name"] == "archive-smoke")
     visual = next(entry for entry in payload["scenarios"] if entry["name"] == "reader-visual-smoke")
+    storage = next(entry for entry in payload["scenarios"] if entry["name"] == "storage-correctness")
     assert archive == {
         "name": "archive-smoke",
         "kind": "cli-smoke",
@@ -46,6 +48,33 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
     assert archive["tier_0_check_count"] > 0
     assert visual["command"]
     assert visual["artifact_count"] > 0
+    assert storage == {
+        "name": "storage-correctness",
+        "kind": "archive-storage",
+        "check_count": 4,
+        "scope_adjudication": storage["scope_adjudication"],
+    }
+    assert "blob_gc" in storage["scope_adjudication"]
+
+
+def test_storage_correctness_manifest_records_the_realized_archive_family() -> None:
+    manifest_path = Path(__file__).parents[3] / "docs/plans/scenario-coverage.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    assert isinstance(manifest, dict)
+    families = manifest["families"]
+    assert isinstance(families, list)
+    storage = next(family for family in families if family["name"] == "storage_correctness")
+    assert storage == {
+        "name": "storage_correctness",
+        "description": "Archive-backed storage correctness scenario family",
+        "subject": "storage_correctness",
+        "scenario_count": 4,
+        "location": "devtools/storage_correctness_scenario.py",
+        "bead": "polylogue-9e5.19",
+        "notes": storage["notes"],
+    }
+    assert "blob-lease wording was stale" in storage["notes"]
+    assert all(gap["id"] != "scenario.storage-correctness" for gap in manifest["coverage_gaps"])
 
 
 def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) -> None:
@@ -150,6 +179,85 @@ def test_reader_visual_smoke_json_reports_artifact_inventory(
         "polylogue.local_reader.workspace.stack",
     }
     assert run.call_args.kwargs["capture_output"] is True
+
+
+def test_storage_correctness_json_runs_archive_backed_checks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from devtools.lab_scenario import main
+
+    report_dir = tmp_path / "reports"
+
+    assert main(["run", "storage-correctness", "--json", "--report-dir", str(report_dir)]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    report_payload = json.loads((report_dir / "storage-correctness.json").read_text(encoding="utf-8"))
+    assert payload["scenario"] == "storage-correctness"
+    assert payload["ok"] is True
+    assert payload["failed_stages"] == []
+    assert set(payload["stages"]) == {
+        "idempotent-reingest",
+        "fts-trigger-drift",
+        "blob-gc-invariant",
+        "lineage-composition",
+    }
+    assert payload["checks"] == report_payload["checks"]
+    assert payload["scope_adjudication"] == report_payload["scope_adjudication"]
+    assert "blob_gc" in payload["scope_adjudication"]
+    checks = {entry["name"]: entry for entry in payload["checks"]}
+    assert checks["idempotent-reingest"]["details"]["repeat_counts"]["skipped_sessions"] == 1
+    assert checks["idempotent-reingest"]["details"]["derived_counts"] == {
+        "sessions": 1,
+        "messages": 2,
+        "blocks": 2,
+        "message_fts": 2,
+    }
+    assert checks["fts-trigger-drift"]["details"]["drifted_readiness"]["ready"] is False
+    assert checks["fts-trigger-drift"]["details"]["drifted_readiness"]["triggers_present"] is False
+    assert checks["fts-trigger-drift"]["details"]["drifted_triggers"] == [
+        "messages_fts_ad",
+        "messages_fts_au",
+    ]
+    assert "Search index is incomplete" in checks["fts-trigger-drift"]["details"]["search_failure"]
+    assert checks["fts-trigger-drift"]["details"]["production_repair"] is True
+    assert checks["fts-trigger-drift"]["details"]["after_triggers"] == [
+        "messages_fts_ad",
+        "messages_fts_ai",
+        "messages_fts_au",
+    ]
+    assert checks["fts-trigger-drift"]["details"]["after_readiness"]["ready"] is True
+    assert checks["fts-trigger-drift"]["details"]["after_fts_rows"] == 1
+    assert checks["blob-gc-invariant"]["details"]["reservation_count"] == 1
+    assert checks["blob-gc-invariant"]["details"]["gc_report"]["deleted_count"] == 1
+    assert checks["blob-gc-invariant"]["details"]["gc_report"]["skipped_reserved"] == 1
+    assert checks["blob-gc-invariant"]["details"]["gc_report"]["skipped_referenced"] == 1
+    assert checks["blob-gc-invariant"]["details"]["latest_generation"]["reclaimed_count"] == 1
+    assert checks["lineage-composition"]["details"]["stored_child_positions"] == [2, 3]
+    assert checks["lineage-composition"]["details"]["composed_texts"] == [
+        "hello",
+        "hi there",
+        "child diverges here",
+        "child reply",
+    ]
+    assert checks["lineage-composition"]["details"]["lineage"]["inheritance"] == "prefix-sharing"
+
+
+def test_storage_correctness_rejects_production_repair_without_trigger_recreation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devtools import storage_correctness_scenario
+
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync",
+        lambda _conn: None,
+    )
+
+    result = storage_correctness_scenario.run_storage_correctness(report_dir=None)
+
+    fts_result = next(check for check in result.check_results if check.name == "fts-trigger-drift")
+    assert fts_result.passed is False
+    assert fts_result.error is not None
+    assert "Search index is incomplete" in fts_result.error
 
 
 def test_main_reports_unsupported_archive_smoke_tier(capsys: pytest.CaptureFixture[str]) -> None:
