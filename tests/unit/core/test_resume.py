@@ -38,11 +38,15 @@ def _seed_resume_sessions(db_path: Path) -> None:
             timestamp="2026-04-20T10:05:00+00:00",
             blocks=[
                 {
+                    "type": "text",
+                    "text": "I will inspect command wiring and insight surfaces.",
+                },
+                {
                     "type": "tool_use",
                     "tool_name": "Read",
                     "semantic_type": "file_read",
                     "input": {"path": "/workspace/polylogue/polylogue/cli/click_app.py"},
-                }
+                },
             ],
         )
         .save()
@@ -68,11 +72,15 @@ def _seed_resume_sessions(db_path: Path) -> None:
             timestamp="2026-04-20T11:15:00+00:00",
             blocks=[
                 {
+                    "type": "text",
+                    "text": "Continuing implementation and running pytest for resume tests.",
+                },
+                {
                     "type": "tool_use",
                     "tool_name": "Bash",
                     "semantic_type": "shell",
                     "input": {"command": "pytest -q tests/unit/core/test_resume.py"},
-                }
+                },
             ],
         )
         .save()
