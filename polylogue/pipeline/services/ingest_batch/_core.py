@@ -44,6 +44,8 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
+    BrowserCapturePrecedence,
+    browser_capture_precedence,
     record_capture_gap_event,
     session_has_parser_ingest_flag,
     stored_message_count,
@@ -401,17 +403,7 @@ def _write_session(
     existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
     session_to_write = payload.parsed_session
     merge_append = False
-
-    incoming_freshness_ms = _timestamp_ms(session_to_write.updated_at) or _timestamp_ms(session_to_write.created_at)
-    if not force_write and not payload.append_only and existing_row is not None and incoming_freshness_ms is not None:
-        existing_updated_at_ms = existing_row["updated_at_ms"]
-        existing_updated_at_int = int(existing_updated_at_ms) if existing_updated_at_ms is not None else None
-        if existing_updated_at_int is not None and incoming_freshness_ms < existing_updated_at_int:
-            counts["skipped_sessions"] = 1
-            counts["skipped_messages"] = payload.message_count
-            counts["skipped_attachments"] = payload.attachment_count
-            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
-            return False, counts
+    browser_precedence: BrowserCapturePrecedence = "default"
 
     if (
         not force_write
@@ -433,17 +425,15 @@ def _write_session(
         )
         current_stored_message_count = stored_message_count(conn, payload.session_id)
         lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
-        # A provider-native browser snapshot owns equal-length coalescing, while
-        # a genuinely fuller export may still advance the archived transcript.
-        lower_precedence_export = (
-            existing_has_native_browser_payload
-            and not incoming_has_native_browser_payload
-            and payload.message_count <= current_stored_message_count
+        browser_precedence = browser_capture_precedence(
+            existing_is_dom_fallback=existing_is_dom_fallback,
+            incoming_is_dom_fallback=incoming_is_dom_fallback,
+            existing_has_native_payload=existing_has_native_browser_payload,
+            incoming_has_native_payload=incoming_has_native_browser_payload,
+            stored_message_count=current_stored_message_count,
+            incoming_message_count=payload.message_count,
         )
-        strictly_less_complete = payload.message_count < current_stored_message_count and not (
-            existing_is_dom_fallback and not incoming_is_dom_fallback
-        )
-        if lower_precedence_fallback or lower_precedence_export or strictly_less_complete:
+        if browser_precedence == "skip":
             if lower_precedence_fallback:
                 record_capture_gap_event(
                     conn,
@@ -454,6 +444,23 @@ def _write_session(
                     incoming_message_count=payload.message_count,
                 )
                 counts["session_events"] = 1
+            counts["skipped_sessions"] = 1
+            counts["skipped_messages"] = payload.message_count
+            counts["skipped_attachments"] = payload.attachment_count
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            return False, counts
+
+    incoming_freshness_ms = _timestamp_ms(session_to_write.updated_at) or _timestamp_ms(session_to_write.created_at)
+    if (
+        not force_write
+        and browser_precedence != "replace"
+        and not payload.append_only
+        and existing_row is not None
+        and incoming_freshness_ms is not None
+    ):
+        existing_updated_at_ms = existing_row["updated_at_ms"]
+        existing_updated_at_int = int(existing_updated_at_ms) if existing_updated_at_ms is not None else None
+        if existing_updated_at_int is not None and incoming_freshness_ms < existing_updated_at_int:
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
             counts["skipped_attachments"] = payload.attachment_count
@@ -498,7 +505,7 @@ def _write_session(
         content_hash=payload.content_hash,
         raw_id=payload.raw_id,
         merge_append=merge_append,
-        force_replace=force_write,
+        force_replace=force_write or browser_precedence == "replace",
         signature_cache=signature_cache,
         stage_timings_s=stage_timings_s,
     )

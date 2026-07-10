@@ -327,14 +327,16 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
         "expected_title",
         "expected_count",
         "expected_owner",
+        "incoming_is_older",
     ),
     [
-        ("native", 2, "export", 2, "Native browser", 2, "initial"),
-        ("export", 2, "native", 2, "Native browser", 2, "incoming"),
-        ("native", 2, "export", 1, "Native browser", 2, "initial"),
-        ("export", 1, "native", 2, "Native browser", 2, "incoming"),
-        ("native", 2, "export", 3, "Fuller export", 3, "incoming"),
-        ("export", 3, "native", 2, "Fuller export", 3, "initial"),
+        ("native", 2, "export", 2, "Native browser", 2, "initial", False),
+        ("export", 2, "native", 2, "Native browser", 2, "incoming", False),
+        ("native", 2, "export", 1, "Native browser", 2, "initial", False),
+        ("export", 1, "native", 2, "Native browser", 2, "incoming", False),
+        ("native", 2, "export", 3, "Fuller export", 3, "incoming", False),
+        ("export", 3, "native", 2, "Fuller export", 3, "initial", False),
+        ("export", 2, "native", 2, "Native browser", 2, "incoming", True),
     ],
     ids=(
         "native-before-equal",
@@ -343,6 +345,7 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
         "native-after-weaker",
         "fuller-export-advances",
         "fuller-export-resists-shorter-native",
+        "older-native-after-equal",
     ),
 )
 def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
@@ -354,16 +357,18 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
     expected_title: str,
     expected_count: int,
     expected_owner: str,
+    incoming_is_older: bool,
 ) -> None:
     session_native_id = f"browser-precedence-{initial_kind}-{initial_count}-{incoming_kind}-{incoming_count}"
 
-    def session(kind: str, message_count: int) -> ParsedSession:
+    def session(kind: str, message_count: int, *, updated_at: str) -> ParsedSession:
         native = kind == "native"
         title = "Native browser" if native else ("Fuller export" if message_count == 3 else "Ordinary export")
         return ParsedSession(
             source_name=Provider.CHATGPT,
             provider_session_id=session_native_id,
             title=title,
+            updated_at=updated_at,
             messages=[
                 ParsedMessage(
                     provider_message_id=f"{kind}-{position}",
@@ -378,13 +383,17 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
         initial = facade.write_raw_and_parsed_result(
-            session(initial_kind, initial_count),
+            session(initial_kind, initial_count, updated_at="2026-04-03T00:00:00Z"),
             payload=f"{initial_kind}-initial".encode(),
             source_path=f"/tmp/{initial_kind}-initial.json",
             acquired_at_ms=1_767_000_000_000,
         )
         incoming = facade.write_raw_and_parsed_result(
-            session(incoming_kind, incoming_count),
+            session(
+                incoming_kind,
+                incoming_count,
+                updated_at="2026-04-02T00:00:00Z" if incoming_is_older else "2026-04-03T00:00:00Z",
+            ),
             payload=f"{incoming_kind}-incoming-{incoming_count}".encode(),
             source_path=f"/tmp/{incoming_kind}-incoming.json",
             acquired_at_ms=1_767_000_000_001,
@@ -401,6 +410,8 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
         conn.close()
 
     expected_raw_id = initial.raw_id if expected_owner == "initial" else incoming.raw_id
+    assert incoming.content_changed is (expected_owner == "incoming")
+    assert incoming.counts["skipped_sessions"] == int(expected_owner == "initial")
     assert dict(stored) == {
         "raw_id": expected_raw_id,
         "title": expected_title,

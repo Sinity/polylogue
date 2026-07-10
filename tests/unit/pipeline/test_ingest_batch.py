@@ -1207,14 +1207,16 @@ def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp
         "expected_title",
         "expected_count",
         "expected_raw_id",
+        "incoming_is_older",
     ),
     [
-        ("native", 2, "export", 2, "Native browser", 2, "raw-initial"),
-        ("export", 2, "native", 2, "Native browser", 2, "raw-incoming"),
-        ("native", 2, "export", 1, "Native browser", 2, "raw-initial"),
-        ("export", 1, "native", 2, "Native browser", 2, "raw-incoming"),
-        ("native", 2, "export", 3, "Fuller export", 3, "raw-incoming"),
-        ("export", 3, "native", 2, "Fuller export", 3, "raw-initial"),
+        ("native", 2, "export", 2, "Native browser", 2, "raw-initial", False),
+        ("export", 2, "native", 2, "Native browser", 2, "raw-incoming", False),
+        ("native", 2, "export", 1, "Native browser", 2, "raw-initial", False),
+        ("export", 1, "native", 2, "Native browser", 2, "raw-incoming", False),
+        ("native", 2, "export", 3, "Fuller export", 3, "raw-incoming", False),
+        ("export", 3, "native", 2, "Fuller export", 3, "raw-initial", False),
+        ("export", 2, "native", 2, "Native browser", 2, "raw-incoming", True),
     ],
     ids=(
         "native-before-equal",
@@ -1223,6 +1225,7 @@ def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp
         "native-after-weaker",
         "fuller-export-advances",
         "fuller-export-resists-shorter-native",
+        "older-native-after-equal",
     ),
 )
 def test_write_session_native_browser_precedence_matrix(
@@ -1234,10 +1237,11 @@ def test_write_session_native_browser_precedence_matrix(
     expected_title: str,
     expected_count: int,
     expected_raw_id: str,
+    incoming_is_older: bool,
 ) -> None:
     session_id = f"chatgpt-export:browser-precedence-{initial_kind}-{initial_count}-{incoming_kind}-{incoming_count}"
 
-    def payload(kind: str, message_count: int, raw_id: str) -> SessionWritePayload:
+    def payload(kind: str, message_count: int, raw_id: str, *, updated_at: str) -> SessionWritePayload:
         native = kind == "native"
         title = "Native browser" if native else ("Fuller export" if message_count == 3 else "Ordinary export")
         return _session_data(
@@ -1246,6 +1250,7 @@ def test_write_session_native_browser_precedence_matrix(
             raw_id=raw_id,
             provider=Provider.CHATGPT,
             title=title,
+            updated_at=updated_at,
             ingest_flags=[NATIVE_BROWSER_CAPTURE_INGEST_FLAG] if native else [],
             message_tuples=[
                 _message_tuple(
@@ -1263,11 +1268,16 @@ def test_write_session_native_browser_precedence_matrix(
     with open_connection(tmp_path / "index.db") as conn:
         changed_initial, _counts_initial = _write_session(
             conn,
-            payload(initial_kind, initial_count, "raw-initial"),
+            payload(initial_kind, initial_count, "raw-initial", updated_at="2026-04-03T00:00:00Z"),
         )
         changed_incoming, counts_incoming = _write_session(
             conn,
-            payload(incoming_kind, incoming_count, "raw-incoming"),
+            payload(
+                incoming_kind,
+                incoming_count,
+                "raw-incoming",
+                updated_at="2026-04-02T00:00:00Z" if incoming_is_older else "2026-04-03T00:00:00Z",
+            ),
         )
         conn.commit()
         stored = conn.execute(

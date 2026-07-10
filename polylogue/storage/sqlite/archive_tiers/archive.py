@@ -119,6 +119,8 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
+    BrowserCapturePrecedence,
+    browser_capture_precedence,
     record_capture_gap_event,
     session_has_parser_ingest_flag,
     stored_message_count,
@@ -857,6 +859,7 @@ class ArchiveStore:
         existing_has_native_browser_payload = False
         incoming_has_native_browser_payload = NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
         current_stored_message_count = 0
+        browser_precedence: BrowserCapturePrecedence = "default"
 
         if source_index >= 0 and existing_raw_id and raw_id and existing_raw_id != raw_id:
             existing_is_dom_fallback = session_has_parser_ingest_flag(
@@ -871,17 +874,15 @@ class ArchiveStore:
             )
             current_stored_message_count = stored_message_count(self._conn, session_id)
             lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
-            # A provider-native browser snapshot owns equal-length coalescing,
-            # while a genuinely fuller export may still advance the transcript.
-            lower_precedence_export = (
-                existing_has_native_browser_payload
-                and not incoming_has_native_browser_payload
-                and len(session.messages) <= current_stored_message_count
+            browser_precedence = browser_capture_precedence(
+                existing_is_dom_fallback=existing_is_dom_fallback,
+                incoming_is_dom_fallback=incoming_is_dom_fallback,
+                existing_has_native_payload=existing_has_native_browser_payload,
+                incoming_has_native_payload=incoming_has_native_browser_payload,
+                stored_message_count=current_stored_message_count,
+                incoming_message_count=len(session.messages),
             )
-            strictly_less_complete = len(session.messages) < current_stored_message_count and not (
-                existing_is_dom_fallback and not incoming_is_dom_fallback
-            )
-            if lower_precedence_fallback or lower_precedence_export or strictly_less_complete:
+            if browser_precedence == "skip":
                 session_event_count = 0
                 if lower_precedence_fallback:
                     record_capture_gap_event(
@@ -908,7 +909,7 @@ class ArchiveStore:
             content_hash=str(session_content_hash(session)),
             raw_id=raw_id,
             merge_append=source_index < 0,
-            force_replace=existing_is_dom_fallback and not incoming_is_dom_fallback,
+            force_replace=browser_precedence == "replace",
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
