@@ -363,16 +363,12 @@ def seed_reader_assertion_claims(workspace: ReaderWorkspace) -> None:
             scope_ref="repo:polylogue",
             kind=AssertionKind.DECISION,
             body_text="The evidence tab renders shared assertion claims.",
-            author_ref="agent:poly-07",
-            # author_kind="user": an active/promoted decision is always
-            # user-authored in production (37t.15) -- non-user writes land
-            # as candidates, never active, regardless of the caller-supplied
-            # status/context_policy above.
+            author_ref="user:reader-fixture",
             author_kind="user",
             evidence_refs=[f"message:{READER_C1_M1}"],
             status="active",
             visibility="private",
-            context_policy={"inject": False},
+            context_policy={"inject": True},
             now_ms=1_760_000_000_000,
         )
         user_conn.commit()

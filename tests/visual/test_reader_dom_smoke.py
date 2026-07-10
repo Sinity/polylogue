@@ -418,6 +418,7 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
         "renderBrowserCaptureChip",
         "renderReadViewExecution",
         "renderContextReadView",
+        "claim.quoted_evidence && claim.quoted_evidence.text",
         "renderContextImageReadView",
         "loadEvidencePanel",
         "/api/assertions?target_ref=",
@@ -432,6 +433,10 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
     assert context["view"] == "context"
     context_payload = cast(dict[str, object], context["payload"])
     assert context_payload["preamble_version"] == "1.0"
+    context_guidance = cast(dict[str, object], context_payload["guidance"])
+    context_assertions = cast(list[dict[str, object]], context_guidance["assertions"])
+    quoted_evidence = cast(dict[str, object], context_assertions[0]["quoted_evidence"])
+    assert quoted_evidence["text"] == "The evidence tab renders shared assertion claims."
     assert context_image["view"] == "context-image"
     context_image_payload = cast(dict[str, object], context_image["payload"])
     context_segments = cast(list[dict[str, object]], context_image_payload["segments"])

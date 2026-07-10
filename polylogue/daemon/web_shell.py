@@ -1559,8 +1559,11 @@ function renderContextReadView(payload) {
   if (!related.length) html += '<div class="inspector-empty">No related sessions surfaced for this seed.</div>';
   html += '</div><div class="inspector-section"><h4>Guidance</h4>';
   assertions.slice(0, 8).forEach(function(claim) {
+    var guidanceText = claim.operator_instruction
+      || (claim.quoted_evidence && claim.quoted_evidence.text)
+      || '';
     html += '<div class="annotation-item"><div class="meta">' + esc(claim.kind || 'assertion') + ' / ' + esc(claim.scope_ref || '') + '</div>'
-      + '<div class="note">' + esc(claim.text || '') + '</div></div>';
+      + '<div class="note">' + esc(guidanceText) + '</div></div>';
   });
   if (!assertions.length) html += '<div class="inspector-empty">No injectable assertion guidance for this session.</div>';
   html += '</div></div>';

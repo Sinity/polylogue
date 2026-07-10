@@ -18,6 +18,7 @@ from polylogue.core.assertions import (
     AssertionContextPolicy,
     AssertionStaleness,
     AssertionValue,
+    constrain_assertion_context_policy,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONValue
@@ -1003,6 +1004,13 @@ def upsert_assertion(
         else:
             resolved_status = AssertionStatus.CANDIDATE
             resolved_context_policy = AssertionContextPolicy.from_raw(_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY)
+
+    resolved_context_policy = constrain_assertion_context_policy(
+        resolved_context_policy,
+        author_kind=resolved_author_kind,
+        author_ref=normalized_author_ref,
+        status=resolved_status,
+    )
 
     evidence_refs_json = _dumps_optional(normalized_evidence_refs)
     supersedes_json = _dumps_optional(list(supersedes or ()))
