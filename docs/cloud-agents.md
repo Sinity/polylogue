@@ -61,11 +61,13 @@ Codex Cloud reads `AGENTS.md` for repo-scoped guidance, but its sandbox env
 vars are configured outside the repo, in the Codex Cloud environment-settings
 panel. Mirror the values from `.claude/settings.json` there:
 
-| Variable                    | Value                     | Why                                               |
-| --------------------------- | ------------------------- | ------------------------------------------------- |
-| `POLYLOGUE_ARCHIVE_ROOT`    | `/tmp/polylogue-archive`  | Keeps writes inside the sandbox tmpfs.            |
-| `POLYLOGUE_FORCE_PLAIN`     | `1`                       | Disables Rich pretty-printers (matches CI).       |
-| `HYPOTHESIS_PROFILE`        | `ci`                      | Bounded property-test budget.                     |
+| Variable                          | Value                     | Why                                                          |
+| --------------------------------- | ------------------------- | ------------------------------------------------------------ |
+| `POLYLOGUE_ARCHIVE_ROOT`          | `/tmp/polylogue-archive`  | Keeps writes inside the sandbox tmpfs.                        |
+| `POLYLOGUE_FORCE_PLAIN`           | `1`                       | Disables Rich pretty-printers (matches CI).                   |
+| `HYPOTHESIS_PROFILE`              | `ci`                      | Bounded property-test budget.                                 |
+| `POLYLOGUE_PYTEST_WORKERS`        | `2`                       | Caps xdist workers for ~4-vCPU/16 GB sandboxes.               |
+| `POLYLOGUE_PYTEST_BASETEMP_ROOT`  | `/tmp/polylogue-pytest`   | Pytest temp DBs in sandbox tmp, not the local `/realm/tmp`.   |
 
 If Codex Cloud supports a per-environment bootstrap script, point it at
 `.claude/setup.sh` (or paste its contents) so `uv` is installed and dev deps
