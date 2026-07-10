@@ -1058,7 +1058,17 @@ class TestNoTokenLogging:
             repo_root / "polylogue" / "daemon",
             repo_root / "polylogue" / "browser_capture",
         ]
-        output_sinks = {"critical", "debug", "echo", "error", "exception", "info", "log", "print", "warning"}
+        output_sinks = {
+            "critical",
+            "debug",
+            "echo",
+            "error",
+            "exception",
+            "info",
+            "log",
+            "print",
+            "warning",
+        }
         intentional_secret_outputs = {
             (Path("polylogue/daemon/browser_capture.py"), "token_show", "echo"),
         }
@@ -1072,6 +1082,20 @@ class TestNoTokenLogging:
 
         def _is_token_name(name: str) -> bool:
             return name == "token" or name.endswith("_token")
+
+        def _is_output_sink(call: ast.Call) -> bool:
+            sink_name = _call_sink_name(call)
+            if sink_name in output_sinks:
+                return True
+            if sink_name != "write" or not isinstance(call.func, ast.Attribute):
+                return False
+            receiver = call.func.value
+            return (
+                isinstance(receiver, ast.Attribute)
+                and receiver.attr in {"stderr", "stdout"}
+                and isinstance(receiver.value, ast.Name)
+                and receiver.value.id == "sys"
+            )
 
         def _contains_token_value(expression: ast.AST, sensitive_names: set[str]) -> bool:
             for node in ast.walk(expression):
@@ -1151,44 +1175,29 @@ class TestNoTokenLogging:
                 names = {name for target in node.targets for name in _assigned_names(target)}
                 if _assignment_carries_token(node.value, self.sensitive_names):
                     self.sensitive_names.update(names)
-                else:
-                    self.sensitive_names.difference_update(names)
                 self.generic_visit(node)
 
             def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
                 names = _assigned_names(node.target)
                 if node.value is not None and _assignment_carries_token(node.value, self.sensitive_names):
                     self.sensitive_names.update(names)
-                else:
-                    self.sensitive_names.difference_update(names)
                 self.generic_visit(node)
 
             def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
                 names = _assigned_names(node.target)
                 if _assignment_carries_token(node.value, self.sensitive_names):
                     self.sensitive_names.update(names)
-                else:
-                    self.sensitive_names.difference_update(names)
+                # Taint is deliberately flow-insensitive within a function:
+                # once any feasible path assigns a token-derived value, later
+                # output remains suspect across try/match/loop joins.
                 self.generic_visit(node)
-
-            def visit_If(self, node: ast.If) -> None:
-                self.visit(node.test)
-                baseline = set(self.sensitive_names)
-                self.sensitive_name_stack[-1] = set(baseline)
-                for statement in node.body:
-                    self.visit(statement)
-                body_names = set(self.sensitive_names)
-                self.sensitive_name_stack[-1] = set(baseline)
-                for statement in node.orelse:
-                    self.visit(statement)
-                self.sensitive_name_stack[-1] |= body_names
 
             def visit_Call(self, node: ast.Call) -> None:
                 sink_name = _call_sink_name(node)
                 expressions = [*node.args, *(keyword.value for keyword in node.keywords)]
                 function_name = self.function_stack[-1] if self.function_stack else "<module>"
                 if (
-                    sink_name in output_sinks
+                    _is_output_sink(node)
                     and any(_contains_token_value(expression, self.sensitive_names) for expression in expressions)
                     and (self.relative_path, function_name, sink_name) not in intentional_secret_outputs
                 ):
@@ -1223,6 +1232,23 @@ class TestNoTokenLogging:
             )
         )
         assert seeded_branch_violation.offenders == [(6, "leak")]
+
+        seeded_try_violation = _SensitiveOutputVisitor(Path("seeded_try_violation.py"))
+        seeded_try_violation.visit(
+            ast.parse(
+                "def leak(auth_token):\n"
+                "    try:\n"
+                "        secret = auth_token\n"
+                "    except Exception:\n"
+                "        secret = 'safe'\n"
+                "    logger.info(secret)\n"
+            )
+        )
+        assert seeded_try_violation.offenders == [(6, "leak")]
+
+        seeded_stdout_violation = _SensitiveOutputVisitor(Path("seeded_stdout_violation.py"))
+        seeded_stdout_violation.visit(ast.parse("def leak(auth_token):\n    sys.stdout.write(auth_token)\n"))
+        assert seeded_stdout_violation.offenders == [(2, "leak")]
 
         seeded_exception_scope = _SensitiveOutputVisitor(Path("polylogue/daemon/browser_capture.py"))
         seeded_exception_scope.visit(
