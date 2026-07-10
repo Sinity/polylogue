@@ -911,7 +911,11 @@ def test_spawned_fresh_child_keeps_all_messages(tmp_path: Path) -> None:
     assert composed == ["fresh subagent prompt", "fresh subagent answer"]
 
 
-def test_hermes_compression_tail_composes_and_delegate_stays_fresh(tmp_path: Path) -> None:
+@pytest.mark.parametrize("end_reason", ["compression", "compaction"])
+def test_hermes_compression_tail_composes_and_delegate_stays_fresh(
+    tmp_path: Path,
+    end_reason: str,
+) -> None:
     state_db = tmp_path / "state.db"
     with sqlite3.connect(state_db) as source:
         source.executescript(
@@ -955,6 +959,10 @@ def test_hermes_compression_tail_composes_and_delegate_stays_fresh(tmp_path: Pat
             "UPDATE sessions SET model_config = ? WHERE id = 'delegate'",
             (json.dumps({"_delegate_from": "parent"}),),
         )
+        source.execute(
+            "UPDATE sessions SET end_reason = ? WHERE id = 'parent'",
+            (end_reason,),
+        )
 
     parsed = parse_state_db(state_db)
     by_raw_id = {session.provider_session_id.split("@", 1)[0]: session for session in parsed}
@@ -962,6 +970,10 @@ def test_hermes_compression_tail_composes_and_delegate_stays_fresh(tmp_path: Pat
     continuation = by_raw_id["continuation"]
     delegate = by_raw_id["delegate"]
     assert continuation.branch_type is BranchType.CONTINUATION
+    assert any(
+        event.event_type == "compaction" and event.payload.get("end_reason") == end_reason
+        for event in parent.session_events
+    )
     assert [message.text for message in continuation.messages] == ["before", "summary", "after", "continued"]
     assert delegate.branch_type is BranchType.SUBAGENT
     assert [message.text for message in delegate.messages] == ["fresh work"]

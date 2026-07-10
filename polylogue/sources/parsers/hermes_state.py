@@ -26,6 +26,7 @@ from .local_agent import _content_blocks_from_content, _content_text, _tool_use_
 
 HERMES_STATE_DB_MARKER = "hermes_state_db"
 _CONTENT_JSON_PREFIX = "\x00json:"
+_COMPACTION_END_REASONS = frozenset({"compression", "compaction"})
 _REQUIRED_SESSION_COLUMNS = frozenset(
     {
         "id",
@@ -504,7 +505,7 @@ def _usage_and_lifecycle_events(
             )
         )
     end_reason = _optional_text(_row_value(row, "end_reason"))
-    if end_reason in {"compression", "compaction"}:
+    if end_reason in _COMPACTION_END_REASONS:
         events.append(
             ParsedSessionEvent(
                 event_type="compaction",
@@ -532,7 +533,7 @@ def _branch_type(row: sqlite3.Row, parent_row: sqlite3.Row | None) -> BranchType
         return BranchType.FORK
     if config.get("_delegate_from") is not None or _optional_text(_row_value(row, "source")) == "tool":
         return BranchType.SUBAGENT
-    if parent_row is not None and _optional_text(_row_value(parent_row, "end_reason")) == "compression":
+    if parent_row is not None and _optional_text(_row_value(parent_row, "end_reason")) in _COMPACTION_END_REASONS:
         return BranchType.CONTINUATION
     return None
 
