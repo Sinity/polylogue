@@ -40,7 +40,7 @@ from devtools.verify import (
     _clear_pytest_report,
     _run,
 )
-from devtools.verify_runs import VerifyRun
+from devtools.verify_runs import VerifyRun, git_head
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     no_lock = os.environ.get("POLYLOGUE_TEST_NO_LOCK") == "1"
     with _run_lock(enabled=not no_lock):
         _clear_pytest_report(cmd)
-        run = VerifyRun(tier="focused-test", argv=selection, git_head=None, root=ROOT)
+        run = VerifyRun(tier="focused-test", argv=selection, git_head=git_head(ROOT), root=ROOT)
         started = time.monotonic()
         rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
         run.finish(exit_code=rc, duration_s=time.monotonic() - started, diagnosis=metadata.get("diagnosis"))
