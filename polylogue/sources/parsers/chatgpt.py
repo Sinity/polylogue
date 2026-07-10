@@ -241,6 +241,21 @@ def _non_negative_int(value: object) -> int | None:
     return None
 
 
+# ChatGPT embeds inline citation anchors in assistant text as private-use
+# unicode spans: U+E200 opens, U+E202 separates reference tokens, U+E201
+# closes (e.g. "\ue200filecite\ue202turn3file14\ue202L180-L293\ue201").
+# The span carries no human-readable text -- the resolvable citation rows
+# live in message metadata (`citations`/`content_references`) and are
+# preserved as web constructs. The raw markers otherwise leak invisible
+# glyphs into search text and rendered transcripts; the untouched original
+# remains in the source-tier raw payload.
+_CITATION_MARKER_RE = re.compile("\ue200.*?\ue201|[\ue200\ue201\ue202]")
+
+
+def _strip_citation_markers(text: str) -> str:
+    return _CITATION_MARKER_RE.sub("", text)
+
+
 _SANDBOX_FILE_RE = re.compile(r"sandbox:(/mnt/data/[^\s)\]\"'>]+)")
 
 
@@ -282,15 +297,15 @@ def _extract_content_text(content: Mapping[str, object]) -> str:
                     text_parts.append(t)
                 # Skip image_asset_pointer and other non-text dicts
         if text_parts:
-            return "\n".join(text_parts)
+            return _strip_citation_markers("\n".join(text_parts))
     # Non-parts content shapes: code / execution_output carry top-level text;
     # browsing display carries a result string.
     top_text = content.get("text")
     if isinstance(top_text, str) and top_text:
-        return top_text
+        return _strip_citation_markers(top_text)
     result = content.get("result")
     if isinstance(result, str) and result:
-        return result
+        return _strip_citation_markers(result)
     return ""
 
 
@@ -420,6 +435,7 @@ def extract_messages_from_mapping(
 
         # Build structured content blocks
         content_blocks: list[ParsedContentBlock] = []
+        forced_message_type: MessageType | None = None
         content_type = content.get("content_type", "text")
         if tool_call_input is not None:
             # Recipient-addressed tool call whose content is a JSON payload
@@ -461,10 +477,35 @@ def extract_messages_from_mapping(
                     metadata={"content_type": content_type},
                 )
             )
+        elif content_type in ("user_editable_context", "model_editable_context"):
+            # System-injected conversation context (#runtime evidence): custom
+            # instructions / user profile (`user_editable_context`) and the
+            # ChatGPT memory payload (`model_set_context`). These carry no
+            # `parts`, so without this branch the messages are dropped and the
+            # archive loses what context the provider injected. Empty payloads
+            # (e.g. memory feature on but no memories) still drop.
+            context_fields = (
+                ("user_profile", "user_instructions")
+                if content_type == "user_editable_context"
+                else ("model_set_context",)
+            )
+            context_texts = [
+                value for key in context_fields if isinstance(value := content.get(key), str) and value.strip()
+            ]
+            if context_texts:
+                text = "\n\n".join(context_texts)
+                forced_message_type = MessageType.CONTEXT
+                content_blocks.append(
+                    ParsedContentBlock(
+                        type=BlockType.TEXT,
+                        text=text,
+                        metadata={"content_type": content_type},
+                    )
+                )
         elif parts:
             for part in parts:
                 if isinstance(part, str) and part:
-                    content_blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=part))
+                    content_blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=_strip_citation_markers(part)))
                 elif isinstance(part, dict) and part.get("content_type") == "image_asset_pointer":
                     content_blocks.append(
                         ParsedContentBlock(
@@ -512,7 +553,7 @@ def extract_messages_from_mapping(
         status_val = msg.get("status")
         end_turn_val = msg.get("end_turn")
         user_context_val = msg_metadata.get("user_context_message_data") if isinstance(msg_metadata, Mapping) else None
-        message_type = classify_text_message_type(text) or MessageType.MESSAGE
+        message_type = forced_message_type or classify_text_message_type(text) or MessageType.MESSAGE
         parsed = ParsedMessage(
             provider_message_id=str(msg_id),
             role=role,
