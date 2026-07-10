@@ -89,7 +89,7 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
     ),
     "storage-correctness": LaneEntry(
         name="storage-correctness",
-        description="Archive-backed storage correctness scenario family for idempotency, FTS drift, and lineage composition",
+        description="Archive-backed storage correctness for idempotency, FTS drift, blob GC, and lineage composition",
         timeout_s=180,
         category="contract",
         execution=devtools_execution(
@@ -99,20 +99,17 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "--json",
             metadata=ScenarioMetadata(
                 path_targets=(
-                    "raw-reparse-loop",
                     "raw-archive-ingest-loop",
                     "message-fts-readiness-loop",
                     "session-query-loop",
                 ),
                 artifact_targets=(
-                    "source_payload_stream",
                     "archive_session_rows",
                     "message_source_rows",
                     "message_fts",
                     "session_query_results",
                 ),
                 operation_targets=(
-                    "acquire-raw-sessions",
                     "ingest-archive-runtime",
                     "index-message-fts",
                     "query-sessions",
@@ -125,7 +122,7 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             classification_override=AssertionClass.SMOKE_PROCESS,
         ),
         family="storage-correctness",
-        tags=("contract", "storage", "scenario", "fts", "lineage"),
+        tags=("contract", "storage", "scenario", "fts", "gc", "lineage"),
     ),
     "semantic-stack": LaneEntry(
         name="semantic-stack",

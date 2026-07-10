@@ -4,33 +4,28 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import subprocess
 import sys
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Protocol, TextIO
 
 from devtools import repo_root as _get_root
 from devtools.cli_boundary import invoke_polylogue_cli
+from devtools.storage_correctness_scenario import (
+    STORAGE_CORRECTNESS_SCENARIO_NAME,
+    run_storage_correctness,
+    storage_correctness_scenario_entry,
+)
 from devtools.visual_artifacts import (
     READER_VISUAL_SMOKE_PYTEST_COMMAND,
     reader_visual_artifact_payloads,
 )
-from polylogue.archive.message.roles import Role
-from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, Provider
 from polylogue.core.outcomes import OutcomeStatus
-from polylogue.pipeline.ids import session_content_hash
 from polylogue.scenarios import AssertionSpec, ExecutionSpec, polylogue_execution
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 
-_SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke", "storage-correctness")
+_SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke", STORAGE_CORRECTNESS_SCENARIO_NAME)
 _ARCHIVE_SMOKE_TIER = 0
 
 
@@ -123,42 +118,6 @@ def get_archive_smoke_checks() -> tuple[ArchiveSmokeCheck, ...]:
     return _ARCHIVE_SMOKE_CHECKS
 
 
-@dataclass(frozen=True, slots=True)
-class StorageCorrectnessCheckResult:
-    name: str
-    passed: bool
-    duration_ms: float
-    details: dict[str, object]
-    error: str | None = None
-
-
-class StorageCorrectnessResult:
-    """Result wrapper for the archive-backed storage-correctness scenario."""
-
-    scenario_name = "storage-correctness"
-
-    def __init__(
-        self,
-        *,
-        check_results: list[StorageCorrectnessCheckResult],
-        report_dir: Path | None,
-    ) -> None:
-        self.check_results = check_results
-        self.report_dir = report_dir
-
-    @property
-    def all_passed(self) -> bool:
-        return not self.failed_stages()
-
-    def stage_statuses(self) -> dict[str, OutcomeStatus]:
-        return {
-            result.name: OutcomeStatus.OK if result.passed else OutcomeStatus.ERROR for result in self.check_results
-        }
-
-    def failed_stages(self) -> tuple[str, ...]:
-        return tuple(result.name for result in self.check_results if not result.passed)
-
-
 def run_tier_0() -> dict[str, str]:
     """Run direct archive-smoke checks and return output by check name."""
     checks = get_archive_smoke_checks()
@@ -211,11 +170,7 @@ def list_scenarios(*, as_json: bool) -> int:
             "command": " ".join((sys.executable, *READER_VISUAL_SMOKE_PYTEST_COMMAND[1:])),
             "artifact_count": len(reader_visual_artifact_payloads()),
         },
-        {
-            "name": "storage-correctness",
-            "kind": "archive-storage",
-            "check_count": len(_STORAGE_CORRECTNESS_CHECKS),
-        },
+        storage_correctness_scenario_entry(),
     ]
     payload = {"scenarios": scenarios}
     if as_json:
@@ -322,302 +277,10 @@ def _scenario_payload(result: _ScenarioResult) -> dict[str, object]:
         "ok": not failed_stages,
         "report_dir": str(result.report_dir) if result.report_dir is not None else None,
     }
-    if isinstance(result, StorageCorrectnessResult):
-        payload["checks"] = [
-            {
-                "name": check.name,
-                "passed": check.passed,
-                "duration_ms": round(check.duration_ms, 1),
-                "details": check.details,
-                "error": check.error,
-            }
-            for check in result.check_results
-        ]
+    extra_payload = getattr(result, "extra_payload", None)
+    if callable(extra_payload):
+        payload.update(extra_payload())
     return payload
-
-
-def _parsed_message(provider_id: str, role: Role, text: str, position: int) -> ParsedMessage:
-    return ParsedMessage(
-        provider_message_id=provider_id,
-        role=role,
-        text=text,
-        position=position,
-        variant_index=0,
-        is_active_path=True,
-        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
-    )
-
-
-def _parsed_session(
-    native_id: str,
-    messages: tuple[ParsedMessage, ...],
-    *,
-    title: str,
-    parent_native_id: str | None = None,
-    branch_type: BranchType | None = None,
-) -> ParsedSession:
-    return ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id=native_id,
-        title=title,
-        updated_at="2026-01-01T00:00:00Z",
-        parent_session_provider_id=parent_native_id,
-        branch_type=branch_type,
-        messages=list(messages),
-    )
-
-
-def _storage_archive_root() -> TemporaryDirectory[str]:
-    return TemporaryDirectory(prefix="polylogue-storage-correctness-")
-
-
-def _row_count(conn: sqlite3.Connection, table: str, where: str = "", params: tuple[object, ...] = ()) -> int:
-    clause = f" WHERE {where}" if where else ""
-    row = conn.execute(f"SELECT COUNT(*) FROM {table}{clause}", params).fetchone()
-    return int(row[0] if row is not None else 0)
-
-
-def _storage_idempotent_reingest_check() -> dict[str, object]:
-    session = _parsed_session(
-        "storage-idempotent",
-        (
-            _parsed_message("m0", Role.USER, "idempotent user storage token", 0),
-            _parsed_message("m1", Role.ASSISTANT, "idempotent assistant storage token", 1),
-        ),
-        title="Storage idempotent",
-    )
-    with _storage_archive_root() as temp_root:
-        root = Path(temp_root)
-        with ArchiveStore(root) as archive:
-            first = archive.write_raw_and_parsed_result(
-                session,
-                payload=b'{"session":"storage-idempotent","version":1}',
-                source_path="/scenario/storage-idempotent.json",
-                acquired_at_ms=1_767_000_000_000,
-            )
-            second = archive.write_raw_and_parsed_result(
-                session,
-                payload=b'{"session":"storage-idempotent","version":1}',
-                source_path="/scenario/storage-idempotent-repeat.json",
-                acquired_at_ms=1_767_000_000_001,
-            )
-        with sqlite3.connect(root / "index.db") as conn:
-            conn.row_factory = sqlite3.Row
-            session_row = conn.execute(
-                "SELECT content_hash, raw_id FROM sessions WHERE session_id = ?",
-                (first.session_id,),
-            ).fetchone()
-            if session_row is None:
-                raise AssertionError("idempotent scenario did not persist a session row")
-            derived_counts = {
-                "sessions": _row_count(conn, "sessions", "session_id = ?", (first.session_id,)),
-                "messages": _row_count(conn, "messages", "session_id = ?", (first.session_id,)),
-                "blocks": _row_count(conn, "blocks", "session_id = ?", (first.session_id,)),
-                "message_fts": _row_count(conn, "messages_fts"),
-            }
-        with sqlite3.connect(root / "source.db") as source_conn:
-            raw_count = _row_count(source_conn, "raw_sessions")
-    expected_hash = str(session_content_hash(session))
-    stored_hash = session_row["content_hash"]
-    stored_hash_hex = stored_hash.hex() if isinstance(stored_hash, bytes) else str(stored_hash)
-    if first.content_changed is not True:
-        raise AssertionError("first ingest should write the derived session")
-    if second.content_changed is not False or second.counts["skipped_sessions"] != 1:
-        raise AssertionError(f"repeat ingest should skip unchanged content, got {second.counts}")
-    if derived_counts != {"sessions": 1, "messages": 2, "blocks": 2, "message_fts": 2}:
-        raise AssertionError(f"repeat ingest changed derived row counts: {derived_counts}")
-    if raw_count != 2:
-        raise AssertionError(f"raw acquisition evidence should retain both captures, got {raw_count}")
-    if stored_hash_hex != expected_hash:
-        raise AssertionError("stored content_hash does not match session_content_hash")
-    return {
-        "first_counts": first.counts,
-        "repeat_counts": second.counts,
-        "derived_counts": derived_counts,
-        "raw_sessions": raw_count,
-        "content_hash": stored_hash_hex,
-    }
-
-
-def _storage_fts_trigger_drift_check() -> dict[str, object]:
-    session = _parsed_session(
-        "storage-fts",
-        (_parsed_message("m0", Role.USER, "stable fts repair sentinel", 0),),
-        title="Storage FTS",
-    )
-    with _storage_archive_root() as temp_root:
-        root = Path(temp_root)
-        with ArchiveStore(root) as archive:
-            first = archive.write_raw_and_parsed_result(
-                session,
-                payload=b'{"session":"storage-fts","version":1}',
-                source_path="/scenario/storage-fts.json",
-                acquired_at_ms=1_767_000_000_000,
-            )
-        with sqlite3.connect(root / "index.db") as conn:
-            before = _row_count(conn, "messages_fts")
-            conn.execute("DELETE FROM messages_fts")
-            conn.commit()
-            drifted = _row_count(conn, "messages_fts")
-        with ArchiveStore(root) as archive:
-            repeat = archive.write_raw_and_parsed_result(
-                session,
-                payload=b'{"session":"storage-fts","version":1}',
-                source_path="/scenario/storage-fts-repeat.json",
-                acquired_at_ms=1_767_000_000_001,
-            )
-            search_hits = archive.search_blocks("sentinel")
-        with sqlite3.connect(root / "index.db") as conn:
-            after = _row_count(conn, "messages_fts")
-    if first.content_changed is not True:
-        raise AssertionError("first FTS scenario ingest should write content")
-    if before != 1 or drifted != 0:
-        raise AssertionError(f"FTS drift setup failed: before={before}, drifted={drifted}")
-    if repeat.content_changed is not False or repeat.counts.get("_fts_repair") != 1:
-        raise AssertionError(f"unchanged ingest should repair FTS drift, got {repeat.counts}")
-    if after != 1 or len(search_hits) != 1:
-        raise AssertionError(f"FTS repair did not restore searchable row: after={after}, hits={search_hits}")
-    return {
-        "before_fts_rows": before,
-        "drifted_fts_rows": drifted,
-        "after_fts_rows": after,
-        "repeat_counts": repeat.counts,
-        "search_hits": search_hits,
-    }
-
-
-def _storage_lineage_composition_check() -> dict[str, object]:
-    parent = _parsed_session(
-        "storage-parent",
-        (
-            _parsed_message("p0", Role.USER, "hello", 0),
-            _parsed_message("p1", Role.ASSISTANT, "hi there", 1),
-            _parsed_message("p2", Role.USER, "parent continues alone", 2),
-        ),
-        title="Storage parent",
-    )
-    child = _parsed_session(
-        "storage-child",
-        (
-            _parsed_message("c0", Role.USER, "hello", 0),
-            _parsed_message("c1", Role.ASSISTANT, "hi there", 1),
-            _parsed_message("cx", Role.USER, "child diverges here", 2),
-            _parsed_message("cy", Role.ASSISTANT, "child reply", 3),
-        ),
-        title="Storage child",
-        parent_native_id="storage-parent",
-        branch_type=BranchType.FORK,
-    )
-    parent_grown = _parsed_session(
-        "storage-parent",
-        (
-            _parsed_message("p0", Role.USER, "hello", 0),
-            _parsed_message("p1", Role.ASSISTANT, "hi there", 1),
-            _parsed_message("p2", Role.USER, "parent continues alone", 2),
-            _parsed_message("p3", Role.ASSISTANT, "parent grows later", 3),
-        ),
-        title="Storage parent",
-    )
-    with _storage_archive_root() as temp_root:
-        root = Path(temp_root)
-        with ArchiveStore(root) as archive:
-            parent_id = archive.write_parsed(parent, content_hash=str(session_content_hash(parent)))
-            child_id = archive.write_parsed(child, content_hash=str(session_content_hash(child)))
-            archive.write_parsed(parent_grown, content_hash=str(session_content_hash(parent_grown)))
-            archive.commit()
-        with sqlite3.connect(root / "index.db") as conn:
-            conn.row_factory = sqlite3.Row
-            stored_positions = [
-                int(row["position"])
-                for row in conn.execute(
-                    "SELECT position FROM messages WHERE session_id = ? ORDER BY position",
-                    (child_id,),
-                ).fetchall()
-            ]
-            link = conn.execute(
-                """
-                SELECT resolved_dst_session_id, inheritance, branch_point_message_id
-                FROM session_links
-                WHERE src_session_id = ?
-                """,
-                (child_id,),
-            ).fetchone()
-            envelope = read_archive_session_envelope(conn, child_id)
-            composed_texts = ["".join(block.text or "" for block in message.blocks) for message in envelope.messages]
-    if parent_id != "codex-session:storage-parent":
-        raise AssertionError(f"unexpected parent id: {parent_id}")
-    if stored_positions != [2, 3]:
-        raise AssertionError(f"child should physically store only divergent tail, got {stored_positions}")
-    if link is None:
-        raise AssertionError("prefix-sharing child did not persist a session_links row")
-    if link["resolved_dst_session_id"] != parent_id:
-        raise AssertionError(f"lineage link did not resolve to parent: {dict(link)}")
-    if link["inheritance"] != "prefix-sharing" or not link["branch_point_message_id"]:
-        raise AssertionError(f"lineage link did not capture prefix-sharing branch point: {dict(link)}")
-    expected_texts = ["hello", "hi there", "child diverges here", "child reply"]
-    if composed_texts != expected_texts:
-        raise AssertionError(f"child did not compose the logical transcript: {composed_texts}")
-    return {
-        "parent_id": parent_id,
-        "child_id": child_id,
-        "stored_child_positions": stored_positions,
-        "lineage": dict(link),
-        "composed_texts": composed_texts,
-    }
-
-
-_STORAGE_CORRECTNESS_CHECKS: tuple[tuple[str, Callable[[], dict[str, object]]], ...] = (
-    ("idempotent-reingest", _storage_idempotent_reingest_check),
-    ("fts-trigger-drift", _storage_fts_trigger_drift_check),
-    ("lineage-composition", _storage_lineage_composition_check),
-)
-
-
-def run_storage_correctness(*, report_dir: Path | None) -> StorageCorrectnessResult:
-    """Run archive-backed storage correctness checks."""
-    results: list[StorageCorrectnessCheckResult] = []
-    for name, check in _STORAGE_CORRECTNESS_CHECKS:
-        started = time.monotonic()
-        try:
-            details = check()
-            passed = True
-            error = None
-        except Exception as exc:
-            details = {}
-            passed = False
-            error = f"{type(exc).__name__}: {exc}"
-        results.append(
-            StorageCorrectnessCheckResult(
-                name=name,
-                passed=passed,
-                duration_ms=(time.monotonic() - started) * 1000,
-                details=details,
-                error=error,
-            )
-        )
-    result = StorageCorrectnessResult(check_results=results, report_dir=report_dir)
-    _write_storage_correctness_report(result)
-    return result
-
-
-def _write_storage_correctness_report(result: StorageCorrectnessResult) -> None:
-    if result.report_dir is None:
-        return
-    result.report_dir.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "scenario": result.scenario_name,
-        "checks": [
-            {
-                "name": check.name,
-                "passed": check.passed,
-                "duration_ms": round(check.duration_ms, 1),
-                "details": check.details,
-                "error": check.error,
-            }
-            for check in result.check_results
-        ],
-    }
-    (result.report_dir / "storage-correctness.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def _run_archive_smoke_check(check: ArchiveSmokeCheck) -> ArchiveSmokeCheckResult:

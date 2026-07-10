@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,13 @@ def resolve_execution_command(
     return (replacement, *tail)
 
 
+def _subprocess_command(command: tuple[str, ...]) -> tuple[str, ...]:
+    """Resolve source-checkout-only control-plane tools for subprocess execution."""
+    if command[:1] == ("devtools",):
+        return (sys.executable, "-m", "devtools", *command[1:])
+    return command
+
+
 def run_execution(
     execution: ExecutionSpec,
     *,
@@ -70,11 +78,12 @@ def run_execution(
 ) -> ExecutionResult:
     """Execute one authored execution spec with consistent subprocess semantics."""
     command = resolve_execution_command(execution, binary_overrides=binary_overrides)
+    subprocess_command = _subprocess_command(command)
     command_env = dict(os.environ)
     if env:
         command_env.update(env)
     completed = subprocess.run(
-        list(command),
+        list(subprocess_command),
         capture_output=capture_output,
         cwd=cwd,
         env=command_env,
@@ -84,7 +93,7 @@ def run_execution(
     )
     return ExecutionResult(
         execution=execution,
-        command=command,
+        command=subprocess_command,
         exit_code=completed.returncode,
         stdout=completed.stdout or "",
         stderr=completed.stderr or "",

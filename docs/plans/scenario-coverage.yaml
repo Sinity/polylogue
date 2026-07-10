@@ -90,16 +90,24 @@ families:
       for scenario execution. Supports pytest, CLI, devtools,
       and pipeline-probe execution kinds.
 
-coverage_gaps:
-  - id: scenario.storage-correctness
+  - name: storage_correctness
+    description: Archive-backed storage correctness scenario family
     subject: storage_correctness
-    gap: No dedicated scenario family for storage-layer verification
-    owner: scenario-coverage
-    severity: major
-    declared_at: "2026-05-02"
-    review_after: "2026-08-01"
+    scenario_count: 4
+    location: devtools/storage_correctness_scenario.py
     bead: polylogue-9e5.19
-    next_evidence: devtools lab projections
+    notes: >
+      Realized from the prior scenario.storage-correctness gap.
+      Runs through the devtools lab smoke/lane registry against
+      real ArchiveStore split-tier writes. Covers content-hash
+      idempotency, canonical message FTS trigger drift and production
+      recovery, lineage prefix-sharing composition, and current blob
+      GC invariants. The old blob-lease wording was stale because no
+      production writer populated it. This family instead covers
+      publication/reference survival, gc_generations age/snapshot
+      gating, and typed reclaim evidence.
+
+coverage_gaps:
   - id: scenario.performance
     subject: performance
     gap: No scenario family exercising memory or throughput budgets

@@ -172,25 +172,22 @@ class TestLaneParsing:
 
         assert lane.family == "storage-correctness"
         assert lane.path_targets == (
-            "raw-reparse-loop",
             "raw-archive-ingest-loop",
             "message-fts-readiness-loop",
             "session-query-loop",
         )
         assert lane.artifact_targets == (
-            "source_payload_stream",
             "archive_session_rows",
             "message_source_rows",
             "message_fts",
             "session_query_results",
         )
         assert lane.operation_targets == (
-            "acquire-raw-sessions",
             "ingest-archive-runtime",
             "index-message-fts",
             "query-sessions",
         )
-        assert lane.tags == ("contract", "storage", "scenario", "fts", "lineage")
+        assert lane.tags == ("contract", "storage", "scenario", "fts", "gc", "lineage")
 
     def test_memory_budget_lane_preserves_wrapped_runtime_metadata(self) -> None:
         lane = LANES["memory-budget"]
@@ -528,6 +525,29 @@ class TestLaneAssertions:
         captured = capsys.readouterr()
         assert exit_code == 1
         assert "failed assertion" in captured.out
+
+    def test_run_lane_validates_json_from_stdout_when_stderr_has_runtime_logs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        lane = LaneEntry(
+            name="json-with-logs",
+            description="JSON contract with runtime logs",
+            timeout_s=30,
+            category="contract",
+            execution=polylogue_execution("ops", "doctor", "--format", "json"),
+            assertion=AssertionSpec(stdout_is_valid_json=True),
+        )
+
+        class _Result:
+            exit_code = 0
+            stdout = '{"ok": true}'
+            stderr = "daemon maintenance log\n"
+            output = stdout + stderr
+
+        monkeypatch.setattr("devtools.validation_lane_runtime.run_execution", lambda *_args, **_kwargs: _Result())
+
+        assert run_lane(lane) == 0
 
     def test_live_insights_coverage_provider_lane_uses_insights_entrypoint(self) -> None:
         cmd = build_lane_command(LANES["live-insights-coverage-provider"])
