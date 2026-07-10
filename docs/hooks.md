@@ -146,9 +146,10 @@ polylogue hooks install --harness codex --events recommended
 The command performs a structured, idempotent merge. Existing matcher groups
 and handlers are preserved, and a second identical invocation produces no
 file diff. Use `--dry-run` to inspect the exact JSON diff first. `--events all`
-means every event currently supported by `polylogue-hook` (16 Claude Code and
-6 Codex events), not every event in the harness's larger evolving catalog. A
-comma-separated event list is also accepted.
+means every event in Polylogue's current harness catalog; a comma-separated
+event list is also accepted. Harness catalogs evolve, so `hooks status --json`
+is the authoritative installed-version view rather than a count embedded in
+this document.
 
 Inspect wiring and trailing-seven-day evidence with:
 

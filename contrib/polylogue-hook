@@ -68,15 +68,18 @@ provider_arg = sys.argv[4] or None
 
 # Supported events
 CC_EVENTS = frozenset({
-    "SessionStart", "Setup", "UserPromptSubmit", "PreToolUse",
-    "PostToolUse", "PostToolUseFailure", "PermissionRequest",
-    "PermissionDenied", "Notification", "Elicitation",
-    "ElicitationResult", "CwdChanged", "FileChanged",
-    "WorktreeCreate", "SubagentStart", "Stop",
+    "SessionStart", "Setup", "InstructionsLoaded", "UserPromptSubmit",
+    "UserPromptExpansion", "MessageDisplay", "PreToolUse", "PermissionRequest",
+    "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PermissionDenied",
+    "Notification", "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted",
+    "Stop", "StopFailure", "TeammateIdle", "ConfigChange", "CwdChanged",
+    "FileChanged", "WorktreeCreate", "WorktreeRemove", "PreCompact", "PostCompact",
+    "Elicitation", "ElicitationResult", "SessionEnd",
 })
 CODEX_EVENTS = frozenset({
     "SessionStart", "UserPromptSubmit", "PreToolUse",
-    "PostToolUse", "PermissionRequest", "Stop",
+    "PostToolUse", "PermissionRequest", "PreCompact", "PostCompact",
+    "SubagentStart", "SubagentStop", "Stop",
 })
 ALL_EVENTS = CC_EVENTS | CODEX_EVENTS
 

@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.hooks import hook_main, settings_path
+from polylogue.hooks import CLAUDE_CODE_EVENTS, CODEX_EVENTS, hook_main, resolve_events, settings_path
 
 
 @pytest.fixture
@@ -168,6 +168,20 @@ def test_hook_runtime_provider_override_records_codex_event(
     record = json.loads(sidecar.read_text(encoding="utf-8"))
     assert record["provider"] == "codex"
     assert record["event_type"] == "SessionStart"
+
+
+def test_all_event_catalogs_include_current_harness_lifecycle_edges() -> None:
+    assert resolve_events("claude-code", "all") == CLAUDE_CODE_EVENTS
+    assert {
+        "InstructionsLoaded",
+        "PostToolBatch",
+        "SubagentStop",
+        "WorktreeRemove",
+        "PostCompact",
+        "SessionEnd",
+    } <= set(CLAUDE_CODE_EVENTS)
+    assert resolve_events("codex", "all") == CODEX_EVENTS
+    assert {"PreCompact", "PostCompact", "SubagentStart", "SubagentStop"} <= set(CODEX_EVENTS)
 
 
 def test_status_reports_wired_vs_recommended(isolated_hook_home: Path) -> None:
