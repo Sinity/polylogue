@@ -16,6 +16,7 @@ from polylogue.sources.live.batch_support import _detect_provider_from_path_samp
 from polylogue.sources.parsers import antigravity, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions, iter_source_sessions_with_raw
+from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.blob_store import BlobStore
 
 
@@ -646,6 +647,38 @@ def test_hermes_state_db_source_iterator_captures_raw_blob(tmp_path: Path) -> No
     assert raw.raw_bytes == b""
     assert raw.blob_hash
     assert raw.blob_size and raw.blob_size > 0
+
+
+def test_hermes_configured_directory_discovers_only_its_state_database(tmp_path: Path) -> None:
+    source_root = tmp_path / "hermes"
+    source_root.mkdir()
+    db_path = source_root / "state.db"
+    unrelated_path = source_root / "unrelated.sqlite"
+    _write_hermes_state_db(db_path)
+    with sqlite3.connect(unrelated_path) as conn:
+        conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+
+    hermes_source = Source(name="hermes", path=source_root)
+    rows = list(
+        iter_source_sessions_with_raw(
+            hermes_source,
+            capture_raw=True,
+            blob_root=tmp_path / "blob",
+        )
+    )
+
+    assert _resolve_source_paths(hermes_source) == [db_path]
+    assert [session.provider_session_id.split("@", 1)[0] for _raw, session in rows] == [
+        "hermes-root",
+        "hermes-child",
+    ]
+
+
+def test_unrelated_configured_source_does_not_discover_hermes_sqlite(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    _write_hermes_state_db(db_path)
+
+    assert _resolve_source_paths(Source(name="codex", path=tmp_path)) == []
 
 
 def test_hermes_state_db_source_iterator_snapshots_wal_before_parsing(tmp_path: Path) -> None:

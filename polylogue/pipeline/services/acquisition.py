@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.core.json import JSONDocument
@@ -18,6 +16,7 @@ from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.drive.types import DriveUILike
 from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -66,32 +65,7 @@ class AcquisitionService:
         """Slize B: Populate source_file_cursor stats for all source paths."""
         if source.path is None:
             return
-        supported_extensions = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
-        supported_double_extensions = frozenset({".jsonl.txt"})
-        skip_dirs = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
-
-        def _has_supported_extension(path: Path) -> bool:
-            name_lower = path.name.lower()
-            for ext in supported_double_extensions:
-                if name_lower.endswith(ext):
-                    return True
-            return path.suffix.lower() in supported_extensions
-
-        base = source.path.expanduser()
-        paths: list[Path] = []
-        if base.is_dir():
-            for root, dirs, files in os.walk(base, followlinks=True):
-                dirs[:] = [d for d in dirs if d not in skip_dirs]
-                for filename in files:
-                    file_path = Path(root) / filename
-                    if _has_supported_extension(file_path):
-                        paths.append(file_path)
-        elif base.is_file():
-            paths.append(base)
-        else:
-            return
-
-        for file_path in paths:
+        for file_path in _resolve_source_paths(source):
             try:
                 st = file_path.stat()
                 await self.repository.upsert_source_file_cursor(

@@ -12,6 +12,7 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
 from .assembly import SidecarData, get_assembly_spec
+from .parsers import hermes_state
 
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
@@ -30,13 +31,19 @@ def _has_supported_extension(path: Path) -> bool:
     return path.suffix.lower() in _SUPPORTED_EXTENSIONS
 
 
-def _walk_source_paths(base: Path) -> list[Path]:
+def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
+    if _has_supported_extension(path):
+        return True
+    return provider is Provider.HERMES and hermes_state.looks_like_state_db_path(path)
+
+
+def _walk_source_paths(base: Path, *, provider: Provider = Provider.UNKNOWN) -> list[Path]:
     paths: list[Path] = []
     for root, dirs, files in os.walk(base, followlinks=True):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
         for filename in files:
             file_path = Path(root) / filename
-            if _has_supported_extension(file_path):
+            if _is_supported_source_path(file_path, provider=provider):
                 paths.append(file_path)
     return sorted(paths)
 
@@ -46,7 +53,7 @@ def _resolve_source_paths(source: Source) -> list[Path]:
         return []
     base = source.path.expanduser()
     if base.is_dir():
-        return _walk_source_paths(base)
+        return _walk_source_paths(base, provider=Provider.from_string(source.name))
     if base.is_file():
         return [base]
     return []
@@ -99,6 +106,7 @@ __all__ = [
     "_SUPPORTED_EXTENSIONS",
     "_SKIP_DIRS",
     "_has_supported_extension",
+    "_is_supported_source_path",
     "_resolve_source_paths",
     "_setup_source_walk",
     "_walk_source_paths",
