@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -122,6 +124,8 @@ def _seed_ready_message_fts(index_db: Path) -> None:
 class _MockServer:
     auth_token = ""
     api_host = "127.0.0.1"
+    archive_query_executor = ThreadPoolExecutor(max_workers=1)
+    archive_query_admission = threading.BoundedSemaphore(64)  # generous: not under test
 
 
 class _MockHeaders:

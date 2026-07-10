@@ -33,6 +33,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -116,6 +118,8 @@ REQUIRED_HEALTH_KEYS: frozenset[str] = frozenset(
 class _MockServer:
     auth_token = ""  # local-dev default: no auth needed for these contracts
     api_host = "127.0.0.1"
+    archive_query_executor = ThreadPoolExecutor(max_workers=1)
+    archive_query_admission = threading.BoundedSemaphore(64)  # generous: not under test here
 
 
 class _MockHeaders:
@@ -892,3 +896,121 @@ class TestErrorEnvelopeContract:
         assert "status" not in error_keys
         assert "alerts" not in error_keys
         assert "quick_check" not in error_keys
+
+
+# ---------------------------------------------------------------------------
+# Bounded archive-query executor / timeout contract (polylogue-0hqs)
+# ---------------------------------------------------------------------------
+
+
+class TestBoundedArchiveQueryExecutor:
+    """A stalled archive query returns an honest, bounded error.
+
+    Regression for polylogue-0hqs: a request thread previously blocked
+    forever on a stuck archive query (observed live: 43 threads
+    permanently stuck at the same SQL fetch, daemon RSS/thread count
+    growing unboundedly). ``_sync_run`` now routes through the server's
+    bounded ``archive_query_executor`` and gives up after
+    ``_ARCHIVE_QUERY_TIMEOUT_S``, so a request that cannot complete in
+    bounded time raises rather than hanging the calling thread forever.
+    """
+
+    def test_sync_run_raises_timeout_error_when_handler_exceeds_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import time as time_module
+
+        import polylogue.daemon.http as daemon_http
+
+        monkeypatch.setattr(daemon_http, "_ARCHIVE_QUERY_TIMEOUT_S", 0.05)
+        handler = _make_handler("GET", "/api/facets")
+
+        async def _slow_handler(poly: object) -> object:
+            time_module.sleep(0.5)
+            return {"never": "reached"}
+
+        with pytest.raises(TimeoutError, match="did not complete within"):
+            handler._sync_run(_slow_handler)
+
+    def test_daemon_safe_handler_maps_timeout_to_503_with_retry_after(self) -> None:
+        from polylogue.daemon.http import daemon_safe_handler
+
+        handler = _make_handler("GET", "/api/facets")
+        _, send_json = _capture_responses(handler)
+
+        @daemon_safe_handler
+        def _raises_timeout(self: object) -> None:
+            raise TimeoutError("archive query did not complete within 30s; the daemon may be busy")
+
+        _raises_timeout(handler)
+
+        send_json.assert_called_once()
+        status = send_json.call_args.args[0]
+        payload = send_json.call_args.args[1]
+        kwargs = send_json.call_args.kwargs
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+        assert payload["error"] == "archive_query_timeout"
+        assert kwargs.get("extra_headers") == {"Retry-After": "2"}
+
+    def test_archive_query_executor_is_bounded(self) -> None:
+        """The server caps concurrent archive-query workers, not one-per-connection."""
+        from polylogue.daemon.http import _ARCHIVE_QUERY_MAX_WORKERS
+
+        assert _ARCHIVE_QUERY_MAX_WORKERS > 0
+        assert _ARCHIVE_QUERY_MAX_WORKERS < 100  # sanity: a bound, not effectively unbounded
+
+    def test_saturated_admission_rejects_immediately_without_submitting(self) -> None:
+        """Regression for the CodeRabbit #2628 follow-up: the executor's own
+        work queue is unbounded, so admission must be checked (and rejected)
+        BEFORE submit() -- not after -- once capacity is exhausted, rather
+        than letting requests queue behind an already-wedged backlog.
+        """
+
+        class _SaturatedServer:
+            auth_token = ""
+            api_host = "127.0.0.1"
+            archive_query_executor = ThreadPoolExecutor(max_workers=1)
+            archive_query_admission = threading.BoundedSemaphore(1)
+
+        server = _SaturatedServer()
+        server.archive_query_admission.acquire()  # simulate capacity already fully consumed
+        try:
+            handler = _make_handler("GET", "/api/facets")
+            handler.server = cast("DaemonAPIHTTPServer", server)
+
+            async def _unused_handler(poly: object) -> object:
+                # If admission were checked AFTER (or not at all before)
+                # submit(), this would run on the executor thread and this
+                # assertion would surface as the test failure instead of the
+                # expected fast rejection below -- proving submit() never
+                # happened.
+                raise AssertionError("must not run: admission should reject before submit()")
+
+            with pytest.raises(TimeoutError, match="rejected"):
+                handler._sync_run(_unused_handler)
+        finally:
+            server.archive_query_admission.release()
+
+    def test_admission_is_released_after_successful_query(self) -> None:
+        """A completed query frees its admission slot for the next request."""
+        handler = _make_handler("GET", "/api/facets")
+        admission = handler.server.archive_query_admission
+
+        async def _fast_handler(poly: object) -> object:
+            return {"ok": True}
+
+        result = handler._sync_run(_fast_handler)
+        assert result == {"ok": True}
+        # Semaphore is back to its starting capacity -- acquiring once more
+        # must succeed without blocking.
+        assert admission.acquire(blocking=False)
+        admission.release()
+
+    def test_server_close_shuts_down_archive_query_executor(self) -> None:
+        from polylogue.daemon.http import DaemonAPIHTTPServer
+
+        server = DaemonAPIHTTPServer.__new__(DaemonAPIHTTPServer)
+        server.archive_query_executor = ThreadPoolExecutor(max_workers=1)
+        # Avoid binding a real socket; only server_close()'s own body runs.
+        server.socket = MagicMock()
+        server.server_close()
+        with pytest.raises(RuntimeError, match="cannot schedule new futures"):
+            server.archive_query_executor.submit(lambda: None)

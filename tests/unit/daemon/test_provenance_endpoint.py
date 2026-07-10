@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -40,6 +42,8 @@ if TYPE_CHECKING:
 class _MockServer:
     auth_token = ""
     api_host = "127.0.0.1"
+    archive_query_executor = ThreadPoolExecutor(max_workers=1)
+    archive_query_admission = threading.BoundedSemaphore(64)  # generous: not under test
 
 
 class _MockHeaders:
