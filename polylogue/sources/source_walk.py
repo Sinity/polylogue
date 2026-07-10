@@ -16,6 +16,7 @@ from .parsers import hermes_state
 
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
+_HERMES_SQLITE_EXTENSIONS = frozenset({".db", ".sqlite", ".sqlite3"})
 _SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
 
 
@@ -34,7 +35,11 @@ def _has_supported_extension(path: Path) -> bool:
 def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
     if _has_supported_extension(path):
         return True
-    return provider is Provider.HERMES and hermes_state.looks_like_state_db_path(path)
+    return (
+        provider is Provider.HERMES
+        and path.suffix.lower() in _HERMES_SQLITE_EXTENSIONS
+        and hermes_state.looks_like_state_db_path(path)
+    )
 
 
 def _walk_source_paths(base: Path, *, provider: Provider = Provider.UNKNOWN) -> list[Path]:

@@ -654,7 +654,9 @@ def test_hermes_configured_directory_discovers_only_its_state_database(tmp_path:
     source_root.mkdir()
     db_path = source_root / "state.db"
     unrelated_path = source_root / "unrelated.sqlite"
+    text_path = source_root / "notes.txt"
     _write_hermes_state_db(db_path)
+    text_path.write_text("not a database", encoding="utf-8")
     with sqlite3.connect(unrelated_path) as conn:
         conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
 
