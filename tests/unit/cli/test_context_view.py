@@ -73,7 +73,11 @@ def test_compose_context_preamble_includes_injectable_assertion_claims() -> None
     assert preamble["guidance"]["assertions"] == [
         {
             "kind": "decision",
-            "text": "Keep context claims behind explicit injection.",
+            "trust_class": "quoted",
+            "quoted_evidence": {
+                "format": "quoted-assertion-evidence",
+                "text": "Keep context claims behind explicit injection.",
+            },
             "target_ref": "session:target",
             "scope_ref": "repo:polylogue",
             "evidence_refs": ["target::m1"],

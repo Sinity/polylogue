@@ -6,12 +6,15 @@ import json
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from polylogue.core.assertions import derive_assertion_context_trust
 from polylogue.surfaces.payloads import (
+    AssertionClaimPayload,
     ContextPreamble,
     ContextPreambleAssertionGuidance,
     ContextPreambleGuidance,
     ContextPreambleLineage,
     ContextPreambleProjectState,
+    ContextPreambleQuotedEvidence,
     ContextPreambleSession,
     ContextTrustClass,
 )
@@ -95,17 +98,7 @@ async def build_context_preamble_payload(
                 context_inject=True,
                 limit=20,
             )
-            assertion_guidance = [
-                ContextPreambleAssertionGuidance(
-                    kind=claim.kind,
-                    trust_class=_assertion_guidance_trust_class(claim.context_policy),
-                    text=claim.body_text,
-                    target_ref=claim.target_ref,
-                    scope_ref=claim.scope_ref,
-                    evidence_refs=list(claim.evidence_refs),
-                )
-                for claim in claims
-            ]
+            assertion_guidance = [_assertion_guidance_from_claim(claim) for claim in claims]
         except Exception:
             pass
 
@@ -122,16 +115,39 @@ async def build_context_preamble_payload(
     )
 
 
-def _assertion_guidance_trust_class(context_policy: object) -> ContextTrustClass:
-    if isinstance(context_policy, dict):
-        value = context_policy.get("trust_class")
-        if value == "operator":
-            return "operator"
-        if value == "system":
-            return "system"
-        if value == "quoted":
-            return "quoted"
-    return "quoted"
+# Assertion rows have no authenticated ContextSource registration yet (37t.11),
+# so their arbitrary prose cannot enter this preamble as an operator directive.
+_ASSERTION_GUIDANCE_SOURCE_AUTHORITY: ContextTrustClass = "quoted"
+
+
+def _assertion_guidance_from_claim(claim: AssertionClaimPayload) -> ContextPreambleAssertionGuidance:
+    """Render assertion prose according to its provenance-derived authority."""
+
+    trust_class = derive_assertion_context_trust(
+        author_kind=getattr(claim, "author_kind", None),
+        author_ref=getattr(claim, "author_ref", None),
+        status=getattr(claim, "status", None),
+        context_policy=getattr(claim, "context_policy", None),
+        source_authority=_ASSERTION_GUIDANCE_SOURCE_AUTHORITY,
+    )
+    text = getattr(claim, "body_text", None) or "(empty assertion)"
+    if trust_class == "operator":
+        return ContextPreambleAssertionGuidance(
+            kind=claim.kind.value,
+            trust_class=trust_class,
+            operator_instruction=text,
+            target_ref=claim.target_ref,
+            scope_ref=claim.scope_ref,
+            evidence_refs=list(claim.evidence_refs),
+        )
+    return ContextPreambleAssertionGuidance(
+        kind=claim.kind.value,
+        trust_class=trust_class,
+        quoted_evidence=ContextPreambleQuotedEvidence(text=text),
+        target_ref=claim.target_ref,
+        scope_ref=claim.scope_ref,
+        evidence_refs=list(claim.evidence_refs),
+    )
 
 
 def compose_context_preamble(env: AppEnv, *, session_id: str, related_limit: int = 5) -> str:

@@ -10,10 +10,11 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import TypedDict
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+from polylogue.core.assertions import AssertionContextTrustClass
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import normalize_object_ref_text, normalize_public_ref_text
@@ -238,7 +239,7 @@ class ImportExplainPayload(SurfacePayloadModel):
 
 
 ProviderCompletenessStatus = Literal["complete", "partial", "missing", "proposed"]
-ContextTrustClass: TypeAlias = Literal["operator", "system", "quoted"]
+ContextTrustClass: TypeAlias = AssertionContextTrustClass
 CompletenessItemStatus = Literal["complete", "partial", "missing", "not_applicable"]
 
 
@@ -2609,17 +2610,37 @@ class FacetsResponse(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
 
+class ContextPreambleQuotedEvidence(SurfacePayloadModel):
+    """Inert assertion content with an explicit data boundary."""
+
+    format: Literal["quoted-assertion-evidence"] = "quoted-assertion-evidence"
+    text: str
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
 class ContextPreambleAssertionGuidance(SurfacePayloadModel):
     """Assertion guidance eligible for explicit context injection."""
 
     kind: str
     trust_class: ContextTrustClass = "quoted"
-    text: str | None = None
+    operator_instruction: str | None = None
+    quoted_evidence: ContextPreambleQuotedEvidence | None = None
     target_ref: str | None = None
     scope_ref: str | None = None
     evidence_refs: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def _require_content_matching_trust_class(self) -> ContextPreambleAssertionGuidance:
+        if self.trust_class == "operator":
+            if self.operator_instruction is None or self.quoted_evidence is not None:
+                raise ValueError("operator guidance requires only operator_instruction")
+            return self
+        if self.operator_instruction is not None or self.quoted_evidence is None:
+            raise ValueError("non-operator guidance requires only quoted_evidence")
+        return self
 
 
 class ContextPreambleGuidance(SurfacePayloadModel):
