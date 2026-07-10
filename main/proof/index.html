@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Getting Started — Polylogue</title>
+    <title>Proof Artifacts — Polylogue</title>
     <style>
 
         :root {
@@ -230,7 +230,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </head>
 <body>
     <header class="site-header">
-        <a href="../../" class="logo">poly<span>logue</span></a>
+        <a href="../" class="logo">poly<span>logue</span></a>
         <div class="search-bar">
             <input type="search" placeholder="Search docs..." id="search-input">
         </div>
@@ -245,19 +245,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Start Here</div>
                 
-                <a href="../../demos/" >
+                <a href="../demos/" >
                     Demos
                 </a>
                 
-                <a href="../../findings/claim-vs-evidence/" >
+                <a href="../findings/claim-vs-evidence/" >
                     Finding: Structured Failure
                 </a>
                 
-                <a href="../../proof/" >
+                <a href="./" class="active">
                     Proof Artifacts
                 </a>
                 
-                <a href="../../architecture/sinex/" >
+                <a href="../architecture/sinex/" >
                     Polylogue on Sinex
                 </a>
                 
@@ -266,27 +266,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Documentation</div>
                 
-                <a href="./" class="active">
+                <a href="../docs/getting-started/" >
                     Getting Started
                 </a>
                 
-                <a href="../search/" >
+                <a href="../docs/search/" >
                     Search
                 </a>
                 
-                <a href="../providers/" >
+                <a href="../docs/providers/" >
                     Providers
                 </a>
                 
-                <a href="../insights/" >
+                <a href="../docs/insights/" >
                     Insights
                 </a>
                 
-                <a href="../export/" >
+                <a href="../docs/export/" >
                     Export
                 </a>
                 
-                <a href="../daemon/" >
+                <a href="../docs/daemon/" >
                     Daemon
                 </a>
                 
@@ -295,19 +295,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Reference</div>
                 
-                <a href="../../reference/cli/" >
+                <a href="../reference/cli/" >
                     CLI
                 </a>
                 
-                <a href="../../reference/mcp/" >
+                <a href="../reference/mcp/" >
                     MCP
                 </a>
                 
-                <a href="../../reference/api/" >
+                <a href="../reference/api/" >
                     API
                 </a>
                 
-                <a href="../../reference/config/" >
+                <a href="../reference/config/" >
                     Config
                 </a>
                 
@@ -316,19 +316,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Architecture</div>
                 
-                <a href="../../architecture/rings/" >
+                <a href="../architecture/rings/" >
                     Rings
                 </a>
                 
-                <a href="../../architecture/internals/" >
+                <a href="../architecture/internals/" >
                     Internals
                 </a>
                 
-                <a href="../../architecture/schema/" >
+                <a href="../architecture/schema/" >
                     Schema
                 </a>
                 
-                <a href="../../architecture/contributing/" >
+                <a href="../architecture/contributing/" >
                     Contributing
                 </a>
                 
@@ -337,19 +337,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Verifiability</div>
                 
-                <a href="../../verifiability/coverage/" >
+                <a href="../verifiability/coverage/" >
                     Coverage
                 </a>
                 
-                <a href="../../verifiability/mutation/" >
+                <a href="../verifiability/mutation/" >
                     Mutation
                 </a>
                 
-                <a href="../../verifiability/freshness/" >
+                <a href="../verifiability/freshness/" >
                     Freshness
                 </a>
                 
-                <a href="../../verifiability/drift/" >
+                <a href="../verifiability/drift/" >
                     Drift
                 </a>
                 
@@ -358,27 +358,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Design</div>
                 
-                <a href="../../design/second-brain/" >
+                <a href="../design/second-brain/" >
                     Second Brain
                 </a>
                 
-                <a href="../../design/time-machine/" >
+                <a href="../design/time-machine/" >
                     Time Machine
                 </a>
                 
-                <a href="../../design/project-memory/" >
+                <a href="../design/project-memory/" >
                     Project Memory
                 </a>
                 
-                <a href="../../design/agent-first-mcp/" >
+                <a href="../design/agent-first-mcp/" >
                     Agent-First MCP
                 </a>
                 
-                <a href="../../design/archive-storytelling/" >
+                <a href="../design/archive-storytelling/" >
                     Archive Storytelling
                 </a>
                 
-                <a href="../../design/whole-product/" >
+                <a href="../design/whole-product/" >
                     Whole Product
                 </a>
                 
@@ -387,130 +387,142 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         </nav>
         <main class="content">
             
-<p><a href="https://github.com/Sinity/polylogue/blob/master/docs/README.md">← Back to Docs</a></p>
-<h1>Getting Started</h1>
-<p>A 5-minute quickstart for Polylogue.</p>
-<h2>Enter the source checkout</h2>
-<pre><code class="language-bash">git clone https://github.com/Sinity/polylogue.git
-cd polylogue
-nix develop
-</code></pre>
-<p>Verify:</p>
-<pre><code class="language-bash">polylogue --version
-# polylogue X.Y.Z (commit 0000000)
-</code></pre>
-<p>No packaged PyPI/Homebrew/container install path is documented as current until
-release artifacts exist and have been smoke-tested. From the dev shell,
-Polylogue follows XDG conventions and works without a mandatory config file.</p>
-<h2>First search</h2>
-<p>Point Polylogue at your AI chat exports, then search:</p>
-<pre><code class="language-bash">polylogue &quot;css refactor&quot;
-</code></pre>
-<p>Polylogue is query-first: a quoted expression (as above) or one after the
-<code>find</code> keyword is a full-text search. A bare <em>unquoted</em> word is treated as a
-command name and prints a hint instead of searching (#1842), so quote
-multi-word queries. Results are rendered in your pager.</p>
-<h2>First list</h2>
-<p>List recent sessions with natural-language time filters:</p>
-<pre><code class="language-bash">polylogue --since yesterday read --all
-polylogue --since &quot;last week&quot; --origin claude-code-session read --all
-</code></pre>
-<p>Limit and format:</p>
-<pre><code class="language-bash">polylogue --since 2026-01 --limit 5 read --all --format json
-</code></pre>
-<h2>First cost check</h2>
-<p>Review estimated API costs:</p>
-<pre><code class="language-bash">polylogue analyze --cost-outlook --plan claude-pro
-</code></pre>
-<p>Polylogue includes a 23-model pricing catalog covering Anthropic, OpenAI, and
-Google models. Session-level and provider-wide rollups are available.</p>
-<h2>Running the daemon</h2>
-<p>The daemon watches your chat directories and ingests new sessions in real
-time:</p>
-<pre><code class="language-bash">polylogued run
-</code></pre>
-<p>It auto-discovers Claude Code sessions, Codex sessions, and configured watch
-roots. Optionally exposes a local HTTP API and a browser-capture receiver.</p>
-<p>Check daemon health:</p>
-<pre><code class="language-bash">polylogued status
-</code></pre>
-<h2>Key commands</h2>
+<h1>Polylogue Proof Artifacts</h1>
+<p>This page maps public-facing claims to inspectable artifacts. It is deliberately
+stricter than a feature list: if a claim has no artifact, phrase it as a
+capability under construction instead of as a proven result.</p>
+<h2>Current Claim Map</h2>
 <table>
 <thead>
 <tr>
-<th>Command</th>
-<th>Purpose</th>
+<th>Claim</th>
+<th>Status</th>
+<th>Artifact</th>
+<th>What It Proves</th>
+<th>Caveat</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>polylogue &lt;terms&gt;</code></td>
-<td>Full-text search</td>
+<td>A deterministic private-data-free corpus exercises the advertised demo constructs.</td>
+<td>Fact</td>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/plans/demo-corpus-construct-audit.md">Demo Corpus Construct Audit</a></td>
+<td>A fresh no-daemon seed/verify run produces non-empty coverage for declared source families: five origins, acquired attachments, browser-capture coalescing, lineage, subagent runs, terminal states, synthetic embeddings, and user overlays.</td>
+<td>The corpus proves product behavior and construct coverage, not private archive scale.</td>
 </tr>
 <tr>
-<td><code>polylogue --since &lt;when&gt; read --all</code></td>
-<td>List matched sessions</td>
+<td>Polylogue reads tool outcomes from structure, not assistant prose.</td>
+<td>Fact</td>
+<td><a href="#claim-vs-evidence-failure-follow-up">Claim-vs-Evidence summary</a> and <code>devtools workspace claim-vs-evidence</code></td>
+<td>The failure predicate is normalized tool-result evidence: <code>is_error=1</code> or non-zero <code>exit_code</code>. Assistant prose is only a follow-up acknowledgment signal.</td>
+<td>The live aggregate is private-archive evidence; reproduce the method on the demo archive.</td>
 </tr>
 <tr>
-<td><code>polylogue --origin &lt;origin&gt; analyze --count</code></td>
-<td>Count matched sessions</td>
+<td>Codex token accounting bills disjoint lanes instead of double-counting cached input.</td>
+<td>Fact</td>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/examples/cost-accounting-demo.txt">Cost accounting example</a> and <a href="https://github.com/Sinity/polylogue/blob/master/docs/cost-model.md#codex-disjoint-billing-lanes">Cost Model</a></td>
+<td>The synthetic run uses the real writer and pricing logic to show <code>fresh_input + cache_read = provider input</code>, avoiding the old cached-token double bill.</td>
+<td>Provider prices and subscription equivalence are curated estimates, not billing authority.</td>
 </tr>
 <tr>
-<td><code>polylogue analyze --by origin</code></td>
-<td>Grouped statistics</td>
+<td>Polylogue can analyze agent affordance usage across MCP and tool-call spellings.</td>
+<td>Fact</td>
+<td><a href="#agent-affordance-usage">Agent affordance usage summary</a> and <code>devtools workspace affordance-usage</code></td>
+<td>Family-normalized counts group tool aliases such as Serena, Lynchpin, Polylogue MCP, Context7, and codebase tools across captured action evidence.</td>
+<td>Counts measure captured usage and failure signals, not independent utility or user benefit.</td>
 </tr>
 <tr>
-<td><code>polylogue analyze --cost-outlook --plan claude-pro</code></td>
-<td>Subscription/quota cost outlook</td>
-</tr>
-<tr>
-<td><code>polylogue --id &lt;id&gt; read</code></td>
-<td>Export one session</td>
-</tr>
-<tr>
-<td><code>polylogue --since yesterday read --all</code></td>
-<td>Batch export</td>
-</tr>
-<tr>
-<td><code>polylogued run</code></td>
-<td>Start the daemon</td>
-</tr>
-<tr>
-<td><code>polylogued status</code></td>
-<td>Daemon health check</td>
-</tr>
-<tr>
-<td><code>polylogue --id &lt;id&gt; read --view transcript</code></td>
-<td>Display full session</td>
+<td>Agents with reviewed memory should recover better.</td>
+<td>Promise</td>
+<td>Pending uplift experiment (<code>polylogue-cfk</code>)</td>
+<td>The substrate can compile context bundles, judged notes, and resume briefs.</td>
+<td>Do not claim measured performance uplift until the paired experiment is complete.</td>
 </tr>
 </tbody>
 </table>
-<h2>Configuration</h2>
-<p>No config file is required. Sensible defaults cover everything.</p>
-<p>Polylogue auto-discovers these directories:</p>
-<pre><code>~/.claude/projects/       Claude Code sessions
-~/.codex/sessions/         Codex sessions
+<h2>Demo Corpus</h2>
+<p>Regenerate the construct audit:</p>
+<pre><code class="language-bash">devtools render demo-corpus-datasheet
+devtools render all --check
 </code></pre>
-<p>Custom watch roots can be given to the daemon with <code>--root</code>. For an explicit
-one-time import request, keep the daemon running and use:</p>
-<pre><code class="language-bash">polylogue import /path/to/exports
-</code></pre>
-<h2>Next steps</h2>
+<p>The current tracked datasheet reports:</p>
 <ul>
-<li><a href="../search/">Search reference</a> -- query grammar, filters, verbs, output formats</li>
-<li><a href="../daemon/">Daemon guide</a> -- <code>polylogued</code>, HTTP API, systemd integration</li>
-<li><a href="../insights/">Insights</a> -- session profiles, work events, phases, costs</li>
-<li><a href="../export/">Export</a> -- markdown, JSONL, and query-set reads</li>
-<li><a href="../../architecture/schema/">Schema</a> -- database tables, FTS5, embeddings, versioning</li>
-<li><a href="../providers/">Providers</a> -- provider detection, parser locations</li>
-<li><a href="../../reference/cli/">CLI Reference</a> -- generated command reference</li>
-<li><a href="../../reference/config/">Configuration</a> -- XDG paths and environment variables</li>
+<li>11 sessions</li>
+<li>43 indexed messages</li>
+<li>87 blocks</li>
+<li>11 session profiles</li>
+<li>12 run rows</li>
+<li>37 observed-event rows</li>
+<li>12 context-snapshot rows</li>
+<li>five origins: <code>aistudio-drive</code>, <code>chatgpt-export</code>, <code>claude-ai-export</code>,
+<code>claude-code-session</code>, <code>codex-session</code></li>
+<li>no residual declared-construct gaps</li>
 </ul>
+<h2>Claim-vs-Evidence Failure Follow-Up</h2>
+<p>The current private-archive demo shelf carries a public-safe aggregate summary
+generated on 2026-07-04 against archive schema v24. It inspected a bounded,
+origin-stratified sample of 5,000 structured failures from a frame of 42,033
+structured failures:</p>
+<ul>
+<li>acknowledged next turn: 420</li>
+<li>silent-proceed next turn: 1,205</li>
+<li>ambiguous next turn: 3,375</li>
+<li>silent lower bound: 24.1%</li>
+<li>acknowledged within the next three assistant turns: 722</li>
+<li>marker calibration rows: 50 labeled</li>
+<li>acknowledged-marker precision: 100.0%</li>
+<li>acknowledged-marker recall: 84.2%</li>
+</ul>
+<p>Regenerate the local packet:</p>
+<pre><code class="language-bash">devtools workspace claim-vs-evidence \
+  --limit 5000 \
+  --out-dir .agent/demos/claim-vs-evidence \
+  --json
+devtools workspace demo-shelf
+</code></pre>
+<p>Reproduce the method without private data:</p>
+<pre><code class="language-bash">export POLYLOGUE_ARCHIVE_ROOT=/realm/tmp/polylogue-claim-vs-evidence-demo
+polylogue demo tour --out-dir /realm/tmp/polylogue-demo-tour --force
+polylogue demo seed --root &quot;$POLYLOGUE_ARCHIVE_ROOT&quot; --force --with-overlays --format json
+polylogue demo verify --root &quot;$POLYLOGUE_ARCHIVE_ROOT&quot; --require-overlays --format json
+devtools workspace claim-vs-evidence \
+  --archive-root &quot;$POLYLOGUE_ARCHIVE_ROOT&quot; \
+  --limit 5000 \
+  --out-dir /realm/tmp/polylogue-claim-vs-evidence-repro \
+  --json
+</code></pre>
+<p>The current one-command tour packet is committed under
+<a href="https://github.com/Sinity/polylogue/blob/master/docs/examples/demo-tour"><code>docs/examples/demo-tour/</code></a>: <code>report.md</code>,
+<code>transcript.txt</code>, command outputs, <code>recording.tape</code>, <code>demo-tour.gif</code>, and the
+<code>uvx --from &lt;repo&gt;</code> install-path timing note.</p>
+<h2>Agent Affordance Usage</h2>
+<p>The current demo shelf includes a recent-session-window affordance report. Top
+families in that window:</p>
+<ul>
+<li><code>lynchpin</code>: 32 actions across 9 raw tool names; 3 distinct sessions; errors 0.</li>
+<li><code>polylogue</code>: 21 actions across 10 raw tool names; 6 distinct sessions; errors 3.</li>
+<li><code>serena</code>: 15 actions across 3 raw tool names; 4 distinct sessions; errors 0.</li>
+</ul>
+<p>Regenerate:</p>
+<pre><code class="language-bash">devtools workspace affordance-usage \
+  --out-dir .agent/demos/agent-affordance-usage \
+  --json
+devtools workspace demo-shelf
+</code></pre>
+<p>Use this as product-development evidence, not as a leaderboard. It answers
+&quot;which affordances are actually being used, with what structured failure
+signals?&quot; A utility judgment still requires reading the session context around
+the samples.</p>
+<h2>Release Readiness</h2>
+<p>The release gate is tracked separately at
+<a href="https://github.com/Sinity/polylogue/blob/master/docs/plans/release-readiness-gate.md">Release Readiness Gate</a>. Before a public
+release, the README claims, generated docs, demo corpus, visual evidence, and
+packaging checks must all agree with that gate.</p>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-    <a href="../../architecture/sinex/">← Polylogue on Sinex</a>
-    <a href="../search/">Search →</a>
+    <a href="../findings/claim-vs-evidence/">← Finding: Structured Failure Follow-Up</a>
+    <a href="../architecture/sinex/">Polylogue on Sinex →</a>
 </nav>
 
         </main>

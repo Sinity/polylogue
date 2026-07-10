@@ -111,8 +111,18 @@
         .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
         .site-footer a { color: var(--text-secondary); }
         .home-hero { text-align: center; padding: 4rem 0 3rem; }
-        .home-hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
-        .home-hero .tagline { font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 2rem; }
+        .home-hero .eyebrow { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); margin-bottom: 0.8rem; }
+        .home-hero h1 { font-size: clamp(2.4rem, 7vw, 4.5rem); line-height: 1.03; max-width: 820px; margin: 0 auto 1rem; letter-spacing: -0.04em; }
+        .home-hero .tagline { font-size: 1.18rem; color: var(--text-secondary); max-width: 760px; margin: 0 auto 1.3rem; }
+        .hero-command { margin: 0 auto 1rem; }
+        .hero-command code { display: inline-block; padding: 0.65rem 0.9rem; border: 1px solid var(--border); background: var(--bg-secondary); box-shadow: 0 10px 30px var(--shadow); }
+        .hero-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 0.45rem 1.2rem; margin: 0 auto 1.7rem; color: var(--text-tertiary); font-size: 0.8rem; }
+        .hero-stats strong { color: var(--text-primary); font-size: 0.92rem; margin-right: 0.18rem; }
+        .proof-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0 2rem; text-align: left; }
+        .proof-card { background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary)); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem; min-height: 155px; }
+        .proof-card strong { display: block; font-size: 1rem; margin: 0.35rem 0 0.5rem; }
+        .proof-card p { color: var(--text-secondary); font-size: 0.9rem; margin: 0; }
+        .proof-label { color: var(--accent); font-size: 0.73rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
         .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
         .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
         .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
@@ -121,7 +131,8 @@
         @media (max-width: 768px) {
             .site-nav { display: none; }
             .content { padding: 1.5rem 1rem; }
-            .home-hero h1 { font-size: 2rem; }
+            .home-hero h1 { font-size: 2.35rem; }
+            .proof-grid { grid-template-columns: 1fr; }
         }
         @media print {
             .site-header, .site-nav, .site-footer { display: none; }
@@ -230,6 +241,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     </header>
     <div class="page-layout">
         <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Start Here</div>
+                
+                <a href="../../demos/" >
+                    Demos
+                </a>
+                
+                <a href="../../findings/claim-vs-evidence/" >
+                    Finding: Structured Failure
+                </a>
+                
+                <a href="../../proof/" >
+                    Proof Artifacts
+                </a>
+                
+                <a href="../../architecture/sinex/" >
+                    Polylogue on Sinex
+                </a>
+                
+            </div>
             
             <div class="nav-section">
                 <div class="nav-section-title">Documentation</div>
@@ -490,7 +522,7 @@ non-technical audiences.</li>
         </main>
     </div>
     <footer class="site-footer">
-        <span>Polylogue — your AI memory</span>
+        <span>Polylogue — the flight recorder for AI work</span>
         <a href="https://github.com/Sinity/polylogue">GitHub</a>
     </footer>
     <script>

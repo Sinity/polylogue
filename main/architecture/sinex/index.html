@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Getting Started — Polylogue</title>
+    <title>Polylogue on Sinex — Polylogue</title>
     <style>
 
         :root {
@@ -257,7 +257,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
                     Proof Artifacts
                 </a>
                 
-                <a href="../../architecture/sinex/" >
+                <a href="./" class="active">
                     Polylogue on Sinex
                 </a>
                 
@@ -266,27 +266,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Documentation</div>
                 
-                <a href="./" class="active">
+                <a href="../../docs/getting-started/" >
                     Getting Started
                 </a>
                 
-                <a href="../search/" >
+                <a href="../../docs/search/" >
                     Search
                 </a>
                 
-                <a href="../providers/" >
+                <a href="../../docs/providers/" >
                     Providers
                 </a>
                 
-                <a href="../insights/" >
+                <a href="../../docs/insights/" >
                     Insights
                 </a>
                 
-                <a href="../export/" >
+                <a href="../../docs/export/" >
                     Export
                 </a>
                 
-                <a href="../daemon/" >
+                <a href="../../docs/daemon/" >
                     Daemon
                 </a>
                 
@@ -316,19 +316,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Architecture</div>
                 
-                <a href="../../architecture/rings/" >
+                <a href="../rings/" >
                     Rings
                 </a>
                 
-                <a href="../../architecture/internals/" >
+                <a href="../internals/" >
                     Internals
                 </a>
                 
-                <a href="../../architecture/schema/" >
+                <a href="../schema/" >
                     Schema
                 </a>
                 
-                <a href="../../architecture/contributing/" >
+                <a href="../contributing/" >
                     Contributing
                 </a>
                 
@@ -387,130 +387,141 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         </nav>
         <main class="content">
             
-<p><a href="https://github.com/Sinity/polylogue/blob/master/docs/README.md">← Back to Docs</a></p>
-<h1>Getting Started</h1>
-<p>A 5-minute quickstart for Polylogue.</p>
-<h2>Enter the source checkout</h2>
-<pre><code class="language-bash">git clone https://github.com/Sinity/polylogue.git
-cd polylogue
-nix develop
-</code></pre>
-<p>Verify:</p>
-<pre><code class="language-bash">polylogue --version
-# polylogue X.Y.Z (commit 0000000)
-</code></pre>
-<p>No packaged PyPI/Homebrew/container install path is documented as current until
-release artifacts exist and have been smoke-tested. From the dev shell,
-Polylogue follows XDG conventions and works without a mandatory config file.</p>
-<h2>First search</h2>
-<p>Point Polylogue at your AI chat exports, then search:</p>
-<pre><code class="language-bash">polylogue &quot;css refactor&quot;
-</code></pre>
-<p>Polylogue is query-first: a quoted expression (as above) or one after the
-<code>find</code> keyword is a full-text search. A bare <em>unquoted</em> word is treated as a
-command name and prints a hint instead of searching (#1842), so quote
-multi-word queries. Results are rendered in your pager.</p>
-<h2>First list</h2>
-<p>List recent sessions with natural-language time filters:</p>
-<pre><code class="language-bash">polylogue --since yesterday read --all
-polylogue --since &quot;last week&quot; --origin claude-code-session read --all
-</code></pre>
-<p>Limit and format:</p>
-<pre><code class="language-bash">polylogue --since 2026-01 --limit 5 read --all --format json
-</code></pre>
-<h2>First cost check</h2>
-<p>Review estimated API costs:</p>
-<pre><code class="language-bash">polylogue analyze --cost-outlook --plan claude-pro
-</code></pre>
-<p>Polylogue includes a 23-model pricing catalog covering Anthropic, OpenAI, and
-Google models. Session-level and provider-wide rollups are available.</p>
-<h2>Running the daemon</h2>
-<p>The daemon watches your chat directories and ingests new sessions in real
-time:</p>
-<pre><code class="language-bash">polylogued run
-</code></pre>
-<p>It auto-discovers Claude Code sessions, Codex sessions, and configured watch
-roots. Optionally exposes a local HTTP API and a browser-capture receiver.</p>
-<p>Check daemon health:</p>
-<pre><code class="language-bash">polylogued status
-</code></pre>
-<h2>Key commands</h2>
+<h1>Polylogue on Sinex</h1>
+<h2>Status</h2>
+<p>The full Sinex-backed architecture described here is a target, not the current implementation.</p>
+<p>Today, Polylogue is SQLite-native and can emit a low-volume bridge event to Sinex containing session metadata such as identity, origin, content hash, message count, model, and optional cost. The current bridge does not make Sinex the authority for complete transcript content or Polylogue user state.</p>
+<p>The maximal target is deliberately stronger:</p>
+<blockquote>
+<p><strong>In Sinex-backed mode, Sinex stores the durable provider-native and normalized transcript evidence, Polylogue-domain history, judgments, lifecycle, context deliveries, and model effects. Polylogue remains the AI-work ontology, normalization/composition kernel, query layer, and product. SQLite remains the standalone store or a local/offline projection and outbox.</strong></p>
+</blockquote>
+<p>This direction supersedes a metadata-only bridge as the ultimate architecture. It does not imply that the implementation or rebuild proof already exists.</p>
+<h2>Division of responsibility</h2>
 <table>
 <thead>
 <tr>
-<th>Command</th>
-<th>Purpose</th>
+<th>Concern</th>
+<th>Polylogue</th>
+<th>Sinex</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>polylogue &lt;terms&gt;</code></td>
-<td>Full-text search</td>
+<td>Provider formats</td>
+<td>Parsing and AI-session normalization semantics</td>
+<td>Durable provider-native material</td>
 </tr>
 <tr>
-<td><code>polylogue --since &lt;when&gt; read --all</code></td>
-<td>List matched sessions</td>
+<td>Sessions, messages, blocks, tools</td>
+<td>Domain authority and product behavior</td>
+<td>Durable event/material backend and scalable projections</td>
 </tr>
 <tr>
-<td><code>polylogue --origin &lt;origin&gt; analyze --count</code></td>
-<td>Count matched sessions</td>
+<td>Forks, continuations, subagents, compaction</td>
+<td>Logical composition semantics</td>
+<td>Persistence of typed relationships and replay history</td>
 </tr>
 <tr>
-<td><code>polylogue analyze --by origin</code></td>
-<td>Grouped statistics</td>
+<td>Physical versus logical accounting</td>
+<td>Domain calculations and user-facing views</td>
+<td>Durable usage observations and projection substrate</td>
 </tr>
 <tr>
-<td><code>polylogue analyze --cost-outlook --plan claude-pro</code></td>
-<td>Subscription/quota cost outlook</td>
+<td>Assertions, lessons, judgments, context policy</td>
+<td>AI-work lifecycle and UX</td>
+<td>Durable authority, retention, and cross-domain judgment substrate</td>
 </tr>
 <tr>
-<td><code>polylogue --id &lt;id&gt; read</code></td>
-<td>Export one session</td>
+<td>Context compilation</td>
+<td>Selection, trust, budget, omissions, delivery manifest</td>
+<td>Ambient evidence, coverage state, and model-effect ledger</td>
 </tr>
 <tr>
-<td><code>polylogue --since yesterday read --all</code></td>
-<td>Batch export</td>
+<td>Terminal, Git, browser, filesystem, desktop</td>
+<td>Correlation and rendering when relevant</td>
+<td>Source and evidence authority</td>
 </tr>
 <tr>
-<td><code>polylogued run</code></td>
-<td>Start the daemon</td>
+<td>Standalone operation</td>
+<td>SQLite authority</td>
+<td>Not required</td>
 </tr>
 <tr>
-<td><code>polylogued status</code></td>
-<td>Daemon health check</td>
-</tr>
-<tr>
-<td><code>polylogue --id &lt;id&gt; read --view transcript</code></td>
-<td>Display full session</td>
+<td>Backed operation</td>
+<td>SQLite edge projection, cache, UI state, offline outbox</td>
+<td>Durable authority</td>
 </tr>
 </tbody>
 </table>
-<h2>Configuration</h2>
-<p>No config file is required. Sensible defaults cover everything.</p>
-<p>Polylogue auto-discovers these directories:</p>
-<pre><code>~/.claude/projects/       Claude Code sessions
-~/.codex/sessions/         Codex sessions
-</code></pre>
-<p>Custom watch roots can be given to the daemon with <code>--root</code>. For an explicit
-one-time import request, keep the daemon running and use:</p>
-<pre><code class="language-bash">polylogue import /path/to/exports
-</code></pre>
-<h2>Next steps</h2>
+<p>The rule is:</p>
+<blockquote>
+<p><strong>Sinex owns durable persistence and evidentiary lifecycle. Polylogue owns AI-work semantics and product behavior.</strong></p>
+</blockquote>
+<h2>Why store both raw and normalized transcripts</h2>
+<p>Storing only provider-native files would preserve bytes but force every consumer to understand unstable vendor formats. Storing only normalized messages would prevent auditing and reinterpretation when parsers change.</p>
+<p>The target therefore retains:</p>
+<ol>
+<li>provider-native archives, rollout files, browser payloads, hook records, attachments, and usage exports;</li>
+<li>immutable, bounded Polylogue-normalized segments;</li>
+<li>durable observations that point to exact material records;</li>
+<li>revision manifests that expose complete versus partial imports;</li>
+<li>rebuildable PostgreSQL and SQLite projections.</li>
+</ol>
+<h2>Identity contract</h2>
+<p>Sinex event IDs identify a particular admitted interpretation and may change on replay. Polylogue refs must remain stable across replay and resegmentation.</p>
+<p>The combined model needs separate identities for:</p>
 <ul>
-<li><a href="../search/">Search reference</a> -- query grammar, filters, verbs, output formats</li>
-<li><a href="../daemon/">Daemon guide</a> -- <code>polylogued</code>, HTTP API, systemd integration</li>
-<li><a href="../insights/">Insights</a> -- session profiles, work events, phases, costs</li>
-<li><a href="../export/">Export</a> -- markdown, JSONL, and query-set reads</li>
-<li><a href="../../architecture/schema/">Schema</a> -- database tables, FTS5, embeddings, versioning</li>
-<li><a href="../providers/">Providers</a> -- provider detection, parser locations</li>
-<li><a href="../../reference/cli/">CLI Reference</a> -- generated command reference</li>
-<li><a href="../../reference/config/">Configuration</a> -- XDG paths and environment variables</li>
+<li>stable Polylogue domain object;</li>
+<li>domain content/semantic revision;</li>
+<li>Sinex interpretation event;</li>
+<li>exact source-material occurrence.</li>
 </ul>
+<p>A content hash, byte offset, or Sinex event UUID alone is not a stable message identity.</p>
+<h2>Lineage is not derivation provenance</h2>
+<p>A Polylogue continuation, fork, copied prefix, subagent, or compaction boundary is a domain relationship. Sinex derivation provenance means that one interpretation was computed from upstream events.</p>
+<p>The integration must not encode session topology as derivation ancestry. This is essential for replay, logical accounting, and safe deletion of shared-prefix evidence.</p>
+<h2>Complete revision visibility</h2>
+<p>A transcript revision can contain thousands of related records. The target ingress protocol needs:</p>
+<ul>
+<li>a revision or batch ID;</li>
+<li>a manifest and content digests;</li>
+<li>expected material/event counts;</li>
+<li>settlement state;</li>
+<li>a final commit frontier;</li>
+<li>retry and partial-state semantics.</li>
+</ul>
+<p>A reader should see either the previous complete revision or the new complete revision, not a half-imported session presented as complete.</p>
+<h2>PostgreSQL and SQLite are complementary</h2>
+<p>A backed deployment can maintain Polylogue-domain PostgreSQL projections for shared/server reads while retaining SQLite for:</p>
+<ul>
+<li>standalone operation;</li>
+<li>offline use;</li>
+<li>local FTS and vector acceleration;</li>
+<li>downloaded material cache;</li>
+<li>UI state;</li>
+<li>projection watermarks;</li>
+<li>a durable offline-write outbox;</li>
+<li>deterministic tests and demos.</li>
+</ul>
+<p>No irreplaceable transcript, judgment, handoff, or context-delivery state should remain silently SQLite-only in backed mode.</p>
+<h2>Decisive proof</h2>
+<p>The architecture becomes real when the following succeeds:</p>
+<pre><code class="language-text">1. Import provider-native and normalized material into Sinex.
+2. Use Polylogue normally and record stable refs.
+3. Delete every rebuildable Polylogue SQLite tier.
+4. Run a rebuild from Sinex.
+5. Compare sessions, messages, blocks, topology, usage, assertions, context deliveries, and refs.
+6. Explain every difference.
+7. Rerun the flagship demos.
+</code></pre>
+<p>Until that proof exists, public wording must say “target,” “program,” or “Sinex-backed direction,” not “current backend.”</p>
+<h2>Roadmap authority</h2>
+<p>The owning Sinex program is <code>sinex-4j2</code>. Related Polylogue decisions that make a metadata-only bridge permanent should be superseded by a new Beads decision under the maximal direction. GitHub Issues are not roadmap authority for either project.</p>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-    <a href="../../architecture/sinex/">← Polylogue on Sinex</a>
-    <a href="../search/">Search →</a>
+    <a href="../../proof/">← Proof Artifacts</a>
+    <a href="../../docs/getting-started/">Getting Started →</a>
 </nav>
 
         </main>
