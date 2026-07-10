@@ -17,7 +17,7 @@ from typing import cast
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.topology.edge import TopologyEdgeType, branch_type_to_edge_type
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
-from polylogue.core.enums import BlockType, PasteBoundary, SessionKind
+from polylogue.core.enums import BlockType, PasteBoundary, SessionEventType, SessionKind, enum_values
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
@@ -47,6 +47,7 @@ from polylogue.storage.search.query_support import normalize_fts5_query
 logger = get_logger(__name__)
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_MATERIALIZED_SESSION_EVENT_TYPES = frozenset(enum_values(SessionEventType))
 
 
 @dataclass(frozen=True, slots=True)
@@ -2538,7 +2539,7 @@ def _write_session_events(
     provider_usage_rows: list[tuple[object, ...]] = []
     for event in events:
         source_message_id = by_native_id.get(event.source_message_provider_id or "")
-        if event.event_type in {"compaction", "capture_gap"}:
+        if event.event_type in _MATERIALIZED_SESSION_EVENT_TYPES:
             session_event_rows.append(
                 (
                     session_id,
@@ -2546,6 +2547,7 @@ def _write_session_events(
                     position,
                     _sqlite_text(event.event_type),
                     _sqlite_text(_event_summary(event) or ""),
+                    _json_dumps(event.payload),
                     _timestamp_ms(event.timestamp),
                 ),
             )
@@ -2581,8 +2583,8 @@ def _write_session_events(
         conn.executemany(
             """
             INSERT OR REPLACE INTO session_events (
-                session_id, source_message_id, position, event_type, summary, occurred_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                session_id, source_message_id, position, event_type, summary, payload_json, occurred_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             session_event_rows,
         )

@@ -108,6 +108,17 @@ class SessionKind(PolylogueStrEnum):
             return cls.STANDARD
 
 
+class SessionEventType(PolylogueStrEnum):
+    """Closed vocabulary for generic timeline events persisted in index.db."""
+
+    COMPACTION = "compaction"
+    CAPTURE_GAP = "capture_gap"
+    HERMES_IDENTITY = "hermes_identity"
+    HERMES_SESSION_METADATA = "hermes_session_metadata"
+    HERMES_MESSAGE_STATE = "hermes_message_state"
+    REWIND = "rewind"
+
+
 class Role(PolylogueStrEnum):
     """Canonical session roles."""
 
@@ -483,6 +494,7 @@ __all__ = [
     "PolylogueStrEnum",
     "Provider",
     "Role",
+    "SessionEventType",
     "SemanticBlockType",
     "TitleSource",
     "TopologyEdgeStatus",

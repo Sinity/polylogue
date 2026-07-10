@@ -49,6 +49,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     upsert_session_work_event,
     write_parsed_session_to_archive,
 )
+from polylogue.storage.sqlite.queries.session_events import sync_session_events_batch
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -1066,6 +1067,45 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             "network_policy": None,
             "observed_at_ms": 1_767_225_603_000,
         },
+    ]
+
+
+def test_archive_tiers_writer_round_trips_typed_session_event_payloads(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.HERMES,
+        provider_session_id="hermes-events-1",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="",
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="hermes_identity",
+                payload={"raw_session_id": "raw-1", "profile_key": "profile-a"},
+            ),
+            ParsedSessionEvent(
+                event_type="hermes_message_state",
+                source_message_provider_id="m1",
+                payload={"state": "rewound", "active": False, "compacted": False},
+            ),
+            ParsedSessionEvent(
+                event_type="rewind",
+                payload={"summary": "Hermes session was rewound", "rewind_count": 2},
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    records = sync_session_events_batch(conn, [session_id])[session_id]
+    assert [(record.event_type, record.payload) for record in records] == [
+        ("hermes_identity", {"profile_key": "profile-a", "raw_session_id": "raw-1"}),
+        ("hermes_message_state", {"active": False, "compacted": False, "state": "rewound"}),
+        ("rewind", {"rewind_count": 2, "summary": "Hermes session was rewound"}),
     ]
 
 

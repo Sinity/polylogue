@@ -13,6 +13,7 @@ from polylogue.core.enums import (
     Origin,
     PasteBoundary,
     Role,
+    SessionEventType,
     SessionKind,
     WebConstructType,
 )
@@ -33,7 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 29
+INDEX_SCHEMA_VERSION = 30
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -498,8 +499,9 @@ CREATE TABLE IF NOT EXISTS session_events (
     session_id        TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     source_message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
     position          INTEGER NOT NULL CHECK(position >= 0),
-    event_type        TEXT NOT NULL CHECK(event_type IN ('compaction', 'capture_gap')),
+    event_type        TEXT NOT NULL CHECK ({check("event_type", SessionEventType)}),
     summary           TEXT NOT NULL,
+    payload_json      TEXT NOT NULL DEFAULT '{{}}' CHECK ({json_object_check("payload_json")}),
     occurred_at_ms    INTEGER,
     PRIMARY KEY(session_id, position)
 ) STRICT;
