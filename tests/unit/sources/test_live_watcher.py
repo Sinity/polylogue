@@ -34,7 +34,7 @@ from polylogue.sources.live.batch import (
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
-from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.runtime import RawSessionRecord
 from tests.infra.frozen_clock import FrozenClock
 
@@ -670,19 +670,19 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
     )
 
     calls: list[str] = []
-    original_write_from_path = BlobStore.write_from_path
+    original_prepare_from_path = BlobStore.prepare_from_path
 
-    def spy_write_from_path(
+    def spy_prepare_from_path(
         store: BlobStore, path: Path, *, heartbeat: Callable[[], None] | None = None
-    ) -> tuple[str, int]:
+    ) -> PreparedBlob:
         calls.append(f"path:{path.name}")
-        return original_write_from_path(store, path, heartbeat=heartbeat)
+        return original_prepare_from_path(store, path, heartbeat=heartbeat)
 
-    def fail_write_from_bytes(_store: object, _payload: bytes) -> tuple[str, int]:
+    def fail_prepare_from_bytes(_store: object, _payload: bytes) -> PreparedBlob:
         raise AssertionError("large live full ingest should stream from path")
 
-    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_path", spy_write_from_path)
-    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_bytes", fail_write_from_bytes)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_path", spy_prepare_from_path)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_bytes", fail_prepare_from_bytes)
 
     result = await processor._ingest_full_paths([source_path], source_name="projects")
 
@@ -1608,7 +1608,6 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
         assert append_metrics.full_file_count == 0
         assert {
             "append.archive_open",
-            "append.blob_write",
             "append.index.blocks",
             "append.index_parsed_write",
             "append.index.messages",
