@@ -47,6 +47,12 @@ def _write_minimal_hermes_state(path: Path) -> None:
                 billing_provider TEXT,
                 billing_base_url TEXT,
                 billing_mode TEXT,
+                user_id TEXT,
+                handoff_state TEXT,
+                handoff_platform TEXT,
+                handoff_error TEXT,
+                archived INTEGER,
+                rewind_count INTEGER,
                 title TEXT
             );
             CREATE TABLE messages (
@@ -65,18 +71,26 @@ def _write_minimal_hermes_state(path: Path) -> None:
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                 reasoning_tokens, api_call_count, estimated_cost_usd, actual_cost_usd,
                 cost_status, cost_source, pricing_version, billing_provider,
-                billing_base_url, billing_mode, title
+                billing_base_url, billing_mode, user_id, handoff_state,
+                handoff_platform, handoff_error, archived, rewind_count, title
             ) VALUES (
                 'shared-session', 'hermes', 'test-model', '{}', NULL, 1775000000.0, 1775000002.0,
-                10, 20, 3, 4, 5, 2, 0.002, 0.0015,
+                0, 0, 0, 0, 0, 2, 0.002, 0.0015,
                 'estimated', 'litellm', '2026-07-10', 'openrouter',
-                'https://openrouter.ai/api/v1', 'metered', 'Shared bytes'
+                'https://openrouter.ai/api/v1', 'metered', 'hermes-user', 'complete',
+                'cli', NULL, 0, 2, 'Shared bytes'
             );
             INSERT INTO messages (
                 session_id, role, content, timestamp, tool_calls, observed, active, compacted
-            ) VALUES (
-                'shared-session', 'user', 'same material', 1775000001.0, NULL, 0, 1, 0
-            );
+            ) VALUES
+                ('shared-session', 'user', 'active material', 1775000001.0, NULL, 0, 1, 0),
+                ('shared-session', 'user', '', 1775000001.1, NULL, 0, 1, 0),
+                ('shared-session', 'user', 'observed material', 1775000001.2, NULL, 1, 1, 0),
+                ('shared-session', 'user', '', 1775000001.3, NULL, 1, 1, 0),
+                ('shared-session', 'assistant', 'rewound material', 1775000001.4, NULL, 0, 0, 0),
+                ('shared-session', 'assistant', '', 1775000001.5, NULL, 0, 0, 0),
+                ('shared-session', 'assistant', 'compacted material', 1775000001.6, NULL, 0, 0, 1),
+                ('shared-session', 'assistant', '', 1775000001.7, NULL, 0, 0, 1);
             """
         )
 
@@ -161,6 +175,27 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
                 )
             return [json.loads(str(row["payload_json"])) for row in event_rows]
 
+        async def durable_hermes_events() -> dict[str, list[tuple[str, dict[str, object]]]]:
+            async with backend.connection() as conn:
+                event_rows = list(
+                    await (
+                        await conn.execute(
+                            """
+                            SELECT session_id, event_type, payload_json
+                            FROM session_events
+                            WHERE event_type LIKE 'hermes_%' OR event_type = 'rewind'
+                            ORDER BY session_id, position
+                            """
+                        )
+                    ).fetchall()
+                )
+            result: dict[str, list[tuple[str, dict[str, object]]]] = {}
+            for row in event_rows:
+                result.setdefault(str(row["session_id"]), []).append(
+                    (str(row["event_type"]), json.loads(str(row["payload_json"])))
+                )
+            return result
+
         expected_cost_provenance = {
             "estimated_cost_usd": 0.002,
             "actual_cost_usd": 0.0015,
@@ -177,6 +212,26 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
             {key: payload[key] for key in expected_cost_provenance} == expected_cost_provenance
             for payload in cost_payloads
         )
+        assert all(payload["total_token_usage"]["total_tokens"] == 0 for payload in cost_payloads)
+
+        hermes_events = await durable_hermes_events()
+        assert set(hermes_events) == set(session_ids)
+        identity_payloads = [
+            payload
+            for events in hermes_events.values()
+            for event_type, payload in events
+            if event_type == "hermes_identity"
+        ]
+        assert {payload["raw_session_id"] for payload in identity_payloads} == {"shared-session"}
+        assert len({payload["profile_key"] for payload in identity_payloads}) == 2
+        expected_states = ["active", "active", "observed", "observed", "rewound", "rewound", "compacted", "compacted"]
+        for events in hermes_events.values():
+            event_types = [event_type for event_type, _payload in events]
+            assert event_types.count("hermes_session_metadata") == 1
+            assert event_types.count("rewind") == 1
+            assert [
+                payload["state"] for event_type, payload in events if event_type == "hermes_message_state"
+            ] == expected_states
 
         async with backend.connection() as conn:
             await conn.execute("DELETE FROM sessions")
@@ -198,5 +253,6 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
         assert session_count == 2
         rebuilt_cost_payloads = await durable_cost_payloads()
         assert rebuilt_cost_payloads == cost_payloads
+        assert await durable_hermes_events() == hermes_events
     finally:
         await backend.close()

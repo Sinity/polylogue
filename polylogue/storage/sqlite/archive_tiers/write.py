@@ -2575,7 +2575,7 @@ def _write_session_events(
                 event,
                 provider_usage_baseline=provider_usage_baseline,
             )
-            if _provider_usage_event_row_has_usage(row):
+            if _provider_usage_event_row_has_evidence(row, event):
                 provider_usage_rows.append(row)
                 wrote_provider_usage_events = True
             position += 1
@@ -2665,8 +2665,25 @@ def _provider_usage_event_row(
     )
 
 
-def _provider_usage_event_row_has_usage(row: tuple[object, ...]) -> bool:
-    return any(isinstance(value, int) and value for value in row[5:17])
+_PROVIDER_USAGE_PROVENANCE_KEYS = (
+    "estimated_cost_usd",
+    "actual_cost_usd",
+    "cost_status",
+    "cost_source",
+    "pricing_version",
+    "billing_provider",
+    "billing_base_url",
+    "billing_mode",
+)
+
+
+def _provider_usage_event_row_has_evidence(
+    row: tuple[object, ...],
+    event: ParsedSessionEvent,
+) -> bool:
+    if any(isinstance(value, int) and value for value in row[5:17]):
+        return True
+    return any(event.payload.get(key) is not None for key in _PROVIDER_USAGE_PROVENANCE_KEYS)
 
 
 def _provider_usage_cumulative_baseline(
