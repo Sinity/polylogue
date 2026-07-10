@@ -459,7 +459,7 @@ def test_process_projection_collapses_components_and_uses_real_work_scopes(
             "208 2 nvidia_uvm 0::/ [nvidia_uvm]",
             "300 1 python 0::/user.slice/user@1000.service/background.slice/"
             "sinnix-background-polylogue-index-rebuild-v30.scope python rebuild-index "
-            f"--archive-root={archive}",
+            "--workers=4",
         )
     )
 

@@ -106,7 +106,11 @@ def build_coordination_envelope(
     self_payload = _self_payload(root_cwd, repo)
     work_item = _work_item_payload(root_cwd, repo, command_runner)
     beads = _beads_payload(root_cwd, repo, command_runner)
-    all_peers, all_resources = _process_payloads(command_runner, root_cwd)
+    all_peers, all_resources = _process_payloads(
+        command_runner,
+        root_cwd,
+        archive_resource=_configured_archive_resource(),
+    )
     peers = all_peers[:peer_limit]
     resources = all_resources[:resource_limit]
     archive = _archive_payload(resources)
@@ -737,12 +741,26 @@ def _bool_or_none(value: object) -> bool | None:
 def _process_payloads(
     runner: CommandRunner,
     cwd: Path,
+    *,
+    archive_resource: str | None,
 ) -> tuple[tuple[CoordinationPeerPayload, ...], tuple[CoordinationResourceEpisodePayload, ...]]:
     result = runner(_PROCESS_COMMAND, None)
     if result.returncode != 0:
         return (), ()
     rows = tuple(parsed for line in result.stdout.splitlines() if (parsed := _parse_ps_row(line)) is not None)
-    return _logical_peer_payloads(rows, result), _resource_scope_payloads(rows, result, cwd)
+    return _logical_peer_payloads(rows, result), _resource_scope_payloads(
+        rows,
+        result,
+        cwd,
+        archive_resource=archive_resource,
+    )
+
+
+def _configured_archive_resource() -> str | None:
+    try:
+        return str(archive_root().resolve())
+    except Exception:
+        return None
 
 
 def _parse_ps_row(row: str) -> _ProcessRow | None:
@@ -844,6 +862,8 @@ def _resource_scope_payloads(
     rows: tuple[_ProcessRow, ...],
     result: CommandResult,
     repo_cwd: Path,
+    *,
+    archive_resource: str | None,
 ) -> tuple[CoordinationResourceEpisodePayload, ...]:
     by_unit: dict[str, list[_ProcessRow]] = {}
     direct: list[_ProcessRow] = []
@@ -861,14 +881,34 @@ def _resource_scope_payloads(
     for unit, unit_rows in sorted(by_unit.items()):
         representative = min(unit_rows, key=lambda row: row.pid)
         kind = _classify_resource(representative) or "work"
-        episodes.append(_resource_payload(representative, unit_rows, kind, result, repo_cwd, unit=unit))
+        episodes.append(
+            _resource_payload(
+                representative,
+                unit_rows,
+                kind,
+                result,
+                repo_cwd,
+                unit=unit,
+                archive_resource=archive_resource,
+            )
+        )
     scoped_pids = {row.pid for unit_rows in by_unit.values() for row in unit_rows}
     for row in direct:
         if row.pid in scoped_pids:
             continue
         kind = _classify_resource(row)
         if kind is not None:
-            episodes.append(_resource_payload(row, [row], kind, result, repo_cwd, unit=_systemd_unit(row.cgroup)))
+            episodes.append(
+                _resource_payload(
+                    row,
+                    [row],
+                    kind,
+                    result,
+                    repo_cwd,
+                    unit=_systemd_unit(row.cgroup),
+                    archive_resource=archive_resource,
+                )
+            )
     return tuple(sorted(episodes, key=lambda episode: (episode.unit or "", episode.pid)))
 
 
@@ -880,9 +920,12 @@ def _resource_payload(
     repo_cwd: Path,
     *,
     unit: str | None,
+    archive_resource: str | None,
 ) -> CoordinationResourceEpisodePayload:
     process_cwd = _proc_cwd(representative.pid)
     resources = _command_resource_refs(representative.command, process_cwd, repo_cwd)
+    if archive_resource and _resource_owns_archive(representative, unit):
+        resources = tuple(dict.fromkeys((*resources, archive_resource)))
     return CoordinationResourceEpisodePayload(
         pid=representative.pid,
         kind=kind,
@@ -897,6 +940,11 @@ def _resource_payload(
         component_pids=tuple(sorted(row.pid for row in rows if row.pid != representative.pid))[:50],
         provenance=_prov("process-cgroup", command=result.args, confidence=0.85 if unit else 0.75),
     )
+
+
+def _resource_owns_archive(row: _ProcessRow, unit: str | None) -> bool:
+    text = f"{unit or ''} {row.comm} {row.command}".lower()
+    return "polylogued" in text or "polylogue-index-rebuild" in text or "rebuild-index" in text
 
 
 def _classify_resource(row: _ProcessRow) -> str | None:
