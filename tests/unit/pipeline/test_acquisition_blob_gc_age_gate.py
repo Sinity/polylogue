@@ -19,7 +19,9 @@ from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, Pars
 from polylogue.storage.blob_gc import MIN_AGE_S, BlobGCResult, run_blob_gc_report
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
+    BlobPublicationReceipt,
     BlobPublicationReservationStore,
+    exclude_archive_blob_publishers,
     reconcile_blob_publication_reservations,
 )
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
@@ -67,7 +69,7 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
             measured_window_s = frozen_clock.time() - initial_time
         return prepared
 
-    def measured_flush(publisher: ArchiveBlobPublisher):
+    def measured_flush(publisher: ArchiveBlobPublisher) -> tuple[BlobPublicationReceipt, ...]:
         nonlocal gc_report
         receipts = original_flush(publisher)
         if receipts and gc_report is None:
@@ -170,6 +172,46 @@ def test_live_publisher_missing_path_receipt_is_retained_by_reconciliation(tmp_p
     assert store.exists(blob_hash)
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+
+
+def test_reconciliation_with_writer_exclusion_clears_only_terminal_receipts(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
+    store = BlobStore(archive_root / "blob")
+    publisher = ArchiveBlobPublisher(source_db, store.root)
+    missing_hash, missing_size = publisher.write_from_bytes(b"missing terminal publication")
+    referenced_hash, referenced_size = publisher.write_from_bytes(b"referenced terminal publication")
+    unresolved_hash, _ = publisher.write_from_bytes(b"unresolved live-looking publication")
+    publisher.flush()
+    store.blob_path(missing_hash).unlink()
+    with sqlite3.connect(source_db) as conn:
+        write_source_raw_session_blob_ref(
+            conn,
+            origin=Origin.CHATGPT_EXPORT,
+            source_path="referenced.json",
+            source_index=0,
+            blob_hash=bytes.fromhex(referenced_hash),
+            blob_size=referenced_size,
+            acquired_at_ms=2,
+            raw_id="referenced-publication",
+        )
+
+    with exclude_archive_blob_publishers(source_db) as exclusion:
+        outcome = reconcile_blob_publication_reservations(
+            source_db,
+            store.root,
+            index_db_path=archive_root / "index.db",
+            writer_exclusion=exclusion,
+        )
+
+    assert missing_size > 0
+    assert outcome.cleared_missing == 1
+    assert outcome.cleared_referenced == 1
+    assert outcome.unresolved == 1
+    with sqlite3.connect(source_db) as conn:
+        remaining = conn.execute("SELECT lower(hex(blob_hash)) FROM blob_publication_reservations").fetchall()
+    assert remaining == [(unresolved_hash,)]
 
 
 def test_failed_reservation_batch_never_publishes_final_blob(

@@ -11,12 +11,15 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.storage.blob_gc import (
     _candidate_blobs,
     _reference_surfaces,
     _still_referenced,
     read_gc_history,
     run_blob_gc,
+    run_blob_gc_report,
 )
 from polylogue.storage.blob_store import BlobStore
 
@@ -308,6 +311,48 @@ def test_run_blob_gc_max_batch_bound(tmp_path: Path) -> None:
     deleted = run_blob_gc(str(db_path), str(blob_root), max_batch=2)
     # May be 0 due to MIN_AGE_S, but should never exceed max_batch
     assert 0 <= deleted <= 2
+
+
+def test_run_blob_gc_bounds_final_lock_rechecks_with_many_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Referenced candidates are filtered before the destructive lock."""
+    from polylogue.storage import blob_gc
+
+    db_path = tmp_path / "source.db"
+    blob_root = tmp_path / "blobs"
+    store = BlobStore(blob_root)
+    conn = _make_db(db_path)
+    for index in range(40):
+        blob_hash, size = store.write_from_bytes(f"referenced-{index}".encode())
+        _backdate(store, blob_hash)
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
+            "VALUES (?, 'codex', ?, ?, '2026-01-01')",
+            (blob_hash, f"{index}.json", size),
+        )
+    orphan_hash, _ = store.write_from_bytes(b"bounded orphan")
+    _backdate(store, orphan_hash)
+    conn.commit()
+    conn.close()
+
+    lock_rechecks = 0
+    original_reference_surfaces = blob_gc._reference_surfaces
+
+    def count_lock_rechecks(conn, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal lock_rechecks
+        if conn.in_transaction:
+            lock_rechecks += 1
+        return original_reference_surfaces(conn, *args, **kwargs)
+
+    monkeypatch.setattr(blob_gc, "_reference_surfaces", count_lock_rechecks)
+    report = run_blob_gc_report(db_path, blob_root, max_batch=2)
+
+    assert report.candidate_count == 41
+    assert report.deleted_count == 1
+    assert lock_rechecks <= 2
+    assert not store.exists(orphan_hash)
 
 
 def test_run_blob_gc_nonexistent_blob_dir(tmp_path: Path) -> None:

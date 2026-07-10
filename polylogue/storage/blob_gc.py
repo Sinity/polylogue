@@ -386,12 +386,52 @@ def run_blob_gc_report(
         return report
 
     sibling_index_db = db_path_obj if db_path_obj.name == "index.db" else db_path_obj.with_name("index.db")
+    evidence = GCRunEvidence(dry_run=dry_run, max_batch=max_batch)
+    shortlist: list[tuple[str, float]] = []
+
+    # Filter the filesystem candidates without holding the source-tier write
+    # lock. Referenced archives can contain millions of old blobs, so walking
+    # past those rows under BEGIN IMMEDIATE would otherwise make max_batch a
+    # deletion bound but not a lock-time bound. Every shortlisted candidate is
+    # checked again under the destructive lock below.
+    planning_conn = sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)
+    planning_conn.row_factory = sqlite3.Row
+    planning_source_conn: sqlite3.Connection | None = None
+    planning_index_conn: sqlite3.Connection | None = None
+    try:
+        if control_db_path != sibling_source_db and sibling_source_db.exists():
+            planning_source_conn = sqlite3.connect(f"file:{sibling_source_db}?mode=ro", uri=True)
+        if control_db_path != sibling_index_db and sibling_index_db.exists():
+            planning_index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
+        for blob_hash, mtime in candidates:
+            if len(shortlist) >= max_batch:
+                break
+            evidence.inspected += 1
+            if _reference_surfaces(
+                planning_conn,
+                blob_hash,
+                source_db_path=(sibling_source_db if planning_source_conn is not None else None),
+                source_conn=planning_source_conn,
+                index_conn=planning_index_conn,
+            ):
+                evidence.skipped_referenced += 1
+                continue
+            if _has_publication_reservation(planning_conn, blob_hash):
+                evidence.skipped_reserved += 1
+                continue
+            shortlist.append((blob_hash, mtime))
+    finally:
+        if planning_source_conn is not None:
+            planning_source_conn.close()
+        if planning_index_conn is not None:
+            planning_index_conn.close()
+        planning_conn.close()
+
     connection_uri = f"file:{control_db_path}?mode=ro" if dry_run else str(control_db_path)
     conn = sqlite3.connect(connection_uri, uri=dry_run)
     conn.row_factory = sqlite3.Row
     source_conn: sqlite3.Connection | None = None
     index_conn: sqlite3.Connection | None = None
-    evidence = GCRunEvidence(dry_run=dry_run, max_batch=max_batch)
     affected = 0
     reclaimed_bytes = 0
     started_at_ms = int(time.time() * 1000)
@@ -403,10 +443,7 @@ def run_blob_gc_report(
         if control_db_path != sibling_index_db and sibling_index_db.exists():
             index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
 
-        for blob_hash, _mtime in candidates:
-            if affected >= max_batch:
-                break
-            evidence.inspected += 1
+        for blob_hash, _mtime in shortlist:
             if _reference_surfaces(
                 conn,
                 blob_hash,
