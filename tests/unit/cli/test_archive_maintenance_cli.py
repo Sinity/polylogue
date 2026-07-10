@@ -47,7 +47,7 @@ def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:
 
 
 def _write_gc_candidate(cli_workspace: dict[str, Path], blob_hash: str) -> Path:
-    blob_root = cli_workspace["data_root"] / "polylogue" / "blob"
+    blob_root = cli_workspace["archive_root"] / "blob"
     path = blob_root / blob_hash[:2] / blob_hash[2:]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"gc candidate")
@@ -291,7 +291,7 @@ def test_backup_plan_cli_reports_backup_profiles_and_tier_boundaries(
         "rebuildable_cache_exclude",
         "diagnostics_bundle",
     }
-    assert payload["blob_store"]["path"] == str(cli_workspace["data_root"] / "polylogue" / "blob")
+    assert payload["blob_store"]["path"] == str(cli_workspace["archive_root"] / "blob")
     assert payload["blob_store"]["backup_policy"] == "back_up_referenced_blobs_with_source_and_user_tiers"
 
 
@@ -473,7 +473,7 @@ def test_blob_publications_cli_requires_confirmation_to_abandon(
     archive_root = cli_workspace["archive_root"]
     publisher = ArchiveBlobPublisher(
         archive_root / "source.db",
-        cli_workspace["data_root"] / "polylogue" / "blob",
+        archive_root / "blob",
     )
     blob_hash, _ = publisher.write_from_bytes(b"operator-adjudicated receipt")
     receipt_id = publisher.receipt_id(blob_hash)

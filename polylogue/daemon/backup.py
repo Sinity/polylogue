@@ -26,7 +26,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from polylogue.logging import get_logger
-from polylogue.paths import archive_root, blob_store_root
+from polylogue.paths import archive_root
 from polylogue.storage.blob_integrity import BlobReferenceDebtReport, referenced_blob_hashes, scan_blob_reference_debt
 from polylogue.storage.blob_store import BlobStore
 
@@ -236,12 +236,13 @@ def _write_blob_reference_debt_report(backup_root: Path, report: BlobReferenceDe
 def _copy_referenced_blobs(
     *,
     source_db: Path,
+    source_blob_root: Path,
     backup_root: Path,
     warnings: list[str],
 ) -> tuple[int, int, BlobReferenceDebtReport]:
     inventory = _source_blob_inventory(source_db)
     hashes = set(inventory)
-    store = BlobStore(blob_store_root())
+    store = BlobStore(source_blob_root)
     debt_report = scan_blob_reference_debt(
         source_db,
         store=store,
@@ -421,6 +422,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         if "source" in included_tiers:
             blob_count, blob_size, blob_reference_debt = _copy_referenced_blobs(
                 source_db=backup_root / "source.db",
+                source_blob_root=root / "blob",
                 backup_root=backup_root,
                 warnings=warnings,
             )

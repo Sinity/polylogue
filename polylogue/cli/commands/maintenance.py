@@ -25,7 +25,7 @@ from polylogue.maintenance.registry import MaintenanceOperationRegistry, Operati
 from polylogue.maintenance.replay import ReplayProgress, execute_replay, rebuild_index_from_source
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
-from polylogue.paths import archive_file_set_root_for_paths, archive_root, blob_store_root, db_path, render_root
+from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path, render_root
 from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_integrity import (
     BlobReferenceDebtClassificationReport,
@@ -599,7 +599,7 @@ def _backup_plan_payload(root: Path) -> dict[str, Any]:
             }
         )
 
-    blob_root = blob_store_root()
+    blob_root = root / "blob"
     return {
         "ok": True,
         "mode": "backup_plan",
@@ -1793,7 +1793,7 @@ def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
     )
     result = run_blob_gc_report(
         config.db_path,
-        blob_store_root(),
+        config.archive_root / "blob",
         max_batch=max_batch,
         dry_run=not yes,
     )
@@ -1853,14 +1853,14 @@ def blob_publications_command(publication_ids: tuple[str, ...], yes: bool, outpu
     if publication_ids:
         abandonment = abandon_blob_publication_receipts(
             source_db,
-            blob_store_root(),
+            root / "blob",
             publication_ids,
             confirmed=True,
             index_db_path=root / "index.db",
         )
     receipts = inspect_blob_publication_receipts(
         source_db,
-        blob_store_root(),
+        root / "blob",
         index_db_path=root / "index.db",
     )
     payload = {

@@ -119,7 +119,7 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     embeddings_db = archive_root / "embeddings.db"
 
     payload = b"precious raw payload"
-    blob_hash, _ = BlobStore(workspace_env["data_root"] / "polylogue" / "blob").write_from_bytes(payload)
+    blob_hash, _ = BlobStore(archive_root / "blob").write_from_bytes(payload)
     blob_hash_bytes = bytes.fromhex(blob_hash)
 
     with sqlite3.connect(source_db) as conn:
@@ -328,10 +328,7 @@ def test_backup_result_formats_non_default_omissions_neutrally() -> None:
     assert all("rebuildable/disposable" not in line for line in lines)
 
 
-def test_backup_missing_blob_warnings_are_bounded(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_backup_missing_blob_warnings_are_bounded(tmp_path: Path) -> None:
     hashes = tuple(f"{idx:064x}" for idx in range(25))
     source_db = tmp_path / "source.db"
     with sqlite3.connect(source_db) as conn:
@@ -350,13 +347,12 @@ def test_backup_missing_blob_warnings_are_bounded(
                 "INSERT INTO blob_refs (blob_hash, raw_id, ref_type) VALUES (?, ?, ?)",
                 (bytes.fromhex(blob_hash), f"raw-{idx}", "attachment"),
             )
-    monkeypatch.setattr(backup_mod, "blob_store_root", lambda: tmp_path / "blob-store")
-
     warnings: list[str] = []
     backup_root = tmp_path / "backup"
     backup_root.mkdir()
     count, size, debt = backup_mod._copy_referenced_blobs(
         source_db=source_db,
+        source_blob_root=tmp_path / "blob-store",
         backup_root=tmp_path / "backup",
         warnings=warnings,
     )
@@ -380,7 +376,7 @@ def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(
     tmp_path: Path,
 ) -> None:
     archive_root = workspace_env["archive_root"]
-    blob_root = workspace_env["data_root"] / "polylogue" / "blob"
+    blob_root = archive_root / "blob"
     publisher = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
     payload = b"reservation-only backup evidence"
     blob_hash, _ = publisher.write_from_bytes(payload)
