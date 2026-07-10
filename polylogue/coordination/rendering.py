@@ -31,6 +31,14 @@ def _beads_summary(payload: AgentCoordinationPayload) -> str:
     )
 
 
+def _projection_summary(payload: AgentCoordinationPayload) -> str:
+    projection = payload.projection
+    omissions = ", ".join(f"{name}={count}" for name, count in projection.omitted_counts.items()) or "none"
+    return (
+        f"detail={str(projection.detail).lower()} bytes={projection.serialized_bytes or 'unknown'} omitted={omissions}"
+    )
+
+
 def render_coordination_text(payload: AgentCoordinationPayload) -> str:
     """Render a compact text view for humans; JSON remains the primary contract."""
 
@@ -40,6 +48,7 @@ def render_coordination_text(payload: AgentCoordinationPayload) -> str:
         f"  branch: {payload.repo.branch or 'n/a'} head={payload.repo.head or 'n/a'} dirty={payload.repo.dirty}",
         f"  self: {payload.self.agent_kind} pid={payload.self.pid}",
         "  work item: " + _work_item_label(payload),
+        "  projection: " + _projection_summary(payload),
     ]
     if payload.peers:
         lines.append(f"  peers: {len(payload.peers)}")
@@ -58,7 +67,7 @@ def render_coordination_text(payload: AgentCoordinationPayload) -> str:
         lines.append("  handoff refs:")
         for handoff_ref in payload.handoff:
             state = "present" if handoff_ref.exists else "missing"
-            lines.append(f"    - {handoff_ref.kind}: {state} {handoff_ref.path}")
+            lines.append(f"    - {handoff_ref.kind}: {state} {handoff_ref.ref or handoff_ref.path}")
     if payload.archive:
         lines.append(
             "  archive: "
@@ -124,6 +133,7 @@ def render_coordination_markdown(payload: AgentCoordinationPayload) -> str:
         f"- Agent: `{payload.self.agent_kind}` pid `{payload.self.pid}`",
         f"- Work item: `{_work_item_label(payload)}`",
         f"- Beads: `{_beads_summary(payload)}`",
+        f"- Projection: `{_projection_summary(payload)}`",
     ]
     if payload.archive:
         lines.extend(
@@ -215,7 +225,7 @@ def render_coordination_markdown(payload: AgentCoordinationPayload) -> str:
     if payload.handoff:
         for handoff_ref in payload.handoff:
             state = "present" if handoff_ref.exists else "missing"
-            lines.append(f"- `{handoff_ref.kind}` {state}: `{handoff_ref.path}`")
+            lines.append(f"- `{handoff_ref.kind}` {state}: `{handoff_ref.ref or handoff_ref.path}`")
     else:
         lines.append("- No handoff refs in this projection.")
     if payload.advisories:
@@ -235,6 +245,7 @@ def render_coordination_tree(payload: AgentCoordinationPayload) -> str:
         f"+- self {payload.self.agent_kind} pid={payload.self.pid}",
         f"+- work {payload.work_item.ref or 'none'} source={payload.work_item.source} confidence={payload.work_item.confidence:.2f}",
         f"+- beads {_beads_summary(payload)}",
+        f"+- projection {_projection_summary(payload)}",
     ]
     if payload.archive:
         lines.append(f"+- archive schema={payload.archive.index_user_version} root={payload.archive.archive_root}")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -27,6 +29,7 @@ from polylogue.coordination.payloads import (
     CoordinationLimitsPayload,
     CoordinationOverlapPayload,
     CoordinationPeerPayload,
+    CoordinationProjectionPayload,
     CoordinationProofRefPayload,
     CoordinationProvenancePayload,
     CoordinationRepoPayload,
@@ -45,9 +48,25 @@ CommandRunner = Callable[[Sequence[str], Path | None], "CommandResult"]
 
 _COMMAND_CHARS = 220
 _CHANGED_PATH_LIMIT = 40
-_PROCESS_COMMAND = ("ps", "-eo", "pid,ppid,comm,args", "--no-headers")
+# Leave headroom for the MCP brief's fixed instructions while keeping the
+# complete default response below the bead's 8 KiB transport ceiling.
+_COMPACT_BYTE_BUDGET = 7_600
+_PROCESS_COMMAND = ("ps", "ww", "-eo", "pid=,ppid=,comm=,cgroup:200=,args=")
 _AGENT_NAMES = ("codex", "claude", "gemini")
-_RESOURCE_NAMES = ("polylogued", "pytest", "python", "uv", "nix", "cargo", "rustc", "node")
+_SYSTEM_RESOURCE_NAMES = frozenset(
+    {
+        "below",
+        "dbus-daemon",
+        "earlyoom",
+        "nix-daemon",
+        "systemd-oomd",
+        "systemd-resolved",
+        "systemd-timesyncd",
+        "systemd-udevd",
+    }
+)
+_WORK_SCOPE_RE = re.compile(r"(?:sinnix-(?:background|build|nix-build)|polylogue[^/]*(?:rebuild|verify|test))")
+_SESSION_ARG_RE = re.compile(r"(?:--session-id|--resume|--thread-id)(?:=|\s+)([^\s]+)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,11 +77,21 @@ class CommandResult:
     stderr: str
 
 
+@dataclass(frozen=True, slots=True)
+class _ProcessRow:
+    pid: int
+    ppid: int
+    comm: str
+    cgroup: str
+    command: str
+
+
 def build_coordination_envelope(
     *,
     view: CoordinationView = "status",
     cwd: Path | None = None,
     limit: int = 10,
+    detail: bool = False,
     runner: CommandRunner | None = None,
 ) -> AgentCoordinationPayload:
     """Return a bounded, JSON-first coordination envelope for agents."""
@@ -77,9 +106,15 @@ def build_coordination_envelope(
     self_payload = _self_payload(root_cwd, repo)
     work_item = _work_item_payload(root_cwd, repo, command_runner)
     beads = _beads_payload(root_cwd, repo, command_runner)
-    peers, resources = _process_payloads(command_runner, root_cwd, peer_limit=peer_limit, resource_limit=resource_limit)
-    handoff = _handoff_payloads(repo.root or str(root_cwd))
+    all_peers, all_resources = _process_payloads(
+        command_runner,
+        root_cwd,
+        archive_resource=_configured_archive_resource(),
+    )
+    peers = all_peers[:peer_limit]
+    resources = all_resources[:resource_limit]
     archive = _archive_payload(resources)
+    handoff = _handoff_payloads(repo.root or str(root_cwd), archive=archive, limit=peer_limit)
     session_trees, activity_episodes, subagent_exchanges, proof_refs, context_flow_refs = _archive_evidence_payloads(
         repo,
         self_payload,
@@ -113,9 +148,19 @@ def build_coordination_envelope(
             changed_path_limit=_CHANGED_PATH_LIMIT,
             command_chars=_COMMAND_CHARS,
         ),
+        projection=CoordinationProjectionPayload(detail=detail),
         provenance=provenance,
     )
-    return project_coordination_envelope(payload, view)
+    projected = project_coordination_envelope(payload, view)
+    total_counts = _coordination_counts(projected)
+    total_counts["peers"] = len(all_peers)
+    total_counts["resource_episodes"] = len(all_resources)
+    total_counts["peer_components"] = sum(peer.component_count for peer in all_peers)
+    total_counts["resource_components"] = sum(episode.component_count for episode in all_resources)
+    total_counts["resource_refs"] = sum(episode.resource_count for episode in all_resources)
+    if detail:
+        return _finalize_projection(projected, total_counts=total_counts, detail=True)
+    return _compact_coordination_payload(projected, total_counts=total_counts)
 
 
 def project_coordination_envelope(
@@ -161,6 +206,251 @@ def project_coordination_envelope(
             }
         )
     return payload
+
+
+_COUNTED_FAMILIES = (
+    "peers",
+    "resource_episodes",
+    "overlaps",
+    "handoff",
+    "session_trees",
+    "activity_episodes",
+    "subagent_exchanges",
+    "proof_refs",
+    "context_flow_refs",
+    "advisories",
+    "provenance",
+)
+
+
+def _coordination_counts(payload: AgentCoordinationPayload) -> dict[str, int]:
+    counts = {name: len(cast(Sequence[object], getattr(payload, name))) for name in _COUNTED_FAMILIES}
+    counts["changed_paths"] = len(payload.repo.changed_paths)
+    counts["work_item_fields"] = len(payload.work_item.fields)
+    if payload.beads is not None:
+        counts["beads_hooks"] = len(payload.beads.hooks)
+        counts["beads_gates"] = len(payload.beads.gates)
+        counts["beads_merge_waiters"] = len(payload.beads.merge_slot.waiters) if payload.beads.merge_slot else 0
+    if payload.archive is not None:
+        counts["archive_hook_states"] = len(payload.archive.hook_flow_states)
+        counts["archive_hook_gaps"] = len(payload.archive.hook_flow_gaps)
+        counts["archive_daemon_processes"] = len(payload.archive.daemon_processes)
+    counts["session_tree_nodes"] = sum(len(tree.nodes) for tree in payload.session_trees)
+    counts["session_tree_edges"] = sum(len(tree.edges) for tree in payload.session_trees)
+    counts["peer_components"] = sum(len(peer.component_pids) for peer in payload.peers)
+    counts["resource_components"] = sum(len(episode.component_pids) for episode in payload.resource_episodes)
+    counts["resource_refs"] = sum(len(episode.resources) for episode in payload.resource_episodes)
+    counts["activity_refs"] = sum(len(episode.refs) for episode in payload.activity_episodes)
+    counts["proof_evidence_refs"] = sum(len(proof.evidence_refs) for proof in payload.proof_refs)
+    counts["context_segment_refs"] = sum(len(ref.segment_refs) for ref in payload.context_flow_refs)
+    counts["context_evidence_refs"] = sum(len(ref.evidence_refs) for ref in payload.context_flow_refs)
+    return counts
+
+
+def _compact_coordination_payload(
+    payload: AgentCoordinationPayload,
+    *,
+    total_counts: dict[str, int],
+) -> AgentCoordinationPayload:
+    repo = payload.repo.model_copy(
+        update={
+            "changed_paths": payload.repo.changed_paths[:8],
+            "provenance": _compact_provenance(payload.repo.provenance),
+        }
+    )
+    self_payload = payload.self.model_copy(update={"provenance": _compact_provenance(payload.self.provenance)})
+    work_item = payload.work_item.model_copy(
+        update={"fields": {}, "provenance": _compact_provenance(payload.work_item.provenance, keep_note=True)}
+    )
+    peers = tuple(
+        peer.model_copy(
+            update={
+                "command": _short_to(peer.command, 120),
+                "component_pids": peer.component_pids[:4],
+                "provenance": _compact_provenance(peer.provenance),
+            }
+        )
+        for peer in payload.peers[:4]
+    )
+    resources = tuple(
+        episode.model_copy(
+            update={
+                "command": _short_to(episode.command, 140),
+                "resources": episode.resources[:3],
+                "component_pids": episode.component_pids[:4],
+                "provenance": _compact_provenance(episode.provenance),
+            }
+        )
+        for episode in payload.resource_episodes[:4]
+    )
+    overlaps = tuple(
+        overlap.model_copy(update={"refs": overlap.refs[:4], "provenance": _compact_provenance(overlap.provenance)})
+        for overlap in payload.overlaps[:4]
+    )
+    handoff = tuple(
+        item.model_copy(update={"provenance": _compact_provenance(item.provenance)}) for item in payload.handoff[:3]
+    )
+    session_trees = tuple(
+        tree.model_copy(
+            update={
+                "nodes": tuple(
+                    node.model_copy(update={"title": _short_to(node.title, 100) if node.title else None})
+                    for node in tree.nodes[:3]
+                ),
+                "edges": tree.edges[:3],
+                "provenance": _compact_provenance(tree.provenance),
+            }
+        )
+        for tree in payload.session_trees[:1]
+    )
+    activity = tuple(
+        item.model_copy(
+            update={
+                "summary": _short_to(item.summary, 140) if item.summary else None,
+                "refs": item.refs[:2],
+                "provenance": _compact_provenance(item.provenance),
+            }
+        )
+        for item in payload.activity_episodes[:2]
+    )
+    proofs = tuple(
+        item.model_copy(
+            update={
+                "summary": _short_to(item.summary, 140) if item.summary else None,
+                "evidence_refs": item.evidence_refs[:2],
+                "provenance": _compact_provenance(item.provenance),
+            }
+        )
+        for item in payload.proof_refs[:2]
+    )
+    context_refs = tuple(
+        item.model_copy(
+            update={
+                "segment_refs": item.segment_refs[:2],
+                "evidence_refs": item.evidence_refs[:2],
+                "provenance": _compact_provenance(item.provenance),
+            }
+        )
+        for item in payload.context_flow_refs[:2]
+    )
+    archive = payload.archive
+    if archive is not None:
+        archive = archive.model_copy(
+            update={
+                "hook_flow_states": dict(tuple(sorted(archive.hook_flow_states.items()))[:6]),
+                "hook_flow_gaps": archive.hook_flow_gaps[:4],
+                "daemon_processes": (),
+                "provenance": _compact_provenance(archive.provenance),
+            }
+        )
+    beads = payload.beads
+    if beads is not None:
+        merge_slot = beads.merge_slot
+        if merge_slot is not None:
+            merge_slot = merge_slot.model_copy(update={"waiters": merge_slot.waiters[:3]})
+        beads = beads.model_copy(
+            update={
+                "hooks": beads.hooks[:3],
+                "gates": beads.gates[:2],
+                "merge_slot": merge_slot,
+                "provenance": _compact_provenance(beads.provenance),
+            }
+        )
+    compact = payload.model_copy(
+        update={
+            "repo": repo,
+            "self": self_payload,
+            "work_item": work_item,
+            "peers": peers,
+            "resource_episodes": resources,
+            "overlaps": overlaps,
+            "handoff": handoff,
+            "archive": archive,
+            "session_trees": session_trees,
+            "activity_episodes": activity,
+            "subagent_exchanges": (),
+            "proof_refs": proofs,
+            "context_flow_refs": context_refs,
+            "advisories": tuple(_short_to(item, 180) for item in payload.advisories[:3]),
+            "provenance": (),
+        }
+    )
+    compact = _finalize_projection(compact, total_counts=total_counts, detail=False)
+    for family in ("context_flow_refs", "activity_episodes", "proof_refs", "session_trees", "handoff"):
+        if _serialized_size(compact) <= _COMPACT_BYTE_BUDGET:
+            break
+        compact = compact.model_copy(update={family: ()})
+        compact = _finalize_projection(compact, total_counts=total_counts, detail=False)
+    if _serialized_size(compact) > _COMPACT_BYTE_BUDGET and compact.beads is not None:
+        compact = compact.model_copy(
+            update={"beads": compact.beads.model_copy(update={"hooks": (), "gates": (), "merge_slot": None})}
+        )
+        compact = _finalize_projection(compact, total_counts=total_counts, detail=False)
+    if _serialized_size(compact) > _COMPACT_BYTE_BUDGET and compact.archive is not None:
+        compact = compact.model_copy(
+            update={
+                "archive": compact.archive.model_copy(update={"hook_flow_states": {}, "hook_flow_gaps": ()}),
+                "overlaps": (),
+                "advisories": (),
+            }
+        )
+        compact = _finalize_projection(compact, total_counts=total_counts, detail=False)
+    if _serialized_size(compact) > _COMPACT_BYTE_BUDGET:
+        compact = compact.model_copy(
+            update={"peers": compact.peers[:1], "resource_episodes": compact.resource_episodes[:1]}
+        )
+        compact = _finalize_projection(compact, total_counts=total_counts, detail=False)
+    return compact
+
+
+def _compact_provenance(
+    provenance: CoordinationProvenancePayload,
+    *,
+    keep_note: bool = False,
+) -> CoordinationProvenancePayload:
+    return provenance.model_copy(update={"command": (), "note": provenance.note if keep_note else None})
+
+
+def _short_to(value: str, limit: int) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1] + "…"
+
+
+def _finalize_projection(
+    payload: AgentCoordinationPayload,
+    *,
+    total_counts: dict[str, int],
+    detail: bool,
+) -> AgentCoordinationPayload:
+    visible = _coordination_counts(payload)
+    omitted = {
+        name: total - visible.get(name, 0)
+        for name, total in sorted(total_counts.items())
+        if total > visible.get(name, 0)
+    }
+    projection = CoordinationProjectionPayload(
+        detail=detail,
+        byte_budget=None if detail else _COMPACT_BYTE_BUDGET,
+        serialized_bytes=0,
+        total_counts=dict(sorted(total_counts.items())),
+        omitted_counts=omitted,
+        detail_hint=None if detail else "CLI: --detail; MCP: detail=true",
+    )
+    finalized = payload.model_copy(update={"projection": projection})
+    for _ in range(3):
+        size = _serialized_size(finalized)
+        if finalized.projection.serialized_bytes == size:
+            break
+        finalized = finalized.model_copy(
+            update={"projection": finalized.projection.model_copy(update={"serialized_bytes": size})}
+        )
+    return finalized
+
+
+def _serialized_size(payload: AgentCoordinationPayload) -> int:
+    return len(payload.to_json(exclude_none=True).encode("utf-8"))
 
 
 def _run_command(args: Sequence[str], cwd: Path | None) -> CommandResult:
@@ -452,83 +742,302 @@ def _process_payloads(
     runner: CommandRunner,
     cwd: Path,
     *,
-    peer_limit: int,
-    resource_limit: int,
+    archive_resource: str | None,
 ) -> tuple[tuple[CoordinationPeerPayload, ...], tuple[CoordinationResourceEpisodePayload, ...]]:
     result = runner(_PROCESS_COMMAND, None)
     if result.returncode != 0:
         return (), ()
-    peers: list[CoordinationPeerPayload] = []
-    resources: list[CoordinationResourceEpisodePayload] = []
-    for row in result.stdout.splitlines():
-        parsed = _parse_ps_row(row)
-        if parsed is None:
-            continue
-        pid, comm, command = parsed
-        comm_lower = comm.lower()
-        command_lower = command.lower()
-        if (
-            pid != os.getpid()
-            and any(name in comm_lower or name in command_lower for name in _AGENT_NAMES)
-            and len(peers) < peer_limit
-        ):
-            peers.append(
-                CoordinationPeerPayload(
-                    pid=pid,
-                    kind=_classify_agent(comm_lower, command_lower),
-                    command=_short(command),
-                    cwd=_proc_cwd(pid),
-                    provenance=_prov("process-table", command=result.args, confidence=0.65),
-                )
-            )
-        if (
-            any(name in comm_lower or name in command_lower for name in _RESOURCE_NAMES)
-            and len(resources) < resource_limit
-        ):
-            resources.append(
-                CoordinationResourceEpisodePayload(
-                    pid=pid,
-                    kind=_classify_resource(comm_lower, command_lower),
-                    command=_short(command),
-                    status="running",
-                    scope=str(cwd),
-                    provenance=_prov("process-table", command=result.args, confidence=0.6),
-                )
-            )
-    return tuple(peers), tuple(resources)
+    rows = tuple(parsed for line in result.stdout.splitlines() if (parsed := _parse_ps_row(line)) is not None)
+    return _logical_peer_payloads(rows, result), _resource_scope_payloads(
+        rows,
+        result,
+        cwd,
+        archive_resource=archive_resource,
+    )
 
 
-def _parse_ps_row(row: str) -> tuple[int, str, str] | None:
-    parts = row.strip().split(None, 3)
-    if len(parts) < 4:
+def _configured_archive_resource() -> str | None:
+    try:
+        return str(archive_root().resolve())
+    except Exception:
+        return None
+
+
+def _parse_ps_row(row: str) -> _ProcessRow | None:
+    parts = row.strip().split(None, 4)
+    if len(parts) < 5:
         return None
     try:
         pid = int(parts[0])
+        ppid = int(parts[1])
     except ValueError:
         return None
-    return pid, parts[2], parts[3]
+    return _ProcessRow(pid=pid, ppid=ppid, comm=parts[2], cgroup=parts[3], command=parts[4])
 
 
-def _classify_agent(comm: str, command: str) -> str:
+def _logical_peer_payloads(
+    rows: tuple[_ProcessRow, ...],
+    result: CommandResult,
+) -> tuple[CoordinationPeerPayload, ...]:
+    by_pid = {row.pid: row for row in rows}
+    candidate_kinds = {row.pid: kind for row in rows if (kind := _agent_kind_for_process(row)) is not None}
+    logical_kinds = {pid: kind for pid, kind in candidate_kinds.items() if not _is_agent_component(by_pid[pid])}
+    roots: dict[int, list[_ProcessRow]] = {}
+    component_ancestors: dict[int, set[int]] = {}
+    for row in rows:
+        if row.pid not in logical_kinds or row.pid == os.getpid():
+            continue
+        root_pid = row.pid
+        parent_pid = row.ppid
+        seen = {row.pid}
+        ancestors: set[int] = set()
+        while parent_pid in by_pid and parent_pid not in seen:
+            seen.add(parent_pid)
+            if parent_pid in logical_kinds:
+                root_pid = parent_pid
+            elif parent_pid in candidate_kinds:
+                ancestors.add(parent_pid)
+            parent_pid = by_pid[parent_pid].ppid
+        roots.setdefault(root_pid, []).append(row)
+        component_ancestors.setdefault(root_pid, set()).update(ancestors)
+
+    peers: list[CoordinationPeerPayload] = []
+    for root_pid, agent_rows in sorted(roots.items()):
+        root = by_pid[root_pid]
+        current = by_pid.get(os.getpid())
+        if _is_agent_component(root) or (
+            current is not None and (current.pid == root_pid or _descends_from(current, root_pid, by_pid))
+        ):
+            continue
+        descendants = tuple(row.pid for row in rows if row.pid != root_pid and _descends_from(row, root_pid, by_pid))
+        kind = logical_kinds[root_pid]
+        session_ref = _session_ref(root.command)
+        component_pids = tuple(
+            sorted(
+                {
+                    *(row.pid for row in agent_rows if row.pid != root_pid),
+                    *descendants,
+                    *component_ancestors.get(root_pid, set()),
+                }
+            )
+        )
+        peers.append(
+            CoordinationPeerPayload(
+                pid=root_pid,
+                kind=kind,
+                logical_id=f"{kind}:{session_ref or root_pid}",
+                session_ref=session_ref,
+                command=_short(root.command),
+                cwd=_proc_cwd(root_pid),
+                component_count=len(component_pids),
+                component_pids=component_pids[:50],
+                provenance=_prov(
+                    "process-tree",
+                    command=result.args,
+                    confidence=0.8,
+                    note="launcher/host/MCP/spare descendants collapsed into one logical peer",
+                ),
+            )
+        )
+    return tuple(peers)
+
+
+def _agent_kind_for_process(row: _ProcessRow) -> str | None:
+    comm = Path(row.comm).name.lower()
+    executable = _executable_name(row.command)
     for name in _AGENT_NAMES:
-        if name in comm or name in command:
+        if comm == name or comm.startswith(f"{name}-") or executable == name or executable.startswith(f"{name}-"):
             return name
-    return "agent"
+    command = row.command.lower()
+    if "@anthropic-ai/claude-code" in command:
+        return "claude"
+    if "@openai/codex" in command:
+        return "codex"
+    return None
 
 
-def _classify_resource(comm: str, command: str) -> str:
-    text = f"{comm} {command}"
-    if "polylogued" in text:
+def _is_agent_component(row: _ProcessRow) -> bool:
+    text = f"{row.comm} {row.command}".lower()
+    executable = _executable_name(row.command)
+    wrapper = any(executable.endswith(suffix) for suffix in ("-browser", "-deepseek", "-full", "-lean", "-local"))
+    return wrapper or any(
+        marker in text for marker in ("mcp-server", "--spare-daemon", "code-mode-host", "claude-code-acp")
+    )
+
+
+def _descends_from(row: _ProcessRow, ancestor_pid: int, by_pid: dict[int, _ProcessRow]) -> bool:
+    parent_pid = row.ppid
+    seen = {row.pid}
+    while parent_pid in by_pid and parent_pid not in seen:
+        if parent_pid == ancestor_pid:
+            return True
+        seen.add(parent_pid)
+        parent_pid = by_pid[parent_pid].ppid
+    return False
+
+
+def _resource_scope_payloads(
+    rows: tuple[_ProcessRow, ...],
+    result: CommandResult,
+    repo_cwd: Path,
+    *,
+    archive_resource: str | None,
+) -> tuple[CoordinationResourceEpisodePayload, ...]:
+    by_unit: dict[str, list[_ProcessRow]] = {}
+    direct: list[_ProcessRow] = []
+    for row in rows:
+        kind = _classify_resource(row)
+        if kind is None:
+            continue
+        unit = _systemd_unit(row.cgroup)
+        if unit and _WORK_SCOPE_RE.search(unit.lower()):
+            by_unit.setdefault(unit, []).append(row)
+        else:
+            direct.append(row)
+
+    episodes: list[CoordinationResourceEpisodePayload] = []
+    for unit, unit_rows in sorted(by_unit.items()):
+        representative = min(unit_rows, key=lambda row: row.pid)
+        kind = _classify_resource(representative) or "work"
+        episodes.append(
+            _resource_payload(
+                representative,
+                unit_rows,
+                kind,
+                result,
+                repo_cwd,
+                unit=unit,
+                archive_resource=archive_resource,
+            )
+        )
+    scoped_pids = {row.pid for unit_rows in by_unit.values() for row in unit_rows}
+    for row in direct:
+        if row.pid in scoped_pids:
+            continue
+        kind = _classify_resource(row)
+        if kind is not None:
+            episodes.append(
+                _resource_payload(
+                    row,
+                    [row],
+                    kind,
+                    result,
+                    repo_cwd,
+                    unit=_systemd_unit(row.cgroup),
+                    archive_resource=archive_resource,
+                )
+            )
+    return tuple(sorted(episodes, key=lambda episode: (episode.unit or "", episode.pid)))
+
+
+def _resource_payload(
+    representative: _ProcessRow,
+    rows: Sequence[_ProcessRow],
+    kind: str,
+    result: CommandResult,
+    repo_cwd: Path,
+    *,
+    unit: str | None,
+    archive_resource: str | None,
+) -> CoordinationResourceEpisodePayload:
+    process_cwd = _proc_cwd(representative.pid)
+    resources = _command_resource_refs(representative.command, process_cwd, repo_cwd)
+    if archive_resource and _resource_owns_archive(representative, unit):
+        resources = tuple(dict.fromkeys((archive_resource, *resources)))
+    return CoordinationResourceEpisodePayload(
+        pid=representative.pid,
+        kind=kind,
+        command=_short(representative.command),
+        status="running",
+        scope=representative.cgroup,
+        unit=unit,
+        cwd=process_cwd,
+        resource_count=len(resources),
+        resources=resources[:50],
+        component_count=max(0, len(rows) - 1),
+        component_pids=tuple(sorted(row.pid for row in rows if row.pid != representative.pid))[:50],
+        provenance=_prov("process-cgroup", command=result.args, confidence=0.85 if unit else 0.75),
+    )
+
+
+def _resource_owns_archive(row: _ProcessRow, unit: str | None) -> bool:
+    text = f"{unit or ''} {row.comm} {row.command}".lower()
+    return "polylogued" in text or "polylogue-index-rebuild" in text or "rebuild-index" in text
+
+
+def _classify_resource(row: _ProcessRow) -> str | None:
+    comm = Path(row.comm).name.lower()
+    executable = _executable_name(row.command)
+    unit = (_systemd_unit(row.cgroup) or "").lower()
+    if comm in _SYSTEM_RESOURCE_NAMES or executable in _SYSTEM_RESOURCE_NAMES or "/system.slice/" in row.cgroup:
+        return None
+    if _WORK_SCOPE_RE.search(unit):
+        if "rebuild" in unit or "nix-build" in unit or "build" in unit:
+            return "build"
+        if "test" in unit or "verify" in unit:
+            return "test"
+        return "work"
+    if executable == "polylogued" or comm == "polylogued":
         return "daemon"
-    if "pytest" in text:
+    if executable == "pytest" or comm == "pytest" or _python_module(row.command) == "pytest":
         return "test"
-    if "nix" in text:
+    if executable in {"nix", "cargo", "rustc"} or comm in {"cargo", "rustc"}:
         return "build"
-    if "cargo" in text or "rustc" in text:
-        return "build"
-    if "uv" in text or "python" in text:
-        return "python"
-    return "process"
+    if executable == "uv" and any(token in row.command for token in ("pytest", "devtools verify", "devtools test")):
+        return "test"
+    return None
+
+
+def _executable_name(command: str) -> str:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    if not tokens:
+        return ""
+    return Path(tokens[0]).name.lower()
+
+
+def _python_module(command: str) -> str | None:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    for index, token in enumerate(tokens[:-1]):
+        if token == "-m":
+            return tokens[index + 1].lower()
+    return None
+
+
+def _systemd_unit(cgroup: str) -> str | None:
+    for segment in reversed(cgroup.split("/")):
+        if segment.endswith((".service", ".scope")):
+            return segment
+    return None
+
+
+def _session_ref(command: str) -> str | None:
+    match = _SESSION_ARG_RE.search(command)
+    return match.group(1) if match else None
+
+
+def _command_resource_refs(command: str, process_cwd: str | None, repo_cwd: Path) -> tuple[str, ...]:
+    refs: list[str] = []
+    if process_cwd:
+        refs.append(process_cwd)
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    for token in tokens:
+        candidate = token.split("=", 1)[-1]
+        if candidate.startswith("/") and (
+            candidate.startswith(str(repo_cwd))
+            or "/polylogue" in candidate
+            or candidate.startswith("/realm/tmp/worktrees/")
+        ):
+            refs.append(candidate)
+    return tuple(dict.fromkeys(refs))
 
 
 def _short(command: str) -> str:
@@ -545,27 +1054,116 @@ def _proc_cwd(pid: int) -> str | None:
         return None
 
 
-def _handoff_payloads(root: str) -> tuple[CoordinationHandoffPayload, ...]:
+def _handoff_payloads(
+    root: str,
+    *,
+    archive: CoordinationArchivePayload | None,
+    limit: int,
+) -> tuple[CoordinationHandoffPayload, ...]:
     repo_root = Path(root)
-    refs = (
-        (repo_root / ".agent" / "conductor-devloop" / "ACTIVE-LOOP.md", "active-loop"),
-        (repo_root / ".agent" / "conductor-devloop" / "HANDOFF-LATEST.md", "handoff"),
-        (repo_root / ".agent" / "conductor-devloop" / "OPERATING-LOG.md", "operating-log"),
-    )
     payloads: list[CoordinationHandoffPayload] = []
-    for path, kind in refs:
-        stat = path.stat() if path.exists() else None
+    scratch = repo_root / ".agent" / "scratch"
+    paths = sorted(
+        (
+            path
+            for pattern in ("*handoff*.md", "*coordination-message*.md")
+            for path in scratch.rglob(pattern)
+            if path.is_file()
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for path in paths[: max(1, limit)]:
+        stat = path.stat()
         payloads.append(
             CoordinationHandoffPayload(
+                ref=str(path),
                 path=str(path),
-                kind=kind,
-                exists=stat is not None,
-                updated_at=(datetime.fromtimestamp(stat.st_mtime, UTC).isoformat() if stat else None),
-                bytes=(stat.st_size if stat else None),
-                provenance=_prov("filesystem", path=str(path), confidence=0.8 if stat else 0.5),
+                kind="scratch-handoff",
+                exists=True,
+                updated_at=datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+                bytes=stat.st_size,
+                provenance=_prov("scratch", path=str(path), confidence=0.8),
             )
         )
-    return tuple(payloads)
+    remaining = max(0, limit - len(payloads))
+    if remaining and archive is not None:
+        payloads.extend(
+            _assertion_handoff_payloads(
+                Path(archive.index_db).with_name("user.db"),
+                repo_root=repo_root,
+                limit=remaining,
+            )
+        )
+    return tuple(payloads[: max(1, limit)])
+
+
+def _assertion_handoff_payloads(
+    user_db: Path,
+    *,
+    repo_root: Path,
+    limit: int,
+) -> tuple[CoordinationHandoffPayload, ...]:
+    if not user_db.exists() or limit <= 0:
+        return ()
+    try:
+        with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=0.2)) as conn:
+            tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "assertions" not in tables:
+                return ()
+            rows = conn.execute(
+                """
+                SELECT assertion_id, kind, body_text, scope_ref, target_ref, updated_at_ms
+                FROM assertions
+                WHERE status = 'active'
+                  AND (kind = 'handoff' OR (kind = 'note' AND body_text LIKE '[handoff]%'))
+                ORDER BY updated_at_ms DESC
+                LIMIT ?
+                """,
+                (limit * 4,),
+            ).fetchall()
+    except sqlite3.Error:
+        return ()
+    repo_tokens = {str(repo_root), repo_root.name}
+    scoped_rows = [
+        row
+        for row in rows
+        if _handoff_matches_repo(
+            body=str(row[2] or ""),
+            scope_ref=str(row[3] or ""),
+            target_ref=str(row[4] or ""),
+            repo_tokens=repo_tokens,
+        )
+    ][:limit]
+    return tuple(
+        CoordinationHandoffPayload(
+            ref=f"assertion:{row[0]}",
+            path=f"user.db:assertions:{row[0]}",
+            kind="assertion-handoff",
+            exists=True,
+            updated_at=datetime.fromtimestamp(int(row[5]) / 1000, UTC).isoformat(),
+            bytes=len(str(row[2] or "").encode()),
+            provenance=_prov(
+                "user-assertion",
+                path=f"user.db:assertions:{row[0]}",
+                confidence=0.9,
+            ),
+        )
+        for row in scoped_rows
+    )
+
+
+def _handoff_matches_repo(*, body: str, scope_ref: str, target_ref: str, repo_tokens: set[str]) -> bool:
+    body_scope = next(
+        (line.removeprefix("scope_repo: ").strip() for line in body.splitlines() if line.startswith("scope_repo: ")),
+        None,
+    )
+    if body_scope is not None:
+        return body_scope in repo_tokens
+    explicit_refs = {value for value in (scope_ref, target_ref) if value}
+    if not explicit_refs:
+        return True
+    return bool(explicit_refs & repo_tokens) or any(token in ref for ref in explicit_refs for token in repo_tokens)
 
 
 def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) -> CoordinationArchivePayload | None:
@@ -797,7 +1395,7 @@ def _session_tree_payload(
         CoordinationSessionTreeNodePayload(
             session_id=str(row["session_id"]),
             source_name=_str_or_none(row["origin"]),
-            title=_str_or_none(row["title"]),
+            title=(_short_to(str(row["title"]), 500) if row["title"] is not None else None),
             depth=depth_by_id.get(str(row["session_id"]), 0),
             is_target=bool(row["is_target"]),
         )
@@ -1095,7 +1693,7 @@ def _activity_payload_from_row(row: sqlite3.Row) -> CoordinationActivityEpisodeP
         run_ref=_str_or_none(row["run_ref"]),
         kind=str(row["kind"]),
         status=_str_or_none(row["status"]),
-        summary=_str_or_none(row["summary"]),
+        summary=(_short_to(str(row["summary"]), 1_000) if row["summary"] is not None else None),
         occurred_at=_str_or_none(row["occurred_at"]),
         refs=_json_str_tuple(row["refs_json"], limit=10),
         provenance=_prov(
@@ -1112,7 +1710,7 @@ def _proof_payload_from_row(row: sqlite3.Row) -> CoordinationProofRefPayload:
         session_id=str(row["session_id"]),
         kind=str(row["kind"]),
         status=status,
-        summary=_str_or_none(row["summary"]),
+        summary=(_short_to(str(row["summary"]), 1_000) if row["summary"] is not None else None),
         evidence_refs=_json_str_tuple(row["evidence_refs_json"], limit=10),
         provenance=_prov("archive-proof-outcome", path="index.db:session_observed_events", confidence=0.7),
     )
@@ -1127,8 +1725,10 @@ def _subagent_exchange_payload_from_row(row: sqlite3.Row) -> CoordinationSubagen
         session_id=str(row["session_id"]),
         run_ref=str(row["run_ref"]),
         agent_ref=_str_or_none(row["agent_ref"]),
-        dispatch_prompt=_str_or_none(row["dispatch_prompt"]),
-        returned_final_message=_str_or_none(row["returned_final_message"]),
+        dispatch_prompt=(_short_to(str(row["dispatch_prompt"]), 1_000) if row["dispatch_prompt"] is not None else None),
+        returned_final_message=(
+            _short_to(str(row["returned_final_message"]), 1_000) if row["returned_final_message"] is not None else None
+        ),
         status=_str_or_none(row["status"]),
         child_session_id=_str_or_none(row["native_session_id"]),
         context_snapshot_ref=_str_or_none(row["context_snapshot_ref"]),

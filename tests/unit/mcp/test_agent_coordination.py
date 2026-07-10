@@ -88,11 +88,20 @@ def test_agent_coordination_tool_returns_shared_payload(
     mcp_server: MCPServerUnderTest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "polylogue.mcp.server_tools.build_coordination_envelope", lambda **kwargs: _payload(kwargs["view"])
-    )
+    calls: list[bool] = []
 
-    raw = invoke_surface(mcp_server._tool_manager._tools["agent_coordination"].fn, view="work-item", limit=5)
+    def fake_build(**kwargs: object) -> AgentCoordinationPayload:
+        calls.append(bool(kwargs["detail"]))
+        return _payload(str(kwargs["view"]))
+
+    monkeypatch.setattr("polylogue.mcp.server_tools.build_coordination_envelope", fake_build)
+
+    raw = invoke_surface(
+        mcp_server._tool_manager._tools["agent_coordination"].fn,
+        view="work-item",
+        limit=5,
+        detail=True,
+    )
     body = json.loads(raw)
 
     assert body["view"] == "work-item"
@@ -102,16 +111,29 @@ def test_agent_coordination_tool_returns_shared_payload(
     assert body["activity_episodes"][0]["kind"] == "run"
     assert body["proof_refs"][0]["status"] == "passed"
     assert body["context_flow_refs"][0]["boundary"] == "session_start"
+    assert calls == [True]
 
 
 def test_agent_coordination_prompt_embeds_bounded_envelope(
     mcp_server: MCPServerUnderTest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("polylogue.coordination.build_coordination_envelope", lambda **kwargs: _payload(kwargs["view"]))
+    calls: list[bool] = []
 
-    raw = invoke_surface(mcp_server._prompt_manager._prompts["agent_coordination_brief"].fn, view="conflicts", limit=5)
+    def fake_build(**kwargs: object) -> AgentCoordinationPayload:
+        calls.append(bool(kwargs["detail"]))
+        return _payload(str(kwargs["view"]))
+
+    monkeypatch.setattr("polylogue.coordination.build_coordination_envelope", fake_build)
+
+    raw = invoke_surface(
+        mcp_server._prompt_manager._prompts["agent_coordination_brief"].fn,
+        view="conflicts",
+        limit=5,
+        detail=True,
+    )
 
     assert "bounded coordination envelope" in raw
     assert '"view": "conflicts"' in raw
     assert "Treat overlaps as awareness" in raw
+    assert calls == [True]
