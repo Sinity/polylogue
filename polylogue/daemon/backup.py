@@ -40,6 +40,8 @@ BACKUP_PROFILES: tuple[BackupProfile, ...] = (
     "diagnostics_bundle",
 )
 _MISSING_BLOB_WARNING_SAMPLE_LIMIT = 10
+_VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
+_VERIFICATION_RECEIPT_FORMAT = "polylogue-backup-verification-receipt-v1"
 
 
 class BackupResult(BaseModel):
@@ -84,6 +86,37 @@ def _backup_db_copy(src: Path, dst: Path) -> None:
     finally:
         conn.close()
     shutil.copy2(src, dst)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _canonical_json_sha256(payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _sqlite_user_version(path: Path) -> int:
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+
+
+def _sqlite_source_fingerprint(path: Path) -> dict[str, object]:
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256_file(path),
+        "user_version": _sqlite_user_version(path),
+    }
+
+
+def _json_str_list(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
 
 
 def _precious_archive_tiers(root: Path) -> dict[str, Path]:
@@ -347,6 +380,7 @@ def _write_manifest(
     blob_count: int,
     blob_size: int,
     warnings: list[str],
+    tier_source_fingerprints: dict[str, dict[str, object]],
     blob_reference_debt: BlobReferenceDebtReport | None = None,
 ) -> None:
     manifest = {
@@ -360,6 +394,7 @@ def _write_manifest(
         "blob_count": blob_count,
         "blob_size_bytes": blob_size,
         "blob_inventory_file": "blob-inventory.json",
+        "tier_source_fingerprints": tier_source_fingerprints,
         "warnings": warnings,
     }
     if blob_reference_debt is not None:
@@ -438,6 +473,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
 
     db_size = 0
     backed_up_files: list[str] = []
+    tier_source_fingerprints: dict[str, dict[str, object]] = {}
     source_exclusion: AbstractContextManager[object] = nullcontext()
     if "source" in included_tiers:
         from polylogue.storage.blob_publication import exclude_archive_blob_publishers
@@ -447,6 +483,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         for tier, src in included_tiers.items():
             dst = backup_root / f"{tier}.db"
             db_size += _backup_sqlite(src, dst)
+            tier_source_fingerprints[f"{tier}.db"] = _sqlite_source_fingerprint(src)
             backed_up_files.append(str(dst))
 
         blob_reference_debt: BlobReferenceDebtReport | None = None
@@ -475,6 +512,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         blob_count=blob_count,
         blob_size=blob_size,
         warnings=warnings,
+        tier_source_fingerprints=tier_source_fingerprints,
         blob_reference_debt=blob_reference_debt,
     )
     backed_up_files.append(str(backup_root / "manifest.json"))
@@ -525,6 +563,17 @@ def _verify_backup_result(result: BackupResult) -> None:
     if not result.verified:
         result.ok = False
         result.error = str(verification.get("error") or "backup verification failed")
+        return
+    try:
+        receipt_path = _write_successful_verification_receipt(output_path, verification)
+    except Exception as exc:
+        result.ok = False
+        result.verified = False
+        result.error = f"backup verification receipt write failed: {exc}"
+        result.verification = {**verification, "ok": False, "error": result.error}
+        return
+    result.verification = {**verification, "receipt_path": str(receipt_path)}
+    result.backed_up_files.append(str(receipt_path))
 
 
 def _backup_verification_scratch_parent(path: Path) -> Path | None:
@@ -628,6 +677,89 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "scratch_restore": "temporary",
             "scratch_parent": str(Path(raw_tmp).parent),
         }
+
+
+def _receipt_tier_artifacts(backup_root: Path, manifest: dict[str, object]) -> list[dict[str, object]]:
+    fingerprints = manifest.get("tier_source_fingerprints")
+    source_fingerprints = fingerprints if isinstance(fingerprints, dict) else {}
+    artifacts: list[dict[str, object]] = []
+    for name in _json_str_list(manifest.get("included_tiers")):
+        filename = str(name)
+        if not filename.endswith(".db"):
+            continue
+        path = backup_root / filename
+        if not path.exists():
+            continue
+        artifacts.append(
+            {
+                "tier": filename.removesuffix(".db"),
+                "path": filename,
+                "size_bytes": path.stat().st_size,
+                "sha256": _sha256_file(path),
+                "user_version": _sqlite_user_version(path),
+                "source_fingerprint": source_fingerprints.get(filename),
+            }
+        )
+    return artifacts
+
+
+def _receipt_blob_inventory(backup_root: Path, manifest: dict[str, object]) -> tuple[list[dict[str, object]], str]:
+    inventory_file = str(manifest.get("blob_inventory_file", "blob-inventory.json"))
+    inventory_path = backup_root / inventory_file
+    declared: dict[str, dict[str, object]] = {}
+    if inventory_path.exists():
+        raw_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        if isinstance(raw_inventory, list):
+            for item in raw_inventory:
+                if isinstance(item, dict) and "blob_hash" in item:
+                    declared[str(item["blob_hash"])] = item
+
+    rows: list[dict[str, object]] = []
+    blob_root = backup_root / "blob"
+    if blob_root.exists():
+        for blob_path in sorted(path for path in blob_root.rglob("*") if path.is_file()):
+            blob_hash = blob_path.parent.name + blob_path.name
+            declared_item = declared.get(blob_hash, {})
+            protection = declared_item.get("protection")
+            rows.append(
+                {
+                    "blob_hash": blob_hash,
+                    "path": str(blob_path.relative_to(backup_root)),
+                    "size_bytes": blob_path.stat().st_size,
+                    "sha256": _sha256_file(blob_path),
+                    "protection": _json_str_list(protection),
+                }
+            )
+    rows.sort(key=lambda item: str(item["blob_hash"]))
+    return rows, _canonical_json_sha256(rows)
+
+
+def _write_successful_verification_receipt(backup_root: Path, verification: dict[str, object]) -> Path:
+    manifest_path = backup_root / "manifest.json"
+    manifest_bytes = manifest_path.read_bytes()
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+    blobs, blob_inventory_root_sha256 = _receipt_blob_inventory(backup_root, manifest)
+    receipt = {
+        "format": _VERIFICATION_RECEIPT_FORMAT,
+        "verdict": "success",
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "archive_file_set",
+        "profile": manifest.get("profile", "rebuildable_cache_exclude"),
+        "manifest_path": "manifest.json",
+        "manifest_size_bytes": len(manifest_bytes),
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "included_tiers": _json_str_list(manifest.get("included_tiers")),
+        "tier_artifacts": _receipt_tier_artifacts(backup_root, manifest),
+        "blob_inventory_file": str(manifest.get("blob_inventory_file", "blob-inventory.json")),
+        "blob_inventory_root_sha256": blob_inventory_root_sha256,
+        "blobs": blobs,
+        "verification": {
+            key: value for key, value in verification.items() if key not in {"scratch_parent", "scratch_restore"}
+        },
+    }
+    receipt_path = backup_root / _VERIFICATION_RECEIPT_FILE
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
+    return receipt_path
 
 
 def format_backup_result(result: BackupResult) -> list[str]:

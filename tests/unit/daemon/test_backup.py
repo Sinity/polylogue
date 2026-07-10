@@ -172,6 +172,27 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     assert not (backup_root / "index.db").exists()
     assert not (backup_root / "ops.db").exists()
     assert (backup_root / "blob" / blob_hash[:2] / blob_hash[2:]).read_bytes() == payload
+    receipt_path = backup_root / "verification-receipt.json"
+    assert receipt_path.exists()
+    assert result.verification["receipt_path"] == str(receipt_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["format"] == "polylogue-backup-verification-receipt-v1"
+    assert receipt["verdict"] == "success"
+    assert receipt["manifest_sha256"] == hashlib.sha256((backup_root / "manifest.json").read_bytes()).hexdigest()
+    assert {artifact["path"] for artifact in receipt["tier_artifacts"]} == {
+        "source.db",
+        "user.db",
+        "embeddings.db",
+    }
+    assert receipt["blobs"] == [
+        {
+            "blob_hash": blob_hash,
+            "path": f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
+            "protection": ["referenced"],
+            "sha256": blob_hash,
+            "size_bytes": len(payload),
+        }
+    ]
 
     with sqlite3.connect(backup_root / "source.db") as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -321,6 +342,20 @@ def test_backup_archive_user_overlays_profile_copies_only_user_tier(
     assert manifest["profile"] == "user_overlays"
     assert manifest["included_tiers"] == ["user.db"]
     assert manifest["omitted_tiers"] == ["source.db", "index.db", "embeddings.db", "ops.db"]
+
+
+def test_backup_archive_verify_false_does_not_write_success_receipt(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_setup(workspace_env)
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=False)
+
+    assert result.ok
+    assert result.verified is False
+    assert result.output_path is not None
+    assert not (Path(result.output_path) / "verification-receipt.json").exists()
 
 
 def test_backup_archive_diagnostics_profile_copies_only_ops_tier(
@@ -537,3 +572,5 @@ def test_backup_archive_verify_marks_failed_artifact_unhealthy(
     assert result.backup_mode == "archive_file_set"
     assert result.verified is False
     assert result.error == "bad"
+    assert result.output_path is not None
+    assert not (Path(result.output_path) / "verification-receipt.json").exists()

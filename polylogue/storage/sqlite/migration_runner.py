@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -14,6 +15,8 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER})
 _MIGRATION_NAME_RE = re.compile(r"^(?P<version>\d{3,})_[a-z0-9_]+\.sql$")
+_VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
+_VERIFICATION_RECEIPT_FORMAT = "polylogue-backup-verification-receipt-v1"
 
 
 class MigrationError(RuntimeError):
@@ -34,6 +37,7 @@ class MigrationResult:
     from_version: int
     to_version: int
     applied_versions: tuple[int, ...]
+    backup_receipt: Path | None = None
 
 
 def _migration_package(tier: ArchiveTier) -> str:
@@ -70,21 +74,183 @@ def _backup_manifest_path(path: Path) -> Path:
     return path / "manifest.json" if path.is_dir() else path
 
 
-def validate_migration_backup_manifest(path: Path, tier: ArchiveTier) -> Path:
-    """Validate that ``path`` is a backup manifest containing ``tier``."""
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _canonical_json_sha256(payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _sqlite_user_version(path: Path) -> int:
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+
+
+def _json_int(value: object, default: int = -1) -> int:
+    return value if isinstance(value, int) else default
+
+
+def _json_str_list(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def _connection_main_path(conn: sqlite3.Connection) -> Path:
+    for _seq, name, filename in conn.execute("PRAGMA database_list"):
+        if name == "main" and filename:
+            return Path(str(filename))
+    raise MigrationError("migration backup receipt validation requires a file-backed SQLite connection")
+
+
+def _checkpoint_live_tier(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.Error as exc:
+        raise MigrationError("migration backup receipt validation could not checkpoint the live tier") from exc
+
+
+def _receipt_path(manifest_path: Path) -> Path:
+    return manifest_path.with_name(_VERIFICATION_RECEIPT_FILE)
+
+
+def _load_json(path: Path, *, label: str) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise MigrationError(f"migration backup {label} is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise MigrationError(f"migration backup {label} must be a JSON object: {path}")
+    return payload
+
+
+def _receipt_tier_artifact(receipt: dict[str, object], tier: ArchiveTier) -> dict[str, object]:
+    artifacts = receipt.get("tier_artifacts")
+    if not isinstance(artifacts, list):
+        raise MigrationError("migration backup receipt is missing tier artifacts")
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        if artifact.get("path") == f"{tier.value}.db" or artifact.get("tier") == tier.value:
+            return artifact
+    raise MigrationError(f"migration backup receipt does not bind {tier.value}.db")
+
+
+def _validate_tier_artifact(backup_root: Path, artifact: dict[str, object], tier: ArchiveTier) -> None:
+    filename = str(artifact.get("path") or f"{tier.value}.db")
+    artifact_path = backup_root / filename
+    if not artifact_path.exists():
+        raise MigrationError(f"migration backup receipt references missing tier artifact: {artifact_path}")
+    if _json_int(artifact.get("size_bytes")) != artifact_path.stat().st_size:
+        raise MigrationError(f"migration backup tier artifact size mismatch: {filename}")
+    if str(artifact.get("sha256")) != _sha256_file(artifact_path):
+        raise MigrationError(f"migration backup tier artifact hash mismatch: {filename}")
+    if _json_int(artifact.get("user_version")) != _sqlite_user_version(artifact_path):
+        raise MigrationError(f"migration backup tier artifact user_version mismatch: {filename}")
+
+
+def _validate_live_source_fingerprint(conn: sqlite3.Connection, artifact: dict[str, object]) -> None:
+    fingerprint = artifact.get("source_fingerprint")
+    if not isinstance(fingerprint, dict):
+        raise MigrationError("migration backup receipt is missing the live source fingerprint")
+    _checkpoint_live_tier(conn)
+    live_path = _connection_main_path(conn)
+    recorded_path_value = fingerprint.get("path")
+    recorded_path = Path(str(recorded_path_value)) if recorded_path_value else None
+    if recorded_path is not None and live_path.resolve(strict=False) != recorded_path.resolve(strict=False):
+        raise MigrationError(
+            f"migration backup receipt was recorded for {recorded_path}, not the live tier {live_path}"
+        )
+    if _json_int(fingerprint.get("size_bytes")) != live_path.stat().st_size:
+        raise MigrationError("migration backup receipt live tier size mismatch")
+    if str(fingerprint.get("sha256")) != _sha256_file(live_path):
+        raise MigrationError("migration backup receipt live tier hash mismatch")
+    if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
+        raise MigrationError("migration backup receipt live tier user_version mismatch")
+
+
+def _current_blob_inventory(backup_root: Path) -> list[dict[str, object]]:
+    manifest = _load_json(backup_root / "manifest.json", label="manifest")
+    inventory_file = str(manifest.get("blob_inventory_file", "blob-inventory.json"))
+    inventory_path = backup_root / inventory_file
+    declared: dict[str, dict[str, object]] = {}
+    if inventory_path.exists():
+        raw_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        if not isinstance(raw_inventory, list):
+            raise MigrationError(f"migration backup blob inventory is not a JSON list: {inventory_path}")
+        for item in raw_inventory:
+            if isinstance(item, dict) and "blob_hash" in item:
+                declared[str(item["blob_hash"])] = item
+    rows: list[dict[str, object]] = []
+    blob_root = backup_root / "blob"
+    if blob_root.exists():
+        for blob_path in sorted(path for path in blob_root.rglob("*") if path.is_file()):
+            blob_hash = blob_path.parent.name + blob_path.name
+            declared_item = declared.get(blob_hash, {})
+            protection = declared_item.get("protection")
+            rows.append(
+                {
+                    "blob_hash": blob_hash,
+                    "path": str(blob_path.relative_to(backup_root)),
+                    "size_bytes": blob_path.stat().st_size,
+                    "sha256": _sha256_file(blob_path),
+                    "protection": _json_str_list(protection),
+                }
+            )
+    rows.sort(key=lambda item: str(item["blob_hash"]))
+    return rows
+
+
+def _validate_blob_inventory(backup_root: Path, receipt: dict[str, object]) -> None:
+    current = _current_blob_inventory(backup_root)
+    expected_root = str(receipt.get("blob_inventory_root_sha256") or "")
+    if expected_root != _canonical_json_sha256(current):
+        raise MigrationError("migration backup receipt blob inventory mismatch")
+    expected_blobs = receipt.get("blobs")
+    if expected_blobs != current:
+        raise MigrationError("migration backup receipt blob metadata mismatch")
+    for blob in current:
+        if str(blob["blob_hash"]) != str(blob["sha256"]):
+            raise MigrationError(f"migration backup blob hash mismatch: {blob['path']}")
+
+
+def validate_migration_backup_manifest(
+    path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection | None = None
+) -> Path:
+    """Validate that ``path`` has a successful backup verification receipt."""
     manifest_path = _backup_manifest_path(path)
     if not manifest_path.exists():
         raise MigrationError(f"migration requires an existing backup manifest; missing {manifest_path}")
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise MigrationError(f"migration backup manifest is not valid JSON: {manifest_path}") from exc
+    payload = _load_json(manifest_path, label="manifest")
     if payload.get("format") != "polylogue-backup-v1":
         raise MigrationError(f"migration backup manifest has unsupported format: {manifest_path}")
-    included = {str(item) for item in payload.get("included_tiers") or []}
+    included = set(_json_str_list(payload.get("included_tiers")))
     if f"{tier.value}.db" not in included:
         raise MigrationError(f"migration backup manifest does not include {tier.value}.db: {manifest_path}")
-    return manifest_path
+    receipt_path = _receipt_path(manifest_path)
+    if not receipt_path.exists():
+        raise MigrationError(f"migration requires a successful backup verification receipt; missing {receipt_path}")
+    receipt = _load_json(receipt_path, label="verification receipt")
+    if receipt.get("format") != _VERIFICATION_RECEIPT_FORMAT:
+        raise MigrationError(f"migration backup receipt has unsupported format: {receipt_path}")
+    if receipt.get("verdict") != "success":
+        raise MigrationError(f"migration backup receipt is not a successful verification: {receipt_path}")
+    if receipt.get("manifest_sha256") != _sha256_file(manifest_path):
+        raise MigrationError("migration backup receipt does not match manifest bytes")
+    receipt_tiers = set(_json_str_list(receipt.get("included_tiers")))
+    if f"{tier.value}.db" not in receipt_tiers:
+        raise MigrationError(f"migration backup receipt does not include {tier.value}.db: {receipt_path}")
+    backup_root = manifest_path.parent
+    artifact = _receipt_tier_artifact(receipt, tier)
+    _validate_tier_artifact(backup_root, artifact, tier)
+    _validate_blob_inventory(backup_root, receipt)
+    if connection is not None:
+        _validate_live_source_fingerprint(connection, artifact)
+    return receipt_path
 
 
 def _execute_migration_sql(conn: sqlite3.Connection, sql: str) -> None:
@@ -102,7 +268,7 @@ def migrate_archive_tier(
     """Apply additive migrations for one durable tier."""
     if tier not in DURABLE_MIGRATION_TIERS:
         raise MigrationError(f"{tier.value} tier does not support in-place migrations")
-    validate_migration_backup_manifest(backup_manifest, tier)
+    backup_receipt = validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
     current_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
     target_version = ARCHIVE_VERSION_BY_TIER[tier]
     if current_version == target_version:
@@ -148,6 +314,7 @@ def migrate_archive_tier(
         from_version=start_version,
         to_version=target_version,
         applied_versions=tuple(applied),
+        backup_receipt=backup_receipt,
     )
 
 
