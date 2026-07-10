@@ -1,4 +1,7 @@
-"""Shared archive write precedence helpers."""
+"""Shared archive write precedence helpers.
+
+Writer module: index.
+"""
 
 from __future__ import annotations
 

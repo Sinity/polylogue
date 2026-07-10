@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -282,3 +283,63 @@ def test_package_matches_exact_and_prefix() -> None:
     assert verify_layering._package_matches("polylogue/cli", "polylogue.cli") is True
     assert verify_layering._package_matches("polylogue/cli", "polylogue.storage") is False
     assert verify_layering._package_matches("polylogue/cli", "polylogue.cliclone") is False
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ARCHIVE_TIERS_RELATIVE = Path("polylogue/storage/sqlite/archive_tiers")
+
+
+def _production_writer_policy() -> verify_layering.WriterModulePolicy:
+    manifest = verify_layering._load_manifest(_REPO_ROOT / "docs/plans/layering.yaml")
+    policy = verify_layering._writer_module_policy(manifest)
+    assert policy is not None
+    return policy
+
+
+def _copy_production_writer_surface(tmp_path: Path) -> Path:
+    destination = tmp_path / _ARCHIVE_TIERS_RELATIVE
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(_REPO_ROOT / _ARCHIVE_TIERS_RELATIVE, destination)
+    return destination
+
+
+def test_layering_production_writer_inventory_passes() -> None:
+    policy = _production_writer_policy()
+
+    assert verify_layering._collect_writer_module_violations(_REPO_ROOT, policy) == []
+
+
+def test_layering_unmarked_production_writer_mutation_fails(tmp_path: Path) -> None:
+    writer_root = _copy_production_writer_surface(tmp_path)
+    source_writer = writer_root / "source_write.py"
+    source_writer.write_text(
+        source_writer.read_text(encoding="utf-8").replace("Writer module: source.\n", ""),
+        encoding="utf-8",
+    )
+
+    violations = verify_layering._collect_writer_module_violations(tmp_path, _production_writer_policy())
+
+    assert any(
+        violation["file"] == "polylogue/storage/sqlite/archive_tiers/source_write.py"
+        and violation["rule"] == "writer_module_unmarked_mutation"
+        for violation in violations
+    )
+
+
+def test_layering_user_ops_mutation_fails_without_a_twin_write_contract(tmp_path: Path) -> None:
+    writer_root = _copy_production_writer_surface(tmp_path)
+    user_writer = writer_root / "user_write.py"
+    user_writer.write_text(
+        user_writer.read_text(encoding="utf-8")
+        + "\n\ndef upsert_ops_control_plane(conn: sqlite3.Connection) -> None:\n"
+        + '    conn.execute("INSERT INTO ingest_cursor (source_path, updated_at_ms) VALUES (?, ?)", ("test", 0))\n',
+        encoding="utf-8",
+    )
+
+    violations = verify_layering._collect_writer_module_violations(tmp_path, _production_writer_policy())
+
+    assert any(
+        violation["file"] == "polylogue/storage/sqlite/archive_tiers/user_write.py"
+        and violation["rule"] == "writer_module_observed_tier_mismatch"
+        for violation in violations
+    )

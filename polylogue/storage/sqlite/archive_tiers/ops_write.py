@@ -1,4 +1,7 @@
-"""Minimal ops-tier archive read/write helpers."""
+"""Minimal ops-tier archive read/write helpers.
+
+Writer module: ops.
+"""
 
 from __future__ import annotations
 

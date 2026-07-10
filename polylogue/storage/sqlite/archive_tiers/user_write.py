@@ -2,6 +2,8 @@
 
 These functions are intentionally narrow: they provide deterministic upsert
 helpers and compact envelope readers for user-only tables in ``user.py``.
+
+Writer module: user.
 """
 
 from __future__ import annotations

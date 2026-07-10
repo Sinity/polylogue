@@ -1,4 +1,7 @@
-"""Small archive-root façade over archive source/index/user tiers."""
+"""Small archive-root façade over archive source/index/user tiers.
+
+Writer module: index.
+"""
 
 from __future__ import annotations
 

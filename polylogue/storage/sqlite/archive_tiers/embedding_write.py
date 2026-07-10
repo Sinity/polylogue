@@ -1,4 +1,7 @@
-"""Archive embedding metadata write helpers."""
+"""Archive embedding metadata write helpers.
+
+Writer module: embeddings.
+"""
 
 from __future__ import annotations
 

@@ -8,9 +8,9 @@ are caught during validation rather than silently ignored.
 from __future__ import annotations
 
 from datetime import date
-from typing import ClassVar
+from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ──────────────────────────────────────────────────────────────────────
 # Topology manifest        (topology-target.yaml)
@@ -273,10 +273,66 @@ class LayeringRule(BaseModel):
     allow: LayeringConstraint | None = None
 
 
+class WriterModuleSurface(BaseModel):
+    """Durability and interruption contract for one writer-owned tier."""
+
+    model_config = ConfigDict(extra="forbid")
+    tier: Literal["source", "index", "embeddings", "user", "ops"]
+    durability: Literal["durable", "rebuildable", "disposable"]
+    interruption: Literal["atomic", "replayable", "restartable"]
+
+    _TIER_CONTRACTS: ClassVar[dict[str, tuple[str, str]]] = {
+        "source": ("durable", "atomic"),
+        "index": ("rebuildable", "replayable"),
+        "embeddings": ("rebuildable", "replayable"),
+        "user": ("durable", "atomic"),
+        "ops": ("disposable", "restartable"),
+    }
+
+    @model_validator(mode="after")
+    def _check_tier_contract(self) -> WriterModuleSurface:
+        expected = self._TIER_CONTRACTS[self.tier]
+        if (self.durability, self.interruption) != expected:
+            raise ValueError(f"{self.tier} requires durability/interruption {expected}")
+        return self
+
+
+class WriterModuleEntry(BaseModel):
+    """One production module that owns one or more SQLite write surfaces."""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    surfaces: list[WriterModuleSurface] = Field(min_length=1)
+    entrypoints: list[str] = Field(min_length=1)
+    twin_write_contract: str | None = None
+
+
+class TwinWriteContract(BaseModel):
+    """Explicit exception for one module that atomically spans two tiers."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    module: str
+    surfaces: list[Literal["source", "index", "embeddings", "user", "ops"]] = Field(min_length=2)
+    entrypoints: list[str] = Field(min_length=1)
+    reason: str
+
+
+class WriterModulePolicy(BaseModel):
+    """Production writer-module inventory and its interruption doctrine."""
+
+    model_config = ConfigDict(extra="forbid")
+    marker: str = "Writer module:"
+    mutation_roots: list[str] = Field(min_length=1)
+    modules: list[WriterModuleEntry] = Field(min_length=1)
+    twin_write_contracts: list[TwinWriteContract] = Field(default_factory=list)
+
+
 class LayeringManifest(BaseModel):
     """Root of layering.yaml."""
 
     model_config = ConfigDict(extra="forbid")
+    writer_modules: WriterModulePolicy | None = None
     rules: list[LayeringRule]
 
 
@@ -670,6 +726,10 @@ __all__ = [
     "FuzzTool",
     "LayeringManifest",
     "LayeringRule",
+    "TwinWriteContract",
+    "WriterModuleEntry",
+    "WriterModulePolicy",
+    "WriterModuleSurface",
     "LintEscalationManifest",
     "LintRule",
     "MANIFEST_MODELS",
