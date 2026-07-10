@@ -126,6 +126,25 @@ def test_kernel_rule_is_blocking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert rc == 1, "kernel_rule violation should be blocking"
 
 
+def test_stable_owner_does_not_bypass_root_kernel_rule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _make_tmp_tree(tmp_path, ["__init__.py", "product_service.py"])
+    yaml_rows: list[dict[str, str | int]] = [
+        {"path": "polylogue/__init__.py", "target": "polylogue/__init__.py", "owner": "kernel"},
+        {
+            "path": "polylogue/product_service.py",
+            "target": "polylogue/product_service.py",
+            "owner": "stable",
+            "reason": "a stable owner is not a kernel primitive",
+        },
+    ]
+    yaml_path = tmp_path / "topology-target.yaml"
+    _write_yaml(yaml_rows, yaml_path)
+
+    monkeypatch.setattr(verify_topology, "ROOT", tmp_path)
+    rc = verify_topology.main(["--yaml", str(yaml_path)])
+    assert rc == 1, "stable ownership must not allow a product service at package root"
+
+
 def test_tbd_is_warning_not_blocking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _make_tmp_tree(tmp_path, ["__init__.py", "uncertain.py"])
     yaml_rows: list[dict[str, str | int]] = [
