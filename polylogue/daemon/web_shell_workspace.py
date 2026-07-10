@@ -126,6 +126,8 @@ function pushWorkspaceURL(route) {
 
 async function loadWorkspaceRoute(route, updateURL) {
   if (!route) return;
+  state.activeView = 'search';
+  if (typeof syncVerbNavButtons === 'function') syncVerbNavButtons();
   state.mode = route.mode;
   state.selected = null;
   state.selectedRaw = null;

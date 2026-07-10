@@ -44,6 +44,28 @@ WEB_SHELL_HTML = (
   --font-mono: JetBrains Mono, Fira Code, ui-monospace, monospace;
   --base: 13px; --small: 11px; --code: 12px; --lh: 1.45;
   --radius: 4px;
+  /* One spacing scale + one type scale (evidence-cockpit redesign, #2673
+     follow-up). New IA surfaces (verb nav, landing, analyze/audit/remember
+     panels, evidence strip) are built exclusively from these tokens instead
+     of one-off pixel values, so density stays coherent as the shell grows. */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
+  --fs-xs: 11px; --fs-sm: 12px; --fs-base: 13px; --fs-md: 15px; --fs-lg: 19px; --fs-xl: 26px; --fs-display: 32px;
+}
+/* Cheap dark/light awareness: every color in this shell is already a CSS
+   custom property, so a light palette is just a second set of values for
+   the same names -- no component CSS below needs to branch on theme. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #F5F7FA; --bg-raised: #FFFFFF; --panel: #FFFFFF;
+    --panel-elevated: #EEF2F6; --panel-subtle: #F0F3F7;
+    --border: #D7DEE6; --border-strong: #B9C4D0;
+    --text: #1B242E; --text-muted: #55636F; --text-dim: #8996A2;
+    --accent: #146B85; --accent-soft: #7FB8CC; --accent-bg: #E3F1F5;
+    --ok: #1C8F63; --ok-bg: #E1F5EC; --warn: #A9660B; --warn-bg: #FBEBD3; --err: #C23A44; --err-bg: #FBE4E6; --active: #2B5FCE;
+    --role-user: #1D63C4; --role-assistant: #1B242E;
+    --role-tool: #6B4FCE; --role-system: #56606C;
+    --role-thinking: #6B7683;
+  }
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; background: var(--bg); color: var(--text);
@@ -53,10 +75,26 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
-#app { display: grid; grid-template-columns: 300px 1fr 320px; grid-template-rows: 36px 1fr 26px; height: 100vh; }
+/* IA restructure (evidence-cockpit redesign): a dedicated primary-nav row
+   organizes the shell around the product's four verbs (Search / Analyze /
+   Audit / Remember, docs/demos.md + README "search . analyze . audit .
+   remember") instead of leaving navigation implicit in route-name-shaped
+   inspector tabs. Sidebar/main/inspector/footer shift down one grid row. */
+#app { display: grid; grid-template-columns: 300px 1fr 320px; grid-template-rows: 36px 40px 1fr 26px; height: 100vh; }
 
 #status-strip { grid-column: 1/-1; grid-row: 1; display: flex; align-items: center; gap: 10px;
   padding: 0 12px; background: var(--bg-raised); border-bottom: 1px solid var(--border); font-size: var(--small); }
+
+#verb-nav { grid-column: 1/-1; grid-row: 2; display: flex; align-items: stretch; gap: 1px;
+  background: var(--border); border-bottom: 1px solid var(--border); }
+#verb-nav .verb-btn { flex: 1; display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+  gap: 1px; background: var(--bg-raised); border: none; color: var(--text-muted); cursor: pointer;
+  padding: 0 var(--sp-4); text-align: left; font-family: var(--font-ui); border-bottom: 2px solid transparent; }
+#verb-nav .verb-btn:hover { background: var(--panel-elevated); color: var(--text); }
+#verb-nav .verb-btn.active { background: var(--panel-elevated); color: var(--accent); border-bottom-color: var(--accent); }
+#verb-nav .verb-label { font-size: var(--fs-sm); font-weight: 650; letter-spacing: 0.2px; }
+#verb-nav .verb-hint { font-size: var(--fs-xs); color: var(--text-dim); }
+#verb-nav .verb-btn.active .verb-hint { color: var(--accent-soft); }
 #status-strip .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 #status-strip .dot.ok { background: var(--ok); }
 #status-strip .dot.warn { background: var(--warn); }
@@ -100,7 +138,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
    gates a single, unmissable "everything you see may be stale/failed"
    notice instead of forcing the operator to notice N independent per-panel
    "Failed to fetch" strings scattered across the shell. */
-#daemon-banner { display: none; position: fixed; top: 36px; left: 0; right: 0; z-index: 60;
+#daemon-banner { display: none; position: fixed; top: 76px; left: 0; right: 0; z-index: 60;
   background: var(--err-bg); border-bottom: 1px solid var(--err); color: var(--err);
   padding: 6px 12px; font-size: var(--small); align-items: center; gap: 10px; }
 #daemon-banner.visible { display: flex; }
@@ -108,7 +146,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 #daemon-banner .route-debug { margin-top: 0; }
 #daemon-banner .route-debug summary { color: var(--err); opacity: 0.8; }
 
-#sidebar { grid-column: 1; grid-row: 2; display: flex; flex-direction: column;
+#sidebar { grid-column: 1; grid-row: 3; display: flex; flex-direction: column;
   background: var(--panel); border-right: 1px solid var(--border); overflow: hidden; }
 #search-box { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; }
 #search-box input { flex: 1; background: var(--panel-elevated); border: 1px solid var(--border);
@@ -147,7 +185,7 @@ __SELECTION_CSS__
 .sidebar-state { padding: 16px 12px; color: var(--text-dim); font-size: var(--small); text-align: center; line-height: 1.6; }
 .sidebar-state .state-icon { font-size: 24px; margin-bottom: 6px; opacity: 0.4; }
 
-#main { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
+#main { grid-column: 2; grid-row: 3; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
 #conv-header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-raised); }
 #conv-header h2 { font-size: 15px; font-weight: 500; line-height: 1.3; margin-bottom: 4px; }
 #conv-header .title-row { display: flex; align-items: flex-start; gap: 10px; justify-content: space-between; }
@@ -212,7 +250,49 @@ __COORDINATION_CSS__
 .main-empty .kbd { font-family: var(--font-mono); font-size: 11px; background: var(--panel-elevated);
   border: 1px solid var(--border); padding: 2px 6px; border-radius: 3px; margin: 0 2px; }
 
-#inspector { grid-column: 3; grid-row: 2; background: var(--panel); border-left: 1px solid var(--border);
+/* Archive landing (evidence-cockpit redesign). Rendered in #msg-list when no
+   session is selected and the active verb is "search" -- an archive
+   snapshot and proof-oriented entry points instead of a bare placeholder. */
+.landing { max-width: 880px; margin: 0 auto; padding: var(--sp-6) var(--sp-5) var(--sp-7); }
+.landing-hero h1 { font-size: var(--fs-xl); font-weight: 600; letter-spacing: -0.01em; margin-bottom: var(--sp-2); color: var(--text); }
+.landing-hero p { font-size: var(--fs-md); color: var(--text-muted); line-height: 1.55; max-width: 640px; }
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--sp-3); margin: var(--sp-5) 0; }
+.stat-tile { border: 1px solid var(--border); border-radius: 6px; background: var(--panel-elevated); padding: var(--sp-3) var(--sp-4); }
+.stat-tile .stat-value { font-family: var(--font-mono); font-size: var(--fs-lg); color: var(--text); line-height: 1.2; }
+.stat-tile .stat-label { font-size: var(--fs-xs); color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+.stat-tile.q-unresolved .stat-value { color: var(--err); }
+.stat-tile.q-partial .stat-value { color: var(--warn); }
+.stat-tile.q-inferred .stat-value { color: var(--accent); }
+.landing-recent h3, .panel-section h3 { font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--text-dim); margin-bottom: var(--sp-2); font-weight: 650; }
+.landing-verbs { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--sp-3); margin-top: var(--sp-6); }
+.verb-card { border: 1px solid var(--border); border-radius: 8px; padding: var(--sp-4); cursor: pointer; background: var(--panel-elevated); }
+.verb-card:hover { border-color: var(--accent-soft); }
+.verb-card h4 { font-size: var(--fs-base); color: var(--accent); margin-bottom: var(--sp-1); }
+.verb-card p { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.5; }
+
+/* Analyze / Audit / Remember verb panels share one row/list vocabulary so
+   the three surfaces read as one system rather than three bespoke pages. */
+.verb-panel { max-width: 880px; margin: 0 auto; padding: var(--sp-5); }
+.panel-section { margin-bottom: var(--sp-6); }
+.panel-table, .panel-section > .panel-row { display: flex; flex-direction: column; gap: var(--sp-2); }
+.panel-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3);
+  border: 1px solid var(--border); border-radius: 6px; padding: var(--sp-2) var(--sp-3); background: var(--panel-subtle);
+  margin-bottom: var(--sp-2); font-size: var(--fs-sm); }
+.panel-row-main { flex-shrink: 0; color: var(--text); }
+.panel-row-meta, .panel-row-body .muted { color: var(--text-muted); font-size: var(--fs-xs); }
+.panel-row-body { flex: 1; min-width: 0; color: var(--text); line-height: 1.5; }
+
+/* Session evidence strip (#2673 follow-up): tool/outcome/lineage/cost
+   summary rendered above the transcript so a session reads as work first,
+   raw messages second. Sourced entirely from already-fetched insights/
+   lineage/cost panel state -- no new API surface. */
+.evidence-strip { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center;
+  padding: var(--sp-3) 16px; border-bottom: 1px solid var(--border); background: var(--bg-raised); }
+.evidence-strip.muted { color: var(--text-dim); font-size: var(--fs-xs); }
+.evidence-strip .chip { font-size: var(--fs-xs); }
+
+#inspector { grid-column: 3; grid-row: 3; background: var(--panel); border-left: 1px solid var(--border);
   overflow-y: auto; display: flex; flex-direction: column; }
 #inspector-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 #inspector-tabs button { flex: 1; background: none; border: none; border-bottom: 2px solid transparent;
@@ -258,7 +338,7 @@ __COORDINATION_CSS__
   background: var(--panel-subtle); border: 1px solid var(--border); padding: 8px; border-radius: var(--radius);
   max-height: 300px; overflow-y: auto; color: var(--text-muted); }
 
-#footer { grid-column: 1/-1; grid-row: 3; display: flex; align-items: center; gap: 14px;
+#footer { grid-column: 1/-1; grid-row: 4; display: flex; align-items: center; gap: 14px;
   padding: 0 10px; background: var(--bg-raised); border-top: 1px solid var(--border); font-size: var(--small); color: var(--text-muted); }
 #footer .hint { font-size: 10px; color: var(--text-dim); }
 #footer .hint kbd { font-family: var(--font-mono); font-size: 10px; background: var(--panel-elevated);
@@ -299,6 +379,20 @@ __COORDINATION_CSS__
     <span class="chip" id="status-live" title="Realtime channel">live: --</span>
   </div>
   <div id="daemon-banner" role="alert"></div>
+  <nav id="verb-nav" aria-label="Primary">
+    <button type="button" class="verb-btn active" data-verb="search" aria-current="page" onclick="setActiveView('search')">
+      <span class="verb-label">Search</span><span class="verb-hint">find sessions and evidence</span>
+    </button>
+    <button type="button" class="verb-btn" data-verb="analyze" onclick="setActiveView('analyze')">
+      <span class="verb-label">Analyze</span><span class="verb-hint">usage, cost &amp; coverage</span>
+    </button>
+    <button type="button" class="verb-btn" data-verb="audit" onclick="setActiveView('audit')">
+      <span class="verb-label">Audit</span><span class="verb-hint">archive debt &amp; claims</span>
+    </button>
+    <button type="button" class="verb-btn" data-verb="remember" onclick="setActiveView('remember')">
+      <span class="verb-label">Remember</span><span class="verb-hint">marks, notes &amp; judgment</span>
+    </button>
+  </nav>
   <div id="sidebar">
     <div id="search-box">
       <input type="text" id="search" placeholder="Search sessions..." autofocus>
@@ -371,6 +465,8 @@ var API = '';
 var state = {
   sessions: [], selected: null, selectedRaw: null, selectedRawError: null,
   origin: '', query: '', offset: 0, limit: 100, total: 0,
+  // Cached /api/status envelope (evidence-cockpit redesign): the landing
+  // view reads totals/readiness from here instead of a second fetch.
   status: {}, facets: null, inspectorTab: 'info',
   facetError: '',
   marks: {}, annotations: {}, savedViews: [], workspaces: [], userStateError: '',
@@ -424,7 +520,16 @@ var state = {
   // Latest web-shell API request metadata. This is a UI/debug aid only: it
   // records route, status, duration, request id, and a bounded response summary
   // without storing raw archive payloads.
-  apiDebug: {counter: 0, last: null}
+  apiDebug: {counter: 0, last: null},
+  // IA redesign (evidence-cockpit): the active primary-nav verb. 'search' is
+  // the historical single-workbench behavior (sidebar + landing/session
+  // detail + inspector); 'analyze'/'audit'/'remember' swap #main for an
+  // archive-wide panel while the sidebar (search/facets) stays live.
+  activeView: 'search',
+  // Archive-wide verb-panel caches. undefined = not yet requested; an
+  // object carries the last envelope; the route-state ledger above still
+  // owns loading/stale/failed presentation for each.
+  analyzePanel: undefined, auditPanel: undefined, assertionsPanel: undefined
 };
 
 // Three escaping contexts, three functions -- do not use one for another
@@ -975,6 +1080,10 @@ async function loadStatus() {
     var profileCounts = (readiness.session_profiles && readiness.session_profiles.counts) || {};
     var totalSessions = s.total_sessions != null ? s.total_sessions : profileCounts.total_sessions;
     var totalMessages = s.total_messages != null ? s.total_messages : null;
+    // Cache the resolved snapshot for the landing view (evidence-cockpit
+    // redesign) so it reads the same totals/readiness this chip strip just
+    // computed instead of re-deriving them or issuing a second fetch.
+    state.status = {total_sessions: totalSessions, total_messages: totalMessages, component_readiness: readiness};
     var convs = document.getElementById('status-convs');
     var msgs = document.getElementById('status-msgs');
     convs.textContent = (totalSessions != null ? Number(totalSessions).toLocaleString() : 'unknown') + ' convs';
@@ -997,6 +1106,11 @@ async function loadStatus() {
   try {
     renderDevLoopChip(await fetchJSON('/api/dev-loop', {timeoutMs: 3000}));
   } catch(e) { renderDevLoopChip(null); }
+  // Refresh whatever #main currently shows so the landing snapshot picks up
+  // the totals/readiness this call just resolved. Guarded: the isolated
+  // Node harness in tests/visual only extracts the status-chip functions
+  // and does not define renderMain, so this must stay a safe no-op there.
+  if (typeof renderMain === 'function') renderMain();
 }
 
 // Apply an MK3 data-quality class to a chip element (canonical, partial, stale,
@@ -1409,8 +1523,319 @@ async function loadReadViewExecution(id, viewId) {
   }
 }
 
+// --- Primary navigation: the four product verbs (IA redesign) -----------
+// Search / Analyze / Audit / Remember (README.md, docs/demos.md). Search
+// owns the historical sidebar + landing/session-detail/inspector workbench;
+// the other three verbs are archive-wide panels rendered into #main. Every
+// panel is built from routes that already exist in route_contracts.py --
+// several (provider-usage, archive-debt, assertions with no target_ref)
+// were registered but never wired into this shell before this change.
+
+function syncVerbNavButtons() {
+  var nav = document.getElementById('verb-nav');
+  if (!nav || !nav.querySelectorAll) return;
+  nav.querySelectorAll('.verb-btn').forEach(function(btn) {
+    var isActive = btn.dataset && btn.dataset.verb === state.activeView;
+    if (btn.classList) btn.classList.toggle('active', isActive);
+    if (isActive) btn.setAttribute('aria-current', 'page');
+    else btn.removeAttribute('aria-current');
+  });
+}
+
+function setActiveView(view) {
+  state.activeView = view || 'search';
+  syncVerbNavButtons();
+  if (typeof renderMain === 'function') renderMain();
+}
+
+function focusSearchBox() {
+  setActiveView('search');
+  var el = document.getElementById('search');
+  if (el && el.focus) el.focus();
+}
+
+function statTile(label, value, quality) {
+  var cls = quality ? ' ' + quality : '';
+  var display = (value === null || value === undefined || value === '') ? '—' : String(value);
+  return '<div class="stat-tile' + escAttr(cls) + '"><div class="stat-value">' + esc(display)
+    + '</div><div class="stat-label">' + esc(label) + '</div></div>';
+}
+
+function landingVerbCard(title, body, onclickJs) {
+  return '<div class="verb-card" onclick="' + escAttr(onclickJs) + '"><h4>' + esc(title) + '</h4><p>' + esc(body) + '</p></div>';
+}
+
+// Archive landing: rendered in #main when the Search verb has no session
+// selected. Every number comes from the already-loaded /api/status snapshot
+// (state.status, cached by loadStatus()) and the already-loaded session list
+// (state.sessions) -- no dedicated landing route exists or is required.
+function renderLandingView() {
+  var status = state.status || {};
+  var readiness = status.component_readiness || {};
+  var recent = (state.sessions || []).slice(0, 6);
+  var html = '<div class="landing">';
+  html += '<div class="landing-hero"><h1>The local flight recorder for AI work.</h1>'
+    + '<p>Search every archived session, analyze usage and cost, audit claims against structural '
+    + 'evidence, and remember reviewed judgment across Claude, Codex, ChatGPT, Gemini, and more.</p></div>';
+  html += '<div class="stat-row">'
+    + statTile('Sessions', status.total_sessions != null ? Number(status.total_sessions).toLocaleString() : null)
+    + statTile('Messages', status.total_messages != null ? Number(status.total_messages).toLocaleString() : null)
+    + statTile('Search index', readinessLabel((readiness.search || {}).state))
+    + statTile('Embeddings', readinessLabel((readiness.embeddings || {}).state))
+    + '</div>';
+  html += '<div class="landing-recent"><h3>Recent sessions</h3>';
+  if (!recent.length) {
+    var listRs = state.routeStates.sessionList || {};
+    if (listRs.state === 'loading') {
+      html += '<div class="inspector-empty">Loading recent sessions…</div>';
+    } else {
+      html += '<div class="inspector-empty">No sessions in archive yet. Run <code>polylogued run</code> to ingest sources.</div>';
+    }
+  } else {
+    recent.forEach(function(c) {
+      var date = c.created_at ? new Date(c.created_at).toLocaleDateString() : '';
+      html += '<div class="panel-row" style="cursor:pointer" onclick="selectSession(\'' + escJsAttr(c.id) + '\')">'
+        + '<span class="panel-row-main">' + esc((c.title || 'Untitled').substring(0, 90)) + '</span>'
+        + '<span class="panel-row-meta">' + esc(c.origin || 'unknown') + ' · ' + esc(date) + ' · '
+        + esc(String(c.message_count || 0)) + ' msgs</span></div>';
+    });
+  }
+  html += '</div>';
+  html += '<div class="landing-verbs">'
+    + landingVerbCard('Search', 'Find sessions by query, origin, tag, or field syntax in the sidebar.', 'focusSearchBox()')
+    + landingVerbCard('Analyze', 'Usage, cost, and coverage accounting across origins.', "setActiveView('analyze')")
+    + landingVerbCard('Audit', 'Archive debt, convergence gaps, and actionable repair rows.', "setActiveView('audit')")
+    + landingVerbCard('Remember', 'Marks, annotations, saved views, and reviewed judgment.', "setActiveView('remember')")
+    + '</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderVerbView(view) {
+  var headerEl = document.getElementById('conv-header');
+  var msgEl = document.getElementById('msg-list');
+  if (view === 'analyze') {
+    headerEl.innerHTML = '<h2>Analyze</h2><div class="conv-stats"><span class="chip">usage, cost &amp; coverage accounting</span></div>';
+    msgEl.innerHTML = renderAnalyzePanel();
+    return;
+  }
+  if (view === 'audit') {
+    headerEl.innerHTML = '<h2>Audit</h2><div class="conv-stats"><span class="chip">archive debt &amp; convergence</span></div>';
+    msgEl.innerHTML = renderAuditPanel();
+    return;
+  }
+  if (view === 'remember') {
+    headerEl.innerHTML = '<h2>Remember</h2><div class="conv-stats"><span class="chip">marks, notes &amp; judgment</span></div>';
+    msgEl.innerHTML = renderRememberPanel();
+    return;
+  }
+  headerEl.innerHTML = '<h2>Polylogue</h2><div class="conv-stats"></div>';
+  msgEl.innerHTML = renderLandingView();
+}
+
+// --- Analyze verb: GET /api/provider-usage --------------------------------
+// Mirrors the loadCostPanel/loadInsightsPanel pattern used by the inspector
+// tabs: an explicit ``{error, details}`` sentinel on failure (rather than
+// leaving the cache ``undefined``) so a failed fetch renders one truthful
+// failure panel with a retry action instead of looping the request forever.
+async function loadAnalyzePanel() {
+  var route = '/api/provider-usage?detail=headline';
+  try {
+    var data = await fetchJSON(route, {timeoutMs: 8000});
+    state.analyzePanel = data;
+  } catch(e) {
+    state.analyzePanel = {error: true, details: routeErrorDetails(e, route)};
+  }
+  if (state.activeView === 'analyze') renderMain();
+}
+
+function retryAnalyzePanel() {
+  state.analyzePanel = undefined;
+  renderMain();
+}
+
+function renderAnalyzePanel() {
+  var data = state.analyzePanel;
+  if (data === undefined) {
+    loadAnalyzePanel();
+    return '<div class="main-empty"><h3>Loading usage accounting…</h3></div>';
+  }
+  if (data && data.error) {
+    return renderInlineRouteFailure('Usage accounting unavailable', data.details, 'retryAnalyzePanel()');
+  }
+  var origins = data.origins || [];
+  var html = '<div class="verb-panel">';
+  html += '<div class="panel-section"><h3>Archive-wide estimate</h3><div class="stat-row">'
+    + statTile('Catalog API-equivalent', formatUsd(data.catalog_api_equivalent_usd))
+    + statTile('Logical (deduped)', formatUsd(data.logical_catalog_api_equivalent_usd))
+    + statTile('Provider-priced (stored)', formatUsd(data.stored_provider_priced_usd))
+    + '</div></div>';
+  html += '<div class="panel-section"><h3>By origin</h3>';
+  if (!origins.length) {
+    html += '<div class="inspector-empty">No provider usage evidence materialized yet.</div>';
+  } else {
+    origins.forEach(function(o) {
+      html += '<div class="panel-row"><span class="panel-row-main">' + esc(o.origin || 'unknown') + '</span>'
+        + '<span class="panel-row-meta">' + esc(String(o.session_count || 0)) + ' sessions · '
+        + esc(String(o.message_count || 0)) + ' messages</span></div>';
+    });
+  }
+  html += '</div>';
+  if (data.detail_level === 'headline') {
+    html += '<div class="panel-section"><h3>Coverage</h3><div class="inspector-field"><span class="value muted">'
+      + esc('headline detail: session/message/model-rollup totals only. Run `polylogue analyze usage --detail full` '
+        + 'for per-origin coverage auditing and stale-rollup diagnostics.') + '</span></div></div>';
+  }
+  if (data.caveats && data.caveats.length) {
+    html += '<div class="panel-section"><h3>Caveats</h3>';
+    data.caveats.forEach(function(cav) { html += '<div class="inspector-field"><span class="value muted">' + esc(cav) + '</span></div>'; });
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+// --- Audit verb: GET /api/archive-debt ------------------------------------
+async function loadAuditPanel() {
+  var route = '/api/archive-debt?limit=50';
+  try {
+    var data = await fetchJSON(route, {timeoutMs: 10000});
+    state.auditPanel = data;
+  } catch(e) {
+    state.auditPanel = {error: true, details: routeErrorDetails(e, route)};
+  }
+  if (state.activeView === 'audit') renderMain();
+}
+
+function retryAuditPanel() {
+  state.auditPanel = undefined;
+  renderMain();
+}
+
+function auditSeverityQuality(severity) {
+  if (severity === 'critical') return 'unresolved';
+  if (severity === 'warning') return 'partial';
+  return 'inferred';
+}
+
+function renderAuditPanel() {
+  var data = state.auditPanel;
+  if (data === undefined) {
+    loadAuditPanel();
+    return '<div class="main-empty"><h3>Loading archive debt…</h3></div>';
+  }
+  if (data && data.error) {
+    return renderInlineRouteFailure('Archive debt unavailable', data.details, 'retryAuditPanel()');
+  }
+  var totals = data.totals || {};
+  var rows = data.rows || [];
+  var html = '<div class="verb-panel">';
+  html += '<div class="panel-section"><h3>Open debt</h3><div class="stat-row">'
+    + statTile('Critical', totals.critical || 0, totals.critical ? 'q-unresolved' : '')
+    + statTile('Warning', totals.warning || 0, totals.warning ? 'q-partial' : '')
+    + statTile('Info', totals.info || 0, totals.info ? 'q-inferred' : '')
+    + statTile('Actionable', totals.actionable || 0, totals.actionable ? 'q-partial' : '')
+    + '</div></div>';
+  html += '<div class="panel-section"><h3>Rows</h3>';
+  if (!rows.length) {
+    html += '<div class="inspector-empty">No open archive debt — every audited stage reports clean.</div>';
+  } else {
+    rows.slice(0, 30).forEach(function(row) {
+      html += '<div class="panel-row"><span class="panel-row-main chip q-' + esc(auditSeverityQuality(row.severity))
+        + '">' + esc(row.kind || 'debt') + '</span><span class="panel-row-body"><strong>'
+        + esc(row.summary || row.stage || '') + '</strong><br><span class="muted">' + esc(row.stage || '')
+        + ' · ' + esc(row.status || 'open') + ' · owner ' + esc(row.owner || 'unknown')
+        + (row.affected_count != null ? ' · ' + esc(String(row.affected_count)) + ' affected' : '')
+        + '</span></span></div>';
+    });
+    if (rows.length > 30) {
+      html += '<div class="inspector-field"><span class="value muted">+' + (rows.length - 30) + ' more — see /api/archive-debt</span></div>';
+    }
+  }
+  html += '</div>';
+  if (data.caveats && data.caveats.length) {
+    html += '<div class="panel-section"><h3>Caveats</h3>';
+    data.caveats.forEach(function(cav) { html += '<div class="inspector-field"><span class="value muted">' + esc(cav) + '</span></div>'; });
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+// --- Remember verb: existing marks/annotations/saved-views state plus ----
+// GET /api/assertions (no target_ref -- recent archive-wide judgment).
+async function loadAssertionsPanel() {
+  var route = '/api/assertions?limit=25';
+  try {
+    var data = await fetchJSON(route, {timeoutMs: 8000});
+    state.assertionsPanel = data;
+  } catch(e) {
+    state.assertionsPanel = {error: true, details: routeErrorDetails(e, route)};
+  }
+  if (state.activeView === 'remember') renderMain();
+}
+
+function retryAssertionsPanel() {
+  state.assertionsPanel = undefined;
+  renderMain();
+}
+
+function renderRememberPanel() {
+  var starCount = 0, pinCount = 0, archiveCount = 0;
+  Object.keys(state.marks || {}).forEach(function(id) {
+    var m = state.marks[id] || {};
+    if (m.star) starCount++;
+    if (m.pin) pinCount++;
+    if (m.archive) archiveCount++;
+  });
+  var annotationCount = 0;
+  Object.keys(state.annotations || {}).forEach(function(id) { annotationCount += (state.annotations[id] || []).length; });
+  var html = '<div class="verb-panel">';
+  html += renderRouteStateNotice('userState', 'Marks & notes', 'loadUserState()');
+  html += '<div class="panel-section"><h3>Reviewed marks</h3><div class="stat-row">'
+    + statTile('Starred', starCount) + statTile('Pinned', pinCount) + statTile('Archived', archiveCount)
+    + statTile('Annotations', annotationCount) + statTile('Saved views', (state.savedViews || []).length)
+    + '</div></div>';
+  html += '<div class="panel-section"><h3>Saved views</h3>';
+  if (!(state.savedViews || []).length) {
+    html += '<div class="inspector-empty">No saved views yet.</div>';
+  } else {
+    (state.savedViews || []).forEach(function(v) {
+      html += '<div class="panel-row" style="cursor:pointer" onclick="applySavedView(\'' + escJsAttr(v.view_id) + '\')">'
+        + '<span class="panel-row-main">' + esc(v.name || v.view_id) + '</span></div>';
+    });
+  }
+  html += '</div>';
+  html += '<div class="panel-section"><h3>Judgment &amp; assertions</h3>';
+  var assertionsData = state.assertionsPanel;
+  if (assertionsData === undefined) {
+    loadAssertionsPanel();
+    html += '<div class="inspector-empty">Loading recent judgments…</div>';
+  } else if (assertionsData && assertionsData.error) {
+    html += renderInlinePanelFailure('Judgments unavailable', assertionsData.details, 'retryAssertionsPanel()');
+  } else {
+    var items = (assertionsData && assertionsData.items) || [];
+    if (!items.length) {
+      html += '<div class="inspector-empty">No recorded assertions yet — accepted judgment and reviewed lessons will appear here.</div>';
+    } else {
+      items.slice(0, 20).forEach(function(claim) {
+        html += '<div class="panel-row"><span class="panel-row-main chip">' + esc(claim.kind || 'assertion')
+          + '</span><span class="panel-row-body"><strong>' + esc((claim.body_text || '').slice(0, 160)) + '</strong><br>'
+          + '<span class="muted">' + esc(claim.status || 'unknown') + ' · ' + esc(claim.target_ref || '') + '</span></span></div>';
+      });
+    }
+  }
+  html += '</div></div>';
+  return html;
+}
+
 function renderMain() {
   renderWorkspaceToolbar();
+  // IA restructure: Analyze/Audit/Remember are archive-wide verb panels that
+  // replace #main outright; Search keeps the historical landing/session-
+  // detail behavior below (stack/compare are Search sub-modes reached via
+  // URL/workspace routes, not separate verbs).
+  if (state.activeView && state.activeView !== 'search') { renderVerbView(state.activeView); return; }
   if (state.mode === 'stack') { renderStackWorkspace(); return; }
   if (state.mode === 'compare') { renderCompareWorkspace(); return; }
   var headerEl = document.getElementById('conv-header');
@@ -1421,8 +1846,7 @@ function renderMain() {
       msgEl.innerHTML = renderInlineRouteFailure('Session detail unavailable', state.selectedLoadError, 'loadSessionFromError()');
     } else {
       headerEl.innerHTML = '<h2>Polylogue</h2><div class="conv-stats"></div>';
-      msgEl.innerHTML = '<div class="main-empty"><h3>Select a session</h3>'
-        + '<p>Browse from the list or use <span class="kbd">/</span> to search. Press <span class="kbd">?</span> for shortcuts.</p></div>';
+      msgEl.innerHTML = renderLandingView();
     }
     return;
   }
@@ -1495,7 +1919,7 @@ function renderMain() {
     msgEl.innerHTML = readViewSelector + '<div class="main-empty"><h3>No messages</h3><p>This session has no message content.</p></div>';
     return;
   }
-  msgEl.innerHTML = readViewSelector + messageBlocksHtml(c.messages);
+  msgEl.innerHTML = readViewSelector + renderEvidenceStrip(c) + messageBlocksHtml(c.messages);
 }
 
 function renderReadViewExecution(c, viewId) {
@@ -1648,6 +2072,60 @@ function messageBlocksHtml(messages) {
   return renderMessageBlocks(messages);
 }
 
+// Session evidence strip (session-as-work-not-chat redesign): a compact
+// summary of tool activity and structural outcomes rendered above the
+// transcript, sourced from the same /api/insights/sessions/{id} envelope
+// already used by the Insights inspector tab (kind=timeline carries the
+// keystone tool_result_is_error/exit_code-derived event.inference.kind --
+// command_succeeded/command_failed/test_passed/test_failed -- computed in
+// insights/transforms.py). No new API surface; this is presentation order.
+function evidenceStripToolCounts(insightsBody) {
+  var kinds = (insightsBody && insightsBody.kinds) || {};
+  var events = (kinds.timeline && kinds.timeline.events) || [];
+  var ok = 0, failed = 0, other = 0;
+  events.forEach(function(ev) {
+    var kind = (ev.inference && ev.inference.kind) || '';
+    if (kind === 'command_failed' || kind === 'test_failed') failed++;
+    else if (kind === 'command_succeeded' || kind === 'test_passed') ok++;
+    else other++;
+  });
+  var toolUseCount = null;
+  var profile = kinds.profile && kinds.profile.profile;
+  if (profile && profile.tool_use_count != null) toolUseCount = profile.tool_use_count;
+  return {ok: ok, failed: failed, other: other, total: events.length, tool_use_count: toolUseCount};
+}
+
+function renderEvidenceStrip(c) {
+  if (!c || !c.id) return '';
+  var data = state.insightsPanels[c.id];
+  if (data === undefined) {
+    if (typeof loadInsightsPanel === 'function') loadInsightsPanel(c.id);
+    return '<div class="evidence-strip muted">Loading evidence summary…</div>';
+  }
+  if (data && data.error) return ''; // the Evidence/Insights tabs already surface this failure with retry.
+  var counts = evidenceStripToolCounts(data);
+  var chips = [];
+  if (counts.tool_use_count != null) {
+    chips.push('<span class="chip">' + esc(String(counts.tool_use_count)) + ' tool call' + (counts.tool_use_count === 1 ? '' : 's') + '</span>');
+  }
+  if (counts.total > 0) {
+    chips.push('<span class="chip q-canonical" title="Structurally successful outcomes (exit_code/is_error)">' + esc(String(counts.ok)) + ' ok</span>');
+    if (counts.failed > 0) {
+      chips.push('<span class="chip q-unresolved" title="Structurally failed outcomes (exit_code/is_error)">' + esc(String(counts.failed)) + ' failed</span>');
+    }
+  } else {
+    chips.push('<span class="chip q-missing" title="No structured work-event evidence materialized for this session">no work events</span>');
+  }
+  var costPanel = state.costPanels[c.id];
+  if (costPanel && !costPanel.error && costPanel.total_usd !== undefined) {
+    var costTag = costPanel.confidence_tag || 'q-unavailable';
+    chips.push('<span class="chip ' + esc(costTag) + '" title="Session cost">' + esc(formatUsd(costPanel.total_usd)) + '</span>');
+  }
+  var branchChip = renderTopologyBranchChip(c);
+  if (branchChip) chips.push(branchChip);
+  return '<div class="evidence-strip" aria-label="Session evidence summary">' + chips.join('') + '</div>';
+}
+
 // --- Topology branch chip + parent-chain stack (#1203) ----------------
 // The branch chip is rendered on the session header and reflects
 // the resolved incoming edge kind (continuation / sidechain / fork /
@@ -1764,6 +2242,13 @@ async function loadInsightsPanel(id) {
   }
   if (state.selected && state.selected.id === id && state.inspectorTab === 'insights') {
     renderInspector();
+  }
+  // The evidence strip above the transcript (session-as-work redesign) reads
+  // this same cache; refresh #main too so it stops showing "Loading
+  // evidence summary…" once the fetch settles, even when the Insights tab
+  // is not the active inspector tab.
+  if (state.selected && state.selected.id === id && typeof renderMain === 'function') {
+    renderMain();
   }
 }
 
@@ -2430,6 +2915,11 @@ async function loadRawData() {
 }
 
 async function selectSession(id, updateURL, opts) {
+  // Picking a session (from the sidebar, landing, search, or a live-tail
+  // event) always means "show me this session" -- switch back to the
+  // Search verb even if Analyze/Audit/Remember was active, otherwise the
+  // click would appear to do nothing.
+  if (state.activeView !== 'search') { state.activeView = 'search'; syncVerbNavButtons(); }
   // ``opts.liveTail`` is set by the SSE handler when a message.appended
   // event lands for the currently-open session. We skip the loading
   // placeholder so the message list visibly stays put while the new
