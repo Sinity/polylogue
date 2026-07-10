@@ -13,13 +13,22 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 import pytest
 
 from tests.benchmarks.helpers import BenchmarkFixture
+
+T = TypeVar("T")
+
+
+def _benchmark_one_shot(benchmark: Any, operation: Callable[..., T], *args: object) -> T:
+    """Measure one mutating convergence run against one fresh archive."""
+    return cast(T, benchmark.pedantic(operation, args=args, rounds=1, iterations=1))
+
 
 # ── Synthetic data generation ──────────────────────────────────────
 
@@ -192,7 +201,7 @@ def test_convergence_scale_tier(benchmark, tier: str, tmp_path: Path, monkeypatc
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
-    result = benchmark(_run_convergence_probe, corpus_root, tmp_path)
+    result = _benchmark_one_shot(benchmark, _run_convergence_probe, corpus_root, tmp_path)
 
     spec = _SCALE_TIERS[tier]
     total_msgs = spec["files"] * spec["msgs_per_file"]
@@ -233,7 +242,7 @@ def test_convergence_single_file_perf(benchmark, tmp_path: Path, monkeypatch: py
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
-    result = benchmark(_run_convergence_probe, root.parent, tmp_path)
+    result = _benchmark_one_shot(benchmark, _run_convergence_probe, root.parent, tmp_path)
     msgs = 1000
     if result["total_s"] > 0:
         extras = {
@@ -313,7 +322,7 @@ def test_convergence_large_session_memory(
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
-    result = benchmark(lambda: _run_convergence_memory_probe(root.parent, tmp_path))
+    result = _benchmark_one_shot(benchmark, _run_convergence_memory_probe, root.parent, tmp_path)
 
     if result["total_s"] > 0:
         rss_peak_mb = result["rss_peak_self_mb"] + result["rss_peak_children_mb"]
@@ -362,7 +371,7 @@ def test_convergence_huge_session_memory_bounded(
 
     file_bytes = target.stat().st_size
 
-    result = benchmark(lambda: _run_convergence_memory_probe(root.parent, tmp_path))
+    result = _benchmark_one_shot(benchmark, _run_convergence_memory_probe, root.parent, tmp_path)
 
     rss_peak_mb = result["rss_peak_self_mb"] + result["rss_peak_children_mb"]
     file_mb = file_bytes / (1024 * 1024)
