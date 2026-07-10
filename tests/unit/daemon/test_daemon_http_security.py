@@ -1094,6 +1094,10 @@ class TestNoTokenLogging:
         def _assignment_carries_token(expression: ast.AST, sensitive_names: set[str]) -> bool:
             if not isinstance(expression, ast.Call):
                 return _contains_token_value(expression, sensitive_names)
+            if isinstance(expression.func, ast.Attribute) and _contains_token_value(
+                expression.func.value, sensitive_names
+            ):
+                return True
             function_name = _call_sink_name(expression)
             value_transformers = {"decode", "dumps", "encode", "format", "join", "repr", "str"}
             return bool(
@@ -1188,6 +1192,12 @@ class TestNoTokenLogging:
             ast.parse("def leak(auth_token):\n    secret = auth_token\n    logger.info('secret=%s', secret)\n")
         )
         assert seeded_alias_violation.offenders == [(3, "leak")]
+
+        seeded_transform_violation = _SensitiveOutputVisitor(Path("seeded_transform_violation.py"))
+        seeded_transform_violation.visit(
+            ast.parse("def leak(auth_token):\n    secret = auth_token.strip()\n    logger.info(secret)\n")
+        )
+        assert seeded_transform_violation.offenders == [(3, "leak")]
 
         safe_literal = _SensitiveOutputVisitor(Path("safe_literal.py"))
         safe_literal.visit(ast.parse('logger.warning("Bearer token required")\n'))
