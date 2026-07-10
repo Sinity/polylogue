@@ -12,6 +12,7 @@ import pytest
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
     DaemonWriteEvent,
+    DaemonWriteThreadBridge,
     daemon_write_telemetry_payload,
 )
 
@@ -299,6 +300,63 @@ async def test_operational_telemetry_reports_actor_queue_wait_and_hold() -> None
     assert event["actor"] == "watcher"
     assert isinstance(event["wait_seconds"], float)
     assert isinstance(event["hold_seconds"], float)
+
+
+def test_thread_bridge_serializes_sync_request_bodies_without_overlap() -> None:
+    loop = asyncio.new_event_loop()
+    loop_ready = threading.Event()
+    second_queued = threading.Event()
+    coordinator_holder: list[DaemonWriteCoordinator] = []
+
+    def observe(event: DaemonWriteEvent) -> None:
+        if event.phase == "queued" and event.actor == "http.user.marks.post":
+            second_queued.set()
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        coordinator_holder.append(DaemonWriteCoordinator(observer=observe))
+        loop_ready.set()
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread.start()
+    assert loop_ready.wait(timeout=1.0)
+    coordinator = coordinator_holder[0]
+    bridge = DaemonWriteThreadBridge(coordinator, loop, timeout=1.0)
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+    order: list[str] = []
+
+    def first_request() -> None:
+        with bridge.hold("http.reset"):
+            order.append("first")
+            first_entered.set()
+            assert release_first.wait(timeout=1.0)
+
+    def second_request() -> None:
+        with bridge.hold("http.user.marks.post"):
+            order.append("second")
+            second_entered.set()
+
+    first = threading.Thread(target=first_request)
+    second = threading.Thread(target=second_request)
+    first.start()
+    assert first_entered.wait(timeout=1.0)
+    second.start()
+    assert second_queued.wait(timeout=1.0)
+    assert not second_entered.is_set()
+    release_first.set()
+    first.join(timeout=1.0)
+    second.join(timeout=1.0)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert order == ["first", "second"]
+
+    future = asyncio.run_coroutine_threadsafe(coordinator.shutdown(timeout=1.0), loop)
+    assert future.result(timeout=1.0)
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=1.0)
 
 
 async def _unexpected_operation() -> None:

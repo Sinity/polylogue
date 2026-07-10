@@ -14,7 +14,8 @@ import contextvars
 import threading
 import time
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal, ParamSpec, TypeVar
 
@@ -297,6 +298,58 @@ class DaemonWriteCoordinator:
             _LATEST_TELEMETRY.update(payload)
 
 
+class DaemonWriteThreadBridge:
+    """Let synchronous daemon request threads hold the main-loop write gate."""
+
+    def __init__(
+        self,
+        coordinator: DaemonWriteCoordinator,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        timeout: float = 30.0,
+    ) -> None:
+        self._coordinator = coordinator
+        self._loop = loop
+        self._timeout = timeout
+
+    @contextmanager
+    def hold(self, actor: str) -> Iterator[None]:
+        entered = threading.Event()
+        settled = threading.Event()
+        release_holder: list[asyncio.Event] = []
+
+        async def hold_lease() -> None:
+            release = asyncio.Event()
+            release_holder.append(release)
+
+            async def wait_for_release() -> None:
+                entered.set()
+                settled.set()
+                await release.wait()
+
+            try:
+                await self._coordinator.run(actor, wait_for_release)
+            finally:
+                settled.set()
+
+        future = asyncio.run_coroutine_threadsafe(hold_lease(), self._loop)
+        if not settled.wait(self._timeout):
+            future.cancel()
+            raise TimeoutError(f"timed out waiting for daemon write gate actor={actor}")
+        if not entered.is_set():
+            future.result(timeout=self._timeout)
+            raise RuntimeError(f"daemon write gate ended before acquisition actor={actor}")
+        try:
+            yield
+        finally:
+            self._loop.call_soon_threadsafe(release_holder[0].set)
+            try:
+                future.result(timeout=self._timeout)
+            except TimeoutError:
+                future.cancel()
+                logger.warning("timed out releasing daemon write gate actor=%s", actor)
+
+
 def daemon_write_telemetry_payload() -> dict[str, object]:
     """Return the bounded process-global writer state for status surfaces."""
     with _TELEMETRY_LOCK:
@@ -329,6 +382,7 @@ __all__ = [
     "DaemonWriteCoordinator",
     "DaemonWriteEvent",
     "DaemonWriteSnapshot",
+    "DaemonWriteThreadBridge",
     "daemon_write_coordinator",
     "daemon_write_telemetry_payload",
 ]

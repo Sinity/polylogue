@@ -48,7 +48,11 @@ from polylogue.daemon.lineage_startup import (
     ensure_lineage_startup_readiness as _ensure_lineage_startup_readiness,
 )
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
-from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, daemon_write_coordinator
+from polylogue.daemon.write_coordinator import (
+    DaemonWriteCoordinator,
+    DaemonWriteThreadBridge,
+    daemon_write_coordinator,
+)
 from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -1123,6 +1127,7 @@ async def run_daemon_services(
                 DaemonAPIHandler,
                 auth_token=api_auth_token,
                 api_host=api_host,
+                write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
@@ -1308,10 +1313,16 @@ async def run_daemon_services(
                     mt.cancel()
             await _drain_tasks(maintenance_tasks, timeout=5.0)
 
-            await write_coordinator.run_sync(
-                "shutdown.live_ingest_attempts",
-                _mark_interrupted_live_ingest_attempts_on_shutdown,
-            )
+            try:
+                async with asyncio.timeout(5.0):
+                    await write_coordinator.run_sync(
+                        "shutdown.live_ingest_attempts",
+                        _mark_interrupted_live_ingest_attempts_on_shutdown,
+                    )
+            except TimeoutError:
+                logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
+            if not await write_coordinator.shutdown(timeout=5.0):
+                logger.warning("daemon: writer coordinator remained active after bounded shutdown drain")
 
             # Clean up pidfile and release advisory lock.
             if pidfile_fd is not None:
