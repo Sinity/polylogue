@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import threading
 from collections.abc import Sequence
 from concurrent.futures import Future
 from pathlib import Path
@@ -281,15 +279,16 @@ async def test_converger_start_skips_process_pool_for_io_only_stages(monkeypatch
 async def test_converger_start_creates_process_pool_for_cpu_bound_stages(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeExecutor:
         def __init__(self) -> None:
-            self.shutdown_called = False
+            self.shutdown_called: tuple[bool, bool] | None = None
+            self._processes: dict[int, object] = {}
 
         def submit(self, func, *args):  # type: ignore[no-untyped-def]
             future: Future[bool] = Future()
             future.set_result(func(*args))
             return future
 
-        def shutdown(self, *, wait: bool = True) -> None:
-            self.shutdown_called = wait
+        def shutdown(self, *, wait: bool = True, cancel_futures: bool = False) -> None:
+            self.shutdown_called = (wait, cancel_futures)
 
     fake_executor = FakeExecutor()
     factory = Mock(return_value=fake_executor)
@@ -312,36 +311,44 @@ async def test_converger_start_creates_process_pool_for_cpu_bound_stages(monkeyp
     await converger.stop()
 
     factory.assert_called_once_with(max_workers=3)
-    assert fake_executor.shutdown_called is True
+    assert fake_executor.shutdown_called == (False, True)
 
 
 @pytest.mark.asyncio
-async def test_converger_stop_does_not_block_the_event_loop() -> None:
-    shutdown_started = threading.Event()
-    release_shutdown = threading.Event()
+async def test_converger_stop_cancels_pending_work_without_waiting() -> None:
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.alive = True
+            self.terminated = False
 
-    class BlockingExecutor:
-        def shutdown(self, *, wait: bool = True) -> None:
-            assert wait is True
-            shutdown_started.set()
-            assert release_shutdown.wait(timeout=1.0)
+        def is_alive(self) -> bool:
+            return self.alive
 
+        def terminate(self) -> None:
+            self.terminated = True
+            self.alive = False
+
+        def join(self, timeout: float | None = None) -> None:
+            assert timeout is not None
+
+        def kill(self) -> None:
+            raise AssertionError("cooperative worker should not require SIGKILL")
+
+    class FakeExecutor:
+        def __init__(self, process: FakeProcess) -> None:
+            self._processes = {1: process}
+            self.shutdown_calls: list[tuple[bool, bool]] = []
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            self.shutdown_calls.append((wait, cancel_futures))
+
+    process = FakeProcess()
+    executor = FakeExecutor(process)
     converger = DaemonConverger([])
-    converger._executor = BlockingExecutor()  # type: ignore[assignment]
+    converger._executor = executor  # type: ignore[assignment]
 
-    stop_task = asyncio.create_task(converger.stop())
-    assert await asyncio.to_thread(shutdown_started.wait, 1.0)
+    await converger.stop()
 
-    loop_progressed = False
-
-    async def mark_progress() -> None:
-        nonlocal loop_progressed
-        await asyncio.sleep(0)
-        loop_progressed = True
-
-    await mark_progress()
-    assert loop_progressed
-    assert not stop_task.done()
-
-    release_shutdown.set()
-    await stop_task
+    assert executor.shutdown_calls == [(False, True)]
+    assert process.terminated is True
+    assert converger._executor is None

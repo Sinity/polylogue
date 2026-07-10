@@ -317,12 +317,9 @@ class DaemonWriteThreadBridge:
     def hold(self, actor: str) -> Iterator[None]:
         entered = threading.Event()
         settled = threading.Event()
-        release_holder: list[asyncio.Event] = []
+        release = asyncio.Event()
 
         async def hold_lease() -> None:
-            release = asyncio.Event()
-            release_holder.append(release)
-
             async def wait_for_release() -> None:
                 entered.set()
                 settled.set()
@@ -335,8 +332,7 @@ class DaemonWriteThreadBridge:
 
         future = asyncio.run_coroutine_threadsafe(hold_lease(), self._loop)
         if not settled.wait(self._timeout):
-            if release_holder:
-                self._loop.call_soon_threadsafe(release_holder[0].set)
+            self._loop.call_soon_threadsafe(release.set)
             future.cancel()
             with contextlib.suppress(TimeoutError, CancelledError):
                 future.result(timeout=self._timeout)
@@ -347,7 +343,7 @@ class DaemonWriteThreadBridge:
         try:
             yield
         finally:
-            self._loop.call_soon_threadsafe(release_holder[0].set)
+            self._loop.call_soon_threadsafe(release.set)
             try:
                 future.result(timeout=self._timeout)
             except TimeoutError:

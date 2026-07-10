@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -2408,12 +2408,34 @@ def test_pidfile_remains_locked_until_admitted_writers_are_drained(
     os.close(successor_fd)
 
 
+def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    class StuckCoordinator:
+        async def run_sync(self, *_args: object, **_kwargs: object) -> None:
+            await asyncio.Event().wait()
+
+    async def exercise() -> None:
+        with patch.object(daemon_cli, "daemon_write_coordinator", return_value=StuckCoordinator()):
+            await asyncio.wait_for(
+                daemon_cli._emit_daemon_lifecycle_event(
+                    "shutdown_started",
+                    archive_root_path=tmp_path,
+                    status="stopping",
+                ),
+                timeout=0.75,
+            )
+
+    asyncio.run(exercise())
+
+
 def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
     events: list[str] = []
     lifecycle_payloads: list[dict[str, object]] = []
+    watcher_coordinators: list[object] = []
     ok_schema = HealthAlert(
         check_name="schema_version",
         tier=HealthTier.FAST,
@@ -2430,8 +2452,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
             return None
 
     class FakeWatcher:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
+        def __init__(self, *_args: object, **kwargs: object) -> None:
             self.catch_up_complete = asyncio.Event()
+            watcher_coordinators.append(kwargs["write_coordinator"])
 
         async def run(self) -> None:
             events.append("watcher")
@@ -2471,6 +2494,22 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
 
         async def stop(self) -> None:
             events.append("converger-stop")
+
+    class FakeAPIServer:
+        def __init__(self) -> None:
+            self.stopped = threading.Event()
+
+        def serve_forever(self, _poll_interval: float) -> None:
+            self.stopped.wait(timeout=2.0)
+
+        def shutdown(self) -> None:
+            self.stopped.set()
+
+        def server_close(self) -> None:
+            return None
+
+    api_server = FakeAPIServer()
+    api_server_factory = Mock(return_value=api_server)
 
     def fake_emit_daemon_event(kind: str, **kwargs: object) -> None:
         assert kind == "daemon.lifecycle"
@@ -2522,6 +2561,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(
             patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=())
         )
+        stack.enter_context(patch("polylogue.daemon.http.DaemonAPIHTTPServer", api_server_factory))
         stack.enter_context(patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event))
         stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
         asyncio.run(
@@ -2533,6 +2573,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
                 browser_capture_spool_path=None,
+                enable_api=True,
             )
         )
 
@@ -2550,9 +2591,13 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     lifecycle_phases = [str(payload["phase"]) for payload in lifecycle_payloads]
     assert lifecycle_phases[0] == "startup"
     assert "component_ready" in lifecycle_phases
-    assert lifecycle_phases[-2:] == ["shutdown_started", "shutdown_complete"]
+    assert lifecycle_phases[-1] == "shutdown_started"
+    assert "shutdown_complete" not in lifecycle_phases
     lifecycle_components = {payload.get("component") for payload in lifecycle_payloads}
     assert {"fts_startup", "lineage_startup", "converger", "watcher"}.issubset(lifecycle_components)
+    assert len(watcher_coordinators) == 1
+    bridge = api_server_factory.call_args.kwargs["write_bridge"]
+    assert bridge._coordinator is watcher_coordinators[0]
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:

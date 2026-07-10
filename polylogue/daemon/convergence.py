@@ -14,7 +14,6 @@ so we skip unchanged files entirely.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -23,7 +22,7 @@ from enum import Enum
 from pathlib import Path
 
 from polylogue.logging import get_logger
-from polylogue.pipeline.services.process_pool import process_pool_executor
+from polylogue.pipeline.services.process_pool import process_pool_executor, terminate_process_pool
 
 logger = get_logger(__name__)
 _INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
@@ -203,7 +202,7 @@ class DaemonConverger:
         executor = self._executor
         self._executor = None
         if executor is not None:
-            await asyncio.to_thread(executor.shutdown, wait=True)
+            terminate_process_pool(executor)
         logger.info("converger: stopped")
 
     def converge_file(self, path: Path) -> FileState:

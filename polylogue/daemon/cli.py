@@ -927,13 +927,16 @@ async def _emit_daemon_lifecycle_event(
     if payload:
         event_payload.update(payload)
     try:
-        await daemon_write_coordinator().run_sync(
-            f"daemon.lifecycle.{phase}",
-            emit_daemon_event,
-            "daemon.lifecycle",
-            operation_id=run_id,
-            payload=event_payload,
-        )
+        async with asyncio.timeout(0.5):
+            await daemon_write_coordinator().run_sync(
+                f"daemon.lifecycle.{phase}",
+                emit_daemon_event,
+                "daemon.lifecycle",
+                operation_id=run_id,
+                payload=event_payload,
+            )
+    except TimeoutError:
+        logger.warning("daemon: timed out emitting lifecycle event %s", phase)
     except Exception:
         logger.warning("daemon: failed to emit lifecycle event %s", phase, exc_info=True)
 
@@ -1343,13 +1346,6 @@ async def run_daemon_services(
                     )
             except TimeoutError:
                 logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
-
-            if lifecycle_events_enabled:
-                await _emit_daemon_lifecycle_event(
-                    "shutdown_complete",
-                    archive_root_path=archive_root_path,
-                    status="stopped",
-                )
 
             writer_drained = await write_coordinator.shutdown(timeout=5.0)
             pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
