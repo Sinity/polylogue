@@ -30,7 +30,7 @@ from devtools import repo_root as _get_root
 ROOT = _get_root()
 PROJECTION = ROOT / "docs" / "plans" / "topology-target.yaml"
 
-KERNEL_OWNERS = frozenset({"kernel", "storage-root", "stable"})
+KERNEL_OWNERS = frozenset({"kernel"})
 
 
 def parse_yaml(text: str) -> list[dict[str, Any]]:
