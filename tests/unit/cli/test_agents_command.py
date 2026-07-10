@@ -59,10 +59,10 @@ def _payload(view: str = "status") -> AgentCoordinationPayload:
 
 
 def test_agents_status_json_uses_shared_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, Path | None, int]] = []
+    calls: list[tuple[str, Path | None, int, bool]] = []
 
-    def fake_build(*, view: str, cwd: Path | None, limit: int) -> AgentCoordinationPayload:
-        calls.append((view, cwd, limit))
+    def fake_build(*, view: str, cwd: Path | None, limit: int, detail: bool) -> AgentCoordinationPayload:
+        calls.append((view, cwd, limit, detail))
         return _payload(view)
 
     monkeypatch.setattr("polylogue.cli.commands.agents.build_coordination_envelope", fake_build)
@@ -77,7 +77,22 @@ def test_agents_status_json_uses_shared_envelope(monkeypatch: pytest.MonkeyPatch
     body = json.loads(result.output)
     assert body["view"] == "status"
     assert body["work_item"]["ref"] == "polylogue-s7ae.1"
-    assert calls == [("status", Path("/repo"), 3)]
+    assert calls == [("status", Path("/repo"), 3, False)]
+
+
+def test_agents_status_detail_is_explicitly_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[bool] = []
+
+    def fake_build(**kwargs: object) -> AgentCoordinationPayload:
+        calls.append(bool(kwargs["detail"]))
+        return _payload(str(kwargs["view"]))
+
+    monkeypatch.setattr("polylogue.cli.commands.agents.build_coordination_envelope", fake_build)
+
+    result = CliRunner().invoke(agents_command, ["status", "--detail", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert calls == [True]
 
 
 def test_agents_work_item_text_is_compact(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -158,11 +158,13 @@ class FakeRunner:
         beads_rows: list[dict[str, object]] | None,
         gates: list[dict[str, object]] | None = None,
         merge_slot: dict[str, object] | None = None,
+        process_rows: str | None = None,
     ) -> None:
         self.root = root
         self.beads_rows = beads_rows
         self.gates = gates
         self.merge_slot = merge_slot
+        self.process_rows = process_rows
 
     def __call__(self, args: Sequence[str], cwd: Path | None) -> CommandResult:
         key = tuple(args)
@@ -211,11 +213,17 @@ class FakeRunner:
                 json.dumps(self.merge_slot or {"id": "polylogue-merge-slot", "available": False, "error": "not found"}),
                 "",
             )
-        if key == ("ps", "-eo", "pid,ppid,comm,args", "--no-headers"):
+        if key == ("ps", "-eo", "pid=,ppid=,comm=,cgroup=,args="):
             return CommandResult(
                 key,
                 0,
-                "101 1 codex codex --profile full\n202 1 polylogued polylogued run --api-port 8766\n",
+                self.process_rows
+                or (
+                    "101 1 codex 0::/user.slice/user@1000.service/app.slice/codex.scope "
+                    "codex --profile full\n"
+                    "202 1 polylogued 0::/user.slice/user@1000.service/app.slice/polylogued.service "
+                    "polylogued run --api-port 8766\n"
+                ),
                 "",
             )
         return CommandResult(key, 1, "", "unexpected command")
@@ -342,7 +350,7 @@ def test_coordination_envelope_composes_archive_evidence(
     monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
     monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
 
-    payload = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), limit=4)
+    payload = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), limit=4, detail=True)
 
     assert len(payload.session_trees) == 1
     tree = payload.session_trees[0]
@@ -416,3 +424,145 @@ def test_coordination_view_projection_is_bounded(tmp_path: Path, monkeypatch: py
     assert payload.overlaps == ()
     assert payload.archive is not None
     assert payload.beads is not None
+
+
+def test_process_projection_collapses_components_and_uses_real_work_scopes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    index.touch()
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr(
+        "polylogue.coordination.envelope._proc_cwd",
+        lambda pid: str(root) if pid in {101, 102, 103, 300} else None,
+    )
+    system = "0::/system.slice"
+    rows = "\n".join(
+        (
+            "101 1 codex 0::/user.slice/user@1000.service/app.slice/codex.scope codex --session-id session-1",
+            "102 101 node 0::/user.slice/user@1000.service/app.slice/codex.scope node code-mode-host",
+            "103 101 claude-mcp 0::/user.slice/user@1000.service/app.slice/codex.scope claude-mcp mcp-server",
+            "104 1 claude 0::/user.slice/user@1000.service/app.slice/claude-spare.service claude --spare-daemon",
+            f"201 1 systemd-timesyncd {system}/systemd-timesyncd.service /nix/store/hash/systemd-timesyncd",
+            f"202 1 systemd-resolved {system}/systemd-resolved.service /nix/store/hash/systemd-resolved",
+            f"203 1 systemd-udevd {system}/systemd-udevd.service /nix/store/hash/systemd-udevd",
+            f"204 1 systemd-oomd {system}/systemd-oomd.service /nix/store/hash/systemd-oomd",
+            f"205 1 dbus-daemon {system}/dbus.service /nix/store/hash/dbus-daemon --system",
+            f"206 1 earlyoom {system}/earlyoom.service /nix/store/hash/earlyoom",
+            f"207 1 below {system}/below.service /nix/store/hash/below record",
+            "208 2 nvidia_uvm 0::/ [nvidia_uvm]",
+            "300 1 python 0::/user.slice/user@1000.service/background.slice/"
+            "sinnix-background-polylogue-index-rebuild-v30.scope python rebuild-index "
+            f"--archive-root={archive}",
+        )
+    )
+
+    payload = build_coordination_envelope(
+        cwd=root,
+        runner=FakeRunner(root, beads_rows=None, process_rows=rows),
+        detail=True,
+    )
+
+    assert [(peer.kind, peer.session_ref) for peer in payload.peers] == [("codex", "session-1")]
+    assert payload.peers[0].component_count >= 2
+    assert {102, 103} <= set(payload.peers[0].component_pids)
+    assert len(payload.resource_episodes) == 1
+    rebuild = payload.resource_episodes[0]
+    assert rebuild.kind == "build"
+    assert rebuild.unit == "sinnix-background-polylogue-index-rebuild-v30.scope"
+    assert rebuild.cwd == str(root)
+    assert str(archive) in rebuild.resources
+    assert all(name not in rebuild.command for name in ("timesyncd", "resolved", "udevd", "oomd", "earlyoom"))
+
+
+def test_compact_projection_is_byte_bounded_and_detail_recovers_omitted_peers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    index.touch()
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    rows = "\n".join(
+        f"{100 + index} 1 codex 0::/user.slice/user@1000.service/app.slice/codex-{index}.scope "
+        f"codex --session-id session-{index} --config {'x' * 180}"
+        for index in range(20)
+    )
+    runner = FakeRunner(root, beads_rows=None, process_rows=rows)
+
+    compact = build_coordination_envelope(cwd=root, runner=runner, limit=20)
+    detailed = build_coordination_envelope(cwd=root, runner=runner, limit=20, detail=True)
+
+    compact_bytes = len(compact.to_json(exclude_none=True).encode())
+    assert compact_bytes <= 8 * 1024
+    assert compact.projection.serialized_bytes == compact_bytes
+    assert compact.projection.omitted_counts["peers"] == 16
+    assert compact.projection.detail_hint == "CLI: --detail; MCP: detail=true"
+    assert len(detailed.peers) == 20
+    assert detailed.projection.detail is True
+    assert detailed.projection.omitted_counts == {}
+    assert len(detailed.to_json(exclude_none=True).encode()) > compact_bytes
+
+
+def test_handoff_projection_uses_supported_live_sources_or_empty_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    index.touch()
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+
+    empty = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), detail=True)
+    assert empty.handoff == ()
+    assert "conductor-devloop" not in empty.to_json(exclude_none=True)
+
+    scratch = root / ".agent" / "scratch"
+    scratch.mkdir(parents=True)
+    handoff = scratch / "2026-07-10-agent-handoff.md"
+    handoff.write_text("handoff evidence", encoding="utf-8")
+    populated = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), detail=True)
+
+    assert len(populated.handoff) == 1
+    assert populated.handoff[0].ref == str(handoff)
+    assert populated.handoff[0].kind == "scratch-handoff"
+    assert populated.handoff[0].exists is True
+
+    with sqlite3.connect(archive / "user.db") as conn:
+        conn.executescript(
+            """
+            CREATE TABLE assertions (
+                assertion_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                body_text TEXT,
+                scope_ref TEXT,
+                target_ref TEXT NOT NULL,
+                status TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            ) STRICT;
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO assertions
+                (assertion_id, kind, body_text, scope_ref, target_ref, status, updated_at_ms)
+            VALUES (?, 'note', ?, ?, 'blackboard:handoff', 'active', 1783700000000)
+            """,
+            ("blackboard-note:handoff-1", f"[handoff] Ready\n\nscope_repo: {root.name}", str(root)),
+        )
+    with_assertion = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), detail=True)
+    assert {item.kind for item in with_assertion.handoff} == {"scratch-handoff", "assertion-handoff"}

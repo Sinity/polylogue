@@ -27,6 +27,11 @@ def _format_options(func: F) -> F:
     )
     func = click.option("--json", "json_output", is_flag=True, help="Emit JSON.")(func)
     func = click.option(
+        "--detail",
+        is_flag=True,
+        help="Include bounded evidence details omitted from the compact default.",
+    )(func)
+    func = click.option(
         "--format",
         "-f",
         "output_format",
@@ -38,8 +43,15 @@ def _format_options(func: F) -> F:
     return func
 
 
-def _emit(view: CoordinationView, cwd: Path | None, limit: int, json_output: bool, output_format: str) -> None:
-    payload = build_coordination_envelope(view=view, cwd=cwd, limit=limit)
+def _emit(
+    view: CoordinationView,
+    cwd: Path | None,
+    limit: int,
+    json_output: bool,
+    output_format: str,
+    detail: bool,
+) -> None:
+    payload = build_coordination_envelope(view=view, cwd=cwd, limit=limit, detail=detail)
     if json_output or output_format == "json":
         click.echo(payload.to_json(exclude_none=True))
         return
@@ -62,51 +74,51 @@ def agents_command(ctx: click.Context) -> None:
 
 @agents_command.command("status")
 @_format_options
-def status_command(cwd: Path | None, limit: int, json_output: bool, output_format: str) -> None:
-    """Show the full bounded coordination envelope."""
-    _emit("status", cwd, limit, json_output, output_format)
+def status_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
+    """Show the compact bounded coordination envelope."""
+    _emit("status", cwd, limit, json_output, output_format, detail)
 
 
 @agents_command.command("self")
 @_format_options
-def self_command(cwd: Path | None, limit: int, json_output: bool, output_format: str) -> None:
+def self_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
     """Show this agent's repo, process, and current work-item projection."""
-    _emit("self", cwd, limit, json_output, output_format)
+    _emit("self", cwd, limit, json_output, output_format, detail)
 
 
 @agents_command.command("work-item")
 @_format_options
-def work_item_command(cwd: Path | None, limit: int, json_output: bool, output_format: str) -> None:
+def work_item_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
     """Show the current work item projection."""
-    _emit("work-item", cwd, limit, json_output, output_format)
+    _emit("work-item", cwd, limit, json_output, output_format, detail)
 
 
 @agents_command.command("current")
 @_format_options
-def current_command(cwd: Path | None, limit: int, json_output: bool, output_format: str) -> None:
+def current_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
     """Alias for ``work-item``."""
-    _emit("work-item", cwd, limit, json_output, output_format)
+    _emit("work-item", cwd, limit, json_output, output_format, detail)
 
 
 @agents_command.command("conflicts")
 @_format_options
-def conflicts_command(cwd: Path | None, limit: int, json_output: bool, output_format: str) -> None:
+def conflicts_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
     """Show overlap/resource awareness; same-file activity is not a blocker."""
-    _emit("conflicts", cwd, limit, json_output, output_format)
+    _emit("conflicts", cwd, limit, json_output, output_format, detail)
 
 
 @agents_command.command("overlap")
 @_format_options
-def overlap_command(cwd: Path | None, limit: int, json_output: bool, output_format: str) -> None:
+def overlap_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
     """Alias for ``conflicts``."""
-    _emit("conflicts", cwd, limit, json_output, output_format)
+    _emit("conflicts", cwd, limit, json_output, output_format, detail)
 
 
 @agents_command.command("handoff")
 @_format_options
-def handoff_command(cwd: Path | None, limit: int, json_output: bool, output_format: str) -> None:
-    """Show handoff and active-loop references for the current repo."""
-    _emit("handoff", cwd, limit, json_output, output_format)
+def handoff_command(cwd: Path | None, limit: int, json_output: bool, output_format: str, detail: bool) -> None:
+    """Show supported live handoff references for the current repo."""
+    _emit("handoff", cwd, limit, json_output, output_format, detail)
 
 
 __all__ = ["agents_command"]

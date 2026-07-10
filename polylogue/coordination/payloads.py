@@ -56,6 +56,10 @@ class CoordinationPeerPayload(SurfacePayloadModel):
     kind: str
     command: str
     cwd: str | None = None
+    logical_id: str | None = None
+    session_ref: str | None = None
+    component_count: int = 0
+    component_pids: tuple[int, ...] = ()
     provenance: CoordinationProvenancePayload
 
 
@@ -65,6 +69,12 @@ class CoordinationResourceEpisodePayload(SurfacePayloadModel):
     command: str
     status: str
     scope: str | None = None
+    unit: str | None = None
+    cwd: str | None = None
+    resource_count: int = 0
+    resources: tuple[str, ...] = ()
+    component_count: int = 0
+    component_pids: tuple[int, ...] = ()
     provenance: CoordinationProvenancePayload
 
 
@@ -81,6 +91,7 @@ class CoordinationHandoffPayload(SurfacePayloadModel):
     path: str
     kind: str
     exists: bool
+    ref: str | None = None
     updated_at: str | None = None
     bytes: int | None = None
     provenance: CoordinationProvenancePayload
@@ -215,6 +226,15 @@ class CoordinationLimitsPayload(SurfacePayloadModel):
     command_chars: int
 
 
+class CoordinationProjectionPayload(SurfacePayloadModel):
+    detail: bool = False
+    byte_budget: int | None = None
+    serialized_bytes: int | None = None
+    total_counts: dict[str, int] = Field(default_factory=dict)
+    omitted_counts: dict[str, int] = Field(default_factory=dict)
+    detail_hint: str | None = None
+
+
 class AgentCoordinationPayload(SurfacePayloadModel):
     view: CoordinationView
     generated_at: str
@@ -234,4 +254,5 @@ class AgentCoordinationPayload(SurfacePayloadModel):
     beads: CoordinationBeadsPayload | None = None
     advisories: tuple[str, ...] = ()
     limits: CoordinationLimitsPayload
+    projection: CoordinationProjectionPayload = Field(default_factory=CoordinationProjectionPayload)
     provenance: tuple[CoordinationProvenancePayload, ...] = ()

@@ -221,7 +221,7 @@ def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     """Register MCP prompts on the given server."""
 
     @mcp.prompt()
-    async def agent_coordination_brief(view: str = "status", limit: int = 10) -> str:
+    async def agent_coordination_brief(view: str = "status", limit: int = 10, detail: bool = False) -> str:
         from polylogue.coordination import CoordinationView, build_coordination_envelope
 
         normalized_view: CoordinationView
@@ -229,7 +229,11 @@ def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             normalized_view = cast(CoordinationView, view)
         else:
             normalized_view = "status"
-        payload = build_coordination_envelope(view=normalized_view, limit=hooks.clamp_limit(limit))
+        payload = build_coordination_envelope(
+            view=normalized_view,
+            limit=hooks.clamp_limit(limit),
+            detail=detail,
+        )
         return f"""Use this bounded coordination envelope to decide the next agent action.
 
 Rules:

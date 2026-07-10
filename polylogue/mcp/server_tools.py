@@ -1031,12 +1031,18 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         view: Literal["status", "self", "work-item", "conflicts", "handoff"] = "status",
         cwd: str | None = None,
         limit: MCPToolLimit = 10,
+        detail: bool = False,
     ) -> str:
-        """Return the bounded shared coordination envelope for agents."""
+        """Return the compact shared envelope; opt into bounded evidence detail."""
 
         async def run() -> str:
             path = Path(cwd).expanduser().resolve() if cwd else None
-            payload = build_coordination_envelope(view=view, cwd=path, limit=hooks.clamp_limit(limit))
+            payload = build_coordination_envelope(
+                view=view,
+                cwd=path,
+                limit=hooks.clamp_limit(limit),
+                detail=detail,
+            )
             return hooks.json_payload(payload, exclude_none=True)
 
         return await hooks.async_safe_call("agent_coordination", run)
