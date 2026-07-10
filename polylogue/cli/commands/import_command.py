@@ -40,7 +40,7 @@ from polylogue.operations.import_contracts import ImportOperation
 from polylogue.paths import archive_root
 from polylogue.sources.import_explain import explain_import_path
 from polylogue.sources.parsers import hermes_state
-from polylogue.sources.sqlite_snapshot import stage_sqlite_snapshot
+from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
 from polylogue.surfaces.payloads import model_json_document
 
 _DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
@@ -77,6 +77,7 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
         if hermes_state.looks_like_state_db_path(resolved):
             stage_sqlite_snapshot(resolved, dest)
             return dest
+        sqlite_staging_metadata_path(dest).unlink(missing_ok=True)
         if resolved.is_dir():
             shutil.copytree(resolved, dest, dirs_exist_ok=True)
         else:

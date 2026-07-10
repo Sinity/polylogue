@@ -217,6 +217,31 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
     assert imported.provider_session_id == direct.provider_session_id
 
 
+def test_stage_for_daemon_removes_stale_sqlite_provenance(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    from polylogue.cli.commands.import_command import _stage_for_daemon
+    from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
+
+    first_root = tmp_path / "hermes"
+    first_root.mkdir()
+    first = first_root / "state.db"
+    with sqlite3.connect(first) as conn:
+        conn.execute("CREATE TABLE evidence(value TEXT)")
+
+    staged = workspace_env["archive_root"] / "inbox" / "state.db"
+    stage_sqlite_snapshot(first, staged)
+    metadata_path = sqlite_staging_metadata_path(staged)
+    assert metadata_path.exists()
+
+    replacement_root = tmp_path / "replacement"
+    replacement_root.mkdir()
+    replacement = replacement_root / "state.db"
+    replacement.write_bytes(b"not a Hermes database")
+
+    assert _stage_for_daemon(replacement, replace_existing=True) == staged
+    assert staged.read_bytes() == replacement.read_bytes()
+    assert not metadata_path.exists()
+
+
 def test_import_command_uses_daemon_url_env_by_default(
     workspace_env: dict[str, Path],
     tmp_path: Path,
