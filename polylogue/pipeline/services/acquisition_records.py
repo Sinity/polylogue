@@ -51,9 +51,11 @@ def make_raw_record(
     elif raw_data.raw_bytes:
         # Bytes provided without pre-computed blob hash (e.g. from tests
         # or legacy callers). Write to blob store and use the hash.
-        from polylogue.storage.blob_store import BlobStore, get_blob_store
+        from polylogue.paths import blob_store_root
+        from polylogue.storage.blob_publication import reserved_blob_store
 
-        blob_store = BlobStore(blob_root) if blob_root is not None else get_blob_store()
+        resolved_blob_root = blob_root or blob_store_root()
+        blob_store = reserved_blob_store(resolved_blob_root)
         raw_id, blob_size = blob_store.write_from_bytes(raw_data.raw_bytes)
     else:
         raise ValueError("RawSessionData has neither blob_hash nor raw_bytes")

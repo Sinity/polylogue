@@ -432,7 +432,7 @@ def test_blob_gc_cli_plain_preview_names_skip_counts(
     assert "Blob GC dry-run" in result.output
     assert "Candidates: 1" in result.output
     assert "Result:     would delete 1 blob(s)" in result.output
-    assert "referenced=0 missing=0 unlink_error=0" in result.output
+    assert "referenced=0 reserved=0 missing=0 unlink_error=0" in result.output
 
 
 def test_blob_gc_cli_yes_deletes_and_records_generation(

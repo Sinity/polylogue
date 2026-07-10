@@ -868,7 +868,9 @@ class LiveBatchProcessor:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         blob_root = blob_store_root()
-        blob_store = BlobStore(blob_root)
+        from polylogue.storage.blob_publication import reserved_blob_store
+
+        blob_store = reserved_blob_store(blob_root, source_db_path=archive_root / "source.db")
         raw_records: list[RawSessionRecord] = []
         raw_by_id: dict[str, Path] = {}
         raw_byte_sizes: dict[Path, int] = {}

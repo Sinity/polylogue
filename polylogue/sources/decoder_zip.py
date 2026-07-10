@@ -11,7 +11,6 @@ from typing import IO
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
-from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from .cursor import _record_cursor_failure
@@ -174,13 +173,19 @@ def process_zip(
     file_mtime: str | None,
     capture_raw: bool,
     cursor_state: CursorStatePayload | None,
+    blob_root: Path | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Process a ZIP file, yielding sessions from its entries."""
     del should_group
 
+    from polylogue.paths import blob_store_root
+    from polylogue.storage.blob_publication import reserved_blob_store
+
     from .cursor import _ParseContext
     from .dispatch import GROUP_PROVIDERS
     from .emitter import _SessionEmitter
+
+    store = reserved_blob_store(blob_root or blob_store_root())
 
     validator = ZipEntryValidator(
         provider_hint,
@@ -211,7 +216,7 @@ def process_zip(
                     # ceiling during decompression, independent of the
                     # entry's (forgeable) declared header sizes.
                     with open_bounded_zip_entry(zf, name) as handle:
-                        blob_hash, blob_size = get_blob_store().write_from_fileobj(handle)
+                        blob_hash, blob_size = store.write_from_fileobj(handle)
                     precomputed_raw = RawSessionData(
                         raw_bytes=b"",
                         source_path=f"{zip_path}:{name}",

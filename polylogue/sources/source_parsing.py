@@ -12,7 +12,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
-from polylogue.storage.blob_store import BlobStore, get_blob_store
+from polylogue.storage.blob_publication import reserved_blob_store
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
@@ -118,6 +118,7 @@ def parse_one_source_path(
             file_mtime=file_mtime,
             capture_raw=capture_raw,
             cursor_state=cursor_state,
+            blob_root=blob_root,
         )
         return
 
@@ -125,7 +126,11 @@ def parse_one_source_path(
     if (provider_hint is Provider.HERMES or original_source_path is not None) and hermes_state.looks_like_state_db_path(
         path
     ):
-        blob_store = BlobStore(blob_root) if blob_root is not None else get_blob_store()
+        if blob_root is None:
+            from polylogue.paths import blob_store_root
+
+            blob_root = blob_store_root()
+        blob_store = reserved_blob_store(blob_root)
         snapshot = snapshot_sqlite_to_blob(path, blob_store)
         retained_path = blob_store.blob_path(snapshot.blob_hash)
         raw_data = None
@@ -159,7 +164,11 @@ def parse_one_source_path(
     emitter = _SessionEmitter(ctx)
 
     if capture_raw and should_group:
-        blob_store = BlobStore(blob_root) if blob_root is not None else get_blob_store()
+        if blob_root is None:
+            from polylogue.paths import blob_store_root
+
+            blob_root = blob_store_root()
+        blob_store = reserved_blob_store(blob_root)
         blob_hash, blob_size = blob_store.write_from_path(path)
         raw_data = RawSessionData(
             raw_bytes=b"",

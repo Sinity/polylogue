@@ -21,10 +21,10 @@ over the `CREATE TABLE` statement.
 
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
-| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 1` |
-| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 11` |
+| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 4` |
+| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 30` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
-| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 3` |
+| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 4` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
 
 There is no single global "schema version" number. Each tier is versioned and
@@ -45,7 +45,8 @@ from this tier, so it is the durable record of *what was ingested*.
 Core tables: `raw_sessions` (one row per acquired payload, keyed by `raw_id`,
 carrying `origin`, `native_id`, `blob_hash`, and parse/validation state),
 `raw_artifacts` (artifact-taxonomy classification per acquired file),
-`blob_refs` / `gc_generations` (content-addressed blob references and the
+`blob_refs` / `blob_publication_reservations` / `gc_generations`
+(content-addressed blob references, in-flight publication protection, and the
 GC bookkeeping described in
 [Internals § Blob Store Model](internals.md#blob-store-model)),
 `raw_hook_events`, and `history_sidecars`.

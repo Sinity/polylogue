@@ -500,6 +500,32 @@ async def _bridge_catch_up_complete(
     target.set()
 
 
+async def _reconcile_blob_publications() -> None:
+    """Classify crash-left publication reservations before source catch-up."""
+    from polylogue.paths import archive_root
+    from polylogue.storage.blob_publication import reconcile_blob_publication_reservations
+
+    root = archive_root()
+    outcome = await asyncio.to_thread(
+        reconcile_blob_publication_reservations,
+        root / "source.db",
+        root / "blob",
+        index_db_path=root / "index.db",
+    )
+    if outcome.cleared_referenced or outcome.cleared_missing or outcome.unresolved:
+        logger.info(
+            "blob publications: reconciled referenced=%d missing=%d unresolved=%d",
+            outcome.cleared_referenced,
+            outcome.cleared_missing,
+            outcome.unresolved,
+        )
+    if outcome.unresolved:
+        logger.warning(
+            "blob publications: retained %d unresolved reservation(s) for reacquisition or operator adjudication",
+            outcome.unresolved,
+        )
+
+
 def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT) -> int:
     """Run one bounded raw source→index convergence pass."""
     from polylogue.config import Config
@@ -1014,6 +1040,7 @@ async def run_daemon_services(
                     archive_root_path=archive_root_path,
                     component="lineage_startup",
                 )
+            await _reconcile_blob_publications()
             # Disable per-write FTS5 automerge so each small ingest batch does
             # not trigger a merge of the full (hundreds-of-MB) existing
             # segments (#1851).  A periodic merge pass amortises the cost.

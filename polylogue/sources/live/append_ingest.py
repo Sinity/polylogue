@@ -13,7 +13,6 @@ from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 logger = get_logger(__name__)
@@ -57,7 +56,9 @@ def _ingest_append_plans_archive(
     _add_timing(timings, "append.imports", t0)
 
     t0 = time.perf_counter()
-    blob_store = BlobStore(blob_store_root())
+    from polylogue.storage.blob_publication import reserved_blob_store
+
+    blob_store = reserved_blob_store(blob_store_root(), source_db_path=source_db)
     _add_timing(timings, "append.blob_store_open", t0)
     succeeded: list[_AppendPlan] = []
     failed: list[_AppendPlan] = []

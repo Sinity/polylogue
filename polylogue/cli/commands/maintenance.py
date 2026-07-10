@@ -1815,6 +1815,7 @@ def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
     click.echo(
         "Skipped:    "
         f"referenced={result.skipped_referenced:,} "
+        f"reserved={result.skipped_reserved:,} "
         f"missing={result.skipped_missing:,} "
         f"unlink_error={result.skipped_unlink_error:,}"
     )

@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, BinaryIO
+from typing import IO, BinaryIO, TypeAlias
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,9 @@ _VALID_HEX = re.compile(r"[0-9a-f]{64}")
 Heartbeat = Callable[[], None]
 
 
+BeforeBlobPublish: TypeAlias = Callable[[str, int], None]
+
+
 def _write_all(fd: int, data: bytes) -> None:
     """Write all *data* to *fd*, retrying on partial writes."""
     offset = 0
@@ -54,8 +57,13 @@ def _write_all(fd: int, data: bytes) -> None:
 class BlobStore:
     """Content-addressed blob store backed by the local filesystem."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, before_publish: BeforeBlobPublish | None = None) -> None:
         self.root = root
+        self._before_publish = before_publish
+
+    def _reserve_publication(self, blob_hash: str, size_bytes: int) -> None:
+        if self._before_publish is not None:
+            self._before_publish(blob_hash, size_bytes)
 
     def blob_path(self, hash_hex: str) -> Path:
         """Return the filesystem path for a blob by its hex digest."""
@@ -116,6 +124,8 @@ class BlobStore:
             hash_hex = hasher.hexdigest()
             dest = self.blob_path(hash_hex)
 
+            self._reserve_publication(hash_hex, size)
+
             if dest.exists():
                 os.unlink(tmp_path)
                 tmp_path = None
@@ -164,6 +174,7 @@ class BlobStore:
 
             hash_hex = hasher.hexdigest()
             dest = self.blob_path(hash_hex)
+            self._reserve_publication(hash_hex, size)
             if dest.exists():
                 os.close(fd)
                 fd = None
@@ -192,6 +203,8 @@ class BlobStore:
         """
         hash_hex = hashlib.sha256(data).hexdigest()
         dest = self.blob_path(hash_hex)
+
+        self._reserve_publication(hash_hex, len(data))
 
         if dest.exists():
             return hash_hex, len(data)
@@ -547,6 +560,7 @@ def load_raw_content(raw_id: str) -> bytes:
 
 __all__ = [
     "BlobStore",
+    "BeforeBlobPublish",
     "BlobVerifyAllResult",
     "BlobVerifyFailure",
     "CleanupOrphansResult",

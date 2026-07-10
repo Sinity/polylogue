@@ -111,7 +111,12 @@ def repair_orphaned_blobs_data(config: Config, dry_run: bool = False) -> BlobRep
         max_batch=100_000,
         dry_run=dry_run,
     )
-    protected_detail = f"; skipped {report.skipped_referenced} referenced" if report.skipped_referenced else ""
+    protected_parts: list[str] = []
+    if report.skipped_referenced:
+        protected_parts.append(f"{report.skipped_referenced} referenced")
+    if report.skipped_reserved:
+        protected_parts.append(f"{report.skipped_reserved} reserved")
+    protected_detail = f"; skipped {', '.join(protected_parts)}" if protected_parts else ""
     if dry_run:
         return BlobRepairOutcome(
             report.would_delete_count,

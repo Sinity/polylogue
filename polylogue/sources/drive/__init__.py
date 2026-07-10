@@ -235,9 +235,10 @@ def iter_drive_raw_data(
         ):
             continue
 
-        from polylogue.storage.blob_store import get_blob_store
+        from polylogue.paths import blob_store_root
+        from polylogue.storage.blob_publication import reserved_blob_store
 
-        blob_store = get_blob_store()
+        blob_store = reserved_blob_store(blob_store_root())
 
         # Check if a local cache file exists (drive-cache or legacy path).
         # If so, use it instead of re-downloading from Drive.

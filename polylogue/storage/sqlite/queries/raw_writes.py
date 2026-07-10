@@ -71,6 +71,10 @@ async def save_raw_session(
             (file_mtime_ms, record.source_path, record.raw_id, file_mtime_ms, record.source_path),
         )
 
+    await conn.execute(
+        "DELETE FROM blob_publication_reservations WHERE blob_hash = ?",
+        (blob_hash,),
+    )
     if transaction_depth == 0:
         await conn.commit()
     return inserted

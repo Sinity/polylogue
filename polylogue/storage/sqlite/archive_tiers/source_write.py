@@ -307,6 +307,7 @@ def write_source_raw_session_blob_ref(
     acquired_at_ms: int,
     native_id: str | None = None,
     raw_id: str | None = None,
+    additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
     manage_transaction: bool = True,
 ) -> str:
     """Insert one raw session that already has a materialized raw-payload blob.
@@ -354,6 +355,18 @@ def write_source_raw_session_blob_ref(
                 acquired_at_ms=acquired_at_ms,
             ),
         )
+        for additional_ref in additional_blob_refs:
+            _insert_blob_ref(
+                conn,
+                ArchiveSourceBlobRef(
+                    blob_hash=additional_ref.blob_hash,
+                    raw_id=resolved_raw_id,
+                    ref_type=additional_ref.ref_type,
+                    source_path=additional_ref.source_path,
+                    size_bytes=additional_ref.size_bytes or 0,
+                    acquired_at_ms=additional_ref.acquired_at_ms or acquired_at_ms,
+                ),
+            )
     return resolved_raw_id
 
 
@@ -588,6 +601,9 @@ def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> Non
             ref.acquired_at_ms,
         ),
     )
+    from polylogue.storage.blob_publication import consume_blob_publication_reservation
+
+    consume_blob_publication_reservation(conn, ref.blob_hash)
 
 
 def _insert_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSourceArtifact) -> None:

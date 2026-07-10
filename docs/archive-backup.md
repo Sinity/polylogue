@@ -78,9 +78,9 @@ Restore expectations:
 Blob garbage collection is dry-run-first work. A safe GC report must prove:
 
 - the candidate blob is not referenced by `source.db.raw_sessions`;
-- the candidate is older than the generation/age gate (`MIN_AGE_S`, the sole
-  defense against a blob write racing a concurrent GC pass — see
-  `docs/internals.md` "GC concurrency model");
+- the candidate has neither a durable reference nor a publication reservation;
+- the candidate is older than the generation/age defense-in-depth gate
+  (`MIN_AGE_S`; see `docs/internals.md` "GC concurrency model");
 - the report names exact candidate counts and references before deletion.
 
 Do not delete blobs based only on filesystem age, directory mtime, or absence

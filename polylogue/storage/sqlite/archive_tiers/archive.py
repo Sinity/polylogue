@@ -127,6 +127,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     stored_message_count,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceBlobRef,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
@@ -785,10 +786,10 @@ class ArchiveStore:
         return self._source_conn
 
     def commit(self) -> None:
-        """Commit the index.db and (if open) source.db write connections.
+        """Commit index.db and any source transaction left by other callers.
 
-        Bulk callers that pass ``manage_transaction=False`` to the write methods
-        own commit cadence; this flushes both tiers' in-flight batch.
+        Raw ingest writes commit source references promptly to consume
+        publication reservations; bulk cadence applies to the derived index.
         """
         self._conn.commit()
         if self._source_conn is not None:
@@ -842,6 +843,42 @@ class ArchiveStore:
             "raw_links": 0,
         }
 
+    def _preacquire_attachment_blobs(
+        self,
+        session: ParsedSession,
+        *,
+        source_path: str,
+        acquired_at_ms: int,
+    ) -> tuple[
+        dict[int, tuple[bytes | None, int, str]],
+        tuple[ArchiveSourceBlobRef, ...],
+    ]:
+        """Reserve inline attachment bytes before the source transaction."""
+        from polylogue.storage.blob_publication import reserved_blob_store
+
+        store = reserved_blob_store(
+            self.archive_root / "blob",
+            source_db_path=self.source_db_path,
+        )
+        acquired: dict[int, tuple[bytes | None, int, str]] = {}
+        refs: list[ArchiveSourceBlobRef] = []
+        for attachment in session.attachments:
+            if not attachment.inline_bytes:
+                continue
+            hash_hex, size = store.write_from_bytes(attachment.inline_bytes)
+            blob_hash = bytes.fromhex(hash_hex)
+            acquired[id(attachment)] = (blob_hash, size, "acquired")
+            refs.append(
+                ArchiveSourceBlobRef(
+                    blob_hash=blob_hash,
+                    ref_type="attachment",
+                    source_path=source_path,
+                    size_bytes=size,
+                    acquired_at_ms=acquired_at_ms,
+                )
+            )
+        return acquired, tuple(refs)
+
     def _write_parsed_precedence_result(
         self,
         session: ParsedSession,
@@ -851,6 +888,7 @@ class ArchiveStore:
         stage_timings_s: dict[str, float] | None,
         stage_timing_prefix: str,
         manage_transaction: bool,
+        preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
     ) -> ArchiveRawParsedWriteResult:
         session_id = str(make_session_id(session.source_name, session.provider_session_id))
         content_hash = str(session_content_hash(session))
@@ -962,6 +1000,7 @@ class ArchiveStore:
             force_replace=browser_precedence == "replace",
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
+            preacquired_attachment_blobs=preacquired_attachment_blobs,
             manage_transaction=manage_transaction,
         )
         counts = self._write_counts(session)
@@ -1032,10 +1071,10 @@ class ArchiveStore:
     ) -> ArchiveRawParsedWriteResult:
         """Write raw acquisition bytes and return write/skip counts.
 
-        With the default ``manage_transaction=True`` each tier write commits on
-        its own. A bulk caller passes ``manage_transaction=False`` and owns
-        commit cadence via :meth:`commit` / :meth:`rollback` so the source.db and
-        index.db writes are batched into shared transactions.
+        The durable source write always commits promptly so parallel publishers
+        can establish their reservations. ``manage_transaction=False`` batches
+        only the rebuildable index write; holding a source transaction across
+        worker results would block the next pre-publication reservation.
         """
 
         def add_timing(name: str, started_at: float) -> None:
@@ -1043,6 +1082,11 @@ class ArchiveStore:
                 key = f"{stage_timing_prefix}.{name}"
                 stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
 
+        preacquired_attachments, attachment_blob_refs = self._preacquire_attachment_blobs(
+            session,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+        )
         t0 = time.perf_counter()
         source_conn = self._ensure_source_conn()
         add_timing("source_connect", t0)
@@ -1056,7 +1100,8 @@ class ArchiveStore:
             raw_id=raw_id,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
-            manage_transaction=manage_transaction,
+            additional_blob_refs=attachment_blob_refs,
+            manage_transaction=True,
         )
         add_timing("source_raw_write", t0)
         t0 = time.perf_counter()
@@ -1067,6 +1112,7 @@ class ArchiveStore:
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
+            preacquired_attachment_blobs=preacquired_attachments,
         )
         add_timing("index_parsed_write", t0)
         return result
@@ -1124,6 +1170,11 @@ class ArchiveStore:
                 key = f"{stage_timing_prefix}.{name}"
                 stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
 
+        preacquired_attachments, attachment_blob_refs = self._preacquire_attachment_blobs(
+            session,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+        )
         t0 = time.perf_counter()
         source_conn = self._ensure_source_conn()
         add_timing("source_connect", t0)
@@ -1138,7 +1189,8 @@ class ArchiveStore:
             blob_hash=bytes.fromhex(blob_hash_hex),
             blob_size=blob_size,
             acquired_at_ms=acquired_at_ms,
-            manage_transaction=manage_transaction,
+            additional_blob_refs=attachment_blob_refs,
+            manage_transaction=True,
         )
         add_timing("source_raw_blob_ref_write", t0)
         t0 = time.perf_counter()
@@ -1149,6 +1201,7 @@ class ArchiveStore:
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
+            preacquired_attachment_blobs=preacquired_attachments,
         )
         add_timing("index_parsed_write", t0)
         return result

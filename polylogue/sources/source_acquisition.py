@@ -11,7 +11,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.logging import get_logger
-from polylogue.storage.blob_store import BlobStore, get_blob_store
+from polylogue.storage.blob_publication import reserved_blob_store
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
@@ -83,7 +83,11 @@ def iter_source_raw_data(
     if walk is None:
         return
 
-    blob_store = BlobStore(blob_root) if blob_root is not None else get_blob_store()
+    if blob_root is None:
+        from polylogue.paths import blob_store_root
+
+        blob_root = blob_store_root()
+    blob_store = reserved_blob_store(blob_root)
     failed_count = 0
     empty_artifact_count = 0
     for path, file_mtime in walk.paths_to_process:

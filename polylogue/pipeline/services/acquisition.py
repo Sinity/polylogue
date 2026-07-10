@@ -87,6 +87,7 @@ class AcquisitionService:
         drive_config: DriveConfig | None = None,
         progress_label: str = "Scanning",
         on_record: Callable[[RawSessionRecord], Awaitable[None]] | None = None,
+        on_source_complete: Callable[[], Awaitable[None]] | None = None,
         observation_callback: Callable[[JSONDocument], None] | None = None,
         persist_cursors: bool = True,
     ) -> ScanResult:
@@ -141,6 +142,9 @@ class AcquisitionService:
                 cursor_state["error_count"] = int(prior_errors) + 1
                 cursor_state["latest_error"] = str(exc)
 
+            if on_source_complete is not None:
+                await on_source_complete()
+
             # Slice B: persist cursor stat fields for all source files after
             # processing so the next run can skip unchanged files.
             if persist_cursors and not source.is_drive:
@@ -175,7 +179,7 @@ class AcquisitionService:
         # Records are metadata-only (~1 KB each, no BLOBs). Larger batches
         # reduce commit frequency and async thread-crossing overhead.
         flush_interval = 500
-        items_since_flush = 0
+        pending_records: list[RawSessionRecord] = []
         peak_observation: JSONDocument | None = None
         observation_count = 0
         peak_baseline = read_peak_rss_self_mb() or 0.0
@@ -222,25 +226,32 @@ class AcquisitionService:
             if not isinstance(peak_value, int | float) or peak_rss_self_mb > peak_value:
                 peak_observation = dict(observation)
 
-        async def _store(record: RawSessionRecord) -> None:
-            nonlocal items_since_flush
-            await self._persist_record(record, result=result)
-            items_since_flush += 1
-            if items_since_flush >= flush_interval:
-                await self.backend.bulk_flush()
-                items_since_flush = 0
+        async def _flush_pending() -> None:
+            if not pending_records:
+                return
+            records = tuple(pending_records)
+            pending_records.clear()
+            async with self.backend.bulk_connection():
+                for pending_record in records:
+                    await self._persist_record(pending_record, result=result)
 
-        async with self.backend.bulk_connection():
-            visit_result = await self.visit_sources(
-                sources,
-                progress_callback=progress_callback,
-                ui=ui,
-                drive_config=drive_config,
-                progress_label="Scanning",
-                on_record=_store,
-                observation_callback=_observe,
-            )
-            result.errors += visit_result.counts["errors"]
+        async def _store(record: RawSessionRecord) -> None:
+            pending_records.append(record)
+            if len(pending_records) >= flush_interval:
+                await _flush_pending()
+
+        visit_result = await self.visit_sources(
+            sources,
+            progress_callback=progress_callback,
+            ui=ui,
+            drive_config=drive_config,
+            progress_label="Scanning",
+            on_record=_store,
+            on_source_complete=_flush_pending,
+            observation_callback=_observe,
+        )
+        await _flush_pending()
+        result.errors += visit_result.counts["errors"]
 
         if peak_observation is not None:
             result.diagnostics["peak_observation"] = peak_observation

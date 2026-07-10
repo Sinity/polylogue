@@ -158,6 +158,10 @@ class SQLiteRawMixin:
                     acquired_at_ms,
                 ),
             )
+            await conn.execute(
+                "DELETE FROM blob_publication_reservations WHERE blob_hash = ?",
+                (blob_hash,),
+            )
             await conn.commit()
             return not existed
 

@@ -249,6 +249,7 @@ def write_parsed_session_to_archive(
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+    preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
     manage_transaction: bool = True,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
@@ -473,6 +474,7 @@ def write_parsed_session_to_archive(
             position_offset=position_offset,
             duplicate_native_ids=duplicate_message_native_ids,
             refresh_attachment_ids=stale_attachment_ids,
+            preacquired_blobs=preacquired_attachment_blobs,
         )
         add_timing("index.attachments", t0)
         t0 = time.perf_counter()
@@ -1963,6 +1965,7 @@ def _write_attachments(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     refresh_attachment_ids: set[str] | None = None,
+    preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
 ) -> None:
     by_native_message_id = {
         message.provider_message_id: _message_id(
@@ -1984,7 +1987,10 @@ def _write_attachments(
         if message_id is None:
             continue
         touched_attachment_ids.add(attachment_id)
-        blob_hash, byte_count, acquisition_status = _acquire_attachment_blob(attachment)
+        acquired_blob = (preacquired_blobs or {}).get(id(attachment))
+        blob_hash, byte_count, acquisition_status = (
+            acquired_blob if acquired_blob is not None else _acquire_attachment_blob(conn, attachment)
+        )
         conn.execute(
             """
             INSERT INTO attachments (
@@ -4353,7 +4359,10 @@ def _attachment_position(attachment: ParsedAttachment) -> int:
     return int.from_bytes(digest.digest()[:4], "big")
 
 
-def _acquire_attachment_blob(attachment: ParsedAttachment) -> tuple[bytes | None, int, str]:
+def _acquire_attachment_blob(
+    conn: sqlite3.Connection,
+    attachment: ParsedAttachment,
+) -> tuple[bytes | None, int, str]:
     """Acquire an attachment's bytes when available (#2468).
 
     Returns ``(blob_hash, byte_count, acquisition_status)``. Inline bytes present
@@ -4366,9 +4375,25 @@ def _acquire_attachment_blob(attachment: ParsedAttachment) -> tuple[bytes | None
     """
     inline = attachment.inline_bytes
     if inline:
-        from polylogue.storage.blob_store import get_blob_store
+        from polylogue.storage.blob_publication import BlobPublicationReservationStore
+        from polylogue.storage.blob_store import BlobStore, get_blob_store
 
-        hash_hex, size = get_blob_store().write_from_bytes(inline)
+        base_store = get_blob_store()
+        database_row = next(
+            (row for row in conn.execute("PRAGMA database_list").fetchall() if str(row[1]) == "main"),
+            None,
+        )
+        index_path = Path(str(database_row[2])) if database_row is not None and database_row[2] else None
+        if index_path is not None and index_path.name == "index.db" and index_path.with_name("source.db").exists():
+            source_db = index_path.with_name("source.db")
+            base_store = BlobStore(index_path.parent / "blob")
+            blob_store = BlobStore(
+                base_store.root,
+                before_publish=BlobPublicationReservationStore.create(source_db).reserve,
+            )
+        else:
+            blob_store = base_store
+        hash_hex, size = blob_store.write_from_bytes(inline)
         return (bytes.fromhex(hash_hex), size, "acquired")
     return (None, attachment.size_bytes or 0, "unfetched")
 
