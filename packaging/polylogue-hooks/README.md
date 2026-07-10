@@ -14,9 +14,14 @@ pip install polylogue-hooks
 
 # Wire into Claude Code settings.json:
 # "hooks": {
-#   "SessionStart": [{"hooks": [{"type": "command", "command": "polylogue-hook SessionStart"}]}]
+#   "SessionStart": [{"hooks": [{"type": "command", "command":
+#     "polylogue-hook SessionStart --provider claude-code"}]}]
 # }
 ```
+
+Prefer `polylogue hooks install --harness claude-code|codex` when the main
+Polylogue CLI is available; it performs the idempotent structured settings
+merge and supplies the explicit provider flag needed by both harnesses.
 
 The bash equivalent under `contrib/polylogue-hook` in the main repository
 remains supported for operators who prefer a shell-only install path.

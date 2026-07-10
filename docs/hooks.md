@@ -134,60 +134,90 @@ coding agent's own Python environment). The script behaviour is identical
 across all three forms and the version is kept in sync with the main package
 via release-please (#1309).
 
+The main `polylogue` distribution also installs the `polylogue-hook` entry
+point. Once either distribution is installed, wire the recommended starter set
+without editing harness settings by hand:
+
+```bash
+polylogue hooks install --harness claude-code --events recommended
+polylogue hooks install --harness codex --events recommended
+```
+
+The command performs a structured, idempotent merge. Existing matcher groups
+and handlers are preserved, and a second identical invocation produces no
+file diff. Use `--dry-run` to inspect the exact JSON diff first. `--events all`
+means every event in Polylogue's current harness catalog; a comma-separated
+event list is also accepted. Harness catalogs evolve, so `hooks status --json`
+is the authoritative installed-version view rather than a count embedded in
+this document.
+
+Inspect wiring and trailing-seven-day evidence with:
+
+```bash
+polylogue hooks status
+polylogue hooks status --coverage
+polylogue hooks status --json
+```
+
+Status distinguishes configured wiring from observed events. The coverage
+table reports the enrichment role for each event and only treats missing event
+types as a liveness gap when the archive supplies a defensible opportunity
+denominator (session start, authored prompt, or tool use). Conditional events
+such as `Stop` remain observational.
+
+Uninstall is symmetric and removes only handlers whose command invokes
+`polylogue-hook`; unrelated hooks in the same event group remain intact:
+
+```bash
+polylogue hooks uninstall --harness claude-code
+polylogue hooks uninstall --harness codex
+```
+
 ## Setup
 
 ### Claude Code
 
-Add hook configuration to Claude Code settings (`.claude/settings.json` or
-`~/.claude/settings.json`):
+`polylogue hooks install --harness claude-code` updates
+`~/.claude/settings.json` using Claude Code's current three-level hook shape
+(event, matcher group, handler). The managed entries look like:
 
 ```json
 {
   "hooks": {
     "SessionStart": [
       {
-        "command": "polylogue-hook SessionStart"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "polylogue-hook SessionStart --provider claude-code",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
-      {
-        "command": "polylogue-hook UserPromptSubmit"
-      }
+      {"hooks": [{"type": "command", "command": "polylogue-hook UserPromptSubmit --provider claude-code", "timeout": 5}]}
     ],
     "PreToolUse": [
-      {
-        "command": "polylogue-hook PreToolUse"
-      }
+      {"hooks": [{"type": "command", "command": "polylogue-hook PreToolUse --provider claude-code", "timeout": 5}]}
     ],
     "PostToolUse": [
-      {
-        "command": "polylogue-hook PostToolUse"
-      }
+      {"hooks": [{"type": "command", "command": "polylogue-hook PostToolUse --provider claude-code", "timeout": 5}]}
     ],
     "PostToolUseFailure": [
-      {
-        "command": "polylogue-hook PostToolUseFailure"
-      }
+      {"hooks": [{"type": "command", "command": "polylogue-hook PostToolUseFailure --provider claude-code", "timeout": 5}]}
     ],
     "PermissionRequest": [
-      {
-        "command": "polylogue-hook PermissionRequest"
-      }
+      {"hooks": [{"type": "command", "command": "polylogue-hook PermissionRequest --provider claude-code", "timeout": 5}]}
     ],
     "PermissionDenied": [
-      {
-        "command": "polylogue-hook PermissionDenied"
-      }
+      {"hooks": [{"type": "command", "command": "polylogue-hook PermissionDenied --provider claude-code", "timeout": 5}]}
     ],
     "Notification": [
-      {
-        "command": "polylogue-hook Notification"
-      }
+      {"hooks": [{"type": "command", "command": "polylogue-hook Notification --provider claude-code", "timeout": 5}]}
     ],
     "Stop": [
-      {
-        "command": "polylogue-hook Stop"
-      }
+      {"hooks": [{"type": "command", "command": "polylogue-hook Stop --provider claude-code", "timeout": 5}]}
     ]
   }
 }
@@ -199,17 +229,35 @@ ground truth before expansion.
 
 ### Codex
 
-Codex hook configuration uses TOML (`.codex/config.toml`):
+Current Codex supports both inline TOML and a dedicated `hooks.json` layer.
+Polylogue writes `~/.codex/hooks.json`, which avoids reserializing or
+reformatting unrelated `config.toml` settings. Existing inline Polylogue hooks
+are detected so install does not duplicate them. The generated JSON uses the
+same event/matcher-group/handler structure:
 
-```toml
-[hooks]
-SessionStart = ["polylogue-hook SessionStart"]
-UserPromptSubmit = ["polylogue-hook UserPromptSubmit"]
-PreToolUse = ["polylogue-hook PreToolUse"]
-PostToolUse = ["polylogue-hook PostToolUse"]
-PermissionRequest = ["polylogue-hook PermissionRequest"]
-Stop = ["polylogue-hook Stop"]
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "polylogue-hook SessionStart --provider codex",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
+
+Codex requires review of new or changed non-managed command hooks. After
+installation, open `/hooks` in Codex and trust the generated definitions. If
+`[features].hooks = false` is set in `config.toml`, status reports the harness
+as disabled; Polylogue does not silently override that explicit operator
+choice.
 
 ## Key Data Captured
 

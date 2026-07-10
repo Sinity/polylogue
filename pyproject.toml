@@ -111,6 +111,7 @@ Documentation = "https://github.com/sinity/polylogue#readme"
 polylogue = "polylogue.cli:main"
 plg = "polylogue.cli:main"
 plog = "polylogue.cli:main"
+polylogue-hook = "polylogue.hooks:hook_main"
 polylogued = "polylogue.daemon.cli:main"
 polylogue-mcp = "polylogue.mcp.cli:main"
 

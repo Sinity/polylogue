@@ -574,6 +574,22 @@ def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) 
         index = active_index_db_path().resolve()
     except Exception:
         return None
+    hook_flow_states: dict[str, str] = {}
+    hook_flow_healthy: bool | None = None
+    hook_flow_gaps: tuple[str, ...] = ()
+    try:
+        from polylogue.hooks import hook_statuses
+
+        hook_status_rows = hook_statuses(coverage=True, archive_root_path=archive)
+        hook_flow_states = {status.harness: status.flow_state for status in hook_status_rows}
+        configured = [status for status in hook_status_rows if status.wired_events]
+        if configured:
+            hook_flow_healthy = all(status.flow_healthy is True for status in configured)
+        hook_flow_gaps = tuple(
+            f"{status.harness}:{status.flow_state}" for status in configured if status.flow_healthy is not True
+        )
+    except Exception:
+        hook_flow_states = {}
     return CoordinationArchivePayload(
         archive_root=str(archive),
         index_db=str(index),
@@ -581,6 +597,9 @@ def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) 
         index_user_version=_sqlite_user_version(index),
         source_user_version=_sqlite_user_version(index.with_name("source.db")),
         user_user_version=_sqlite_user_version(index.with_name("user.db")),
+        hook_flow_states=hook_flow_states,
+        hook_flow_healthy=hook_flow_healthy,
+        hook_flow_gaps=hook_flow_gaps,
         daemon_processes=tuple(resource for resource in resources if resource.kind == "daemon"),
         provenance=_prov("archive-paths", path=str(archive), confidence=0.75),
     )

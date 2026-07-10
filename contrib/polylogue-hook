@@ -7,7 +7,7 @@
 # where the daemon watcher picks them up for ingestion.
 #
 # Usage:
-#   polylogue-hook <event-type>
+#   polylogue-hook <event-type> [--provider claude-code|codex]
 #
 # Environment variables:
 #   POLYLOGUE_HOOK_SIDECAR_DIR  Override default sidecar directory
@@ -34,6 +34,19 @@ if [ -z "$EVENT_TYPE" ]; then
     exit 1
 fi
 
+shift
+PROVIDER_ARG=""
+if [ "${1:-}" = "--provider" ]; then
+    PROVIDER_ARG="${2:-}"
+    case "$PROVIDER_ARG" in
+        claude-code|codex) ;;
+        *)
+            echo "polylogue-hook: --provider must be claude-code or codex" >&2
+            exit 2
+            ;;
+    esac
+fi
+
 SIDECAR_DIR="${POLYLOGUE_HOOK_SIDECAR_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/polylogue/hooks}"
 
 # Save stdin payload to a temp file so python3 can read it.
@@ -42,7 +55,7 @@ PAYLOAD_FILE=$(mktemp)
 trap 'rm -f "$PAYLOAD_FILE"' EXIT
 cat > "$PAYLOAD_FILE"
 
-python3 - "$EVENT_TYPE" "$SIDECAR_DIR" "$PAYLOAD_FILE" <<'PYEOF'
+python3 - "$EVENT_TYPE" "$SIDECAR_DIR" "$PAYLOAD_FILE" "$PROVIDER_ARG" <<'PYEOF'
 import json
 import os
 import sys
@@ -51,22 +64,27 @@ from datetime import datetime, timezone
 event_type = sys.argv[1]
 sidecar_dir = sys.argv[2]
 payload_path = sys.argv[3]
+provider_arg = sys.argv[4] or None
 
 # Supported events
 CC_EVENTS = frozenset({
-    "SessionStart", "Setup", "UserPromptSubmit", "PreToolUse",
-    "PostToolUse", "PostToolUseFailure", "PermissionRequest",
-    "PermissionDenied", "Notification", "Elicitation",
-    "ElicitationResult", "CwdChanged", "FileChanged",
-    "WorktreeCreate", "SubagentStart", "Stop",
+    "SessionStart", "Setup", "InstructionsLoaded", "UserPromptSubmit",
+    "UserPromptExpansion", "MessageDisplay", "PreToolUse", "PermissionRequest",
+    "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PermissionDenied",
+    "Notification", "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted",
+    "Stop", "StopFailure", "TeammateIdle", "ConfigChange", "CwdChanged",
+    "FileChanged", "WorktreeCreate", "WorktreeRemove", "PreCompact", "PostCompact",
+    "Elicitation", "ElicitationResult", "SessionEnd",
 })
 CODEX_EVENTS = frozenset({
     "SessionStart", "UserPromptSubmit", "PreToolUse",
-    "PostToolUse", "PermissionRequest", "Stop",
+    "PostToolUse", "PermissionRequest", "PreCompact", "PostCompact",
+    "SubagentStart", "SubagentStop", "Stop",
 })
 ALL_EVENTS = CC_EVENTS | CODEX_EVENTS
 
-if event_type not in ALL_EVENTS:
+allowed_events = CC_EVENTS if provider_arg == "claude-code" else CODEX_EVENTS if provider_arg == "codex" else ALL_EVENTS
+if event_type not in allowed_events:
     print(f"polylogue-hook: unsupported event type: {event_type}", file=sys.stderr)
     sys.exit(2)
 
@@ -95,9 +113,11 @@ if not session_id:
     sys.exit(1)
 
 # Detect provider
-provider = os.environ.get("POLYLOGUE_HOOK_PROVIDER")
+provider = provider_arg or os.environ.get("POLYLOGUE_HOOK_PROVIDER")
 if not provider:
-    if "permission_mode" in payload or "model" in payload:
+    if "turn_id" in payload:
+        provider = "codex"
+    elif "permission_mode" in payload or "model" in payload:
         provider = "claude-code"
     elif "source" in payload:
         provider = "codex"
@@ -107,7 +127,7 @@ if not provider:
 if provider not in ("claude-code", "codex"):
     print(
         "polylogue-hook: could not detect provider; "
-        "set POLYLOGUE_HOOK_PROVIDER=claude-code|codex",
+        "pass --provider claude-code|codex",
         file=sys.stderr,
     )
     sys.exit(1)

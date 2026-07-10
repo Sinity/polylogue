@@ -70,6 +70,10 @@ varies on a known-bounded dimension):
 - ``polylogue_archive_blocker_count`` (gauge)
 - ``polylogue_archive_blocker`` (gauge) — labels: blocker
 - ``polylogue_archive_source_index_links_total`` (gauge) — labels: source, state
+- ``polylogue_hook_flow_healthy`` (gauge, 0/1) — labels: harness
+- ``polylogue_hook_flow_state`` (gauge, one-hot) — labels: harness, state
+- ``polylogue_hook_sessions`` (gauge) — labels: harness, state
+- ``polylogue_hook_event_observed_ratio`` (gauge) — labels: harness, event
 
 The handler signature mirrors ``healthz.py``'s ``ProbeResponder``
 protocol so it is testable without the full ``BaseHTTPRequestHandler``
@@ -945,6 +949,7 @@ def format_metrics(
         samples=[({"version": str(polylogue_version)}, 1)],
     )
     _emit_archive_storage_metrics(lines, db)
+    _emit_hook_flow_metrics(lines, db)
 
     from polylogue.daemon.status_snapshot import snapshot_state_for_metrics
 
@@ -1238,6 +1243,75 @@ def _emit_archive_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
         return
     for name in ("polylogue_archive_sessions_total", "polylogue_archive_messages_total"):
         _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
+
+
+def _emit_hook_flow_metrics(lines: list[str], db: Path) -> None:
+    """Emit bounded hook wiring/liveness gauges from the shared projection."""
+
+    from polylogue.hooks import flow_states, hook_statuses
+
+    try:
+        statuses = hook_statuses(coverage=True, archive_root_path=db.parent)
+    except Exception:
+        statuses = ()
+    healthy_samples: list[tuple[dict[str, str] | None, float | int]] = []
+    state_samples: list[tuple[dict[str, str] | None, float | int]] = []
+    session_samples: list[tuple[dict[str, str] | None, float | int]] = []
+    coverage_samples: list[tuple[dict[str, str] | None, float | int]] = []
+    for status in statuses:
+        if status.flow_healthy is not None:
+            healthy_samples.append(({"harness": status.harness}, 1 if status.flow_healthy else 0))
+        state_samples.extend(
+            (
+                {"harness": status.harness, "state": state},
+                1 if state == status.flow_state else 0,
+            )
+            for state in flow_states()
+        )
+        session_samples.extend(
+            (
+                {"harness": status.harness, "state": state},
+                value,
+            )
+            for state, value in (
+                ("eligible", status.eligible_session_count),
+                ("with_events", status.sessions_with_hook_events),
+                ("without_events", status.sessions_without_hook_events),
+            )
+        )
+        coverage_samples.extend(
+            ({"harness": status.harness, "event": row.event}, row.observed_rate)
+            for row in status.coverage
+            if row.observed_rate is not None
+        )
+    _emit_metric(
+        lines,
+        name="polylogue_hook_flow_healthy",
+        help_text="1 when a configured harness has no hook-flow liveness gap.",
+        metric_type="gauge",
+        samples=healthy_samples,
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_hook_flow_state",
+        help_text="One-hot hook-flow state per harness.",
+        metric_type="gauge",
+        samples=state_samples,
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_hook_sessions",
+        help_text="Trailing-seven-day harness sessions by hook-evidence state.",
+        metric_type="gauge",
+        samples=session_samples,
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_hook_event_observed_ratio",
+        help_text="Share of eligible trailing-seven-day sessions observing each hook event.",
+        metric_type="gauge",
+        samples=coverage_samples,
+    )
 
 
 def _emit_archive_index_metrics(lines: list[str], conn: sqlite3.Connection) -> None:

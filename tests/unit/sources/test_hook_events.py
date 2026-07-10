@@ -3,7 +3,7 @@
 Exercises:
   - ArtifactKind.HOOK_EVENT is recognized by classify_artifact
   - Hook event stream detection via looks_like_hook_event / looks_like_hook_event_stream
-  - All 16 Claude Code events and 6 Codex events classify correctly
+  - Current Claude Code and Codex hook catalogs classify correctly
   - Paste ground truth (UserPromptSubmit) event shape
   - Tool annotation events (PreToolUse + PostToolUse)
   - Error subtype events (PostToolUseFailure)
@@ -22,6 +22,7 @@ from polylogue.archive.artifact_taxonomy.support import (
     looks_like_hook_event_stream,
 )
 from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.hooks import CLAUDE_CODE_EVENTS, CODEX_EVENTS
 
 
 def _make_hook_record(
@@ -145,28 +146,10 @@ def test_looks_like_hook_event_stream_mixed() -> None:
 
 @pytest.mark.parametrize(
     "event_type",
-    [
-        # All 16 Claude Code events
-        "SessionStart",
-        "Setup",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PostToolUseFailure",
-        "PermissionRequest",
-        "PermissionDenied",
-        "Notification",
-        "Elicitation",
-        "ElicitationResult",
-        "CwdChanged",
-        "FileChanged",
-        "WorktreeCreate",
-        "SubagentStart",
-        "Stop",
-    ],
+    CLAUDE_CODE_EVENTS,
 )
 def test_classify_artifact_cc_stream(event_type: str) -> None:
-    """All 16 Claude Code hook events classify as HOOK_EVENT."""
+    """Every current Claude Code hook event classifies as HOOK_EVENT."""
     records: JSONValue = [_make_hook_record(event_type=event_type, provider="claude-code")]
     artifact = classify_artifact(records, provider="claude-code")
     assert artifact.kind is ArtifactKind.HOOK_EVENT, f"{event_type} should be HOOK_EVENT, got {artifact.kind}"
@@ -175,18 +158,10 @@ def test_classify_artifact_cc_stream(event_type: str) -> None:
 
 @pytest.mark.parametrize(
     "event_type",
-    [
-        # All 6 Codex events
-        "SessionStart",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PermissionRequest",
-        "Stop",
-    ],
+    CODEX_EVENTS,
 )
 def test_classify_artifact_codex_stream(event_type: str) -> None:
-    """All 6 Codex hook events classify as HOOK_EVENT."""
+    """Every current Codex hook event classifies as HOOK_EVENT."""
     records: JSONValue = [_make_hook_record(event_type=event_type, provider="codex")]
     artifact = classify_artifact(records, provider="codex")
     assert artifact.kind is ArtifactKind.HOOK_EVENT, f"{event_type} should be HOOK_EVENT, got {artifact.kind}"

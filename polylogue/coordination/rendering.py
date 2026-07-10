@@ -65,6 +65,13 @@ def render_coordination_text(payload: AgentCoordinationPayload) -> str:
             f"{payload.archive.archive_root} index_exists={payload.archive.index_exists} "
             f"index_schema={payload.archive.index_user_version}"
         )
+        hook_states = ", ".join(
+            f"{harness}={state}" for harness, state in sorted(payload.archive.hook_flow_states.items())
+        )
+        if hook_states:
+            lines.append(f"  hook health: healthy={payload.archive.hook_flow_healthy} {hook_states}")
+        for gap in payload.archive.hook_flow_gaps:
+            lines.append(f"    - hook gap: {gap}")
     if payload.session_trees:
         tree = payload.session_trees[0]
         lines.append(
