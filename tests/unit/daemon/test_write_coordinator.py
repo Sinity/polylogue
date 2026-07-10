@@ -162,8 +162,10 @@ async def test_waiting_cancellation_removes_actor_without_deadlock() -> None:
 @pytest.mark.asyncio
 async def test_sync_writer_cancellation_holds_gate_until_thread_finishes() -> None:
     released = asyncio.Event()
+    events: list[DaemonWriteEvent] = []
 
     def observe(event: DaemonWriteEvent) -> None:
+        events.append(event)
         if event.phase == "released" and event.actor == "raw":
             released.set()
 
@@ -183,13 +185,23 @@ async def test_sync_writer_cancellation_holds_gate_until_thread_finishes() -> No
 
     assert coordinator.snapshot().active_actor == "raw"
     assert not released.is_set()
+    successor_entered = asyncio.Event()
+
+    async def successor_writer() -> None:
+        successor_entered.set()
+
+    successor = asyncio.create_task(coordinator.run("successor", successor_writer))
+    while coordinator.snapshot().queued_actors != ("successor",):
+        await asyncio.sleep(0)
+    assert not successor_entered.is_set()
     allow_worker_finish.set()
+    await successor
     assert await coordinator.shutdown(timeout=1.0)
+    assert successor_entered.is_set()
     assert released.is_set()
     assert coordinator.snapshot().active_actor is None
-    last_event = coordinator.snapshot().last_event
-    assert last_event is not None
-    assert last_event.outcome == "cancelled"
+    raw_release = next(event for event in events if event.phase == "released" and event.actor == "raw")
+    assert raw_release.outcome == "cancelled"
 
 
 @pytest.mark.asyncio
