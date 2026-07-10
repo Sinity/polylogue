@@ -75,6 +75,7 @@ def _parse_source_path_worker(
     sidecar_data: Any,
     capture_raw: bool,
     blob_root_str: str,
+    source_db_path_str: str,
 ) -> list[tuple[RawSessionData | None, ParsedSession]]:
     """ProcessPool worker: parse one file and return materialized tuples.
 
@@ -83,17 +84,24 @@ def _parse_source_path_worker(
     driver. ``cursor_state`` is intentionally ``None``: re-ingest does not use
     cursor state, and it could not cross the process boundary anyway.
     """
-    return list(
-        parse_one_source_path(
-            path_str,
-            file_mtime=file_mtime,
-            source_name=source_name,
-            sidecar_data=sidecar_data,
-            capture_raw=capture_raw,
-            cursor_state=None,
-            blob_root=Path(blob_root_str),
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    publisher = ArchiveBlobPublisher(Path(source_db_path_str), Path(blob_root_str))
+    try:
+        return list(
+            parse_one_source_path(
+                path_str,
+                file_mtime=file_mtime,
+                source_name=source_name,
+                sidecar_data=sidecar_data,
+                capture_raw=capture_raw,
+                cursor_state=None,
+                blob_root=Path(blob_root_str),
+                blob_store=publisher,
+            )
         )
-    )
+    finally:
+        publisher.discard_pending()
 
 
 async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> ParseResult:
@@ -111,6 +119,9 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
     batched = threshold > 0
     workers = _parse_worker_count()
     blob_root = archive_root / "blob"
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    parse_blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
     counters = {"raw_rows": 0, "index_rows": 0, "pending_messages": 0}
 
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
@@ -178,6 +189,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                     source,
                     capture_raw=True,
                     blob_root=blob_root,
+                    blob_store=parse_blob_publisher,
                 ):
                     await write_pair(source, raw_data, session)
         else:
@@ -210,6 +222,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                             walk.sidecar_data,
                             True,
                             str(blob_root),
+                            str(archive_root / "source.db"),
                         )
                         future_to_source[future] = (source, path)
                         total_paths += 1
@@ -238,6 +251,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
         if batched and counters["pending_messages"] > 0:
             archive.commit()
             _record_post_commit_upkeep(archive_root, result, reason=POST_COMMIT_UPKEEP_REASON)
+        parse_blob_publisher.discard_pending()
 
     raw_rows_written = counters["raw_rows"]
     index_rows_written = counters["index_rows"]

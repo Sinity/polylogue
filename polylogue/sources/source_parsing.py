@@ -88,6 +88,7 @@ def parse_one_source_path(
     capture_raw: bool,
     cursor_state: CursorStatePayload | None = None,
     blob_root: Path | None = None,
+    blob_store: BlobStore | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Parse a single source file into ``(raw, session)`` tuples.
 
@@ -119,6 +120,7 @@ def parse_one_source_path(
             capture_raw=capture_raw,
             cursor_state=cursor_state,
             blob_root=blob_root,
+            blob_store=blob_store,
         )
         return
 
@@ -130,9 +132,12 @@ def parse_one_source_path(
             from polylogue.paths import blob_store_root
 
             blob_root = blob_store_root()
-        blob_store = BlobStore(blob_root)
-        snapshot = snapshot_sqlite_to_blob(path, blob_store)
-        retained_path = blob_store.blob_path(snapshot.blob_hash)
+        resolved_store = blob_store or BlobStore(blob_root)
+        snapshot = snapshot_sqlite_to_blob(path, resolved_store)
+        from polylogue.storage.blob_publication import flush_blob_publications
+
+        flush_blob_publications(resolved_store)
+        retained_path = resolved_store.blob_path(snapshot.blob_hash)
         raw_data = None
         if capture_raw:
             raw_data = RawSessionData(
@@ -143,6 +148,7 @@ def parse_one_source_path(
                 provider_hint=provider_hint,
                 blob_hash=snapshot.blob_hash,
                 blob_size=snapshot.blob_size,
+                blob_publication_receipt_id=snapshot.blob_publication_receipt_id,
             )
         for session in hermes_state.parse_state_db(
             retained_path,
@@ -168,8 +174,12 @@ def parse_one_source_path(
             from polylogue.paths import blob_store_root
 
             blob_root = blob_store_root()
-        blob_store = BlobStore(blob_root)
-        blob_hash, blob_size = blob_store.write_from_path(path)
+        resolved_store = blob_store or BlobStore(blob_root)
+        blob_hash, blob_size = resolved_store.write_from_path(path)
+        from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
+
+        receipt_id = publication_receipt_id(resolved_store, blob_hash)
+        flush_blob_publications(resolved_store)
         raw_data = RawSessionData(
             raw_bytes=b"",
             source_path=str(path),
@@ -178,6 +188,7 @@ def parse_one_source_path(
             provider_hint=provider_hint,
             blob_hash=blob_hash,
             blob_size=blob_size,
+            blob_publication_receipt_id=receipt_id,
         )
         with path.open("rb") as handle:
             yield from emitter.emit(handle, path.name, precomputed_raw=raw_data)
@@ -207,6 +218,7 @@ def iter_source_sessions_with_raw(
     capture_raw: bool = True,
     known_mtimes: dict[str, str] | None = None,
     blob_root: Path | None = None,
+    blob_store: BlobStore | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Iterate parsed sessions with optional raw byte capture."""
     if not source.path:
@@ -235,6 +247,7 @@ def iter_source_sessions_with_raw(
                 capture_raw=capture_raw,
                 cursor_state=cursor_state,
                 blob_root=blob_root,
+                blob_store=blob_store,
             )
         except FileNotFoundError as exc:
             failed_count += 1

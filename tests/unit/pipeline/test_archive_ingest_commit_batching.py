@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
@@ -23,6 +24,8 @@ from polylogue.pipeline.services import archive_ingest
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import build_default_corpus_specs
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.storage.blob_gc import BlobGCResult, run_blob_gc_report
+from polylogue.storage.blob_publication import ArchiveBlobPublisher, BlobPublicationReceipt
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
 from polylogue.storage.sqlite.maintenance import SqliteOptimizeObservation
@@ -101,6 +104,45 @@ def test_per_session_escape_hatch(
     assert sessions == _expected_session_count(sources)
     assert sessions == result.counts["sessions"]
     assert messages == result.counts["messages"]
+
+
+def test_direct_grouped_reingest_reserves_raw_blob_until_source_commit(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
+    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "session.jsonl"
+    source_path.write_text(
+        '{"type":"user","uuid":"u1","sessionId":"s1","message":{"content":"hello"}}\n'
+        '{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"content":"hi"}}\n',
+        encoding="utf-8",
+    )
+    gc_reports: list[BlobGCResult] = []
+    original_flush = ArchiveBlobPublisher.flush
+
+    def flush_then_gc(publisher: ArchiveBlobPublisher) -> tuple[BlobPublicationReceipt, ...]:
+        receipts = original_flush(publisher)
+        if receipts and not gc_reports:
+            os.utime(publisher.blob_path(receipts[0].blob_hash), (1_700_000_000, 1_700_000_000))
+            gc_reports.append(run_blob_gc_report(archive_root / "source.db", archive_root / "blob"))
+        return receipts
+
+    monkeypatch.setattr(ArchiveBlobPublisher, "flush", flush_then_gc)
+    result = asyncio.run(parse_sources_archive(archive_root, [Source(name="claude-code", path=source_path)]))
+
+    assert result.counts["sessions"] == 1
+    assert len(gc_reports) == 1
+    assert gc_reports[0].deleted_count == 0
+    assert gc_reports[0].skipped_reserved == 1
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+    final_gc = run_blob_gc_report(archive_root / "source.db", archive_root / "blob")
+    assert final_gc.deleted_count == 0
+    assert final_gc.skipped_reserved == 0
+    assert final_gc.skipped_referenced >= 1
 
 
 def test_archive_ingest_raw_payload_uses_explicit_archive_blob_root(
