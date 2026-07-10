@@ -937,7 +937,8 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
     has_key = _bool_value(info.get("embedding_has_voyage_key"))
     enabled = _bool_value(info.get("embedding_enabled"))
     pending = _int_value(info.get("embedding_pending_count")) or 0
-    pending_messages = _int_value(info.get("embedding_pending_message_count")) or 0
+    pending_messages = _int_value(info.get("embedding_pending_message_count"))
+    pending_messages_exact = _bool_value(info.get("embedding_pending_message_count_exact"))
     stale = _int_value(info.get("embedding_stale_count")) or 0
     failures = _int_value(info.get("embedding_failure_count")) or 0
 
@@ -981,6 +982,12 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
             )
         )
     if pending or stale:
+        if pending_messages_exact and pending_messages is not None:
+            details = f"Pending messages: {pending_messages}; stale messages: {stale}."
+            caveats: tuple[str, ...] = ()
+        else:
+            details = "Pending and stale message counts are unknown in the bounded debt projection."
+            caveats = ("Run `polylogue ops embed status --detail` for bounded exact-count attempts.",)
         rows.append(
             ArchiveDebtRowPayload(
                 debt_ref="debt:embedding:catchup:backlog",
@@ -991,8 +998,9 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
                 status="actionable" if enabled else "blocked",
                 owner="daemon",
                 summary=f"{pending} session(s) pending embedding catch-up",
-                details=f"Pending messages: {pending_messages}; stale messages: {stale}.",
+                details=details,
                 evidence_refs=(f"archive-tier:{index_db.with_name('embeddings.db')}",),
+                caveats=caveats,
                 actions=(
                     ArchiveDebtActionPayload(
                         label="Run embedding backfill",

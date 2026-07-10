@@ -365,8 +365,13 @@ def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int, total_s
     return embedded_sessions / eligible_sessions * 100
 
 
-def _message_coverage_percent(*, embedded_messages: int, candidate_prose_messages: int | None) -> float | None:
-    if candidate_prose_messages is None:
+def _message_coverage_percent(
+    *,
+    embedded_messages: int,
+    candidate_prose_messages: int | None,
+    candidate_prose_messages_exact: bool,
+) -> float | None:
+    if candidate_prose_messages is None or not candidate_prose_messages_exact:
         return None
     if candidate_prose_messages <= 0:
         return 100.0 if embedded_messages > 0 else 0.0
@@ -560,6 +565,7 @@ def _payload_from_stats(
     message_coverage = _message_coverage_percent(
         embedded_messages=stats.embedded_messages,
         candidate_prose_messages=stats.candidate_prose_messages,
+        candidate_prose_messages_exact=stats.candidate_prose_messages_exact,
     )
     return {
         "config_enabled": config_enabled,

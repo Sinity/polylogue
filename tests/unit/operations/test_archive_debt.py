@@ -180,6 +180,7 @@ def test_archive_debt_converts_embedding_and_fts_readiness(
             "embedding_has_voyage_key": True,
             "embedding_pending_count": 3,
             "embedding_pending_message_count": 30,
+            "embedding_pending_message_count_exact": True,
             "embedding_stale_count": 1,
             "embedding_failure_count": 2,
         },
@@ -211,6 +212,35 @@ def test_archive_debt_converts_embedding_and_fts_readiness(
     assert "debt:fts:messages_fts" in refs
     assert payload.totals.total == 3
     assert payload.totals.critical == 2
+
+
+def test_archive_debt_preserves_unknown_embedding_message_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_current_tier_files(tmp_path)
+    monkeypatch.setattr(
+        module,
+        "embedding_readiness_info",
+        lambda _path, detail=False: {
+            "embedding_config_enabled": True,
+            "embedding_enabled": True,
+            "embedding_has_voyage_key": True,
+            "embedding_pending_count": 3,
+            "embedding_pending_message_count": None,
+            "embedding_pending_message_count_exact": False,
+            "embedding_stale_count": 0,
+            "embedding_failure_count": 0,
+        },
+    )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("embedding",))
+
+    assert payload.totals.total == 1
+    row = payload.rows[0]
+    assert row.debt_ref == "debt:embedding:catchup:backlog"
+    assert row.details == "Pending and stale message counts are unknown in the bounded debt projection."
+    assert row.caveats == ("Run `polylogue ops embed status --detail` for bounded exact-count attempts.",)
 
 
 def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:

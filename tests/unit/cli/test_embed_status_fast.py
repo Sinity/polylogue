@@ -214,7 +214,7 @@ def test_status_json_reports_archive_embedding_metadata_without_detail(tmp_path:
     assert payload["newest_embedded_at"] is None
 
 
-def test_status_json_detail_uses_analyzed_prose_index_for_candidate_count(tmp_path: Path) -> None:
+def test_status_json_detail_does_not_derive_coverage_from_analyzed_prose_estimate(tmp_path: Path) -> None:
     db_anchor = tmp_path / "custom.sqlite"
     index_db = tmp_path / "index.db"
     _seed_archive_file_set_from_archive_tiers(index_db)
@@ -235,7 +235,43 @@ def test_status_json_detail_uses_analyzed_prose_index_for_candidate_count(tmp_pa
 
     assert payload["candidate_prose_messages"] == 3
     assert payload["candidate_prose_messages_exact"] is False
-    assert payload["message_coverage_percent"] == 33.3
+    assert payload["message_coverage_percent"] is None
+
+
+def test_status_json_does_not_report_over_100_percent_from_retained_embedding_rows(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    with sqlite3.connect(index_db) as conn:
+        conn.executescript(
+            """
+            CREATE INDEX idx_messages_embedding_prose
+            ON messages(session_id, message_id)
+            WHERE message_type = 'message'
+              AND role IN ('user', 'assistant')
+              AND material_origin IN ('human_authored', 'assistant_authored')
+              AND word_count > 0;
+            ANALYZE idx_messages_embedding_prose;
+            """
+        )
+    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO message_embeddings_meta VALUES (
+                'orphaned-by-index-rebuild', 'voyage-4', 1024, 1767225700000, x'ff', 0
+            )
+            """
+        )
+        conn.execute(
+            "UPDATE embedding_status SET message_count_embedded = 4 WHERE session_id = 'codex-session:complete'"
+        )
+
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["embedded_messages"] == 4
+    assert payload["candidate_prose_messages"] == 3
+    assert payload["candidate_prose_messages_exact"] is False
+    assert payload["message_coverage_percent"] is None
 
 
 def test_status_json_default_does_not_exact_count_archive_session_state(
