@@ -356,14 +356,18 @@
   // the capture itself — per-asset outcomes are disclosed in provider_meta.
   const assetFetchRequestMessage = "polylogue.chatgpt.assetFetchRequest";
   const assetFetchResponseMessage = "polylogue.chatgpt.assetFetchResponse";
-  const assetFetchTimeoutMs = 35000;
+  const assetFetchTimeoutMs = 9000;
   const assetMaxBytesPerFile = 25 * 1024 * 1024;
   const assetMaxBytesTotal = 75 * 1024 * 1024;
   // Wall-clock budget for the WHOLE acquisition pass and a per-kind circuit
   // breaker: a conversation can reference dozens of sandbox files, and once
   // the sandbox container is gone every one of them fails the same way --
   // without these bounds a capture could stall for minutes on dead links.
-  const assetTotalTimeBudgetMs = 45000;
+  // Must fit inside the 15s capturePage message timeout raced by popup and
+  // background (CAPTURE_MESSAGE_TIMEOUT_MS) with headroom for the
+  // conversation fetch itself. Dead links answer fast; anything slower is
+  // skipped and disclosed -- a later re-capture backfills idempotently.
+  const assetTotalTimeBudgetMs = 10000;
   const assetConsecutiveFailureLimit = 3;
   const assetResponses = new Map();
   const sandboxLinkPattern = /sandbox:(\/mnt\/data\/[^\s)\]"'>]+)/g;

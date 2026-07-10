@@ -110,7 +110,7 @@
   // signed download_url; the bytes are then fetched from that URL directly.
   const assetFetchRequestMessage = "polylogue.chatgpt.assetFetchRequest";
   const assetFetchResponseMessage = "polylogue.chatgpt.assetFetchResponse";
-  const assetFetchTimeoutMs = 30000;
+  const assetFetchTimeoutMs = 8000;
 
   function assetTimeoutError(label) {
     const error = new Error(`${label}_timeout_after_${assetFetchTimeoutMs}ms`);
