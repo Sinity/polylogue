@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path
@@ -16,14 +14,12 @@ from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
+from polylogue.sources.parsers.hermes_state import looks_like_state_db_path
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 
 _SCHEMA_REGISTRY = SchemaRegistry()
 _HERMES_STATE_DB_MARKER = "hermes_state_db"
-_HERMES_STATE_DB_CONTRACT = (
-    Path(__file__).parents[2] / "schemas" / "providers" / "hermes" / "state_db_v16.contract.json"
-)
 
 
 def artifact_observation_id(
@@ -97,17 +93,6 @@ def _resolve_payload_support(
     return resolution, True
 
 
-@lru_cache(maxsize=1)
-def _supported_hermes_state_db_schema_versions() -> frozenset[int]:
-    contract = json.loads(_HERMES_STATE_DB_CONTRACT.read_text(encoding="utf-8"))
-    if not isinstance(contract, dict):
-        return frozenset()
-    schema_version = contract.get("schema_version")
-    if not isinstance(schema_version, int) or schema_version < 0:
-        return frozenset()
-    return frozenset({schema_version})
-
-
 def _hermes_state_db_schema_version(path: Path) -> int | None:
     try:
         with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
@@ -132,8 +117,9 @@ def _resolve_hermes_state_db_support(
     path_value = payload.get("state_db_path")
     if not isinstance(path_value, str) or not path_value:
         return (None, False)
-    schema_version = _hermes_state_db_schema_version(Path(path_value))
-    if schema_version is None:
+    path = Path(path_value)
+    schema_version = _hermes_state_db_schema_version(path)
+    if schema_version is None or not looks_like_state_db_path(path):
         return (None, False)
     resolution = SchemaResolution(
         provider=Provider.HERMES.value,
@@ -143,7 +129,7 @@ def _resolve_hermes_state_db_support(
         bundle_scope=None,
         reason="package_default",
     )
-    return resolution, schema_version in _supported_hermes_state_db_schema_versions()
+    return resolution, True
 
 
 def _record_blob_ref(record: RawSessionRecord) -> str:

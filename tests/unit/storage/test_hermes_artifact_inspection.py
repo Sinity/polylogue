@@ -123,6 +123,32 @@ def test_retained_v16_snapshot_is_contract_backed_parseable(
     assert observation.decode_error is None
 
 
+def test_retained_structurally_compatible_v17_snapshot_is_parseable(
+    blob_store: BlobStore,
+    tmp_path: Path,
+) -> None:
+    snapshot = tmp_path / "retained-v17.sqlite3"
+    _write_hermes_v16(snapshot)
+    with sqlite3.connect(snapshot) as conn:
+        conn.execute("UPDATE schema_version SET version = 17")
+        conn.execute("ALTER TABLE sessions ADD COLUMN git_branch TEXT")
+        conn.execute("ALTER TABLE sessions ADD COLUMN git_repo_root TEXT")
+
+    observation = inspect_raw_artifact(
+        _record(
+            blob_store,
+            snapshot,
+            raw_id="hermes:profile-a:revision-17",
+            source_path="/original/profile/state-v17.sqlite3",
+        )
+    )
+
+    assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
+    assert observation.resolved_package_version == "state-db-v17"
+    assert observation.resolved_element_kind == "state_db"
+    assert observation.decode_error is None
+
+
 def test_corrupt_retained_snapshot_is_decode_failed(blob_store: BlobStore, tmp_path: Path) -> None:
     snapshot = tmp_path / "state.db"
     snapshot.write_bytes(b"not a SQLite database")
