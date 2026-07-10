@@ -184,6 +184,26 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
             RigorVersionField(name="inference_version", current_version=SESSION_INFERENCE_VERSION),
         ),
+        notes=(
+            "Heuristic-tier inventory (#b0b.1): the activity-type classifier "
+            "(``inference.heuristic_label`` -- planning/debugging/testing/review/"
+            "refactoring/documentation/configuration/data_analysis, "
+            "archive/session/extraction.py _TEXT_SIGNAL_TABLE) stays heuristic-tier "
+            "permanently. Unlike outcome/pathology fields (tool_result_is_error, "
+            "tool_result_exit_code), there is no structural signal for 'what "
+            "category of work is this' to convert to -- keyword text matching "
+            "against user messages is the only available signal. Coverage "
+            "caveat: text-signal density varies by origin -- tool-heavy CLI "
+            "sessions (Claude Code, Codex) carry action-category evidence that "
+            "is checked before falling back to text signals, while low-tool-use "
+            "chat exports lean more heavily on this text classifier and so "
+            "carry proportionally more heuristic-tier labels. As of #b0b.1 the "
+            "keyword match is word-boundary-anchored (previously a naive "
+            "substring check that false-positived on unrelated words, e.g. "
+            "'fix' inside 'prefix', 'test' inside 'latest', 'config' inside "
+            "'reconfigured') -- a correctness fix, not a change to the "
+            "heuristic-vs-structural tier itself."
+        ),
     ),
     RigorContract(
         insight_name="session_phases",

@@ -235,18 +235,33 @@ _DATA_ANALYSIS_PATTERNS = ("data", "analysis", "query", "sql", "duckdb", "pandas
 # Text signals as weighted inputs (not short-circuit overrides).
 # Order matters — first match wins. These are checked only after action
 # evidence, or as a fallback when no action evidence is available.
-TextSignalTable: TypeAlias = list[tuple[tuple[str, ...], WorkEventHeuristicLabel, str]]
+TextSignalTable: TypeAlias = list[tuple["re.Pattern[str]", WorkEventHeuristicLabel, str]]
+
+
+def _word_boundary_pattern(patterns: tuple[str, ...]) -> re.Pattern[str]:
+    """Compile patterns to a single word-boundary-anchored alternation.
+
+    A naive `pattern in text` substring check false-positives on unrelated
+    words that happen to contain a pattern (#b0b.1: "fix" inside "prefix",
+    "test" inside "latest", "plan" inside "explanation", "data" inside
+    "metadata", "spec" inside "respect", "move" inside "remove", "config"
+    inside "reconfigured"). `\b` anchors work correctly for both single
+    words and multi-word phrases ("stack trace", "should we") since it only
+    requires a word/non-word transition at the pattern's own start and end,
+    not internally.
+    """
+    return re.compile(r"\b(?:" + "|".join(re.escape(pattern) for pattern in patterns) + r")\b")
 
 
 _TEXT_SIGNAL_TABLE: TextSignalTable = [
-    (_DEBUGGING_PATTERNS, WorkEventHeuristicLabel.DEBUGGING, "user_text_debugging"),
-    (_PLANNING_PATTERNS, WorkEventHeuristicLabel.PLANNING, "user_text_planning"),
-    (_TESTING_PATTERNS, WorkEventHeuristicLabel.TESTING, "user_text_testing"),
-    (_REVIEW_PATTERNS, WorkEventHeuristicLabel.REVIEW, "user_text_review"),
-    (_REFACTORING_PATTERNS, WorkEventHeuristicLabel.REFACTORING, "user_text_refactoring"),
-    (_DOCUMENTATION_PATTERNS, WorkEventHeuristicLabel.DOCUMENTATION, "user_text_documentation"),
-    (_CONFIGURATION_PATTERNS, WorkEventHeuristicLabel.CONFIGURATION, "user_text_configuration"),
-    (_DATA_ANALYSIS_PATTERNS, WorkEventHeuristicLabel.DATA_ANALYSIS, "user_text_data_analysis"),
+    (_word_boundary_pattern(_DEBUGGING_PATTERNS), WorkEventHeuristicLabel.DEBUGGING, "user_text_debugging"),
+    (_word_boundary_pattern(_PLANNING_PATTERNS), WorkEventHeuristicLabel.PLANNING, "user_text_planning"),
+    (_word_boundary_pattern(_TESTING_PATTERNS), WorkEventHeuristicLabel.TESTING, "user_text_testing"),
+    (_word_boundary_pattern(_REVIEW_PATTERNS), WorkEventHeuristicLabel.REVIEW, "user_text_review"),
+    (_word_boundary_pattern(_REFACTORING_PATTERNS), WorkEventHeuristicLabel.REFACTORING, "user_text_refactoring"),
+    (_word_boundary_pattern(_DOCUMENTATION_PATTERNS), WorkEventHeuristicLabel.DOCUMENTATION, "user_text_documentation"),
+    (_word_boundary_pattern(_CONFIGURATION_PATTERNS), WorkEventHeuristicLabel.CONFIGURATION, "user_text_configuration"),
+    (_word_boundary_pattern(_DATA_ANALYSIS_PATTERNS), WorkEventHeuristicLabel.DATA_ANALYSIS, "user_text_data_analysis"),
 ]
 
 
@@ -256,8 +271,8 @@ def _text_signal_from_lowered_text(
     before_index: int | None = None,
 ) -> tuple[int, WorkEventHeuristicLabel, str] | None:
     signal_table = _TEXT_SIGNAL_TABLE if before_index is None else _TEXT_SIGNAL_TABLE[:before_index]
-    for index, (patterns, kind, name) in enumerate(signal_table):
-        if any(pattern in lowered_text for pattern in patterns):
+    for index, (pattern, kind, name) in enumerate(signal_table):
+        if pattern.search(lowered_text):
             return index, kind, name
     return None
 
