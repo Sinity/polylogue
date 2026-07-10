@@ -4030,11 +4030,8 @@ def _reextract_provider_usage_tail_db(
                 child_session_id,
             ),
         )
-    provenance_absent = "\n          AND ".join(
-        f"json_extract(payload_json, '$.{key}') IS NULL" for key in _PROVIDER_USAGE_PROVENANCE_KEYS
-    )
     conn.execute(
-        f"""
+        """
         DELETE FROM session_provider_usage_events
         WHERE session_id = ?
           AND last_input_tokens = 0
@@ -4049,7 +4046,14 @@ def _reextract_provider_usage_tail_db(
           AND total_cache_write_tokens = 0
           AND total_reasoning_output_tokens = 0
           AND total_tokens = 0
-          AND {provenance_absent}
+          AND json_extract(payload_json, '$.estimated_cost_usd') IS NULL
+          AND json_extract(payload_json, '$.actual_cost_usd') IS NULL
+          AND json_extract(payload_json, '$.cost_status') IS NULL
+          AND json_extract(payload_json, '$.cost_source') IS NULL
+          AND json_extract(payload_json, '$.pricing_version') IS NULL
+          AND json_extract(payload_json, '$.billing_provider') IS NULL
+          AND json_extract(payload_json, '$.billing_base_url') IS NULL
+          AND json_extract(payload_json, '$.billing_mode') IS NULL
         """,
         (child_session_id,),
     )
