@@ -627,6 +627,14 @@ tiers migrate via
 verified backup manifest; fresh source tiers never create the table.</p>
 </li>
 <li>
+<p>Source schema version 4 adds <code>blob_publication_reservations</code>, an exact
+filesystem-publication boundary rather than the removed late write-effects
+lease. Rows are keyed by per-publication receipt ID and indexed by content
+hash, so concurrent publishers of identical bytes remain independent.
+Existing v3 tiers migrate additively through
+<code>004_blob_publication_reservations.sql</code> after a verified backup manifest.</p>
+</li>
+<li>
 <p>Index schema version 30 makes <code>session_events</code> the lossless generic relation
 for every parsed non-message event. It retains open event types and structured
 payloads in original positions while policy and usage tables remain typed
@@ -1119,8 +1127,8 @@ historical alias for this row-group view of <code>raw_artifacts</code>.)</li>
 GC identifies unreferenced blobs via a snapshot reference check plus an
 age floor (see GC concurrency model below), not simple link counting.</li>
 </ul>
-<h3>GC concurrency model — snapshot reference check plus age floor</h3>
-<p><code>run_blob_gc</code> deletes orphan blob files using two independent safety
+<h3>GC concurrency model — publication reservation, reference, and age floor</h3>
+<p><code>run_blob_gc</code> deletes orphan blob files using three safety
 invariants combined:</p>
 <ol>
 <li><strong>DB reference check</strong> — <code>_still_referenced</code> queries <code>raw_sessions</code> for
@@ -1130,6 +1138,16 @@ right now.&quot; It only sees <em>committed</em> rows: a blob whose referencing
 ingest has written the bytes to disk but not yet committed the row is,
 by SQLite's isolation, indistinguishable from a true orphan to this
 check alone.</li>
+<li><strong>Publication receipt</strong> — archive orchestration prepares a bounded batch of
+private temporary files, commits every per-publication receipt in one
+source-tier transaction, then publishes every final content-addressed path.
+The exact source-reference transaction consumes its own receipt ID; an
+index-only attachment consumes its receipt only after the index commit.
+Same-hash publishers cannot consume one another. Pure parser/source APIs
+receive an injected writer and remain independent of archive paths/schema.
+GC enumerates outside its lock, then holds the source-tier write lock only
+across the bounded final reference/receipt recheck and unlink. Dry-run is
+read-only.</li>
 <li><strong>Age floor</strong> — a candidate must be older than
 <code>max(MIN_AGE_S, now - prev_generation.completed_at)</code>
 (<code>polylogue/storage/blob_gc.py:run_blob_gc_report</code>). <code>MIN_AGE_S</code> is 60
@@ -1138,10 +1156,8 @@ runs so a blob created during the same window as the previous pass is
 never reclaimed before its eventual reference can land. With no prior
 generation recorded, the static <code>MIN_AGE_S</code> floor applies on its own.</li>
 </ol>
-<p><strong>This age floor is the SOLE defense</strong> against the race the reference check
-cannot see: blob written to disk at T0, referencing row commits at T1, GC
-runs somewhere in <code>(T0, T1)</code>. A prior revision of this module carried a
-second invariant — a lease mechanism (<code>pending_blob_refs</code>,
+<p>The age floor was previously the sole defense against the race the reference
+check cannot see. A prior revision carried a late lease mechanism (<code>pending_blob_refs</code>,
 <code>acquire_blob_leases</code>/<code>release_operation_leases</code>) meant to make that window
 explicit rather than relying on a timing heuristic. It was fully
 implemented and unit-tested but <strong>never reachable in production</strong>: the only
@@ -1153,29 +1169,20 @@ built its payload without them). A race-window audit
 production callers across the whole write path, so <code>has_lease</code> was always
 <code>False</code> and the acquire/release calls never ran. The mechanism was removed
 rather than left as dead code implying a protection that did not exist
-(polylogue-v7e0).</p>
-<p><strong>Why <code>MIN_AGE_S = 60</code> is judged sufficient today</strong>: it must outlast the
-span from blob-write-to-disk to referencing-row-commit for one ingest
-operation. Ordinary ingest batches clear this comfortably — parse,
-materialize, and FTS repair for a normal session count run in low hundreds
-of milliseconds to a few seconds (<code>commit_archive_write_effects</code> only logs
-<code>slow_archive_write_effects</code> above 1.0s total). The known risk class is the
-memory-bounded streaming path for multi-GiB Claude Code JSONL
-(<code>sources/dispatch.py</code>), where a single session's parse+materialize could
-plausibly exceed 60s. <strong>The residual exposure</strong>: an operator who runs
-<code>polylogue maintenance blob-gc --yes</code> manually, concurrently with such a
-long-running ingest, inside that window, could still race a genuinely
-in-flight write. There is currently no lease-based (or other exact) closure
-of that window — the mitigation is operational (avoid running blob-gc
-manually during a large corpus import) rather than mechanical. Re-closing
-this precisely would require acquiring a lease at blob-write time (inside
-<code>acquisition_records.py</code>/<code>source_acquisition_components.py</code>/attachment
-writes), not merely at the end of an ingest batch just before commit — a
-lease acquired that late provides no additional coverage over what the age
-floor already gives, since the row is about to become visible anyway.
-Any future attempt at a real per-write lease should account for this,
-and for the fact that acquire and materialize can be separated across
-daemon batching/quiet-window deferral, not just within one call stack.</p>
+(polylogue-v7e0). A deterministic provider-shaped measurement later proved
+the real window structurally unbounded: acquisition prefetched 128 artifacts
+and committed references in batches of 500, so a slow following artifact
+could age an earlier blob past 60 seconds. Source v4 therefore reserves at
+the only boundary that closes the race: before final-path visibility.</p>
+<p>Crash reconciliation has no TTL. It classifies and retains receipts by
+default, including missing-path receipts: absence is not proof that a paused
+publisher died. Automatic clearing requires archive-wide writer exclusion.
+Existing blob-without-reference rows remain explicit recoverable acquisition
+debt until reacquisition or confirmed operator abandonment through
+<code>polylogue ops maintenance blob-publications</code>. Age is never treated as proof
+that a publisher is dead. Archive backup holds the same writer exclusion and
+copies an exact hash/size inventory for the union of durable references and
+publication receipts.</p>
 <ul>
 <li><strong>Known issues</strong>: GC has bugs with orphan detection and integrity
 verification (<a href="https://github.com/Sinity/polylogue/issues/818">#818</a>)

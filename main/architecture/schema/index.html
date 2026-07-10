@@ -415,12 +415,12 @@ over the <code>CREATE TABLE</code> statement.</p>
 <tr>
 <td><code>source.py</code></td>
 <td><code>source.db</code></td>
-<td><code>SOURCE_SCHEMA_VERSION = 1</code></td>
+<td><code>SOURCE_SCHEMA_VERSION = 4</code></td>
 </tr>
 <tr>
 <td><code>index.py</code></td>
 <td><code>index.db</code></td>
-<td><code>INDEX_SCHEMA_VERSION = 11</code></td>
+<td><code>INDEX_SCHEMA_VERSION = 30</code></td>
 </tr>
 <tr>
 <td><code>embeddings.py</code></td>
@@ -430,7 +430,7 @@ over the <code>CREATE TABLE</code> statement.</p>
 <tr>
 <td><code>user.py</code></td>
 <td><code>user.db</code></td>
-<td><code>USER_SCHEMA_VERSION = 3</code></td>
+<td><code>USER_SCHEMA_VERSION = 4</code></td>
 </tr>
 <tr>
 <td><code>ops.py</code></td>
@@ -451,7 +451,8 @@ from this tier, so it is the durable record of <em>what was ingested</em>.</p>
 <p>Core tables: <code>raw_sessions</code> (one row per acquired payload, keyed by <code>raw_id</code>,
 carrying <code>origin</code>, <code>native_id</code>, <code>blob_hash</code>, and parse/validation state),
 <code>raw_artifacts</code> (artifact-taxonomy classification per acquired file),
-<code>blob_refs</code> / <code>gc_generations</code> (content-addressed blob references and the
+<code>blob_refs</code> / <code>blob_publication_reservations</code> / <code>gc_generations</code>
+(content-addressed blob references, in-flight publication protection, and the
 GC bookkeeping described in
 <a href="../internals/#blob-store-model">Internals § Blob Store Model</a>),
 <code>raw_hook_events</code>, and <code>history_sidecars</code>.</p>
