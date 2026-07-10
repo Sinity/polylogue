@@ -325,6 +325,96 @@ console.log(JSON.stringify({{activeView: state.activeView, renderMainCalls: rend
     assert result["renderMainCalls"] == 1
 
 
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_verb_nav_exposes_active_view_to_assistive_technology(tmp_path: Path) -> None:
+    """Visual and accessible active state must move together between verbs."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, _NAV_FUNCS)
+    harness = f"""
+function button(verb) {{
+  return {{
+    dataset: {{verb: verb}}, attributes: {{}},
+    classList: {{toggle: function() {{}}}},
+    setAttribute: function(name, value) {{ this.attributes[name] = value; }},
+    removeAttribute: function(name) {{ delete this.attributes[name]; }}
+  }};
+}}
+var buttons = [button('search'), button('analyze'), button('audit'), button('remember')];
+var document = {{getElementById: function() {{ return {{querySelectorAll: function() {{ return buttons; }}}}; }}}};
+var state = {{activeView: 'search'}};
+function renderMain() {{}}
+{functions_src}
+syncVerbNavButtons();
+setActiveView('audit');
+console.log(JSON.stringify(buttons.map(function(btn) {{ return btn.attributes['aria-current'] || null; }})));
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    assert json.loads(proc.stdout) == [None, None, "page", None]
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_workspace_route_returns_to_search_before_rendering(tmp_path: Path) -> None:
+    """Stack/compare actions remain visible when launched from another verb."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, ["loadWorkspaceRoute"])
+    harness = f"""
+var state = {{activeView: 'remember', mode: 'single', selected: {{id: 's1'}}, selectedRaw: {{}}}};
+var navSyncCalls = 0, renderSnapshots = [];
+function syncVerbNavButtons() {{ navSyncCalls += 1; }}
+function pushWorkspaceURL() {{}}
+function fetchJSON() {{ return Promise.resolve({{items: []}}); }}
+function renderMain() {{ renderSnapshots.push({{activeView: state.activeView, mode: state.mode}}); }}
+function renderInspector() {{}}
+function renderSessions() {{}}
+{functions_src}
+(async function() {{
+  await loadWorkspaceRoute({{mode: 'stack', ids: ['s1'], focus: 's1'}}, true);
+  console.log(JSON.stringify({{activeView: state.activeView, navSyncCalls: navSyncCalls, renders: renderSnapshots}}));
+}})();
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    result = json.loads(proc.stdout)
+    assert result == {
+        "activeView": "search",
+        "navSyncCalls": 1,
+        "renders": [{"activeView": "search", "mode": "stack"}],
+    }
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_remember_saved_view_uses_wire_view_id(tmp_path: Path) -> None:
+    """Remember must pass the saved-view API key, never an absent legacy id."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(
+        WEB_SHELL_HTML,
+        ["esc", "escAttr", "escJsAttr", "renderRouteStateNotice", "statTile", "renderRememberPanel"],
+    )
+    harness = f"""
+var state = {{
+  marks: {{}}, annotations: {{}}, assertionsPanel: {{items: []}},
+  savedViews: [{{view_id: 'view-42', name: 'Review queue'}}], routeStates: {{}}
+}};
+{functions_src}
+console.log(JSON.stringify({{html: renderRememberPanel()}}));
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    html = json.loads(proc.stdout)["html"]
+    assert "applySavedView('view-42')" in html
+    assert "undefined" not in html
+
+
 _ANALYZE_FUNCS = [
     "esc",
     "escAttr",

@@ -380,7 +380,7 @@ __COORDINATION_CSS__
   </div>
   <div id="daemon-banner" role="alert"></div>
   <nav id="verb-nav" aria-label="Primary">
-    <button type="button" class="verb-btn active" data-verb="search" onclick="setActiveView('search')">
+    <button type="button" class="verb-btn active" data-verb="search" aria-current="page" onclick="setActiveView('search')">
       <span class="verb-label">Search</span><span class="verb-hint">find sessions and evidence</span>
     </button>
     <button type="button" class="verb-btn" data-verb="analyze" onclick="setActiveView('analyze')">
@@ -1537,6 +1537,8 @@ function syncVerbNavButtons() {
   nav.querySelectorAll('.verb-btn').forEach(function(btn) {
     var isActive = btn.dataset && btn.dataset.verb === state.activeView;
     if (btn.classList) btn.classList.toggle('active', isActive);
+    if (isActive) btn.setAttribute('aria-current', 'page');
+    else btn.removeAttribute('aria-current');
   });
 }
 
@@ -1799,8 +1801,8 @@ function renderRememberPanel() {
     html += '<div class="inspector-empty">No saved views yet.</div>';
   } else {
     (state.savedViews || []).forEach(function(v) {
-      html += '<div class="panel-row" style="cursor:pointer" onclick="applySavedView(\'' + escJsAttr(v.id) + '\')">'
-        + '<span class="panel-row-main">' + esc(v.name || v.id) + '</span></div>';
+      html += '<div class="panel-row" style="cursor:pointer" onclick="applySavedView(\'' + escJsAttr(v.view_id) + '\')">'
+        + '<span class="panel-row-main">' + esc(v.name || v.view_id) + '</span></div>';
     });
   }
   html += '</div>';
