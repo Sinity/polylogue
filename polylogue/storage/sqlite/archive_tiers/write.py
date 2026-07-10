@@ -353,7 +353,10 @@ def write_parsed_session_to_archive(
                 reported_duration_ms = excluded.reported_duration_ms,
                 content_hash = excluded.content_hash,
                 created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
-                updated_at_ms = MAX(COALESCE(sessions.updated_at_ms, 0), COALESCE(excluded.updated_at_ms, 0))
+                updated_at_ms = CASE
+                    WHEN ? THEN excluded.updated_at_ms
+                    ELSE MAX(COALESCE(sessions.updated_at_ms, 0), COALESCE(excluded.updated_at_ms, 0))
+                END
             """,
             (
                 native_id,
@@ -386,6 +389,7 @@ def write_parsed_session_to_archive(
                 session_content_hash,
                 _timestamp_ms(session.created_at),
                 _timestamp_ms(session.updated_at),
+                force_replace,
             ),
         )
         add_timing("index.session_upsert", t0)
@@ -563,9 +567,13 @@ def write_parsed_session_to_archive(
             add_timing=add_timing,
         )
         add_timing("index.graph_resolve", t0)
-        if session.ingest_flags:
+        if merge_append and session.ingest_flags:
             t0 = time.perf_counter()
             _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
+            add_timing("index.ingest_flags", t0)
+        elif not merge_append:
+            t0 = time.perf_counter()
+            _replace_ingest_flag_tags(conn, session_id, session.ingest_flags)
             add_timing("index.ingest_flags", t0)
     return session_id
 
@@ -607,9 +615,23 @@ def _write_ingest_flag_tags(conn: sqlite3.Connection, session_id: str, flags: li
         )
 
 
+def _replace_ingest_flag_tags(conn: sqlite3.Connection, session_id: str, flags: list[str]) -> None:
+    """Synchronize parser-owned flags to the accepted full replacement."""
+    conn.execute(
+        "DELETE FROM session_tags WHERE session_id = ? AND tag_source = 'auto' AND method = 'parser'",
+        (session_id,),
+    )
+    _write_ingest_flag_tags(conn, session_id, flags)
+
+
 def upsert_parser_ingest_flag_tags(conn: sqlite3.Connection, session_id: str, flags: list[str]) -> None:
     """Upsert parser-owned ingest flag tags for an already-materialized session."""
     _write_ingest_flag_tags(conn, session_id, flags)
+
+
+def replace_parser_ingest_flag_tags(conn: sqlite3.Connection, session_id: str, flags: list[str]) -> None:
+    """Replace parser-owned ingest flags for an accepted current owner."""
+    _replace_ingest_flag_tags(conn, session_id, flags)
 
 
 def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) -> None:
@@ -4483,6 +4505,7 @@ __all__ = [
     "read_session_tags",
     "read_session_work_events",
     "rebuild_archive_messages_fts",
+    "replace_parser_ingest_flag_tags",
     "upsert_session_profile_costs",
     "apply_insight_materialization",
     "upsert_insight_materialization",

@@ -168,6 +168,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     ArchiveSessionPhase,
     ArchiveSessionWorkEvent,
+    _timestamp_ms,
     read_archive_session_envelope,
     read_insight_materialization,
     read_session_phases,
@@ -850,7 +851,7 @@ class ArchiveStore:
     ) -> ArchiveRawParsedWriteResult:
         session_id = str(make_session_id(session.source_name, session.provider_session_id))
         existing_row = self._conn.execute(
-            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            "SELECT raw_id, updated_at_ms FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
@@ -901,6 +902,23 @@ class ArchiveStore:
                     session_id=session_id,
                     content_changed=False,
                     counts=self._skipped_counts(session, session_events=session_event_count),
+                )
+
+        incoming_freshness_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+        if (
+            source_index >= 0
+            and browser_precedence != "replace"
+            and existing_row is not None
+            and incoming_freshness_ms is not None
+        ):
+            existing_updated_at_ms = existing_row["updated_at_ms"]
+            existing_updated_at_int = int(existing_updated_at_ms) if existing_updated_at_ms is not None else None
+            if existing_updated_at_int is not None and incoming_freshness_ms < existing_updated_at_int:
+                return ArchiveRawParsedWriteResult(
+                    raw_id=raw_id,
+                    session_id=session_id,
+                    content_changed=False,
+                    counts=self._skipped_counts(session),
                 )
 
         write_parsed_session_to_archive(

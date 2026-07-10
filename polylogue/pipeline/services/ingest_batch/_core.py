@@ -52,6 +52,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
     _timestamp_ms,
+    replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
 )
@@ -484,7 +485,9 @@ def _write_session(
         merge_append = True
 
     if not force_write and content_unchanged:
-        if payload.parsed_session.ingest_flags:
+        if browser_precedence == "replace":
+            replace_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
+        elif payload.parsed_session.ingest_flags:
             upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
         counts["raw_links"] = int(_refresh_session_raw_link(conn, payload.session_id, payload.raw_id))
         counts["skipped_sessions"] = 1

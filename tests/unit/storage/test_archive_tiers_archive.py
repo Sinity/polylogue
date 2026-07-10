@@ -419,6 +419,87 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
     }
 
 
+@pytest.mark.parametrize(
+    ("arrivals", "expected_title", "expected_native_flag"),
+    [
+        (
+            (
+                ("native", 2, "Native browser", "2026-04-01T00:00:00Z"),
+                ("export", 3, "Fuller export", "2026-04-02T00:00:00Z"),
+                ("export", 3, "Newest export", "2026-04-03T00:00:00Z"),
+            ),
+            "Newest export",
+            False,
+        ),
+        (
+            (
+                ("export", 2, "Newer export", "2026-04-03T00:00:00Z"),
+                ("native", 2, "Older native", "2026-04-01T00:00:00Z"),
+                ("native", 2, "Native update", "2026-04-02T00:00:00Z"),
+            ),
+            "Native update",
+            True,
+        ),
+    ],
+    ids=("owner-flag-is-replaced", "forced-owner-resets-freshness"),
+)
+def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
+    tmp_path: Path,
+    arrivals: tuple[tuple[str, int, str, str], ...],
+    expected_title: str,
+    expected_native_flag: bool,
+) -> None:
+    session_native_id = f"browser-three-arrivals-{expected_title.lower().replace(' ', '-')}"
+
+    def session(kind: str, count: int, title: str, updated_at: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id=session_native_id,
+            title=title,
+            updated_at=updated_at,
+            messages=[
+                ParsedMessage(
+                    provider_message_id=f"{title}-{position}",
+                    role=Role.USER if position == 0 else Role.ASSISTANT,
+                    text=f"{title} message {position}",
+                )
+                for position in range(count)
+            ],
+            ingest_flags=[NATIVE_BROWSER_CAPTURE_INGEST_FLAG] if kind == "native" else [],
+        )
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        outcomes = [
+            facade.write_raw_and_parsed_result(
+                session(kind, count, title, updated_at),
+                payload=f"arrival-{index}-{title}".encode(),
+                source_path=f"/tmp/arrival-{index}.json",
+                acquired_at_ms=1_767_000_000_000 + index,
+            )
+            for index, (kind, count, title, updated_at) in enumerate(arrivals)
+        ]
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        stored = conn.execute(
+            "SELECT raw_id, title FROM sessions WHERE session_id = ?",
+            (outcomes[0].session_id,),
+        ).fetchone()
+        native_flag = conn.execute(
+            "SELECT 1 FROM session_tags WHERE session_id = ? AND tag = ?",
+            (outcomes[0].session_id, NATIVE_BROWSER_CAPTURE_INGEST_FLAG),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert [outcome.content_changed for outcome in outcomes] == [True, True, True]
+    assert [outcome.counts["sessions"] for outcome in outcomes] == [1, 1, 1]
+    assert dict(stored) == {"raw_id": outcomes[-1].raw_id, "title": expected_title}
+    assert (native_flag is not None) is expected_native_flag
+
+
 def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,

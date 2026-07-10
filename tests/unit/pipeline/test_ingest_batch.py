@@ -1295,6 +1295,80 @@ def test_write_session_native_browser_precedence_matrix(
     }
 
 
+@pytest.mark.parametrize(
+    ("arrivals", "expected_title", "expected_native_flag"),
+    [
+        (
+            (
+                ("native", 2, "Native browser", "2026-04-01T00:00:00Z"),
+                ("export", 3, "Fuller export", "2026-04-02T00:00:00Z"),
+                ("export", 3, "Newest export", "2026-04-03T00:00:00Z"),
+            ),
+            "Newest export",
+            False,
+        ),
+        (
+            (
+                ("export", 2, "Newer export", "2026-04-03T00:00:00Z"),
+                ("native", 2, "Older native", "2026-04-01T00:00:00Z"),
+                ("native", 2, "Native update", "2026-04-02T00:00:00Z"),
+            ),
+            "Native update",
+            True,
+        ),
+    ],
+    ids=("owner-flag-is-replaced", "forced-owner-resets-freshness"),
+)
+def test_write_session_browser_precedence_tracks_three_arrivals(
+    tmp_path: Path,
+    arrivals: tuple[tuple[str, int, str, str], ...],
+    expected_title: str,
+    expected_native_flag: bool,
+) -> None:
+    session_id = f"chatgpt-export:browser-three-arrivals-{expected_title.lower().replace(' ', '-')}"
+
+    def payload(kind: str, count: int, title: str, updated_at: str, raw_id: str) -> SessionWritePayload:
+        return _session_data(
+            session_id,
+            content_hash=f"{raw_id}-{title}",
+            raw_id=raw_id,
+            provider=Provider.CHATGPT,
+            title=title,
+            updated_at=updated_at,
+            ingest_flags=[NATIVE_BROWSER_CAPTURE_INGEST_FLAG] if kind == "native" else [],
+            message_tuples=[
+                _message_tuple(
+                    f"{raw_id}-{position}",
+                    session_id,
+                    role="user" if position == 0 else "assistant",
+                    text=f"{title} message {position}",
+                    content_hash=f"{raw_id}-{position}",
+                    sort_key=float(position),
+                )
+                for position in range(count)
+            ],
+        )
+
+    with open_connection(tmp_path / "index.db") as conn:
+        outcomes = [
+            _write_session(conn, payload(kind, count, title, updated_at, f"raw-{index}"))
+            for index, (kind, count, title, updated_at) in enumerate(arrivals)
+        ]
+        conn.commit()
+        stored = conn.execute(
+            "SELECT raw_id, title FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        native_flag = conn.execute(
+            "SELECT 1 FROM session_tags WHERE session_id = ? AND tag = ?",
+            (session_id, NATIVE_BROWSER_CAPTURE_INGEST_FLAG),
+        ).fetchone()
+
+    assert [changed for changed, _counts in outcomes] == [True, True, True]
+    assert dict(stored) == {"raw_id": "raw-2", "title": expected_title}
+    assert (native_flag is not None) is expected_native_flag
+
+
 def test_write_session_skips_new_with_zero_messages(tmp_path: Path) -> None:
     """A new session with zero messages is skipped, not left as a manifest-only row."""
     with open_connection(tmp_path / "index.db") as conn:
