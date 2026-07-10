@@ -1203,12 +1203,14 @@ def test_citation_markers_are_stripped_but_citations_survive() -> None:
 
     assert len(messages) == 1
     message = messages[0]
-    assert "\ue200" not in message.text
-    assert "\ue201" not in message.text
-    assert "\ue202" not in message.text
-    assert "filecite" not in message.text
-    assert message.text.startswith("Per the brief.")
-    assert message.text.endswith("end.")
+    text = message.text
+    assert text is not None
+    assert "\ue200" not in text
+    assert "\ue201" not in text
+    assert "\ue202" not in text
+    assert "filecite" not in text
+    assert text.startswith("Per the brief.")
+    assert text.endswith("end.")
     assert all("\ue200" not in (block.text or "") for block in message.blocks)
     constructs = [c for block in message.blocks for c in block.web_constructs]
     assert any(c.provider_key == "citations" for c in constructs)
@@ -1237,6 +1239,7 @@ def test_user_editable_context_becomes_runtime_context_message() -> None:
     message = messages[0]
     assert message.message_type is MessageType.CONTEXT
     assert message.material_origin is MaterialOrigin.RUNTIME_CONTEXT
+    assert message.text is not None
     assert "Profile: local-first archivist." in message.text
     assert "Always answer with evidence refs." in message.text
     assert message.blocks[0].metadata == {"content_type": "user_editable_context"}
@@ -1265,4 +1268,5 @@ def test_model_editable_context_memory_payload_is_kept_and_empty_is_dropped() ->
 
     assert [m.provider_message_id for m in messages] == ["msg1"]
     assert messages[0].message_type is MessageType.CONTEXT
+    assert messages[0].text is not None
     assert "Prefers rigorous verification" in messages[0].text
