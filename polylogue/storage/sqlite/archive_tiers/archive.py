@@ -712,6 +712,14 @@ class ArchiveStore:
         read_only: bool = False,
         read_timeout: float = 5.0,
     ) -> None:
+        if not read_only:
+            from polylogue.paths import archive_root as configured_archive_root
+            from polylogue.storage.archive_identity import assert_writable_archive_identity
+
+            assert_writable_archive_identity(
+                configured_root=configured_archive_root(),
+                active_root=archive_root,
+            )
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
         self.index_db_path = archive_root / "index.db"
