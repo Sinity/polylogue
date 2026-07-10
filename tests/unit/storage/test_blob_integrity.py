@@ -968,6 +968,63 @@ def test_source_replacement_publication_survives_gc_before_reference_commit(tmp_
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
 
 
+def test_source_replacement_dedup_reserves_existing_target_before_reference_commit(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
+    source_path = tmp_path / "replacement.json"
+    payload = b'{"id":"existing-replacement"}'
+    source_path.write_bytes(payload)
+    stale_hash = bytes.fromhex("4" * 64)
+    target_hash = hashlib.sha256(payload).hexdigest()
+    BlobStore(archive_root / "blob").write_from_bytes(payload)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms
+            ) VALUES ('raw-dedup-repair', 'chatgpt-export', ?, 0, ?, 1, 1)
+            """,
+            (str(source_path), stale_hash),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (
+                blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+            ) VALUES (?, 'raw-dedup-repair', 'raw_payload', ?, 1, 1)
+            """,
+            (stale_hash, str(source_path)),
+        )
+
+    gc_reports = []
+
+    class GCInjectingStore(BlobStore):
+        def publish_many(self, prepared):  # type: ignore[no-untyped-def]
+            batch = tuple(prepared)
+            result = super().publish_many(batch)
+            os.utime(self.blob_path(target_hash), (1_700_000_000, 1_700_000_000))
+            gc_reports.append(run_blob_gc_report(source_db, self.root))
+            return result
+
+    store = GCInjectingStore(archive_root / "blob")
+    report = replace_raw_backed_blob_reference_debt_from_source(
+        source_db,
+        store=store,
+        dry_run=False,
+        manifest_path=tmp_path / "dedup-repair.jsonl",
+    )
+
+    assert len(gc_reports) == 1
+    assert gc_reports[0].deleted_count == 0
+    assert gc_reports[0].skipped_reserved == 1
+    assert report.replaced_rows == 1
+    assert report.written_blobs == 0
+    assert store.exists(target_hash)
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+
+
 def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"

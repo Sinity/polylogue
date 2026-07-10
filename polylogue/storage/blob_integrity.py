@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
-from polylogue.storage.blob_store import BlobStore, get_blob_store
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.connection import open_read_connection
 
 BlobIntegrityKind = Literal["orphan_blobs", "missing_referenced_blobs", "hash_mismatch"]
@@ -707,8 +707,8 @@ def classify_blob_reference_debt(
 ) -> BlobReferenceDebtClassificationReport:
     """Classify missing referenced blobs without mutating archive state."""
 
-    blob_store = store if store is not None else get_blob_store()
     source_db = _source_db_for_blob_reference_report(db_path)
+    blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
     refs = _reference_rows_for_blob_debt(source_db)
     by_hash = _group_reference_rows(refs)
     missing = [(blob_hash, group) for blob_hash, group in by_hash.items() if not blob_store.exists(blob_hash)]
@@ -1303,8 +1303,8 @@ def prune_orphan_blob_reference_debt(
     source exports or browser-capture files.
     """
 
-    blob_store = store if store is not None else get_blob_store()
     source_db = _source_db_for_blob_reference_report(db_path)
+    blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
     with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as read_conn:
         rows = _blob_ref_rows_for_orphan_prune(read_conn)
 
@@ -1374,8 +1374,8 @@ def plan_raw_backed_blob_reference_recovery(
 ) -> BlobReferenceRecoveryPlanReport:
     """Classify raw-backed missing blob refs without mutating archive state."""
 
-    blob_store = store if store is not None else get_blob_store()
     source_db = _source_db_for_blob_reference_report(db_path)
+    blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
     with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
         rows = _missing_raw_backed_blob_rows(conn)
 
@@ -1445,8 +1445,8 @@ def replace_raw_backed_blob_reference_debt_from_source(
     if not dry_run and manifest_path is None:
         raise ValueError("manifest_path is required when applying source replacement")
 
-    blob_store = store if store is not None else get_blob_store()
     source_db = _source_db_for_blob_reference_report(db_path)
+    blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
     with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
         rows = _missing_raw_backed_blob_rows(conn)
 
@@ -1580,17 +1580,18 @@ def replace_raw_backed_blob_reference_debt_from_source(
         publication_receipts: list[str | None] = []
         for row, new_blob_hash, _new_blob_size, _file_mtime_ms, _acquired_at_ms in candidate_updates:
             receipt_id: str | None = None
-            if not blob_store.exists(new_blob_hash):
-                source_path = str(row["source_path"])
-                payload_bytes, _reason = _current_raw_payload_bytes(
-                    source_path,
-                    int(row["source_index"]) if row.get("source_index") is not None else None,
-                    source_bytes_cache=apply_source_bytes_cache,
-                    decoded_payload_cache=apply_decoded_payload_cache,
-                )
-                if payload_bytes is not None:
-                    published_hash, _published_size = publisher.write_from_bytes(payload_bytes)
-                    receipt_id = publisher.receipt_id(published_hash)
+            existed_before_publication = blob_store.exists(new_blob_hash)
+            source_path = str(row["source_path"])
+            payload_bytes, _reason = _current_raw_payload_bytes(
+                source_path,
+                int(row["source_index"]) if row.get("source_index") is not None else None,
+                source_bytes_cache=apply_source_bytes_cache,
+                decoded_payload_cache=apply_decoded_payload_cache,
+            )
+            if payload_bytes is not None:
+                published_hash, _published_size = publisher.write_from_bytes(payload_bytes)
+                receipt_id = publisher.receipt_id(published_hash)
+                if not existed_before_publication:
                     written_blobs += 1
                     written_bytes += len(payload_bytes)
             publication_receipts.append(receipt_id)
@@ -1666,8 +1667,8 @@ def restore_direct_blob_reference_debt(
 ) -> BlobReferenceDebtRestoreReport:
     """Restore direct-file missing blob refs after exact hash verification."""
 
-    blob_store = store if store is not None else get_blob_store()
     source_db = _source_db_for_blob_reference_report(db_path)
+    blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
     refs = _reference_rows_for_blob_debt(source_db)
     by_hash = _group_reference_rows(refs)
     missing = {blob_hash: group for blob_hash, group in by_hash.items() if not blob_store.exists(blob_hash)}
@@ -1873,8 +1874,8 @@ def scan_blob_reference_debt(
 ) -> BlobReferenceDebtReport:
     """Count missing referenced blob files exactly without mutating state."""
 
-    blob_store = store if store is not None else get_blob_store()
     resolved_db_path = Path(db_path)
+    blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
     with sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True) as conn:
         referenced = _referenced_blob_hashes(resolved_db_path, conn)
         reference_sources = _reference_source_counts(resolved_db_path, conn)
@@ -1943,8 +1944,8 @@ def scan_attachment_acquisition_debt(
     ``db_path`` is the index-tier database (``index.db``), not ``source.db``.
     """
 
-    blob_store = store if store is not None else get_blob_store()
     resolved_db_path = Path(db_path)
+    blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
     with sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         status_counts: dict[str, int] = dict(
@@ -1991,8 +1992,8 @@ def scan_blob_integrity(
     every raw-session reference.
     """
 
-    blob_store = store if store is not None else get_blob_store()
     resolved_db_path = Path(db_path)
+    blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
     with open_read_connection(resolved_db_path) as conn:
         referenced = _referenced_blob_hashes(resolved_db_path, conn)
 
