@@ -117,3 +117,9 @@ def test_without_noise_idempotent(conv: Session) -> None:
 def test_extract_thinking_never_empty_string(msg: Message) -> None:
     result = msg.extract_thinking()
     assert result is None or len(result.strip()) > 0
+
+
+def test_extract_thinking_empty_wrapper_returns_none() -> None:
+    msg = Message(id="empty-thinking", role=Role.ASSISTANT, text="<thinking></thinking>")
+
+    assert msg.extract_thinking() is None

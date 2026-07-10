@@ -81,6 +81,32 @@ def test_prose_only_uses_text_fallback_and_preserves_order() -> None:
     assert message.text == "Alpha\n\nOmega"
 
 
+def test_reasoning_projection_drops_empty_inline_thinking_wrapper() -> None:
+    message = make_msg(id="empty-thinking", role=Role.ASSISTANT, text="<thinking></thinking>")
+
+    projected = project_message_content([message], ContentProjectionSpec(include_reasoning=False))
+
+    assert projected == []
+
+
+def test_reasoning_projection_uses_typed_message_without_blocks() -> None:
+    message = make_msg(
+        id="typed-thinking",
+        role=Role.TOOL,
+        text="private reasoning",
+        message_type=MessageType.THINKING,
+    )
+
+    without_reasoning = project_message_content([message], ContentProjectionSpec(include_reasoning=False))
+    only_reasoning = project_message_content(
+        [message],
+        ContentProjectionSpec.from_params({"include_content_kinds": [ContentKind.REASONING]}),
+    )
+
+    assert without_reasoning == []
+    assert [projected.text for projected in only_reasoning] == ["private reasoning"]
+
+
 def test_projection_filters_structured_code_and_tool_outputs_without_losing_prose() -> None:
     session = make_conv(
         messages=[

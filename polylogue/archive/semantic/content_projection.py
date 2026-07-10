@@ -224,6 +224,8 @@ def _segments_for_message(
 
 def _whole_message_kind(message: Message, *, has_content_blocks: bool) -> ContentKind | None:
     message_type = MessageType.normalize(getattr(message, "message_type", MessageType.MESSAGE))
+    if message_type is MessageType.THINKING:
+        return None
     if not has_content_blocks and (message_type == MessageType.TOOL_RESULT or message.role == Role.TOOL):
         return ContentKind.TOOL_OUTPUT
     if (
@@ -274,6 +276,14 @@ def _segments_from_text(message: Message) -> list[_Segment]:
     text = (message.text or "").strip()
     if not text:
         return []
+    message_type = MessageType.normalize(getattr(message, "message_type", MessageType.MESSAGE))
+    if message_type is MessageType.THINKING:
+        thinking = message.extract_thinking()
+        if thinking:
+            return [_Segment(ContentKind.REASONING, thinking)]
+        if _THINKING_PATTERN.search(text):
+            return []
+        return [_Segment(ContentKind.REASONING, text)]
     if message.role == Role.TOOL or message.is_tool_use:
         return [_Segment(ContentKind.TOOL_OUTPUT, text)]
     if not message.is_authored_prose:
@@ -282,7 +292,7 @@ def _segments_from_text(message: Message) -> list[_Segment]:
         return [_Segment(ContentKind.SYSTEM_NOISE, text)]
 
     segments = _segments_from_inline_text(text)
-    if segments:
+    if segments or _THINKING_PATTERN.search(text):
         return segments
 
     if message.is_thinking:
