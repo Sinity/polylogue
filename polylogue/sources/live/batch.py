@@ -868,9 +868,9 @@ class LiveBatchProcessor:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         blob_root = blob_store_root()
-        from polylogue.storage.blob_publication import reserved_blob_store
+        from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
-        blob_store = reserved_blob_store(blob_root, source_db_path=archive_root / "source.db")
+        blob_store = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
         raw_records: list[RawSessionRecord] = []
         raw_by_id: dict[str, Path] = {}
         raw_byte_sizes: dict[Path, int] = {}
@@ -901,6 +901,7 @@ class LiveBatchProcessor:
 
         for path in paths:
             blob_hash: str | None = None
+            blob_publication_receipt_id: str | None = None
             try:
                 stat = path.stat()
             except OSError:
@@ -956,6 +957,7 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
+                    blob_publication_receipt_id = snapshot.blob_publication_receipt_id
                     source_path = original_sqlite_source_path(path) or path
                     raw_id = hermes_profile_raw_id(source_path, 0, blob_hash)
                     raw_source_revisions[path] = snapshot.source_revision
@@ -991,6 +993,7 @@ class LiveBatchProcessor:
                                 source_payload_read_bytes=source_payload_read_bytes,
                             ),
                         )
+                        blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                     except OSError:
                         failed.append(path)
                         continue
@@ -1008,6 +1011,7 @@ class LiveBatchProcessor:
                         failed.append(path)
                         continue
                     raw_id, blob_size = blob_store.write_from_bytes(payload)
+                    blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                     raw_payloads[raw_id] = payload
                     source_payload_read_bytes += len(payload)
                     if heartbeat is not None:
@@ -1028,6 +1032,7 @@ class LiveBatchProcessor:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 raw_id, blob_size = blob_store.write_from_bytes(payload)
+                blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 raw_payloads[raw_id] = payload
                 source_payload_read_bytes += len(payload)
                 if heartbeat is not None:
@@ -1057,6 +1062,7 @@ class LiveBatchProcessor:
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
+                    blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except OSError:
                     failed.append(path)
                     continue
@@ -1079,6 +1085,7 @@ class LiveBatchProcessor:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 raw_id, blob_size = blob_store.write_from_bytes(payload)
+                blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 raw_payloads[raw_id] = payload
                 source_payload_read_bytes += len(payload)
                 if heartbeat is not None:
@@ -1101,6 +1108,7 @@ class LiveBatchProcessor:
                     ),
                     source_index=0,
                     blob_size=blob_size,
+                    blob_publication_receipt_id=blob_publication_receipt_id,
                     acquired_at=datetime.now(UTC).isoformat(),
                     file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
                 )
@@ -1109,6 +1117,7 @@ class LiveBatchProcessor:
 
         summary: _IngestBatchSummary | None = None
         if raw_records:
+            blob_store.flush()
             available_records = [record for record in raw_records if record.raw_id in raw_payloads]
             missing_payload_records = [record for record in raw_records if record.raw_id not in raw_payloads]
             if heartbeat is not None:
@@ -1169,6 +1178,7 @@ class LiveBatchProcessor:
         )
         raw_records.clear()
         raw_by_id.clear()
+        blob_store.discard_pending()
         return result
 
     def _archive_active(self, archive_root: Path) -> bool:
@@ -1280,6 +1290,7 @@ class LiveBatchProcessor:
                                 acquired_at_ms=acquired_at_ms,
                                 stage_timings_s=record_timings,
                                 stage_timing_prefix="full",
+                                blob_publication_receipt_id=record.blob_publication_receipt_id,
                             )
                         else:
                             raw_id, session_id = archive.write_raw_and_parsed(
@@ -1290,6 +1301,7 @@ class LiveBatchProcessor:
                                 acquired_at_ms=acquired_at_ms,
                                 stage_timings_s=record_timings,
                                 stage_timing_prefix="full",
+                                blob_publication_receipt_id=record.blob_publication_receipt_id,
                             )
                         result.raw_ids[record.raw_id] = raw_id
                         result.session_ids.append(session_id)
@@ -1376,6 +1388,7 @@ class LiveBatchProcessor:
                                     source_path=raw_data.source_path,
                                     source_index=raw_data.source_index or 0,
                                     blob_size=member_size,
+                                    blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
                                     acquired_at=acquired_at,
                                     file_mtime=raw_data.file_mtime,
                                 ),

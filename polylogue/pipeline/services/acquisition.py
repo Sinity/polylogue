@@ -22,6 +22,7 @@ from polylogue.storage.runtime import RawSessionRecord
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
+    from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
@@ -90,6 +91,7 @@ class AcquisitionService:
         on_source_complete: Callable[[], Awaitable[None]] | None = None,
         observation_callback: Callable[[JSONDocument], None] | None = None,
         persist_cursors: bool = True,
+        blob_store: BlobStore | None = None,
     ) -> ScanResult:
         """Visit source raw payloads incrementally without forcing list materialization.
 
@@ -119,6 +121,7 @@ class AcquisitionService:
                 async for record in iter_raw_record_stream(
                     source,
                     blob_root=self.backend.db_path.parent / "blob",
+                    blob_store=blob_store,
                     known_mtimes=known_mtimes,
                     known_cursors=known_cursors,
                     ui=drive_ui,
@@ -176,6 +179,12 @@ class AcquisitionService:
             AcquireResult with counts and list of acquired raw_ids
         """
         result = AcquireResult()
+        from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+        blob_publisher = ArchiveBlobPublisher(
+            self.backend.db_path.parent / "source.db",
+            self.backend.db_path.parent / "blob",
+        )
         # Records are metadata-only (~1 KB each, no BLOBs). Larger batches
         # reduce commit frequency and async thread-crossing overhead.
         flush_interval = 500
@@ -240,17 +249,21 @@ class AcquisitionService:
             if len(pending_records) >= flush_interval:
                 await _flush_pending()
 
-        visit_result = await self.visit_sources(
-            sources,
-            progress_callback=progress_callback,
-            ui=ui,
-            drive_config=drive_config,
-            progress_label="Scanning",
-            on_record=_store,
-            on_source_complete=_flush_pending,
-            observation_callback=_observe,
-        )
-        await _flush_pending()
+        try:
+            visit_result = await self.visit_sources(
+                sources,
+                progress_callback=progress_callback,
+                ui=ui,
+                drive_config=drive_config,
+                progress_label="Scanning",
+                on_record=_store,
+                on_source_complete=_flush_pending,
+                observation_callback=_observe,
+                blob_store=blob_publisher,
+            )
+            await _flush_pending()
+        finally:
+            blob_publisher.discard_pending()
         result.errors += visit_result.counts["errors"]
 
         if peak_observation is not None:

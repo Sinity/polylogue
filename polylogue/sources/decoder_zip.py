@@ -179,13 +179,13 @@ def process_zip(
     del should_group
 
     from polylogue.paths import blob_store_root
-    from polylogue.storage.blob_publication import reserved_blob_store
+    from polylogue.storage.blob_store import BlobStore
 
     from .cursor import _ParseContext
     from .dispatch import GROUP_PROVIDERS
     from .emitter import _SessionEmitter
 
-    store = reserved_blob_store(blob_root or blob_store_root())
+    store = BlobStore(blob_root or blob_store_root())
 
     validator = ZipEntryValidator(
         provider_hint,

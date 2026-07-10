@@ -137,6 +137,9 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                     raw_id=raw_id,
                     stage_timings_s=result.stage_timings_s,
                     manage_transaction=not batched,
+                    blob_publication_receipt_id=(
+                        raw_data.blob_publication_receipt_id if raw_data is not None else None
+                    ),
                 )
             except Exception:
                 # Discard the in-flight uncommitted batch so a failed write

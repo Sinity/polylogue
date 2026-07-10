@@ -506,23 +506,35 @@ async def _reconcile_blob_publications() -> None:
     from polylogue.storage.blob_publication import reconcile_blob_publication_reservations
 
     root = archive_root()
+    if not (root / "source.db").exists():
+        return
     outcome = await asyncio.to_thread(
         reconcile_blob_publication_reservations,
         root / "source.db",
         root / "blob",
         index_db_path=root / "index.db",
     )
-    if outcome.cleared_referenced or outcome.cleared_missing or outcome.unresolved:
+    if (
+        outcome.cleared_referenced
+        or outcome.cleared_missing
+        or outcome.retained_referenced
+        or outcome.retained_missing
+        or outcome.unresolved
+    ):
         logger.info(
-            "blob publications: reconciled referenced=%d missing=%d unresolved=%d",
+            "blob publications: classified cleared_ref=%d cleared_missing=%d "
+            "retained_ref=%d retained_missing=%d unresolved=%d",
             outcome.cleared_referenced,
             outcome.cleared_missing,
+            outcome.retained_referenced,
+            outcome.retained_missing,
             outcome.unresolved,
         )
-    if outcome.unresolved:
+    retained = outcome.retained_referenced + outcome.retained_missing + outcome.unresolved
+    if retained:
         logger.warning(
-            "blob publications: retained %d unresolved reservation(s) for reacquisition or operator adjudication",
-            outcome.unresolved,
+            "blob publications: retained %d receipt(s) for inspection or explicit abandonment",
+            retained,
         )
 
 

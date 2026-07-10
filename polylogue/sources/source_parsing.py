@@ -12,7 +12,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
-from polylogue.storage.blob_publication import reserved_blob_store
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
@@ -130,7 +130,7 @@ def parse_one_source_path(
             from polylogue.paths import blob_store_root
 
             blob_root = blob_store_root()
-        blob_store = reserved_blob_store(blob_root)
+        blob_store = BlobStore(blob_root)
         snapshot = snapshot_sqlite_to_blob(path, blob_store)
         retained_path = blob_store.blob_path(snapshot.blob_hash)
         raw_data = None
@@ -168,7 +168,7 @@ def parse_one_source_path(
             from polylogue.paths import blob_store_root
 
             blob_root = blob_store_root()
-        blob_store = reserved_blob_store(blob_root)
+        blob_store = BlobStore(blob_root)
         blob_hash, blob_size = blob_store.write_from_path(path)
         raw_data = RawSessionData(
             raw_bytes=b"",

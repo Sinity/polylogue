@@ -4375,24 +4375,9 @@ def _acquire_attachment_blob(
     """
     inline = attachment.inline_bytes
     if inline:
-        from polylogue.storage.blob_publication import BlobPublicationReservationStore
-        from polylogue.storage.blob_store import BlobStore, get_blob_store
+        from polylogue.storage.blob_store import get_blob_store
 
-        base_store = get_blob_store()
-        database_row = next(
-            (row for row in conn.execute("PRAGMA database_list").fetchall() if str(row[1]) == "main"),
-            None,
-        )
-        index_path = Path(str(database_row[2])) if database_row is not None and database_row[2] else None
-        if index_path is not None and index_path.name == "index.db" and index_path.with_name("source.db").exists():
-            source_db = index_path.with_name("source.db")
-            base_store = BlobStore(index_path.parent / "blob")
-            blob_store = BlobStore(
-                base_store.root,
-                before_publish=BlobPublicationReservationStore.create(source_db).reserve,
-            )
-        else:
-            blob_store = base_store
+        blob_store = get_blob_store()
         hash_hex, size = blob_store.write_from_bytes(inline)
         return (bytes.fromhex(hash_hex), size, "acquired")
     return (None, attachment.size_bytes or 0, "unfetched")
