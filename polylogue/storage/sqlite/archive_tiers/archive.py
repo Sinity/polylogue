@@ -13,7 +13,7 @@ from types import TracebackType
 from typing import Any, Literal, TypedDict, cast
 
 from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
-from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
@@ -854,6 +854,8 @@ class ArchiveStore:
         existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
         existing_is_dom_fallback = False
         incoming_is_dom_fallback = DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
+        existing_has_native_browser_payload = False
+        incoming_has_native_browser_payload = NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
         current_stored_message_count = 0
 
         if source_index >= 0 and existing_raw_id and raw_id and existing_raw_id != raw_id:
@@ -862,12 +864,24 @@ class ArchiveStore:
                 session_id,
                 DOM_FALLBACK_INGEST_FLAG,
             )
+            existing_has_native_browser_payload = session_has_parser_ingest_flag(
+                self._conn,
+                session_id,
+                NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+            )
             current_stored_message_count = stored_message_count(self._conn, session_id)
             lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
+            # A provider-native browser snapshot owns equal-length coalescing,
+            # while a genuinely fuller export may still advance the transcript.
+            lower_precedence_export = (
+                existing_has_native_browser_payload
+                and not incoming_has_native_browser_payload
+                and len(session.messages) <= current_stored_message_count
+            )
             strictly_less_complete = len(session.messages) < current_stored_message_count and not (
                 existing_is_dom_fallback and not incoming_is_dom_fallback
             )
-            if lower_precedence_fallback or strictly_less_complete:
+            if lower_precedence_fallback or lower_precedence_export or strictly_less_complete:
                 session_event_count = 0
                 if lower_precedence_fallback:
                     record_capture_gap_event(

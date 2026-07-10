@@ -7,7 +7,11 @@ import binascii
 from collections.abc import Mapping
 from typing import TypeGuard
 
-from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, TEMPORARY_CHAT_INGEST_FLAG
+from polylogue.archive.ingest_flags import (
+    DOM_FALLBACK_INGEST_FLAG,
+    NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+    TEMPORARY_CHAT_INGEST_FLAG,
+)
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import (
     BrowserCaptureAttachment,
@@ -63,7 +67,13 @@ def _apply_browser_capture_session_kind(
 ) -> ParsedSession:
     session_kind = _session_kind_for_browser_capture(envelope, provider_session_id)
     ingest_flags = list(
-        dict.fromkeys([*session.ingest_flags, *_ingest_flags_for_browser_capture(envelope, provider_session_id)])
+        dict.fromkeys(
+            [
+                *session.ingest_flags,
+                *_ingest_flags_for_browser_capture(envelope, provider_session_id),
+                NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+            ]
+        )
     )
     return session.model_copy(update={"session_kind": session_kind, "ingest_flags": ingest_flags})
 
@@ -219,4 +229,10 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
     )
 
 
-__all__ = ["DOM_FALLBACK_INGEST_FLAG", "TEMPORARY_CHAT_INGEST_FLAG", "looks_like", "parse"]
+__all__ = [
+    "DOM_FALLBACK_INGEST_FLAG",
+    "NATIVE_BROWSER_CAPTURE_INGEST_FLAG",
+    "TEMPORARY_CHAT_INGEST_FLAG",
+    "looks_like",
+    "parse",
+]

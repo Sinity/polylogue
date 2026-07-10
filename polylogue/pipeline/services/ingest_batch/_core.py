@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
@@ -422,12 +422,28 @@ def _write_session(
     ):
         existing_is_dom_fallback = session_has_parser_ingest_flag(conn, payload.session_id, DOM_FALLBACK_INGEST_FLAG)
         incoming_is_dom_fallback = _incoming_has_ingest_flag(payload, DOM_FALLBACK_INGEST_FLAG)
+        existing_has_native_browser_payload = session_has_parser_ingest_flag(
+            conn,
+            payload.session_id,
+            NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+        )
+        incoming_has_native_browser_payload = _incoming_has_ingest_flag(
+            payload,
+            NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+        )
         current_stored_message_count = stored_message_count(conn, payload.session_id)
         lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
+        # A provider-native browser snapshot owns equal-length coalescing, while
+        # a genuinely fuller export may still advance the archived transcript.
+        lower_precedence_export = (
+            existing_has_native_browser_payload
+            and not incoming_has_native_browser_payload
+            and payload.message_count <= current_stored_message_count
+        )
         strictly_less_complete = payload.message_count < current_stored_message_count and not (
             existing_is_dom_fallback and not incoming_is_dom_fallback
         )
-        if lower_precedence_fallback or strictly_less_complete:
+        if lower_precedence_fallback or lower_precedence_export or strictly_less_complete:
             if lower_precedence_fallback:
                 record_capture_gap_event(
                     conn,
