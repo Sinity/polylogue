@@ -1,2 +1,2 @@
 tool=Bash count=4
-tool=exec_command count=1
+tool=exec_command count=2

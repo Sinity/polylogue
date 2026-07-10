@@ -57,6 +57,8 @@ DEMO_CODEX_LINEAGE_PARENT_SESSION_ID = "codex-session:demo-lineage-parent"
 DEMO_CODEX_LINEAGE_FORK_SESSION_ID = "codex-session:demo-lineage-fork"
 DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID = "codex-session:demo-lineage-subagent"
 DEMO_CODEX_TERMINAL_ERROR_SESSION_ID = "codex-session:demo-terminal-error"
+DEMO_CODEX_RECEIPTS_SESSION_ID = "codex-session:demo-receipts"
+DEMO_CODEX_ANTI_GREP_SESSION_ID = "codex-session:demo-anti-grep"
 DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID = (
     "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo"
 )
@@ -72,6 +74,8 @@ DEMO_SESSION_IDS = (
     DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
     DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID,
     DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
+    DEMO_CODEX_RECEIPTS_SESSION_ID,
+    DEMO_CODEX_ANTI_GREP_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
 )
@@ -202,6 +206,23 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
         messages_max=10,
         seed_offset=2,
         style="demo-tool-heavy",
+    ),
+    DemoCorpusFamily(
+        family_id="evidence-lab-receipts",
+        label="Evidence Lab claim-versus-receipt",
+        provider="codex",
+        construct_ids=(
+            "receipts_failed_test_action",
+            "receipts_successful_recovery_action",
+            "receipts_conflicting_claim",
+            "anti_grep_control",
+        ),
+        description=(
+            "A claim-versus-receipt case with a structural pytest failure, a later verified "
+            "repair, and a prose-only anti-grep control."
+        ),
+        source_paths=("codex/receipts.jsonl", "codex/anti-grep-control.jsonl"),
+        synthetic=False,
     ),
     DemoCorpusFamily(
         family_id="gemini-attachments",

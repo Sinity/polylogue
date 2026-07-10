@@ -20,10 +20,12 @@ The tour creates a throwaway archive, imports synthetic provider-shaped artifact
 
 The human transcript is deliberately evidence-first rather than audit-first:
 
-1. inspect one structured failure receipt;
-2. aggregate failed actions from structural fields rather than prose;
-3. read a fork as one composed chronicle while preserving parent refs;
-4. only then zoom out to archive facets.
+1. compare a false success claim with the structural receipt that existed at claim time;
+2. distinguish the later verified repair from the earlier contradiction;
+3. prove that prose containing the word `error` contributes zero failed actions;
+4. aggregate failed actions from structural fields rather than prose;
+5. read a fork as one composed chronicle while preserving parent refs;
+6. only then zoom out to archive facets.
 
 The full fixture audit remains machine-readable in `report.json`, so the public story stays compact without weakening verification. The current fixture world covers five origins, structured tool outcomes, attachment bytes, browser-capture coalescing, lineage, a subagent, a compaction boundary, context snapshots, user overlays, and deterministic synthetic embeddings. See the [construct audit](plans/demo-corpus-construct-audit.md) and [proof map](proof-artifacts.md).
 
@@ -31,9 +33,9 @@ The full fixture audit remains machine-readable in `report.json`, so the public 
 
 ### Deterministic tour
 
-**Claim:** normal product paths can ingest and query the constructs declared by the demo corpus, retain a structural tool failure, aggregate it without prose matching, and compose copied lineage with original refs intact.
+**Claim:** normal product paths can ingest and query the constructs declared by the demo corpus, compare a false assistant success claim with the structural failure that existed at the claim boundary, distinguish a later verified repair, reject a prose-only anti-grep control, and compose copied lineage with original refs intact.
 
-**Oracle:** the independent construct verifier, expected fixture manifest, structural `exit_code`/`is_error` fields, and stable message refs in the composed chronicle.
+**Oracle:** the independent construct verifier, exact expected claim text, message order, structural `exit_code`/`is_error` fields, a prose-only negative control, source-material hash, and stable refs in the composed chronicle.
 
 **Does not prove:** private-archive scale, provider completeness, real-world prevalence, memory uplift, or the planned Sinex-backed storage architecture.
 
@@ -63,9 +65,11 @@ Read the full [finding, method, calibration, and caveats](findings/claim-vs-evid
 
 These are roadmap items, not present capabilities unless their packets are linked above.
 
-### The Receipts
+### The Receipts: deterministic contract proof
 
-A two-column view of an assistant claim and the paired structural tool outcome. Positive, negative, and missing-evidence controls prevent prose matching from masquerading as ground truth. Owned by `polylogue-212.2` and `polylogue-xyel`.
+The current `polylogue demo receipts` command is a deterministic product-contract proof. It compares a false success claim with the structural failed test result that existed at the claim boundary, then distinguishes a later successful rerun. A separate prose-only session contains the word `error` while contributing zero structurally failed actions.
+
+This is not the real-PR field proof owned by `polylogue-212.2`. That Bead still requires a merged pull request whose claim, tool evidence, code change, and verification receipts are independently reconstructable.
 
 ### Count It Once
 

@@ -1,50 +1,96 @@
-schema: external-claims-ledger/v1
+schema: external-claims-ledger/v2
 statuses: [proven, capability, aspirational, retired]
+evidence_classes:
+  - deterministic_product_proof
+  - field_observation
+  - implementation_contract
+  - architecture_decision
+  - hypothesis
+public_surfaces:
+  - README.md
+  - docs/demos.md
+  - docs/findings/*.md
+  - docs/sinex-interop.md
+  - docs/site/pages.toml
+retired_phrases:
+  - your AI memory
 claims:
   - id: category.flight-recorder
     status: capability
+    evidence_class: implementation_contract
     publication: Polylogue is the local flight recorder and system of record for AI work.
+    scope: Product category for the current local archive, query, evidence, and context surfaces.
     evidence: [README.md, docs/architecture.md, docs/proof-artifacts.md]
     caveat: Pre-1.0; not every planned memory or coordination feature is complete.
+    owner_beads: [polylogue-3tl.12, polylogue-3tl.8]
+    proof_commands: []
 
   - id: demo.private-data-free
     status: proven
+    evidence_class: deterministic_product_proof
     publication: The deterministic tour exercises five origins, tool outcomes, lineage, subagents, context snapshots, attachments, and user overlays without private data.
+    scope: The committed deterministic provider-shaped demo corpus and its declared construct verifier.
     evidence: [docs/plans/demo-corpus-construct-audit.md, docs/examples/demo-tour/report.md]
-    caveat: Construct proof, not private-archive scale or prevalence.
+    caveat: Construct proof, not private-archive scale or real-world prevalence.
+    owner_beads: [polylogue-212.7, polylogue-3tl.5]
+    proof_commands: [polylogue demo tour]
 
   - id: evidence.structured-outcomes
     status: proven
-    publication: Polylogue can classify supported tool failures from structural outcome fields rather than assistant prose alone.
-    evidence: [docs/proof-artifacts.md, devtools/claim_vs_evidence.py]
-    caveat: Unsupported or malformed evidence must remain explicit.
+    evidence_class: deterministic_product_proof
+    publication: Polylogue can compare an assistant claim with supported structural tool outcomes without treating prose keywords as the oracle.
+    scope: Provider-normalized tool-result fields represented by the deterministic Evidence Lab receipts fixture.
+    evidence: [docs/demos.md, polylogue/demo/receipts.py, tests/unit/cli/test_demo_command.py]
+    caveat: Unsupported or malformed tool evidence remains explicit rather than being inferred.
+    owner_beads: [polylogue-3tl.15, polylogue-212]
+    proof_commands: [polylogue demo tour, polylogue demo receipts]
 
   - id: finding.silent-proceed-lower-bound
     status: proven
+    evidence_class: field_observation
     publication: In one private archive, a bounded sample found a 24.1% lower bound for silent continuation after structured failure; most cases remained ambiguous.
+    scope: One private archive, a 5,000-row origin-stratified sample, and the documented classifier version.
     evidence: [docs/findings/claim-vs-evidence.md]
-    caveat: Not a population estimate.
+    caveat: This is not a population estimate and the large ambiguous remainder materially limits interpretation.
+    owner_beads: [polylogue-xyel]
+    proof_commands: [python -m devtools.claim_vs_evidence --help]
 
   - id: context.compiler
     status: capability
+    evidence_class: implementation_contract
     publication: Polylogue can compile bounded evidence-linked context and record omissions and delivery snapshots.
+    scope: The current context compiler, context image, and delivery snapshot contracts.
     evidence: [polylogue/context/compiler.py, tests/unit/context/test_compiler.py]
-    caveat: No general task-performance uplift claim.
+    caveat: No general task-performance uplift claim follows from the existence of the compiler.
+    owner_beads: [polylogue-37t]
+    proof_commands: []
 
   - id: memory.uplift
     status: aspirational
+    evidence_class: hypothesis
     publication: Polylogue is testing whether reviewed evidence-linked context improves resumption.
+    scope: Planned and pilot paired resumption experiments under fixed checkpoints and budgets.
     evidence: [.agent/demos/uplift-two-arm/current/report.md]
-    caveat: Existing pilot is small and contains a stale-packet counterexample.
+    caveat: The existing pilot is small and includes a stale-packet counterexample.
+    owner_beads: [polylogue-37t]
+    proof_commands: []
 
   - id: sinex.backend
     status: aspirational
-    publication: The maximal target is Sinex-backed Polylogue, with Sinex storing durable evidence and Polylogue retaining AI-work semantics and product behavior.
+    evidence_class: architecture_decision
+    publication: The maximal target is Sinex-backed Polylogue, with Sinex storing complete durable transcript evidence and Polylogue retaining AI-work semantics and product behavior.
+    scope: Target architecture for Sinex-backed deployments; standalone SQLite Polylogue remains a supported profile.
     evidence: [docs/sinex-interop.md]
-    caveat: The current bridge is metadata-thin; the rebuild proof has not landed.
+    caveat: The current bridge is metadata-thin; stable identity, revision settlement, and rebuild proofs have not landed.
+    owner_beads: [polylogue-fs1.9]
+    proof_commands: []
 
   - id: positioning.your-ai-memory
     status: retired
-    publication: Do not use as the primary category.
+    evidence_class: architecture_decision
+    publication: Do not use this phrase as the primary product category.
+    scope: First-contact copy in README, site, demos, and public findings.
     evidence: [docs/site/pages.toml, devtools/pages_templates.py]
-    caveat: Memory remains a product capability and roadmap program.
+    caveat: Memory remains a product capability and roadmap program, but not the external category definition.
+    owner_beads: [polylogue-3tl.12]
+    proof_commands: []

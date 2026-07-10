@@ -22,12 +22,12 @@ Polylogue answers questions that transcript folders and vendor chat history do n
 
 Polylogue is local-first. Lexical search and the core archive stay on your machine. Optional semantic search is disabled by default and sends selected text only to the embedding provider you configure.
 
-## Run the private-data-free tour
+## Run the first proof
 
-The deterministic tour creates a throwaway archive, imports synthetic provider artifacts through the normal parsers, verifies the expected constructs, runs canonical queries, and writes a report and transcript.
+The smallest useful demonstration is one command:
 
 ```bash
-nix run github:Sinity/polylogue -- demo tour
+nix run github:Sinity/polylogue -- demo receipts
 ```
 
 From a source checkout:
@@ -35,12 +35,18 @@ From a source checkout:
 ```bash
 git clone https://github.com/Sinity/polylogue.git
 cd polylogue
-nix develop -c polylogue demo tour
+nix develop -c polylogue demo receipts
 ```
 
-No provider account, API key, or private transcript is required.
+It creates a throwaway private-data-free archive, imports provider-shaped artifacts through the normal parser and storage path, and compares an assistant success claim with a structurally failed test receipt, a later successful repair, and a prose-only anti-grep control. The result is a bounded contract proof: it demonstrates how Polylogue reasons from evidence, not how often real agents make this mistake.
 
-The current fixture world includes five origins, tool calls and structural failures, acquired attachment bytes, browser-capture coalescing, forks and continuations, a subagent, a compaction boundary, context snapshots, user overlays, and deterministic synthetic embeddings. Its generated construct audit lives at [docs/plans/demo-corpus-construct-audit.md](docs/plans/demo-corpus-construct-audit.md).
+Run the broader tour to inspect lineage, aggregate failures, and archive facets, and to write a human report plus machine-readable receipts:
+
+```bash
+nix run github:Sinity/polylogue -- demo tour
+```
+
+No provider account, API key, or private transcript is required. The current fixture world includes five origins, tool calls and structural failures, acquired attachment bytes, browser-capture coalescing, forks and continuations, a subagent, a compaction boundary, context snapshots, user overlays, and deterministic synthetic embeddings. Its generated construct audit lives at [docs/plans/demo-corpus-construct-audit.md](docs/plans/demo-corpus-construct-audit.md).
 
 ## A concrete evidence chain
 

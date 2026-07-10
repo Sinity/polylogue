@@ -1,28 +1,51 @@
 # prepare deterministic proof archive
-Seeded 11 sessions, 43 messages, and 5 user-state assertions in 17.874s. Fixture audit: 30/30 declared constructs satisfied.
+Seeded 13 sessions, 55 messages, and 5 user-state assertions in 3.497s. Fixture audit: 34/34 declared constructs satisfied.
 
 # verify evidence before presenting it
-Verification passed in 0.050s; 0 path leaks and 0 semantic problems. The complete fixture and verification audit remains in report.json.
+Verification passed in 0.019s; 0 path leaks and 0 semantic problems. The complete fixture and verification audit remains in report.json.
 
-$ polylogue --id codex-session:demo-terminal-error read --view messages --limit 10
-Start with the receipt, not a dashboard: the assistant acknowledges a failed test run, and the tool result retains exit_code=4 plus the exact error output.
-exit=0 duration=2.158s bytes=230
-Run the command and stop if it fails.
----
- {"metadata": {"exit_code": 4}, "output": "ERROR: file or directory not found: tests/missing_test.py"}
----
- I hit an error and need the missing test path corrected before continuing.
----
+$ polylogue demo receipts
+Start with a falsifiable disagreement: assistant prose claims the tests pass, while the provider-normalized tool result says exit 1. A later run repairs the result, and a prose-only 'error' control demonstrates why keyword matching is not the oracle.
+exit=0 duration=1.662s bytes=1105
+Polylogue evidence receipt
+archive: <demo-archive>
+verdict: contradicted_at_claim_time_then_repaired
+
+assistant claim: All tests pass. The clock fix is complete.
+claim evidence: block:codex-session:demo-receipts:receipts-a-claim:0
+
+at claim time:
+  tool: shell (exec_command)
+  command: pytest tests/test_clock.py -q
+  exit: 1 (failed=true)
+  result: {"metadata": {"exit_code": 1}, "output": "F  tests/test_clock.py::test_uses_monotonic_clock\n1 failed in 0.18s"}
+  evidence: block:codex-session:demo-receipts:call-receipts-test-fail:0
+
+later recovery:
+  tool: shell (exec_command)
+  command: pytest tests/test_clock.py -q
+  exit: 0 (failed=false)
+  result: {"metadata": {"exit_code": 0}, "output": ".  1 passed in 0.16s"}
+  evidence: block:codex-session:demo-receipts:call-receipts-test-pass:0
+
+anti-grep control:
+  prose hits for 'error': 2
+  structurally failed actions: 0
+  control session: session:codex-session:demo-anti-grep
+
+source material:
+  raw_id: c0bcedce8ec536029fd8bb1ee0e5d5bf017dc1fadfb7c1cd3eed1eb6bece57a0
+  blob_sha256: 9fd0dbdb080058070935924534a903cc63a8dcba571f6b2734f92a96576b59d7
 
 $ polylogue 'actions where is_error:true | group by tool | count'
 Now aggregate the same structural field across providers. This query counts normalized failed actions; it does not search prose for the word 'error'.
-exit=0 duration=1.898s bytes=44
+exit=0 duration=1.933s bytes=44
 tool=Bash count=4
-tool=exec_command count=1
+tool=exec_command count=2
 
 $ polylogue --id codex-session:demo-lineage-fork read --view chronicle
 Read a fork as one logical chronicle: inherited parent messages remain attributable to their origin while the fork contributes only its divergent tail.
-exit=0 duration=2.084s bytes=936
+exit=0 duration=2.035s bytes=936
 # Session Chronicle
 
 - Sessions: 1
@@ -68,10 +91,10 @@ The fork diverges into demo corpus construct checks.
 _No distinct matching prose in the last edge._
 
 $ polylogue analyze --facets
-Only after inspecting evidence, zoom out to the archive: eleven sessions across five origins, with deferred families labeled rather than silently guessed.
-exit=0 duration=1.953s bytes=1426
+Only after inspecting evidence, zoom out to the archive across five origins, with deferred families labeled rather than silently guessed.
+exit=0 duration=1.881s bytes=1426
 Facets (global) — matched result set:
-  sessions: 11  messages: 43
+  sessions: 13  messages: 55
   Family states:
     total_counts: Total counts — complete
     origins: Provider origins — complete
@@ -83,7 +106,7 @@ Facets (global) — matched result set:
     action_types: Action types — deferred (deferred_by_default; use --include-deferred)
     has_flags: Content flags — deferred (deferred_by_default; use --include-deferred)
   Provider origins:
-    codex-session: 5
+    codex-session: 7
     claude-code-session: 3
     aistudio-drive: 1
     chatgpt-export: 1
@@ -92,10 +115,10 @@ Facets (global) — matched result set:
     pytest-triage: 1
   IDF (higher = rarer, partitions more strongly):
     [origins]
-      aistudio-drive: 2.398
-      chatgpt-export: 2.398
-      claude-ai-export: 2.398
-      claude-code-session: 1.299
-      codex-session: 0.788
+      aistudio-drive: 2.565
+      chatgpt-export: 2.565
+      claude-ai-export: 2.565
+      claude-code-session: 1.466
+      codex-session: 0.619
     [tags]
-      pytest-triage: 2.398
+      pytest-triage: 2.565

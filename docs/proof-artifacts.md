@@ -25,13 +25,13 @@ devtools render all --check
 
 The current tracked datasheet reports:
 
-- 11 sessions
-- 43 indexed messages
-- 87 blocks
-- 11 session profiles
-- 12 run rows
-- 37 observed-event rows
-- 12 context-snapshot rows
+- 13 sessions
+- 55 indexed messages
+- 99 blocks
+- 13 session profiles
+- 14 run rows
+- 45 observed-event rows
+- 14 context-snapshot rows
 - five origins: `aistudio-drive`, `chatgpt-export`, `claude-ai-export`,
   `claude-code-session`, `codex-session`
 - no residual declared-construct gaps
