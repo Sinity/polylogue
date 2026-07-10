@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 
 from polylogue.archive.raw_materialization import parsed_non_session_artifact_reason
@@ -25,6 +23,7 @@ from polylogue.maintenance.targets import (
     MaintenanceTargetSpec,
     build_maintenance_target_catalog,
 )
+from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
@@ -43,13 +42,9 @@ logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
-
-
-class RawMaterializationReplayIntent(StrEnum):
-    """Authority boundary for replaying durable raw evidence into index.db."""
-
-    ORDINARY_REPAIR = "ordinary-repair"
-    EMPTY_INDEX_REBUILD = "empty-index-rebuild"
+RAW_MATERIALIZATION_REPLAY_BLOCK_REASON = (
+    "raw source-to-index replay is disabled until per-session revision authority is implemented (Ref polylogue-yla8)"
+)
 
 
 def _format_bytes(value: int) -> str:
@@ -102,12 +97,8 @@ def _raw_materialization_source_available(source_path: str) -> bool:
     return False
 
 
-def _raw_materialization_index_has_sessions(config: Config) -> bool:
-    index_db = config.archive_root / "index.db"
-    if not index_db.exists():
-        return False
-    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
-        return conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None
+def _raw_materialization_archive_root(config: Config) -> Path:
+    return archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
 
 
 def _raw_materialization_candidate_ids(
@@ -129,11 +120,12 @@ def _raw_materialization_candidate_ids(
     missing blobs, and source-path/native-id aliases remain excluded or counted
     as debt instead of being blindly retried.
     """
-    source_db = config.archive_root / "source.db"
-    index_db = config.archive_root / "index.db"
+    archive_root = _raw_materialization_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
     if not source_db.exists() or not index_db.exists():
         return RawMaterializationCandidates([], 0, 0)
-    blob_store = BlobStore(config.archive_root / "blob")
+    blob_store = BlobStore(archive_root / "blob")
     raw_ids: list[str] = []
     raw_blob_bytes: dict[str, int] = {}
     raw_origins: dict[str, str] = {}
@@ -203,7 +195,7 @@ def _raw_materialization_candidate_ids(
                 continue
             if _raw_materialized_by_source_path_native(conn, row):
                 continue
-            if _raw_materialization_parsed_non_session_artifact(config.archive_root, row):
+            if _raw_materialization_parsed_non_session_artifact(archive_root, row):
                 continue
             blob_hash = row["blob_hash"].hex() if isinstance(row["blob_hash"], bytes) else str(row["blob_hash"])
             if blob_store.exists(blob_hash):
@@ -299,12 +291,16 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
     It does not parse raw blobs or mutate the archive.
     """
 
-    source_db = config.archive_root / "source.db"
-    index_db = config.archive_root / "index.db"
+    archive_root = _raw_materialization_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
     if not source_db.exists() or not index_db.exists():
         return {
             "available": False,
             "reason": "source_or_index_tier_missing",
+            "execution_blocked": True,
+            "execution_block_reason": RAW_MATERIALIZATION_REPLAY_BLOCK_REASON,
+            "blocked_candidate_count": 0,
             "candidate_count": 0,
             "top_raw_rows": [],
             "origin_summary": [],
@@ -336,6 +332,9 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
     ]
     return {
         "available": True,
+        "execution_blocked": True,
+        "execution_block_reason": RAW_MATERIALIZATION_REPLAY_BLOCK_REASON,
+        "blocked_candidate_count": len(candidates.raw_ids),
         "candidate_count": len(candidates.raw_ids),
         "missing_blob_count": candidates.missing_blobs,
         "missing_blob_source_available_count": candidates.missing_blob_source_available,
@@ -1456,15 +1455,10 @@ def repair_raw_materialization(
     source_family: str | None = None,
     source_root: Path | None = None,
     raw_artifact_limit: int | None = None,
-    replay_intent: RawMaterializationReplayIntent = RawMaterializationReplayIntent.ORDINARY_REPAIR,
     progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
-    """Materialize raw evidence under an explicit revision-authority intent.
-
-    Ordinary convergence is intentionally fail-closed until per-session raw
-    revision authority exists.  A cold rebuild may replay only into an empty
-    index, where force-write cannot replace a newer accepted revision.
-    """
+    """Report raw replay debt without applying authority-ambiguous revisions."""
+    del progress_callback
     candidates = _raw_materialization_candidate_ids(
         config,
         raw_artifact_id=raw_artifact_id,
@@ -1491,7 +1485,6 @@ def repair_raw_materialization(
         "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
         "raw_materialization_selected_total_blob_bytes": float(selected_total_bytes),
         "raw_materialization_selected_max_blob_bytes": float(selected_max_bytes),
-        "raw_materialization_index_nonempty": float(_raw_materialization_index_has_sessions(config)),
     }
     if raw_artifact_limit is not None:
         metrics["raw_materialization_limit"] = float(raw_artifact_limit)
@@ -1507,65 +1500,11 @@ def repair_raw_materialization(
     oversized_raw_ids = [
         raw_id for raw_id in oversized_candidate_raw_ids if raw_id not in oversized_stream_safe_raw_id_set
     ]
-    oversized_raw_id_set = set(oversized_raw_ids)
-    executable_raw_ids = [raw_id for raw_id in raw_ids if raw_id not in oversized_raw_id_set]
     if oversized_raw_ids:
         metrics["raw_materialization_oversized_count"] = float(len(oversized_raw_ids))
         metrics["raw_materialization_execute_blob_limit_bytes"] = float(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)
     if oversized_stream_safe_raw_ids:
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
-    if dry_run:
-        if not raw_ids:
-            detail = "Raw materialization ready"
-            if missing_blobs:
-                detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=False)}"
-            return _internal_derived_repair_result(
-                "raw_materialization",
-                repaired_count=0,
-                success=missing_blobs == 0,
-                detail=detail,
-                metrics=metrics,
-            )
-        byte_detail = ""
-        if raw_ids:
-            byte_detail = (
-                f"; selected raw payload bytes total={_format_bytes(selected_total_bytes)}, "
-                f"largest={_format_bytes(selected_max_bytes)}"
-            )
-        oversized_detail = ""
-        if oversized_raw_ids:
-            oversized_detail = (
-                f"; {len(oversized_raw_ids):,} raw rows exceed actual replay limit "
-                f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
-            )
-        if oversized_stream_safe_raw_ids:
-            oversized_detail += (
-                f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows can use streaming replay"
-            )
-        if candidates.already_parsed:
-            detail = (
-                f"Would: replay {len(raw_ids):,} of {len(candidate_raw_ids):,} raw rows into index.db "
-                f"({candidates.already_parsed:,} already parsed but not materialized)"
-            )
-        else:
-            detail = (
-                f"Would: replay {len(raw_ids):,} of {len(candidate_raw_ids):,} "
-                "acquired-but-unparsed raw rows into index.db"
-            )
-        if replay_intent is RawMaterializationReplayIntent.ORDINARY_REPAIR:
-            detail += "; execution blocked until raw revision authority is available"
-            metrics["raw_materialization_replay_blocked_count"] = float(len(raw_ids))
-        detail += byte_detail
-        detail += oversized_detail
-        if missing_blobs:
-            detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=False)}"
-        return _internal_derived_repair_result(
-            "raw_materialization",
-            repaired_count=len(raw_ids),
-            success=True,
-            detail=detail,
-            metrics=metrics,
-        )
     if not raw_ids:
         detail = "Raw materialization ready"
         if missing_blobs:
@@ -1577,134 +1516,30 @@ def repair_raw_materialization(
             detail=detail,
             metrics=metrics,
         )
-    if not executable_raw_ids:
-        return _internal_derived_repair_result(
-            "raw_materialization",
-            repaired_count=0,
-            success=False,
-            detail=(
-                f"Raw materialization blocked: {len(oversized_raw_ids):,} raw rows exceed actual replay limit "
-                f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}; "
-                f"largest={_format_bytes(candidates.max_blob_bytes)}. Use a streaming provider-specific "
-                "repair path before replaying these rows."
-            ),
-            metrics=metrics,
-        )
-
-    index_nonempty = bool(metrics["raw_materialization_index_nonempty"])
-    if replay_intent is RawMaterializationReplayIntent.ORDINARY_REPAIR:
-        metrics["raw_materialization_replay_blocked_count"] = float(len(executable_raw_ids))
-        return _internal_derived_repair_result(
-            "raw_materialization",
-            repaired_count=0,
-            success=False,
-            detail=(
-                "Raw materialization blocked: ordinary repair cannot prove per-session raw revision authority; "
-                f"left {len(executable_raw_ids):,} replay candidate(s) pending (Ref polylogue-yla8)"
-            ),
-            metrics=metrics,
-        )
-    if index_nonempty:
-        metrics["raw_materialization_replay_blocked_count"] = float(len(executable_raw_ids))
-        return _internal_derived_repair_result(
-            "raw_materialization",
-            repaired_count=0,
-            success=False,
-            detail=(
-                "Raw materialization blocked: empty-index rebuild intent requires an empty index; "
-                f"left {len(executable_raw_ids):,} replay candidate(s) pending"
-            ),
-            metrics=metrics,
-        )
-
-    async def _run() -> tuple[int, int]:
-        from polylogue.pipeline.services.parsing import ParsingService
-        from polylogue.storage.repository import SessionRepository
-        from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-        backend = SQLiteBackend(db_path=config.archive_root / "index.db")
-        repository = SessionRepository(backend=backend, archive_root=config.archive_root)
-        processed_total = 0
-        failure_total = 0
-        try:
-            service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
-            total = len(executable_raw_ids)
-            if progress_callback is not None:
-                if total == 1:
-                    raw_id = executable_raw_ids[0]
-                    raw_size = candidates.raw_blob_bytes.get(raw_id, 0)
-                    progress_callback(
-                        0,
-                        desc=(f"raw_materialization: parsing raw 1/1 {raw_id} size={_format_bytes(raw_size)}"),
-                    )
-                else:
-                    progress_callback(
-                        0,
-                        desc=(
-                            f"raw_materialization: parsing {total:,} selected raw rows "
-                            f"of {len(candidate_raw_ids):,} candidates"
-                        ),
-                    )
-            result = await service.parse_from_raw(
-                raw_ids=executable_raw_ids,
-                progress_callback=progress_callback,
-                # Raw materialization is a convergence repair from durable
-                # source evidence. If the index still has an older row for the
-                # same native session whose source raw row disappeared, the
-                # normal duplicate-protection path would preserve stale
-                # unbacked content and leave readiness permanently blocked.
-                force_write=True,
-                repair_message_fts=False,
-            )
-            processed_total += len(result.processed_ids)
-            failure_total += result.parse_failures
-            if progress_callback is not None:
-                progress_callback(
-                    total,
-                    desc=f"raw_materialization: parsed {total:,} raw rows changed={processed_total}",
-                )
-            return processed_total, failure_total
-        finally:
-            await repository.close()
-
-    try:
-        processed, failures = asyncio.run(_run())
-    except Exception as exc:
-        return _internal_derived_repair_result(
-            "raw_materialization",
-            repaired_count=0,
-            success=False,
-            detail=f"Failed to materialize raw evidence: {exc}",
-            metrics=metrics,
-        )
-    metrics["raw_materialization_parse_failure_count"] = float(failures)
-    metrics["raw_materialization_session_change_count"] = float(processed)
+    metrics["raw_materialization_replay_blocked_count"] = float(len(raw_ids))
+    detail = (
+        f"Raw materialization blocked: {RAW_MATERIALIZATION_REPLAY_BLOCK_REASON}; "
+        f"left {len(raw_ids):,} of {len(candidate_raw_ids):,} selected replay candidate(s) pending; "
+        f"selected raw payload bytes total={_format_bytes(selected_total_bytes)}, "
+        f"largest={_format_bytes(selected_max_bytes)}"
+    )
+    if dry_run:
+        detail = f"Preview only. {detail}"
     if candidates.already_parsed:
-        detail = (
-            f"Replayed {len(executable_raw_ids):,} of {len(candidate_raw_ids):,} raw rows "
-            f"({candidates.already_parsed:,} already parsed but not materialized); "
-            f"{processed:,} sessions changed; message FTS left to ingest triggers or daemon convergence"
-        )
-    else:
-        detail = (
-            f"Replayed {len(executable_raw_ids):,} of {len(candidate_raw_ids):,} acquired-but-unparsed raw rows; "
-            f"{processed:,} sessions changed; message FTS left to ingest triggers or daemon convergence"
-        )
+        detail += f"; {candidates.already_parsed:,} already parsed but not materialized"
     if missing_blobs:
         detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=True)}"
     if oversized_raw_ids:
         detail += (
-            f"; {len(oversized_raw_ids):,} raw rows remain blocked by replay limit "
+            f"; {len(oversized_raw_ids):,} raw rows also exceed replay size limit "
             f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
         )
     if oversized_stream_safe_raw_ids:
-        detail += f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows used streaming replay"
-    if failures:
-        detail += f"; {failures:,} raw rows failed during parse/write"
+        detail += f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows are stream-capable"
     return _internal_derived_repair_result(
         "raw_materialization",
-        repaired_count=processed,
-        success=missing_blobs == 0 and failures == 0 and not oversized_raw_ids,
+        repaired_count=0,
+        success=False,
         detail=detail,
         metrics=metrics,
     )

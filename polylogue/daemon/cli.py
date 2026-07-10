@@ -543,7 +543,7 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
     from polylogue.config import Config
     from polylogue.paths import archive_root, render_root
     from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
-    from polylogue.storage.repair import RawMaterializationReplayIntent, repair_raw_materialization
+    from polylogue.storage.repair import repair_raw_materialization
 
     archive = archive_root()
     restored = restore_direct_blob_reference_debt(
@@ -563,12 +563,7 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
         render_root=render_root(),
         sources=[],
     )
-    result = repair_raw_materialization(
-        config,
-        dry_run=False,
-        raw_artifact_limit=limit,
-        replay_intent=RawMaterializationReplayIntent.ORDINARY_REPAIR,
-    )
+    result = repair_raw_materialization(config, dry_run=False, raw_artifact_limit=limit)
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
     return result.repaired_count
