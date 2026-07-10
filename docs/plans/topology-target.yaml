@@ -2552,11 +2552,11 @@ files:
     target: polylogue/sources/live/_lag_sample_ddl.py
     owner: stable
   - path: polylogue/sources/live/append_ingest.py
-    loc: 104
+    loc: 127
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1626
+    loc: 1647
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -3263,7 +3263,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 9106
+    loc: 9298
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3319,7 +3319,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py
-    loc: 751
+    loc: 803
     target: polylogue/storage/sqlite/archive_tiers/source_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/types.py
@@ -3481,7 +3481,7 @@ files:
     owner: stable
     cross_cut: { layer: read }
   - path: polylogue/storage/sqlite/queries/raw_state.py
-    loc: 262
+    loc: 216
     target: polylogue/storage/sqlite/queries/raw_state.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/raw_writes.py
@@ -3593,6 +3593,10 @@ files:
   - path: polylogue/storage/sqlite/query_store_maintenance.py
     loc: 97
     target: polylogue/storage/sqlite/query_store_maintenance.py
+    owner: stable
+  - path: polylogue/storage/sqlite/raw_state_update.py
+    loc: 60
+    target: polylogue/storage/sqlite/raw_state_update.py
     owner: stable
   - path: polylogue/storage/sqlite/run_projection_relations.py
     loc: 556

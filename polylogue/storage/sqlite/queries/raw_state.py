@@ -8,9 +8,9 @@ import aiosqlite
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.sources import origin_from_provider
-from polylogue.storage.raw.models import UNSET, RawSessionStateUpdate, _RawStateUnset
-from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
+from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
+from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
 
 # raw_sessions carries a single ``origin`` column (#1743). Provider-token
 # filters translate the token to its canonical origin value before matching.
@@ -58,62 +58,16 @@ async def apply_raw_state_update(
             await conn.commit()
         return
 
-    set_clauses: list[str] = []
-    params: list[object] = []
-
-    if state.parsed_at is not UNSET:
-        set_clauses.append("parsed_at_ms = ?")
-        params.append(_timestamp_ms(state.parsed_at) if isinstance(state.parsed_at, str) else None)
-    if state.parse_error is not UNSET:
-        set_clauses.append("parse_error = ?")
-        params.append(state.parse_error[:2000] if isinstance(state.parse_error, str) else state.parse_error)
-    if state.validation_status is not UNSET:
-        raw_status = state.validation_status
-        set_clauses.append("validation_status = ?")
-        params.append(coerce_status(raw_status).value if raw_status is not None else None)
-    if state.validation_error is not UNSET:
-        set_clauses.append("validation_error = ?")
-        params.append(
-            state.validation_error[:2000] if isinstance(state.validation_error, str) else state.validation_error
-        )
-    if state.validation_drift_count is not UNSET:
-        drift_count = state.validation_drift_count
-        set_clauses.append("validation_drift_count = ?")
-        params.append(max(0, int(drift_count or 0)) if not isinstance(drift_count, _RawStateUnset) else 0)
-    if state.validation_mode is not UNSET:
-        raw_mode = state.validation_mode
-        set_clauses.append("validation_mode = ?")
-        params.append(coerce_mode(raw_mode).value if raw_mode is not None else None)
-    # raw_sessions collapses payload/validation provider identity onto a single
-    # ``origin`` column (#1743). Either update folds into origin; payload wins.
-    if state.payload_provider is not UNSET or state.validation_provider is not UNSET:
-        origin_value: str | None = None
-        if state.payload_provider is not UNSET:
-            payload_token = coerce_provider(state.payload_provider)
-            if payload_token:
-                origin_value = origin_filter_value(payload_token)
-        if origin_value is None and state.validation_provider is not UNSET:
-            validation_token = coerce_provider(state.validation_provider)
-            if validation_token:
-                origin_value = origin_filter_value(validation_token)
-        set_clauses.append("origin = COALESCE(?, origin)")
-        params.append(origin_value)
-    if state.detection_warnings is not UNSET:
-        set_clauses.append("detection_warnings_json = ?")
-        warnings = state.detection_warnings
-        params.append((warnings[:2000] if isinstance(warnings, str) else warnings) or "[]")
-    if state.validation_status is not UNSET or state.validation_error is not UNSET:
-        set_clauses.append("validated_at_ms = ?")
-        params.append(_now_ms())
+    set_clauses, compiled_params = compile_raw_state_update(state, now_ms=_now_ms())
     if not set_clauses:
         if transaction_depth == 0:
             await conn.commit()
         return
 
-    params.append(raw_id)
+    params = (*compiled_params, raw_id)
     await conn.execute(
         f"UPDATE raw_sessions SET {', '.join(set_clauses)} WHERE raw_id = ?",
-        tuple(params),
+        params,
     )
     if transaction_depth == 0:
         await conn.commit()

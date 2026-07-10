@@ -1229,6 +1229,8 @@ class LiveBatchProcessor:
         result = _ArchiveFullWriteResult()
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             for record in records:
+                provider: Provider | None = None
+                source_raw_id: str | None = None
                 try:
                     record_timings: dict[str, float] = {}
                     t0 = time.perf_counter()
@@ -1237,6 +1239,32 @@ class LiveBatchProcessor:
                     source_name = Path(record.source_path).name
                     fallback_id = Path(record.source_path).stem
                     blob_hash = record.blob_hash or record.raw_id
+                    acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
+                    source_write_started = time.perf_counter()
+                    if payload is None:
+                        source_raw_id = archive.write_raw_blob_ref(
+                            provider=provider,
+                            blob_hash_hex=blob_hash,
+                            blob_size=record.blob_size,
+                            source_path=record.source_path,
+                            source_index=record.source_index or 0,
+                            raw_id=(record.raw_id if provider is Provider.HERMES else None),
+                            acquired_at_ms=acquired_at_ms,
+                            blob_publication_receipt_id=record.blob_publication_receipt_id,
+                        )
+                        source_write_name = "full.source_raw_blob_ref_write"
+                    else:
+                        source_raw_id = archive.write_raw_payload(
+                            provider=provider,
+                            payload=payload,
+                            source_path=record.source_path,
+                            source_index=record.source_index or 0,
+                            acquired_at_ms=acquired_at_ms,
+                            blob_publication_receipt_id=record.blob_publication_receipt_id,
+                        )
+                        source_write_name = "full.source_raw_write"
+                    record_timings[source_write_name] = time.perf_counter() - source_write_started
+                    t0 = time.perf_counter()
                     if provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
                         blob_store.blob_path(blob_hash)
                     ):
@@ -1275,39 +1303,32 @@ class LiveBatchProcessor:
                         time.perf_counter() - t0
                     )
                     if not sessions:
+                        archive.mark_raw_parse_failed(
+                            source_raw_id,
+                            provider=provider,
+                            error=ValueError("parsed raw payload produced no sessions"),
+                        )
                         continue
-                    acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
                     for session in sessions:
-                        if payload is None:
-                            raw_id, session_id = archive.write_raw_blob_and_parsed(
-                                session,
-                                blob_hash_hex=blob_hash,
-                                blob_size=record.blob_size,
-                                source_path=record.source_path,
-                                source_index=record.source_index or 0,
-                                raw_id=(record.raw_id if provider is Provider.HERMES else None),
-                                acquired_at_ms=acquired_at_ms,
-                                stage_timings_s=record_timings,
-                                stage_timing_prefix="full",
-                                blob_publication_receipt_id=record.blob_publication_receipt_id,
-                            )
-                        else:
-                            raw_id, session_id = archive.write_raw_and_parsed(
-                                session,
-                                payload=payload,
-                                source_path=record.source_path,
-                                source_index=record.source_index or 0,
-                                acquired_at_ms=acquired_at_ms,
-                                stage_timings_s=record_timings,
-                                stage_timing_prefix="full",
-                                blob_publication_receipt_id=record.blob_publication_receipt_id,
-                            )
+                        raw_id, session_id = archive.write_parsed_for_retained_raw(
+                            session,
+                            raw_id=source_raw_id,
+                            source_path=record.source_path,
+                            source_index=record.source_index or 0,
+                            acquired_at_ms=acquired_at_ms,
+                            stage_timings_s=record_timings,
+                            stage_timing_prefix="full",
+                            finalize_raw_parse=False,
+                        )
                         result.raw_ids[record.raw_id] = raw_id
                         result.session_ids.append(session_id)
                         result.session_count += 1
                         result.message_count += len(session.messages)
+                    archive.mark_raw_parse_succeeded(source_raw_id, provider=provider)
                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
                 except Exception as exc:
+                    if provider is not None and source_raw_id is not None:
+                        archive.mark_raw_parse_failed(source_raw_id, provider=provider, error=exc)
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
                         logger.debug(
                             "live.watcher: archive full ingest deferred for %s (retryable lock); will retry: %s",
