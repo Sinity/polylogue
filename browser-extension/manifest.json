@@ -3,7 +3,7 @@
   "name": "Polylogue Browser Capture",
   "version": "0.1.0",
   "description": "Capture supported web LLM sessions into the local Polylogue inbox.",
-  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "permissions": ["activeTab", "alarms", "scripting", "storage", "tabs"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://claude.ai/*",

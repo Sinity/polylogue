@@ -18,6 +18,7 @@ export default [
         URL: "readonly",
         URLSearchParams: "readonly",
         fetch: "readonly",
+        TextEncoder: "readonly",
       },
     },
     rules: {

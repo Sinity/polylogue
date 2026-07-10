@@ -257,6 +257,86 @@ function renderLog(items) {
     .join("");
 }
 
+function fidelityLabel(captureMode) {
+  if (captureMode === "native_full") return "Native";
+  if (captureMode === "dom_degraded") return "DOM fallback";
+  return captureMode || "--";
+}
+
+function truncateForDisplay(value, limit = 200) {
+  const text = String(value ?? "");
+  return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
+}
+
+function renderAssetAcquisition(assetAcquisition) {
+  const summaryNode = document.getElementById("assets");
+  const detailNode = document.getElementById("asset-failures");
+  if (!assetAcquisition || typeof assetAcquisition !== "object") {
+    summaryNode.textContent = "--";
+    detailNode.textContent = "";
+    return;
+  }
+  const attempted = Number(assetAcquisition.attempted) || 0;
+  const acquired = Number(assetAcquisition.acquired) || 0;
+  const failed = Array.isArray(assetAcquisition.failed) ? assetAcquisition.failed : [];
+  const skipped = Number(assetAcquisition.skipped_over_budget) || 0;
+  if (!attempted) {
+    summaryNode.textContent = "none";
+    detailNode.textContent = "";
+    return;
+  }
+  const parts = [`${acquired} acquired`, `${failed.length} failed`];
+  if (skipped) parts.push(`${skipped} skipped`);
+  summaryNode.textContent = parts.join(" · ");
+  const shown = failed.slice(0, 5);
+  const overflow = failed.length - shown.length;
+  detailNode.textContent = shown.length
+    ? shown
+        .map((item) => `${item.provider_attachment_id || "asset"}: ${truncateForDisplay(item.error || "unknown")}`)
+        .join("; ") + (overflow > 0 ? `; +${overflow} more` : "")
+    : "";
+}
+
+function renderQueue(queue) {
+  const countNode = document.getElementById("queue-count");
+  const listNode = document.getElementById("queue-log");
+  const entries = Array.isArray(queue?.entries) ? queue.entries : [];
+  const droppedCount = Number(queue?.dropped_count) || 0;
+  countNode.textContent = droppedCount ? `${entries.length} (+${droppedCount} dropped)` : String(entries.length);
+  if (!entries.length) {
+    listNode.innerHTML = '<div class="log-meta">No captures queued for retry.</div>';
+    return;
+  }
+  listNode.innerHTML = entries
+    .map((entry) => {
+      const session = entry.envelope?.session || {};
+      const provider = session.provider || "unknown";
+      const providerSessionId = session.provider_session_id || "";
+      const title = `${provider} ${providerSessionId}`.trim();
+      const meta = [
+        `attempt ${entry.attempts || 0}`,
+        entry.next_attempt_at ? `next in ${relativeAge(entry.next_attempt_at)}` : null,
+        entry.last_error,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return `<div class="log-item"><div class="log-time">${escapeHtml(relativeAge(entry.enqueued_at))}</div><div><div class="log-title">${providerLogo(provider)} ${escapeHtml(title)}</div><div class="log-meta">${escapeHtml(meta)}</div></div></div>`;
+    })
+    .join("");
+}
+
+function renderReceiverHealth(health) {
+  const node = document.getElementById("receiver-health");
+  if (!health) {
+    node.textContent = "--";
+    node.title = "";
+    return;
+  }
+  const labels = { ok: "OK", unauthorized: "Unauthorized", unreachable: "Unreachable", error: "Error" };
+  node.textContent = labels[health.status] || health.status || "--";
+  node.title = health.detail || "";
+}
+
 function renderDebugLog(items) {
   const debug = document.getElementById("debug-log");
   const safeItems = Array.isArray(items) ? items.slice(0, 24) : [];
@@ -314,12 +394,14 @@ async function render() {
   const stored = await chrome.storage.local.get({
     polylogueCaptureLog: [],
     polylogueDebugLog: [],
+    polylogueCaptureQueue: { entries: [], dropped_count: 0 },
     polylogueState: null,
     receiverAuthToken: "",
     receiverBaseUrl: DEFAULT_RECEIVER
   });
   renderLog(stored.polylogueCaptureLog);
   renderDebugLog(stored.polylogueDebugLog);
+  renderQueue(stored.polylogueCaptureQueue);
   document.getElementById("receiver-url").value = stored.receiverBaseUrl;
   document.getElementById("receiver-token").value = stored.receiverAuthToken || "";
   document.getElementById("receiver").textContent = stored.receiverBaseUrl;
@@ -333,9 +415,11 @@ async function render() {
   const updatedNode = document.getElementById("updated");
   requestNode.textContent = state?.last_receiver_request_id || "--";
   modeNode.textContent = state?.capture_mode || state?.archive_state?.state || "--";
+  document.getElementById("fidelity").textContent = fidelityLabel(state?.capture_mode);
+  renderAssetAcquisition(state?.asset_acquisition);
   const lastSession = state?.last_capture || {};
-  const turnCount = state?.archive_state?.indexed_message_count || lastSession.turn_count || "--";
-  const attachmentCount = state?.archive_state?.attachment_count || lastSession.attachment_count || null;
+  const turnCount = state?.archive_state?.indexed_message_count ?? state?.turn_count ?? lastSession.turn_count ?? "--";
+  const attachmentCount = state?.archive_state?.attachment_count ?? state?.attachment_count ?? lastSession.attachment_count ?? null;
   turnsNode.textContent = attachmentCount === null ? String(turnCount) : `${turnCount} / ${attachmentCount} files`;
   updatedNode.textContent = state?.updated_at ? `${relativeAge(state.updated_at)} ago` : "--";
 
@@ -381,6 +465,24 @@ document.getElementById("open-polylogue").addEventListener("click", async () => 
     const url = `${String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "")}/?q=${encodeURIComponent(providerSessionId || "")}`;
     await chrome.tabs.create({ url });
   }, { busy: "Opening" });
+});
+
+document.getElementById("check-receiver").addEventListener("click", async () => {
+  try {
+    await withAction(
+      "check-receiver",
+      async () => {
+        const health = await chrome.runtime.sendMessage({ type: "polylogue.checkReceiverHealth" });
+        renderReceiverHealth(health);
+        if (health?.status === "unreachable") throw new Error(health?.detail || "unreachable");
+      },
+      { busy: "Checking", ok: "Checked", bad: "Unreachable" },
+    );
+  } catch {
+    // withAction already reflects the failure via button state + renderReceiverHealth;
+    // swallow here so a genuinely unreachable receiver doesn't surface as an
+    // unhandled rejection from this click listener.
+  }
 });
 
 document.getElementById("save").addEventListener("click", async () => {

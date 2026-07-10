@@ -4,6 +4,7 @@ let messageListener;
 let installedListener;
 let activatedListener;
 let updatedListener;
+let alarmListener;
 let stored;
 let fetchCalls;
 let tabs;
@@ -17,12 +18,22 @@ function installChromeMock() {
   installedListener = null;
   activatedListener = null;
   updatedListener = null;
+  alarmListener = null;
   fetchCalls = [];
   tabs = [{ id: 42, url: "https://chatgpt.com/?temporary-chat=true", title: "ChatGPT" }];
   globalThis.chrome = {
     action: {
       setBadgeBackgroundColor: vi.fn(async () => undefined),
       setBadgeText: vi.fn(async () => undefined),
+    },
+    alarms: {
+      create: vi.fn(async () => undefined),
+      clear: vi.fn(async () => undefined),
+      onAlarm: {
+        addListener: vi.fn((fn) => {
+          alarmListener = fn;
+        }),
+      },
     },
     runtime: {
       onInstalled: {
@@ -270,5 +281,190 @@ describe("background receiver diagnostics", () => {
       target: { tabId: 77 },
       files: ["src/common.js", "src/content/grok.js"],
     });
+  });
+});
+
+describe("capture retry queue", () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    await loadBackground();
+  });
+
+  it("queues a capture for retry when the receiver is unreachable, sets a badge, then drains on the next alarm", async () => {
+    let callCount = 0;
+    globalThis.fetch = vi.fn(async (url) => {
+      callCount += 1;
+      fetchCalls.push({ url });
+      if (callCount === 1) throw new TypeError("Failed to fetch");
+      return responseJson({
+        ok: true,
+        provider: "chatgpt",
+        provider_session_id: "conv-9",
+        artifact_ref: "chatgpt/conv-9.json",
+      });
+    });
+
+    const envelope = {
+      session: {
+        provider: "chatgpt",
+        provider_session_id: "conv-9",
+        provider_meta: { capture_fidelity: "native_full" },
+        turns: [{ role: "user" }, { role: "assistant" }],
+      },
+    };
+
+    const response = await sendRuntimeMessage({ type: "polylogue.capture", envelope, reason: "content_script_capture" });
+
+    expect(response).toEqual({ ok: false, queued: true, error: "Failed to fetch", receiver_request_id: null });
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
+    expect(stored.polylogueCaptureQueue.entries[0].envelope.session.provider_session_id).toBe("conv-9");
+    expect(stored.polylogueCaptureQueue.entries[0].attempts).toBe(0);
+    expect(globalThis.chrome.alarms.create).toHaveBeenCalledWith(
+      "polylogueCaptureRetry",
+      expect.objectContaining({ periodInMinutes: 1 }),
+    );
+    const lastBadgeCall = globalThis.chrome.action.setBadgeText.mock.calls.at(-1);
+    expect(lastBadgeCall[0]).toEqual({ text: "1" });
+
+    // Force the queued entry's backoff window to be due, then simulate the
+    // retry alarm firing (real Chrome would deliver this on its own timer).
+    stored.polylogueCaptureQueue.entries[0].next_attempt_at = new Date(Date.now() - 1000).toISOString();
+    expect(alarmListener).toBeTypeOf("function");
+    alarmListener({ name: "polylogueCaptureRetry" });
+
+    await vi.waitFor(() => expect(stored.polylogueCaptureQueue.entries).toHaveLength(0));
+    expect(callCount).toBe(2);
+    expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith("polylogueCaptureRetry");
+    expect(stored.polylogueCaptureLog[0].reason).toBe("capture_retry_drained");
+    expect(stored.polylogueState.captured).toBe(true);
+    expect(stored.polylogueState.provider_session_id).toBe("conv-9");
+  });
+
+  it("does not queue a capture rejected with a client error", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "invalid_envelope" }, { ok: false, status: 400 }));
+
+    const response = await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-1" } },
+    });
+
+    expect(response).toEqual({ ok: false, error: "invalid_envelope", receiver_request_id: "receiver-request-1" });
+    expect(stored.polylogueCaptureQueue).toBeUndefined();
+    expect(globalThis.chrome.alarms.create).not.toHaveBeenCalled();
+  });
+
+  it("retries a 503 receiver response but bounds the queue at 20 entries with a drop counter", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "unavailable" }, { ok: false, status: 503 }));
+
+    for (let i = 0; i < 22; i += 1) {
+      await sendRuntimeMessage({
+        type: "polylogue.capture",
+        envelope: { session: { provider: "chatgpt", provider_session_id: `conv-${i}` } },
+      });
+    }
+
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(20);
+    expect(stored.polylogueCaptureQueue.dropped_count).toBe(2);
+    expect(stored.polylogueCaptureQueue.entries[0].envelope.session.provider_session_id).toBe("conv-2");
+    expect(stored.polylogueCaptureQueue.entries.at(-1).envelope.session.provider_session_id).toBe("conv-21");
+  });
+
+  it("summarizes the retry queue for the popup without leaking full envelope internals", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("offline");
+    });
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: {
+        session: { provider: "chatgpt", provider_session_id: "conv-5", turns: [{ role: "user", text: "secret" }] },
+      },
+    });
+
+    const response = await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" });
+
+    expect(response.ok).toBe(true);
+    expect(response.dropped_count).toBe(0);
+    expect(response.entries).toHaveLength(1);
+    expect(response.entries[0]).toMatchObject({ provider: "chatgpt", provider_session_id: "conv-5", attempts: 0 });
+    expect(response.entries[0].envelope).toBeUndefined();
+  });
+
+  it("drains the retry queue once a subsequent capture proves the receiver is reachable again", async () => {
+    let callCount = 0;
+    globalThis.fetch = vi.fn(async () => {
+      callCount += 1;
+      if (callCount === 1) throw new TypeError("Failed to fetch");
+      return responseJson({ ok: true, provider: "chatgpt", provider_session_id: "conv-7" });
+    });
+
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-7" } },
+    });
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
+
+    // Make the queued entry due, then drive a second capture that succeeds —
+    // its success should trigger a queue drain as a side effect.
+    stored.polylogueCaptureQueue.entries[0].next_attempt_at = new Date(Date.now() - 1000).toISOString();
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-8" } },
+    });
+
+    await vi.waitFor(() => expect(stored.polylogueCaptureQueue.entries).toHaveLength(0));
+  });
+});
+
+describe("receiver health probe", () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    await loadBackground();
+  });
+
+  it("reports the receiver as reachable and authorized when /api/health returns ok:true", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      fetchCalls.push({ url });
+      return responseJson({ ok: true });
+    });
+
+    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
+
+    expect(response).toEqual({ ok: true, status: "ok", detail: null });
+    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/api/health");
+  });
+
+  it("reports the receiver as reachable but unauthorized when no valid token is configured", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({ ok: false, error: "unauthorized" }));
+
+    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
+
+    expect(response).toEqual({ ok: true, status: "unauthorized", detail: "unauthorized" });
+  });
+
+  it("reports the receiver as unreachable when the fetch itself fails", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+
+    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
+
+    expect(response).toEqual({ ok: false, status: "unreachable", detail: "Failed to fetch" });
+  });
+
+  it("reports the receiver as unreachable when the response body is not JSON", async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      headers: { get: vi.fn(() => null) },
+      json: vi.fn(async () => {
+        throw new Error("not json");
+      }),
+      ok: true,
+      status: 200,
+    }));
+
+    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
+
+    expect(response).toEqual({ ok: false, status: "unreachable", detail: "non_json_response" });
   });
 });

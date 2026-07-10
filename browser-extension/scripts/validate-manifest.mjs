@@ -22,6 +22,7 @@ const EXT_ROOT = resolve(__dirname, "..");
 
 const ALLOWED_PERMISSIONS = new Set([
   "activeTab",
+  "alarms",
   "scripting",
   "storage",
   "tabs",
