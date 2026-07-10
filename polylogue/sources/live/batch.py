@@ -16,6 +16,7 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
+from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind, append_source_revision
 from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
 from polylogue.core.enums import Provider
@@ -1155,6 +1156,7 @@ class LiveBatchProcessor:
                     blob_publication_receipt_id=blob_publication_receipt_id,
                     acquired_at=datetime.now(UTC).isoformat(),
                     file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
+                    captured_source_revision=raw_source_revisions.get(path, raw_id),
                 )
             )
             raw_by_id[raw_id] = path
@@ -1373,6 +1375,19 @@ class LiveBatchProcessor:
                         record_session_ids.append(session_id)
                         record_session_count += 1
                         record_message_count += len(session.messages)
+                    if record_session_count == 1 and record.captured_source_revision is not None:
+                        session = sessions[0]
+                        archive.bind_raw_revision(
+                            source_raw_id,
+                            RawRevisionEnvelope(
+                                logical_source_key=f"{provider.value}:{session.provider_session_id}",
+                                kind=RawRevisionKind.FULL,
+                                source_revision=record.captured_source_revision,
+                                acquisition_generation=archive.raw_full_revision_generation(
+                                    f"{provider.value}:{session.provider_session_id}"
+                                ),
+                            ),
+                        )
                     archive.mark_raw_parse_succeeded(source_raw_id, provider=provider)
                     result.raw_ids[record.raw_id] = record_raw_id
                     result.session_ids.extend(record_session_ids)
@@ -1677,7 +1692,7 @@ class LiveBatchProcessor:
             logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
 
     def _record_append_cursor(self, plan: _AppendPlan) -> bool:
-        content_fingerprint = sha256(f"{plan.cursor_fingerprint or ''}\0{plan.payload_hash}".encode()).hexdigest()
+        content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
         tail_hash, _tail_bytes = tail_hash_from_path(plan.path, plan.stat_size)
         updated = self._cursor.set(
             plan.path,

@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 4
+SOURCE_SCHEMA_VERSION = 5
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -30,6 +30,17 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     validation_drift_count  INTEGER NOT NULL DEFAULT 0 CHECK(validation_drift_count >= 0),
     validation_mode         TEXT CHECK ({nullable_check("validation_mode", ValidationMode)}),
     detection_warnings_json TEXT NOT NULL DEFAULT '[]'
+    ,logical_source_key      TEXT
+    ,revision_kind           TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(revision_kind IN ('full', 'append', 'unknown'))
+    ,source_revision         TEXT
+    ,predecessor_raw_id      TEXT
+    ,baseline_raw_id         TEXT
+    ,append_start_offset     INTEGER CHECK(append_start_offset >= 0)
+    ,append_end_offset       INTEGER CHECK(append_end_offset > append_start_offset)
+    ,acquisition_generation  INTEGER CHECK(acquisition_generation >= 0)
+    ,revision_authority      TEXT NOT NULL DEFAULT 'quarantined'
+        CHECK(revision_authority IN ('asserted', 'byte_proven', 'quarantined'))
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_origin
@@ -47,6 +58,10 @@ ON raw_sessions(raw_id)
 WHERE parsed_at_ms IS NULL
   AND validated_at_ms IS NOT NULL
   AND (validation_status IS NULL OR validation_status != 'failed');
+
+CREATE INDEX IF NOT EXISTS idx_raw_sessions_logical_revision
+ON raw_sessions(logical_source_key, acquisition_generation, raw_id)
+WHERE logical_source_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS blob_refs (
     blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),

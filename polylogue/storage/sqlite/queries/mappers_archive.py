@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import (
     ArtifactSupportStatus,
@@ -128,6 +129,22 @@ def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
     # record still exposes provider-wire ``source_name``/``payload_provider``;
     # both project from the stored origin.
     provider = provider_from_origin(Origin.from_string(row["origin"]))
+    logical_source_key = _row_text(row, "logical_source_key")
+    source_revision = _row_text(row, "source_revision")
+    generation = _row_int(row, "acquisition_generation")
+    revision = None
+    if logical_source_key is not None and source_revision is not None and generation is not None:
+        revision = RawRevisionEnvelope(
+            logical_source_key=logical_source_key,
+            kind=RawRevisionKind(_row_text(row, "revision_kind") or "unknown"),
+            source_revision=source_revision,
+            acquisition_generation=generation,
+            predecessor_raw_id=_row_text(row, "predecessor_raw_id"),
+            baseline_raw_id=_row_text(row, "baseline_raw_id"),
+            append_start_offset=_row_int(row, "append_start_offset"),
+            append_end_offset=_row_int(row, "append_end_offset"),
+            authority=RawRevisionAuthority(_row_text(row, "revision_authority") or "quarantined"),
+        )
     return RawSessionRecord(
         raw_id=row["raw_id"],
         blob_hash=blob_hash,
@@ -146,6 +163,7 @@ def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
         validation_drift_count=_row_int(row, "validation_drift_count"),
         validation_provider=provider,
         validation_mode=(ValidationMode.from_string(validation_mode) if validation_mode is not None else None),
+        revision=revision,
     )
 
 

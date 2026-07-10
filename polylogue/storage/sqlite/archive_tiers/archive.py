@@ -27,6 +27,7 @@ from polylogue.archive.query.predicate import (
     QuerySequencePredicate,
     QueryTextPredicate,
 )
+from polylogue.archive.revision_authority import RawRevisionEnvelope
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostEstimatePayload,
@@ -131,6 +132,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceBlobRef,
     apply_source_raw_state_update,
+    bind_source_raw_revision,
     write_source_blob_refs,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
@@ -1135,6 +1137,7 @@ class ArchiveStore:
         source_index: int = 0,
         raw_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
+        revision: RawRevisionEnvelope | None = None,
     ) -> str:
         """Commit raw bytes before attempting to parse or index them."""
         if self._blob_publisher is None:
@@ -1152,6 +1155,7 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
+            revision=revision,
             manage_transaction=True,
         )
 
@@ -1166,6 +1170,7 @@ class ArchiveStore:
         source_index: int = 0,
         raw_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
+        revision: RawRevisionEnvelope | None = None,
     ) -> str:
         """Commit a prepublished raw blob reference before parsing it."""
         if self._blob_publisher is not None:
@@ -1180,6 +1185,7 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
+            revision=revision,
             manage_transaction=True,
         )
 
@@ -1220,6 +1226,56 @@ class ArchiveStore:
             key = f"{stage_timing_prefix}.index_parsed_write"
             stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
         return result.raw_id, result.session_id
+
+    def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope) -> None:
+        bind_source_raw_revision(self._ensure_source_conn(), raw_id, revision)
+
+    def raw_full_revision_generation(self, logical_source_key: str) -> int:
+        """Allocate the next generation from durable, authoritative evidence."""
+        row = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT MAX(acquisition_generation)
+            FROM raw_sessions
+            WHERE logical_source_key = ? AND revision_authority != 'quarantined'
+            """,
+                (logical_source_key,),
+            )
+            .fetchone()
+        )
+        return int(row[0]) + 1 if row is not None and row[0] is not None else 0
+
+    def raw_append_revision_parent(
+        self,
+        logical_source_key: str,
+        start_offset: int,
+        predecessor_revision: str | None,
+    ) -> tuple[str, str, int] | None:
+        """Return a unique byte-contiguous predecessor and its baseline."""
+        if predecessor_revision is None:
+            return None
+        rows = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT raw_id, COALESCE(baseline_raw_id, raw_id), acquisition_generation
+            FROM raw_sessions
+            WHERE logical_source_key = ? AND source_revision = ?
+              AND revision_authority != 'quarantined'
+              AND ((revision_kind = 'full' AND ? = blob_size)
+                   OR (revision_kind = 'append' AND append_end_offset = ?))
+            ORDER BY acquisition_generation DESC
+            LIMIT 2
+            """,
+                (logical_source_key, predecessor_revision, start_offset, start_offset),
+            )
+            .fetchall()
+        )
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        return str(row[0]), str(row[1]), int(row[2]) + 1
 
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
         """Commit one typed source parse state after its index outcome."""
