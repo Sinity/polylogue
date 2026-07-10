@@ -143,7 +143,7 @@ async def rebuild_index_from_source(
     replay expands to complete logical cohorts so a partial selection cannot
     make an older snapshot look newest.
     """
-    del raw_ids, raw_batch_size, ingest_workers, materialize
+    del raw_batch_size, ingest_workers, materialize
     import asyncio
 
     from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
@@ -153,6 +153,7 @@ async def rebuild_index_from_source(
     result = await asyncio.to_thread(
         backfill_historical_revision_evidence,
         Path(config.archive_root),
+        selected_raw_ids=raw_ids,
     )
     if progress_callback is not None:
         progress_callback(result.replayed_logical_sources, "revision replay complete")

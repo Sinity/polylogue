@@ -23,6 +23,7 @@ class RevisionApplicationReceipt:
     accepted_raw_id: str | None
     accepted_source_revision: str | None
     accepted_content_hash: bytes | None
+    accepted_byte_frontier: int | None = None
     baseline_raw_id: str | None = None
     predecessor_raw_id: str | None = None
     append_end_offset: int | None = None
@@ -138,33 +139,51 @@ def record_revision_application_sync(
     assert receipt.accepted_content_hash is not None
     existing_head = conn.execute(
         """
-        SELECT acquisition_generation, accepted_source_revision
+        SELECT session_id, accepted_raw_id, accepted_source_revision,
+               accepted_content_hash, accepted_byte_frontier,
+               acquisition_generation, append_end_offset
         FROM raw_revision_heads WHERE logical_source_key = ?
         """,
         (receipt.logical_source_key,),
     ).fetchone()
     if existing_head is not None:
-        existing_generation = int(existing_head[0])
-        existing_revision = str(existing_head[1])
-        if receipt.acquisition_generation < existing_generation:
-            raise RuntimeError("raw revision CAS rejected an older accepted generation")
-        if (
-            receipt.acquisition_generation == existing_generation
-            and existing_revision != receipt.accepted_source_revision
-        ):
-            raise RuntimeError("raw revision CAS rejected an ambiguous accepted generation")
+        if receipt.accepted_byte_frontier is None:
+            raise ValueError("accepted revision receipt requires a byte frontier")
+        existing_frontier = int(existing_head[4])
+        if receipt.accepted_byte_frontier < existing_frontier:
+            raise RuntimeError("raw revision CAS rejected an older accepted byte frontier")
+        if receipt.accepted_byte_frontier == existing_frontier:
+            existing_semantics = (existing_head[0], existing_head[3], existing_head[4])
+            accepted_semantics = (
+                receipt.session_id,
+                receipt.accepted_content_hash,
+                receipt.accepted_byte_frontier,
+            )
+            if existing_semantics != accepted_semantics:
+                raise RuntimeError("raw revision CAS rejected a conflicting accepted head")
+            if tuple(existing_head) == (
+                receipt.session_id,
+                receipt.accepted_raw_id,
+                receipt.accepted_source_revision,
+                receipt.accepted_content_hash,
+                receipt.accepted_byte_frontier,
+                receipt.acquisition_generation,
+                receipt.append_end_offset,
+            ):
+                return
     conn.execute(
         """
         INSERT INTO raw_revision_heads (
             logical_source_key, session_id, accepted_raw_id,
             accepted_source_revision, accepted_content_hash,
-            acquisition_generation, append_end_offset, decided_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            accepted_byte_frontier, acquisition_generation, append_end_offset, decided_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(logical_source_key) DO UPDATE SET
             session_id = excluded.session_id,
             accepted_raw_id = excluded.accepted_raw_id,
             accepted_source_revision = excluded.accepted_source_revision,
             accepted_content_hash = excluded.accepted_content_hash,
+            accepted_byte_frontier = excluded.accepted_byte_frontier,
             acquisition_generation = excluded.acquisition_generation,
             append_end_offset = excluded.append_end_offset,
             decided_at_ms = excluded.decided_at_ms
@@ -175,6 +194,7 @@ def record_revision_application_sync(
             receipt.accepted_raw_id,
             receipt.accepted_source_revision,
             receipt.accepted_content_hash,
+            receipt.accepted_byte_frontier,
             receipt.acquisition_generation,
             receipt.append_end_offset,
             decided_at_ms,

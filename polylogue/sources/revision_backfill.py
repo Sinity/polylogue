@@ -22,15 +22,20 @@ class RevisionBackfillResult:
     quarantined: int
 
 
-def backfill_historical_revision_evidence(archive_root: Path) -> RevisionBackfillResult:
+def backfill_historical_revision_evidence(
+    archive_root: Path,
+    *,
+    selected_raw_ids: list[str] | None = None,
+) -> RevisionBackfillResult:
     """Parse retained legacy bytes, classify only single-session full captures."""
     scanned = 0
     classified = 0
     quarantined = 0
     logical_keys: set[str] = set()
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        logical_keys.update(archive.pending_raw_revision_logical_keys())
-        for raw_id, source_index in archive.unclassified_raw_revision_rows():
+        unclassified, selected_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
+        logical_keys.update(selected_keys)
+        for raw_id, source_index in unclassified:
             scanned += 1
             if source_index < 0:
                 quarantined += 1

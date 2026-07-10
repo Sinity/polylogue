@@ -1533,6 +1533,66 @@ class ArchiveStore:
         )
         return tuple(str(row[0]) for row in rows)
 
+    def raw_revision_rebuild_selection(
+        self,
+        raw_ids: list[str] | None,
+    ) -> tuple[tuple[tuple[str, int], ...], tuple[str, ...]]:
+        """Expand requested raws only to complete same-source-path cohorts."""
+        conn = self._ensure_source_conn()
+        if raw_ids is None:
+            return (
+                self.unclassified_raw_revision_rows(),
+                tuple(
+                    str(row[0])
+                    for row in conn.execute(
+                        """
+                        SELECT DISTINCT logical_source_key FROM raw_sessions
+                        WHERE logical_source_key IS NOT NULL ORDER BY logical_source_key
+                        """
+                    )
+                ),
+            )
+        selected = tuple(dict.fromkeys(raw_ids))
+        if not selected:
+            return (), ()
+        placeholders = ",".join("?" for _ in selected)
+        source_paths = tuple(
+            str(row[0])
+            for row in conn.execute(
+                f"SELECT DISTINCT source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                selected,
+            )
+        )
+        if not source_paths:
+            return (), ()
+        path_placeholders = ",".join("?" for _ in source_paths)
+        unclassified = tuple(
+            (str(row[0]), int(row[1]))
+            for row in conn.execute(
+                f"""
+                SELECT raw_id, source_index FROM raw_sessions
+                WHERE source_path IN ({path_placeholders})
+                  AND logical_source_key IS NULL
+                  AND revision_authority = 'quarantined'
+                ORDER BY raw_id
+                """,
+                source_paths,
+            )
+        )
+        logical_keys = tuple(
+            str(row[0])
+            for row in conn.execute(
+                f"""
+                SELECT DISTINCT logical_source_key FROM raw_sessions
+                WHERE source_path IN ({path_placeholders})
+                  AND logical_source_key IS NOT NULL
+                ORDER BY logical_source_key
+                """,
+                source_paths,
+            )
+        )
+        return unclassified, logical_keys
+
     def apply_raw_revision_replay(
         self,
         plan: RevisionReplayPlan,
@@ -1541,10 +1601,24 @@ class ArchiveStore:
         acquired_at_ms: int,
     ) -> tuple[str, tuple[str, ...]]:
         """Apply a proven chain and atomically receipt its exact index state."""
-        del acquired_at_ms
         if not plan.accepted_raw_ids:
             raise ValueError("cannot apply a revision plan without an accepted chain")
         candidates = {item.raw_id: item for item in self._raw_revision_candidates(plan.logical_source_key)}
+        attachments_by_raw_id: dict[str, dict[int, tuple[bytes | None, int, str]]] = {}
+        attachment_refs_by_raw_id: dict[str, tuple[ArchiveSourceBlobRef, ...]] = {}
+        for raw_id in plan.accepted_raw_ids:
+            _provider, _payload, source_path, _kind = self.raw_revision_material(raw_id)
+            acquired, refs = self._preacquire_attachment_blobs(
+                parsed_by_raw_id[raw_id],
+                source_path=source_path,
+                acquired_at_ms=acquired_at_ms,
+            )
+            attachments_by_raw_id[raw_id] = acquired
+            attachment_refs_by_raw_id[raw_id] = refs
+        if self._blob_publisher is not None:
+            self._blob_publisher.flush()
+        for raw_id, refs in attachment_refs_by_raw_id.items():
+            write_source_blob_refs(self._ensure_source_conn(), raw_id, refs)
         session_ids: set[str] = set()
         with self._conn:
             for position, raw_id in enumerate(plan.accepted_raw_ids):
@@ -1555,7 +1629,7 @@ class ArchiveStore:
                     stage_timings_s=None,
                     stage_timing_prefix="revision_replay",
                     manage_transaction=False,
-                    preacquired_attachment_blobs={},
+                    preacquired_attachment_blobs=attachments_by_raw_id[raw_id],
                     finalize_raw_parse=False,
                     revision_authoritative=True,
                 )
@@ -1590,6 +1664,7 @@ class ArchiveStore:
                         accepted_raw_id=accepted_raw_id if has_head else None,
                         accepted_source_revision=accepted.source_revision if has_head else None,
                         accepted_content_hash=stored[0] if has_head else None,
+                        accepted_byte_frontier=(accepted.append_end_offset or accepted.blob_size) if has_head else None,
                         baseline_raw_id=candidate.baseline_raw_id,
                         predecessor_raw_id=candidate.predecessor_raw_id,
                         append_end_offset=accepted.append_end_offset,

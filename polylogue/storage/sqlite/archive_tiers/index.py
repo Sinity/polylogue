@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 31
+INDEX_SCHEMA_VERSION = 32
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS raw_revision_heads (
     accepted_raw_id          TEXT NOT NULL,
     accepted_source_revision TEXT NOT NULL,
     accepted_content_hash    BLOB NOT NULL CHECK(length(accepted_content_hash) = 32),
+    accepted_byte_frontier   INTEGER NOT NULL CHECK(accepted_byte_frontier >= 0),
     acquisition_generation  INTEGER NOT NULL CHECK(acquisition_generation >= 0),
     append_end_offset        INTEGER CHECK(append_end_offset IS NULL OR append_end_offset >= 0),
     decided_at_ms            INTEGER NOT NULL CHECK(decided_at_ms >= 0)

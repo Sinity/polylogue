@@ -738,7 +738,7 @@ class LiveBatchProcessor:
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
         if source_revision is not None:
             byte_size = stat.st_size
-            fp = raw_fingerprint or ""
+            fp = source_revision
             last_nl = byte_size
             tail_hash = source_revision
             bytes_read = 0
@@ -1173,6 +1173,7 @@ class LiveBatchProcessor:
                     captured_source_revision=raw_source_revisions.get(path, raw_id),
                 )
             )
+            raw_source_revisions.setdefault(path, raw_id)
             raw_by_id[raw_id] = path
 
         summary: _IngestBatchSummary | None = None
@@ -1382,7 +1383,7 @@ class LiveBatchProcessor:
                             RawRevisionEnvelope(
                                 logical_source_key=logical_source_key,
                                 kind=RawRevisionKind.FULL,
-                                source_revision=source_raw_id,
+                                source_revision=record.captured_source_revision or source_raw_id,
                                 acquisition_generation=0,
                                 authority=RawRevisionAuthority.QUARANTINED,
                             ),
