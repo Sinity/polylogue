@@ -11,6 +11,7 @@ import os
 import select
 import socket
 import sqlite3
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -1258,7 +1259,33 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # regardless of how many connections are open, and the timeout below
         # means a stalled query returns an honest error instead of blocking
         # this thread (and the client) forever.
-        future = self.server.archive_query_executor.submit(lambda: asyncio.run(self._run_archive_query(handler)))
+        #
+        # admission is acquired here (non-blocking) and released inside the
+        # submitted closure once the work actually finishes -- not when this
+        # request thread stops waiting on it. That keeps the semaphore an
+        # honest count of in-flight-or-queued work regardless of whether the
+        # caller gave up, so a backlog of wedged queries saturates admission
+        # and new requests get rejected immediately instead of queuing behind
+        # ThreadPoolExecutor's own unbounded work queue (CodeRabbit, #2628).
+        admission = self.server.archive_query_admission
+        if not admission.acquire(blocking=False):
+            logger.warning(
+                "archive query rejected: admission saturated (%d workers + %d queue slots all in use)",
+                _ARCHIVE_QUERY_MAX_WORKERS,
+                _ARCHIVE_QUERY_MAX_QUEUED,
+            )
+            raise TimeoutError(
+                "archive query rejected: the daemon is already handling the maximum number of "
+                "concurrent/queued archive queries; retry shortly"
+            )
+
+        def _run_and_release() -> object:
+            try:
+                return asyncio.run(self._run_archive_query(handler))
+            finally:
+                admission.release()
+
+        future = self.server.archive_query_executor.submit(_run_and_release)
         try:
             return future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
         except FutureTimeoutError as exc:
@@ -3750,6 +3777,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 # instead of occupying a connection thread forever.
 _ARCHIVE_QUERY_MAX_WORKERS = 8
 _ARCHIVE_QUERY_TIMEOUT_S = 30.0
+# ThreadPoolExecutor's own work queue is unbounded (CodeRabbit review, #2628):
+# once all workers are individually wedged, submit() would still accept every
+# new request into that queue, and a request thread giving up after
+# _ARCHIVE_QUERY_TIMEOUT_S does NOT cancel the queued/running closure -- it
+# keeps consuming a worker slot for a client that was already told it timed
+# out. _archive_query_admission below is a bounded semaphore covering both
+# running AND queued work; once it is exhausted, a new request is rejected
+# immediately (503, no executor submission at all) instead of queuing behind
+# an unbounded backlog. This bounds the worst case to a fixed backlog rather
+# than a slow, wedged-query-driven memory/latency spiral.
+_ARCHIVE_QUERY_MAX_QUEUED = 16
 
 
 class DaemonAPIHTTPServer(ThreadingHTTPServer):
@@ -3771,6 +3809,9 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         self.api_host = api_host
         self.archive_query_executor = ThreadPoolExecutor(
             max_workers=_ARCHIVE_QUERY_MAX_WORKERS, thread_name_prefix="archive-query"
+        )
+        self.archive_query_admission = threading.BoundedSemaphore(
+            _ARCHIVE_QUERY_MAX_WORKERS + _ARCHIVE_QUERY_MAX_QUEUED
         )
 
     def server_close(self) -> None:

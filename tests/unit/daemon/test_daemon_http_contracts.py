@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http import HTTPStatus
@@ -118,6 +119,7 @@ class _MockServer:
     auth_token = ""  # local-dev default: no auth needed for these contracts
     api_host = "127.0.0.1"
     archive_query_executor = ThreadPoolExecutor(max_workers=1)
+    archive_query_admission = threading.BoundedSemaphore(64)  # generous: not under test here
 
 
 class _MockHeaders:
@@ -954,6 +956,53 @@ class TestBoundedArchiveQueryExecutor:
 
         assert _ARCHIVE_QUERY_MAX_WORKERS > 0
         assert _ARCHIVE_QUERY_MAX_WORKERS < 100  # sanity: a bound, not effectively unbounded
+
+    def test_saturated_admission_rejects_immediately_without_submitting(self) -> None:
+        """Regression for the CodeRabbit #2628 follow-up: the executor's own
+        work queue is unbounded, so admission must be checked (and rejected)
+        BEFORE submit() -- not after -- once capacity is exhausted, rather
+        than letting requests queue behind an already-wedged backlog.
+        """
+
+        class _SaturatedServer:
+            auth_token = ""
+            api_host = "127.0.0.1"
+            archive_query_executor = ThreadPoolExecutor(max_workers=1)
+            archive_query_admission = threading.BoundedSemaphore(1)
+
+        server = _SaturatedServer()
+        server.archive_query_admission.acquire()  # simulate capacity already fully consumed
+        try:
+            handler = _make_handler("GET", "/api/facets")
+            handler.server = cast("DaemonAPIHTTPServer", server)
+
+            async def _unused_handler(poly: object) -> object:
+                # If admission were checked AFTER (or not at all before)
+                # submit(), this would run on the executor thread and this
+                # assertion would surface as the test failure instead of the
+                # expected fast rejection below -- proving submit() never
+                # happened.
+                raise AssertionError("must not run: admission should reject before submit()")
+
+            with pytest.raises(TimeoutError, match="rejected"):
+                handler._sync_run(_unused_handler)
+        finally:
+            server.archive_query_admission.release()
+
+    def test_admission_is_released_after_successful_query(self) -> None:
+        """A completed query frees its admission slot for the next request."""
+        handler = _make_handler("GET", "/api/facets")
+        admission = handler.server.archive_query_admission
+
+        async def _fast_handler(poly: object) -> object:
+            return {"ok": True}
+
+        result = handler._sync_run(_fast_handler)
+        assert result == {"ok": True}
+        # Semaphore is back to its starting capacity -- acquiring once more
+        # must succeed without blocking.
+        assert admission.acquire(blocking=False)
+        admission.release()
 
     def test_server_close_shuts_down_archive_query_executor(self) -> None:
         from polylogue.daemon.http import DaemonAPIHTTPServer
