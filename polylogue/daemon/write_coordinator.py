@@ -219,8 +219,8 @@ class DaemonWriteCoordinator:
         async def operation() -> T:
             return await _run_in_daemon_thread(
                 function,
+                f"polylogue-writer:{actor}",
                 *args,
-                thread_name=f"polylogue-writer:{actor}",
                 **kwargs,
             )
 
@@ -306,9 +306,9 @@ class DaemonWriteCoordinator:
 
 async def _run_in_daemon_thread(
     function: Callable[P, T],
+    thread_name: str,
     /,
     *args: P.args,
-    thread_name: str,
     **kwargs: P.kwargs,
 ) -> T:
     """Await one context-preserving worker that cannot pin interpreter exit."""
