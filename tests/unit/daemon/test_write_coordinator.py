@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import subprocess
+import sys
+import textwrap
 import threading
 from pathlib import Path
 
@@ -269,6 +272,47 @@ async def test_shutdown_is_bounded_without_releasing_active_sync_writer() -> Non
     worker_release.set()
     await task
     assert await coordinator.shutdown(timeout=0.1)
+
+
+def test_stuck_sync_writer_cannot_pin_process_exit() -> None:
+    script = textwrap.dedent(
+        """
+        import asyncio
+        import contextlib
+        import threading
+
+        from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+        async def main() -> None:
+            coordinator = DaemonWriteCoordinator()
+            started = threading.Event()
+
+            def writer() -> None:
+                started.set()
+                threading.Event().wait()
+
+            caller = asyncio.create_task(coordinator.run_sync("stuck", writer))
+            while not started.is_set():
+                await asyncio.sleep(0.001)
+            caller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await caller
+            assert await coordinator.shutdown(timeout=0.01) is False
+
+        asyncio.run(main())
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parents[3],
+        capture_output=True,
+        text=True,
+        timeout=2.0,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.asyncio

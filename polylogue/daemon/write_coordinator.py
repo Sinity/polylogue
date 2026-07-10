@@ -214,10 +214,15 @@ class DaemonWriteCoordinator:
             )
 
     async def run_sync(self, actor: str, function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
-        """Run blocking writer work without releasing the gate on cancellation."""
+        """Run blocking writer work without making process exit unbounded."""
 
         async def operation() -> T:
-            return await asyncio.to_thread(function, *args, **kwargs)
+            return await _run_in_daemon_thread(
+                function,
+                *args,
+                thread_name=f"polylogue-writer:{actor}",
+                **kwargs,
+            )
 
         return await self.run(actor, operation)
 
@@ -297,6 +302,40 @@ class DaemonWriteCoordinator:
         with _TELEMETRY_LOCK:
             _LATEST_TELEMETRY.clear()
             _LATEST_TELEMETRY.update(payload)
+
+
+async def _run_in_daemon_thread(
+    function: Callable[P, T],
+    /,
+    *args: P.args,
+    thread_name: str,
+    **kwargs: P.kwargs,
+) -> T:
+    """Await one context-preserving worker that cannot pin interpreter exit."""
+    loop = asyncio.get_running_loop()
+    result: asyncio.Future[T] = loop.create_future()
+    context = contextvars.copy_context()
+
+    def publish(value: T | None = None, error: BaseException | None = None) -> None:
+        if result.done():
+            return
+        if error is not None:
+            result.set_exception(error)
+        else:
+            result.set_result(value)  # type: ignore[arg-type]
+
+    def worker() -> None:
+        try:
+            value = context.run(function, *args, **kwargs)
+        except BaseException as exc:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(publish, None, exc)
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(publish, value, None)
+
+    threading.Thread(target=worker, name=thread_name, daemon=True).start()
+    return await result
 
 
 class DaemonWriteThreadBridge:
