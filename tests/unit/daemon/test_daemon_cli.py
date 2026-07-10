@@ -2165,6 +2165,9 @@ def test_ensure_fts_startup_readiness_uses_extended_write_timeout(
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
 
+    async def noop() -> None:
+        return None
+
     class FakePolylogue:
         async def __aenter__(self) -> object:
             return object()
@@ -2187,6 +2190,7 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     with (
         patch.object(daemon_cli, "Polylogue", FakePolylogue),
         patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
+        patch.object(daemon_cli, "_reconcile_blob_publications", noop),
         pytest.raises(RuntimeError, match="watch stopped"),
     ):
         asyncio.run(
@@ -2279,6 +2283,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         events.append("lineage")
         return 0
 
+    async def fake_reconcile_blob_publications() -> None:
+        events.append("blob-publications")
+
     async def fake_drive_catchup() -> int:
         events.append("drive-once")
         return 0
@@ -2309,6 +2316,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
         stack.enter_context(patch.object(daemon_cli, "_ensure_fts_startup_readiness", fake_fts_startup))
         stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness", fake_lineage_startup))
+        stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", fake_reconcile_blob_publications))
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
         stack.enter_context(patch("polylogue.paths.archive_root", return_value=Path("/tmp/polylogue-test-archive")))
         stack.enter_context(patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup))
@@ -2366,7 +2374,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert "watcher" in events
     assert events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("lineage") < events.index("watcher")
+    assert events.index("lineage") < events.index("blob-publications") < events.index("watcher")
     assert events.index("drive-once") < events.index("watcher")
+    assert events.index("blob-publications") < events.index("drive-once")
     assert events.index("lineage") < events.index("convergence")
     assert events.index("lineage") < events.index("raw-materialization")
     assert events.index("lineage") < events.index("drive")
@@ -2382,6 +2392,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
+
+    async def noop() -> None:
+        return None
 
     class FakeServer:
         shutdown_called = False
@@ -2400,6 +2413,7 @@ def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
     server = FakeServer()
     with (
         patch.object(daemon_cli, "make_server", return_value=server),
+        patch.object(daemon_cli, "_reconcile_blob_publications", noop),
         pytest.raises(RuntimeError, match="server stopped"),
     ):
         asyncio.run(
@@ -2420,6 +2434,9 @@ def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
 
 def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
+
+    async def noop() -> None:
+        return None
 
     class FakePolylogue:
         async def __aenter__(self) -> object:
@@ -2461,6 +2478,7 @@ def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> No
         patch.object(daemon_cli, "Polylogue", FakePolylogue),
         patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
         patch.object(daemon_cli, "make_server", return_value=server),
+        patch.object(daemon_cli, "_reconcile_blob_publications", noop),
         pytest.raises(RuntimeError, match="watch stopped"),
     ):
         asyncio.run(
@@ -2593,6 +2611,7 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
     with (
         patch.object(daemon_cli, "make_server", return_value=browser_server),
         patch.object(daemon_cli, "_ensure_fts_startup_readiness", noop),
+        patch.object(daemon_cli, "_reconcile_blob_publications", noop),
         patch.object(daemon_cli, "_configure_fts_automerge", noop),
         patch.object(daemon_cli, "_run_drive_source_catchup_safely", no_drive_changes),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", wait_forever),
