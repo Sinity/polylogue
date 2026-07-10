@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from polylogue.version import VERSION_INFO
+
 ArchiveTierName = Literal["source", "index", "embeddings", "user", "ops"]
 TIER_FILENAMES: tuple[tuple[ArchiveTierName, str], ...] = (
     ("source", "source.db"),
@@ -92,13 +94,13 @@ class ArchiveIdentity:
         return "|".join((self.tier("source").stable_id, self.tier("user").stable_id))
 
     def conflicts_with(self, other: ArchiveIdentity) -> bool:
-        shared_durable = self.tier("source").same_file(other.tier("source")) and self.tier("user").same_file(
+        shared_durable = self.tier("source").same_file(other.tier("source")) or self.tier("user").same_file(
             other.tier("user")
         )
         distinct_indexes = not self.tier("index").same_file(other.tier("index"))
         return shared_durable and distinct_indexes and self.tier("index").exists and other.tier("index").exists
 
-    def as_dict(self) -> dict[str, object]:
+    def as_dict(self, *, unit: str | None = None) -> dict[str, object]:
         return {
             "configured_root": str(self.configured_root),
             "durable_id": self.durable_id,
@@ -107,7 +109,11 @@ class ArchiveIdentity:
             "generation_state": self.generation_state,
             "process_id": os.getpid(),
             "executable": os.path.realpath(sys.executable),
-            "unit": os.environ.get("SYSTEMD_UNIT") or os.environ.get("INVOCATION_ID"),
+            "unit": unit,
+            "invocation_id": os.environ.get("INVOCATION_ID"),
+            "version": VERSION_INFO.version,
+            "build_commit": VERSION_INFO.commit,
+            "build_dirty": VERSION_INFO.dirty,
             "tiers": [tier.as_dict() for tier in self.tiers],
         }
 

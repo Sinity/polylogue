@@ -959,6 +959,11 @@ def test_archive_storage_info_uses_configured_archive_root(tmp_path: Path) -> No
     assert storage.present_tiers == ["ops"]
     assert storage.missing_tiers == ["source", "index", "embeddings", "user"]
     assert storage.identity["active_generation"]
+    assert storage.identity["unit"] == "polylogued.service"
+    assert "invocation_id" in storage.identity
+    assert storage.identity["version"]
+    assert storage.identity["build_commit"]
+    assert isinstance(storage.identity["build_dirty"], bool)
     ops = next(tier for tier in storage.tiers if tier.name == "ops")
     assert ops.resolved_path == str(default_root / "ops.db")
     assert ops.device is not None

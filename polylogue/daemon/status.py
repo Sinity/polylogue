@@ -453,8 +453,8 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         present_tiers=present_tiers,
         missing_tiers=missing_tiers,
         tiers=tiers,
-        identity=identity.as_dict(),
-        identity_conflicts=[conflict.as_dict() for conflict in conflicts],
+        identity=identity.as_dict(unit="polylogued.service"),
+        identity_conflicts=[conflict.as_dict(unit="polylogued.service") for conflict in conflicts],
     )
 
 
