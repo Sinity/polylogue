@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from itertools import permutations
+from pathlib import Path
 
-from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionKind
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandidate, plan_revision_replay
+from polylogue.core.enums import Provider
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 def _candidate(
@@ -100,3 +104,51 @@ def test_replay_requires_byte_proven_full_baseline() -> None:
         _candidate("asserted", RawRevisionKind.FULL, 0, authority=RawRevisionAuthority.ASSERTED),
     ]
     assert _decisions(candidates) == {"asserted": ApplicationDecision.DEFERRED}
+
+
+def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        append_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"suffix",
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            append_raw_id,
+            RawRevisionEnvelope(
+                "codex:session",
+                RawRevisionKind.APPEND,
+                "revision-append",
+                0,
+                predecessor_source_revision="revision-base",
+                append_start_offset=8,
+                append_end_offset=14,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+        baseline_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"baseline",
+            source_path="session.jsonl",
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            baseline_raw_id,
+            RawRevisionEnvelope(
+                "codex:session",
+                RawRevisionKind.FULL,
+                "revision-base",
+                0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+
+        plan = archive.classify_raw_revision_cohort("codex:session")
+
+    assert {item.raw_id: item.decision for item in plan.applications} == {
+        baseline_raw_id: ApplicationDecision.SELECTED_BASELINE,
+        append_raw_id: ApplicationDecision.APPLIED_APPEND,
+    }

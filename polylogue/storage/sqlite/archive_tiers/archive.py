@@ -30,7 +30,19 @@ from polylogue.archive.query.predicate import (
     QuerySequencePredicate,
     QueryTextPredicate,
 )
-from polylogue.archive.revision_authority import RawRevisionEnvelope
+from polylogue.archive.revision_authority import (
+    HistoricalRawRevision,
+    RawRevisionAuthority,
+    RawRevisionEnvelope,
+    RawRevisionKind,
+    classify_historical_full_revisions,
+)
+from polylogue.archive.revision_replay import (
+    ApplicationDecision,
+    RevisionCandidate,
+    RevisionReplayPlan,
+    plan_revision_replay,
+)
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostEstimatePayload,
@@ -43,9 +55,9 @@ from polylogue.archive.semantic.pricing import (
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost
 from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONValue, require_json_value
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.insights.affordance_usage import (
     clean_patterns as _clean_affordance_patterns,
 )
@@ -109,6 +121,7 @@ from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuer
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import (
@@ -131,6 +144,11 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     record_source_outage_events,
     session_has_parser_ingest_flag,
     stored_message_count,
+)
+from polylogue.storage.sqlite.archive_tiers.revision_application import (
+    RevisionApplicationReceipt,
+    assert_session_fts_exact_sync,
+    record_revision_application_sync,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceBlobRef,
@@ -954,6 +972,7 @@ class ArchiveStore:
         stage_timing_prefix: str,
         manage_transaction: bool,
         preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
+        revision_authoritative: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         session_id = str(make_session_id(session.source_name, session.provider_session_id))
         content_hash = str(session_content_hash(session))
@@ -971,6 +990,37 @@ class ArchiveStore:
         incoming_has_native_browser_payload = NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
         current_stored_message_count = 0
         browser_precedence: BrowserCapturePrecedence = "default"
+
+        if revision_authoritative:
+            write_parsed_session_to_archive(
+                self._conn,
+                session,
+                content_hash=content_hash,
+                raw_id=raw_id,
+                merge_append=source_index < 0,
+                force_replace=source_index >= 0,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
+                preacquired_attachment_blobs=preacquired_attachment_blobs,
+                manage_transaction=manage_transaction,
+            )
+            return ArchiveRawParsedWriteResult(
+                raw_id=raw_id,
+                session_id=session_id,
+                content_changed=True,
+                counts=self._write_counts(session),
+            )
+        governed = self._conn.execute(
+            "SELECT 1 FROM raw_revision_heads WHERE session_id = ? LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if governed is not None:
+            return ArchiveRawParsedWriteResult(
+                raw_id=raw_id,
+                session_id=session_id,
+                content_changed=False,
+                counts=self._skipped_counts(session),
+            )
 
         if source_index >= 0 and existing_raw_id and raw_id and existing_raw_id != raw_id:
             existing_is_dom_fallback = session_has_parser_ingest_flag(
@@ -1204,6 +1254,7 @@ class ArchiveStore:
         stage_timing_prefix: str = "append",
         manage_transaction: bool = True,
         finalize_raw_parse: bool = True,
+        revision_authoritative: bool = False,
     ) -> tuple[str, str]:
         """Index one session for raw evidence that is already durable."""
         preacquired_attachments, attachment_blob_refs = self._preacquire_attachment_blobs(
@@ -1224,6 +1275,7 @@ class ArchiveStore:
             manage_transaction=manage_transaction,
             preacquired_attachment_blobs=preacquired_attachments,
             finalize_raw_parse=finalize_raw_parse,
+            revision_authoritative=revision_authoritative,
         )
         if stage_timings_s is not None:
             key = f"{stage_timing_prefix}.index_parsed_write"
@@ -1280,6 +1332,286 @@ class ArchiveStore:
         row = rows[0]
         return str(row[0]), str(row[1]), int(row[2]) + 1
 
+    def classify_raw_revision_cohort(self, logical_source_key: str) -> RevisionReplayPlan:
+        """Promote only a unique byte-prefix full chain and contiguous appends."""
+        if self._blob_publisher is None:
+            raise RuntimeError("raw revision classification requires a writable blob publisher")
+        source_conn = self._ensure_source_conn()
+        full_rows = source_conn.execute(
+            """
+            SELECT raw_id, lower(hex(blob_hash)) AS blob_hash
+            FROM raw_sessions
+            WHERE logical_source_key = ? AND revision_kind = 'full'
+            """,
+            (logical_source_key,),
+        ).fetchall()
+        historical: list[HistoricalRawRevision] = []
+        for row in full_rows:
+            historical.append(
+                HistoricalRawRevision(
+                    raw_id=str(row[0]),
+                    payload=self._blob_publisher.read_all(str(row[1])),
+                )
+            )
+        decisions = classify_historical_full_revisions(historical)
+        by_raw_id = {decision.raw_id: decision for decision in decisions}
+        baseline_ids = [decision.raw_id for decision in decisions if decision.relation == "baseline"]
+        baseline_raw_id = baseline_ids[0] if len(baseline_ids) == 1 else None
+        generation_by_raw_id: dict[str, int] = {}
+        if baseline_raw_id is not None:
+            current: str | None = baseline_raw_id
+            generation = 0
+            children = {
+                decision.predecessor_raw_id: decision.raw_id
+                for decision in decisions
+                if decision.predecessor_raw_id is not None
+            }
+            while current is not None:
+                generation_by_raw_id[current] = generation
+                current = children.get(current)
+                generation += 1
+        with source_conn:
+            for row in full_rows:
+                raw_id = str(row[0])
+                decision = by_raw_id.get(raw_id)
+                authority = decision.authority if decision is not None else RawRevisionAuthority.QUARANTINED
+                predecessor_raw_id = decision.predecessor_raw_id if decision is not None else None
+                source_conn.execute(
+                    """
+                    UPDATE raw_sessions
+                    SET revision_authority = ?, predecessor_raw_id = ?, baseline_raw_id = ?,
+                        acquisition_generation = ?
+                    WHERE raw_id = ?
+                    """,
+                    (
+                        authority.value,
+                        predecessor_raw_id,
+                        baseline_raw_id if authority is RawRevisionAuthority.BYTE_PROVEN else None,
+                        generation_by_raw_id.get(raw_id, 0),
+                        raw_id,
+                    ),
+                )
+            self._promote_contiguous_append_evidence(source_conn, logical_source_key)
+        return self.raw_revision_replay_plan(logical_source_key)
+
+    @staticmethod
+    def _promote_contiguous_append_evidence(conn: sqlite3.Connection, logical_source_key: str) -> None:
+        while True:
+            candidates = conn.execute(
+                """
+                SELECT child.raw_id, parent.raw_id, COALESCE(parent.baseline_raw_id, parent.raw_id),
+                       parent.acquisition_generation + 1
+                FROM raw_sessions AS child
+                JOIN raw_sessions AS parent
+                  ON parent.logical_source_key = child.logical_source_key
+                 AND parent.source_revision = child.predecessor_source_revision
+                 AND parent.revision_authority = 'byte_proven'
+                 AND (
+                     (parent.revision_kind = 'full' AND parent.blob_size = child.append_start_offset)
+                     OR
+                     (parent.revision_kind = 'append' AND parent.append_end_offset = child.append_start_offset)
+                 )
+                WHERE child.logical_source_key = ?
+                  AND child.revision_kind = 'append'
+                  AND (
+                      child.revision_authority = 'quarantined'
+                      OR child.predecessor_raw_id != parent.raw_id
+                      OR child.baseline_raw_id != COALESCE(parent.baseline_raw_id, parent.raw_id)
+                      OR child.acquisition_generation != parent.acquisition_generation + 1
+                  )
+                """,
+                (logical_source_key,),
+            ).fetchall()
+            by_child: dict[str, list[sqlite3.Row | tuple[object, ...]]] = {}
+            for row in candidates:
+                by_child.setdefault(str(row[0]), []).append(row)
+            promotable = [rows[0] for rows in by_child.values() if len(rows) == 1]
+            if not promotable:
+                return
+            changed = 0
+            for row in promotable:
+                cursor = conn.execute(
+                    """
+                    UPDATE raw_sessions
+                    SET revision_authority = 'byte_proven', predecessor_raw_id = ?,
+                        baseline_raw_id = ?, acquisition_generation = ?
+                    WHERE raw_id = ?
+                    """,
+                    (str(row[1]), str(row[2]), int(cast(Any, row[3])), str(row[0])),
+                )
+                changed += int(cursor.rowcount)
+            if not changed:
+                return
+
+    def raw_revision_replay_plan(self, logical_source_key: str) -> RevisionReplayPlan:
+        return plan_revision_replay(self._raw_revision_candidates(logical_source_key))
+
+    def _raw_revision_candidates(self, logical_source_key: str) -> list[RevisionCandidate]:
+        rows = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT raw_id, revision_kind, source_revision, acquisition_generation,
+                   revision_authority, blob_size, predecessor_raw_id, baseline_raw_id,
+                   append_start_offset, append_end_offset
+            FROM raw_sessions
+            WHERE logical_source_key = ? AND source_revision IS NOT NULL
+            """,
+                (logical_source_key,),
+            )
+            .fetchall()
+        )
+        return [
+            RevisionCandidate(
+                raw_id=str(row[0]),
+                logical_source_key=logical_source_key,
+                kind=RawRevisionKind(str(row[1])),
+                source_revision=str(row[2]),
+                acquisition_generation=int(row[3]),
+                authority=RawRevisionAuthority(str(row[4])),
+                blob_size=int(row[5]),
+                predecessor_raw_id=str(row[6]) if row[6] is not None else None,
+                baseline_raw_id=str(row[7]) if row[7] is not None else None,
+                append_start_offset=int(row[8]) if row[8] is not None else None,
+                append_end_offset=int(row[9]) if row[9] is not None else None,
+            )
+            for row in rows
+        ]
+
+    def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
+        """Read one retained revision with its parsing identity."""
+        if self._blob_publisher is None:
+            raise RuntimeError("raw revision replay requires a writable blob publisher")
+        row = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT origin, lower(hex(blob_hash)), source_path, revision_kind
+            FROM raw_sessions WHERE raw_id = ?
+            """,
+                (raw_id,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            raise KeyError(raw_id)
+        return (
+            provider_from_origin(Origin.from_string(str(row[0]))),
+            self._blob_publisher.read_all(str(row[1])),
+            str(row[2]),
+            RawRevisionKind(str(row[3])),
+        )
+
+    def unclassified_raw_revision_rows(self) -> tuple[tuple[str, int], ...]:
+        """Return legacy rows that have no durable logical revision identity."""
+        rows = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT raw_id, source_index
+            FROM raw_sessions
+            WHERE logical_source_key IS NULL AND revision_authority = 'quarantined'
+            ORDER BY raw_id
+            """
+            )
+            .fetchall()
+        )
+        return tuple((str(row[0]), int(row[1])) for row in rows)
+
+    def pending_raw_revision_logical_keys(self) -> tuple[str, ...]:
+        rows = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT DISTINCT logical_source_key
+            FROM raw_sessions
+            WHERE logical_source_key IS NOT NULL AND parsed_at_ms IS NULL
+            ORDER BY logical_source_key
+            """
+            )
+            .fetchall()
+        )
+        return tuple(str(row[0]) for row in rows)
+
+    def apply_raw_revision_replay(
+        self,
+        plan: RevisionReplayPlan,
+        parsed_by_raw_id: dict[str, ParsedSession],
+        *,
+        acquired_at_ms: int,
+    ) -> tuple[str, tuple[str, ...]]:
+        """Apply a proven chain and atomically receipt its exact index state."""
+        del acquired_at_ms
+        if not plan.accepted_raw_ids:
+            raise ValueError("cannot apply a revision plan without an accepted chain")
+        candidates = {item.raw_id: item for item in self._raw_revision_candidates(plan.logical_source_key)}
+        session_ids: set[str] = set()
+        with self._conn:
+            for position, raw_id in enumerate(plan.accepted_raw_ids):
+                result = self._index_parsed_for_retained_raw(
+                    parsed_by_raw_id[raw_id],
+                    raw_id=raw_id,
+                    source_index=0 if position == 0 else -1,
+                    stage_timings_s=None,
+                    stage_timing_prefix="revision_replay",
+                    manage_transaction=False,
+                    preacquired_attachment_blobs={},
+                    finalize_raw_parse=False,
+                    revision_authoritative=True,
+                )
+                session_ids.add(result.session_id)
+            if len(session_ids) != 1:
+                raise RuntimeError("one logical revision chain produced multiple session ids")
+            session_id = next(iter(session_ids))
+            repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
+            assert_session_fts_exact_sync(self._conn, session_id)
+            stored = self._conn.execute(
+                "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if stored is None or not isinstance(stored[0], bytes):
+                raise RuntimeError("accepted revision did not produce a hashed session")
+            accepted_raw_id = plan.accepted_raw_ids[-1]
+            accepted = candidates[accepted_raw_id]
+            decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
+            for application in plan.applications:
+                candidate = candidates[application.raw_id]
+                has_head = application.accepted_raw_id is not None
+                record_revision_application_sync(
+                    self._conn,
+                    RevisionApplicationReceipt(
+                        raw_id=candidate.raw_id,
+                        session_id=session_id,
+                        logical_source_key=plan.logical_source_key,
+                        source_revision=candidate.source_revision,
+                        acquisition_generation=accepted.acquisition_generation
+                        if has_head
+                        else candidate.acquisition_generation,
+                        decision=application.decision,
+                        accepted_raw_id=accepted_raw_id if has_head else None,
+                        accepted_source_revision=accepted.source_revision if has_head else None,
+                        accepted_content_hash=stored[0] if has_head else None,
+                        baseline_raw_id=candidate.baseline_raw_id,
+                        predecessor_raw_id=candidate.predecessor_raw_id,
+                        append_end_offset=accepted.append_end_offset,
+                        detail=application.detail,
+                    ),
+                    decided_at_ms=decided_at_ms,
+                )
+        terminal_raw_ids = {
+            application.raw_id
+            for application in plan.applications
+            if application.decision
+            in {
+                ApplicationDecision.SELECTED_BASELINE,
+                ApplicationDecision.APPLIED_APPEND,
+                ApplicationDecision.SUPERSEDED,
+            }
+        }
+        for raw_id in terminal_raw_ids:
+            provider, _payload, _source_path, _kind = self.raw_revision_material(raw_id)
+            self.mark_raw_parse_succeeded(raw_id, provider=provider)
+        return session_id, plan.accepted_raw_ids
+
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
         """Commit one typed source parse state after its index outcome."""
         apply_source_raw_state_update(
@@ -1322,6 +1654,7 @@ class ArchiveStore:
         manage_transaction: bool,
         preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]],
         finalize_raw_parse: bool,
+        revision_authoritative: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         provider = Provider.from_string(session.source_name)
         try:
@@ -1333,6 +1666,7 @@ class ArchiveStore:
                 stage_timing_prefix=stage_timing_prefix,
                 manage_transaction=manage_transaction,
                 preacquired_attachment_blobs=preacquired_attachment_blobs,
+                revision_authoritative=revision_authoritative,
             )
         except Exception as exc:
             self.finalize_raw_parse_state(raw_id, state=self._raw_parse_failure_state(provider, exc))

@@ -410,6 +410,21 @@ def _write_session(
     merge_append = False
     browser_precedence: BrowserCapturePrecedence = "default"
 
+    has_revision_heads = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_revision_heads'"
+    ).fetchone()
+    if has_revision_heads is not None:
+        governed = conn.execute(
+            "SELECT 1 FROM raw_revision_heads WHERE session_id = ? LIMIT 1",
+            (payload.session_id,),
+        ).fetchone()
+        if governed is not None:
+            counts["skipped_sessions"] = 1
+            counts["skipped_messages"] = payload.message_count
+            counts["skipped_attachments"] = payload.attachment_count
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            return False, counts
+
     if (
         not force_write
         and not payload.append_only

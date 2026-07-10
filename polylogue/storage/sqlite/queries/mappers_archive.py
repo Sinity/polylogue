@@ -139,6 +139,7 @@ def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
             kind=RawRevisionKind(_row_text(row, "revision_kind") or "unknown"),
             source_revision=source_revision,
             acquisition_generation=generation,
+            predecessor_source_revision=_row_text(row, "predecessor_source_revision"),
             predecessor_raw_id=_row_text(row, "predecessor_raw_id"),
             baseline_raw_id=_row_text(row, "baseline_raw_id"),
             append_start_offset=_row_int(row, "append_start_offset"),

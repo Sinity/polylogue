@@ -44,14 +44,11 @@ class RevisionApplication:
 class RevisionReplayPlan:
     logical_source_key: str
     applications: tuple[RevisionApplication, ...]
+    accepted_chain: tuple[str, ...] = ()
 
     @property
     def accepted_raw_ids(self) -> tuple[str, ...]:
-        return tuple(
-            item.raw_id
-            for item in self.applications
-            if item.decision in {ApplicationDecision.SELECTED_BASELINE, ApplicationDecision.APPLIED_APPEND}
-        )
+        return self.accepted_chain
 
 
 def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayPlan:
@@ -82,7 +79,11 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
             applications=tuple(
                 RevisionApplication(
                     candidate.raw_id,
-                    ApplicationDecision.DEFERRED,
+                    (
+                        ApplicationDecision.AMBIGUOUS
+                        if candidate.authority is RawRevisionAuthority.QUARANTINED
+                        else ApplicationDecision.DEFERRED
+                    ),
                     None,
                     None,
                     "no unique byte-proven full baseline",
@@ -115,6 +116,7 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
         baseline.source_revision,
         "newest unique byte-proven full baseline",
     )
+    accepted_chain = [baseline.raw_id]
     for candidate in proven_full:
         if candidate.raw_id == baseline.raw_id:
             continue
@@ -158,6 +160,7 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
             "unique contiguous byte-proven append",
         )
         accepted = child
+        accepted_chain.append(child.raw_id)
 
     for candidate in candidates:
         if candidate.raw_id in applications:
@@ -174,16 +177,19 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
             accepted.source_revision,
             "evidence is not a unique contiguous successor of the accepted head",
         )
-    return _ordered_plan(logical_key, applications)
+    return _ordered_plan(logical_key, applications, accepted_chain=tuple(accepted_chain))
 
 
 def _ordered_plan(
     logical_source_key: str,
     applications: dict[str, RevisionApplication],
+    *,
+    accepted_chain: tuple[str, ...] = (),
 ) -> RevisionReplayPlan:
     return RevisionReplayPlan(
         logical_source_key=logical_source_key,
         applications=tuple(applications[raw_id] for raw_id in sorted(applications)),
+        accepted_chain=accepted_chain,
     )
 
 

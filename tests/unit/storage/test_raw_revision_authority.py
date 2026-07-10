@@ -58,9 +58,39 @@ def test_historical_classifier_quarantines_unprovable_authority(payloads: list[b
     assert {decision.authority for decision in decisions} == {RawRevisionAuthority.QUARANTINED}
 
 
-def test_append_envelope_requires_baseline_and_exact_forward_offsets() -> None:
-    with pytest.raises(ValueError, match="baseline and offsets"):
+def test_append_envelope_requires_predecessor_revision_and_exact_forward_offsets() -> None:
+    with pytest.raises(ValueError, match="predecessor revision and offsets"):
         RawRevisionEnvelope("codex:session", RawRevisionKind.APPEND, "rev-2", 2)
+
+
+def test_quarantined_append_records_observation_without_claiming_raw_parent() -> None:
+    envelope = RawRevisionEnvelope(
+        "codex:session",
+        RawRevisionKind.APPEND,
+        "rev-2",
+        2,
+        predecessor_source_revision="rev-1",
+        append_start_offset=100,
+        append_end_offset=150,
+        authority=RawRevisionAuthority.QUARANTINED,
+    )
+
+    assert envelope.predecessor_raw_id is None
+    assert envelope.baseline_raw_id is None
+
+
+def test_replay_eligible_append_requires_bound_raw_parent() -> None:
+    with pytest.raises(ValueError, match="baseline and raw predecessor"):
+        RawRevisionEnvelope(
+            "codex:session",
+            RawRevisionKind.APPEND,
+            "rev-2",
+            2,
+            predecessor_source_revision="rev-1",
+            append_start_offset=100,
+            append_end_offset=150,
+            authority=RawRevisionAuthority.BYTE_PROVEN,
+        )
 
 
 def test_source_writer_persists_typed_revision_envelope() -> None:
@@ -71,6 +101,7 @@ def test_source_writer_persists_typed_revision_envelope() -> None:
         RawRevisionKind.APPEND,
         "sha256:revision-2",
         2,
+        predecessor_source_revision="sha256:revision-1",
         predecessor_raw_id="raw-full",
         baseline_raw_id="raw-full",
         append_start_offset=100,
@@ -86,12 +117,24 @@ def test_source_writer_persists_typed_revision_envelope() -> None:
         revision=envelope,
     )
     assert conn.execute(
-        """SELECT logical_source_key, revision_kind, source_revision, predecessor_raw_id,
+        """SELECT logical_source_key, revision_kind, source_revision, predecessor_source_revision,
+                  predecessor_raw_id,
                   baseline_raw_id, append_start_offset, append_end_offset,
                   acquisition_generation, revision_authority
            FROM raw_sessions WHERE raw_id = ?""",
         (raw_id,),
-    ).fetchone() == ("codex:session-1", "append", "sha256:revision-2", "raw-full", "raw-full", 100, 150, 2, "asserted")
+    ).fetchone() == (
+        "codex:session-1",
+        "append",
+        "sha256:revision-2",
+        "sha256:revision-1",
+        "raw-full",
+        "raw-full",
+        100,
+        150,
+        2,
+        "asserted",
+    )
 
 
 def test_unenveloped_raw_write_is_quarantined() -> None:
@@ -139,7 +182,11 @@ def test_revision_binding_is_idempotent_but_rejects_conflicting_identity() -> No
 
 def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
-    full_payload = b"x" * 100
+    full_payload = (
+        b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2026-06-01T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"old","role":"user","content":'
+        b'[{"type":"input_text","text":"old"}]}}\n'
+    )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -154,7 +201,7 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
 
     append_payload = (
         b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2026-06-02T00:00:00Z"}}\n'
-        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'{"type":"response_item","payload":{"type":"message","id":"new","role":"user","content":'
         b'[{"type":"input_text","text":"new"}]}}\n'
     )
     path = tmp_path / "session.jsonl"
@@ -185,11 +232,124 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
     assert result.succeeded == [plan]
     with sqlite3.connect(tmp_path / "source.db") as conn:
         row = conn.execute(
-            """SELECT predecessor_raw_id, baseline_raw_id, append_start_offset,
+            """SELECT predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
                       append_end_offset, acquisition_generation, revision_authority
                FROM raw_sessions WHERE revision_kind = 'append'"""
         ).fetchone()
-    assert row == (baseline_raw_id, baseline_raw_id, len(full_payload), stat.st_size, 2, "asserted")
+    assert row == (
+        "full-revision",
+        baseline_raw_id,
+        baseline_raw_id,
+        len(full_payload),
+        stat.st_size,
+        1,
+        "byte_proven",
+    )
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
+        assert set(conn.execute("SELECT decision FROM raw_revision_applications").fetchall()) == {
+            ("selected_baseline",),
+            ("applied_append",),
+        }
+        append_application = conn.execute(
+            "SELECT raw_id FROM raw_revision_applications WHERE decision = 'applied_append'"
+        ).fetchone()
+        assert (
+            conn.execute(
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex:session-1'"
+            ).fetchone()
+            == append_application
+        )
+
+
+def test_live_append_retains_cursor_identity_until_baseline_arrives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    append_payload = (
+        b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"new"}]}}\n'
+    )
+    path = tmp_path / "session.jsonl"
+    path.write_bytes((b"x" * 100) + append_payload)
+    stat = path.stat()
+    plan = _AppendPlan(
+        path=path,
+        source_name="codex",
+        start_offset=100,
+        last_complete_newline=stat.st_size,
+        stat_size=stat.st_size,
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        payload=append_payload,
+        payload_hash="append-hash",
+        cursor_fingerprint="late-full-revision",
+        bytes_read=len(append_payload),
+    )
+    cursor = CursorStore(tmp_path / "cursor.sqlite")
+    owner = SimpleNamespace(
+        _cursor=cursor,
+        _polylogue=SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path)),
+    )
+    events: list[str] = []
+    original_bind = ArchiveStore.bind_raw_revision
+    original_index = ArchiveStore.write_parsed_for_retained_raw
+
+    def recording_bind(self: ArchiveStore, raw_id: str, revision: RawRevisionEnvelope) -> None:
+        events.append("bind")
+        original_bind(self, raw_id, revision)
+
+    def recording_index(self: ArchiveStore, *args: Any, **kwargs: Any) -> tuple[str, str]:
+        events.append("index")
+        return original_index(self, *args, **kwargs)
+
+    monkeypatch.setattr(ArchiveStore, "bind_raw_revision", recording_bind)
+    monkeypatch.setattr(ArchiveStore, "write_parsed_for_retained_raw", recording_index)
+
+    result = ingest_append_plans(cast(Any, owner), [plan])
+
+    assert result.succeeded == []
+    assert result.deferred == [plan]
+    assert events == ["bind"]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        observed = conn.execute(
+            """SELECT source_revision, predecessor_source_revision, predecessor_raw_id,
+                      baseline_raw_id, append_start_offset, append_end_offset, revision_authority
+               FROM raw_sessions WHERE revision_kind = 'append'"""
+        ).fetchone()
+    assert observed == (
+        append_source_revision("late-full-revision", "append-hash"),
+        "late-full-revision",
+        None,
+        None,
+        100,
+        stat.st_size,
+        "quarantined",
+    )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"x" * 100,
+            source_path=str(path),
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            baseline_raw_id,
+            RawRevisionEnvelope(
+                "codex:session-1",
+                RawRevisionKind.FULL,
+                "late-full-revision",
+                0,
+            ),
+        )
+        assert archive.raw_append_revision_parent("codex:session-1", 100, "late-full-revision") == (
+            baseline_raw_id,
+            baseline_raw_id,
+            1,
+        )
 
 
 def test_append_parent_requires_exact_cursor_revision(tmp_path: Path) -> None:

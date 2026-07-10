@@ -28,6 +28,7 @@ class RawRevisionEnvelope:
     kind: RawRevisionKind
     source_revision: str
     acquisition_generation: int
+    predecessor_source_revision: str | None = None
     predecessor_raw_id: str | None = None
     baseline_raw_id: str | None = None
     append_start_offset: int | None = None
@@ -41,13 +42,19 @@ class RawRevisionEnvelope:
             raise ValueError("acquisition_generation must be non-negative")
         offsets = (self.append_start_offset, self.append_end_offset)
         if self.kind is RawRevisionKind.APPEND:
-            if self.baseline_raw_id is None or None in offsets:
-                raise ValueError("append evidence requires baseline and offsets")
+            if self.predecessor_source_revision is None or None in offsets:
+                raise ValueError("append evidence requires predecessor revision and offsets")
             assert self.append_start_offset is not None and self.append_end_offset is not None
             if self.append_start_offset < 0 or self.append_end_offset <= self.append_start_offset:
                 raise ValueError("append offsets must describe a non-empty forward range")
-        elif any(value is not None for value in offsets):
-            raise ValueError("only append evidence may carry byte offsets")
+            raw_predecessors = (self.predecessor_raw_id, self.baseline_raw_id)
+            if self.authority is RawRevisionAuthority.QUARANTINED:
+                if any(value is not None for value in raw_predecessors):
+                    raise ValueError("quarantined append evidence may not claim raw predecessors")
+            elif any(value is None for value in raw_predecessors):
+                raise ValueError("replay-eligible append evidence requires baseline and raw predecessor")
+        elif self.predecessor_source_revision is not None or any(value is not None for value in offsets):
+            raise ValueError("only append evidence may carry predecessor revision or byte offsets")
 
 
 @dataclass(frozen=True)

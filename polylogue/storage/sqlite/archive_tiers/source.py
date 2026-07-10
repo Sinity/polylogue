@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 5
+SOURCE_SCHEMA_VERSION = 6
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     ,revision_kind           TEXT NOT NULL DEFAULT 'unknown'
         CHECK(revision_kind IN ('full', 'append', 'unknown'))
     ,source_revision         TEXT
+    ,predecessor_source_revision TEXT
     ,predecessor_raw_id      TEXT
     ,baseline_raw_id         TEXT
     ,append_start_offset     INTEGER CHECK(append_start_offset >= 0)

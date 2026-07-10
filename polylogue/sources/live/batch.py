@@ -16,7 +16,12 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
-from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind, append_source_revision
+from polylogue.archive.revision_authority import (
+    RawRevisionAuthority,
+    RawRevisionEnvelope,
+    RawRevisionKind,
+    append_source_revision,
+)
 from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
 from polylogue.core.enums import Provider
@@ -311,6 +316,15 @@ class LiveBatchProcessor:
             for plan in append_result.failed:
                 failed_paths.append(str(plan.path))
                 cursor_fingerprint_read_bytes += self._record_failed_cursor(plan.path)
+            for plan in append_result.deferred:
+                cursor_fingerprint_read_bytes += record_deferred_append_cursor(
+                    self._cursor,
+                    plan.path,
+                    cursor=self._cursor.get_record(plan.path),
+                    parser_fingerprint=self._current_parser_fingerprint(),
+                    source_name=plan.source_name,
+                )
+                deferred_paths.append(plan.path)
 
         for path in paths:
             if is_degraded():
@@ -1360,35 +1374,48 @@ class LiveBatchProcessor:
                     record_session_ids: list[str] = []
                     record_session_count = 0
                     record_message_count = 0
-                    for session in sessions:
-                        raw_id, session_id = archive.write_parsed_for_retained_raw(
-                            session,
-                            raw_id=source_raw_id,
-                            source_path=record.source_path,
-                            source_index=record.source_index or 0,
-                            acquired_at_ms=acquired_at_ms,
-                            stage_timings_s=record_timings,
-                            stage_timing_prefix="full",
-                            finalize_raw_parse=False,
-                        )
-                        record_raw_id = raw_id
-                        record_session_ids.append(session_id)
-                        record_session_count += 1
-                        record_message_count += len(session.messages)
-                    if record_session_count == 1 and record.captured_source_revision is not None:
+                    if len(sessions) == 1:
                         session = sessions[0]
+                        logical_source_key = f"{provider.value}:{session.provider_session_id}"
                         archive.bind_raw_revision(
                             source_raw_id,
                             RawRevisionEnvelope(
-                                logical_source_key=f"{provider.value}:{session.provider_session_id}",
+                                logical_source_key=logical_source_key,
                                 kind=RawRevisionKind.FULL,
-                                source_revision=record.captured_source_revision,
-                                acquisition_generation=archive.raw_full_revision_generation(
-                                    f"{provider.value}:{session.provider_session_id}"
-                                ),
+                                source_revision=source_raw_id,
+                                acquisition_generation=0,
+                                authority=RawRevisionAuthority.QUARANTINED,
                             ),
                         )
-                    archive.mark_raw_parse_succeeded(source_raw_id, provider=provider)
+                        plan = archive.classify_raw_revision_cohort(logical_source_key)
+                        if not plan.accepted_raw_ids:
+                            continue
+                        parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
+                        session_id, applied_raw_ids = archive.apply_raw_revision_replay(
+                            plan,
+                            parsed_by_raw_id,
+                            acquired_at_ms=acquired_at_ms,
+                        )
+                        record_session_ids.append(session_id)
+                        record_session_count = 1
+                        record_message_count = sum(len(parsed_by_raw_id[raw_id].messages) for raw_id in applied_raw_ids)
+                    else:
+                        for session in sessions:
+                            raw_id, session_id = archive.write_parsed_for_retained_raw(
+                                session,
+                                raw_id=source_raw_id,
+                                source_path=record.source_path,
+                                source_index=record.source_index or 0,
+                                acquired_at_ms=acquired_at_ms,
+                                stage_timings_s=record_timings,
+                                stage_timing_prefix="full",
+                                finalize_raw_parse=False,
+                            )
+                            record_raw_id = raw_id
+                            record_session_ids.append(session_id)
+                            record_session_count += 1
+                            record_message_count += len(session.messages)
+                        archive.mark_raw_parse_succeeded(source_raw_id, provider=provider)
                     result.raw_ids[record.raw_id] = record_raw_id
                     result.session_ids.extend(record_session_ids)
                     result.session_count += record_session_count
@@ -1413,6 +1440,30 @@ class LiveBatchProcessor:
                         exc_info=True,
                     )
         return result
+
+    def _parse_raw_revision_chain(self, archive: Any, plan: Any) -> dict[str, Any]:
+        parsed_by_raw_id: dict[str, Any] = {}
+        for raw_id in plan.accepted_raw_ids:
+            provider, payload, source_path, _kind = archive.raw_revision_material(raw_id)
+            source_name = Path(source_path).name
+            fallback_id = Path(source_path).stem
+            if is_stream_record_provider(source_path, str(provider)):
+                sessions = parse_stream_payload(
+                    provider,
+                    _iter_json_stream(BytesIO(payload), source_name),
+                    fallback_id,
+                )
+            else:
+                sessions = parse_payload(
+                    provider,
+                    list(_iter_json_stream(BytesIO(payload), source_name)),
+                    fallback_id,
+                    source_path=source_path,
+                )
+            if len(sessions) != 1:
+                raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
+            parsed_by_raw_id[raw_id] = sessions[0]
+        return parsed_by_raw_id
 
     def _extract_zip_member_records(
         self,

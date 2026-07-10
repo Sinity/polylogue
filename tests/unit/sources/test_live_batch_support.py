@@ -1138,7 +1138,8 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
     owner = Owner()
     result = ingest_append_plans(owner, plans)
 
-    assert result.succeeded == [plans[0]]
+    assert result.succeeded == []
+    assert result.deferred == [plans[0]]
     assert result.failed == [plans[1]]
     assert result.worker_count == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -1149,7 +1150,7 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
         assert rows[1][0]
         assert rows[1][1] == "quarantined"
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "append-ok"
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
 def test_append_ingest_writes_archive_file_set_through_archive_tiers(
@@ -1548,12 +1549,13 @@ def test_append_ingest_bootstraps_archive_root(
 
     result = ingest_append_plans(Owner(), [plan])
 
-    assert result.succeeded == [plan]
+    assert result.succeeded == []
+    assert result.deferred == [plan]
     assert result.failed == []
     for filename in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db"):
         assert (tmp_path / filename).exists()
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "append-bootstrap"
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
 def test_live_raw_compaction_ignores_cursor_db_without_source_db(tmp_path: Path) -> None:

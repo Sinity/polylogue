@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 30
+INDEX_SCHEMA_VERSION = 31
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -50,6 +50,54 @@ CREATE TABLE IF NOT EXISTS fts_freshness_state (
 """
 
 INDEX_DDL = f"""
+CREATE TABLE IF NOT EXISTS raw_revision_applications (
+    decision_id              TEXT PRIMARY KEY,
+    raw_id                   TEXT NOT NULL,
+    session_id               TEXT NOT NULL,
+    logical_source_key       TEXT NOT NULL,
+    source_revision          TEXT NOT NULL,
+    acquisition_generation  INTEGER NOT NULL CHECK(acquisition_generation >= 0),
+    decision                 TEXT NOT NULL CHECK(decision IN (
+                                 'selected_baseline', 'applied_append', 'superseded',
+                                 'ambiguous', 'deferred'
+                             )),
+    accepted_raw_id          TEXT,
+    accepted_source_revision TEXT,
+    accepted_content_hash    BLOB CHECK(
+                                 accepted_content_hash IS NULL OR length(accepted_content_hash) = 32
+                             ),
+    baseline_raw_id          TEXT,
+    predecessor_raw_id       TEXT,
+    append_end_offset        INTEGER CHECK(append_end_offset IS NULL OR append_end_offset >= 0),
+    detail                   TEXT NOT NULL,
+    decided_at_ms            INTEGER NOT NULL CHECK(decided_at_ms >= 0),
+    CHECK(
+        (accepted_raw_id IS NULL AND accepted_source_revision IS NULL AND accepted_content_hash IS NULL)
+        OR
+        (accepted_raw_id IS NOT NULL AND accepted_source_revision IS NOT NULL AND accepted_content_hash IS NOT NULL)
+    )
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_revision_applications_identity
+ON raw_revision_applications(
+    raw_id, session_id, decision, source_revision,
+    COALESCE(accepted_source_revision, '')
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_revision_applications_logical
+ON raw_revision_applications(logical_source_key, acquisition_generation, raw_id);
+
+CREATE TABLE IF NOT EXISTS raw_revision_heads (
+    logical_source_key       TEXT PRIMARY KEY,
+    session_id               TEXT NOT NULL,
+    accepted_raw_id          TEXT NOT NULL,
+    accepted_source_revision TEXT NOT NULL,
+    accepted_content_hash    BLOB NOT NULL CHECK(length(accepted_content_hash) = 32),
+    acquisition_generation  INTEGER NOT NULL CHECK(acquisition_generation >= 0),
+    append_end_offset        INTEGER CHECK(append_end_offset IS NULL OR append_end_offset >= 0),
+    decided_at_ms            INTEGER NOT NULL CHECK(decided_at_ms >= 0)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS sessions (
     session_id              TEXT GENERATED ALWAYS AS (origin || ':' || native_id) STORED UNIQUE,
     native_id               TEXT NOT NULL,

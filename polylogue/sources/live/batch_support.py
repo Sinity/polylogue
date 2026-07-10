@@ -85,6 +85,7 @@ class _AppendPlan:
 class _AppendResult:
     succeeded: list[_AppendPlan]
     failed: list[_AppendPlan]
+    deferred: list[_AppendPlan] = field(default_factory=list)
     worker_count: int = 0
     stage_timings_s: dict[str, float] = field(default_factory=dict)
 
