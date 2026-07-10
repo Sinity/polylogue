@@ -24,7 +24,7 @@ from .emitter import _SessionEmitter
 from .parsers import antigravity, hermes_state
 from .parsers.base import ParsedSession, RawSessionData
 from .source_walk import _setup_source_walk
-from .sqlite_snapshot import snapshot_sqlite_to_blob
+from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
 
 logger = get_logger(__name__)
 _cursor.logger = logger
@@ -121,7 +121,10 @@ def parse_one_source_path(
         )
         return
 
-    if provider_hint is Provider.HERMES and hermes_state.looks_like_state_db_path(path):
+    original_source_path = original_sqlite_source_path(path) if is_sqlite_path(path) else None
+    if (provider_hint is Provider.HERMES or original_source_path is not None) and hermes_state.looks_like_state_db_path(
+        path
+    ):
         blob_store = BlobStore(blob_root) if blob_root is not None else get_blob_store()
         snapshot = snapshot_sqlite_to_blob(path, blob_store)
         retained_path = blob_store.blob_path(snapshot.blob_hash)
@@ -129,7 +132,7 @@ def parse_one_source_path(
         if capture_raw:
             raw_data = RawSessionData(
                 raw_bytes=b"",
-                source_path=str(path),
+                source_path=str(original_source_path or path),
                 source_index=None,
                 file_mtime=file_mtime,
                 provider_hint=provider_hint,
@@ -139,7 +142,7 @@ def parse_one_source_path(
         for session in hermes_state.parse_state_db(
             retained_path,
             fallback_id=path.stem,
-            profile_root=path.parent,
+            profile_root=(original_source_path or path).parent,
         ):
             yield (raw_data, session)
         return

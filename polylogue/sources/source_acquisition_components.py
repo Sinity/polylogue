@@ -22,7 +22,7 @@ from . import decoders as _decoders
 from .decoders import _zip_entry_provider_hint
 from .dispatch import GROUP_PROVIDERS, _detect_provider_from_raw_bytes, detect_provider
 from .parsers.base import RawSessionData
-from .sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
+from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
 
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
@@ -296,7 +296,9 @@ def make_split_entry_raw_data(
 
 def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
     """Stream one non-ZIP source file into the blob store."""
-    if context.provider_hint is Provider.HERMES and is_sqlite_path(context.path):
+    sqlite_path = is_sqlite_path(context.path)
+    original_source_path = original_sqlite_source_path(context.path) if sqlite_path else None
+    if (context.provider_hint is Provider.HERMES or original_source_path is not None) and sqlite_path:
         heartbeat = make_status_heartbeat(
             context.status_callback,
             source_name=context.source.name,
@@ -327,7 +329,7 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         blob_size=blob_size,
     )
     return raw_data_record(
-        source_path=str(context.path),
+        source_path=str(original_source_path or context.path),
         file_mtime=context.file_mtime,
         provider_hint=detected_provider,
         blob_hash=blob_hash,

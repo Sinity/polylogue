@@ -606,7 +606,12 @@ class TestIngestEndpointInboxBoundary:
             )
         )
 
-        body = json.dumps({"path": "/outside/tree/session.json"}).encode("utf-8")
+        body = json.dumps(
+            {
+                "path": "/outside/tree/session.json",
+                "source_path": "/original/provider/export/session.json",
+            }
+        ).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = _capture_responses(handler)
 
@@ -623,6 +628,8 @@ class TestIngestEndpointInboxBoundary:
         assert payload["path"] == str(staged.resolve())
         assert payload["preflight"]["status"] == "supported"
         assert payload["preflight"]["providers"] == ["chatgpt"]
+        assert payload["request"]["source_path"] == "/original/provider/export/session.json"
+        assert payload["request"]["staged_path"] == str(staged.resolve())
         emit_event.assert_called_once()
         assert emit_event.call_args.kwargs["payload"]["path"] == str(staged.resolve())
         assert emit_event.call_args.kwargs["payload"]["preflight"]["status"] == "supported"

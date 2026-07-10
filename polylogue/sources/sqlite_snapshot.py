@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import tempfile
@@ -13,6 +14,8 @@ from polylogue.storage.blob_store import BlobStore, Heartbeat
 
 _SQLITE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
+_STAGING_METADATA_SUFFIX = ".polylogue-import"
+_STAGING_METADATA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +67,60 @@ def snapshot_sqlite_database(source: Path, destination: Path) -> None:
         source_conn.backup(destination_conn)
 
 
+def sqlite_staging_metadata_path(staged_path: Path) -> Path:
+    """Return the non-ingestible provenance sidecar for a staged database."""
+    return staged_path.with_name(f"{staged_path.name}{_STAGING_METADATA_SUFFIX}")
+
+
+def original_sqlite_source_path(staged_path: Path) -> Path | None:
+    """Read the original source path recorded for a staged SQLite snapshot."""
+    metadata_path = sqlite_staging_metadata_path(staged_path)
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != _STAGING_METADATA_VERSION:
+        return None
+    original = payload.get("original_source_path")
+    if not isinstance(original, str) or not original:
+        return None
+    return Path(original)
+
+
+def stage_sqlite_snapshot(source: Path, destination: Path) -> None:
+    """Atomically publish a snapshot and its original-path provenance."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".staging",
+    )
+    os.close(fd)
+    temporary_path = Path(temporary_name)
+    temporary_path.unlink()
+    metadata_path = sqlite_staging_metadata_path(destination)
+    metadata_temporary_path = metadata_path.with_name(f".{metadata_path.name}.{os.getpid()}.tmp")
+    try:
+        snapshot_sqlite_database(source, temporary_path)
+        metadata_temporary_path.write_text(
+            json.dumps(
+                {
+                    "version": _STAGING_METADATA_VERSION,
+                    "original_source_path": str(source.expanduser().resolve()),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        os.chmod(metadata_temporary_path, 0o600)
+        os.replace(metadata_temporary_path, metadata_path)
+        os.replace(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+        metadata_temporary_path.unlink(missing_ok=True)
+
+
 def snapshot_sqlite_to_blob(
     source: Path,
     blob_store: BlobStore,
@@ -96,8 +153,11 @@ def snapshot_sqlite_to_blob(
 __all__ = [
     "SQLiteBlobSnapshot",
     "is_sqlite_path",
+    "original_sqlite_source_path",
     "snapshot_sqlite_database",
     "snapshot_sqlite_to_blob",
+    "sqlite_staging_metadata_path",
+    "stage_sqlite_snapshot",
     "sqlite_database_for_sidecar",
     "sqlite_source_revision",
 ]

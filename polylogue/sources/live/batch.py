@@ -98,7 +98,7 @@ from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
 )
-from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+from polylogue.sources.sqlite_snapshot import original_sqlite_source_path, snapshot_sqlite_to_blob
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -1086,7 +1086,9 @@ class LiveBatchProcessor:
                     raw_id=raw_id,
                     payload_provider=provider,
                     source_name=source_name,
-                    source_path=str(path),
+                    source_path=(
+                        str(original_sqlite_source_path(path) or path) if path in raw_source_revisions else str(path)
+                    ),
                     source_index=0,
                     blob_size=blob_size,
                     acquired_at=datetime.now(UTC).isoformat(),

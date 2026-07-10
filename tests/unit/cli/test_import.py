@@ -95,7 +95,7 @@ def test_import_command_stages_local_path_before_daemon_request(
     assert request.data is not None
     request_data = cast("bytes", request.data)
     body = json.loads(request_data.decode("utf-8"))
-    assert body == {"path": str(staged)}
+    assert body == {"path": str(staged), "source_path": str(source.resolve())}
     assert body["path"] != str(source)
     assert captured["timeout"] == 5
 
@@ -118,11 +118,17 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
+    from polylogue.config import Source
+    from polylogue.sources.parsers import hermes_state
+    from polylogue.sources.source_parsing import iter_source_sessions_with_raw
+    from polylogue.sources.sqlite_snapshot import original_sqlite_source_path
 
     source = tmp_path / "state.db"
     with sqlite3.connect(source) as conn:
         conn.executescript(
             """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
             CREATE TABLE sessions (
                 id TEXT PRIMARY KEY, source TEXT, user_id TEXT, session_key TEXT,
                 chat_id TEXT, chat_type TEXT, thread_id TEXT, model TEXT,
@@ -193,7 +199,22 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
     with sqlite3.connect(staged) as conn:
         assert conn.execute("SELECT title FROM sessions WHERE id = 'h1'").fetchone()[0] == "Hermes"
         assert conn.execute("SELECT content FROM messages ORDER BY id DESC LIMIT 1").fetchone()[0] == "WAL turn"
-    assert json.loads(cast("bytes", cast("Request", captured["request"]).data).decode("utf-8")) == {"path": str(staged)}
+    assert original_sqlite_source_path(staged) == source.resolve()
+    assert json.loads(cast("bytes", cast("Request", captured["request"]).data).decode("utf-8")) == {
+        "path": str(staged),
+        "source_path": str(source.resolve()),
+    }
+
+    direct = hermes_state.parse_state_db(source, profile_root=source.parent)[0]
+    [(raw, imported)] = list(
+        iter_source_sessions_with_raw(
+            Source(name="inbox", path=staged),
+            capture_raw=True,
+            blob_root=tmp_path / "blobs",
+        )
+    )
+    assert raw is not None and raw.source_path == str(source.resolve())
+    assert imported.provider_session_id == direct.provider_session_id
 
 
 def test_import_command_uses_daemon_url_env_by_default(
@@ -292,7 +313,7 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
     request = cast("Request", captured["request"])
     assert request.data is not None
     body = json.loads(cast("bytes", request.data).decode("utf-8"))
-    assert body == {"path": str(staged)}
+    assert body == {"path": str(staged), "source_path": str(source_root.resolve())}
     assert captured["timeout"] == 5
     assert str(staged) in result.output
     assert "polylogued status" in result.output
