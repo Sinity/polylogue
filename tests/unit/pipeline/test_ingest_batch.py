@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import Future
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -50,11 +51,15 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.storage.blob_gc import BlobGCResult, run_blob_gc_report
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.refresh import SessionInsightRefreshChunkObservation
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
@@ -274,11 +279,17 @@ def _action_tuple(
     )
 
 
-def _attachment_tuple(attachment_id: str, *, mime_type: str = "image/png") -> ParsedAttachment:
+def _attachment_tuple(
+    attachment_id: str,
+    *,
+    mime_type: str = "image/png",
+    inline_bytes: bytes | None = None,
+) -> ParsedAttachment:
     return ParsedAttachment(
         provider_attachment_id=attachment_id,
         mime_type=mime_type,
-        size_bytes=1024,
+        size_bytes=len(inline_bytes) if inline_bytes is not None else 1024,
+        inline_bytes=inline_bytes,
     )
 
 
@@ -1795,6 +1806,92 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
 
     second_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
     assert [hit.session_id for hit in second_result.hits] == [session_id]
+
+
+def test_process_ingest_batch_sync_reserves_inline_attachment_until_index_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    db_path = archive_root / "index.db"
+    legacy_blob_root = tmp_path / "legacy-worker-blob-root"
+    source_path = tmp_path / "raw.jsonl"
+    source_path.write_text("{}", encoding="utf-8")
+    raw_id = "raw-inline-attachment"
+    session_id = "codex-session:inline-attachment"
+    payload = b"production ingest attachment"
+    attachment = _attachment_tuple("att-inline", mime_type="text/plain", inline_bytes=payload)
+    session = _session_data(
+        session_id,
+        content_hash="inline-attachment",
+        raw_id=raw_id,
+        message_tuples=[
+            _message_tuple(
+                "msg-inline",
+                session_id,
+                role="user",
+                text="attachment",
+                content_hash="inline-message",
+                sort_key=0.0,
+            )
+        ],
+        attachment_tuples=[attachment],
+        attachment_ref_tuples=[_attachment_ref_tuple("att-inline", session_id, "msg-inline")],
+    )
+    raw_record = RawSessionRecord(
+        raw_id=raw_id,
+        source_name="codex",
+        source_path=str(source_path),
+        blob_size=source_path.stat().st_size,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+
+    def fake_ingest_record(
+        record: RawSessionRecord,
+        archive_root_str: str,
+        validation_mode: str,
+        measure_ingest_result_size: bool,
+        *,
+        blob_root_str: str | None,
+    ) -> IngestRecordResult:
+        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
+        assert record.raw_id == raw_id
+        return IngestRecordResult(raw_id=record.raw_id, sessions=[session])
+
+    gc_reports: list[BlobGCResult] = []
+    original_flush = ArchiveBlobPublisher.flush
+
+    def flush_then_gc(publisher: ArchiveBlobPublisher):  # type: ignore[no-untyped-def]
+        receipts = original_flush(publisher)
+        for receipt in receipts:
+            os.utime(publisher.blob_path(receipt.blob_hash), (1_700_000_000, 1_700_000_000))
+        gc_reports.append(run_blob_gc_report(archive_root / "source.db", archive_root / "blob"))
+        return receipts
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
+    monkeypatch.setattr(ArchiveBlobPublisher, "flush", flush_then_gc)
+
+    _process_ingest_batch_sync(
+        [raw_record],
+        db_path=db_path,
+        archive_root_str=str(archive_root),
+        blob_root_str=str(legacy_blob_root),
+        validation_mode="off",
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+    )
+
+    expected_hash = sha256(payload).digest()
+    assert len(gc_reports) == 1
+    assert gc_reports[0].deleted_count == 0
+    assert gc_reports[0].skipped_reserved == 1
+    assert BlobStore(archive_root / "blob").exists(expected_hash.hex())
+    assert not legacy_blob_root.exists()
+    with open_connection(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash = ?", (expected_hash,)).fetchone()[0] == 1
+    with open_connection(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
 
 
 def test_process_ingest_batch_sync_replaces_stale_sessions_for_same_raw_id(
