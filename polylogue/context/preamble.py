@@ -13,6 +13,7 @@ from polylogue.surfaces.payloads import (
     ContextPreambleLineage,
     ContextPreambleProjectState,
     ContextPreambleSession,
+    ContextTrustClass,
 )
 
 if TYPE_CHECKING:
@@ -97,6 +98,7 @@ async def build_context_preamble_payload(
             assertion_guidance = [
                 ContextPreambleAssertionGuidance(
                     kind=claim.kind,
+                    trust_class=_assertion_guidance_trust_class(claim.context_policy),
                     text=claim.body_text,
                     target_ref=claim.target_ref,
                     scope_ref=claim.scope_ref,
@@ -118,6 +120,18 @@ async def build_context_preamble_payload(
         project_state=project,
         guidance=guidance,
     )
+
+
+def _assertion_guidance_trust_class(context_policy: object) -> ContextTrustClass:
+    if isinstance(context_policy, dict):
+        value = context_policy.get("trust_class")
+        if value == "operator":
+            return "operator"
+        if value == "system":
+            return "system"
+        if value == "quoted":
+            return "quoted"
+    return "quoted"
 
 
 def compose_context_preamble(env: AppEnv, *, session_id: str, related_limit: int = 5) -> str:

@@ -238,6 +238,7 @@ class ImportExplainPayload(SurfacePayloadModel):
 
 
 ProviderCompletenessStatus = Literal["complete", "partial", "missing", "proposed"]
+ContextTrustClass: TypeAlias = Literal["operator", "system", "quoted"]
 CompletenessItemStatus = Literal["complete", "partial", "missing", "not_applicable"]
 
 
@@ -2612,6 +2613,7 @@ class ContextPreambleAssertionGuidance(SurfacePayloadModel):
     """Assertion guidance eligible for explicit context injection."""
 
     kind: str
+    trust_class: ContextTrustClass = "quoted"
     text: str | None = None
     target_ref: str | None = None
     scope_ref: str | None = None
