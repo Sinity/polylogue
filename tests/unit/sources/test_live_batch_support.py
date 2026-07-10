@@ -12,7 +12,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
-from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor
+from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor, _ArchiveFullWriteResult
 from polylogue.sources.live.batch_support import (
     _DEFER_APPEND,
     _AppendPlan,
@@ -26,6 +26,7 @@ from polylogue.storage.raw.models import UNSET
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.source_write import read_archive_raw_session_envelope
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 
 
@@ -1231,6 +1232,11 @@ def test_append_parse_failure_retains_typed_raw_failure(
     assert parsed_at_ms is None
     assert isinstance(parse_error, str) and "injected append parse failure" in parse_error
     assert len(parse_error) <= 2000
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions").fetchone()[0])
+        envelope = read_archive_raw_session_envelope(conn, raw_id)
+    assert envelope.parse_error == parse_error
+    assert envelope.detection_warnings == (parse_error[:500],)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
@@ -1332,6 +1338,78 @@ def test_append_multi_session_failure_does_not_finalize_after_first(
     assert isinstance(parse_error, str) and "second-session index failure" in parse_error
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+
+
+def test_full_multi_session_failure_retries_without_success_mapping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source = root / "full-multi.jsonl"
+    source.write_bytes(b"{}\n")
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    sessions = [
+        ParsedSession(source_name=Provider.CODEX, provider_session_id="full-multi-1", messages=[]),
+        ParsedSession(source_name=Provider.CODEX, provider_session_id="full-multi-2", messages=[]),
+    ]
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    monkeypatch.setattr("polylogue.sources.live.batch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
+    original_write = ArchiveStore._write_parsed_precedence_result
+    write_count = 0
+
+    def fail_second_index(
+        archive: ArchiveStore,
+        session: ParsedSession,
+        **kwargs: object,
+    ) -> object:
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise sqlite3.IntegrityError("injected full second-session index failure")
+        return original_write(archive, session, **cast(Any, kwargs))
+
+    monkeypatch.setattr(ArchiveStore, "_write_parsed_precedence_result", fail_second_index)
+    archive_results: list[_ArchiveFullWriteResult] = []
+    original_full_write = processor._ingest_full_records_archive
+
+    def capture_full_write(*args: Any, **kwargs: Any) -> _ArchiveFullWriteResult:
+        outcome = original_full_write(*args, **kwargs)
+        archive_results.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(processor, "_ingest_full_records_archive", capture_full_write)
+
+    first = processor._ingest_full_paths_sync([source], source_name="codex")
+
+    assert first.succeeded == []
+    assert source in first.failed
+    assert archive_results[0].raw_ids == {}
+    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    assert parsed_at_ms is None
+    assert isinstance(parse_error, str) and "full second-session index failure" in parse_error
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+
+    retry = processor._ingest_full_paths_sync([source], source_name="codex")
+
+    assert retry.succeeded == [source]
+    assert retry.failed == []
+    assert archive_results[1].raw_ids
+    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    assert parsed_at_ms is not None
+    assert parse_error is None
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
 
 
 def test_append_crash_after_index_commit_repairs_idempotently(
