@@ -670,7 +670,10 @@ class TestMessageParsing:
         assert result.messages[0].occurred_at_ms == 1_767_225_600_000
         assert result.messages[0].model_name == "gpt-5-codex"
         assert result.messages[0].model_effort == "high"
-        assert result.messages[0].input_tokens == 10
+        # input_tokens=10 is inclusive of cache_read_tokens=3 per Codex's raw
+        # convention; the parser subtracts cache out at the source so input
+        # and cache_read are disjoint, additive billing lanes (7 + 3 == 10).
+        assert result.messages[0].input_tokens == 7
         assert result.messages[0].output_tokens == 2
         assert result.messages[0].cache_read_tokens == 3
         assert result.messages[0].cache_write_tokens == 4
@@ -710,11 +713,13 @@ class TestMessageParsing:
         result = parse(payload, "fallback")
 
         assert len(result.messages) == 2
-        assert result.messages[0].input_tokens == 10
+        # Disjoint lanes: input_tokens is the raw provider value minus
+        # cache_read_tokens (10-3=7, 11-7=4), not the raw inclusive value.
+        assert result.messages[0].input_tokens == 7
         assert result.messages[0].output_tokens == 4
         assert result.messages[0].cache_read_tokens == 3
         assert result.messages[0].cache_write_tokens == 2
-        assert result.messages[1].input_tokens == 11
+        assert result.messages[1].input_tokens == 4
         assert result.messages[1].output_tokens == 5
         assert result.messages[1].cache_read_tokens == 7
         assert result.messages[1].cache_write_tokens == 6

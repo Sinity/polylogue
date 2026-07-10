@@ -113,6 +113,33 @@ double-billed cost — all from hand-checkable token numbers, no mocks:
 uv run python scripts/cost_accounting_demo.py
 ```
 
+**The same bug class also existed at per-message granularity** (polylogue-f2qv.2):
+`sources/parsers/codex.py:_token_usage` (per-message `input_tokens`/
+`output_tokens`/`cache_read_tokens`/`cache_write_tokens` on `ParsedMessage`,
+independent of the `token_count` event rollup above) stored Codex's raw
+inclusive-of-cache `input_tokens` unmodified, so `estimate_message_cost`/
+`compute_session_cost` (which read the `messages.input_tokens` column
+directly and bill it as a separate additive lane alongside `cache_read_tokens`)
+double-billed the same way. Fixed by subtracting cache out of input at parse
+time, so `messages.input_tokens` carries the same disjoint-lane contract
+cross-provider (Claude's native `input_tokens` already excludes cache and is
+untouched). Guarded by
+`tests/unit/core/test_pricing.py::test_disjoint_input_cache_lanes_survive_parse_write_and_pricing`
+(parser-to-writer-to-pricing consequence guard) and
+`tests/unit/sources/test_parsers_codex.py` (parser-level disjointness) plus
+the Claude control case in
+`tests/unit/sources/test_parsers_claude_code_artifacts.py::test_message_input_tokens_stays_raw_unlike_codex_disjoint_fix`.
+
+Current Codex JSONL places exact usage in nested `token_count` events
+(`last_token_usage` and session-global `total_token_usage`); current sampled
+message records do not carry usage. The direct-message usage path above remains
+a supported compatibility path. At the event tier,
+`reasoning_output_tokens` stays separately queryable. At the priced model tier,
+`output_tokens` remains the provider's inclusive output total because reasoning
+uses the same output rate and must not be added again. Thus the logical
+completion/reasoning partition is preserved as evidence without inventing a
+second additive reasoning cost lane or a duplicate aggregate schema.
+
 A captured run is committed at
 [docs/examples/cost-accounting-demo.txt](examples/cost-accounting-demo.txt)
 (synthetic, no private data).
