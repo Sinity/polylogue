@@ -309,12 +309,22 @@ def test_source_tier_v3_adds_publication_reservations_with_backup_manifest(tmp_p
         conn.execute(
             """
             INSERT INTO blob_publication_reservations (
-                blob_hash, publisher_id, reserved_at_ms, refreshed_at_ms
-            ) VALUES (?, 'publisher', 1, 1)
+                publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+            ) VALUES ('receipt-1', ?, 32, 'publisher', 1)
             """,
             (b"r" * 32,),
         )
-        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+        conn.execute(
+            """
+            INSERT INTO blob_publication_reservations (
+                publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+            ) VALUES ('receipt-2', ?, 32, 'publisher-2', 2)
+            """,
+            (b"r" * 32,),
+        )
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 2
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list('blob_publication_reservations')")}
+        assert "idx_blob_publication_reservations_hash" in indexes
     finally:
         conn.close()
 

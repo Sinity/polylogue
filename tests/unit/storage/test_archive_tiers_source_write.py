@@ -265,10 +265,10 @@ def test_source_reference_commit_atomically_consumes_publication_reservation(tmp
     conn.execute(
         """
         INSERT INTO blob_publication_reservations (
-            blob_hash, publisher_id, reserved_at_ms, refreshed_at_ms
-        ) VALUES (?, 'publisher', 1, 1)
+            publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+        ) VALUES ('receipt-1', ?, ?, 'publisher', 1)
         """,
-        (blob_hash,),
+        (blob_hash, len(payload)),
     )
     conn.commit()
 
@@ -279,6 +279,7 @@ def test_source_reference_commit_atomically_consumes_publication_reservation(tmp
         source_index=0,
         payload=payload,
         acquired_at_ms=2,
+        blob_publication_receipt_id="receipt-1",
         manage_transaction=False,
     )
 

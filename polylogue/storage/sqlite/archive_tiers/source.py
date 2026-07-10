@@ -62,11 +62,15 @@ CREATE INDEX IF NOT EXISTS idx_blob_refs_ref_id
 ON blob_refs(ref_id);
 
 CREATE TABLE IF NOT EXISTS blob_publication_reservations (
-    blob_hash        BLOB PRIMARY KEY CHECK(length(blob_hash) = 32),
+    publication_id   TEXT PRIMARY KEY,
+    blob_hash        BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    size_bytes       INTEGER NOT NULL CHECK(size_bytes >= 0),
     publisher_id     TEXT NOT NULL,
-    reserved_at_ms   INTEGER NOT NULL,
-    refreshed_at_ms  INTEGER NOT NULL
+    reserved_at_ms   INTEGER NOT NULL
 ) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_blob_publication_reservations_hash
+ON blob_publication_reservations(blob_hash);
 
 CREATE TABLE IF NOT EXISTS gc_generations (
     generation_id    TEXT PRIMARY KEY,

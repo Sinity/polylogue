@@ -349,6 +349,7 @@ class RawSessionData(BaseModel):
     provider_hint: Provider | None = None
     blob_hash: str | None = None
     blob_size: int | None = None
+    blob_publication_receipt_id: str | None = Field(default=None, exclude=True)
 
     @field_validator("provider_hint", mode="before")
     @classmethod
