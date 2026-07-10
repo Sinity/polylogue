@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
 import os
 import sqlite3
 from collections.abc import Sequence
@@ -142,6 +143,118 @@ def test_direct_grouped_reingest_reserves_raw_blob_until_source_commit(
     final_gc = run_blob_gc_report(archive_root / "source.db", archive_root / "blob")
     assert final_gc.deleted_count == 0
     assert final_gc.skipped_reserved == 0
+    assert final_gc.skipped_referenced >= 1
+
+
+def test_process_pool_reingest_reserves_before_publish_and_consumes_with_source_ref(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert multiprocessing.get_start_method() == "fork"
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "2")
+    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "process-session.jsonl"
+    source_path.write_text(
+        '{"type":"user","uuid":"u1","sessionId":"s1","message":{"content":"hello"}}\n'
+        '{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"content":"hi"}}\n',
+        encoding="utf-8",
+    )
+    reservation_committed = multiprocessing.Event()
+    allow_publication = multiprocessing.Event()
+    source_write_entered = multiprocessing.Event()
+    allow_source_write = multiprocessing.Event()
+    original_publish_many = BlobStore.publish_many
+    original_write = ArchiveStore.write_raw_and_parsed_result
+
+    def pause_worker_publication(store: BlobStore, prepared):  # type: ignore[no-untyped-def]
+        batch = tuple(prepared)
+        reservation_committed.set()
+        assert allow_publication.wait(timeout=10)
+        return original_publish_many(store, batch)
+
+    def pause_main_source_write(archive: ArchiveStore, *args, **kwargs):  # type: ignore[no-untyped-def]
+        source_write_entered.set()
+        assert allow_source_write.wait(timeout=10)
+        return original_write(archive, *args, **kwargs)
+
+    monkeypatch.setattr(BlobStore, "publish_many", pause_worker_publication)
+    monkeypatch.setattr(ArchiveStore, "write_raw_and_parsed_result", pause_main_source_write)
+
+    read_result, write_result = multiprocessing.Pipe(duplex=False)
+
+    def observe_real_process_route() -> None:
+        error = ""
+        try:
+            assert reservation_committed.wait(timeout=10)
+            with sqlite3.connect(archive_root / "source.db") as conn:
+                row = conn.execute(
+                    "SELECT publication_id, lower(hex(blob_hash)) FROM blob_publication_reservations"
+                ).fetchone()
+                assert row is not None
+                _publication_id, blob_hash = row
+                assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+                assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
+            store = BlobStore(archive_root / "blob")
+            assert not store.exists(blob_hash)
+
+            allow_publication.set()
+            assert source_write_entered.wait(timeout=10)
+            assert store.exists(blob_hash)
+            with sqlite3.connect(archive_root / "source.db") as conn:
+                assert (
+                    conn.execute(
+                        "SELECT COUNT(*) FROM blob_publication_reservations WHERE blob_hash = ?",
+                        (bytes.fromhex(blob_hash),),
+                    ).fetchone()[0]
+                    == 1
+                )
+                assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+                assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
+            os.utime(store.blob_path(blob_hash), (1_700_000_000, 1_700_000_000))
+            protected = run_blob_gc_report(archive_root / "source.db", store.root)
+            assert protected.deleted_count == 0
+            assert protected.skipped_reserved == 1
+        except BaseException as exc:
+            error = f"{type(exc).__name__}: {exc}"
+        finally:
+            allow_publication.set()
+            allow_source_write.set()
+            write_result.send(error)
+            write_result.close()
+
+    observation = multiprocessing.Process(target=observe_real_process_route)
+    observation.start()
+    try:
+        result = asyncio.run(parse_sources_archive(archive_root, [Source(name="claude-code", path=source_path)]))
+    finally:
+        allow_publication.set()
+        allow_source_write.set()
+    observation.join(timeout=10)
+    if observation.is_alive():
+        observation.terminate()
+        observation.join(timeout=2)
+        pytest.fail("process-route observer did not terminate")
+    error = read_result.recv() if read_result.poll() else "observer exited without a result"
+    assert observation.exitcode == 0
+    assert not error, error
+
+    assert result.counts["sessions"] == 1
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        row = conn.execute(
+            """
+            SELECT lower(hex(raw_sessions.blob_hash))
+            FROM raw_sessions
+            JOIN blob_refs ON blob_refs.blob_hash = raw_sessions.blob_hash
+            """
+        ).fetchone()
+        assert row is not None
+        blob_hash = row[0]
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+    assert BlobStore(archive_root / "blob").exists(blob_hash)
+    final_gc = run_blob_gc_report(archive_root / "source.db", archive_root / "blob")
+    assert final_gc.deleted_count == 0
     assert final_gc.skipped_referenced >= 1
 
 
