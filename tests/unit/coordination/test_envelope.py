@@ -445,7 +445,8 @@ def test_process_projection_collapses_components_and_uses_real_work_scopes(
     system = "0::/system.slice"
     rows = "\n".join(
         (
-            "101 1 codex 0::/user.slice/user@1000.service/app.slice/codex.scope codex --session-id session-1",
+            "100 1 node 0::/user.slice/user@1000.service/app.slice/codex.scope node @openai/codex code-mode-host",
+            "101 100 codex 0::/user.slice/user@1000.service/app.slice/codex.scope codex --session-id session-1",
             "102 101 node 0::/user.slice/user@1000.service/app.slice/codex.scope node code-mode-host",
             "103 101 claude-mcp 0::/user.slice/user@1000.service/app.slice/codex.scope claude-mcp mcp-server",
             "104 1 claude 0::/user.slice/user@1000.service/app.slice/claude-spare.service claude --spare-daemon",
@@ -470,8 +471,8 @@ def test_process_projection_collapses_components_and_uses_real_work_scopes(
     )
 
     assert [(peer.kind, peer.session_ref) for peer in payload.peers] == [("codex", "session-1")]
-    assert payload.peers[0].component_count >= 2
-    assert {102, 103} <= set(payload.peers[0].component_pids)
+    assert payload.peers[0].component_count >= 3
+    assert {100, 102, 103} <= set(payload.peers[0].component_pids)
     assert len(payload.resource_episodes) == 1
     rebuild = payload.resource_episodes[0]
     assert rebuild.kind == "build"

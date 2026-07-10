@@ -781,19 +781,25 @@ def _logical_peer_payloads(
 ) -> tuple[CoordinationPeerPayload, ...]:
     by_pid = {row.pid: row for row in rows}
     candidate_kinds = {row.pid: kind for row in rows if (kind := _agent_kind_for_process(row)) is not None}
+    logical_kinds = {pid: kind for pid, kind in candidate_kinds.items() if not _is_agent_component(by_pid[pid])}
     roots: dict[int, list[_ProcessRow]] = {}
+    component_ancestors: dict[int, set[int]] = {}
     for row in rows:
-        if row.pid not in candidate_kinds or row.pid == os.getpid():
+        if row.pid not in logical_kinds or row.pid == os.getpid():
             continue
         root_pid = row.pid
         parent_pid = row.ppid
         seen = {row.pid}
+        ancestors: set[int] = set()
         while parent_pid in by_pid and parent_pid not in seen:
             seen.add(parent_pid)
-            if parent_pid in candidate_kinds:
+            if parent_pid in logical_kinds:
                 root_pid = parent_pid
+            elif parent_pid in candidate_kinds:
+                ancestors.add(parent_pid)
             parent_pid = by_pid[parent_pid].ppid
         roots.setdefault(root_pid, []).append(row)
+        component_ancestors.setdefault(root_pid, set()).update(ancestors)
 
     peers: list[CoordinationPeerPayload] = []
     for root_pid, agent_rows in sorted(roots.items()):
@@ -804,9 +810,17 @@ def _logical_peer_payloads(
         ):
             continue
         descendants = tuple(row.pid for row in rows if row.pid != root_pid and _descends_from(row, root_pid, by_pid))
-        kind = candidate_kinds[root_pid]
+        kind = logical_kinds[root_pid]
         session_ref = _session_ref(root.command)
-        component_pids = tuple(sorted({*(row.pid for row in agent_rows if row.pid != root_pid), *descendants}))
+        component_pids = tuple(
+            sorted(
+                {
+                    *(row.pid for row in agent_rows if row.pid != root_pid),
+                    *descendants,
+                    *component_ancestors.get(root_pid, set()),
+                }
+            )
+        )
         peers.append(
             CoordinationPeerPayload(
                 pid=root_pid,
@@ -844,7 +858,11 @@ def _agent_kind_for_process(row: _ProcessRow) -> str | None:
 
 def _is_agent_component(row: _ProcessRow) -> bool:
     text = f"{row.comm} {row.command}".lower()
-    return any(marker in text for marker in ("mcp-server", "--spare-daemon", "code-mode-host", "claude-code-acp"))
+    executable = _executable_name(row.command)
+    wrapper = any(executable.endswith(suffix) for suffix in ("-browser", "-deepseek", "-full", "-lean", "-local"))
+    return wrapper or any(
+        marker in text for marker in ("mcp-server", "--spare-daemon", "code-mode-host", "claude-code-acp")
+    )
 
 
 def _descends_from(row: _ProcessRow, ancestor_pid: int, by_pid: dict[int, _ProcessRow]) -> bool:
