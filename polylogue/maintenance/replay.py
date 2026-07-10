@@ -137,11 +137,32 @@ async def rebuild_index_from_source(
     materialize: bool,
     progress_callback: StageProgressCallback | None,
 ) -> dict[str, object]:
-    """Fail closed until rebuild replay has per-session revision authority."""
-    del config, raw_ids, raw_batch_size, ingest_workers, materialize, progress_callback
-    from polylogue.storage.repair import RAW_MATERIALIZATION_REPLAY_BLOCK_REASON
+    """Replay retained bytes through typed revision authority.
 
-    raise RuntimeError(RAW_MATERIALIZATION_REPLAY_BLOCK_REASON)
+    ``raw_ids`` is an initial scheduling hint, not an authority boundary: the
+    replay expands to complete logical cohorts so a partial selection cannot
+    make an older snapshot look newest.
+    """
+    del raw_ids, raw_batch_size, ingest_workers, materialize
+    import asyncio
+
+    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+
+    if progress_callback is not None:
+        progress_callback(0, "classifying retained raw revision cohorts")
+    result = await asyncio.to_thread(
+        backfill_historical_revision_evidence,
+        Path(config.archive_root),
+    )
+    if progress_callback is not None:
+        progress_callback(result.replayed_logical_sources, "revision replay complete")
+    return {
+        "scanned_raw_count": result.scanned,
+        "classified_full_count": result.classified_full,
+        "replayed_logical_source_count": result.replayed_logical_sources,
+        "quarantined_raw_count": result.quarantined,
+        "authority_selection_expanded": True,
+    }
 
 
 class UnsupportedReplayTargetError(RuntimeError):
