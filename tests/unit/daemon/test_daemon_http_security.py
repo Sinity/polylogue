@@ -1070,32 +1070,99 @@ class TestNoTokenLogging:
                 return call.func.attr
             return None
 
-        def _contains_token_value(expression: ast.AST) -> bool:
+        def _is_token_name(name: str) -> bool:
+            return name == "token" or name.endswith("_token")
+
+        def _contains_token_value(expression: ast.AST, sensitive_names: set[str]) -> bool:
             for node in ast.walk(expression):
                 name: str | None = None
                 if isinstance(node, ast.Name):
                     name = node.id
                 elif isinstance(node, ast.Attribute):
                     name = node.attr
-                if name is not None and (name == "token" or name.endswith("_token")):
+                if name is not None and (_is_token_name(name) or name in sensitive_names):
                     return True
             return False
+
+        def _assigned_names(target: ast.AST) -> set[str]:
+            if isinstance(target, ast.Name):
+                return {target.id}
+            if isinstance(target, (ast.List, ast.Tuple)):
+                return {name for element in target.elts for name in _assigned_names(element)}
+            return set()
+
+        def _assignment_carries_token(expression: ast.AST, sensitive_names: set[str]) -> bool:
+            if not isinstance(expression, ast.Call):
+                return _contains_token_value(expression, sensitive_names)
+            function_name = _call_sink_name(expression)
+            value_transformers = {"decode", "dumps", "encode", "format", "join", "repr", "str"}
+            return bool(
+                function_name
+                and (
+                    _is_token_name(function_name)
+                    or (
+                        function_name in value_transformers
+                        and any(
+                            _contains_token_value(value, sensitive_names)
+                            for value in [*expression.args, *(kw.value for kw in expression.keywords)]
+                        )
+                    )
+                )
+            )
 
         class _SensitiveOutputVisitor(ast.NodeVisitor):
             def __init__(self, relative_path: Path) -> None:
                 self.relative_path = relative_path
                 self.function_stack: list[str] = []
+                self.sensitive_name_stack: list[set[str]] = [set()]
                 self.offenders: list[tuple[int, str]] = []
+
+            @property
+            def sensitive_names(self) -> set[str]:
+                return self.sensitive_name_stack[-1]
 
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 self.function_stack.append(node.name)
+                argument_names = {
+                    argument.arg
+                    for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+                    if _is_token_name(argument.arg)
+                }
+                if node.args.vararg is not None and _is_token_name(node.args.vararg.arg):
+                    argument_names.add(node.args.vararg.arg)
+                if node.args.kwarg is not None and _is_token_name(node.args.kwarg.arg):
+                    argument_names.add(node.args.kwarg.arg)
+                self.sensitive_name_stack.append(self.sensitive_names | argument_names)
                 self.generic_visit(node)
+                self.sensitive_name_stack.pop()
                 self.function_stack.pop()
 
             def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                self.function_stack.append(node.name)
+                self.visit_FunctionDef(node)
+
+            def visit_Assign(self, node: ast.Assign) -> None:
+                names = {name for target in node.targets for name in _assigned_names(target)}
+                if _assignment_carries_token(node.value, self.sensitive_names):
+                    self.sensitive_names.update(names)
+                else:
+                    self.sensitive_names.difference_update(names)
                 self.generic_visit(node)
-                self.function_stack.pop()
+
+            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+                names = _assigned_names(node.target)
+                if node.value is not None and _assignment_carries_token(node.value, self.sensitive_names):
+                    self.sensitive_names.update(names)
+                else:
+                    self.sensitive_names.difference_update(names)
+                self.generic_visit(node)
+
+            def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+                names = _assigned_names(node.target)
+                if _assignment_carries_token(node.value, self.sensitive_names):
+                    self.sensitive_names.update(names)
+                else:
+                    self.sensitive_names.difference_update(names)
+                self.generic_visit(node)
 
             def visit_Call(self, node: ast.Call) -> None:
                 sink_name = _call_sink_name(node)
@@ -1103,7 +1170,7 @@ class TestNoTokenLogging:
                 function_name = self.function_stack[-1] if self.function_stack else "<module>"
                 if (
                     sink_name in output_sinks
-                    and any(_contains_token_value(expression) for expression in expressions)
+                    and any(_contains_token_value(expression, self.sensitive_names) for expression in expressions)
                     and (self.relative_path, function_name) not in intentional_secret_outputs
                 ):
                     self.offenders.append((node.lineno, function_name))
@@ -1112,6 +1179,12 @@ class TestNoTokenLogging:
         seeded_violation = _SensitiveOutputVisitor(Path("seeded_violation.py"))
         seeded_violation.visit(ast.parse("def leak(auth_token):\n    logger.info(auth_token)\n"))
         assert seeded_violation.offenders == [(2, "leak")]
+
+        seeded_alias_violation = _SensitiveOutputVisitor(Path("seeded_alias_violation.py"))
+        seeded_alias_violation.visit(
+            ast.parse("def leak(auth_token):\n    secret = auth_token\n    logger.info('secret=%s', secret)\n")
+        )
+        assert seeded_alias_violation.offenders == [(3, "leak")]
 
         safe_literal = _SensitiveOutputVisitor(Path("safe_literal.py"))
         safe_literal.visit(ast.parse('logger.warning("Bearer token required")\n'))
