@@ -1171,3 +1171,102 @@ def test_sandbox_link_trailing_punctuation_is_stripped() -> None:
         "sandbox:/mnt/data/report.md",
         "sandbox:/mnt/data/data.csv",
     ]
+
+
+# CITATION MARKER HYGIENE + SYSTEM-INJECTED CONTEXT
+
+
+def test_citation_markers_are_stripped_but_citations_survive() -> None:
+    marked = "Per the brief. \ue200filecite\ue202turn0file0\ue201 More text \ue200cite\ue202turn1search2\ue202L10-L20\ue201 end."
+    mapping = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "assistant"},
+                "content": {"parts": [marked]},
+                "metadata": {
+                    "citations": [
+                        {
+                            "citation_format_type": "berry_file_search",
+                            "start_ix": 15,
+                            "end_ix": 43,
+                            "metadata": {"title": "brief.md", "url": "https://example.test/brief"},
+                        }
+                    ]
+                },
+            },
+        },
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    assert len(messages) == 1
+    message = messages[0]
+    text = message.text
+    assert text is not None
+    assert "\ue200" not in text
+    assert "\ue201" not in text
+    assert "\ue202" not in text
+    assert "filecite" not in text
+    assert text.startswith("Per the brief.")
+    assert text.endswith("end.")
+    assert all("\ue200" not in (block.text or "") for block in message.blocks)
+    constructs = [c for block in message.blocks for c in block.web_constructs]
+    assert any(c.provider_key == "citations" for c in constructs)
+
+
+def test_user_editable_context_becomes_runtime_context_message() -> None:
+    mapping = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "user"},
+                "content": {
+                    "content_type": "user_editable_context",
+                    "user_profile": "Profile: local-first archivist.",
+                    "user_instructions": "Always answer with evidence refs.",
+                },
+                "metadata": {"is_visually_hidden_from_conversation": True},
+            },
+        },
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.message_type is MessageType.CONTEXT
+    assert message.material_origin is MaterialOrigin.RUNTIME_CONTEXT
+    assert message.text is not None
+    assert "Profile: local-first archivist." in message.text
+    assert "Always answer with evidence refs." in message.text
+    assert message.blocks[0].metadata == {"content_type": "user_editable_context"}
+
+
+def test_model_editable_context_memory_payload_is_kept_and_empty_is_dropped() -> None:
+    def node(msg_id: str, model_set_context: str) -> dict[str, object]:
+        return {
+            "id": msg_id,
+            "message": {
+                "id": msg_id,
+                "author": {"role": "assistant"},
+                "content": {
+                    "content_type": "model_editable_context",
+                    "model_set_context": model_set_context,
+                },
+            },
+        }
+
+    mapping = {
+        "node1": node("msg1", "1. Prefers rigorous verification.\n2. Runs Polylogue."),
+        "node2": node("msg2", ""),
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    assert [m.provider_message_id for m in messages] == ["msg1"]
+    assert messages[0].message_type is MessageType.CONTEXT
+    assert messages[0].text is not None
+    assert "Prefers rigorous verification" in messages[0].text
