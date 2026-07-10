@@ -7,6 +7,7 @@ a branch point, and reads must compose the parent prefix back in.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.sources.parsers.hermes_state import parse_state_db
 from polylogue.storage.runtime import LineageCompleteness
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -868,6 +870,148 @@ def test_spawned_fresh_child_keeps_all_messages(tmp_path: Path) -> None:
     conn.close()
     composed = asyncio.run(_read_texts(db, child_id))
     assert composed == ["fresh subagent prompt", "fresh subagent answer"]
+
+
+def test_hermes_compression_tail_composes_and_delegate_stays_fresh(tmp_path: Path) -> None:
+    state_db = tmp_path / "state.db"
+    with sqlite3.connect(state_db) as source:
+        source.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (16);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                model_config TEXT,
+                parent_session_id TEXT,
+                started_at REAL,
+                ended_at REAL,
+                end_reason TEXT,
+                title TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL,
+                tool_calls TEXT,
+                observed INTEGER,
+                active INTEGER,
+                compacted INTEGER
+            );
+            INSERT INTO sessions VALUES
+                ('parent', 'cli', '{}', NULL, 1.0, 3.0, 'compression', 'Parent'),
+                ('continuation', 'cli', '{}', 'parent', 4.0, NULL, NULL, 'Continuation'),
+                ('delegate', 'tool', '{}', 'parent', 5.0, NULL, NULL, 'Delegate');
+            INSERT INTO messages VALUES
+                (1, 'parent', 'user', 'before', 1.0, NULL, 0, 1, 0),
+                (2, 'parent', 'assistant', 'summary', 2.0, NULL, 0, 1, 0),
+                (3, 'continuation', 'user', 'after', 4.0, NULL, 0, 1, 0),
+                (4, 'continuation', 'assistant', 'continued', 4.5, NULL, 0, 1, 0),
+                (5, 'delegate', 'assistant', 'fresh work', 5.0, NULL, 0, 1, 0);
+            """
+        )
+        source.execute(
+            "UPDATE sessions SET model_config = ? WHERE id = 'delegate'",
+            (json.dumps({"_delegate_from": "parent"}),),
+        )
+
+    parsed = parse_state_db(state_db)
+    by_raw_id = {session.provider_session_id.split("@", 1)[0]: session for session in parsed}
+    parent = by_raw_id["parent"]
+    continuation = by_raw_id["continuation"]
+    delegate = by_raw_id["delegate"]
+    assert continuation.branch_type is BranchType.CONTINUATION
+    assert [message.text for message in continuation.messages] == ["before", "summary", "after", "continued"]
+    assert delegate.branch_type is BranchType.SUBAGENT
+    assert [message.text for message in delegate.messages] == ["fresh work"]
+
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    continuation_id = write_parsed_session_to_archive(conn, continuation)
+    delegate_id = write_parsed_session_to_archive(conn, delegate)
+
+    physical = conn.execute(
+        """
+        SELECT b.text
+        FROM messages AS m
+        JOIN blocks AS b ON b.message_id = m.message_id
+        WHERE m.session_id = ? AND b.block_type = 'text'
+        ORDER BY m.position, b.position
+        """,
+        (continuation_id,),
+    ).fetchall()
+    assert [row[0] for row in physical] == ["after", "continued"]
+    parent_tip = conn.execute(
+        "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position DESC LIMIT 1",
+        (parent_id,),
+    ).fetchone()[0]
+    continuation_link = conn.execute(
+        """
+        SELECT link_type, inheritance, branch_point_message_id
+        FROM session_links WHERE src_session_id = ?
+        """,
+        (continuation_id,),
+    ).fetchone()
+    assert tuple(continuation_link) == ("continuation", "prefix-sharing", parent_tip)
+    delegate_link = conn.execute(
+        "SELECT link_type, inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (delegate_id,),
+    ).fetchone()
+    assert tuple(delegate_link) == ("subagent", "spawned-fresh", None)
+    assert [
+        "".join(block.text or "" for block in message.blocks)
+        for message in read_archive_session_envelope(conn, continuation_id).messages
+    ] == ["before", "summary", "after", "continued"]
+
+    write_parsed_session_to_archive(conn, parent)
+    write_parsed_session_to_archive(conn, continuation)
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+            (continuation_id,),
+        ).fetchone()[0]
+        == 2
+    )
+    assert (
+        conn.execute(
+            "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
+            (continuation_id,),
+        ).fetchone()[0]
+        == parent_tip
+    )
+    conn.close()
+    assert asyncio.run(_read_texts(db, continuation_id)) == ["before", "summary", "after", "continued"]
+
+    late_db = tmp_path / "late-index.db"
+    late_conn = _connect(late_db)
+    late_continuation_id = write_parsed_session_to_archive(late_conn, continuation)
+    late_parent_id = write_parsed_session_to_archive(late_conn, parent)
+    late_link = late_conn.execute(
+        "SELECT inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (late_continuation_id,),
+    ).fetchone()
+    late_parent_tip = late_conn.execute(
+        "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position DESC LIMIT 1",
+        (late_parent_id,),
+    ).fetchone()[0]
+    assert tuple(late_link) == ("prefix-sharing", late_parent_tip)
+    assert (
+        late_conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+            (late_continuation_id,),
+        ).fetchone()[0]
+        == 2
+    )
+    late_conn.close()
+    assert asyncio.run(_read_texts(late_db, late_continuation_id)) == [
+        "before",
+        "summary",
+        "after",
+        "continued",
+    ]
 
 
 def _build_parent_and_fork(db: Path) -> tuple[str, str]:

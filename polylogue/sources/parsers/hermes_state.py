@@ -158,24 +158,32 @@ def parse_state_db(
         message_columns = _columns(conn, "messages")
         schema_version = _schema_version(conn)
         resolved_profile_root = profile_root or path.parent
-        sessions = [
-            _parse_session_row(
-                conn,
-                row,
-                profile_root=resolved_profile_root,
-                schema_version=schema_version,
-                session_columns=session_columns,
-                message_columns=message_columns,
-            )
-            for row in conn.execute(
+        session_rows = list(
+            conn.execute(
                 """
                 SELECT *
                 FROM sessions
                 ORDER BY COALESCE(started_at, 0), id
                 """
             ).fetchall()
+        )
+        rows_by_id = {str(row["id"]): row for row in session_rows}
+        sessions = [
+            _parse_session_row(
+                conn,
+                row,
+                parent_row=rows_by_id.get(str(row["parent_session_id"]))
+                if row["parent_session_id"] is not None
+                else None,
+                profile_root=resolved_profile_root,
+                schema_version=schema_version,
+                session_columns=session_columns,
+                message_columns=message_columns,
+            )
+            for row in session_rows
         ]
-    return [session for session in sessions if session.messages or session.instructions_text]
+    hydrated = _hydrate_compression_continuations(sessions)
+    return [session for session in hydrated if session.messages or session.instructions_text]
 
 
 def _connect_readonly(path: Path) -> sqlite3.Connection:
@@ -330,6 +338,7 @@ def _parse_session_row(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
     *,
+    parent_row: sqlite3.Row | None,
     profile_root: Path,
     schema_version: int | None,
     session_columns: set[str],
@@ -397,7 +406,7 @@ def _parse_session_row(
         active_leaf_message_provider_id=active_leaf_id,
         session_events=session_events,
         parent_session_provider_id=parent_id,
-        branch_type=_branch_type(row) if parent_id else None,
+        branch_type=_branch_type(row, parent_row) if parent_id else None,
         instructions_text=system_prompt,
         reported_cost_usd=_reported_cost(row),
         models_used=[model_name] if model_name else [],
@@ -517,15 +526,50 @@ def _usage_and_lifecycle_events(
     return events
 
 
-def _branch_type(row: sqlite3.Row) -> BranchType | None:
+def _branch_type(row: sqlite3.Row, parent_row: sqlite3.Row | None) -> BranchType | None:
     config = _json_mapping(_row_value(row, "model_config"))
     if config.get("_branched_from") is not None:
         return BranchType.FORK
-    if config.get("_delegate_from") is not None:
+    if config.get("_delegate_from") is not None or _optional_text(_row_value(row, "source")) == "tool":
         return BranchType.SUBAGENT
-    if _optional_text(_row_value(row, "end_reason")) == "compression":
+    if parent_row is not None and _optional_text(_row_value(parent_row, "end_reason")) == "compression":
         return BranchType.CONTINUATION
-    return BranchType.CONTINUATION
+    return None
+
+
+def _hydrate_compression_continuations(sessions: list[ParsedSession]) -> list[ParsedSession]:
+    """Recompose tail-only Hermes compression children for lineage normalization."""
+    by_id = {session.provider_session_id: session for session in sessions}
+    hydrated: dict[str, ParsedSession] = {}
+    visiting: set[str] = set()
+
+    def hydrate(session: ParsedSession) -> ParsedSession:
+        session_id = session.provider_session_id
+        if session_id in hydrated:
+            return hydrated[session_id]
+        parent_id = session.parent_session_provider_id
+        if (
+            session.branch_type is not BranchType.CONTINUATION
+            or parent_id is None
+            or parent_id not in by_id
+            or session_id in visiting
+        ):
+            hydrated[session_id] = session
+            return session
+
+        visiting.add(session_id)
+        parent = hydrate(by_id[parent_id])
+        visiting.remove(session_id)
+        combined = [*parent.messages, *session.messages]
+        rebased = [
+            message.model_copy(deep=True, update={"position": position, "is_active_leaf": False})
+            for position, message in enumerate(combined)
+        ]
+        result = session.model_copy(update={"messages": _mark_active_leaf(rebased)})
+        hydrated[session_id] = result
+        return result
+
+    return [hydrate(session) for session in sessions]
 
 
 def _reported_cost(row: sqlite3.Row) -> float | None:
