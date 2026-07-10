@@ -193,7 +193,7 @@ Status as of the prefix-inheritance slices (index schema **v12**):
    acquisition.
 3. **Done (prefix-inheritance)** — both read paths compose: the async
    `get_messages` query and the sync `read_archive_session_envelope` (used by MCP
-   `get_session` / CLI `read`) prepend the parent transcript up to the branch
+   `get_session_summary` / CLI `read`) prepend the parent transcript up to the branch
    point. Effective-context derivation lands with the compaction slice.
 4. Optimize ingest, then re-ingest the real archive.
 5. Validate against authoritative stores (`state_5.sqlite`, `stats-cache.json`):

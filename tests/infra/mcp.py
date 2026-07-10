@@ -23,7 +23,6 @@ EXPECTED_TOOL_NAMES = {
     "blackboard_list",
     "blackboard_post",
     "list_assertion_claims",
-    "get_session",
     "neighbor_candidates",
     "stats",
     "embedding_status",

@@ -344,22 +344,6 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("compile_context", run)
 
     @mcp.tool()
-    async def get_session(
-        id: str,
-    ) -> str:
-        async def run() -> str:
-            config = hooks.get_config()
-            try:
-                with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-                    session_id = archive.resolve_session_id(id)
-                    archive_summary = archive.read_summary(session_id)
-                    return hooks.json_payload(archive_summary_payload(archive_summary))
-            except (KeyError, ValueError, sqlite3.OperationalError):
-                return hooks.error_json(f"Session not found: {id}", code="not_found")
-
-        return await hooks.async_safe_call("get_session", run)
-
-    @mcp.tool()
     async def archive_list_sessions(
         origin: str | None = None,
         exclude_origin: str | None = None,

@@ -1,7 +1,7 @@
 """Unit contracts for MCP tool surfaces backed by the store.
 
-Read-heavy MCP tools (``search``, ``list_sessions``, ``get_session``,
-``get_session_summary``, ``get_messages``, ``stats``) route unconditionally
+Read-heavy MCP tools (``search``, ``list_sessions``, ``get_session_summary``,
+``get_messages``, ``stats``) route unconditionally
 through ``ArchiveStore`` over the archive. These tests
 seed a archive on disk, point the MCP ``_get_config`` seam at it, and
 assert against the archive tool output. Monolithic ``_get_archive_ops`` and ``_get_polylogue`` seams are no longer on these read paths.
@@ -792,8 +792,8 @@ class TestArchiveTools:
         assert payload["messages"][0]["blocks"][0]["text"] == "hello from mcp"
 
 
-class TestGetSessionTool:
-    def test_get_returns_session(self, tmp_path: Path, mcp_server: MCPServerUnderTest) -> None:
+class TestGetSessionSummaryTool:
+    def test_get_summary_returns_session(self, tmp_path: Path, mcp_server: MCPServerUnderTest) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(
             archive_root,
@@ -803,7 +803,7 @@ class TestGetSessionTool:
         )
 
         with _archive_config(archive_root):
-            result = invoke_surface(mcp_server._tool_manager._tools["get_session"].fn, id=session_id)
+            result = invoke_surface(mcp_server._tool_manager._tools["get_session_summary"].fn, id=session_id)
 
         conv = json.loads(result)
         assert conv["id"] == session_id
@@ -816,7 +816,7 @@ class TestGetSessionTool:
             mock_poly.get_session_summary = AsyncMock(return_value=None)
             mock_get_polylogue.return_value = mock_poly
 
-            result = invoke_surface(mcp_server._tool_manager._tools["get_session"].fn, id="nonexistent")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_session_summary"].fn, id="nonexistent")
 
         parsed = json.loads(result)
         assert "message" in parsed
@@ -1040,7 +1040,7 @@ class TestGetSessionTool:
             mock_get_polylogue.return_value = mock_poly
 
             result = await invoke_surface_async(
-                mcp_server._tool_manager._tools["get_session"].fn, id="nonexistent-id-xyz"
+                mcp_server._tool_manager._tools["get_session_summary"].fn, id="nonexistent-id-xyz"
             )
 
         assert isinstance(json.loads(result), dict)

@@ -1389,22 +1389,6 @@
     }
   },
   {
-    "name": "get_session",
-    "parameters": {
-      "properties": {
-        "id": {
-          "title": "Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id"
-      ],
-      "title": "get_sessionArguments",
-      "type": "object"
-    }
-  },
-  {
     "name": "get_session_summary",
     "parameters": {
       "properties": {
