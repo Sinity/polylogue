@@ -265,10 +265,24 @@ def test_status_json_does_not_report_over_100_percent_from_retained_embedding_ro
         conn.execute(
             "UPDATE embedding_status SET message_count_embedded = 4 WHERE session_id = 'codex-session:complete'"
         )
+        conn.executemany(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, needs_reindex, error_message
+            ) VALUES (?, 'codex-session', ?, 0, ?)
+            """,
+            [
+                ("orphaned-clean-status", 7, None),
+                ("orphaned-error-status", 0, "Embedding generation failed: HTTP 400"),
+            ],
+        )
 
     payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
+    assert payload["embedded_sessions"] == 1
+    assert payload["pending_sessions"] == 1
     assert payload["embedded_messages"] == 4
+    assert payload["failure_count"] == 0
     assert payload["candidate_prose_messages"] == 3
     assert payload["candidate_prose_messages_exact"] is False
     assert payload["message_coverage_percent"] is None

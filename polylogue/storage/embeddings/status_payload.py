@@ -394,9 +394,10 @@ def _archive_embedding_session_state_summary(
         conn,
         f"""
         SELECT COUNT(*)
-        FROM {status_table}
-        WHERE COALESCE(needs_reindex, 0) = 0
-          AND error_message IS NULL
+        FROM {status_table} AS e
+        JOIN sessions AS s ON s.session_id = e.session_id
+        WHERE COALESCE(e.needs_reindex, 0) = 0
+          AND e.error_message IS NULL
         """,
     )
     pending_sessions = max(total_sessions - embedded_sessions, 0)
@@ -666,7 +667,11 @@ def _archive_embedding_status_payload(
         if has_status:
             embedded_messages = _scalar_int(
                 conn,
-                f"SELECT COALESCE(SUM(message_count_embedded), 0) FROM {status_table}",
+                f"""
+                SELECT COALESCE(SUM(e.message_count_embedded), 0)
+                FROM {status_table} AS e
+                JOIN sessions AS s ON s.session_id = e.session_id
+                """,
             )
         elif has_meta:
             exact_embedded_messages = _scalar_int_with_timeout(
@@ -681,7 +686,15 @@ def _archive_embedding_status_payload(
         else:
             embedded_messages = 0
         failure_count = (
-            _scalar_int(conn, f"SELECT COUNT(*) FROM {status_table} WHERE error_message IS NOT NULL")
+            _scalar_int(
+                conn,
+                f"""
+                SELECT COUNT(*)
+                FROM {status_table} AS e
+                JOIN sessions AS s ON s.session_id = e.session_id
+                WHERE e.error_message IS NOT NULL
+                """,
+            )
             if has_status
             else 0
         )
