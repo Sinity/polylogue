@@ -2,7 +2,9 @@
   "env": {
     "POLYLOGUE_ARCHIVE_ROOT": "/tmp/polylogue-archive",
     "POLYLOGUE_FORCE_PLAIN": "1",
-    "HYPOTHESIS_PROFILE": "ci"
+    "HYPOTHESIS_PROFILE": "ci",
+    "POLYLOGUE_PYTEST_WORKERS": "2",
+    "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/tmp/polylogue-pytest"
   },
   "permissions": {
     "allow": [
