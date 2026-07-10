@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
@@ -360,10 +361,40 @@ def extract_messages_from_mapping(
         model_name = str(model_slug) if isinstance(model_slug, str) and model_slug else None
         duration_ms = _non_negative_int(duration_raw)
 
+        # A non-"all" recipient marks a tool invocation (e.g. the web-search/
+        # browsing tool). Computed here (rather than where ParsedMessage is
+        # built below) so the content-block builder can use it to recognize
+        # a JSON-encoded tool-call payload instead of storing it as raw text.
+        recipient_val = msg.get("recipient")
+        recipient = (
+            recipient_val if isinstance(recipient_val, str) and recipient_val and recipient_val != "all" else None
+        )
+        tool_call_input: Mapping[str, object] | None = None
+        if recipient is not None and text:
+            try:
+                parsed_tool_json = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                parsed_tool_json = None
+            if isinstance(parsed_tool_json, dict):
+                tool_call_input = parsed_tool_json
+
         # Build structured content blocks
         content_blocks: list[ParsedContentBlock] = []
         content_type = content.get("content_type", "text")
-        if content_type in ("thoughts", "reasoning_recap"):
+        if tool_call_input is not None:
+            # Recipient-addressed tool call whose content is a JSON payload
+            # (e.g. ChatGPT's web-search tool: {"search_query": [...]}) --
+            # a proper TOOL_USE block instead of raw JSON as BlockType.TEXT
+            # (#e2yk). The reader already folds tool_use blocks by default.
+            content_blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.TOOL_USE,
+                    tool_name=recipient,
+                    tool_input=tool_call_input,
+                    metadata={"content_type": content_type},
+                )
+            )
+        elif content_type in ("thoughts", "reasoning_recap"):
             # ChatGPT thinking/reasoning blocks
             content_blocks.append(
                 ParsedContentBlock(
@@ -438,7 +469,6 @@ def extract_messages_from_mapping(
         if not text and not content_blocks:
             continue
 
-        recipient_val = msg.get("recipient")
         status_val = msg.get("status")
         end_turn_val = msg.get("end_turn")
         user_context_val = msg_metadata.get("user_context_message_data") if isinstance(msg_metadata, Mapping) else None
@@ -464,9 +494,7 @@ def extract_messages_from_mapping(
             model_name=model_name,
             duration_ms=duration_ms,
             sender_name=_string_value(author, "name") if isinstance(author, Mapping) else None,
-            recipient=recipient_val
-            if isinstance(recipient_val, str) and recipient_val and recipient_val != "all"
-            else None,
+            recipient=recipient,
             delivery_status=status_val if isinstance(status_val, str) and status_val else None,
             end_turn=end_turn_val if isinstance(end_turn_val, bool) else None,
             user_context_text=(

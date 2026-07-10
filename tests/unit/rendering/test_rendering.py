@@ -248,6 +248,52 @@ class TestMediaBlockRendering:
         assert "Archive (text/plain)" in plaintext
 
 
+class TestToolUseInputSummary:
+    """`_tool_input_summary`'s folded one-line summary for tool_use blocks.
+
+    Regression for the #2629 review: a ChatGPT web-search tool_input shape
+    (``{"search_query": [{"q": "..."}], "response_length": "medium"}``)
+    previously fell through to the generic key=value fallback, which picks
+    the first scalar-valued key -- "response_length=medium" -- silently
+    dropping the actual search terms from the folded summary.
+    """
+
+    def test_chatgpt_search_query_list_of_dicts_shows_query_text(self) -> None:
+        block = RenderableBlock(
+            type=BlockType.TOOL_USE.value,
+            tool_name="web",
+            tool_id="call-1",
+            tool_input={
+                "search_query": [{"q": "Hetzner Cloud prices"}, {"q": "CCX53 pricing"}],
+                "response_length": "medium",
+            },
+        )
+        markdown = render_blocks_markdown([block])
+        assert "Hetzner Cloud prices" in markdown
+        assert "CCX53 pricing" in markdown
+        assert "response_length=medium" not in markdown
+
+    def test_search_query_list_of_plain_strings_shows_query_text(self) -> None:
+        block = RenderableBlock(
+            type=BlockType.TOOL_USE.value,
+            tool_name="web",
+            tool_id="call-2",
+            tool_input={"search_query": ["plain string query"], "response_length": "short"},
+        )
+        markdown = render_blocks_markdown([block])
+        assert "plain string query" in markdown
+
+    def test_command_tool_input_unaffected(self) -> None:
+        block = RenderableBlock(
+            type=BlockType.TOOL_USE.value,
+            tool_name="Bash",
+            tool_id="call-3",
+            tool_input={"command": "ls -la"},
+        )
+        markdown = render_blocks_markdown([block])
+        assert "`ls -la`" in markdown
+
+
 class TestPlainConsoleLiteralOutput:
     """PlainConsole must preserve non-markup literal string content."""
 

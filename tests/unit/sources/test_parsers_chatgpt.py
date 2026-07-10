@@ -606,6 +606,80 @@ def test_chatgpt_metadata_extracted_into_content_blocks() -> None:
     assert user_msg.blocks[0].metadata is None
 
 
+def test_chatgpt_recipient_addressed_json_payload_parses_as_tool_use() -> None:
+    """Regression for polylogue-e2yk.
+
+    A recipient-addressed message (e.g. the web-search tool) whose text is a
+    JSON-encoded payload must parse as a BlockType.TOOL_USE block, not raw
+    BlockType.TEXT -- the reader already folds tool_use blocks by default, so
+    this alone fixes the raw-JSON-dumped-in-transcript symptom.
+    """
+    payload: dict[str, object] = {
+        "title": "Web Search Tool Call",
+        "id": "conv-tool-call-001",
+        "mapping": {
+            "node1": {
+                "id": "node1",
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "assistant"},
+                    "content": {
+                        "parts": ['{"search_query":[{"q":"Hetzner Cloud prices"}],"response_length":"medium"}'],
+                        "content_type": "text",
+                    },
+                    "create_time": 1717430400.0,
+                    "recipient": "web",
+                },
+            },
+        },
+    }
+
+    messages, _ = extract_messages_from_mapping(payload["mapping"])  # type: ignore[arg-type]
+    assistant_msg = next(m for m in messages if m.role == "assistant")
+
+    assert assistant_msg.recipient == "web"
+    assert len(assistant_msg.blocks) == 1
+    block = assistant_msg.blocks[0]
+    assert block.type == BlockType.TOOL_USE
+    assert block.tool_name == "web"
+    assert block.tool_input == {
+        "search_query": [{"q": "Hetzner Cloud prices"}],
+        "response_length": "medium",
+    }
+
+
+def test_chatgpt_recipient_addressed_non_json_text_stays_text() -> None:
+    """A recipient-addressed message whose text is NOT JSON stays BlockType.TEXT.
+
+    Only a JSON-parseable payload is reinterpreted as a tool call -- plain
+    prose directed at a recipient (e.g. dalle image-gen captions) must not
+    be misclassified.
+    """
+    payload: dict[str, object] = {
+        "title": "Non-JSON Recipient Text",
+        "id": "conv-non-json-001",
+        "mapping": {
+            "node1": {
+                "id": "node1",
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "assistant"},
+                    "content": {"parts": ["a plain caption, not JSON"], "content_type": "text"},
+                    "create_time": 1717430400.0,
+                    "recipient": "dalle.text2im",
+                },
+            },
+        },
+    }
+
+    messages, _ = extract_messages_from_mapping(payload["mapping"])  # type: ignore[arg-type]
+    assistant_msg = next(m for m in messages if m.role == "assistant")
+
+    assert assistant_msg.recipient == "dalle.text2im"
+    assert len(assistant_msg.blocks) == 1
+    assert assistant_msg.blocks[0].type == BlockType.TEXT
+
+
 # =============================================================================
 # CATALOG-DRIVEN METADATA ROUNDTRIP PERMUTATIONS
 # =============================================================================

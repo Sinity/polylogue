@@ -114,6 +114,24 @@ def _tool_input_summary(name: str | None, tool_input: Mapping[str, object] | Non
             return f'"{q[:57]}..."'
         return f'"{q}"'
 
+    # ChatGPT web-search tool shape: {"search_query": [{"q": "..."}, ...], ...}.
+    # Without this, the generic key=value fallback below picks the first
+    # scalar-valued key (e.g. "response_length=medium") and the actual search
+    # terms -- previously visible as raw JSON text before #e2yk -- vanish
+    # from the folded summary entirely (#2629 review).
+    search_query = tool_input.get("search_query")
+    if isinstance(search_query, list) and search_query:
+        queries: list[str] = []
+        for item in search_query:
+            candidate = item.get("q") if isinstance(item, Mapping) else item
+            if isinstance(candidate, str) and candidate:
+                queries.append(candidate)
+        if queries:
+            joined = "; ".join(queries)
+            if len(joined) > 60:
+                return f'"{joined[:57]}..."'
+            return f'"{joined}"'
+
     # Generic: show first key=value
     for key, value in tool_input.items():
         if isinstance(value, str) and len(value) < 60:
