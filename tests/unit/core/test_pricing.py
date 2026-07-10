@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from polylogue.archive.message.messages import MessageCollection
@@ -247,6 +249,129 @@ def test_paid_model_with_cache_rate_is_not_flagged(monkeypatch: pytest.MonkeyPat
     )
     assert estimate.status == "priced"
     assert estimate.missing_reasons == ()
+
+
+def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Guard the 7.69x-class defect through parse, storage, and pricing."""
+    import sqlite3
+
+    from polylogue.archive.semantic import pricing as pricing_mod
+    from polylogue.archive.semantic.pricing import CostUsagePayload, ModelPricing, _estimate_from_usage
+    from polylogue.sources.parsers.codex import parse
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+    codex_like = ModelPricing(
+        source_name="test",
+        input_usd_per_1m=1.0,
+        output_usd_per_1m=2.0,
+        cache_read_usd_per_1m=0.1,
+        cache_write_usd_per_1m=0.0,
+    )
+    monkeypatch.setitem(pricing_mod.PRICING, "test-codex-like", codex_like)
+
+    raw_usage = {"input_tokens": 2500, "cached_input_tokens": 2400, "output_tokens": 50}
+    raw = [
+        {
+            "type": "message",
+            "id": "assistant-1",
+            "role": "assistant",
+            "model": "test-codex-like",
+            "content": [{"type": "output_text", "text": "done"}],
+            "usage": raw_usage,
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        **raw_usage,
+                        "reasoning_output_tokens": 30,
+                        "total_tokens": 2550,
+                    },
+                },
+            },
+        },
+    ]
+
+    parsed = parse(raw, "fallback")
+    conn = sqlite3.connect(tmp_path / "index.db")
+    conn.row_factory = sqlite3.Row
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    session_id = write_parsed_session_to_archive(conn, parsed)
+
+    message_usage = conn.execute(
+        """
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        FROM messages
+        WHERE session_id = ? AND native_id = 'assistant-1'
+        """,
+        (session_id,),
+    ).fetchone()
+    event_usage = conn.execute(
+        """
+        SELECT total_input_tokens, total_output_tokens,
+               total_cached_input_tokens, total_reasoning_output_tokens
+        FROM session_provider_usage_events
+        WHERE session_id = ? AND provider_event_type = 'token_count'
+        """,
+        (session_id,),
+    ).fetchone()
+    model_usage = conn.execute(
+        """
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        FROM session_model_usage
+        WHERE session_id = ? AND model_name = 'test-codex-like'
+        """,
+        (session_id,),
+    ).fetchone()
+    conn.close()
+
+    assert dict(message_usage) == {
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cache_read_tokens": 2400,
+        "cache_write_tokens": 0,
+    }
+    assert dict(event_usage) == {
+        "total_input_tokens": 2500,
+        "total_output_tokens": 50,
+        "total_cached_input_tokens": 2400,
+        "total_reasoning_output_tokens": 30,
+    }
+    completion_output = event_usage["total_output_tokens"] - event_usage["total_reasoning_output_tokens"]
+    assert completion_output + event_usage["total_reasoning_output_tokens"] == raw_usage["output_tokens"]
+    # The model-cost tier keeps priced lanes additive: output is the provider's
+    # inclusive total and reasoning stays event-tier evidence, never re-added.
+    assert dict(model_usage) == dict(message_usage)
+
+    # Price the values that survived parser -> archive writer, not a second
+    # hand-built representation of the corrected usage.
+    disjoint = _estimate_from_usage(
+        source_name="test",
+        model_name="test-codex-like",
+        usage=CostUsagePayload(**dict(message_usage)),
+        provenance=("message_token_usage",),
+    )
+    # Pre-fix parser output: input stored inclusive of cache (the bug).
+    naive = _estimate_from_usage(
+        source_name="test",
+        model_name="test-codex-like",
+        usage=CostUsagePayload(input_tokens=2500, output_tokens=50, cache_read_tokens=2400),
+        provenance=("message_token_usage",),
+    )
+
+    assert disjoint.usage.input_tokens + disjoint.usage.cache_read_tokens == raw_usage["input_tokens"]
+    # Naive double-bills the entire cached lane at the full input rate on top
+    # of the cache-read rate -- on this ~96%-cached ratio the guard requires
+    # at least a 5x inflation (real corpus measured 7.69x; the exact multiple
+    # depends on the input/cache_read price ratio, not hardcoded here).
+    assert naive.total_usd > disjoint.total_usd * 5
 
 
 def test_canonical_model_family_maps_known_models() -> None:

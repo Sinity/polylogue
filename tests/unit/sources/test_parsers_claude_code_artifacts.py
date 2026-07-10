@@ -323,6 +323,40 @@ def test_parse_code_interrupt_marker_is_protocol_not_human_prompt() -> None:
     assert result.messages[0].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
 
 
+def test_message_input_tokens_stays_raw_unlike_codex_disjoint_fix() -> None:
+    """Control case for polylogue-f2qv.2: Anthropic's native ``input_tokens``
+    already excludes the cached portion (unlike Codex's inclusive convention),
+    so the Claude Code parser must NOT subtract ``cache_read_input_tokens``
+    out of it -- doing so would under-count fresh input. ``input_tokens`` and
+    ``cache_read_input_tokens`` are already disjoint additive lanes as
+    reported."""
+    items: list[object] = [
+        {
+            "type": "assistant",
+            "uuid": "asst-1",
+            "sessionId": "sess-cache",
+            "timestamp": 1704067200,
+            "message": {
+                "role": "assistant",
+                "content": "done",
+                "model": "claude-opus-4-8",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "cache_read_input_tokens": 2400,
+                    "cache_creation_input_tokens": 10,
+                },
+            },
+        },
+    ]
+
+    result = parse_code(items, "fallback-cache")
+
+    assert result.messages[0].input_tokens == 100
+    assert result.messages[0].cache_read_tokens == 2400
+    assert result.messages[0].cache_write_tokens == 10
+
+
 def test_message_usage_payload_captures_server_tool_use() -> None:
     """web_search/web_fetch request counts are billed separately and must be
     preserved in the usage event payload (they ride into payload_json)."""

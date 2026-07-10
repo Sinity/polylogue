@@ -182,16 +182,25 @@ def _turn_context_payload(payload: dict[str, object]) -> dict[str, object]:
 
 
 def _token_usage(record: dict[str, object]) -> dict[str, int]:
+    """Extract per-message usage as disjoint additive pricing lanes.
+
+    Codex input includes cache reads, while message pricing bills fresh input
+    and cache reads separately. Normalize at the source; Claude already reports
+    these lanes disjointly. The event rollup applies the same rule in
+    ``_provider_usage_disjoint_lanes``.
+    """
     usage = _dict_record(record.get("usage")) or _dict_record(record.get("tokens")) or record
+    input_with_cached = _int_value(usage.get("input_tokens") or usage.get("inputTokenCount"))
+    cache_read_tokens = _int_value(
+        usage.get("cache_read_tokens")
+        or usage.get("cache_read_input_tokens")
+        or usage.get("cached_input_tokens")
+        or usage.get("cached_tokens")
+    )
     return {
-        "input_tokens": _int_value(usage.get("input_tokens") or usage.get("inputTokenCount")),
+        "input_tokens": max(input_with_cached - cache_read_tokens, 0),
         "output_tokens": _int_value(usage.get("output_tokens") or usage.get("outputTokenCount")),
-        "cache_read_tokens": _int_value(
-            usage.get("cache_read_tokens")
-            or usage.get("cache_read_input_tokens")
-            or usage.get("cached_input_tokens")
-            or usage.get("cached_tokens")
-        ),
+        "cache_read_tokens": cache_read_tokens,
         "cache_write_tokens": _int_value(
             usage.get("cache_write_tokens")
             or usage.get("cache_creation_input_tokens")
