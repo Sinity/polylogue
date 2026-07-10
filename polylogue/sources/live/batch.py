@@ -1236,7 +1236,7 @@ class LiveBatchProcessor:
                         )
                     elif is_stream_record_provider(record.source_path, str(provider)):
                         if payload is None:
-                            with blob_store.open(record.raw_id) as payload_handle:
+                            with blob_store.open(blob_hash) as payload_handle:
                                 sessions = parse_stream_payload(
                                     provider,
                                     _iter_json_stream(payload_handle, source_name),
@@ -1250,7 +1250,7 @@ class LiveBatchProcessor:
                             )
                     else:
                         if payload is None:
-                            with blob_store.open(record.raw_id) as payload_handle:
+                            with blob_store.open(blob_hash) as payload_handle:
                                 payloads = list(_iter_json_stream(payload_handle, source_name))
                         else:
                             payloads = list(_iter_json_stream(BytesIO(payload), source_name))
