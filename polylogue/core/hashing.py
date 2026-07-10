@@ -48,6 +48,11 @@ def hash_payload(payload: object) -> str:
     return hashlib.sha256(serialized).hexdigest()
 
 
+def hash_bytes(payload: bytes) -> str:
+    """Hash bytes to a full SHA-256 hex digest."""
+    return hashlib.sha256(payload).hexdigest()
+
+
 def hash_file(path: Path) -> str:
     """Hash file contents to full SHA-256 hex digest (streams 1MB chunks)."""
     hasher = hashlib.sha256()
@@ -57,4 +62,4 @@ def hash_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
-__all__ = ["hash_text", "hash_text_short", "hash_payload", "hash_file"]
+__all__ = ["hash_bytes", "hash_file", "hash_payload", "hash_text", "hash_text_short"]

@@ -15,7 +15,7 @@ from polylogue.scenarios import (
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, list_assertions_for_target
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, AssertionStatus, list_assertions_for_target
 
 EXPECTED_DEMO_SESSIONS = (
     (
@@ -185,7 +185,10 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     assert {assertion.key for assertion in assertions if assertion.kind == AssertionKind.DECISION} == {"pytest-triage"}
     fixture_assertions = [assertion for assertion in assertions if assertion.author_kind == "fixture"]
     assert fixture_assertions
-    assert all(assertion.context_policy == {"demo": True, "inject": False} for assertion in fixture_assertions)
+    assert all(assertion.status == AssertionStatus.CANDIDATE for assertion in fixture_assertions)
+    assert all(
+        assertion.context_policy == {"inject": False, "promotion_required": True} for assertion in fixture_assertions
+    )
     assert all(assertion.author_kind in {"fixture", "user"} for assertion in assertions)
     assert all("/tmp/" not in str(value) for row in _user_overlay_rows(archive_root) for value in row if value)
 
@@ -204,7 +207,9 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
 
     repeat = await parse_sources_archive(archive_root, sources)
 
-    assert sorted(repeat.processed_ids) == [row[0] for row in EXPECTED_DEMO_SESSIONS]
+    assert repeat.processed_ids == set()
+    assert repeat.changed_session_ids == ()
+    assert repeat.counts["skipped_sessions"] == len(EXPECTED_DEMO_SESSIONS)
     assert _session_rows(archive_root) == EXPECTED_DEMO_SESSIONS
     assert {
         "raw_sessions": _row_count(archive_root / "source.db", "raw_sessions"),

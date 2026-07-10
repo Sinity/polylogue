@@ -1041,15 +1041,16 @@ class TestIsLocalhost:
 
 
 class TestNoTokenLogging:
-    """Static grep over daemon and browser-capture sources confirms no
-    code path logs or prints the bearer token.
+    """Static analysis confirms no unintended output sink receives a token.
 
     A regression that adds ``logger.info(f"...token={auth_token}...")``
-    or similar to a daemon module would be caught here.
+    or similar to a daemon module is caught here. The explicit
+    ``browser-capture token show`` pairing command is the sole intentional
+    secret-output path.
     """
 
     def test_no_token_in_log_or_print_calls(self) -> None:
-        import re
+        import ast
         from pathlib import Path
 
         repo_root = Path(__file__).resolve().parents[3]
@@ -1057,26 +1058,293 @@ class TestNoTokenLogging:
             repo_root / "polylogue" / "daemon",
             repo_root / "polylogue" / "browser_capture",
         ]
-        # Match {logger,log,print,debug,info,warning,error,exception} that
-        # mention auth_token or "Bearer" anywhere on the same line.
-        pattern = re.compile(
-            r"(?:logger|log|print|debug|info|warning|error|exception)\b.*"
-            r"(?:auth_token|Bearer)",
-            re.IGNORECASE,
+        output_sinks = {
+            "_send_error",
+            "_send_json",
+            "critical",
+            "debug",
+            "echo",
+            "error",
+            "exception",
+            "info",
+            "log",
+            "print",
+            "send",
+            "warning",
+        }
+        intentional_secret_outputs = {
+            (Path("polylogue/daemon/browser_capture.py"), "token_show", "echo"),
+        }
+        safe_token_container_results = {
+            (Path("polylogue/daemon/browser_capture.py"), "serve_command", "make_server"),
+        }
+
+        def _call_sink_name(call: ast.Call) -> str | None:
+            if isinstance(call.func, ast.Name):
+                return call.func.id
+            if isinstance(call.func, ast.Attribute):
+                return call.func.attr
+            return None
+
+        def _is_token_name(name: str) -> bool:
+            return name == "token" or name.endswith("_token")
+
+        def _is_output_sink(call: ast.Call) -> bool:
+            sink_name = _call_sink_name(call)
+            if sink_name in output_sinks:
+                return True
+            if sink_name != "write" or not isinstance(call.func, ast.Attribute):
+                return False
+            receiver = call.func.value
+            is_standard_stream = (
+                isinstance(receiver, ast.Attribute)
+                and receiver.attr in {"stderr", "stdout"}
+                and isinstance(receiver.value, ast.Name)
+                and receiver.value.id == "sys"
+            )
+            is_http_response_stream = any(
+                isinstance(node, ast.Attribute) and node.attr == "wfile" for node in ast.walk(receiver)
+            )
+            return is_standard_stream or is_http_response_stream
+
+        def _contains_token_value(expression: ast.AST, sensitive_names: set[str]) -> bool:
+            for node in ast.walk(expression):
+                name: str | None = None
+                if isinstance(node, ast.Name):
+                    name = node.id
+                elif isinstance(node, ast.Attribute):
+                    name = node.attr
+                if name is not None and (_is_token_name(name) or name in sensitive_names):
+                    return True
+            return False
+
+        def _assigned_names(target: ast.AST) -> set[str]:
+            if isinstance(target, ast.Name):
+                return {target.id}
+            if isinstance(target, (ast.List, ast.Tuple)):
+                return {name for element in target.elts for name in _assigned_names(element)}
+            return set()
+
+        def _assignment_carries_token(
+            expression: ast.AST,
+            sensitive_names: set[str],
+            *,
+            suppress_call_result_taint: bool = False,
+        ) -> bool:
+            if not isinstance(expression, ast.Call):
+                return _contains_token_value(expression, sensitive_names)
+            function_name = _call_sink_name(expression)
+            if isinstance(expression.func, ast.Attribute) and _contains_token_value(
+                expression.func.value, sensitive_names
+            ):
+                return True
+            arguments_carry_token = any(
+                _contains_token_value(value, sensitive_names)
+                for value in [*expression.args, *(kw.value for kw in expression.keywords)]
+            )
+            if (
+                arguments_carry_token
+                and function_name
+                and not function_name[:1].isupper()
+                and not suppress_call_result_taint
+            ):
+                return True
+            return bool(function_name and _is_token_name(function_name))
+
+        class _SensitiveOutputVisitor(ast.NodeVisitor):
+            def __init__(self, relative_path: Path) -> None:
+                self.relative_path = relative_path
+                self.function_stack: list[str] = []
+                self.sensitive_name_stack: list[set[str]] = [set()]
+                self.offenders: list[tuple[int, str]] = []
+
+            @property
+            def sensitive_names(self) -> set[str]:
+                return self.sensitive_name_stack[-1]
+
+            def _call_result_is_known_container(self, expression: ast.AST) -> bool:
+                if not isinstance(expression, ast.Call):
+                    return False
+                function_name = self.function_stack[-1] if self.function_stack else "<module>"
+                return (
+                    self.relative_path,
+                    function_name,
+                    _call_sink_name(expression),
+                ) in safe_token_container_results
+
+            def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+                self.function_stack.append(node.name)
+                argument_names = {
+                    argument.arg
+                    for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+                    if _is_token_name(argument.arg)
+                }
+                if node.args.vararg is not None and _is_token_name(node.args.vararg.arg):
+                    argument_names.add(node.args.vararg.arg)
+                if node.args.kwarg is not None and _is_token_name(node.args.kwarg.arg):
+                    argument_names.add(node.args.kwarg.arg)
+                self.sensitive_name_stack.append(self.sensitive_names | argument_names)
+                self.generic_visit(node)
+                self.sensitive_name_stack.pop()
+                self.function_stack.pop()
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self._visit_function(node)
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                self._visit_function(node)
+
+            def visit_Assign(self, node: ast.Assign) -> None:
+                names = {name for target in node.targets for name in _assigned_names(target)}
+                if _assignment_carries_token(
+                    node.value,
+                    self.sensitive_names,
+                    suppress_call_result_taint=self._call_result_is_known_container(node.value),
+                ):
+                    self.sensitive_names.update(names)
+                self.generic_visit(node)
+
+            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+                names = _assigned_names(node.target)
+                if node.value is not None and _assignment_carries_token(
+                    node.value,
+                    self.sensitive_names,
+                    suppress_call_result_taint=self._call_result_is_known_container(node.value),
+                ):
+                    self.sensitive_names.update(names)
+                self.generic_visit(node)
+
+            def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+                names = _assigned_names(node.target)
+                if _assignment_carries_token(
+                    node.value,
+                    self.sensitive_names,
+                    suppress_call_result_taint=self._call_result_is_known_container(node.value),
+                ):
+                    self.sensitive_names.update(names)
+                # Taint is deliberately flow-insensitive within a function:
+                # once any feasible path assigns a token-derived value, later
+                # output remains suspect across try/match/loop joins.
+                self.generic_visit(node)
+
+            def visit_Call(self, node: ast.Call) -> None:
+                sink_name = _call_sink_name(node)
+                expressions = [*node.args, *(keyword.value for keyword in node.keywords)]
+                function_name = self.function_stack[-1] if self.function_stack else "<module>"
+                if (
+                    _is_output_sink(node)
+                    and any(_contains_token_value(expression, self.sensitive_names) for expression in expressions)
+                    and (self.relative_path, function_name, sink_name) not in intentional_secret_outputs
+                ):
+                    self.offenders.append((node.lineno, function_name))
+                self.generic_visit(node)
+
+        seeded_violation = _SensitiveOutputVisitor(Path("seeded_violation.py"))
+        seeded_violation.visit(ast.parse("def leak(auth_token):\n    logger.info(auth_token)\n"))
+        assert seeded_violation.offenders == [(2, "leak")]
+
+        seeded_alias_violation = _SensitiveOutputVisitor(Path("seeded_alias_violation.py"))
+        seeded_alias_violation.visit(
+            ast.parse("def leak(auth_token):\n    secret = auth_token\n    logger.info('secret=%s', secret)\n")
         )
+        assert seeded_alias_violation.offenders == [(3, "leak")]
+
+        seeded_transform_violation = _SensitiveOutputVisitor(Path("seeded_transform_violation.py"))
+        seeded_transform_violation.visit(
+            ast.parse("def leak(auth_token):\n    secret = auth_token.strip()\n    logger.info(secret)\n")
+        )
+        assert seeded_transform_violation.offenders == [(3, "leak")]
+
+        seeded_branch_violation = _SensitiveOutputVisitor(Path("seeded_branch_violation.py"))
+        seeded_branch_violation.visit(
+            ast.parse(
+                "def leak(auth_token, condition):\n"
+                "    if condition:\n"
+                "        secret = auth_token\n"
+                "    else:\n"
+                "        secret = 'safe'\n"
+                "    logger.info(secret)\n"
+            )
+        )
+        assert seeded_branch_violation.offenders == [(6, "leak")]
+
+        seeded_try_violation = _SensitiveOutputVisitor(Path("seeded_try_violation.py"))
+        seeded_try_violation.visit(
+            ast.parse(
+                "def leak(auth_token):\n"
+                "    try:\n"
+                "        secret = auth_token\n"
+                "    except Exception:\n"
+                "        secret = 'safe'\n"
+                "    logger.info(secret)\n"
+            )
+        )
+        assert seeded_try_violation.offenders == [(6, "leak")]
+
+        seeded_stdout_violation = _SensitiveOutputVisitor(Path("seeded_stdout_violation.py"))
+        seeded_stdout_violation.visit(ast.parse("def leak(auth_token):\n    sys.stdout.write(auth_token)\n"))
+        assert seeded_stdout_violation.offenders == [(2, "leak")]
+
+        seeded_helper_violation = _SensitiveOutputVisitor(Path("seeded_helper_violation.py"))
+        seeded_helper_violation.visit(
+            ast.parse("def leak(auth_token):\n    rendered = helper(auth_token)\n    logger.info(rendered)\n")
+        )
+        assert seeded_helper_violation.offenders == [(3, "leak")]
+
+        seeded_http_violation = _SensitiveOutputVisitor(Path("seeded_http_violation.py"))
+        seeded_http_violation.visit(
+            ast.parse("def leak(auth_token, handler):\n    handler.wfile.write(auth_token.encode())\n")
+        )
+        assert seeded_http_violation.offenders == [(2, "leak")]
+
+        seeded_json_response_violation = _SensitiveOutputVisitor(Path("seeded_json_response_violation.py"))
+        seeded_json_response_violation.visit(
+            ast.parse(
+                "def leak(self, auth_token):\n"
+                "    payload = {'credential': auth_token}\n"
+                "    self._send_json(HTTPStatus.OK, payload)\n"
+            )
+        )
+        assert seeded_json_response_violation.offenders == [(3, "leak")]
+
+        seeded_error_response_violation = _SensitiveOutputVisitor(Path("seeded_error_response_violation.py"))
+        seeded_error_response_violation.visit(
+            ast.parse(
+                "def leak(self, auth_token):\n"
+                "    detail = auth_token.strip()\n"
+                "    self._send_error(HTTPStatus.BAD_REQUEST, 'invalid', detail)\n"
+            )
+        )
+        assert seeded_error_response_violation.offenders == [(3, "leak")]
+
+        seeded_journal_violation = _SensitiveOutputVisitor(Path("seeded_journal_violation.py"))
+        seeded_journal_violation.visit(ast.parse("def leak(auth_token, journal):\n    journal.send(auth_token)\n"))
+        assert seeded_journal_violation.offenders == [(2, "leak")]
+
+        seeded_exception_scope = _SensitiveOutputVisitor(Path("polylogue/daemon/browser_capture.py"))
+        seeded_exception_scope.visit(
+            ast.parse("def token_show(token):\n    click.echo(token)\n    logger.info(token)\n")
+        )
+        assert seeded_exception_scope.offenders == [(3, "token_show")]
+
+        safe_literal = _SensitiveOutputVisitor(Path("safe_literal.py"))
+        safe_literal.visit(ast.parse('logger.warning("Bearer token required")\n'))
+        assert safe_literal.offenders == []
 
         offenders: list[str] = []
         for root in roots:
             if not root.exists():
                 continue
             for py_file in root.rglob("*.py"):
-                for lineno, line in enumerate(py_file.read_text().splitlines(), 1):
-                    if pattern.search(line):
-                        # Whitelist the legitimate non-logging usages:
-                        # passing the token to the checker is not a leak.
-                        if "_check_auth_logic" in line:
-                            continue
-                        offenders.append(f"{py_file.relative_to(repo_root)}:{lineno}: {line.strip()}")
+                relative_path = py_file.relative_to(repo_root)
+                source = py_file.read_text(encoding="utf-8")
+                visitor = _SensitiveOutputVisitor(relative_path)
+                visitor.visit(ast.parse(source, filename=str(relative_path)))
+                lines = source.splitlines()
+                offenders.extend(
+                    f"{relative_path}:{lineno} ({function_name}): {lines[lineno - 1].strip()}"
+                    for lineno, function_name in visitor.offenders
+                )
 
         assert not offenders, "potential token-logging code paths:\n" + "\n".join(offenders)
 

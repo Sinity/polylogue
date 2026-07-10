@@ -3,6 +3,47 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import Literal
+
+BrowserCapturePrecedence = Literal["default", "replace", "skip"]
+
+
+def browser_capture_precedence(
+    *,
+    existing_is_dom_fallback: bool,
+    incoming_is_dom_fallback: bool,
+    existing_has_native_payload: bool,
+    incoming_has_native_payload: bool,
+    stored_message_count: int,
+    incoming_message_count: int,
+) -> BrowserCapturePrecedence:
+    """Resolve browser-source ownership before provider timestamp freshness."""
+    lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
+    lower_precedence_export = (
+        existing_has_native_payload
+        and not incoming_has_native_payload
+        and incoming_message_count <= stored_message_count
+    )
+    strictly_less_complete = incoming_message_count < stored_message_count and not (
+        existing_is_dom_fallback and not incoming_is_dom_fallback
+    )
+    if lower_precedence_fallback or lower_precedence_export or strictly_less_complete:
+        return "skip"
+
+    incoming_owns_browser_merge = (
+        (existing_is_dom_fallback and not incoming_is_dom_fallback)
+        or (
+            incoming_has_native_payload
+            and not existing_has_native_payload
+            and incoming_message_count >= stored_message_count
+        )
+        or (
+            existing_has_native_payload
+            and not incoming_has_native_payload
+            and incoming_message_count > stored_message_count
+        )
+    )
+    return "replace" if incoming_owns_browser_merge else "default"
 
 
 def stored_message_count(conn: sqlite3.Connection, session_id: str) -> int:
@@ -68,4 +109,10 @@ def record_capture_gap_event(
     )
 
 
-__all__ = ["record_capture_gap_event", "session_has_parser_ingest_flag", "stored_message_count"]
+__all__ = [
+    "BrowserCapturePrecedence",
+    "browser_capture_precedence",
+    "record_capture_gap_event",
+    "session_has_parser_ingest_flag",
+    "stored_message_count",
+]

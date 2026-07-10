@@ -18,22 +18,27 @@ This test:
    first argument that is not on the whitelist — the test message points at
    the file, line, and the actual source so the offending site is obvious.
 
-The whitelist (``_AUDITED_SITES``) is keyed by ``(relative_path, line_no)``
-and records *why* a given interpolation is safe. New interpolations must be
-audited and added explicitly; the gate forces that session rather than
-allowing silent drift.
+The whitelist (``_AUDITED_SITES``) is keyed by relative path, enclosing
+function qualname, and a location-free AST fingerprint of the execute call.
+New interpolations must be audited and added explicitly; unrelated line edits
+do not invalidate an existing audit.
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, TypeAlias
 
 _STORAGE_ROOT: Final = Path("polylogue/storage")
 
-# Audited identifier-interpolation sites. The values are not used at runtime;
-# they document why the interpolation is safe and survive renames via grep.
+_AuditedSiteKey: TypeAlias = tuple[str, str, str, int]
+
+# Audited identifier-interpolation sites. The values document why the
+# interpolation is safe; keys survive line insertions and formatting changes.
 #
 # When adding an entry, paste the literal source line into the comment so a
 # reviewer can confirm the interpolated value is a trusted identifier (table
@@ -43,58 +48,84 @@ _STORAGE_ROOT: Final = Path("polylogue/storage")
 # currently-safe interpolation. This dict exists for the rare future case
 # where an interpolation site cannot be expressed as a single trusted-name
 # reference (e.g. an inline expression). Each entry MUST carry a rationale.
-_AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
+_AUDITED_SITES: Final[dict[_AuditedSiteKey, str]] = {
     (
         "polylogue/storage/embeddings/status_payload.py",
-        626,
+        "_archive_embedding_status_payload",
+        "f425ee78aeaa43aa",
+        0,
     ): 'conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}") uses an internal integer constant.',
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5230,
+        "ArchiveStore.query_actions",
+        "d23e920a2a302a20",
+        0,
     ): "query_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL plus closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5281,
+        "ArchiveStore.query_session_actions",
+        "00e73501ef574c76",
+        0,
     ): "query_session_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL, placeholders, and closed order direction; ids are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5759,
+        "ArchiveStore.query_runs",
+        "3654ef6dea2f1594",
+        0,
     ): "query_runs interpolates run_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5810,
+        "ArchiveStore.query_observed_events",
+        "5ce5c9442c306377",
+        0,
     ): "query_observed_events interpolates observed_event_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        5865,
+        "ArchiveStore.query_context_snapshots",
+        "59d7f0d1698c6ebd",
+        0,
     ): "query_context_snapshots interpolates context_snapshot_relation_sql() and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
-        1623,
+        "ArchiveStore.list_cost_rollup_insights",
+        "30b0c4c942f5755f",
+        0,
     ): "cost_rollup no-usage leg interpolates a closed WHERE fragment list built in-function; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/ops_write.py",
-        585,
+        "read_embedding_catchup_run",
+        "4384d56aeed4ab93",
+        0,
     ): "read_embedding_catchup_run formats outcome column names from _embedding_catchup_run_outcome_columns(), a closed schema-shape helper.",
     (
         "polylogue/storage/sqlite/maintenance.py",
-        42,
+        "maybe_optimize_sqlite",
+        "74e2a23591a87a48",
+        0,
     ): 'conn.execute(f"PRAGMA analysis_limit = {int(analysis_limit)}") casts the caller value to int before interpolation.',
     (
         "polylogue/storage/sqlite/migration_runner.py",
-        136,
+        "migrate_archive_tier",
+        "de2f840618fb23dc",
+        0,
     ): 'conn.execute(f"PRAGMA user_version = {step.version}") uses the internal migration step integer version.',
     (
         "polylogue/storage/usage.py",
-        1343,
+        "_provider_event_stats",
+        "aa006dbcd45f6400",
+        0,
     ): "provider usage summary interpolates closed counter-column expressions and WHERE fragments; filter values are bound.",
     (
         "polylogue/storage/usage.py",
-        1385,
+        "_provider_cumulative_usage",
+        "ad7bb9d262cfceb3",
+        0,
     ): "provider cumulative usage interpolates closed counter-column expressions and origin SELECT/JOIN fragments; origin is bound.",
     (
         "polylogue/storage/usage.py",
-        1450,
+        "_sample_event_sessions",
+        "f437ad380e1b12d6",
+        0,
     ): "usage quality examples interpolate closed diagnostic predicates; origin and limit values are bound.",
 }
 
@@ -108,9 +139,34 @@ def _execute_call_target(node: ast.Call) -> str | None:
 
 
 class _SqlExecuteVisitor(ast.NodeVisitor):
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        relative_path: str | None = None,
+        audited_sites: Mapping[_AuditedSiteKey, str] = _AUDITED_SITES,
+    ) -> None:
         self.path = path
-        self.violations: list[tuple[str, int, str, str]] = []
+        self.relative_path = relative_path or path.as_posix()
+        self.audited_sites = audited_sites
+        self.scope: list[str] = []
+        self.sites: list[_InterpolatedSqlSite] = []
+        self.occurrences: dict[tuple[str, str, str], int] = {}
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
 
     def visit_Call(self, node: ast.Call) -> None:
         target = _execute_call_target(node)
@@ -118,11 +174,41 @@ class _SqlExecuteVisitor(ast.NodeVisitor):
             first = node.args[0]
             violation = _classify_first_arg(first)
             if violation is not None:
-                rel = self.path.as_posix()
-                if (rel, node.lineno) not in _AUDITED_SITES:
-                    source_line = _read_line(self.path, node.lineno)
-                    self.violations.append((rel, node.lineno, violation, source_line))
+                base_key = (
+                    self.relative_path,
+                    ".".join(self.scope) or "<module>",
+                    _statement_fingerprint(node),
+                )
+                occurrence = self.occurrences.get(base_key, 0)
+                self.occurrences[base_key] = occurrence + 1
+                key = (*base_key, occurrence)
+                self.sites.append(
+                    _InterpolatedSqlSite(
+                        key=key,
+                        line=node.lineno,
+                        kind=violation,
+                        source=_read_line(self.path, node.lineno),
+                    )
+                )
         self.generic_visit(node)
+
+    @property
+    def violations(self) -> list[_InterpolatedSqlSite]:
+        return [site for site in self.sites if site.key not in self.audited_sites]
+
+
+@dataclass(frozen=True)
+class _InterpolatedSqlSite:
+    key: _AuditedSiteKey
+    line: int
+    kind: str
+    source: str
+
+
+def _statement_fingerprint(node: ast.Call) -> str:
+    """Hash an execute call's syntax without source-location attributes."""
+    normalized = ast.dump(node, annotate_fields=True, include_attributes=False)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 # Identifier names that, when used inside an f-string formatted-value, are
@@ -448,20 +534,46 @@ def _read_line(path: Path, line_no: int) -> str:
         return "<source unavailable>"
 
 
+def _scan_path(
+    path: Path,
+    *,
+    relative_path: str | None = None,
+    audited_sites: Mapping[_AuditedSiteKey, str] = _AUDITED_SITES,
+) -> _SqlExecuteVisitor:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except SyntaxError as exc:
+        raise AssertionError(f"{path} failed to parse: {exc}") from exc
+    visitor = _SqlExecuteVisitor(
+        path,
+        relative_path=relative_path,
+        audited_sites=audited_sites,
+    )
+    visitor.visit(tree)
+    return visitor
+
+
+def _format_site_key(key: _AuditedSiteKey) -> str:
+    return f"({key[0]!r}, {key[1]!r}, {key[2]!r}, {key[3]})"
+
+
+def _format_violations(violations: list[_InterpolatedSqlSite]) -> str:
+    return "\n".join(
+        f"  {site.key[0]}:{site.line} [{site.kind}]\n"
+        f"    {site.source}\n"
+        f"    suggested _AUDITED_SITES key: {_format_site_key(site.key)}"
+        for site in violations
+    )
+
+
 def test_no_unaudited_string_interpolated_sql() -> None:
-    violations: list[tuple[str, int, str, str]] = []
+    violations: list[_InterpolatedSqlSite] = []
     for path in sorted(_STORAGE_ROOT.rglob("*.py")):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except SyntaxError as exc:
-            raise AssertionError(f"{path} failed to parse: {exc}") from exc
-        visitor = _SqlExecuteVisitor(path)
-        visitor.visit(tree)
-        violations.extend(visitor.violations)
+        violations.extend(_scan_path(path).violations)
 
     assert not violations, (
         "Unaudited string-interpolated SQL in polylogue/storage/:\n"
-        + "\n".join(f"  {rel}:{line} [{kind}]\n    {src}" for rel, line, kind, src in violations)
+        + _format_violations(violations)
         + (
             "\n\nIf the interpolated value is a trusted compile-time identifier "
             "(table name, savepoint counter, schema-version literal), add an entry "
@@ -474,31 +586,88 @@ def test_no_unaudited_string_interpolated_sql() -> None:
 def test_audited_sites_are_real_violations() -> None:
     """Ensure _AUDITED_SITES does not develop stale entries.
 
-    Every audited (path, line) must still parse to an execute() call with an
+    Every audited stable key must still identify an execute() call with an
     unsafe first arg in the current tree; otherwise the whitelist is stale.
     """
-    audited_by_path: dict[Path, set[int]] = {}
-    for rel, line in _AUDITED_SITES:
-        audited_by_path.setdefault(Path(rel), set()).add(line)
+    audited_by_path: dict[Path, set[_AuditedSiteKey]] = {}
+    for key in _AUDITED_SITES:
+        audited_by_path.setdefault(Path(key[0]), set()).add(key)
 
-    stale: list[tuple[str, int]] = []
-    for path, lines in audited_by_path.items():
+    stale: list[_AuditedSiteKey] = []
+    for path, keys in audited_by_path.items():
         if not path.exists():
-            stale.extend((path.as_posix(), line) for line in lines)
+            stale.extend(keys)
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        found: set[int] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            if _execute_call_target(node) is None or not node.args:
-                continue
-            if _classify_first_arg(node.args[0]) is not None:
-                found.add(node.lineno)
-        stale.extend((path.as_posix(), line) for line in lines if line not in found)
+        found = {site.key for site in _scan_path(path).sites}
+        stale.extend(keys - found)
 
     assert not stale, (
-        "Stale _AUDITED_SITES entries (no matching execute call at that line):\n"
-        + "\n".join(f"  {rel}:{line}" for rel, line in stale)
-        + "\nRemove the entry or update its line number after refactoring."
+        "Stale _AUDITED_SITES entries (no matching execute call syntax):\n"
+        + "\n".join(f"  {_format_site_key(key)}" for key in sorted(stale))
+        + "\nRemove the entry or replace it with the suggested key after auditing the changed statement."
     )
+
+
+def test_audited_site_key_survives_unrelated_line_insertions(tmp_path: Path) -> None:
+    relative_path = "polylogue/storage/example.py"
+    source = 'def query(conn, suffix):\n    return conn.execute(f"SELECT 1 {suffix}")\n'
+    path = tmp_path / "example.py"
+    path.write_text(source, encoding="utf-8")
+
+    original = _scan_path(path, relative_path=relative_path, audited_sites={})
+    assert len(original.violations) == 1
+    key = original.violations[0].key
+    assert key[:2] == (relative_path, "query")
+    audited = {key: "suffix is a closed SQL fragment in this synthetic example"}
+
+    path.write_text("# unrelated insertion\n\n" + source, encoding="utf-8")
+    shifted = _scan_path(path, relative_path=relative_path, audited_sites=audited)
+
+    assert [site.key for site in shifted.sites] == [key]
+    assert shifted.violations == []
+
+
+def test_new_interpolated_sql_expression_requires_a_fresh_audit_key(tmp_path: Path) -> None:
+    relative_path = "polylogue/storage/example.py"
+    original_source = 'def query(conn, suffix):\n    return conn.execute(f"SELECT 1 {suffix}")\n'
+    path = tmp_path / "example.py"
+    path.write_text(original_source, encoding="utf-8")
+    original = _scan_path(path, relative_path=relative_path, audited_sites={})
+    audited = {original.violations[0].key: "synthetic existing audit"}
+
+    path.write_text(
+        "def query(conn, suffix):\n"
+        '    conn.execute(f"SELECT 1 {suffix}")\n'
+        '    return conn.execute(f"SELECT 2 {suffix}")\n',
+        encoding="utf-8",
+    )
+    changed = _scan_path(path, relative_path=relative_path, audited_sites=audited)
+
+    assert len(changed.violations) == 1
+    new_site = changed.violations[0]
+    assert new_site.key not in audited
+    assert f"suggested _AUDITED_SITES key: {_format_site_key(new_site.key)}" in _format_violations(changed.violations)
+
+
+def test_duplicate_interpolated_sql_expression_requires_a_fresh_audit_key(tmp_path: Path) -> None:
+    relative_path = "polylogue/storage/example.py"
+    source = 'def query(conn, suffix):\n    return conn.execute(f"SELECT 1 {suffix}")\n'
+    path = tmp_path / "example.py"
+    path.write_text(source, encoding="utf-8")
+    original = _scan_path(path, relative_path=relative_path, audited_sites={})
+    original_key = original.violations[0].key
+
+    path.write_text(
+        "def query(conn, suffix):\n"
+        '    conn.execute(f"SELECT 1 {suffix}")\n'
+        '    return conn.execute(f"SELECT 1 {suffix}")\n',
+        encoding="utf-8",
+    )
+    changed = _scan_path(
+        path,
+        relative_path=relative_path,
+        audited_sites={original_key: "synthetic existing audit"},
+    )
+
+    assert [site.key[3] for site in changed.sites] == [0, 1]
+    assert [site.key for site in changed.violations] == [(*original_key[:3], 1)]

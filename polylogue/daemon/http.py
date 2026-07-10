@@ -1105,7 +1105,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 auth_header = f"Bearer {qs_token}"
         result = _check_auth_logic(self._auth_token, self._client_host, auth_header)
         if not result.allowed:
-            self._send_error(HTTPStatus.UNAUTHORIZED, result.reason or "unauthorized")
+            self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
         return result.allowed
 
     def _check_host_admission(self) -> bool:

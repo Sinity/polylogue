@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import sqlite3
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
-from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import BlockType, Provider
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedPasteEvidence, ParsedSession
+from polylogue.sources.parsers.base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedPasteEvidence,
+    ParsedSession,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_metadata,
@@ -316,6 +323,360 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
     assert stored["message_count"] == 2
     assert event["event_type"] == "capture_gap"
     assert "DOM browser-capture fallback" in event["summary"]
+
+
+@pytest.mark.parametrize(
+    (
+        "initial_kind",
+        "initial_count",
+        "incoming_kind",
+        "incoming_count",
+        "expected_title",
+        "expected_count",
+        "expected_owner",
+        "incoming_is_older",
+    ),
+    [
+        ("native", 2, "export", 2, "Native browser", 2, "initial", False),
+        ("export", 2, "native", 2, "Native browser", 2, "incoming", False),
+        ("native", 2, "export", 1, "Native browser", 2, "initial", False),
+        ("export", 1, "native", 2, "Native browser", 2, "incoming", False),
+        ("native", 2, "export", 3, "Fuller export", 3, "incoming", False),
+        ("export", 3, "native", 2, "Fuller export", 3, "initial", False),
+        ("export", 2, "native", 2, "Native browser", 2, "incoming", True),
+    ],
+    ids=(
+        "native-before-equal",
+        "native-after-equal",
+        "native-before-weaker",
+        "native-after-weaker",
+        "fuller-export-advances",
+        "fuller-export-resists-shorter-native",
+        "older-native-after-equal",
+    ),
+)
+def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
+    tmp_path: Path,
+    initial_kind: str,
+    initial_count: int,
+    incoming_kind: str,
+    incoming_count: int,
+    expected_title: str,
+    expected_count: int,
+    expected_owner: str,
+    incoming_is_older: bool,
+) -> None:
+    session_native_id = f"browser-precedence-{initial_kind}-{initial_count}-{incoming_kind}-{incoming_count}"
+
+    def session(kind: str, message_count: int, *, updated_at: str) -> ParsedSession:
+        native = kind == "native"
+        title = "Native browser" if native else ("Fuller export" if message_count == 3 else "Ordinary export")
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id=session_native_id,
+            title=title,
+            updated_at=updated_at,
+            messages=[
+                ParsedMessage(
+                    provider_message_id=f"{kind}-{position}",
+                    role=Role.USER if position == 0 else Role.ASSISTANT,
+                    text=f"{kind} message {position}",
+                )
+                for position in range(message_count)
+            ],
+            ingest_flags=[NATIVE_BROWSER_CAPTURE_INGEST_FLAG] if native else [],
+        )
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        initial = facade.write_raw_and_parsed_result(
+            session(initial_kind, initial_count, updated_at="2026-04-03T00:00:00Z"),
+            payload=f"{initial_kind}-initial".encode(),
+            source_path=f"/tmp/{initial_kind}-initial.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        incoming = facade.write_raw_and_parsed_result(
+            session(
+                incoming_kind,
+                incoming_count,
+                updated_at="2026-04-02T00:00:00Z" if incoming_is_older else "2026-04-03T00:00:00Z",
+            ),
+            payload=f"{incoming_kind}-incoming-{incoming_count}".encode(),
+            source_path=f"/tmp/{incoming_kind}-incoming.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        stored = conn.execute(
+            "SELECT raw_id, title, message_count FROM sessions WHERE session_id = ?",
+            (initial.session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    expected_raw_id = initial.raw_id if expected_owner == "initial" else incoming.raw_id
+    assert incoming.content_changed is (expected_owner == "incoming")
+    assert incoming.counts["skipped_sessions"] == int(expected_owner == "initial")
+    assert dict(stored) == {
+        "raw_id": expected_raw_id,
+        "title": expected_title,
+        "message_count": expected_count,
+    }
+
+
+@pytest.mark.parametrize(
+    ("arrivals", "expected_title", "expected_native_flag", "expected_capture_gap_count"),
+    [
+        (
+            (
+                ("native", 2, "Native browser", "2026-04-01T00:00:00Z"),
+                ("export", 3, "Fuller export", "2026-04-02T00:00:00Z"),
+                ("export", 3, "Newest export", "2026-04-03T00:00:00Z"),
+            ),
+            "Newest export",
+            False,
+            0,
+        ),
+        (
+            (
+                ("export", 2, "Newer export", "2026-04-03T00:00:00Z"),
+                ("native", 2, "Older native", "2026-04-01T00:00:00Z"),
+                ("native", 2, "Native update", "2026-04-02T00:00:00Z"),
+            ),
+            "Native update",
+            True,
+            0,
+        ),
+        (
+            (
+                ("dom", 1, "DOM fallback", "2026-04-03T00:00:00Z"),
+                ("native", 2, "Older native", "2026-04-01T00:00:00Z"),
+                ("export", 3, "Fuller export", "2026-04-02T00:00:00Z"),
+            ),
+            "Fuller export",
+            False,
+            1,
+        ),
+    ],
+    ids=("owner-flag-is-replaced", "forced-owner-resets-freshness", "capture-gap-survives-later-owner"),
+)
+def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
+    tmp_path: Path,
+    arrivals: tuple[tuple[str, int, str, str], ...],
+    expected_title: str,
+    expected_native_flag: bool,
+    expected_capture_gap_count: int,
+) -> None:
+    session_native_id = f"browser-three-arrivals-{expected_title.lower().replace(' ', '-')}"
+
+    def session(kind: str, count: int, title: str, updated_at: str) -> ParsedSession:
+        ingest_flags = {
+            "dom": [DOM_FALLBACK_INGEST_FLAG],
+            "native": [NATIVE_BROWSER_CAPTURE_INGEST_FLAG],
+        }.get(kind, [])
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id=session_native_id,
+            title=title,
+            updated_at=updated_at,
+            messages=[
+                ParsedMessage(
+                    provider_message_id=f"{title}-{position}",
+                    role=Role.USER if position == 0 else Role.ASSISTANT,
+                    text=f"{title} message {position}",
+                )
+                for position in range(count)
+            ],
+            ingest_flags=ingest_flags,
+        )
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        outcomes = [
+            facade.write_raw_and_parsed_result(
+                session(kind, count, title, updated_at),
+                payload=f"arrival-{index}-{title}".encode(),
+                source_path=f"/tmp/arrival-{index}.json",
+                acquired_at_ms=1_767_000_000_000 + index,
+            )
+            for index, (kind, count, title, updated_at) in enumerate(arrivals)
+        ]
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        stored = conn.execute(
+            "SELECT raw_id, title FROM sessions WHERE session_id = ?",
+            (outcomes[0].session_id,),
+        ).fetchone()
+        native_flag = conn.execute(
+            "SELECT 1 FROM session_tags WHERE session_id = ? AND tag = ?",
+            (outcomes[0].session_id, NATIVE_BROWSER_CAPTURE_INGEST_FLAG),
+        ).fetchone()
+        capture_gap_count = conn.execute(
+            "SELECT COUNT(*) FROM session_events WHERE session_id = ? AND event_type = 'capture_gap'",
+            (outcomes[0].session_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert [outcome.content_changed for outcome in outcomes] == [True, True, True]
+    assert [outcome.counts["sessions"] for outcome in outcomes] == [1, 1, 1]
+    assert dict(stored) == {"raw_id": outcomes[-1].raw_id, "title": expected_title}
+    assert (native_flag is not None) is expected_native_flag
+    assert capture_gap_count == expected_capture_gap_count
+
+
+def test_archive_tiers_archive_facade_hash_skips_identical_content_and_refreshes_raw_link(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="content-identical-raw-refresh",
+        title="Stable content",
+        updated_at="2026-04-03T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="message-1",
+                role=Role.USER,
+                text="same parsed content",
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            session,
+            payload=b'[{"capture":"first"}]',
+            source_path="/tmp/first.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        second = facade.write_raw_and_parsed_result(
+            session,
+            payload=b'[{"capture":"second"}]',
+            source_path="/tmp/second.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        stored_raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            (first.session_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.content_changed is True
+    assert second.content_changed is False
+    assert second.counts["sessions"] == 0
+    assert second.counts["skipped_sessions"] == 1
+    assert second.counts["raw_links"] == 1
+    assert stored_raw_id == second.raw_id
+
+
+def test_archive_tiers_archive_facade_replaces_same_size_changed_attachment_bytes(tmp_path: Path) -> None:
+    def session(payload: bytes) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="changed-inline-attachment",
+            title="Stable content",
+            updated_at="2026-04-03T00:00:00Z",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="message-1",
+                    role=Role.USER,
+                    text="same parsed message",
+                )
+            ],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="attachment-1",
+                    message_provider_id="message-1",
+                    name="payload.bin",
+                    mime_type="application/octet-stream",
+                    size_bytes=len(payload),
+                    inline_bytes=payload,
+                )
+            ],
+        )
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            session(b"one"),
+            payload=b"first raw",
+            source_path="/tmp/first.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        second = facade.write_raw_and_parsed_result(
+            session(b"two"),
+            payload=b"second raw",
+            source_path="/tmp/second.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        stored_raw_id, stored_blob_hash = conn.execute(
+            "SELECT s.raw_id, a.blob_hash FROM sessions AS s CROSS JOIN attachments AS a WHERE s.session_id = ?",
+            (first.session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert second.content_changed is True
+    assert second.counts["attachments"] == 1
+    assert stored_raw_id == second.raw_id
+    assert bytes(stored_blob_hash) == sha256(b"two").digest()
+
+
+def test_archive_tiers_archive_facade_repairs_missing_fts_on_identical_repeat(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="identical-repeat-fts-repair",
+        title="Stable content",
+        updated_at="2026-04-03T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="message-1",
+                role=Role.USER,
+                text="searchable needle",
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            session,
+            payload=b"stable raw",
+            source_path="/tmp/stable.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+
+    with sqlite3.connect(root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 1
+        conn.execute("DELETE FROM messages_fts")
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+
+    with ArchiveStore(root) as facade:
+        repeated = facade.write_raw_and_parsed_result(
+            session,
+            payload=b"stable raw",
+            source_path="/tmp/stable.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    with sqlite3.connect(root / "index.db") as conn:
+        repaired_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+
+    assert repeated.session_id == first.session_id
+    assert repeated.content_changed is False
+    assert repeated.counts["skipped_sessions"] == 1
+    assert repeated.counts["_fts_repair"] == 1
+    assert repaired_count == 1
 
 
 def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:

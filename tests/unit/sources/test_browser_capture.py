@@ -12,7 +12,11 @@ from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
-from polylogue.sources.parsers.browser_capture import DOM_FALLBACK_INGEST_FLAG, TEMPORARY_CHAT_INGEST_FLAG
+from polylogue.sources.parsers.browser_capture import (
+    DOM_FALLBACK_INGEST_FLAG,
+    NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+    TEMPORARY_CHAT_INGEST_FLAG,
+)
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_scenarios import open_index_db
 
@@ -78,6 +82,7 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert session.attachments[0].message_provider_id == "a1"
     assert session.attachments[0].source_url == "https://chatgpt.com/attachment/1"
     assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
+    assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in session.ingest_flags
 
 
 def test_browser_capture_embedded_attachment_payloads_become_inline_bytes() -> None:
@@ -171,6 +176,7 @@ def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
     assert session.messages[1].model_name == "gpt-native"
     assert session.messages[1].blocks[0].type.value == "code"
     assert DOM_FALLBACK_INGEST_FLAG not in session.ingest_flags
+    assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
 
 
 def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() -> None:
@@ -658,10 +664,12 @@ async def test_browser_capture_embedded_attachments_are_acquired_in_archive(
     assert remote["byte_count"] == 4096
 
 
+@pytest.mark.parametrize("source_order", ["export-first", "browser-first"])
 @pytest.mark.asyncio
 async def test_browser_capture_raw_payload_coalesces_with_chatgpt_export(
     workspace_env: dict[str, Path],
     tmp_path: Path,
+    source_order: str,
 ) -> None:
     del workspace_env
     gdpr_export = tmp_path / "chatgpt-export.json"
@@ -733,10 +741,11 @@ async def test_browser_capture_raw_payload_coalesces_with_chatgpt_export(
         spool_path=tmp_path / "browser-capture",
     ).path
     config = get_config()
-    sources = [
+    export_first_sources = [
         Source(name="chatgpt", path=gdpr_export),
         Source(name="browser-capture", path=artifact),
     ]
+    sources = export_first_sources if source_order == "export-first" else list(reversed(export_first_sources))
 
     async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
         await polylogue.parse_sources(sources)

@@ -6,11 +6,11 @@ import unicodedata
 from typing import TypeAlias
 
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.hashing import hash_payload
+from polylogue.core.hashing import hash_bytes, hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources import ParsedMessage, ParsedSession
-from polylogue.sources.parsers.base import ParsedContentBlock
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock
 from polylogue.types import ContentHash, MessageId, SessionEventId, SessionId
 
 # Sentinel values to distinguish None from empty in hash computations
@@ -96,6 +96,20 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
     return payload
 
 
+def _attachment_hash_payload(attachment: ParsedAttachment) -> dict[str, JSONValue]:
+    """Build attachment identity without perturbing legacy metadata-only hashes."""
+    payload: dict[str, JSONValue] = {
+        "id": _normalize_for_hash(attachment.provider_attachment_id),
+        "message_id": _normalize_for_hash(attachment.message_provider_id),
+        "name": _normalize_for_hash(attachment.name),
+        "mime_type": _normalize_for_hash(attachment.mime_type),
+        "size_bytes": _normalize_for_hash(attachment.size_bytes),
+    }
+    if attachment.inline_bytes is not None:
+        payload["inline_content_hash"] = hash_bytes(attachment.inline_bytes)
+    return payload
+
+
 def _session_hash_payload(
     *,
     title: str | None,
@@ -135,16 +149,7 @@ def session_content_hash(convo: ParsedSession) -> ContentHash:
         _message_hash_payload(msg, msg.provider_message_id or f"msg-{idx}")
         for idx, msg in enumerate(convo.messages, start=1)
     ]
-    attachments_payload = [
-        {
-            "id": _normalize_for_hash(att.provider_attachment_id),
-            "message_id": _normalize_for_hash(att.message_provider_id),
-            "name": _normalize_for_hash(att.name),
-            "mime_type": _normalize_for_hash(att.mime_type),
-            "size_bytes": _normalize_for_hash(att.size_bytes),
-        }
-        for att in convo.attachments
-    ]
+    attachments_payload = [_attachment_hash_payload(attachment) for attachment in convo.attachments]
     session_events_payload = [
         {
             "event_index": event_index,

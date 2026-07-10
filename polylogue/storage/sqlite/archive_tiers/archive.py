@@ -13,7 +13,7 @@ from types import TracebackType
 from typing import Any, Literal, TypedDict, cast
 
 from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
-from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
@@ -105,6 +105,7 @@ from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuer
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import (
     SESSION_INSIGHT_MATERIALIZATION_TYPES,
@@ -119,6 +120,8 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
+    BrowserCapturePrecedence,
+    browser_capture_precedence,
     record_capture_gap_event,
     session_has_parser_ingest_flag,
     stored_message_count,
@@ -166,12 +169,15 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     ArchiveSessionPhase,
     ArchiveSessionWorkEvent,
+    _timestamp_ms,
     read_archive_session_envelope,
     read_insight_materialization,
     read_session_phases,
     read_session_work_events,
     rebuild_archive_messages_fts,
+    replace_parser_ingest_flag_tags,
     search_archive_blocks,
+    upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.connection_profile import (
@@ -847,14 +853,21 @@ class ArchiveStore:
         manage_transaction: bool,
     ) -> ArchiveRawParsedWriteResult:
         session_id = str(make_session_id(session.source_name, session.provider_session_id))
+        content_hash = str(session_content_hash(session))
         existing_row = self._conn.execute(
-            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
+        existing_hash = existing_row["content_hash"] if existing_row is not None else None
+        existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
+        content_unchanged = existing_row is not None and existing_hash_hex == content_hash
         existing_is_dom_fallback = False
         incoming_is_dom_fallback = DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
+        existing_has_native_browser_payload = False
+        incoming_has_native_browser_payload = NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
         current_stored_message_count = 0
+        browser_precedence: BrowserCapturePrecedence = "default"
 
         if source_index >= 0 and existing_raw_id and raw_id and existing_raw_id != raw_id:
             existing_is_dom_fallback = session_has_parser_ingest_flag(
@@ -862,12 +875,22 @@ class ArchiveStore:
                 session_id,
                 DOM_FALLBACK_INGEST_FLAG,
             )
+            existing_has_native_browser_payload = session_has_parser_ingest_flag(
+                self._conn,
+                session_id,
+                NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+            )
             current_stored_message_count = stored_message_count(self._conn, session_id)
             lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
-            strictly_less_complete = len(session.messages) < current_stored_message_count and not (
-                existing_is_dom_fallback and not incoming_is_dom_fallback
+            browser_precedence = browser_capture_precedence(
+                existing_is_dom_fallback=existing_is_dom_fallback,
+                incoming_is_dom_fallback=incoming_is_dom_fallback,
+                existing_has_native_payload=existing_has_native_browser_payload,
+                incoming_has_native_payload=incoming_has_native_browser_payload,
+                stored_message_count=current_stored_message_count,
+                incoming_message_count=len(session.messages),
             )
-            if lower_precedence_fallback or strictly_less_complete:
+            if browser_precedence == "skip":
                 session_event_count = 0
                 if lower_precedence_fallback:
                     record_capture_gap_event(
@@ -888,13 +911,55 @@ class ArchiveStore:
                     counts=self._skipped_counts(session, session_events=session_event_count),
                 )
 
+        incoming_freshness_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+        if (
+            source_index >= 0
+            and browser_precedence != "replace"
+            and existing_row is not None
+            and incoming_freshness_ms is not None
+        ):
+            existing_updated_at_ms = existing_row["updated_at_ms"]
+            existing_updated_at_int = int(existing_updated_at_ms) if existing_updated_at_ms is not None else None
+            if existing_updated_at_int is not None and incoming_freshness_ms < existing_updated_at_int:
+                return ArchiveRawParsedWriteResult(
+                    raw_id=raw_id,
+                    session_id=session_id,
+                    content_changed=False,
+                    counts=self._skipped_counts(session),
+                )
+
+        if content_unchanged:
+            if browser_precedence == "replace":
+                replace_parser_ingest_flag_tags(self._conn, session_id, session.ingest_flags)
+            elif session.ingest_flags:
+                upsert_parser_ingest_flag_tags(self._conn, session_id, session.ingest_flags)
+            raw_link_changed = False
+            if raw_id and raw_id != existing_raw_id:
+                cursor = self._conn.execute(
+                    "UPDATE sessions SET raw_id = ? WHERE session_id = ? AND (raw_id IS NULL OR raw_id != ?)",
+                    (raw_id, session_id, raw_id),
+                )
+                raw_link_changed = bool(cursor.rowcount)
+            fts_repaired = repair_session_fts_if_needed_sync(self._conn, session_id)
+            if manage_transaction:
+                self._conn.commit()
+            counts = self._skipped_counts(session)
+            counts["raw_links"] = int(raw_link_changed)
+            counts["_fts_repair"] = int(fts_repaired)
+            return ArchiveRawParsedWriteResult(
+                raw_id=raw_id,
+                session_id=session_id,
+                content_changed=False,
+                counts=counts,
+            )
+
         write_parsed_session_to_archive(
             self._conn,
             session,
-            content_hash=str(session_content_hash(session)),
+            content_hash=content_hash,
             raw_id=raw_id,
             merge_append=source_index < 0,
-            force_replace=existing_is_dom_fallback and not incoming_is_dom_fallback,
+            force_replace=browser_precedence == "replace",
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,

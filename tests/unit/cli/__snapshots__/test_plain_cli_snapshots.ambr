@@ -870,8 +870,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 2,
-        "user_version": 2,
+        "expected_user_version": 3,
+        "user_version": 3,
         "version_status": "ok",
         "table_counts": {
           "raw_sessions": 2,
@@ -892,8 +892,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 24,
-        "user_version": 24,
+        "expected_user_version": 30,
+        "user_version": 30,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,
@@ -999,7 +999,7 @@
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 36,
+          "sqlite_stat1_rows": 38,
           "planner_stats_present": true
         },
         "embeddings": {
