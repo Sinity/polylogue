@@ -26,13 +26,17 @@ writer_modules:
         - tier: index
           durability: rebuildable
           interruption: replayable
-      entrypoints: [delete_sessions]
+      entrypoints:
+        [delete_sessions, write_parsed_for_retained_raw, write_raw_and_parsed,
+        write_raw_and_parsed_result, write_raw_blob_and_parsed, write_raw_blob_and_parsed_result]
     - path: polylogue/storage/sqlite/archive_tiers/source_write.py
       surfaces:
         - tier: source
           durability: durable
           interruption: atomic
-      entrypoints: [apply_source_raw_state_update, write_history_sidecar, write_source_raw_session, write_source_raw_session_blob_ref]
+      entrypoints:
+        [apply_source_raw_state_update, bind_source_raw_revision, write_history_sidecar, write_source_blob_refs,
+        write_source_raw_session, write_source_raw_session_blob_ref]
     - path: polylogue/storage/sqlite/archive_tiers/write.py
       surfaces:
         - tier: index
@@ -42,21 +46,27 @@ writer_modules:
           durability: durable
           interruption: atomic
       entrypoints:
-        [apply_insight_materialization, rebuild_archive_messages_fts, upsert_session_phase, upsert_session_profile_costs,
-        upsert_session_tag, upsert_session_work_event, write_parsed_session_to_archive]
+        [apply_insight_materialization, rebuild_archive_messages_fts, repair_stale_prefix_branch_points,
+        replace_parser_ingest_flag_tags, upsert_insight_materialization, upsert_parser_ingest_flag_tags,
+        upsert_session_phase, upsert_session_profile_costs, upsert_session_tag, upsert_session_work_event,
+        write_parsed_session_to_archive]
       twin_write_contract: session-tag-assertion-mirror
     - path: polylogue/storage/sqlite/archive_tiers/embedding_write.py
       surfaces:
         - tier: embeddings
           durability: rebuildable
           interruption: replayable
-      entrypoints: [mark_session_embedding_error, upsert_message_embeddings]
+      entrypoints: [mark_session_embedding_error, upsert_message_embedding, upsert_message_embeddings]
     - path: polylogue/storage/sqlite/archive_tiers/user_write.py
       surfaces:
         - tier: user
           durability: durable
           interruption: atomic
-      entrypoints: [mark_assertion_status, upsert_assertion]
+      entrypoints:
+        [judge_assertion_candidate, mark_assertion_status, upsert_annotation, upsert_assertion,
+        upsert_blackboard_note, upsert_correction, upsert_mark, upsert_pathology_findings_as_assertions,
+        upsert_recall_pack, upsert_saved_view, upsert_session_metadata_assertion, upsert_session_tag_assertion,
+        upsert_suppression, upsert_transform_candidate_assertions, upsert_workspace]
     - path: polylogue/storage/sqlite/archive_tiers/ops_write.py
       surfaces:
         - tier: ops
@@ -70,7 +80,7 @@ writer_modules:
         - tier: index
           durability: rebuildable
           interruption: replayable
-      entrypoints: [record_capture_gap_event]
+      entrypoints: [record_capture_gap_event, record_source_outage_events]
     - path: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
       surfaces:
         - tier: index

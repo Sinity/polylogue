@@ -351,6 +351,36 @@ def _imported_writer_modules(tree: ast.Module) -> dict[str, str]:
     return imports
 
 
+def _imported_names(tree: ast.Module) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.asname or alias.name.split(".", maxsplit=1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            names.update(alias.asname or alias.name for alias in node.names)
+    return names
+
+
+def _imported_sql_execution_lines(tree: ast.Module) -> list[int]:
+    """Find execute calls whose SQL text is hidden behind an import.
+
+    The layering gate cannot classify an imported constant against this
+    module's owned tiers. Keep executable SQL beside its owning writer so a
+    change to the statement cannot bypass the writer inventory.
+    """
+    imported = _imported_names(tree)
+    return sorted(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _SQL_EXECUTION_METHODS
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id in imported
+    )
+
+
 def _called_function_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     names: set[str] = set()
     for node in ast.walk(function):
@@ -367,9 +397,15 @@ def _entrypoint_tiers(
     tree: ast.Module,
     entrypoint: str,
     specs: dict[str, WriterModuleSpec],
+    *,
+    follow_imports: bool = True,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] | None = None,
+    imported_modules: dict[str, str] | None = None,
+    direct_tiers: dict[str, frozenset[str]] | None = None,
 ) -> frozenset[str]:
-    functions = _function_definitions(tree)
-    imported_modules = _imported_writer_modules(tree)
+    functions = functions or _function_definitions(tree)
+    imported_modules = imported_modules or _imported_writer_modules(tree)
+    direct_tiers = direct_tiers or {name: _mutation_tiers(function) for name, function in functions.items()}
     pending = [entrypoint]
     visited: set[str] = set()
     tiers: set[str] = set()
@@ -380,11 +416,11 @@ def _entrypoint_tiers(
         visited.add(name)
         function = functions.get(name)
         if function is None:
-            spec = specs.get(imported_modules.get(name, ""))
+            spec = specs.get(imported_modules.get(name, "")) if follow_imports else None
             if spec is not None:
                 tiers.update(surface.tier for surface in spec.surfaces)
             continue
-        tiers.update(_mutation_tiers(function))
+        tiers.update(direct_tiers[name])
         for called_name in _called_function_names(function):
             if called_name in functions or called_name in imported_modules:
                 pending.append(called_name)
@@ -477,6 +513,14 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
             continue
 
         expected_tiers = tuple(surface.tier for surface in spec.surfaces)
+        for line in _imported_sql_execution_lines(tree):
+            violations.append(
+                {
+                    "file": spec.path,
+                    "line": line,
+                    "rule": "writer_module_imported_sql_opaque",
+                }
+            )
         observed_tiers = _mutation_tiers(tree)
         unexpected_tiers = sorted(observed_tiers.difference(expected_tiers))
         if unexpected_tiers:
@@ -498,6 +542,11 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                     "expected": list(expected_tiers),
                 }
             )
+
+        functions = _function_definitions(tree)
+        imported_modules = _imported_writer_modules(tree)
+        direct_tiers = {name: _mutation_tiers(function) for name, function in functions.items()}
+
         if len(declaration.tiers) > 1:
             if not _contract_is_audited(declaration, spec, policy):
                 violations.append(
@@ -514,14 +563,21 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                 assert contract_name is not None
                 contract = policy.twin_write_contracts[contract_name]
                 for entrypoint in contract.entrypoints:
-                    reached_tiers = _entrypoint_tiers(tree, entrypoint, specs)
-                    if set(contract.surfaces) != reached_tiers:
+                    contract_tiers = _entrypoint_tiers(
+                        tree,
+                        entrypoint,
+                        specs,
+                        functions=functions,
+                        imported_modules=imported_modules,
+                        direct_tiers=direct_tiers,
+                    )
+                    if set(contract.surfaces) != contract_tiers:
                         violations.append(
                             {
                                 "file": spec.path,
                                 "rule": "writer_module_contract_unproven",
                                 "entrypoint": entrypoint,
-                                "observed": sorted(reached_tiers),
+                                "observed": sorted(contract_tiers),
                                 "expected": list(contract.surfaces),
                             }
                         )
@@ -535,9 +591,19 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                 }
             )
 
-        functions = _function_definitions(tree)
         observed_entrypoints = {
-            name for name, function in functions.items() if not name.startswith("_") and _mutation_tiers(function)
+            name
+            for name in functions
+            if not name.startswith("_")
+            and _entrypoint_tiers(
+                tree,
+                name,
+                specs,
+                follow_imports=False,
+                functions=functions,
+                imported_modules=imported_modules,
+                direct_tiers=direct_tiers,
+            )
         }
         if observed_entrypoints != set(spec.entrypoints):
             violations.append(
@@ -558,7 +624,15 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                         "entrypoint": entrypoint,
                     }
                 )
-            elif not _mutation_tiers(function):
+            elif not _entrypoint_tiers(
+                tree,
+                entrypoint,
+                specs,
+                follow_imports=False,
+                functions=functions,
+                imported_modules=imported_modules,
+                direct_tiers=direct_tiers,
+            ):
                 violations.append(
                     {
                         "file": spec.path,
