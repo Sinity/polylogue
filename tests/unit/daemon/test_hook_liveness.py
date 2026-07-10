@@ -150,3 +150,13 @@ def test_metrics_project_hook_flow_gap(hook_archive: Path) -> None:
     assert 'polylogue_hook_flow_healthy{harness="claude-code"} 0' in body
     assert 'polylogue_hook_flow_state{harness="claude-code",state="gap"} 1' in body
     assert 'polylogue_hook_sessions{harness="claude-code",state="without_events"} 1' in body
+
+
+def test_metrics_do_not_encode_unknown_hook_evidence_as_zero(hook_archive: Path) -> None:
+    (Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json").unlink()
+
+    body = format_metrics(hook_archive / "index.db")
+
+    assert 'polylogue_hook_flow_state{harness="claude-code",state="not-wired"} 1' in body
+    assert "polylogue_hook_flow_healthy{" not in body
+    assert "polylogue_hook_event_observed_ratio{" not in body

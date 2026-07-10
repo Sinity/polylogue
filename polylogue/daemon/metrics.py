@@ -1259,7 +1259,8 @@ def _emit_hook_flow_metrics(lines: list[str], db: Path) -> None:
     session_samples: list[tuple[dict[str, str] | None, float | int]] = []
     coverage_samples: list[tuple[dict[str, str] | None, float | int]] = []
     for status in statuses:
-        healthy_samples.append(({"harness": status.harness}, 1 if status.flow_healthy else 0))
+        if status.flow_healthy is not None:
+            healthy_samples.append(({"harness": status.harness}, 1 if status.flow_healthy else 0))
         state_samples.extend(
             (
                 {"harness": status.harness, "state": state},
@@ -1279,11 +1280,9 @@ def _emit_hook_flow_metrics(lines: list[str], db: Path) -> None:
             )
         )
         coverage_samples.extend(
-            (
-                {"harness": status.harness, "event": row.event},
-                row.observed_rate or 0.0,
-            )
+            ({"harness": status.harness, "event": row.event}, row.observed_rate)
             for row in status.coverage
+            if row.observed_rate is not None
         )
     _emit_metric(
         lines,
