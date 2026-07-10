@@ -144,3 +144,59 @@ def test_backfill_resumes_after_index_receipt_commits_before_source_terminal(
         assert conn.execute(
             "SELECT parsed_at_ms IS NOT NULL FROM raw_sessions WHERE raw_id = ?", (raw_id,)
         ).fetchone() == (1,)
+
+
+def test_backfill_resumes_after_only_some_source_markers_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2026-06-01T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"one","role":"user","content":'
+        b'[{"type":"input_text","text":"one"}]}}\n'
+    )
+    newest = baseline + (
+        b'{"type":"response_item","payload":{"type":"message","id":"two","role":"assistant","content":'
+        b'[{"type":"output_text","text":"two"}]}}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = {
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path="session.jsonl",
+                acquired_at_ms=index,
+            )
+            for index, payload in enumerate((baseline, newest), start=1)
+        }
+
+    original_mark = ArchiveStore.mark_raw_parse_succeeded
+    calls = 0
+
+    def crash_after_one_marker(self: ArchiveStore, raw_id: str, *, provider: Provider) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            original_mark(self, raw_id, provider=provider)
+            return
+        raise RuntimeError("crash between source markers")
+
+    monkeypatch.setattr(ArchiveStore, "mark_raw_parse_succeeded", crash_after_one_marker)
+    with pytest.raises(RuntimeError, match="between source markers"):
+        backfill_historical_revision_evidence(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        accepted_before = conn.execute("SELECT raw_id, content_hash FROM sessions").fetchone()
+        assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0] == 2
+
+    monkeypatch.setattr(ArchiveStore, "mark_raw_parse_succeeded", original_mark)
+    backfill_historical_revision_evidence(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == 2
+        assert {
+            str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions WHERE parsed_at_ms IS NOT NULL")
+        } == raw_ids
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT raw_id, content_hash FROM sessions").fetchone() == accepted_before
+        assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0] == 2
