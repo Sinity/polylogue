@@ -1,6 +1,6 @@
 {
   "archive_root": "archive",
-  "first_result_s": 7.434,
+  "first_result_s": 20.082,
   "ok": true,
   "output_dir": ".",
   "problems": [],
@@ -253,7 +253,7 @@
         "--limit",
         "10"
       ],
-      "duration_s": 4.539,
+      "duration_s": 2.158,
       "exit_code": 0,
       "name": "structural failure receipt",
       "output_path": "command-output/01-structural-failure-receipt.txt"
@@ -264,7 +264,7 @@
         "polylogue",
         "actions where is_error:true | group by tool | count"
       ],
-      "duration_s": 1.908,
+      "duration_s": 1.898,
       "exit_code": 0,
       "name": "failed actions aggregate",
       "output_path": "command-output/02-failed-actions-aggregate.txt"
@@ -279,7 +279,7 @@
         "--view",
         "chronicle"
       ],
-      "duration_s": 2.207,
+      "duration_s": 2.084,
       "exit_code": 0,
       "name": "composed lineage",
       "output_path": "command-output/03-composed-lineage.txt"
@@ -291,13 +291,13 @@
         "analyze",
         "--facets"
       ],
-      "duration_s": 1.941,
+      "duration_s": 1.953,
       "exit_code": 0,
       "name": "archive facets",
       "output_path": "command-output/04-archive-facets.txt"
     }
   ],
-  "total_duration_s": 13.49,
+  "total_duration_s": 26.018,
   "transcript_path": "transcript.txt",
   "verify": {
     "absolute_path_leaks": [],

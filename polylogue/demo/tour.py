@@ -138,7 +138,7 @@ def run_demo_tour(
     ok = not problems
 
     transcript_path.write_text("\n".join(transcript_parts), encoding="utf-8")
-    _write_recording_tape(recording_tape_path)
+    _write_recording_tape(recording_tape_path, out_dir_name=resolved_output.name)
 
     result = DemoTourResult(
         archive_root=resolved_archive,
@@ -302,23 +302,27 @@ def _render_report_markdown(result: DemoTourResult) -> str:
     return "\n".join(lines)
 
 
-def _write_recording_tape(path: Path) -> None:
+def _write_recording_tape(path: Path, *, out_dir_name: str) -> None:
+    # Reference the out-dir by basename only: the tape must reproduce the run
+    # it sits next to without baking a machine-local absolute path into a
+    # potentially committed artifact.
+    out_ref = shlex.quote(out_dir_name)
     path.write_text(
         textwrap.dedent(
-            """\
+            f"""\
             Output "demo-tour.gif"
             Set FontSize 18
             Set Width 1080
             Set Height 720
             Set Padding 18
             Set TypingSpeed 0.04
-            Type "polylogue demo tour"
+            Type "polylogue demo tour --out-dir {out_ref}"
             Enter
             Sleep 15s
-            Type "cat polylogue-demo-tour/transcript.txt"
+            Type "cat {out_ref}/transcript.txt"
             Enter
             Sleep 4s
-            Type "cat polylogue-demo-tour/report.md"
+            Type "cat {out_ref}/report.md"
             Enter
             Sleep 2s
             """

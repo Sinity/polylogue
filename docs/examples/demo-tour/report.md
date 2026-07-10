@@ -24,8 +24,8 @@ one receipt, a structural aggregate, copied-lineage composition, then archive sc
 
 ## Timings
 
-- First evidence result: 7.434s (budget 30s)
-- Full tour: 13.490s (budget 420s)
+- First evidence result: 20.082s (budget 30s)
+- Full tour: 26.018s (budget 420s)
 
 ## Archive
 
@@ -39,10 +39,10 @@ one receipt, a structural aggregate, copied-lineage composition, then archive sc
 
 | Step | Exit | Duration | Bytes | Output |
 | --- | ---: | ---: | ---: | --- |
-| structural failure receipt | 0 | 4.539s | 230 | `command-output/01-structural-failure-receipt.txt` |
-| failed actions aggregate | 0 | 1.908s | 44 | `command-output/02-failed-actions-aggregate.txt` |
-| composed lineage | 0 | 2.207s | 936 | `command-output/03-composed-lineage.txt` |
-| archive facets | 0 | 1.941s | 1426 | `command-output/04-archive-facets.txt` |
+| structural failure receipt | 0 | 2.158s | 230 | `command-output/01-structural-failure-receipt.txt` |
+| failed actions aggregate | 0 | 1.898s | 44 | `command-output/02-failed-actions-aggregate.txt` |
+| composed lineage | 0 | 2.084s | 936 | `command-output/03-composed-lineage.txt` |
+| archive facets | 0 | 1.953s | 1426 | `command-output/04-archive-facets.txt` |
 
 ## Problems
 

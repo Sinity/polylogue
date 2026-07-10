@@ -150,9 +150,12 @@ def test_demo_tour_writes_report_transcript_and_recording(
     assert "$ polylogue analyze --facets" in transcript_text
     assert "construct_coverage" not in transcript_text
     recording_text = recording.read_text(encoding="utf-8")
-    assert "polylogue demo tour" in recording_text
-    assert "cat polylogue-demo-tour/transcript.txt" in recording_text
-    assert "cat polylogue-demo-tour/report.md" in recording_text
+    # The tape must reproduce the run it sits next to: commands reference the
+    # actual out-dir basename, never a machine-local absolute path.
+    assert "polylogue demo tour --out-dir tour" in recording_text
+    assert "cat tour/transcript.txt" in recording_text
+    assert "cat tour/report.md" in recording_text
+    assert str(tmp_path) not in recording_text
 
 
 def test_demo_tour_plain_output_reports_artifacts(tmp_path: Path) -> None:
