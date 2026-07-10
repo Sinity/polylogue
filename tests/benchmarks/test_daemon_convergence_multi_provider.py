@@ -21,7 +21,7 @@ from typing import Any, Literal, TypeAlias, cast
 
 import pytest
 
-from tests.benchmarks.helpers import BenchmarkFixture
+from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
 
 # ── Synthetic data generation per provider ────────────────────────────
 
@@ -252,7 +252,7 @@ def test_convergence_per_provider(
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
-    result = benchmark(lambda: _run_convergence_probe(corpus_root, tmp_path))
+    result = benchmark_one_shot(benchmark, _run_convergence_probe, corpus_root, tmp_path)
 
     spec = _SCALE_TIERS[tier]
     total_msgs = spec["files"] * spec["msgs_per_file"]
@@ -295,7 +295,7 @@ def test_convergence_single_file_per_provider(
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
-    result = benchmark(lambda: _run_convergence_probe(root.parent, tmp_path))
+    result = benchmark_one_shot(benchmark, _run_convergence_probe, root.parent, tmp_path)
     msgs = 500
     if result["total_s"] > 0:
         extras = {
@@ -330,7 +330,7 @@ def test_cross_provider_convergence_correctness(
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
-    result = benchmark(lambda: _run_convergence_probe(corpus_root, tmp_path))
+    result = benchmark_one_shot(benchmark, _run_convergence_probe, corpus_root, tmp_path)
 
     assert result["failed_files"] == 0, f"Cross-provider convergence had failures: {result}"
     assert result["succeeded_files"] >= len(providers), (
