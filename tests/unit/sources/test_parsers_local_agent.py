@@ -477,6 +477,45 @@ def test_hermes_state_db_later_repository_capability_is_optional(tmp_path: Path)
     assert "repository" in session_capabilities
 
 
+def test_hermes_branch_keeps_its_physical_prefix_without_compression_hydration(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    _write_hermes_state_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                id, source, model, model_config, parent_session_id, started_at, title
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "hermes-branch",
+                "cli",
+                "nous-hermes-test",
+                json.dumps({"_branched_from": "hermes-root"}),
+                "hermes-root",
+                1_775_000_151.0,
+                "Branch child",
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO messages(session_id, role, content, timestamp, active, compacted)
+            VALUES ('hermes-branch', ?, ?, ?, 1, 0)
+            """,
+            [
+                ("user", "copied prefix", 1_775_000_151.0),
+                ("assistant", "branch diverges", 1_775_000_152.0),
+            ],
+        )
+
+    sessions = hermes_state.parse_state_db(db_path)
+    branch = next(session for session in sessions if session.provider_session_id.startswith("hermes-branch@"))
+
+    assert branch.branch_type is not None
+    assert branch.branch_type.value == "fork"
+    assert [message.text for message in branch.messages] == ["copied prefix", "branch diverges"]
+
+
 def test_hermes_state_db_profile_qualifies_identity_and_retains_raw_id(tmp_path: Path) -> None:
     first_path = tmp_path / "profile-a" / "state.db"
     second_path = tmp_path / "profile-b" / "state.db"

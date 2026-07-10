@@ -196,6 +196,52 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
                 )
             return result
 
+        async def durable_message_state() -> dict[str, dict[str, list[object]]]:
+            async with backend.connection() as conn:
+                message_rows = list(
+                    await (
+                        await conn.execute(
+                            """
+                            SELECT
+                                m.session_id,
+                                m.message_id,
+                                m.material_origin,
+                                m.is_active_path,
+                                COUNT(b.block_id) AS block_count
+                            FROM messages AS m
+                            LEFT JOIN blocks AS b ON b.message_id = m.message_id
+                            GROUP BY m.session_id, m.message_id, m.position
+                            ORDER BY m.session_id, m.position
+                            """
+                        )
+                    ).fetchall()
+                )
+                state_rows = list(
+                    await (
+                        await conn.execute(
+                            """
+                            SELECT session_id, source_message_id, json_extract(payload_json, '$.state') AS state
+                            FROM session_events
+                            WHERE event_type = 'hermes_message_state'
+                            ORDER BY session_id, position
+                            """
+                        )
+                    ).fetchall()
+                )
+            result: dict[str, dict[str, list[object]]] = {}
+            for row in message_rows:
+                session_state = result.setdefault(
+                    str(row["session_id"]),
+                    {"message_ids": [], "material_origins": [], "active_path": [], "block_counts": [], "states": []},
+                )
+                session_state["message_ids"].append(str(row["message_id"]))
+                session_state["material_origins"].append(str(row["material_origin"]))
+                session_state["active_path"].append(int(row["is_active_path"]))
+                session_state["block_counts"].append(int(row["block_count"]))
+            for row in state_rows:
+                result[str(row["session_id"])]["states"].append((str(row["source_message_id"]), str(row["state"])))
+            return result
+
         expected_cost_provenance = {
             "estimated_cost_usd": 0.002,
             "actual_cost_usd": 0.0015,
@@ -244,6 +290,23 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
                 payload["state"] for event_type, payload in events if event_type == "hermes_message_state"
             ] == expected_states
 
+        message_state = await durable_message_state()
+        assert set(message_state) == set(session_ids)
+        for state in message_state.values():
+            assert state["material_origins"] == [
+                "human_authored",
+                "human_authored",
+                "runtime_context",
+                "runtime_context",
+                "assistant_authored",
+                "assistant_authored",
+                "assistant_authored",
+                "assistant_authored",
+            ]
+            assert state["active_path"] == [1, 1, 1, 1, 0, 0, 0, 0]
+            assert state["block_counts"] == [1, 0, 1, 0, 1, 0, 1, 0]
+            assert state["states"] == list(zip(state["message_ids"], expected_states, strict=True))
+
         async with backend.connection() as conn:
             await conn.execute("DELETE FROM sessions")
             await conn.commit()
@@ -265,5 +328,6 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
         rebuilt_cost_payloads = await durable_cost_payloads()
         assert rebuilt_cost_payloads == cost_payloads
         assert await durable_hermes_events() == hermes_events
+        assert await durable_message_state() == message_state
     finally:
         await backend.close()
