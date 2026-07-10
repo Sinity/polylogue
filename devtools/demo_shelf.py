@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ DEFAULT_CATALOG = "CURATED_CATALOG.md"
 DEMO_SET_CONTRACT = "current-curated-demo-set"
 READABLE_SUFFIXES = frozenset({".md", ".json", ".jsonl", ".csv", ".txt", ".yaml", ".yml"})
 SUMMARY_COVERAGE_FIELDS = frozenset({"claim", "non_claim", "proof_fields", "caveat_fields"})
+MAX_EXCLUSION_SAMPLES = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +37,11 @@ class ShelfRender:
     summary_count: int
     summary_coverage: dict[str, list[str]]
     unsummarized_demos: list[str]
+    input_closure_mode: str
+    display_root: str
+    excluded_input_count: int
+    exclusion_reason_counts: dict[str, int]
+    exclusion_samples: list[dict[str, str]]
 
 
 def _is_readable_artifact(path: Path) -> bool:
@@ -119,12 +126,11 @@ def _summary_record(root: Path, path: Path) -> dict[str, Any]:
     return record
 
 
-def _summary_records(root: Path, generated: set[Path]) -> list[dict[str, Any]]:
+def _summary_records(root: Path, included_paths: set[Path]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*summary.json")):
-        if not path.is_file() or path.resolve() in generated:
-            continue
-        records.append(_summary_record(root, path))
+    for path in sorted(included_paths):
+        if path.name.endswith("summary.json"):
+            records.append(_summary_record(root, path))
     return records
 
 
@@ -188,24 +194,38 @@ def _build_summary_index(
     return json.dumps(summary_index, indent=2) + "\n", len(summary_records), coverage
 
 
-def _demo_records(root: Path, files: list[dict[str, object]]) -> list[dict[str, object]]:
+def _demo_records(
+    root: Path,
+    files: list[dict[str, object]],
+    included_paths: set[Path],
+) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
-    for entry in sorted(path for path in root.iterdir() if path.is_dir() and not path.name.startswith(".")):
-        readme = entry / "README.md"
-        if not readme.exists():
-            readme = entry / "current" / "README.md"
-        analysis = entry / "ANALYSIS.md"
-        if not analysis.exists():
-            analysis = entry / "current" / "ANALYSIS.md"
-        title = _first_heading(readme) or _first_heading(analysis) or entry.name.replace("-", " ").title()
-        entry_files = [record for record in files if str(record["path"]).startswith(f"{entry.name}/")]
+    demo_ids = sorted(
+        {
+            str(record["path"]).split("/", maxsplit=1)[0]
+            for record in files
+            if "/" in str(record["path"]) and not str(record["path"]).startswith(".")
+        }
+    )
+    for demo_id in demo_ids:
+        entry = root / demo_id
+        readme_candidates = (entry / "README.md", entry / "current" / "README.md")
+        analysis_candidates = (entry / "ANALYSIS.md", entry / "current" / "ANALYSIS.md")
+        readme = next((path for path in readme_candidates if path.resolve() in included_paths), None)
+        analysis = next((path for path in analysis_candidates if path.resolve() in included_paths), None)
+        title = (
+            (_first_heading(readme) if readme is not None else "")
+            or (_first_heading(analysis) if analysis is not None else "")
+            or demo_id.replace("-", " ").title()
+        )
+        entry_files = [record for record in files if str(record["path"]).startswith(f"{demo_id}/")]
         readable_count = sum(1 for record in entry_files if record["readable"])
         records.append(
             {
-                "id": entry.name,
+                "id": demo_id,
                 "title": title,
-                "readme": readme.relative_to(root).as_posix() if readme.exists() else None,
-                "analysis": analysis.relative_to(root).as_posix() if analysis.exists() else None,
+                "readme": readme.relative_to(root).as_posix() if readme is not None else None,
+                "analysis": analysis.relative_to(root).as_posix() if analysis is not None else None,
                 "file_count": len(entry_files),
                 "readable_count": readable_count,
             }
@@ -285,6 +305,64 @@ def _coverage_failures(summary_coverage: dict[str, list[str]], required: set[str
     }
 
 
+def _repository_context(root: Path) -> tuple[Path, str] | None:
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    repository_root = Path(result.stdout.strip()).resolve()
+    try:
+        relative_root = root.relative_to(repository_root).as_posix()
+    except ValueError:
+        return None
+    return repository_root, relative_root or "."
+
+
+def _select_input_files(
+    root: Path,
+    *,
+    generated: set[Path],
+    output_root: Path,
+    private_projection: bool,
+) -> tuple[str, str, list[Path], list[dict[str, str]]]:
+    repository_context = _repository_context(root)
+    relative_root = repository_context[1] if repository_context is not None else None
+    display_root = relative_root if relative_root is not None else str(root)
+    all_files = [
+        path.resolve()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+        and path.resolve() not in generated
+        and (output_root == root or not path.resolve().is_relative_to(output_root))
+    ]
+    if private_projection or repository_context is None:
+        mode = "filesystem-private" if private_projection else "filesystem"
+        return mode, display_root, all_files, []
+
+    repository_root, relative_root = repository_context
+    result = subprocess.run(
+        ["git", "-C", str(repository_root), "ls-files", "-z", "--", relative_root],
+        check=True,
+        capture_output=True,
+    )
+    tracked = {
+        (repository_root / raw.decode("utf-8", errors="surrogateescape")).resolve()
+        for raw in result.stdout.split(b"\0")
+        if raw
+    }
+    included = [path for path in all_files if path in tracked]
+    excluded = [
+        {"path": path.relative_to(root).as_posix(), "reason": "not_git_tracked"}
+        for path in all_files
+        if path not in tracked
+    ]
+    return "git-tracked", display_root, included, excluded
+
+
 def render_demo_shelf(
     root: Path,
     *,
@@ -293,40 +371,60 @@ def render_demo_shelf(
     summary_index_name: str = DEFAULT_SUMMARY_INDEX,
     readme_name: str = DEFAULT_README,
     catalog_name: str = DEFAULT_CATALOG,
+    private_output: Path | None = None,
 ) -> ShelfRender:
-    """Build deterministic demo shelf indexes.
-
-    ``bundle_name`` is accepted for CLI compatibility only. Declarative read
-    packages own portable bundle generation; this helper deliberately does not
-    concatenate readable artifact bodies.
-    """
-
+    """Build deterministic indexes from tracked inputs or an explicit private projection."""
     root = root.expanduser().resolve()
-    manifest_path = root / manifest_name
-    summary_index_path = root / summary_index_name
-    readme_path = root / readme_name
-    catalog_path = root / catalog_name
-    generated = {manifest_path.resolve(), summary_index_path.resolve(), readme_path.resolve(), catalog_path.resolve()}
-    if bundle_name:
-        generated.add((root / bundle_name).resolve())
-    files: list[dict[str, object]] = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        resolved = path.resolve()
-        if resolved in generated:
-            continue
-        rel = path.relative_to(root).as_posix()
-        files.append(
-            {
-                "path": rel,
-                "bytes": path.stat().st_size,
-                "readable": _is_readable_artifact(path),
-            }
+    output_root = private_output.expanduser().resolve() if private_output is not None else root
+    if private_output is not None and output_root.is_relative_to(root):
+        raise ValueError("private output must be outside the committed shelf root")
+    manifest_path = output_root / manifest_name
+    summary_index_path = output_root / summary_index_name
+    readme_path = output_root / readme_name
+    catalog_path = output_root / catalog_name
+    generated = {
+        path.resolve()
+        for path in (
+            manifest_path,
+            summary_index_path,
+            readme_path,
+            catalog_path,
+            root / manifest_name,
+            root / summary_index_name,
+            root / readme_name,
+            root / catalog_name,
         )
+    }
+    if bundle_name:
+        generated.update({(output_root / bundle_name).resolve(), (root / bundle_name).resolve()})
+    mode, display_root, input_files, excluded_inputs = _select_input_files(
+        root,
+        generated=generated,
+        output_root=output_root,
+        private_projection=private_output is not None,
+    )
+    reason_counts: dict[str, int] = {}
+    for excluded in excluded_inputs:
+        reason = excluded["reason"]
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    files = [
+        {
+            "path": path.relative_to(root).as_posix(),
+            "bytes": path.stat().st_size,
+            "readable": _is_readable_artifact(path),
+        }
+        for path in input_files
+    ]
     manifest = {
         "contract": DEMO_SET_CONTRACT,
-        "root": str(root),
+        "root": display_root,
+        "input_closure": {
+            "mode": mode,
+            "included_count": len(files),
+            "excluded_count": len(excluded_inputs),
+            "exclusion_reason_counts": dict(sorted(reason_counts.items())),
+            "exclusion_samples": "bounded samples are emitted in the command JSON payload",
+        },
         "packaging": (
             "Use devtools workspace read-package for portable readable bundles; this helper only writes indexes."
         ),
@@ -338,11 +436,12 @@ def render_demo_shelf(
         "files": files,
     }
     manifest_text = json.dumps(manifest, indent=2) + "\n"
-    summary_records = _summary_records(root, generated)
-    records = _demo_records(root, files)
+    included_paths = set(input_files)
+    summary_records = _summary_records(root, included_paths)
+    records = _demo_records(root, files, included_paths)
     unsummarized_demos = _unsummarized_demos(records, summary_records)
     summary_index_text, summary_count, summary_coverage = _build_summary_index(
-        root,
+        Path(display_root),
         summary_records,
         unsummarized_demos,
     )
@@ -362,6 +461,11 @@ def render_demo_shelf(
         summary_count=summary_count,
         summary_coverage=summary_coverage,
         unsummarized_demos=unsummarized_demos,
+        input_closure_mode=mode,
+        display_root=display_root,
+        excluded_input_count=len(excluded_inputs),
+        exclusion_reason_counts=dict(sorted(reason_counts.items())),
+        exclusion_samples=excluded_inputs[:MAX_EXCLUSION_SAMPLES],
     )
 
 
@@ -406,15 +510,21 @@ def main(argv: list[str] | None = None) -> int:
         metavar="VERSION",
         help="In check mode, fail when a summary declares a different index_schema_version.",
     )
+    parser.add_argument(
+        "--private-output",
+        type=Path,
+        default=None,
+        help="Write a full-filesystem private projection to this separate, untracked directory.",
+    )
     parser.add_argument("--check", action="store_true", help="Verify files are current without writing.")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     args = parser.parse_args(argv)
-
     rendered = render_demo_shelf(
         args.root,
         manifest_name=args.manifest,
         bundle_name=args.bundle,
         summary_index_name=args.summary_index,
+        private_output=args.private_output,
     )
     changed = {
         "manifest": _changed(rendered.manifest_path, rendered.manifest_text),
@@ -428,8 +538,9 @@ def main(argv: list[str] | None = None) -> int:
         summary_index_payload["records"],
         args.require_index_schema_version,
     )
-    ok = not any(changed.values()) and not coverage_failures and not schema_mismatches
-    if not args.check:
+    undeclared_inputs = rendered.input_closure_mode == "git-tracked" and rendered.excluded_input_count > 0
+    ok = not any(changed.values()) and not coverage_failures and not schema_mismatches and not undeclared_inputs
+    if not args.check and not undeclared_inputs:
         rendered.manifest_path.parent.mkdir(parents=True, exist_ok=True)
         rendered.manifest_path.write_text(rendered.manifest_text)
         rendered.summary_index_path.write_text(rendered.summary_index_text)
@@ -453,6 +564,14 @@ def main(argv: list[str] | None = None) -> int:
         "summary_coverage_failures": coverage_failures,
         "required_index_schema_version": args.require_index_schema_version,
         "summary_schema_mismatches": schema_mismatches,
+        "input_closure": {
+            "mode": rendered.input_closure_mode,
+            "included_count": rendered.file_count,
+            "excluded_count": rendered.excluded_input_count,
+            "exclusion_reason_counts": rendered.exclusion_reason_counts,
+        },
+        "undeclared_inputs": undeclared_inputs,
+        "exclusion_samples": rendered.exclusion_samples,
         "changed": changed,
         "mode": "check" if args.check else "write",
     }
@@ -471,6 +590,8 @@ def main(argv: list[str] | None = None) -> int:
         reasons.extend(f"summary coverage {field}" for field in coverage_failures)
         if schema_mismatches:
             reasons.append("summary schema version")
+        if undeclared_inputs:
+            reasons.append("undeclared shelf inputs (use --private-output for a private projection)")
         print("demo shelf drift:", ", ".join(reasons), file=sys.stderr)
     return 0 if ok else 1
 

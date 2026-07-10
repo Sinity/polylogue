@@ -1,11 +1,58 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from devtools import demo_shelf
+
+GENERATED_SHELF_FILES = (
+    "MANIFEST.readable.json",
+    "SUMMARY_INDEX.json",
+    "README.md",
+    "CURATED_CATALOG.md",
+)
+
+
+def _git(repository: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repository), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _repository_shelf(tmp_path: Path) -> tuple[Path, Path]:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    _git(repository, "config", "user.email", "demo-shelf@example.invalid")
+    _git(repository, "config", "user.name", "Demo Shelf Test")
+    (repository / ".gitignore").write_text(".agent/demos/ignored-demo/\nprivate-output/\n")
+    root = repository / ".agent" / "demos"
+    (root / "tracked-demo").mkdir(parents=True)
+    (root / "tracked-demo" / "README.md").write_text("# Tracked Demo\n")
+    (root / "tracked-demo" / "summary.json").write_text(
+        json.dumps(
+            {
+                "artifact": "tracked-demo",
+                "claim": "Tracked evidence is included.",
+                "non_claim": "This fixture does not use private evidence.",
+                "proofs": ["README.md"],
+                "caveats": ["Synthetic fixture"],
+            }
+        )
+    )
+    _git(repository, "add", ".gitignore", ".agent/demos/tracked-demo")
+    _git(repository, "commit", "--quiet", "-m", "seed tracked demo")
+    assert demo_shelf.main(["--root", str(root)]) == 0
+    _git(repository, "add", ".agent/demos")
+    _git(repository, "commit", "--quiet", "-m", "add shelf projections")
+    return repository, root
 
 
 def test_demo_shelf_writes_manifest_and_summary_index(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -237,3 +284,93 @@ def test_demo_shelf_require_index_schema_version_fails_stale_claim(
             "required": 23,
         }
     ]
+
+
+def test_repository_closure_rejects_ignored_demo_with_bounded_accounting(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository, root = _repository_shelf(tmp_path)
+    capsys.readouterr()
+    baseline = {name: (root / name).read_bytes() for name in GENERATED_SHELF_FILES}
+    ignored_root = root / "ignored-demo"
+    ignored_root.mkdir()
+    for index in range(25):
+        (ignored_root / f"private-{index:02}.json").write_text(json.dumps({"artifact": "private evidence"}))
+
+    exit_code = demo_shelf.main(["--root", str(root), "--json"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["undeclared_inputs"] is True
+    assert payload["input_closure"] == {
+        "mode": "git-tracked",
+        "included_count": 2,
+        "excluded_count": 25,
+        "exclusion_reason_counts": {"not_git_tracked": 25},
+    }
+    assert len(payload["exclusion_samples"]) == demo_shelf.MAX_EXCLUSION_SAMPLES
+    assert payload["exclusion_samples"][0] == {
+        "path": "ignored-demo/private-00.json",
+        "reason": "not_git_tracked",
+    }
+    assert {name: (root / name).read_bytes() for name in GENERATED_SHELF_FILES} == baseline
+    assert _git(repository, "status", "--short") == ""
+
+
+def test_private_projection_keeps_ignored_demo_accessible(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository, root = _repository_shelf(tmp_path)
+    capsys.readouterr()
+    ignored = root / "ignored-demo" / "summary.json"
+    ignored.parent.mkdir()
+    ignored.write_text(json.dumps({"artifact": "private evidence"}))
+    private_output = repository / "private-output"
+
+    exit_code = demo_shelf.main(["--root", str(root), "--private-output", str(private_output), "--json"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["input_closure"] == {
+        "mode": "filesystem-private",
+        "included_count": 3,
+        "excluded_count": 0,
+        "exclusion_reason_counts": {},
+    }
+    manifest = json.loads((private_output / "MANIFEST.readable.json").read_text())
+    assert "ignored-demo/summary.json" in {record["path"] for record in manifest["files"]}
+    assert _git(repository, "status", "--short") == ""
+
+
+def test_tracked_projection_is_byte_identical_in_clean_clone(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository, root = _repository_shelf(tmp_path)
+    capsys.readouterr()
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "--quiet", str(repository), str(clone)], check=True)
+    cloned_root = clone / ".agent" / "demos"
+
+    exit_code = demo_shelf.main(["--root", str(cloned_root), "--check", "--json"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["changed"] == dict.fromkeys(("manifest", "summary_index", "readme", "catalog"), False)
+    for name in GENERATED_SHELF_FILES:
+        assert (cloned_root / name).read_bytes() == (root / name).read_bytes()
+
+
+def test_current_repository_closure_keeps_uplift_corpus_indexed() -> None:
+    root = Path(".agent/demos")
+
+    rendered = demo_shelf.render_demo_shelf(root)
+
+    manifest = json.loads(rendered.manifest_text)
+    paths = {record["path"] for record in manifest["files"]}
+    assert "uplift-two-arm/current/report.md" in paths
+    assert "uplift-two-arm/current/arms/pair1-handoff-pack-output.md" in paths
+    assert "uplift-two-arm/current/metrics/score.json" in paths
+    assert "uplift-two-arm" in rendered.unsummarized_demos
