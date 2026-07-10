@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from collections.abc import Callable
@@ -22,7 +21,7 @@ from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import preview_backfill
 from polylogue.maintenance.preview import ALL_SCOPES, staleness_inventory
 from polylogue.maintenance.registry import MaintenanceOperationRegistry, OperationRecord
-from polylogue.maintenance.replay import ReplayProgress, execute_replay, rebuild_index_from_source
+from polylogue.maintenance.replay import ReplayProgress, execute_replay
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path, render_root
@@ -50,7 +49,6 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitPlan, build_archive_init_plan
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
-from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ArchiveAssertionEnvelope,
@@ -1103,26 +1101,6 @@ def _filter_raw_ids_by_max_blob_size(root: Path, raw_ids: list[str], max_blob_mb
     return [str(row[0]) for row in rows]
 
 
-def _selected_raw_blob_bytes(root: Path, raw_ids: list[str]) -> int:
-    if not raw_ids:
-        return 0
-    source_db = root / "source.db"
-    if not source_db.exists():
-        return 0
-    total = 0
-    chunk_size = 900
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
-        for offset in range(0, len(raw_ids), chunk_size):
-            chunk = raw_ids[offset : offset + chunk_size]
-            placeholders = ",".join("?" for _ in chunk)
-            row = conn.execute(
-                f"SELECT COALESCE(SUM(blob_size), 0) FROM raw_sessions WHERE raw_id IN ({placeholders})",
-                tuple(chunk),
-            ).fetchone()
-            total += int(row[0] or 0) if row is not None else 0
-    return total
-
-
 def _rebuild_index_selection_plan(
     root: Path,
     *,
@@ -1311,48 +1289,7 @@ def _rebuild_index_selection_plan(
     }
 
 
-def _now_ms() -> int:
-    return int(datetime.now(UTC).timestamp() * 1000)
-
-
-def _record_rebuild_index_attempt(
-    root: Path,
-    *,
-    attempt_id: str | None = None,
-    status: str,
-    started_at_ms: int,
-    finished_at_ms: int | None = None,
-    parsed_raw_count: int = 0,
-    materialized_count: int = 0,
-    error_message: str | None = None,
-) -> str | None:
-    ops_db = root / "ops.db"
-    if not ops_db.exists():
-        return None
-    try:
-        with sqlite3.connect(ops_db, timeout=10.0) as conn:
-            return record_ingest_attempt(
-                conn,
-                attempt_id=attempt_id,
-                source_path=str(root / "source.db"),
-                status=status,
-                phase="rebuild-index",
-                storage_route="maintenance",
-                started_at_ms=started_at_ms,
-                heartbeat_at_ms=_now_ms() if status == "running" else None,
-                finished_at_ms=finished_at_ms,
-                parsed_raw_count=parsed_raw_count,
-                materialized_count=materialized_count,
-                error_message=error_message,
-                source_paths_json=json.dumps([str(root / "source.db")]),
-            )
-    except sqlite3.Error:
-        return None
-
-
 @maintenance_group.command("rebuild-index")
-@click.option("--batch-size", type=int, default=50, show_default=True, help="Maximum raw records per ingest batch.")
-@click.option("--workers", type=int, default=None, help="Optional ingest worker count.")
 @click.option(
     "--only-missing",
     is_flag=True,
@@ -1371,16 +1308,6 @@ def _record_rebuild_index_attempt(
     help="Bound an explicit replay selection to raw rows at or below this blob size.",
 )
 @click.option(
-    "--force-write",
-    is_flag=True,
-    help="Rewrite sessions even when the parsed content hash matches existing index rows.",
-)
-@click.option(
-    "--no-materialize",
-    is_flag=True,
-    help="Skip the final full session-insight materialization pass.",
-)
-@click.option(
     "--plan",
     "plan_only",
     is_flag=True,
@@ -1396,29 +1323,19 @@ def _record_rebuild_index_attempt(
     help="Output format.",
 )
 def rebuild_index_command(
-    batch_size: int,
-    workers: int | None,
     only_missing: bool,
     raw_ids: tuple[str, ...],
     max_blob_mb: float | None,
-    force_write: bool,
-    no_materialize: bool,
     plan_only: bool,
     plan_limit: int,
     output_format: str,
 ) -> None:
-    """Replay durable source rows into index.db, then rebuild read models.
+    """Inspect source rows selected for an authority-safe index rebuild.
 
-    This is the canonical post-reset path for a rebuildable index tier:
-    ``source.db`` remains the durable evidence root, ``index.db`` is recreated
-    from those rows, and session insight tables are rebuilt from the resulting
-    sessions unless ``--no-materialize`` is supplied.
+    Use ``--plan`` for read-only inspection. Execution is temporarily disabled
+    until raw revisions have a typed per-session authority order.
     """
     configure_logging()
-    if batch_size <= 0:
-        raise click.BadParameter("batch size must be positive", param_hint="--batch-size")
-    if workers is not None and workers <= 0:
-        raise click.BadParameter("workers must be positive", param_hint="--workers")
     if raw_ids and only_missing:
         raise click.UsageError("--raw-id cannot be combined with --only-missing")
     if max_blob_mb is not None and max_blob_mb <= 0:
@@ -1456,7 +1373,6 @@ def rebuild_index_command(
     selected_raw_ids = _filter_raw_ids_by_max_blob_size(root, selected_raw_ids, max_blob_mb)
     selected_raw_count = len(selected_raw_ids)
     skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
-    selected_blob_bytes = _selected_raw_blob_bytes(root, selected_raw_ids)
     if plan_only:
         payload = _rebuild_index_selection_plan(
             root,
@@ -1501,130 +1417,9 @@ def rebuild_index_command(
                         f"blob={int(group['blob_bytes']):,} source={group['source_path']}"
                     )
         return
-    if only_missing and selected_raw_count == 0 and no_materialize:
-        payload = {
-            "archive_root": str(root),
-            "raw_session_count": raw_count,
-            "selected_raw_count": 0,
-            "skipped_by_blob_limit_count": 0,
-            "selected_blob_bytes": 0,
-            "only_missing": True,
-            "status": "ok",
-            "materialized": False,
-            "parse_counts": {},
-            "changed_counts": {},
-            "processed_session_count": 0,
-            "parse_failure_count": 0,
-            "batch_count": 0,
-            "materialized_session_count": 0,
-            "materialized_rebuilt": False,
-            "materialize_observation": None,
-        }
-        if output_format == "json":
-            click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        else:
-            click.echo(f"Archive root: {root}")
-            click.echo(f"Raw rows:     {raw_count:,}")
-            click.echo("Selected:     0 missing raw row(s)")
-            click.echo("Materialized: skipped")
-            click.echo("Elapsed:      0.0s")
-        return
+    from polylogue.storage.repair import RAW_MATERIALIZATION_REPLAY_BLOCK_REASON
 
-    started = datetime.now(UTC)
-    started_ms = int(started.timestamp() * 1000)
-    config = Config(archive_root=root, render_root=render_root(), sources=[])
-    rebuild_attempt_id = _record_rebuild_index_attempt(
-        root,
-        status="running",
-        started_at_ms=started_ms,
-        parsed_raw_count=0,
-        materialized_count=0,
-    )
-    if output_format == "plain":
-        click.echo(f"Selected:     {selected_raw_count:,} raw row(s)")
-        click.echo(f"Blob bytes:   {selected_blob_bytes:,}")
-
-    def _emit_progress(amount: int, desc: str | None = None) -> None:
-        del amount
-        if desc:
-            click.echo(f"  {desc}", err=True)
-
-    try:
-        result = asyncio.run(
-            rebuild_index_from_source(
-                config,
-                raw_ids=selected_raw_ids,
-                raw_batch_size=batch_size,
-                ingest_workers=workers,
-                force_write=force_write,
-                materialize=not no_materialize,
-                progress_callback=_emit_progress if output_format == "plain" else None,
-            )
-        )
-    except BaseException as exc:
-        _record_rebuild_index_attempt(
-            root,
-            attempt_id=rebuild_attempt_id,
-            status="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
-            started_at_ms=started_ms,
-            finished_at_ms=_now_ms(),
-            error_message=str(exc),
-        )
-        raise
-    completed = datetime.now(UTC)
-    _record_rebuild_index_attempt(
-        root,
-        attempt_id=rebuild_attempt_id,
-        status="completed" if result["parse_failure_count"] == 0 else "failed",
-        started_at_ms=started_ms,
-        finished_at_ms=int(completed.timestamp() * 1000),
-        parsed_raw_count=selected_raw_count,
-        materialized_count=result["materialized_session_count"]
-        if isinstance(result["materialized_session_count"], int)
-        else 0,
-        error_message=None
-        if result["parse_failure_count"] == 0
-        else f"{result['parse_failure_count']} parse failure(s)",
-    )
-    payload = {
-        "archive_root": str(root),
-        "raw_session_count": raw_count,
-        "selected_raw_count": selected_raw_count,
-        "selected_blob_bytes": selected_blob_bytes,
-        "skipped_by_blob_limit_count": skipped_by_blob_limit_count,
-        "only_missing": only_missing,
-        "raw_id_count": len(raw_ids),
-        "max_blob_mb": max_blob_mb,
-        "batch_size": batch_size,
-        "workers": workers,
-        "force_write": force_write,
-        "status": "ok" if result["parse_failure_count"] == 0 else "parse-failures",
-        "started_at": started.isoformat(),
-        "completed_at": completed.isoformat(),
-        "elapsed_s": round((completed - started).total_seconds(), 3),
-        **result,
-    }
-
-    if output_format == "json":
-        click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-
-    click.echo(f"Archive root: {root}")
-    click.echo(f"Raw rows:     {raw_count:,}")
-    if only_missing:
-        click.echo(f"Selected:     {selected_raw_count:,} missing raw row(s)")
-    elif raw_ids:
-        click.echo(f"Selected:     {selected_raw_count:,} explicit raw row(s)")
-    if skipped_by_blob_limit_count:
-        click.echo(f"Blob limit:   skipped {skipped_by_blob_limit_count:,} raw row(s)")
-    click.echo(f"Parsed:       {result['processed_session_count']:,} changed session(s)")
-    click.echo(f"Batches:      {result['batch_count']:,}")
-    click.echo(f"Failures:     {result['parse_failure_count']:,}")
-    if result["materialized"]:
-        click.echo(f"Materialized: {result['materialized_session_count']:,} session insight row(s)")
-    else:
-        click.echo("Materialized: skipped")
-    click.echo(f"Elapsed:      {payload['elapsed_s']:.1f}s")
+    raise click.ClickException(RAW_MATERIALIZATION_REPLAY_BLOCK_REASON)
 
 
 @maintenance_group.command("missing-raw-blob-cursors")

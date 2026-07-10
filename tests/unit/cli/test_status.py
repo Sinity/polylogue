@@ -18,6 +18,7 @@ from polylogue.cli.commands.status import (
     _FULL_TIMEOUT_S,
     _archive_cli_route_status,
     _archive_facade_route_status,
+    _render_raw_replay_backlog,
     _show_daemon_status,
     _show_direct_json,
     _show_direct_status,
@@ -67,6 +68,30 @@ def _combined_calls(env: AppEnv) -> str:
     """Get combined output from the capturing console."""
     console: Any = env.ui.console
     return " ".join(console.calls)
+
+
+def test_raw_replay_backlog_plain_status_explains_containment() -> None:
+    env = _make_app_env()
+    reason = "raw source-to-index replay is disabled pending per-session revision authority"
+
+    _render_raw_replay_backlog(
+        env,
+        {
+            "available": True,
+            "execution_blocked": True,
+            "execution_block_reason": reason,
+            "candidate_count": 2,
+            "missing_blob_count": 0,
+            "total_blob_bytes": 12_000_000,
+            "max_blob_bytes": 10_000_000,
+            "oversized_count": 0,
+            "origin_summary": [],
+        },
+    )
+
+    output = _combined_calls(env)
+    assert "Raw replay backlog:" in output
+    assert reason in output
 
 
 def test_archive_facade_route_catalog_covers_public_async_facade() -> None:

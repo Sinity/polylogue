@@ -1865,6 +1865,9 @@ def _render_raw_replay_backlog(env: AppEnv, backlog: dict[str, Any]) -> None:
         line += f"; {oversized:,} oversized"
     line += "[/yellow]"
     env.ui.console.print(line)
+    block_reason = backlog.get("execution_block_reason")
+    if backlog.get("execution_blocked") and isinstance(block_reason, str) and block_reason:
+        env.ui.console.print(f"    [yellow]{block_reason}[/yellow]")
 
     origins = backlog.get("origin_summary")
     if isinstance(origins, list) and origins:
