@@ -63,9 +63,19 @@ def _ingest_append_plans_archive(
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             _add_timing(timings, "append.archive_open", t0)
             for plan in plans:
+                provider: Provider | None = None
+                raw_id: str | None = None
                 try:
-                    t0 = time.perf_counter()
                     provider = Provider.from_string(plan.source_name)
+                    t0 = time.perf_counter()
+                    raw_id = archive.write_raw_payload(
+                        provider=provider,
+                        payload=plan.payload,
+                        source_path=str(plan.path),
+                        source_index=-1,
+                        acquired_at_ms=acquired_at_ms,
+                    )
+                    _add_timing(timings, "append.source_raw_write", t0)
                     t0 = time.perf_counter()
                     payloads = list(_iter_json_stream(BytesIO(plan.payload), plan.path.name))
                     _add_timing(timings, "append.json_stream", t0)
@@ -78,21 +88,34 @@ def _ingest_append_plans_archive(
                     )
                     _add_timing(timings, "append.provider_parse", t0)
                     if not sessions:
+                        archive.mark_raw_parse_failed(
+                            raw_id,
+                            provider=provider,
+                            error=ValueError("parsed raw payload produced no sessions"),
+                        )
                         failed.append(plan)
                         continue
                     for session in sessions:
                         t0 = time.perf_counter()
-                        archive.write_raw_and_parsed(
+                        archive.write_parsed_for_retained_raw(
                             session,
-                            payload=plan.payload,
+                            raw_id=raw_id,
                             source_path=str(plan.path),
                             source_index=-1,
                             acquired_at_ms=acquired_at_ms,
                             stage_timings_s=timings,
+                            finalize_raw_parse=False,
                         )
                         _add_timing(timings, "append.raw_and_index_write", t0)
+                    archive.mark_raw_parse_succeeded(raw_id, provider=provider)
                     succeeded.append(plan)
-                except Exception:
+                except Exception as exc:
+                    if provider is not None and raw_id is not None:
+                        archive.mark_raw_parse_failed(
+                            raw_id,
+                            provider=provider,
+                            error=exc,
+                        )
                     logger.warning("live.watcher: archive append ingest failed for %s", plan.path, exc_info=True)
                     failed.append(plan)
     except Exception as exc:

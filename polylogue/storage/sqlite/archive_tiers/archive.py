@@ -112,6 +112,7 @@ from polylogue.storage.insights.session.runtime import (
     SessionInsightStatusSnapshot,
 )
 from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -128,6 +129,8 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceBlobRef,
+    apply_source_raw_state_update,
+    write_source_blob_refs,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
@@ -747,6 +750,7 @@ class ArchiveStore:
 
             self._blob_publisher = ArchiveBlobPublisher(self.source_db_path, self.archive_root / "blob")
         self._pending_index_blob_receipts: list[tuple[str, bytes]] = []
+        self._pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]] = []
         self._attach_user_tier_if_present()
 
     @classmethod
@@ -799,6 +803,7 @@ class ArchiveStore:
         """
         self._conn.commit()
         self._consume_index_blob_receipts()
+        self._flush_pending_raw_parse_states()
         if self._source_conn is not None:
             self._source_conn.commit()
 
@@ -810,6 +815,7 @@ class ArchiveStore:
         """
         self._conn.rollback()
         self._pending_index_blob_receipts.clear()
+        self._pending_raw_parse_states.clear()
         if self._source_conn is not None:
             self._source_conn.rollback()
 
@@ -1087,6 +1093,7 @@ class ArchiveStore:
         stage_timing_prefix: str = "append",
         manage_transaction: bool = True,
         blob_publication_receipt_id: str | None = None,
+        finalize_raw_parse: bool = True,
     ) -> tuple[str, str]:
         """Write raw acquisition bytes and the parsed session they produced."""
         result = self.write_raw_and_parsed_result(
@@ -1100,8 +1107,187 @@ class ArchiveStore:
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
             blob_publication_receipt_id=blob_publication_receipt_id,
+            finalize_raw_parse=finalize_raw_parse,
         )
         return result.raw_id, result.session_id
+
+    def write_raw_payload(
+        self,
+        *,
+        provider: Provider,
+        payload: bytes,
+        source_path: str,
+        acquired_at_ms: int,
+        source_index: int = 0,
+        raw_id: str | None = None,
+        blob_publication_receipt_id: str | None = None,
+    ) -> str:
+        """Commit raw bytes before attempting to parse or index them."""
+        if self._blob_publisher is None:
+            raise RuntimeError("raw archive writes require a writable archive publisher")
+        if blob_publication_receipt_id is None:
+            raw_hash, _raw_size = self._blob_publisher.write_from_bytes(payload)
+            blob_publication_receipt_id = self._blob_publisher.receipt_id(raw_hash)
+        self._blob_publisher.flush()
+        return write_source_raw_session(
+            self._ensure_source_conn(),
+            origin=origin_from_provider(provider),
+            source_path=source_path,
+            source_index=source_index,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            manage_transaction=True,
+        )
+
+    def write_raw_blob_ref(
+        self,
+        *,
+        provider: Provider,
+        blob_hash_hex: str,
+        blob_size: int,
+        source_path: str,
+        acquired_at_ms: int,
+        source_index: int = 0,
+        raw_id: str | None = None,
+        blob_publication_receipt_id: str | None = None,
+    ) -> str:
+        """Commit a prepublished raw blob reference before parsing it."""
+        if self._blob_publisher is not None:
+            self._blob_publisher.flush()
+        return write_source_raw_session_blob_ref(
+            self._ensure_source_conn(),
+            origin=origin_from_provider(provider),
+            source_path=source_path,
+            source_index=source_index,
+            blob_hash=bytes.fromhex(blob_hash_hex),
+            blob_size=blob_size,
+            acquired_at_ms=acquired_at_ms,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            manage_transaction=True,
+        )
+
+    def write_parsed_for_retained_raw(
+        self,
+        session: ParsedSession,
+        *,
+        raw_id: str,
+        source_path: str,
+        acquired_at_ms: int,
+        source_index: int = 0,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "append",
+        manage_transaction: bool = True,
+        finalize_raw_parse: bool = True,
+    ) -> tuple[str, str]:
+        """Index one session for raw evidence that is already durable."""
+        preacquired_attachments, attachment_blob_refs = self._preacquire_attachment_blobs(
+            session,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+        )
+        if self._blob_publisher is not None:
+            self._blob_publisher.flush()
+        write_source_blob_refs(self._ensure_source_conn(), raw_id, attachment_blob_refs)
+        index_started = time.perf_counter()
+        result = self._index_parsed_for_retained_raw(
+            session,
+            raw_id=raw_id,
+            source_index=source_index,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=manage_transaction,
+            preacquired_attachment_blobs=preacquired_attachments,
+            finalize_raw_parse=finalize_raw_parse,
+        )
+        if stage_timings_s is not None:
+            key = f"{stage_timing_prefix}.index_parsed_write"
+            stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
+        return result.raw_id, result.session_id
+
+    def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
+        """Commit one typed source parse state after its index outcome."""
+        apply_source_raw_state_update(
+            self._ensure_source_conn(),
+            raw_id,
+            state=state,
+            manage_transaction=True,
+        )
+
+    def mark_raw_parse_failed(self, raw_id: str, *, provider: Provider, error: BaseException) -> None:
+        """Persist a bounded parse/index failure for retained raw evidence."""
+        self.finalize_raw_parse_state(raw_id, state=self._raw_parse_failure_state(provider, error))
+
+    def mark_raw_parse_succeeded(self, raw_id: str, *, provider: Provider) -> None:
+        """Finalize one retained raw payload after every derived session commits."""
+        self.finalize_raw_parse_state(raw_id, state=self._raw_parse_success_state(provider))
+
+    def _flush_pending_raw_parse_states(self) -> None:
+        if not self._pending_raw_parse_states:
+            return
+        source_conn = self._ensure_source_conn()
+        with source_conn:
+            for raw_id, state in self._pending_raw_parse_states:
+                apply_source_raw_state_update(
+                    source_conn,
+                    raw_id,
+                    state=state,
+                    manage_transaction=False,
+                )
+        self._pending_raw_parse_states.clear()
+
+    def _index_parsed_for_retained_raw(
+        self,
+        session: ParsedSession,
+        *,
+        raw_id: str,
+        source_index: int,
+        stage_timings_s: dict[str, float] | None,
+        stage_timing_prefix: str,
+        manage_transaction: bool,
+        preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]],
+        finalize_raw_parse: bool,
+    ) -> ArchiveRawParsedWriteResult:
+        provider = Provider.from_string(session.source_name)
+        try:
+            result = self._write_parsed_precedence_result(
+                session,
+                raw_id=raw_id,
+                source_index=source_index,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
+                manage_transaction=manage_transaction,
+                preacquired_attachment_blobs=preacquired_attachment_blobs,
+            )
+        except Exception as exc:
+            self.finalize_raw_parse_state(raw_id, state=self._raw_parse_failure_state(provider, exc))
+            raise
+        if finalize_raw_parse:
+            success_state = self._raw_parse_success_state(provider)
+            if manage_transaction:
+                self.finalize_raw_parse_state(raw_id, state=success_state)
+            else:
+                self._pending_raw_parse_states.append((raw_id, success_state))
+        return result
+
+    @staticmethod
+    def _raw_parse_success_state(provider: Provider) -> RawSessionStateUpdate:
+        return RawSessionStateUpdate(
+            parsed_at=datetime.now(UTC).isoformat(),
+            parse_error=None,
+            payload_provider=provider,
+        )
+
+    @staticmethod
+    def _raw_parse_failure_state(provider: Provider, exc: BaseException) -> RawSessionStateUpdate:
+        error = f"{type(exc).__name__}: {exc}"[:2000]
+        return RawSessionStateUpdate(
+            parse_error=error,
+            payload_provider=provider,
+            detection_warnings=error[:500],
+        )
 
     def write_raw_and_parsed_result(
         self,
@@ -1116,6 +1302,7 @@ class ArchiveStore:
         stage_timing_prefix: str = "append",
         manage_transaction: bool = True,
         blob_publication_receipt_id: str | None = None,
+        finalize_raw_parse: bool = True,
     ) -> ArchiveRawParsedWriteResult:
         """Write raw acquisition bytes and return write/skip counts.
 
@@ -1160,7 +1347,7 @@ class ArchiveStore:
         )
         add_timing("source_raw_write", t0)
         t0 = time.perf_counter()
-        result = self._write_parsed_precedence_result(
+        result = self._index_parsed_for_retained_raw(
             session,
             raw_id=raw_id,
             source_index=source_index,
@@ -1168,6 +1355,7 @@ class ArchiveStore:
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
             preacquired_attachment_blobs=preacquired_attachments,
+            finalize_raw_parse=finalize_raw_parse,
         )
         add_timing("index_parsed_write", t0)
         return result
@@ -1186,6 +1374,7 @@ class ArchiveStore:
         stage_timing_prefix: str = "full",
         manage_transaction: bool = True,
         blob_publication_receipt_id: str | None = None,
+        finalize_raw_parse: bool = True,
     ) -> tuple[str, str]:
         """Write parsed session metadata for an already-materialized raw blob."""
         result = self.write_raw_blob_and_parsed_result(
@@ -1200,6 +1389,7 @@ class ArchiveStore:
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
             blob_publication_receipt_id=blob_publication_receipt_id,
+            finalize_raw_parse=finalize_raw_parse,
         )
         return result.raw_id, result.session_id
 
@@ -1217,6 +1407,7 @@ class ArchiveStore:
         stage_timing_prefix: str = "full",
         manage_transaction: bool = True,
         blob_publication_receipt_id: str | None = None,
+        finalize_raw_parse: bool = True,
     ) -> ArchiveRawParsedWriteResult:
         """Write parsed metadata for a raw blob and return write/skip counts.
 
@@ -1255,7 +1446,7 @@ class ArchiveStore:
         )
         add_timing("source_raw_blob_ref_write", t0)
         t0 = time.perf_counter()
-        result = self._write_parsed_precedence_result(
+        result = self._index_parsed_for_retained_raw(
             session,
             raw_id=raw_id,
             source_index=source_index,
@@ -1263,6 +1454,7 @@ class ArchiveStore:
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
             preacquired_attachment_blobs=preacquired_attachments,
+            finalize_raw_parse=finalize_raw_parse,
         )
         add_timing("index_parsed_write", t0)
         return result

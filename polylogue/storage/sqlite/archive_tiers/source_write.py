@@ -7,8 +7,11 @@ import json
 import sqlite3
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
+from polylogue.storage.raw.models import RawSessionStateUpdate
+from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +167,55 @@ def deterministic_history_sidecar_id(origin: Origin | str, source_path: str, con
     digest.update(b"\0")
     digest.update(content_hash)
     return digest.hexdigest()
+
+
+def apply_source_raw_state_update(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    *,
+    state: RawSessionStateUpdate,
+    manage_transaction: bool = True,
+) -> None:
+    """Apply one canonical typed raw-state mutation to ``source.db``."""
+    set_clauses, compiled_params = compile_raw_state_update(
+        state,
+        now_ms=int(datetime.now(UTC).timestamp() * 1000),
+    )
+    if not set_clauses:
+        return
+
+    params = (*compiled_params, raw_id)
+    with conn if manage_transaction else nullcontext():
+        cursor = conn.execute(
+            f"UPDATE raw_sessions SET {', '.join(set_clauses)} WHERE raw_id = ?",
+            params,
+        )
+        if cursor.rowcount != 1:
+            raise KeyError(raw_id)
+
+
+def write_source_blob_refs(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    refs: tuple[ArchiveSourceBlobRef, ...],
+) -> None:
+    """Attach already-published blobs to one retained raw record."""
+    if not refs:
+        return
+    with conn:
+        for ref in refs:
+            _insert_blob_ref(
+                conn,
+                ArchiveSourceBlobRef(
+                    blob_hash=ref.blob_hash,
+                    raw_id=raw_id,
+                    ref_type=ref.ref_type,
+                    source_path=ref.source_path,
+                    size_bytes=ref.size_bytes,
+                    acquired_at_ms=ref.acquired_at_ms,
+                    publication_receipt_id=ref.publication_receipt_id,
+                ),
+            )
 
 
 def write_history_sidecar(
