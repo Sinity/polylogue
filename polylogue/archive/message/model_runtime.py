@@ -162,7 +162,7 @@ class MessageRuntimeMixin:
         if text:
             match = re.search(r"<(?:antml:)?thinking>(.*?)</(?:antml:)?thinking>", text, re.DOTALL)
             if match:
-                return match.group(1).strip()
+                return match.group(1).strip() or None
 
         return None
 
