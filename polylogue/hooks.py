@@ -228,7 +228,7 @@ def normalize_harness(value: str) -> HookHarness:
     normalized = value.strip().lower()
     if normalized not in EVENTS_BY_HARNESS:
         raise HookSettingsError(f"unsupported harness {value!r}; choose claude-code or codex")
-    return cast(HookHarness, normalized)
+    return normalized
 
 
 def resolve_events(harness: HookHarness, value: str) -> tuple[str, ...]:
@@ -786,7 +786,7 @@ def _hook_provider_arg(args: list[str]) -> HookHarness | None:
     if index + 1 >= len(args):
         return None
     value = args[index + 1]
-    return cast(HookHarness, value) if value in EVENTS_BY_HARNESS else None
+    return value if value in EVENTS_BY_HARNESS else None
 
 
 def hook_main(argv: list[str] | None = None) -> int:

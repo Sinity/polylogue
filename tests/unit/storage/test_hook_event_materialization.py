@@ -9,7 +9,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from polylogue.core.enums import ArtifactSupportStatus
+from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -58,7 +58,7 @@ async def test_hook_artifact_materializes_event_rows(
         observation = ArtifactObservationRecord(
             observation_id="obs-hook-session-1",
             raw_id=blob_hash,
-            payload_provider="claude-code",
+            payload_provider=Provider.CLAUDE_CODE,
             source_name="claude-code",
             source_path="/hooks/claude-code-session-1.jsonl",
             source_index=0,

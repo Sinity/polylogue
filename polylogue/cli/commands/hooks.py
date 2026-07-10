@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast
 
 import click
 
@@ -35,7 +34,7 @@ def _resolved_events(harness: HookHarness, value: str) -> tuple[str, ...]:
 
 
 def _emit_change(plan: HookChangePlan, *, json_output: bool) -> None:
-    payload = cast(dict[str, object], plan.to_dict())
+    payload = plan.to_dict()
     if json_output:
         click.echo(json.dumps(payload, indent=2, default=str))
         return

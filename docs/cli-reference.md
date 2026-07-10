@@ -166,11 +166,12 @@ Commands:
   Setup, import, and evidence:
     config    Show resolved Polylogue configuration with...
     init      Detect chat sources and write a starter polylogue.toml.
+    hooks     Install and monitor harness capture hooks.
     import    Import sessions from configured sources.
     demo      Seed and verify the deterministic demo archive.
     tutorial  Inspect first-run setup state.
-    Use these for first-run setup, source import, demo archives, and
-    onboarding checks.
+    Use these for first-run setup, hook wiring, source import, demo archives,
+    and onboarding checks.
 
   Reader and local UI:
     agents     Inspect agent coordination state.
