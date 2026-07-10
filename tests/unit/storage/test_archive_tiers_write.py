@@ -26,6 +26,7 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
     ParsedWebConstruct,
 )
+from polylogue.storage.hydrators import session_event_from_record
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1007,6 +1008,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             ),
             ParsedSessionEvent(
                 event_type="capture_gap",
+                source_message_provider_id="missing-provider-message",
                 timestamp="2026-01-01T00:00:02+00:00",
                 payload={"summary": "DOM fallback skipped; richer capture already exists"},
             ),
@@ -1023,7 +1025,8 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
 
     rows = conn.execute(
         """
-        SELECT event_id, source_message_id, position, event_type, summary, payload_json, occurred_at_ms
+        SELECT event_id, source_message_id, source_message_provider_id,
+               position, event_type, summary, payload_json, occurred_at_ms
         FROM session_events
         WHERE session_id = ?
         ORDER BY position
@@ -1034,6 +1037,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
         {
             "event_id": f"{session_id}:0",
             "source_message_id": f"{session_id}:m1",
+            "source_message_provider_id": "m1",
             "position": 0,
             "event_type": "compaction",
             "summary": "compressed context",
@@ -1043,6 +1047,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
         {
             "event_id": f"{session_id}:1",
             "source_message_id": None,
+            "source_message_provider_id": "missing-provider-message",
             "position": 1,
             "event_type": "capture_gap",
             "summary": "DOM fallback skipped; richer capture already exists",
@@ -1052,6 +1057,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
         {
             "event_id": f"{session_id}:2",
             "source_message_id": None,
+            "source_message_provider_id": None,
             "position": 2,
             "event_type": "turn_context",
             "summary": "",
@@ -1061,6 +1067,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
         {
             "event_id": f"{session_id}:3",
             "source_message_id": None,
+            "source_message_provider_id": None,
             "position": 3,
             "event_type": "agent_policy",
             "summary": "",
@@ -1070,6 +1077,11 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
     ]
     hydrated = sync_session_events_batch(conn, [session_id])[session_id]
     assert hydrated[0].timestamp == "2026-01-01T00:00:01+00:00"
+    assert hydrated[0].source_message_provider_id == "m1"
+    assert hydrated[1].source_message_id is None
+    assert hydrated[1].source_message_provider_id == "missing-provider-message"
+    domain_event = session_event_from_record(hydrated[1])
+    assert domain_event.source_message_provider_id == "missing-provider-message"
     assert hydrated[2].payload == {"cwd": "/tmp"}
     policies = conn.execute(
         """

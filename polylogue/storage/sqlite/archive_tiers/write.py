@@ -288,6 +288,7 @@ def write_parsed_session_to_archive(
     if signature_cache is not None:
         signature_cache.pop(session_id, None)
     messages = _normalized_messages(session.messages)
+    event_duplicate_message_native_ids = _duplicate_message_native_ids(messages)
     # Lineage normalization (#2467): when this is a prefix-sharing child whose
     # parent is already in the archive, drop the inherited prefix and keep only
     # the divergent tail. All downstream writes (messages, blocks, counts,
@@ -297,12 +298,16 @@ def write_parsed_session_to_archive(
     branch_point_message_id: str | None = None
     lineage_inheritance: str | None = None
     parent_session_id: str | None = None
+    inherited_source_message_ids: dict[str, str] = {}
     if not merge_append:
         parent_session_id = _existing_parent_session_id(conn, session, origin.value)
         if parent_session_id is not None and messages:
-            branch_point_message_id, lineage_inheritance, messages = _extract_prefix_tail(
-                conn, parent_session_id, messages, cache=signature_cache
-            )
+            (
+                branch_point_message_id,
+                lineage_inheritance,
+                messages,
+                inherited_source_message_ids,
+            ) = _extract_prefix_tail(conn, parent_session_id, messages, cache=signature_cache)
     duplicate_message_native_ids = _duplicate_message_native_ids(messages)
     active_leaf_message_id = _active_leaf_message_id(
         session_id,
@@ -511,6 +516,8 @@ def write_parsed_session_to_archive(
             event_position_offset=event_position_offset,
             duplicate_native_ids=duplicate_message_native_ids,
             provider_usage_baseline=provider_usage_baseline,
+            inherited_source_message_ids=inherited_source_message_ids,
+            ambiguous_source_provider_ids=event_duplicate_message_native_ids,
         )
         add_timing("index.session_events", t0)
         t0 = time.perf_counter()
@@ -2519,6 +2526,8 @@ def _write_session_events(
     event_position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     provider_usage_baseline: Mapping[str, int] | None = None,
+    inherited_source_message_ids: Mapping[str, str] | None = None,
+    ambiguous_source_provider_ids: frozenset[str] = frozenset(),
 ) -> SessionEventWriteResult:
     by_native_id = {
         message.provider_message_id: _message_id(
@@ -2529,7 +2538,9 @@ def _write_session_events(
             duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
-        if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
+        if message.provider_message_id
+        and message.provider_message_id not in duplicate_native_ids
+        and message.provider_message_id not in ambiguous_source_provider_ids
     }
     wrote_provider_usage_events = False
     position = event_position_offset
@@ -2537,11 +2548,15 @@ def _write_session_events(
     agent_policy_rows: list[tuple[object, ...]] = []
     provider_usage_rows: list[tuple[object, ...]] = []
     for event in events:
-        source_message_id = by_native_id.get(event.source_message_provider_id or "")
+        source_message_provider_id = event.source_message_provider_id
+        source_message_id = by_native_id.get(source_message_provider_id or "")
+        if source_message_id is None and inherited_source_message_ids is not None:
+            source_message_id = inherited_source_message_ids.get(source_message_provider_id or "")
         session_event_rows.append(
             (
                 session_id,
                 source_message_id,
+                _sqlite_text(source_message_provider_id),
                 position,
                 _sqlite_text(event.event_type),
                 _sqlite_text(_event_summary(event) or ""),
@@ -2579,8 +2594,9 @@ def _write_session_events(
         conn.executemany(
             """
             INSERT OR REPLACE INTO session_events (
-                session_id, source_message_id, position, event_type, summary, payload_json, occurred_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                session_id, source_message_id, source_message_provider_id,
+                position, event_type, summary, payload_json, occurred_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             session_event_rows,
         )
@@ -3684,6 +3700,13 @@ def _reextract_prefix_tail_db(
         return
     prefix_message_ids = [child_composed[i][0] for i in range(k)]
     t0 = time.perf_counter()
+    _remap_session_event_prefix_refs(
+        conn,
+        child_session_id,
+        tuple((prefix_message_ids[index], parent_composed[index][0]) for index in range(k)),
+    )
+    record_substage("session_event_ref_remap", t0)
+    t0 = time.perf_counter()
     _reextract_provider_usage_tail_db(
         conn,
         child_session_id,
@@ -3939,6 +3962,31 @@ def _delete_prefix_message_dependents(conn: sqlite3.Connection, prefix_message_i
         )
 
 
+def _remap_session_event_prefix_refs(
+    conn: sqlite3.Connection,
+    child_session_id: str,
+    message_id_pairs: Sequence[tuple[str, str]],
+) -> None:
+    """Point child events at the canonical messages that own replayed content.
+
+    The provider-local reference remains unchanged in its dedicated column;
+    only the rebuildable canonical resolution moves from the soon-to-be-deleted
+    child replay row to the corresponding parent/ancestor row.
+    """
+    conn.executemany(
+        """
+        UPDATE session_events
+        SET source_message_id = ?
+        WHERE session_id = ? AND source_message_id = ?
+        """,
+        (
+            (parent_message_id, child_session_id, child_message_id)
+            for child_message_id, parent_message_id in message_id_pairs
+            if child_message_id != parent_message_id
+        ),
+    )
+
+
 def _reextract_provider_usage_tail_db(
     conn: sqlite3.Connection,
     child_session_id: str,
@@ -3982,8 +4030,11 @@ def _reextract_provider_usage_tail_db(
                 child_session_id,
             ),
         )
+    provenance_absent = "\n          AND ".join(
+        f"json_extract(payload_json, '$.{key}') IS NULL" for key in _PROVIDER_USAGE_PROVENANCE_KEYS
+    )
     conn.execute(
-        """
+        f"""
         DELETE FROM session_provider_usage_events
         WHERE session_id = ?
           AND last_input_tokens = 0
@@ -3998,6 +4049,7 @@ def _reextract_provider_usage_tail_db(
           AND total_cache_write_tokens = 0
           AND total_reasoning_output_tokens = 0
           AND total_tokens = 0
+          AND {provenance_absent}
         """,
         (child_session_id,),
     )
@@ -4018,22 +4070,31 @@ def _extract_prefix_tail(
     messages: list[ParsedMessage],
     *,
     cache: dict[str, list[tuple[str, str]]] | None = None,
-) -> tuple[str | None, str | None, list[ParsedMessage]]:
+) -> tuple[str | None, str | None, list[ParsedMessage], dict[str, str]]:
     """Align ``messages`` (the child's full parsed messages, which replay the
     parent's prefix) against the parent's composed transcript. Returns
-    ``(branch_point_message_id, inheritance, tail_messages)``."""
+    ``(branch_point_message_id, inheritance, tail_messages, inherited_refs)``.
+    ``inherited_refs`` maps unambiguous provider-local child message ids to the
+    canonical parent message rows that physically own the replayed prefix.
+    """
     parent_composed = _composed_db_signatures(conn, parent_session_id, cache=cache)
     if not parent_composed:
-        return (None, "spawned-fresh", messages)
+        return (None, "spawned-fresh", messages, {})
     child_sigs = [_parsed_message_signature(m) for m in messages]
     k = 0
     limit = min(len(parent_composed), len(child_sigs))
     while k < limit and parent_composed[k][1] == child_sigs[k]:
         k += 1
     if k == 0:
-        return (None, "spawned-fresh", messages)
+        return (None, "spawned-fresh", messages, {})
     branch_point_message_id = parent_composed[k - 1][0]
-    return (branch_point_message_id, "prefix-sharing", messages[k:])
+    duplicate_native_ids = _duplicate_message_native_ids(messages)
+    inherited_refs: dict[str, str] = {}
+    for index, message in enumerate(messages[:k]):
+        provider_id = message.provider_message_id
+        if provider_id and provider_id not in duplicate_native_ids:
+            inherited_refs[provider_id] = parent_composed[index][0]
+    return (branch_point_message_id, "prefix-sharing", messages[k:], inherited_refs)
 
 
 def _prefix_sharing_edge_sync(conn: sqlite3.Connection, session_id: str) -> tuple[str, str] | None:

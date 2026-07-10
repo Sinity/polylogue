@@ -25,6 +25,7 @@ class SessionEvent(BaseModel):
     sort_key: float | None = None
     payload: dict[str, object] = Field(default_factory=dict)
     source_message_id: MessageId | None = None
+    source_message_provider_id: str | None = None
     raw_id: str | None = None
     materializer_version: int = 1
 

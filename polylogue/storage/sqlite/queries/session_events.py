@@ -39,6 +39,7 @@ def _row_to_session_event(row: sqlite3.Row) -> SessionEventRecord:
         sort_key=(float(row["occurred_at_ms"]) / 1000.0 if row["occurred_at_ms"] is not None else None),
         payload=_payload(row["payload_json"]),
         source_message_id=MessageId(source_message_id) if source_message_id is not None else None,
+        source_message_provider_id=row["source_message_provider_id"],
         raw_id=None,
         materializer_version=1,
     )

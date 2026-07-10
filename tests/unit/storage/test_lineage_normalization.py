@@ -564,7 +564,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
             _msg("p2", Role.USER, "parent continues alone", 2),
         ],
     )
-    write_parsed_session_to_archive(conn, parent, manage_transaction=False)
+    parent_id = write_parsed_session_to_archive(conn, parent, manage_transaction=False)
 
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     dangling_blocks = conn.execute(
@@ -584,13 +584,29 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
         (child_id,),
     ).fetchall()
     assert [row[0] for row in stored_positions] == [2, 3]
-    assert (
-        conn.execute(
-            "SELECT source_message_id FROM session_events WHERE session_id = ?",
-            (child_id,),
-        ).fetchone()[0]
-        is None
-    )
+    event_ref = conn.execute(
+        """
+        SELECT source_message_id, source_message_provider_id
+        FROM session_events WHERE session_id = ?
+        """,
+        (child_id,),
+    ).fetchone()
+    assert dict(event_ref) == {
+        "source_message_id": f"{parent_id}:p1",
+        "source_message_provider_id": "c1",
+    }
+
+    # A source-tier rebuild reparses the child while the parent already exists.
+    # The provider reference and canonical parent resolution must be identical.
+    write_parsed_session_to_archive(conn, child, force_replace=True, manage_transaction=False)
+    rebuilt_event_ref = conn.execute(
+        """
+        SELECT source_message_id, source_message_provider_id
+        FROM session_events WHERE session_id = ?
+        """,
+        (child_id,),
+    ).fetchone()
+    assert dict(rebuilt_event_ref) == dict(event_ref)
     conn.rollback()
     conn.close()
 
@@ -711,6 +727,18 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
                     },
                 },
             ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="cy",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "actual_cost_usd": 0.125,
+                    "cost_status": "actual",
+                    "cost_source": "hermes_state_db",
+                    "billing_provider": "openrouter",
+                },
+            ),
         ],
     )
     child_id = write_parsed_session_to_archive(conn, child)
@@ -760,6 +788,17 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
         "cache_read_tokens": 10,
         "cost_provenance": "origin_reported",
     }
+    provenance_rows = conn.execute(
+        """
+        SELECT payload_json
+        FROM session_provider_usage_events
+        WHERE session_id = ?
+          AND json_extract(payload_json, '$.actual_cost_usd') IS NOT NULL
+        """,
+        (child_id,),
+    ).fetchall()
+    assert len(provenance_rows) == 1
+    assert json.loads(provenance_rows[0]["payload_json"])["actual_cost_usd"] == 0.125
 
 
 def test_parent_reingest_keeps_child_composing(tmp_path: Path) -> None:

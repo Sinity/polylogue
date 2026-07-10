@@ -136,7 +136,9 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
 - Index schema version 30 makes `session_events` the lossless generic relation
   for every parsed non-message event. It retains open event types and structured
   payloads in original positions while policy and usage tables remain typed
-  projections. Existing index tiers must be rebuilt from source evidence
+  projections. The original provider-local source-message reference is stored
+  independently from its nullable canonical `messages.message_id` resolution,
+  so unresolved and lineage-normalized references remain auditable. Existing index tiers must be rebuilt from source evidence
   (`polylogue ops reset --index && polylogued run`).
 - Index schema version 28 adds the `delegations` VIEW, derived from
   `session_links` (`link_type='subagent'`) LEFT JOIN'd to the parent's Task
