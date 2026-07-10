@@ -151,6 +151,7 @@ class ScenarioFamily(BaseModel):
     subject: str
     scenario_count: int | str  # int literal or "dynamic"
     location: str
+    bead: str | None = None
     notes: str | None = None
 
 
