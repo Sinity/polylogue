@@ -427,7 +427,7 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
 
 
 @pytest.mark.parametrize(
-    ("arrivals", "expected_title", "expected_native_flag"),
+    ("arrivals", "expected_title", "expected_native_flag", "expected_capture_gap_count"),
     [
         (
             (
@@ -437,6 +437,7 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
             ),
             "Newest export",
             False,
+            0,
         ),
         (
             (
@@ -446,19 +447,35 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
             ),
             "Native update",
             True,
+            0,
+        ),
+        (
+            (
+                ("dom", 1, "DOM fallback", "2026-04-03T00:00:00Z"),
+                ("native", 2, "Older native", "2026-04-01T00:00:00Z"),
+                ("export", 3, "Fuller export", "2026-04-02T00:00:00Z"),
+            ),
+            "Fuller export",
+            False,
+            1,
         ),
     ],
-    ids=("owner-flag-is-replaced", "forced-owner-resets-freshness"),
+    ids=("owner-flag-is-replaced", "forced-owner-resets-freshness", "capture-gap-survives-later-owner"),
 )
 def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
     tmp_path: Path,
     arrivals: tuple[tuple[str, int, str, str], ...],
     expected_title: str,
     expected_native_flag: bool,
+    expected_capture_gap_count: int,
 ) -> None:
     session_native_id = f"browser-three-arrivals-{expected_title.lower().replace(' ', '-')}"
 
     def session(kind: str, count: int, title: str, updated_at: str) -> ParsedSession:
+        ingest_flags = {
+            "dom": [DOM_FALLBACK_INGEST_FLAG],
+            "native": [NATIVE_BROWSER_CAPTURE_INGEST_FLAG],
+        }.get(kind, [])
         return ParsedSession(
             source_name=Provider.CHATGPT,
             provider_session_id=session_native_id,
@@ -472,7 +489,7 @@ def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
                 )
                 for position in range(count)
             ],
-            ingest_flags=[NATIVE_BROWSER_CAPTURE_INGEST_FLAG] if kind == "native" else [],
+            ingest_flags=ingest_flags,
         )
 
     root = tmp_path / "archive"
@@ -498,6 +515,10 @@ def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
             "SELECT 1 FROM session_tags WHERE session_id = ? AND tag = ?",
             (outcomes[0].session_id, NATIVE_BROWSER_CAPTURE_INGEST_FLAG),
         ).fetchone()
+        capture_gap_count = conn.execute(
+            "SELECT COUNT(*) FROM session_events WHERE session_id = ? AND event_type = 'capture_gap'",
+            (outcomes[0].session_id,),
+        ).fetchone()[0]
     finally:
         conn.close()
 
@@ -505,6 +526,7 @@ def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
     assert [outcome.counts["sessions"] for outcome in outcomes] == [1, 1, 1]
     assert dict(stored) == {"raw_id": outcomes[-1].raw_id, "title": expected_title}
     assert (native_flag is not None) is expected_native_flag
+    assert capture_gap_count == expected_capture_gap_count
 
 
 def test_archive_tiers_archive_facade_hash_skips_identical_content_and_refreshes_raw_link(tmp_path: Path) -> None:

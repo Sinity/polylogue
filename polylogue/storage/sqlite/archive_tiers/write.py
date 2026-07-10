@@ -651,7 +651,6 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         "blocks",
         "attachment_refs",
         "paste_spans",
-        "session_events",
         "session_provider_usage_events",
         "session_agent_policies",
         "session_working_dirs",
@@ -661,6 +660,12 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         "session_model_usage",
     ):
         conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+    # capture_gap rows are archive-generated ingest evidence, not projections
+    # owned by whichever parser payload currently wins source precedence.
+    conn.execute(
+        "DELETE FROM session_events WHERE session_id = ? AND event_type != 'capture_gap'",
+        (session_id,),
+    )
     conn.execute("DELETE FROM session_links WHERE src_session_id = ?", (session_id,))
 
 
