@@ -90,7 +90,12 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
     assert gc_report is not None
     assert gc_report.deleted_count == 0
     assert gc_report.skipped_reserved == 1
-    assert run_blob_gc_report(archive_root / "source.db", archive_root / "blob").deleted_count == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+    final_gc = run_blob_gc_report(archive_root / "source.db", archive_root / "blob")
+    assert final_gc.deleted_count == 0
+    assert final_gc.skipped_reserved == 0
+    assert final_gc.skipped_referenced >= 1
 
 
 def test_two_same_hash_publishers_consume_only_their_own_receipt(tmp_path: Path) -> None:

@@ -344,6 +344,7 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         provider_hint=detected_provider,
         blob_hash=blob_hash,
         blob_size=blob_size,
+        blob_publication_receipt_id=publication_id,
     )
 
 
@@ -363,13 +364,14 @@ def _stream_preserved_zip_entry(
         )
     from polylogue.storage.blob_publication import publication_receipt_id
 
+    publication_id = publication_receipt_id(context.blob_store, blob_hash)
     observe_acquisition(
         context.observation_callback,
         phase="zip-entry-streamed",
         source_path=context.source_path,
         provider_hint=provider_hint,
         blob_size=blob_size,
-        blob_publication_receipt_id=publication_receipt_id(context.blob_store, blob_hash),
+        blob_publication_receipt_id=publication_id,
     )
     return raw_data_record(
         source_path=context.source_path,
@@ -377,6 +379,7 @@ def _stream_preserved_zip_entry(
         provider_hint=provider_hint,
         blob_hash=blob_hash,
         blob_size=blob_size,
+        blob_publication_receipt_id=publication_id,
     )
 
 
