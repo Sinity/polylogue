@@ -37,7 +37,7 @@ artifacts; standalone mockups belong in design notes, not release evidence.
 The default specs are deliberately self-contained and private-data-free:
 
 - `demo-tour` runs `polylogue demo tour --out-dir demo-tour --force`, then
-  shows the generated report.
+  shows the compact evidence transcript followed by the bounded proof report.
 - `query-tour` seeds `query-tour/archive`, runs the query/read drilldown, and
   summarizes facets for the same query.
 - `reader-evidence-tour` runs the browserless reader smoke lane and renders the

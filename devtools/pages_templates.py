@@ -42,7 +42,7 @@ BASE_TEMPLATE = """<!DOCTYPE html>
         </main>
     </div>
     <footer class="site-footer">
-        <span>Polylogue — your AI memory</span>
+        <span>Polylogue — the flight recorder for AI work</span>
         <a href="https://github.com/Sinity/polylogue">GitHub</a>
     </footer>
     <script>
@@ -65,24 +65,34 @@ BASE_TEMPLATE = """<!DOCTYPE html>
 HOME_TEMPLATE = """{% extends "base.html" %}
 {% block content %}
 <div class="home-hero">
-    <h1>Polylogue</h1>
-    <p class="tagline">Your AI memory</p>
+    <p class="eyebrow">Local-first · cross-provider · evidence-addressable</p>
+    <h1>The flight recorder for AI work</h1>
+    <p class="tagline">Search every provider. Read tool activity as work, not chat. Audit claims against outcomes. Resume from reviewed evidence.</p>
+    <div class="hero-command"><code>nix run github:Sinity/polylogue -- demo tour</code></div>
+    <div class="hero-stats" aria-label="Local archive snapshot">
+        <span><strong>{{ stats.session_count }}</strong> sessions</span>
+        <span><strong>{{ stats.message_count }}</strong> messages</span>
+        <span><strong>{{ stats.provider_count }}</strong> origins</span>
+    </div>
     <div class="hero-search">
-        <input type="search" placeholder="Search your archive..."
+        <input type="search" placeholder="Search the documentation..."
                onkeydown="if(event.key==='Enter' && '{{ search_href }}'){window.location='{{ search_href }}?q='+encodeURIComponent(this.value)}">
     </div>
-    <div class="card-grid">
-        <div class="stat-card">
-            <div class="stat-value">{{ stats.session_count }}</div>
-            <div class="stat-label">sessions</div>
+    <div class="proof-grid">
+        <div class="proof-card">
+            <span class="proof-label">Audit</span>
+            <strong>Claims → structural outcomes</strong>
+            <p>Resolve prose to paired tool results, exit status, and source evidence.</p>
         </div>
-        <div class="stat-card">
-            <div class="stat-value">{{ stats.message_count }}</div>
-            <div class="stat-label">messages</div>
+        <div class="proof-card">
+            <span class="proof-label">Lineage</span>
+            <strong>Physical evidence → logical work</strong>
+            <p>Keep forks and copied prefixes without counting replay as new work.</p>
         </div>
-        <div class="stat-card">
-            <div class="stat-value">{{ stats.provider_count }}</div>
-            <div class="stat-label">providers</div>
+        <div class="proof-card">
+            <span class="proof-label">Context</span>
+            <strong>History → reviewed handoff</strong>
+            <p>Compile bounded evidence with omissions, caveats, and delivery records.</p>
         </div>
     </div>
     <div class="home-links">

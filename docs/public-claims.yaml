@@ -1,0 +1,50 @@
+schema: external-claims-ledger/v1
+statuses: [proven, capability, aspirational, retired]
+claims:
+  - id: category.flight-recorder
+    status: capability
+    publication: Polylogue is the local flight recorder and system of record for AI work.
+    evidence: [README.md, docs/architecture.md, docs/proof-artifacts.md]
+    caveat: Pre-1.0; not every planned memory or coordination feature is complete.
+
+  - id: demo.private-data-free
+    status: proven
+    publication: The deterministic tour exercises five origins, tool outcomes, lineage, subagents, context snapshots, attachments, and user overlays without private data.
+    evidence: [docs/plans/demo-corpus-construct-audit.md, docs/examples/demo-tour/report.md]
+    caveat: Construct proof, not private-archive scale or prevalence.
+
+  - id: evidence.structured-outcomes
+    status: proven
+    publication: Polylogue can classify supported tool failures from structural outcome fields rather than assistant prose alone.
+    evidence: [docs/proof-artifacts.md, devtools/claim_vs_evidence.py]
+    caveat: Unsupported or malformed evidence must remain explicit.
+
+  - id: finding.silent-proceed-lower-bound
+    status: proven
+    publication: In one private archive, a bounded sample found a 24.1% lower bound for silent continuation after structured failure; most cases remained ambiguous.
+    evidence: [docs/findings/claim-vs-evidence.md]
+    caveat: Not a population estimate.
+
+  - id: context.compiler
+    status: capability
+    publication: Polylogue can compile bounded evidence-linked context and record omissions and delivery snapshots.
+    evidence: [polylogue/context/compiler.py, tests/unit/context/test_compiler.py]
+    caveat: No general task-performance uplift claim.
+
+  - id: memory.uplift
+    status: aspirational
+    publication: Polylogue is testing whether reviewed evidence-linked context improves resumption.
+    evidence: [.agent/demos/uplift-two-arm/current/report.md]
+    caveat: Existing pilot is small and contains a stale-packet counterexample.
+
+  - id: sinex.backend
+    status: aspirational
+    publication: The maximal target is Sinex-backed Polylogue, with Sinex storing durable evidence and Polylogue retaining AI-work semantics and product behavior.
+    evidence: [docs/sinex-interop.md]
+    caveat: The current bridge is metadata-thin; the rebuild proof has not landed.
+
+  - id: positioning.your-ai-memory
+    status: retired
+    publication: Do not use as the primary category.
+    evidence: [docs/site/pages.toml, devtools/pages_templates.py]
+    caveat: Memory remains a product capability and roadmap program.

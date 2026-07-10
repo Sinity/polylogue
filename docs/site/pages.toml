@@ -2,6 +2,21 @@ site_name = "Polylogue"
 site_url = "/polylogue/"
 
 [[nav]]
+title = "Start Here"
+[[nav.items]]
+label = "Demos"
+path = "/demos/"
+[[nav.items]]
+label = "Finding: Structured Failure"
+path = "/findings/claim-vs-evidence/"
+[[nav.items]]
+label = "Proof Artifacts"
+path = "/proof/"
+[[nav.items]]
+label = "Polylogue on Sinex"
+path = "/architecture/sinex/"
+
+[[nav]]
 title = "Documentation"
 [[nav.items]]
 label = "Getting Started"
@@ -90,8 +105,28 @@ path = "/design/whole-product/"
 
 [[pages]]
 path = "/index.html"
-title = "Polylogue — Your AI Memory"
+title = "Polylogue — The Flight Recorder for AI Work"
 template = "home.html"
+
+[[pages]]
+path = "/demos/"
+title = "Demos and Proofs"
+source = "docs/demos.md"
+
+[[pages]]
+path = "/findings/claim-vs-evidence/"
+title = "Finding: Structured Failure Follow-Up"
+source = "docs/findings/claim-vs-evidence.md"
+
+[[pages]]
+path = "/proof/"
+title = "Proof Artifacts"
+source = "docs/proof-artifacts.md"
+
+[[pages]]
+path = "/architecture/sinex/"
+title = "Polylogue on Sinex"
+source = "docs/sinex-interop.md"
 
 [[pages]]
 path = "/docs/getting-started/"

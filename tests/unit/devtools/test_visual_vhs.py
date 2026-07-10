@@ -156,6 +156,7 @@ class TestDefaultTapeContent:
         tape = generate_tape(spec)
 
         assert 'Type "polylogue demo tour --out-dir demo-tour --force"' in tape
+        assert 'Type "cat demo-tour/transcript.txt"' in tape
         assert 'Type "cat demo-tour/report.md"' in tape
 
     def test_query_tour_uses_demo_archive_not_live_archive(self) -> None:

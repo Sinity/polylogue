@@ -260,10 +260,10 @@ def _nav_data_for_page(config: PagesConfig, page: PageEntry) -> list[dict[str, A
 
 def _home_links_for_page(page: PageEntry, page_paths: set[str]) -> list[dict[str, str]]:
     candidates = [
+        ("Run the demos", "/demos/"),
+        ("Inspect the proof", "/proof/"),
         ("Get started", "/docs/getting-started/"),
-        ("Search", "/docs/search/"),
-        ("Architecture", "/architecture/rings/"),
-        ("Verifiability", "/verifiability/coverage/"),
+        ("Polylogue on Sinex", "/architecture/sinex/"),
     ]
     return [
         {"label": label, "href": _href_between_pages(page.path, target), "suffix": "->"}

@@ -11,7 +11,12 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.demo.models import DemoSeedResult, DemoTourResult, DemoTourStep, DemoVerifyResult
-from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, DEMO_SESSION_IDS
+from polylogue.scenarios import (
+    DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
+    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
+    DEMO_SESSION_IDS,
+)
 
 
 def test_demo_seed_and_verify_json_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,10 +126,10 @@ def test_demo_tour_writes_report_transcript_and_recording(
     assert payload["seed"]["session_count"] == len(DEMO_SESSION_IDS)
     assert payload["verify"]["ok"] is True
     assert [step["name"] for step in payload["steps"]] == [
+        "structural failure receipt",
+        "failed actions aggregate",
+        "composed lineage",
         "archive facets",
-        "pytest evidence drilldown",
-        "session evidence by id",
-        "query facets",
     ]
     assert all(step["exit_code"] == 0 for step in payload["steps"])
 
@@ -134,11 +139,20 @@ def test_demo_tour_writes_report_transcript_and_recording(
     assert report.exists()
     assert transcript.exists()
     assert recording.exists()
-    assert "Polylogue Demo Tour Report" in report.read_text(encoding="utf-8")
+    report_text = report.read_text(encoding="utf-8")
+    assert "Polylogue Demo Tour Report" in report_text
+    assert "What this tour proves" in report_text
+    assert "What this tour does not prove" in report_text
     transcript_text = transcript.read_text(encoding="utf-8")
+    assert f"$ polylogue --id {DEMO_CODEX_TERMINAL_ERROR_SESSION_ID} read --view messages --limit 10" in transcript_text
+    assert "$ polylogue 'actions where is_error:true | group by tool | count'" in transcript_text
+    assert f"$ polylogue --id {DEMO_CODEX_LINEAGE_FORK_SESSION_ID} read --view chronicle" in transcript_text
     assert "$ polylogue analyze --facets" in transcript_text
-    assert "$ polylogue find pytest then read --view messages --limit 3" in transcript_text
-    assert "polylogue demo tour" in recording.read_text(encoding="utf-8")
+    assert "construct_coverage" not in transcript_text
+    recording_text = recording.read_text(encoding="utf-8")
+    assert "polylogue demo tour" in recording_text
+    assert "cat polylogue-demo-tour/transcript.txt" in recording_text
+    assert "cat polylogue-demo-tour/report.md" in recording_text
 
 
 def test_demo_tour_plain_output_reports_artifacts(tmp_path: Path) -> None:
