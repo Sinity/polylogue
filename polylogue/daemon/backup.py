@@ -598,9 +598,20 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             and restored_hashes == expected_blobs
             and hashes_valid
         )
+        restored_hash_set = set(restored_hashes)
+        source_blob_hashes = _source_blob_hashes(restored / "source.db") if (restored / "source.db").exists() else set()
+        missing_source_blobs = source_blob_hashes - restored_hash_set
+        source_blobs_resolved = not missing_source_blobs
         index_attachment_hashes = _index_attachment_blob_hashes(restored / "index.db")
-        index_attachment_blobs_resolved = index_attachment_hashes <= set(restored_hashes)
-        ok = all(tier_integrity.values()) and omitted_absent and blobs_ok and index_attachment_blobs_resolved
+        missing_index_attachment_blobs = index_attachment_hashes - restored_hash_set
+        index_attachment_blobs_resolved = not missing_index_attachment_blobs
+        ok = (
+            all(tier_integrity.values())
+            and omitted_absent
+            and blobs_ok
+            and source_blobs_resolved
+            and index_attachment_blobs_resolved
+        )
         return {
             "ok": ok,
             "mode": "archive_file_set",
@@ -610,7 +621,10 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "manifest_blob_count": blob_count,
             "restored_blob_count": restored_blob_count,
             "blob_inventory_exact": blobs_ok,
+            "source_blobs_resolved": source_blobs_resolved,
+            "missing_source_blob_count": len(missing_source_blobs),
             "index_attachment_blobs_resolved": index_attachment_blobs_resolved,
+            "missing_index_attachment_blob_count": len(missing_index_attachment_blobs),
             "scratch_restore": "temporary",
             "scratch_parent": str(Path(raw_tmp).parent),
         }

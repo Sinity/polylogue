@@ -453,6 +453,56 @@ def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(
     assert verification["blob_inventory_exact"] is False
 
 
+def test_backup_verification_rejects_missing_source_references_and_reservations(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    archive_root = workspace_env["archive_root"]
+    source_db = archive_root / "source.db"
+    missing_reference_hash = hashlib.sha256(b"missing referenced blob").digest()
+    missing_reservation_hash = hashlib.sha256(b"missing reserved blob").digest()
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "missing-raw",
+                "codex-session",
+                "missing",
+                "/tmp/missing.jsonl",
+                0,
+                missing_reference_hash,
+                23,
+                1,
+                "passed",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+            (missing_reference_hash, "missing-raw", "raw_payload", "/tmp/missing.jsonl", 23, 1),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_publication_reservations (
+                publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ("missing-publication", missing_reservation_hash, 21, "publisher", 1),
+        )
+
+    result = backup_archive(output_dir=tmp_path / "backups", verify=True)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert result.verification["source_blobs_resolved"] is False
+    assert result.verification["missing_source_blob_count"] == 2
+    assert result.verification["blob_inventory_exact"] is True
+
+
 def test_backup_archive_requires_precious_tiers(workspace_env: dict[str, Path], tmp_path: Path) -> None:
     archive_root = workspace_env["archive_root"]
     archive_root.mkdir(parents=True, exist_ok=True)
