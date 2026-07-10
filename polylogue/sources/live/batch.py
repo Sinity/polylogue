@@ -16,7 +16,7 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
-from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
+from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind, append_source_revision
 from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
 from polylogue.core.enums import Provider
@@ -1142,7 +1142,6 @@ class LiveBatchProcessor:
             ingested.append(path)
             raw_byte_sizes[path] = stat.st_size
             raw_source_names[path] = source_name
-            prior_cursor = self._cursor.get_record(path)
             raw_records.append(
                 RawSessionRecord(
                     raw_id=raw_id,
@@ -1158,7 +1157,6 @@ class LiveBatchProcessor:
                     acquired_at=datetime.now(UTC).isoformat(),
                     file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
                     captured_source_revision=raw_source_revisions.get(path, raw_id),
-                    acquisition_generation=(prior_cursor.source_generation + 1) if prior_cursor is not None else 0,
                 )
             )
             raw_by_id[raw_id] = path
@@ -1385,7 +1383,9 @@ class LiveBatchProcessor:
                                 logical_source_key=f"{provider.value}:{session.provider_session_id}",
                                 kind=RawRevisionKind.FULL,
                                 source_revision=record.captured_source_revision,
-                                acquisition_generation=record.acquisition_generation or 0,
+                                acquisition_generation=archive.raw_full_revision_generation(
+                                    f"{provider.value}:{session.provider_session_id}"
+                                ),
                             ),
                         )
                     archive.mark_raw_parse_succeeded(source_raw_id, provider=provider)
@@ -1549,7 +1549,6 @@ class LiveBatchProcessor:
             payload_hash=tail_hash,
             cursor_fingerprint=cursor.content_fingerprint,
             bytes_read=len(payload),
-            source_generation=cursor.source_generation,
         )
 
     def _append_payload_for_provider(self, path: Path, source_name: str, payload: bytes) -> bytes | None:
@@ -1693,7 +1692,7 @@ class LiveBatchProcessor:
             logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
 
     def _record_append_cursor(self, plan: _AppendPlan) -> bool:
-        content_fingerprint = sha256(f"{plan.cursor_fingerprint or ''}\0{plan.payload_hash}".encode()).hexdigest()
+        content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
         tail_hash, _tail_bytes = tail_hash_from_path(plan.path, plan.stat_size)
         updated = self._cursor.set(
             plan.path,

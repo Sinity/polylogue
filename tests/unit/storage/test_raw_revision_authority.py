@@ -12,6 +12,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
+    append_source_revision,
     classify_historical_full_revisions,
 )
 from polylogue.core.enums import Origin, Provider
@@ -145,7 +146,6 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         payload_hash="append-hash",
         cursor_fingerprint="full-revision",
         bytes_read=len(append_payload),
-        source_generation=2,
     )
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     owner = SimpleNamespace(
@@ -163,3 +163,26 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
                FROM raw_sessions WHERE revision_kind = 'append'"""
         ).fetchone()
     assert row == (baseline_raw_id, baseline_raw_id, len(full_payload), stat.st_size, 2, "asserted")
+
+
+def test_append_parent_requires_exact_cursor_revision(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"baseline",
+            source_path="session.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-a", 0),
+        )
+
+        assert archive.raw_append_revision_parent("codex:session-1", 8, "revision-b") is None
+        assert archive.raw_append_revision_parent("codex:session-1", 8, "revision-a") == (
+            raw_id,
+            raw_id,
+            1,
+        )
+        assert append_source_revision("revision-a", "payload") != append_source_revision("revision-a", "other-payload")

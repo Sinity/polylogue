@@ -1142,7 +1142,12 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
     assert result.failed == [plans[1]]
     assert result.worker_count == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+        rows = conn.execute(
+            "SELECT parse_error, revision_authority FROM raw_sessions ORDER BY parse_error IS NOT NULL"
+        ).fetchall()
+        assert rows[0] == (None, "quarantined")
+        assert rows[1][0]
+        assert rows[1][1] == "quarantined"
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "append-ok"
 

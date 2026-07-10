@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from hashlib import sha256
 from typing import Literal
 
 
@@ -61,6 +62,11 @@ class HistoricalRevisionDecision:
     authority: RawRevisionAuthority
     relation: Literal["baseline", "predecessor", "ambiguous"]
     predecessor_raw_id: str | None = None
+
+
+def append_source_revision(predecessor_revision: str, payload_hash: str) -> str:
+    """Return the exact content fingerprint committed by the append cursor."""
+    return sha256(f"{predecessor_revision}\0{payload_hash}".encode()).hexdigest()
 
 
 def classify_historical_full_revisions(
@@ -137,5 +143,6 @@ __all__ = [
     "RawRevisionAuthority",
     "RawRevisionEnvelope",
     "RawRevisionKind",
+    "append_source_revision",
     "classify_historical_full_revisions",
 ]

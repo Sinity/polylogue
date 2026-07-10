@@ -79,7 +79,6 @@ class _AppendPlan:
     payload_hash: str
     cursor_fingerprint: str | None
     bytes_read: int
-    source_generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)

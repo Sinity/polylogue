@@ -1230,21 +1230,45 @@ class ArchiveStore:
     def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope) -> None:
         bind_source_raw_revision(self._ensure_source_conn(), raw_id, revision)
 
-    def raw_append_revision_parent(self, logical_source_key: str, start_offset: int) -> tuple[str, str, int] | None:
+    def raw_full_revision_generation(self, logical_source_key: str) -> int:
+        """Allocate the next generation from durable, authoritative evidence."""
+        row = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT MAX(acquisition_generation)
+            FROM raw_sessions
+            WHERE logical_source_key = ? AND revision_authority != 'quarantined'
+            """,
+                (logical_source_key,),
+            )
+            .fetchone()
+        )
+        return int(row[0]) + 1 if row is not None and row[0] is not None else 0
+
+    def raw_append_revision_parent(
+        self,
+        logical_source_key: str,
+        start_offset: int,
+        predecessor_revision: str | None,
+    ) -> tuple[str, str, int] | None:
         """Return a unique byte-contiguous predecessor and its baseline."""
+        if predecessor_revision is None:
+            return None
         rows = (
             self._ensure_source_conn()
             .execute(
                 """
             SELECT raw_id, COALESCE(baseline_raw_id, raw_id), acquisition_generation
             FROM raw_sessions
-            WHERE logical_source_key = ? AND revision_authority != 'quarantined'
+            WHERE logical_source_key = ? AND source_revision = ?
+              AND revision_authority != 'quarantined'
               AND ((revision_kind = 'full' AND ? = blob_size)
                    OR (revision_kind = 'append' AND append_end_offset = ?))
             ORDER BY acquisition_generation DESC
             LIMIT 2
             """,
-                (logical_source_key, start_offset, start_offset),
+                (logical_source_key, predecessor_revision, start_offset, start_offset),
             )
             .fetchall()
         )
