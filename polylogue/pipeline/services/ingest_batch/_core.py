@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     BrowserCapturePrecedence,
     browser_capture_precedence,
     record_capture_gap_event,
+    record_source_outage_events,
     session_has_parser_ingest_flag,
     stored_message_count,
 )
@@ -448,10 +449,19 @@ def _write_session(
                     incoming_message_count=payload.message_count,
                 )
                 counts["session_events"] = 1
+            # Twin of the ArchiveStore skip path: a capture that loses the
+            # content merge can still truthfully declare when it was NOT
+            # observing the page — that outage telemetry survives the skip.
+            outage_events = record_source_outage_events(
+                conn,
+                session_id=payload.session_id,
+                events=payload.parsed_session.session_events,
+            )
+            counts["session_events"] = counts.get("session_events", 0) + outage_events
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
             counts["skipped_attachments"] = payload.attachment_count
-            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events) - outage_events
             return False, counts
 
     incoming_freshness_ms = _timestamp_ms(session_to_write.updated_at) or _timestamp_ms(session_to_write.created_at)

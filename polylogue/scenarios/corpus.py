@@ -63,6 +63,11 @@ DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID = (
     "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo"
 )
 DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID = "claude-code-session:demo-lineage-sidechain"
+# Two materials (a direct export and a browser capture) reporting the same
+# logical conversation under unrelated native ids — the ambiguous
+# cross-material duplicate / occurrence-identity anchor (#polylogue-212.11).
+DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID = "chatgpt-export:cross-material-duplicate-01"
+DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID = "chatgpt-export:cross-material-duplicate-02"
 DEMO_EMBEDDING_PROSE_SESSION_ID = DEMO_CLAUDE_CODE_SESSION_ID
 DEMO_SESSION_IDS = (
     DEMO_CHATGPT_SESSION_ID,
@@ -78,6 +83,8 @@ DEMO_SESSION_IDS = (
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
+    DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID,
+    DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID,
 )
 
 
@@ -183,14 +190,33 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "capture_gap_events",
             "browser_capture_raw_variants",
             "browser_capture_coalesced_session",
+            "source_outage_interval_events",
         ),
         description=(
             "Native-payload and lower-precedence DOM browser captures for an existing ChatGPT session, "
-            "proving source evidence remains durable while the indexed session stays canonical."
+            "proving source evidence remains durable while the indexed session stays canonical. The "
+            "native capture also declares a bounded pre-capture interval during which the extension "
+            "adapter reported no observation, distinct from ordinary conversational silence."
         ),
         source_paths=(
             "browser-capture/chatgpt-raw-provider.json",
             "browser-capture/chatgpt-dom-fallback.json",
+        ),
+        synthetic=False,
+    ),
+    DemoCorpusFamily(
+        family_id="cross-material-duplicate",
+        label="Cross-material duplicate occurrence",
+        provider="chatgpt",
+        construct_ids=("ambiguous_cross_material_duplicate",),
+        description=(
+            "The same logical conversation content arrives through two independent materials — a "
+            "direct ChatGPT export and a browser capture with an unrelated native id — so occurrence-"
+            "identity tooling must resolve the duplicate from content, not from identity keys."
+        ),
+        source_paths=(
+            "chatgpt/duplicate-source-export.json",
+            "browser-capture/duplicate-capture.json",
         ),
         synthetic=False,
     ),
@@ -253,10 +279,13 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "subagent_run_rows",
             "unfinished_terminal_state_rows",
             "error_terminal_state_rows",
+            "compaction_omits_failed_attempt",
         ),
         description=(
             "Explicit parent, prefix-sharing branch, spawned subagent, sidechain, compaction, and "
-            "structural unfinished/error terminal-state source files."
+            "structural unfinished/error terminal-state source files. The compaction fixture also "
+            "precedes its summary with a structurally failed tool result that the summary text omits, "
+            "proving compaction honesty must be checked against full session evidence."
         ),
         source_paths=(
             "codex/lineage-parent.jsonl",

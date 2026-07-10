@@ -7,6 +7,8 @@ import pytest
 
 from polylogue.core.json import JSONDocument
 from polylogue.scenarios import (
+    DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID,
+    DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID,
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
@@ -206,12 +208,15 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         DEMO_CODEX_ANTI_GREP_SESSION_ID,
         DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,
         DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
+        DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID,
+        DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID,
     )
     assert tuple(family.family_id for family in DEMO_CORPUS_FAMILIES) == (
         "chatgpt-dialogue",
         "claude-code-tools",
         "claude-ai-temporary",
         "browser-capture-gap",
+        "cross-material-duplicate",
         "codex-tools",
         "evidence-lab-receipts",
         "gemini-attachments",
@@ -232,7 +237,15 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         "capture_gap_events",
         "browser_capture_raw_variants",
         "browser_capture_coalesced_session",
+        "source_outage_interval_events",
     )
+    cross_material_family = DEMO_CORPUS_FAMILIES[4]
+    assert cross_material_family.synthetic is False
+    assert cross_material_family.source_paths == (
+        "chatgpt/duplicate-source-export.json",
+        "browser-capture/duplicate-capture.json",
+    )
+    assert cross_material_family.construct_ids == ("ambiguous_cross_material_duplicate",)
     assert DEMO_CORPUS_FAMILIES[-1].synthetic is False
     assert set(DEMO_CORPUS_FAMILIES[-1].construct_ids) == {
         "embedding_candidate_prose_messages",
@@ -253,6 +266,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         "subagent_run_rows",
         "unfinished_terminal_state_rows",
         "error_terminal_state_rows",
+        "compaction_omits_failed_attempt",
     }
     assert "codex/terminal-error.jsonl" in lineage_family.source_paths
     assert tuple(spec.style for spec in specs) == (
