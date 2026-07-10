@@ -636,26 +636,41 @@ class LiveWatcher:
         """
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
-        if not source_db.exists():
+        index_db = archive_root / "index.db"
+        if not source_db.exists() or not index_db.exists():
             return False
         try:
             with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0) as conn:
-                row = conn.execute(
+                rows = conn.execute(
                     """
-                    SELECT origin, blob_hash, blob_size
+                    SELECT raw_id, origin, blob_hash, blob_size
                     FROM raw_sessions
                     WHERE source_path = ?
                       AND COALESCE(source_index, 0) >= 0
+                      AND parsed_at_ms IS NOT NULL
+                      AND parse_error IS NULL
                     ORDER BY acquired_at_ms DESC, raw_id DESC
-                    LIMIT 1
                     """,
                     (str(path),),
-                ).fetchone()
+                ).fetchall()
+            with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0) as conn:
+                row = next(
+                    (
+                        candidate
+                        for candidate in rows
+                        if conn.execute(
+                            "SELECT 1 FROM sessions WHERE raw_id = ? LIMIT 1",
+                            (candidate[0],),
+                        ).fetchone()
+                        is not None
+                    ),
+                    None,
+                )
         except sqlite3.Error:
             return False
         if row is None:
             return False
-        origin, blob_hash, blob_size = row
+        _raw_id, origin, blob_hash, blob_size = row
         archived_size = int(blob_size or 0)
         current_size = int(stat.st_size)
         if archived_size <= 0 or archived_size > current_size:

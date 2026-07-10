@@ -40,7 +40,7 @@ from polylogue.sources.dispatch import (
     parse_payload,
     parse_stream_payload,
 )
-from polylogue.sources.live.append_ingest import ingest_append_plans
+from polylogue.sources.live.append_ingest import ingest_append_plans, reset_transient_raw_parse_state
 from polylogue.sources.live.batch_observability import (
     record_attempt_progress,
 )
@@ -1348,6 +1348,12 @@ class LiveBatchProcessor:
                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
                 except Exception as exc:
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
+                        if provider is not None and source_raw_id is not None:
+                            reset_transient_raw_parse_state(
+                                archive,
+                                source_raw_id,
+                                provider=provider,
+                            )
                         raise
                     if provider is not None and source_raw_id is not None:
                         archive.mark_raw_parse_failed(source_raw_id, provider=provider, error=exc)

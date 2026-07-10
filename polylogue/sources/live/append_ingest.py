@@ -14,6 +14,7 @@ from polylogue.logging import get_logger
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
+from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 logger = get_logger(__name__)
@@ -26,6 +27,24 @@ def _add_timing(timings: dict[str, float], name: str, started_at: float) -> None
 class _AppendIngestOwner(Protocol):
     _cursor: CursorStore
     _polylogue: Any
+
+
+def reset_transient_raw_parse_state(
+    archive: Any,
+    raw_id: str,
+    *,
+    provider: Provider,
+) -> None:
+    """Leave acquired bytes pending when index persistence was unavailable."""
+    archive.finalize_raw_parse_state(
+        raw_id,
+        state=RawSessionStateUpdate(
+            parsed_at=None,
+            parse_error=None,
+            payload_provider=provider,
+            detection_warnings=None,
+        ),
+    )
 
 
 def ingest_append_plans(owner: _AppendIngestOwner, plans: list[_AppendPlan]) -> _AppendResult:
@@ -116,6 +135,8 @@ def _ingest_append_plans_archive(
                         # Contention is infrastructure state, not a poison
                         # payload. Let the watcher requeue without advancing
                         # the failure ledger toward exclusion.
+                        if provider is not None and raw_id is not None:
+                            reset_transient_raw_parse_state(archive, raw_id, provider=provider)
                         raise
                     if provider is not None and raw_id is not None:
                         archive.mark_raw_parse_failed(
@@ -133,4 +154,4 @@ def _ingest_append_plans_archive(
     return _AppendResult(succeeded=succeeded, failed=failed, worker_count=1, stage_timings_s=timings)
 
 
-__all__ = ["ingest_append_plans"]
+__all__ = ["ingest_append_plans", "reset_transient_raw_parse_state"]
