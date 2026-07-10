@@ -22,7 +22,7 @@ from enum import Enum
 from pathlib import Path
 
 from polylogue.logging import get_logger
-from polylogue.pipeline.services.process_pool import process_pool_executor
+from polylogue.pipeline.services.process_pool import process_pool_executor, terminate_process_pool
 
 logger = get_logger(__name__)
 _INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
@@ -199,9 +199,10 @@ class DaemonConverger:
         )
 
     async def stop(self) -> None:
-        if self._executor is not None:
-            self._executor.shutdown(wait=True)
-            self._executor = None
+        executor = self._executor
+        self._executor = None
+        if executor is not None:
+            terminate_process_pool(executor)
         logger.info("converger: stopped")
 
     def converge_file(self, path: Path) -> FileState:

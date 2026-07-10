@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from polylogue.paths import active_index_db_path
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -36,12 +36,42 @@ def _events_db_path() -> Path:
 
 
 def _ensure_events_db() -> sqlite3.Connection:
-    """Open (creating if necessary) the daemon events database."""
+    """Open and initialize the daemon events database for an emitter."""
     path = _events_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     initialize_archive_database(path, ArchiveTier.OPS)
     conn = open_daemon_connection(path)
     conn.executescript(_DAEMON_EVENTS_DDL)
+    return conn
+
+
+def _open_events_reader() -> sqlite3.Connection | None:
+    """Open the existing event ledger read-only, or return ``None``.
+
+    Status, polling, and SSE reads must not turn observation into an ops-tier
+    write. A missing file or a pre-event-schema ops database therefore has the
+    same documented empty-ledger result without directory creation, tier
+    initialization, DDL, or write-profile pragmas.
+    """
+    path = _events_db_path()
+    if not path.is_file():
+        return None
+    try:
+        conn = open_readonly_connection(path)
+    except sqlite3.OperationalError:
+        if not path.is_file():
+            return None
+        raise
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_events' LIMIT 1"
+        ).fetchone()
+    except BaseException:
+        conn.close()
+        raise
+    if exists is None:
+        conn.close()
+        return None
     return conn
 
 
@@ -89,7 +119,9 @@ def query_daemon_events(
     offset: int = 0,
 ) -> Sequence[dict[str, object]]:
     """Query recent daemon events."""
-    conn = _ensure_events_db()
+    conn = _open_events_reader()
+    if conn is None:
+        return []
     try:
         if kind:
             rows = conn.execute(
@@ -128,7 +160,9 @@ def query_events_since(
     Used by the live SSE stream and ETag polling fallback in the web reader.
     ``kinds`` restricts to a whitelist (empty/None means all kinds).
     """
-    conn = _ensure_events_db()
+    conn = _open_events_reader()
+    if conn is None:
+        return []
     try:
         kinds_tuple = tuple(kinds or ())
         if kinds_tuple:
@@ -162,7 +196,9 @@ def query_events_since(
 
 def get_latest_event_id() -> int:
     """Return the id of the most recent daemon event, or 0 if none exist."""
-    conn = _ensure_events_db()
+    conn = _open_events_reader()
+    if conn is None:
+        return 0
     try:
         row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM daemon_events").fetchone()
         return int(row[0]) if row is not None else 0
@@ -369,7 +405,9 @@ def emit_progress_complete(
 
 def get_daemon_event_counts() -> dict[str, int]:
     """Return event counts by kind."""
-    conn = _ensure_events_db()
+    conn = _open_events_reader()
+    if conn is None:
+        return {}
     try:
         rows = conn.execute("SELECT kind, COUNT(*) FROM daemon_events GROUP BY kind ORDER BY COUNT(*) DESC").fetchall()
         return {row[0]: row[1] for row in rows}

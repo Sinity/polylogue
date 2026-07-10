@@ -1243,7 +1243,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 1681
+    loc: 1750
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1283,7 +1283,7 @@ files:
     target: polylogue/daemon/cursor_lag_status.py
     owner: stable
   - path: polylogue/daemon/embedding_backlog.py
-    loc: 311
+    loc: 317
     target: polylogue/daemon/embedding_backlog.py
     owner: stable
   - path: polylogue/daemon/embedding_readiness.py
@@ -1458,6 +1458,10 @@ files:
   - path: polylogue/daemon/workspace_routes.py
     loc: 136
     target: polylogue/daemon/workspace_routes.py
+    owner: stable
+  - path: polylogue/daemon/write_coordinator.py
+    loc: 218
+    target: polylogue/daemon/write_coordinator.py
     owner: stable
   - path: polylogue/demo/__init__.py
     loc: 31
@@ -2556,7 +2560,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1647
+    loc: 1662
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2604,7 +2608,7 @@ files:
     target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 867
+    loc: 874
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
@@ -3595,7 +3599,7 @@ files:
     target: polylogue/storage/sqlite/query_store_maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/raw_state_update.py
-    loc: 60
+    loc: 62
     target: polylogue/storage/sqlite/raw_state_update.py
     owner: stable
   - path: polylogue/storage/sqlite/run_projection_relations.py

@@ -1241,6 +1241,26 @@ def test_append_parse_failure_retains_typed_raw_failure(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
+def test_append_archive_lock_propagates_for_watcher_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "append-locked.jsonl"
+    payload = b'{"type":"session_meta","payload":{"id":"append-locked"}}\n'
+    path.write_bytes(payload)
+    plan = _append_plan(path, payload, payload_hash="locked")
+    owner = _append_owner(tmp_path)
+
+    monkeypatch.setattr(
+        ArchiveStore,
+        "write_raw_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        ingest_append_plans(cast(Any, owner), [plan])
+
+
 def test_full_parse_failure_retains_typed_raw_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1274,6 +1294,31 @@ def test_full_parse_failure_retains_typed_raw_failure(
     assert len(parse_error) <= 2000
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_full_archive_lock_propagates_for_watcher_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source = root / "full-locked.jsonl"
+    source.write_bytes(b'{"type":"session_meta","payload":{"id":"full-locked"}}\n')
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr(
+        ArchiveStore,
+        "write_raw_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        processor._ingest_full_paths_sync([source], source_name="codex")
 
 
 def test_append_index_failure_never_marks_raw_success(

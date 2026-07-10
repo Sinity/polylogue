@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import os
 import sqlite3
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -516,6 +517,137 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "dry_run": False,
         "raw_artifact_limit": 11,
     }
+
+
+def test_raw_materialization_closes_fts_on_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    archive = tmp_path / "archive"
+    closed: list[Path] = []
+
+    class FakeRestoreResult:
+        restored_count = 0
+
+    def cancel_repair(*_args: object, **_kwargs: object) -> object:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
+        lambda *_args, **_kwargs: FakeRestoreResult(),
+    )
+    monkeypatch.setattr("polylogue.storage.repair.repair_raw_materialization", cancel_repair)
+    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", closed.append)
+
+    with pytest.raises(asyncio.CancelledError):
+        daemon_cli._drain_raw_materialization_once()
+
+    assert closed == [archive / "index.db"]
+
+
+def test_raw_materialization_fts_failure_records_durable_debt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    index_db = tmp_path / "index.db"
+    index_db.touch()
+    calls: list[tuple[str, str, str, str | None]] = []
+
+    class FakeCursor:
+        def __init__(self, db: Path) -> None:
+            assert db == index_db
+
+        def clear_convergence_debt(self, **_kwargs: object) -> None:
+            raise AssertionError("failed FTS repair must not clear debt")
+
+        def record_convergence_debt(
+            self,
+            *,
+            stage: str,
+            subject_type: str,
+            subject_id: str,
+            error: str | None = None,
+        ) -> None:
+            calls.append((stage, subject_type, subject_id, error))
+
+    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda _db: True)
+    monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: False)
+    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
+
+    daemon_cli._close_raw_materialization_fts(index_db)
+
+    assert calls == [
+        (
+            "fts",
+            "fts_surface",
+            "messages_fts",
+            "raw materialization exited without restoring message FTS readiness",
+        )
+    ]
+
+
+def test_raw_materialization_fts_success_clears_prior_debt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    index_db = tmp_path / "index.db"
+    index_db.touch()
+    cleared: list[dict[str, object]] = []
+
+    class FakeCursor:
+        def __init__(self, db: Path) -> None:
+            assert db == index_db
+
+        def clear_convergence_debt(self, **kwargs: object) -> None:
+            cleared.append(kwargs)
+
+        def record_convergence_debt(self, **_kwargs: object) -> None:
+            raise AssertionError("successful FTS repair must not record debt")
+
+    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda _db: True)
+    monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: True)
+    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
+
+    daemon_cli._close_raw_materialization_fts(index_db)
+
+    assert cleared == [{"subject_type": "fts_surface", "subject_id": "messages_fts", "stage": "fts"}]
+
+
+def test_raw_materialization_fts_exception_becomes_explicit_debt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    index_db = tmp_path / "index.db"
+    index_db.touch()
+    errors: list[str | None] = []
+
+    class FakeCursor:
+        def __init__(self, db: Path) -> None:
+            assert db == index_db
+
+        def record_convergence_debt(self, *, error: str | None = None, **_kwargs: object) -> None:
+            errors.append(error)
+
+    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda _db: True)
+    monkeypatch.setattr(
+        "polylogue.daemon.convergence_stages.repair_fts_surface",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("injected FTS failure")),
+    )
+    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
+
+    daemon_cli._close_raw_materialization_fts(index_db)
+
+    assert errors == ["FTS repair failed after raw materialization: RuntimeError: injected FTS failure"]
 
 
 def test_periodic_raw_materialization_convergence_treats_sqlite_lock_as_retry(
@@ -2215,22 +2347,34 @@ def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
     from polylogue.daemon import cli as daemon_cli
 
     calls: list[tuple[str, dict[str, object]]] = []
+    actors: list[str] = []
 
     def fake_emit(kind: str, **kwargs: object) -> None:
         calls.append((kind, kwargs))
 
+    class FakeCoordinator:
+        async def run_sync(self, actor: str, function: Any, /, *args: object, **kwargs: object) -> None:
+            actors.append(actor)
+            function(*args, **kwargs)
+
     monkeypatch.setenv("POLYLOGUE_DEV_LOOP_RUN_ID", "dev-loop-run")
     monkeypatch.setenv("POLYLOGUE_DEV_LOOP_LOG_DIR", str(tmp_path / "logs"))
 
-    with patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit):
-        daemon_cli._emit_daemon_lifecycle_event(
-            "component_started",
-            archive_root_path=tmp_path / "archive",
-            component="api",
-            payload={"port": 8766},
+    with (
+        patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit),
+        patch.object(daemon_cli, "daemon_write_coordinator", return_value=FakeCoordinator()),
+    ):
+        asyncio.run(
+            daemon_cli._emit_daemon_lifecycle_event(
+                "component_started",
+                archive_root_path=tmp_path / "archive",
+                component="api",
+                payload={"port": 8766},
+            )
         )
 
     assert len(calls) == 1
+    assert actors == ["daemon.lifecycle.component_started"]
     kind, kwargs = calls[0]
     assert kind == "daemon.lifecycle"
     assert kwargs["operation_id"] == "dev-loop-run"
@@ -2243,12 +2387,55 @@ def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
     assert payload["dev_loop_log_dir"] == str(tmp_path / "logs")
 
 
+def test_pidfile_remains_locked_until_admitted_writers_are_drained(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    pidfile = tmp_path / "daemon.pid"
+    owner_fd = daemon_cli._acquire_pidfile(pidfile)
+    monkeypatch.setattr(daemon_cli, "_pidfile_path", pidfile)
+
+    retained_fd = daemon_cli._release_pidfile_after_writer_drain(owner_fd, writer_drained=False)
+
+    assert retained_fd == owner_fd
+    with pytest.raises(RuntimeError, match="another daemon may be running"):
+        daemon_cli._acquire_pidfile(pidfile)
+
+    assert daemon_cli._release_pidfile_after_writer_drain(retained_fd, writer_drained=True) is None
+    successor_fd = daemon_cli._acquire_pidfile(pidfile)
+    os.close(successor_fd)
+
+
+def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    class StuckCoordinator:
+        async def run_sync(self, *_args: object, **_kwargs: object) -> None:
+            await asyncio.Event().wait()
+
+    async def exercise() -> None:
+        with patch.object(daemon_cli, "daemon_write_coordinator", return_value=StuckCoordinator()):
+            await asyncio.wait_for(
+                daemon_cli._emit_daemon_lifecycle_event(
+                    "shutdown_started",
+                    archive_root_path=tmp_path,
+                    status="stopping",
+                ),
+                timeout=0.75,
+            )
+
+    asyncio.run(exercise())
+
+
 def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
     events: list[str] = []
     lifecycle_payloads: list[dict[str, object]] = []
+    watcher_coordinators: list[object] = []
     ok_schema = HealthAlert(
         check_name="schema_version",
         tier=HealthTier.FAST,
@@ -2265,8 +2452,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
             return None
 
     class FakeWatcher:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
+        def __init__(self, *_args: object, **kwargs: object) -> None:
             self.catch_up_complete = asyncio.Event()
+            watcher_coordinators.append(kwargs["write_coordinator"])
 
         async def run(self) -> None:
             events.append("watcher")
@@ -2276,10 +2464,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         def stop(self) -> None:
             events.append("stop")
 
-    async def fake_fts_startup() -> None:
+    def fake_fts_startup() -> None:
         events.append("fts")
 
-    async def fake_lineage_startup() -> int:
+    def fake_lineage_startup() -> int:
         events.append("lineage")
         return 0
 
@@ -2307,6 +2495,22 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         async def stop(self) -> None:
             events.append("converger-stop")
 
+    class FakeAPIServer:
+        def __init__(self) -> None:
+            self.stopped = threading.Event()
+
+        def serve_forever(self, _poll_interval: float) -> None:
+            self.stopped.wait(timeout=2.0)
+
+        def shutdown(self) -> None:
+            self.stopped.set()
+
+        def server_close(self) -> None:
+            return None
+
+    api_server = FakeAPIServer()
+    api_server_factory = Mock(return_value=api_server)
+
     def fake_emit_daemon_event(kind: str, **kwargs: object) -> None:
         assert kind == "daemon.lifecycle"
         lifecycle_payloads.append(cast(dict[str, object], kwargs["payload"]))
@@ -2314,8 +2518,8 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
-        stack.enter_context(patch.object(daemon_cli, "_ensure_fts_startup_readiness", fake_fts_startup))
-        stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness", fake_lineage_startup))
+        stack.enter_context(patch.object(daemon_cli, "_ensure_fts_startup_readiness_sync", fake_fts_startup))
+        stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", fake_lineage_startup))
         stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", fake_reconcile_blob_publications))
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
         stack.enter_context(patch("polylogue.paths.archive_root", return_value=Path("/tmp/polylogue-test-archive")))
@@ -2357,6 +2561,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(
             patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=())
         )
+        stack.enter_context(patch("polylogue.daemon.http.DaemonAPIHTTPServer", api_server_factory))
         stack.enter_context(patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event))
         stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
         asyncio.run(
@@ -2368,6 +2573,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
                 browser_capture_spool_path=None,
+                enable_api=True,
             )
         )
 
@@ -2385,9 +2591,13 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     lifecycle_phases = [str(payload["phase"]) for payload in lifecycle_payloads]
     assert lifecycle_phases[0] == "startup"
     assert "component_ready" in lifecycle_phases
-    assert lifecycle_phases[-2:] == ["shutdown_started", "shutdown_complete"]
+    assert lifecycle_phases[-1] == "shutdown_started"
+    assert "shutdown_complete" not in lifecycle_phases
     lifecycle_components = {payload.get("component") for payload in lifecycle_payloads}
     assert {"fts_startup", "lineage_startup", "converger", "watcher"}.issubset(lifecycle_components)
+    assert len(watcher_coordinators) == 1
+    bridge = api_server_factory.call_args.kwargs["write_bridge"]
+    assert bridge._coordinator is watcher_coordinators[0]
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
@@ -2573,6 +2783,9 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
     async def noop() -> None:
         return None
 
+    def noop_sync() -> None:
+        return None
+
     async def no_drive_changes() -> int:
         return 0
 
@@ -2610,7 +2823,8 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
 
     with (
         patch.object(daemon_cli, "make_server", return_value=browser_server),
-        patch.object(daemon_cli, "_ensure_fts_startup_readiness", noop),
+        patch.object(daemon_cli, "_ensure_fts_startup_readiness_sync", noop_sync),
+        patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", noop_sync),
         patch.object(daemon_cli, "_reconcile_blob_publications", noop),
         patch.object(daemon_cli, "_configure_fts_automerge", noop),
         patch.object(daemon_cli, "_run_drive_source_catchup_safely", no_drive_changes),

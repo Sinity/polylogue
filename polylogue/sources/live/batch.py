@@ -6,7 +6,7 @@ import asyncio
 import sqlite3
 import time
 import zipfile
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -14,7 +14,7 @@ from io import BytesIO
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
@@ -40,7 +40,7 @@ from polylogue.sources.dispatch import (
     parse_payload,
     parse_stream_payload,
 )
-from polylogue.sources.live.append_ingest import ingest_append_plans
+from polylogue.sources.live.append_ingest import ingest_append_plans, reset_transient_raw_parse_state
 from polylogue.sources.live.batch_observability import (
     record_attempt_progress,
 )
@@ -117,6 +117,9 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
+LiveBatchSyncRunner = Callable[..., Awaitable[Any]]
+P = ParamSpec("P")
+T = TypeVar("T")
 _ARCHIVE_RUNTIME_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 _ARCHIVE_NATIVE_WRITE_TIERS = "source,index"
 
@@ -159,6 +162,7 @@ class LiveBatchProcessor:
         converger: object | None = None,
         stop_requested: Callable[[], bool] | None = None,
         event_emitter: LiveBatchEventEmitter | None = None,
+        sync_runner: LiveBatchSyncRunner | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
@@ -167,6 +171,7 @@ class LiveBatchProcessor:
         self._converger = converger
         self._stop_requested = stop_requested or (lambda: False)
         self._event_emitter = event_emitter
+        self._sync_runner = sync_runner
         self._last_cursor_write_stale = False
         self._raw_compaction_min_acquired_at = datetime.now(UTC).isoformat()
 
@@ -249,7 +254,11 @@ class LiveBatchProcessor:
             )
             t0 = time.perf_counter()
             try:
-                append_result = await asyncio.to_thread(self._ingest_append_plans, plans)
+                append_result = await self._run_sync(
+                    "watcher.live_ingest.append",
+                    self._ingest_append_plans,
+                    plans,
+                )
             except SchemaVersionMismatchError as exc:
                 handle_schema_version_mismatch(plans[0].source_name, exc)
                 for plan in plans:
@@ -284,7 +293,8 @@ class LiveBatchProcessor:
                 current_path=plans[0].path,
                 stage_payload=append_stage_payload,
             )
-            _converged_paths, elapsed, timings, convergence_debt = await asyncio.to_thread(
+            _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
+                "watcher.live_ingest.append_convergence",
                 self._converge_paths,
                 [plan.path for plan in append_result.succeeded],
             )
@@ -414,6 +424,11 @@ class LiveBatchProcessor:
                     )
                     break
                 except Exception as exc:
+                    if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
+                        # Archive contention is infrastructure state, not a
+                        # poison payload. Let LiveWatcher requeue the source
+                        # group without advancing or excluding its cursors.
+                        raise
                     logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                     for path in source_paths:
                         failed_paths.append(str(path))
@@ -448,7 +463,8 @@ class LiveBatchProcessor:
                     current_source=source_name,
                     current_path=source_paths[0] if source_paths else None,
                 )
-                _converged_paths, elapsed, timings, convergence_debt = await asyncio.to_thread(
+                _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
+                    "watcher.live_ingest.full_convergence",
                     self._converge_paths,
                     full_result.succeeded,
                 )
@@ -497,7 +513,11 @@ class LiveBatchProcessor:
         )
 
         if succeeded_paths:
-            await asyncio.to_thread(self._compact_superseded_raw_snapshots, sorted(succeeded_paths))
+            await self._run_sync(
+                "watcher.live_ingest.raw_compaction",
+                self._compact_superseded_raw_snapshots,
+                sorted(succeeded_paths),
+            )
 
         retry_paths = failed_paths + [str(path) for path in deferred_paths]
         db_bytes_after = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
@@ -644,7 +664,7 @@ class LiveBatchProcessor:
     def _record_failed_cursor(self, path: Path) -> int:
         try:
             stat = path.stat()
-            fp, last_nl = fingerprint_file(path)
+            fp, _last_nl = fingerprint_file(path)
             tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
         except FileNotFoundError:
             try:
@@ -656,11 +676,18 @@ class LiveBatchProcessor:
             return 0
         try:
             existing = self._cursor.get_record(path)
+            # Persistence failed, so the durable consumption boundary stays at
+            # the last successful cursor.  Recording EOF here made retry state
+            # look consumed even though ``failure_count`` happened to force a
+            # later retry; a cleared/rebuilt retry ledger could then lose the
+            # append permanently.
+            committed_offset = existing.byte_offset if existing is not None else 0
+            committed_newline = existing.last_complete_newline if existing is not None else 0
             self._cursor.set(
                 path,
                 stat.st_size,
-                byte_offset=last_nl,
-                last_complete_newline=last_nl,
+                byte_offset=committed_offset,
+                last_complete_newline=committed_newline,
                 parser_fingerprint=self._current_parser_fingerprint(),
                 content_fingerprint=fp,
                 tail_hash=tail_hash,
@@ -851,9 +878,27 @@ class LiveBatchProcessor:
         heartbeat: _FullIngestHeartbeat | None = None,
         attempt_id: str | None = None,
     ) -> _FullIngestResult:
-        return await asyncio.to_thread(
-            self._ingest_full_paths_sync, paths, source_name=source_name, heartbeat=heartbeat, attempt_id=attempt_id
+        return await self._run_sync(
+            "watcher.live_ingest.full",
+            self._ingest_full_paths_sync,
+            paths,
+            source_name=source_name,
+            heartbeat=heartbeat,
+            attempt_id=attempt_id,
         )
+
+    async def _run_sync(
+        self,
+        actor: str,
+        function: Callable[P, T],
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> T:
+        """Run blocking batch work through the daemon's exit-safe writer runner."""
+        if self._sync_runner is not None:
+            return cast(T, await self._sync_runner(actor, function, *args, **kwargs))
+        return await asyncio.to_thread(function, *args, **kwargs)
 
     def _ingest_full_paths_sync(
         self,
@@ -1335,22 +1380,23 @@ class LiveBatchProcessor:
                     result.message_count += record_message_count
                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
                 except Exception as exc:
+                    if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
+                        if provider is not None and source_raw_id is not None:
+                            reset_transient_raw_parse_state(
+                                archive,
+                                source_raw_id,
+                                provider=provider,
+                            )
+                        raise
                     if provider is not None and source_raw_id is not None:
                         archive.mark_raw_parse_failed(source_raw_id, provider=provider, error=exc)
-                    if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
-                        logger.debug(
-                            "live.watcher: archive full ingest deferred for %s (retryable lock); will retry: %s",
-                            record.source_path,
-                            exc,
-                        )
-                    else:
-                        logger.warning(
-                            "live.watcher: archive full ingest failed for %s: %s: %s",
-                            record.source_path,
-                            type(exc).__name__,
-                            exc,
-                            exc_info=True,
-                        )
+                    logger.warning(
+                        "live.watcher: archive full ingest failed for %s: %s: %s",
+                        record.source_path,
+                        type(exc).__name__,
+                        exc,
+                        exc_info=True,
+                    )
         return result
 
     def _extract_zip_member_records(

@@ -12,7 +12,7 @@ import select
 import socket
 import sqlite3
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
@@ -48,6 +48,10 @@ from polylogue.daemon.web_shell_paste import (
     envelope_paste_spans,
     render_paste_browser_page,
     snippet_for_paste,
+)
+from polylogue.daemon.write_coordinator import (
+    DaemonWriteCoordinator,
+    DaemonWriteThreadBridge,
 )
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.logging import get_logger
@@ -1253,6 +1257,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return await handler(polylogue)
 
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
+        if getattr(self, "_write_gate_depth", 0) > 0:
+            # The read executor deliberately leaves timed-out work running.
+            # A mutation cannot use that contract: its route-level writer
+            # lease must remain held until the real substrate call finishes.
+            return asyncio.run(self._run_archive_query(handler))
+
         # Route through the server's bounded archive-query executor (#0hqs)
         # rather than running asyncio.run() directly on this connection's own
         # thread: caps concurrent DB work at _ARCHIVE_QUERY_MAX_WORKERS
@@ -1293,6 +1303,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
                 "the daemon may be busy with catch-up ingestion/embedding"
             ) from exc
+
+    @contextlib.contextmanager
+    def _write_gate(self, actor: str) -> Iterator[None]:
+        """Hold the daemon's main-loop writer lease across this sync request."""
+        bridge = getattr(self.server, "write_bridge", None)
+        if bridge is None:
+            # Direct handler unit doubles predate the server-owned bridge. A
+            # real DaemonAPIHTTPServer always installs one in ``__init__``.
+            yield
+            return
+        depth = getattr(self, "_write_gate_depth", 0)
+        with cast(DaemonWriteThreadBridge, bridge).hold(actor):
+            self._write_gate_depth = depth + 1
+            try:
+                yield
+            finally:
+                self._write_gate_depth = depth
 
     def do_OPTIONS(self) -> None:
         self._send_error(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
@@ -1466,10 +1493,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if not is_loopback_host(self._api_host) and not self._check_auth():
                 return
             handler = cast(Callable[..., None], getattr(self, observability_route.handler_name))
-            if observability_route.passes_path:
-                handler(path)
-            else:
-                handler()
+            with self._write_gate(f"http.otlp.{path[1]}"):
+                if observability_route.passes_path:
+                    handler(path)
+                else:
+                    handler()
             return
 
         if not self._check_auth():
@@ -1482,13 +1510,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         )
         if authenticated_route is not None:
             handler = cast(Callable[..., None], getattr(self, authenticated_route.handler_name))
-            if authenticated_route.passes_path:
-                handler(path)
-            else:
-                handler()
+            mutating_actor = {
+                "_handle_reset": "http.reset",
+                "_handle_ingest": "http.ingest",
+                "_handle_maintenance_run": "http.maintenance.run",
+            }.get(authenticated_route.handler_name)
+            gate = self._write_gate(mutating_actor) if mutating_actor is not None else contextlib.nullcontext()
+            with gate:
+                if authenticated_route.passes_path:
+                    handler(path)
+                else:
+                    handler()
             return
-        if path[:2] == ["api", "user"] and user_state_http.dispatch_post(self, path[2:]):
-            return
+        if path[:2] == ["api", "user"]:
+            with self._write_gate(f"http.user.{path[2] if len(path) > 2 else 'unknown'}.post"):
+                if user_state_http.dispatch_post(self, path[2:]):
+                    return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     def do_DELETE(self) -> None:
@@ -1507,8 +1544,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not self._check_cross_origin():
             return
 
-        if path[:2] == ["api", "user"] and user_state_http.dispatch_delete(self, path[2:], params):
-            return
+        if path[:2] == ["api", "user"]:
+            with self._write_gate(f"http.user.{path[2] if len(path) > 2 else 'unknown'}.delete"):
+                if user_state_http.dispatch_delete(self, path[2:], params):
+                    return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     # ------------------------------------------------------------------
@@ -3803,14 +3842,20 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         *,
         auth_token: str | None = None,
         api_host: str = "127.0.0.1",
+        write_bridge: DaemonWriteThreadBridge | None = None,
     ) -> None:
         super().__init__(server_address, handler_class)
         self.auth_token = auth_token
         self.api_host = api_host
-        self.archive_query_executor = ThreadPoolExecutor(
+        self._owned_write_runtime: _StandaloneWriteRuntime | None = None
+        if write_bridge is None:
+            self._owned_write_runtime = _StandaloneWriteRuntime()
+            write_bridge = self._owned_write_runtime.bridge
+        self.write_bridge: DaemonWriteThreadBridge = write_bridge
+        self.archive_query_executor: ThreadPoolExecutor = ThreadPoolExecutor(
             max_workers=_ARCHIVE_QUERY_MAX_WORKERS, thread_name_prefix="archive-query"
         )
-        self.archive_query_admission = threading.BoundedSemaphore(
+        self.archive_query_admission: threading.BoundedSemaphore = threading.BoundedSemaphore(
             _ARCHIVE_QUERY_MAX_WORKERS + _ARCHIVE_QUERY_MAX_QUEUED
         )
 
@@ -3824,4 +3869,51 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         # TimeoutStopSec forces a SIGKILL -- acceptable (bounded, not
         # unbounded) and unchanged from today's plain-thread behavior.
         self.archive_query_executor.shutdown(wait=False, cancel_futures=True)
+        owned_write_runtime = self._owned_write_runtime
+        self._owned_write_runtime = None
+        if owned_write_runtime is not None:
+            owned_write_runtime.close()
         super().server_close()
+
+
+class _StandaloneWriteRuntime:
+    """Coordinator loop for HTTP-server use outside ``polylogued``."""
+
+    def __init__(self) -> None:
+        ready = threading.Event()
+        self.loop = asyncio.new_event_loop()
+        self.coordinator: DaemonWriteCoordinator | None = None
+
+        def run() -> None:
+            asyncio.set_event_loop(self.loop)
+            self.coordinator = DaemonWriteCoordinator()
+            ready.set()
+            self.loop.run_forever()
+            self.loop.close()
+
+        self.thread = threading.Thread(target=run, name="daemon-http-writer", daemon=True)
+        self.thread.start()
+        if not ready.wait(5.0):
+            raise RuntimeError("standalone daemon HTTP writer loop failed to start")
+        assert self.coordinator is not None
+        self.bridge: DaemonWriteThreadBridge = DaemonWriteThreadBridge(self.coordinator, self.loop)
+
+    def close(self) -> None:
+        assert self.coordinator is not None
+        future = asyncio.run_coroutine_threadsafe(self.coordinator.shutdown(timeout=5.0), self.loop)
+        try:
+            idle = future.result(timeout=5.5)
+        except TimeoutError:
+            idle = False
+        if idle:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=1.0)
+        else:
+            logger.warning("standalone daemon HTTP writer still active during server close")
+            asyncio.run_coroutine_threadsafe(self._stop_when_idle(), self.loop)
+
+    async def _stop_when_idle(self) -> None:
+        assert self.coordinator is not None
+        while not await self.coordinator.shutdown(timeout=5.0):
+            logger.warning("standalone daemon HTTP writer still draining after server close")
+        self.loop.call_soon(self.loop.stop)

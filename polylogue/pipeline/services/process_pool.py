@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import time
 from concurrent.futures import ProcessPoolExecutor
 
 
@@ -34,8 +35,27 @@ def process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
     )
 
 
+def terminate_process_pool(executor: ProcessPoolExecutor, *, timeout: float = 1.0) -> None:
+    """Cancel pending work and bound shutdown of already-running workers."""
+    if timeout < 0:
+        raise ValueError("process pool termination timeout must be non-negative")
+    processes = tuple((getattr(executor, "_processes", None) or {}).values())
+    executor.shutdown(wait=False, cancel_futures=True)
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+    deadline = time.monotonic() + timeout
+    for process in processes:
+        process.join(timeout=max(0.0, deadline - time.monotonic()))
+    for process in processes:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.1)
+
+
 __all__ = [
     "_initialize_worker_logging",
     "process_pool_context",
     "process_pool_executor",
+    "terminate_process_pool",
 ]

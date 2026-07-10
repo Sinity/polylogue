@@ -49,6 +49,10 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     snapshot = result["status_snapshot"]
     assert isinstance(snapshot, dict)
     assert snapshot["state"] == "fresh"
+    writer = result["daemon_write_coordinator"]
+    assert isinstance(writer, dict)
+    assert "active_actor" in writer
+    assert "queued_actors" in writer
 
 
 def test_status_snapshot_minimal_refresh_stays_request_safe(
@@ -367,6 +371,10 @@ def test_daemon_status_payload_links_unified_archive_debt(monkeypatch: pytest.Mo
 def test_daemon_status_marks_raw_materialization_debt_not_ready(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from polylogue.daemon import events as events_mod
+
+    missing_events_path = tmp_path / "fresh-ops" / "ops.db"
+    monkeypatch.setattr(events_mod, "_events_db_path", lambda: missing_events_path)
     monkeypatch.setattr("polylogue.daemon.status.archive_root", lambda: tmp_path)
     monkeypatch.setattr(
         "polylogue.daemon.status.raw_materialization_readiness_snapshot",
@@ -454,6 +462,7 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     assert "Raw replay backlog: 3 raw row(s), 15.0 MB pending; largest 10.0 MB" in lines
     assert "  raw source-to-index replay is disabled pending revision authority" in lines
     assert "  weighted by origin: aistudio-drive=3/15.0 MB" in lines
+    assert not missing_events_path.parent.exists()
 
 
 def test_daemon_status_preserves_lost_source_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

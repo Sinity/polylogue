@@ -36,6 +36,9 @@ from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.fts_startup import (
     ensure_fts_startup_readiness as _ensure_fts_startup_readiness,
 )
+from polylogue.daemon.fts_startup import (
+    ensure_fts_startup_readiness_sync as _ensure_fts_startup_readiness_sync,
+)
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
@@ -45,9 +48,14 @@ from polylogue.daemon.health import (
     resolve_health_tiers,
 )
 from polylogue.daemon.lineage_startup import (
-    ensure_lineage_startup_readiness as _ensure_lineage_startup_readiness,
+    ensure_lineage_startup_readiness_sync as _ensure_lineage_startup_readiness_sync,
 )
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
+from polylogue.daemon.write_coordinator import (
+    DaemonWriteCoordinator,
+    DaemonWriteThreadBridge,
+    daemon_write_coordinator,
+)
 from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -58,6 +66,18 @@ logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
 _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 25
+
+
+async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
+    """Run the real startup FTS writer on an exit-safe coordinator thread."""
+    await coordinator.run_sync("startup.fts_readiness", _ensure_fts_startup_readiness_sync)
+
+
+async def _run_startup_lineage_readiness(coordinator: DaemonWriteCoordinator) -> int:
+    """Run the real startup lineage writer on an exit-safe coordinator thread."""
+    return await coordinator.run_sync("startup.lineage_readiness", _ensure_lineage_startup_readiness_sync)
+
+
 _SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS = 60
 _SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT = 100
 _SESSION_INSIGHT_CONVERGENCE_BURST_LIMIT = 10
@@ -208,7 +228,7 @@ async def _configure_fts_automerge() -> None:
     if not db.exists():
         return
     try:
-        await asyncio.to_thread(_configure_fts_automerge_sync, db)
+        await daemon_write_coordinator().run_sync("startup.fts_automerge", _configure_fts_automerge_sync, db)
     except Exception:
         logger.warning("daemon: FTS automerge configuration failed", exc_info=True)
 
@@ -241,7 +261,7 @@ async def _periodic_fts_merge() -> None:
         if not db.exists():
             continue
         try:
-            await asyncio.to_thread(run_periodic_fts_merge_sync, db)
+            await daemon_write_coordinator().run_sync("maintenance.fts_merge", run_periodic_fts_merge_sync, db)
         except Exception:
             logger.warning("daemon: FTS periodic merge failed", exc_info=True)
 
@@ -257,7 +277,8 @@ async def _periodic_wal_checkpoint() -> None:
         if not root.exists():
             continue
         try:
-            observations = await asyncio.to_thread(
+            observations = await daemon_write_coordinator().run_sync(
+                "maintenance.wal_checkpoint",
                 maybe_checkpoint_archive_wals,
                 root,
                 reason="periodic",
@@ -353,7 +374,8 @@ async def _periodic_drive_source_catchup() -> None:
     """Periodically converge remote Drive sources such as AiStudio exports."""
     while True:
         await asyncio.sleep(_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS)
-        changed = await _run_drive_source_catchup_safely()
+        coordinator = daemon_write_coordinator()
+        changed = await coordinator.run("maintenance.drive_catchup", _run_drive_source_catchup_safely)
         if changed:
             logger.info("daemon: Drive catch-up refreshed %d session(s)", changed)
 
@@ -396,7 +418,8 @@ async def _periodic_db_optimize() -> None:
         if not root.exists():
             continue
         try:
-            observations = await asyncio.to_thread(
+            observations = await daemon_write_coordinator().run_sync(
+                "maintenance.db_optimize",
                 maybe_optimize_archive_tiers,
                 root,
                 reason="periodic",
@@ -427,7 +450,11 @@ async def _retry_convergence_debt_once(db: Path) -> None:
     if not db.exists():
         return
     try:
-        repaired = await asyncio.to_thread(_drain_convergence_debt_once, db)
+        repaired = await daemon_write_coordinator().run_sync(
+            "maintenance.convergence_debt",
+            _drain_convergence_debt_once,
+            db,
+        )
         if repaired:
             logger.info("convergence: retried %d derived debt item(s)", repaired)
     except sqlite3.OperationalError as exc:
@@ -452,7 +479,10 @@ async def _periodic_raw_materialization_convergence_after(
         await catch_up_complete.wait()
     while True:
         try:
-            materialized = await asyncio.to_thread(_drain_raw_materialization_once)
+            materialized = await daemon_write_coordinator().run_sync(
+                "maintenance.raw_materialization",
+                _drain_raw_materialization_once,
+            )
             if materialized:
                 logger.info("raw materialization: converged %d session(s)", materialized)
         except sqlite3.OperationalError as exc:
@@ -475,7 +505,10 @@ async def _periodic_session_insight_convergence_after(
         burst_count = 0
         try:
             while burst_count < _SESSION_INSIGHT_CONVERGENCE_BURST_LIMIT:
-                refreshed = await asyncio.to_thread(_drain_session_insights_once)
+                refreshed = await daemon_write_coordinator().run_sync(
+                    "maintenance.session_insights",
+                    _drain_session_insights_once,
+                )
                 if not refreshed:
                     break
                 burst_count += 1
@@ -508,7 +541,8 @@ async def _reconcile_blob_publications() -> None:
     root = archive_root()
     if not (root / "source.db").exists():
         return
-    outcome = await asyncio.to_thread(
+    outcome = await daemon_write_coordinator().run_sync(
+        "startup.blob_publications",
         reconcile_blob_publication_reservations,
         root / "source.db",
         root / "blob",
@@ -563,10 +597,89 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
         render_root=render_root(),
         sources=[],
     )
-    result = repair_raw_materialization(config, dry_run=False, raw_artifact_limit=limit)
+    try:
+        result = repair_raw_materialization(config, dry_run=False, raw_artifact_limit=limit)
+    finally:
+        _close_raw_materialization_fts(config.archive_root / "index.db")
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
     return result.repaired_count
+
+
+def _close_raw_materialization_fts(index_db: Path) -> None:
+    """Return message search to ready or leave explicit retryable debt.
+
+    Large raw replay batches deliberately suspend FTS triggers and may skip
+    inline repair.  This closure runs under the same daemon write lease as the
+    replay, including replay exception/cancellation cleanup.
+    """
+    if not index_db.exists():
+        return
+    from polylogue.daemon.convergence_stages import repair_fts_surface
+
+    try:
+        needs_repair = _raw_materialization_fts_needs_repair(index_db)
+    except Exception as exc:
+        _record_raw_materialization_fts_debt(index_db, f"FTS readiness probe failed after raw materialization: {exc}")
+        return
+    if not needs_repair:
+        return
+    try:
+        repaired = repair_fts_surface(index_db, "messages_fts")
+    except Exception as exc:
+        # Preserve the original raw-materialization outcome. A stale
+        # freshness row plus explicit debt keeps readiness negative and makes
+        # this closure retryable instead of masking the initiating failure.
+        _record_raw_materialization_fts_debt(
+            index_db,
+            f"FTS repair failed after raw materialization: {type(exc).__name__}: {exc}",
+        )
+        return
+    if repaired:
+        try:
+            from polylogue.sources.live.cursor import CursorStore
+
+            CursorStore(index_db).clear_convergence_debt(
+                subject_type="fts_surface",
+                subject_id="messages_fts",
+                stage="fts",
+            )
+        except Exception:
+            logger.warning("raw materialization: failed to clear repaired message FTS debt", exc_info=True)
+        return
+    _record_raw_materialization_fts_debt(
+        index_db,
+        "raw materialization exited without restoring message FTS readiness",
+    )
+
+
+def _record_raw_materialization_fts_debt(index_db: Path, error: str) -> None:
+    from polylogue.sources.live.cursor import CursorStore
+
+    try:
+        CursorStore(index_db).record_convergence_debt(
+            stage="fts",
+            subject_type="fts_surface",
+            subject_id="messages_fts",
+            error=error,
+        )
+    except Exception:
+        # The stale FTS freshness row remains a durable negative readiness
+        # verdict even if the richer retry queue cannot be updated.
+        logger.warning("raw materialization: failed to record message FTS convergence debt", exc_info=True)
+
+
+def _raw_materialization_fts_needs_repair(index_db: Path) -> bool:
+    from polylogue.storage.fts.freshness import message_fts_recorded_readiness_sync
+    from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
+    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+    with open_daemon_connection(index_db, timeout=5.0) as conn:
+        recorded = message_fts_recorded_readiness_sync(conn)
+        if recorded is not None:
+            return not bool(recorded["ready"])
+        readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
+        return bool(readiness["exists"]) and not bool(readiness["ready"])
 
 
 def _drain_session_insights_once(*, limit: int = _SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT) -> int:
@@ -717,7 +830,11 @@ async def _periodic_health_check() -> None:
             from polylogue.daemon.health import check_health
             from polylogue.daemon.notifications import send_notifications
 
-            health = check_health(tiers=tiers)
+            health = await daemon_write_coordinator().run_sync(
+                "maintenance.health_check",
+                check_health,
+                tiers=tiers,
+            )
             if health.overall_status != "ok":
                 send_notifications(health.alerts, config=cfg.raw)
         except Exception:
@@ -739,6 +856,18 @@ def _acquire_pidfile(pidfile: Path) -> int:
     os.write(fd, str(os.getpid()).encode())
     os.fsync(fd)
     return fd
+
+
+def _release_pidfile_after_writer_drain(pidfile_fd: int | None, *, writer_drained: bool) -> int | None:
+    """Release daemon ownership only after every admitted writer is idle."""
+    if not writer_drained:
+        logger.error("daemon: writer coordinator remains active; retaining pidfile ownership until process exit")
+        return pidfile_fd
+    if pidfile_fd is not None:
+        with contextlib.suppress(OSError):
+            os.close(pidfile_fd)
+    _cleanup_pidfile()
+    return None
 
 
 def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
@@ -784,7 +913,7 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     )
 
 
-def _emit_daemon_lifecycle_event(
+async def _emit_daemon_lifecycle_event(
     phase: str,
     *,
     archive_root_path: Path,
@@ -813,7 +942,16 @@ def _emit_daemon_lifecycle_event(
     if payload:
         event_payload.update(payload)
     try:
-        emit_daemon_event("daemon.lifecycle", operation_id=run_id, payload=event_payload)
+        async with asyncio.timeout(0.5):
+            await daemon_write_coordinator().run_sync(
+                f"daemon.lifecycle.{phase}",
+                emit_daemon_event,
+                "daemon.lifecycle",
+                operation_id=run_id,
+                payload=event_payload,
+            )
+    except TimeoutError:
+        logger.warning("daemon: timed out emitting lifecycle event %s", phase)
     except Exception:
         logger.warning("daemon: failed to emit lifecycle event %s", phase, exc_info=True)
 
@@ -824,7 +962,13 @@ async def run_live_watcher(
     debounce_s: float,
 ) -> None:
     async with Polylogue() as polylogue:
-        watcher = LiveWatcher(polylogue, sources, debounce_s=debounce_s, event_emitter=_emit_live_batch_event)
+        watcher = LiveWatcher(
+            polylogue,
+            sources,
+            debounce_s=debounce_s,
+            event_emitter=_emit_live_batch_event,
+            write_coordinator=daemon_write_coordinator(),
+        )
         try:
             await watcher.run()
         except KeyboardInterrupt:
@@ -936,8 +1080,10 @@ async def run_daemon_services(
     for src in sources:
         src.root.mkdir(parents=True, exist_ok=True)
 
+    write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
+
     if lifecycle_events_enabled:
-        _emit_daemon_lifecycle_event(
+        await _emit_daemon_lifecycle_event(
             "startup",
             archive_root_path=archive_root_path,
             status="starting",
@@ -976,7 +1122,6 @@ async def run_daemon_services(
     tasks: list[asyncio.Task[None]] = []
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
-
     try:
         if enable_browser_capture:
             resolved_browser_capture_auth_token = resolve_receiver_auth_token(
@@ -993,7 +1138,7 @@ async def run_daemon_services(
             server_task = asyncio.create_task(asyncio.to_thread(server.serve_forever, 0.5))
             tasks.append(server_task)
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "component_started",
                     archive_root_path=archive_root_path,
                     component="browser_capture",
@@ -1018,11 +1163,12 @@ async def run_daemon_services(
                 DaemonAPIHandler,
                 auth_token=api_auth_token,
                 api_host=api_host,
+                write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "component_started",
                     archive_root_path=archive_root_path,
                     component="api",
@@ -1038,16 +1184,16 @@ async def run_daemon_services(
             from polylogue.daemon.convergence_stages import make_default_convergence_stages
             from polylogue.daemon.embedding_backlog import periodic_embedding_backlog_check
 
-            await _ensure_fts_startup_readiness()
+            await _run_startup_fts_readiness(write_coordinator)
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "component_ready",
                     archive_root_path=archive_root_path,
                     component="fts_startup",
                 )
-            await _ensure_lineage_startup_readiness()
+            await _run_startup_lineage_readiness(write_coordinator)
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "component_ready",
                     archive_root_path=archive_root_path,
                     component="lineage_startup",
@@ -1058,7 +1204,10 @@ async def run_daemon_services(
             # segments (#1851).  A periodic merge pass amortises the cost.
             await _configure_fts_automerge()
             if enable_source_catchup:
-                changed_drive_sessions = await _run_drive_source_catchup_safely()
+                changed_drive_sessions = await write_coordinator.run(
+                    "startup.drive_catchup",
+                    _run_drive_source_catchup_safely,
+                )
                 if changed_drive_sessions:
                     logger.info("daemon: startup Drive catch-up refreshed %d session(s)", changed_drive_sessions)
             else:
@@ -1086,7 +1235,7 @@ async def run_daemon_services(
             )
             await converger.start()
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "component_started",
                     archive_root_path=archive_root_path,
                     component="converger",
@@ -1103,6 +1252,7 @@ async def run_daemon_services(
                         debounce_s=debounce_s,
                         converger=converger,
                         event_emitter=_emit_live_batch_event,
+                        write_coordinator=write_coordinator,
                     )
                     watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
                     if catch_up_complete_gate is not None and watcher_catch_up_complete is not None:
@@ -1117,7 +1267,7 @@ async def run_daemon_services(
                     watcher_task = asyncio.create_task(watcher.run())
                     tasks.append(watcher_task)
                     if lifecycle_events_enabled:
-                        _emit_daemon_lifecycle_event(
+                        await _emit_daemon_lifecycle_event(
                             "component_started",
                             archive_root_path=archive_root_path,
                             component="watcher",
@@ -1129,7 +1279,7 @@ async def run_daemon_services(
                 # Watcher disabled or preflight-blocked: keep HTTP/health and
                 # other components serving so operators see the degraded state.
                 if lifecycle_events_enabled:
-                    _emit_daemon_lifecycle_event(
+                    await _emit_daemon_lifecycle_event(
                         "component_skipped",
                         archive_root_path=archive_root_path,
                         component="watcher",
@@ -1142,7 +1292,7 @@ async def run_daemon_services(
                 await asyncio.gather(*all_tasks)
             else:
                 if lifecycle_events_enabled:
-                    _emit_daemon_lifecycle_event(
+                    await _emit_daemon_lifecycle_event(
                         "component_skipped",
                         archive_root_path=archive_root_path,
                         component="watcher",
@@ -1164,7 +1314,7 @@ async def run_daemon_services(
                 cleanup_task.uncancel()
         try:
             if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
+                await _emit_daemon_lifecycle_event(
                     "shutdown_started",
                     archive_root_path=archive_root_path,
                     status="stopping",
@@ -1172,7 +1322,11 @@ async def run_daemon_services(
             if watcher is not None:
                 watcher.stop()
             if converger is not None:
-                await converger.stop()
+                try:
+                    async with asyncio.timeout(5.0):
+                        await converger.stop()
+                except TimeoutError:
+                    logger.warning("daemon: timed out stopping convergence executor")
             if server is not None:
                 await _shutdown_server_if_serving(server, server_task, label="browser-capture")
             if api_server is not None:
@@ -1199,19 +1353,17 @@ async def run_daemon_services(
                     mt.cancel()
             await _drain_tasks(maintenance_tasks, timeout=5.0)
 
-            await asyncio.to_thread(_mark_interrupted_live_ingest_attempts_on_shutdown)
+            try:
+                async with asyncio.timeout(5.0):
+                    await write_coordinator.run_sync(
+                        "shutdown.live_ingest_attempts",
+                        _mark_interrupted_live_ingest_attempts_on_shutdown,
+                    )
+            except TimeoutError:
+                logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
 
-            # Clean up pidfile and release advisory lock.
-            if pidfile_fd is not None:
-                with contextlib.suppress(OSError):
-                    os.close(pidfile_fd)
-            _cleanup_pidfile()
-            if lifecycle_events_enabled:
-                _emit_daemon_lifecycle_event(
-                    "shutdown_complete",
-                    archive_root_path=archive_root_path,
-                    status="stopped",
-                )
+            writer_drained = await write_coordinator.shutdown(timeout=5.0)
+            pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         finally:
             if server is not None:
                 with contextlib.suppress(Exception):

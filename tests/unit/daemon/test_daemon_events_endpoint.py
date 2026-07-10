@@ -17,6 +17,7 @@ status payload on every probe.
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
@@ -105,6 +106,7 @@ class TestEventsPollFallback:
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
         assert payload == {"events": [], "last_event_id": 0}
+        assert not empty_events_db.exists()
 
     def test_poll_returns_events_after_since(self, empty_events_db: Path) -> None:
         from polylogue.daemon.events import emit_daemon_event
@@ -193,6 +195,103 @@ class TestEventsSSEStream:
         out = cast("BytesIO", handler.wfile).getvalue()
         # Only the second event should be present.
         assert out.count(b"event: ingestion_batch\n") == 1
+
+
+class TestEventLedgerReadIsolation:
+    """Event/status observation never initializes or contends for ops writes."""
+
+    def test_read_helpers_leave_missing_tier_and_parent_absent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon import events as events_mod
+
+        events_path = tmp_path / "fresh" / "ops.db"
+        monkeypatch.setattr(events_mod, "_events_db_path", lambda: events_path)
+
+        def unexpected(*_args: object, **_kwargs: object) -> None:
+            pytest.fail("event readers must not initialize or open an ops writer")
+
+        monkeypatch.setattr(events_mod, "initialize_archive_database", unexpected)
+        monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
+
+        assert events_mod.query_daemon_events() == []
+        assert events_mod.query_events_since(0) == []
+        assert events_mod.get_latest_event_id() == 0
+        assert events_mod.get_daemon_event_counts() == {}
+        assert events_mod.get_last_ingestion_batch() is None
+        assert events_mod.get_recent_operations() == []
+        assert not events_path.parent.exists()
+
+    def test_read_helpers_leave_schema_less_ops_file_unchanged(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon import events as events_mod
+
+        events_path = tmp_path / "ops.db"
+        with sqlite3.connect(events_path) as conn:
+            conn.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+            conn.execute("INSERT INTO sentinel VALUES ('preserved')")
+        size_before = events_path.stat().st_size
+        monkeypatch.setattr(events_mod, "_events_db_path", lambda: events_path)
+
+        def unexpected(*_args: object, **_kwargs: object) -> None:
+            pytest.fail("event readers must not initialize or open an ops writer")
+
+        monkeypatch.setattr(events_mod, "initialize_archive_database", unexpected)
+        monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
+
+        assert events_mod.query_daemon_events() == []
+        assert events_mod.query_events_since(0) == []
+        assert events_mod.get_latest_event_id() == 0
+        assert events_mod.get_daemon_event_counts() == {}
+        assert events_path.stat().st_size == size_before
+        with sqlite3.connect(f"file:{events_path}?mode=ro", uri=True) as conn:
+            assert conn.execute("SELECT value FROM sentinel").fetchone() == ("preserved",)
+            assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'daemon_events'").fetchone() is None
+
+    def test_reads_remain_query_only_during_active_writer_transaction(
+        self,
+        empty_events_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon import events as events_mod
+
+        events_mod.emit_daemon_event("committed", payload={"value": 1})
+        writer = sqlite3.connect(empty_events_db, timeout=0.1)
+        try:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute(
+                "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (2, 'uncommitted', NULL, '{}')"
+            )
+            writer_changes = writer.total_changes
+
+            def unexpected(*_args: object, **_kwargs: object) -> None:
+                pytest.fail("event readers must not initialize or open an ops writer")
+
+            monkeypatch.setattr(events_mod, "initialize_archive_database", unexpected)
+            monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
+
+            assert [event["kind"] for event in events_mod.query_daemon_events()] == ["committed"]
+            assert [event["kind"] for event in events_mod.query_events_since(0)] == ["committed"]
+            assert events_mod.get_latest_event_id() == 1
+            assert events_mod.get_daemon_event_counts() == {"committed": 1}
+            assert writer.in_transaction is True
+            assert writer.total_changes == writer_changes
+            writer.execute(
+                "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (3, 'writer-still-active', NULL, '{}')"
+            )
+            writer.commit()
+        finally:
+            writer.close()
+
+        assert [event["kind"] for event in events_mod.query_events_since(1)] == [
+            "uncommitted",
+            "writer-still-active",
+        ]
 
 
 class TestStatusEventEtag:

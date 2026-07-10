@@ -62,6 +62,7 @@ class StatusSnapshot:
             "age_s": round(age_s, 3),
             "refresh_error": self.refresh_error,
         }
+        payload["daemon_write_coordinator"] = _daemon_write_coordinator_payload()
         return json_document(payload)
 
 
@@ -173,6 +174,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "embedding_readiness": {},
         "memory": {},
         "health": {},
+        "daemon_write_coordinator": _daemon_write_coordinator_payload(),
         "raw_parse_failures": 0,
         "raw_validation_failures": 0,
         "raw_quarantined": 0,
@@ -188,6 +190,13 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
     }
     payload["component_readiness"] = _minimal_component_readiness(payload)
     return json_document(payload)
+
+
+def _daemon_write_coordinator_payload() -> dict[str, object]:
+    """Project current in-process writer state into every status snapshot."""
+    from polylogue.daemon.write_coordinator import daemon_write_telemetry_payload
+
+    return daemon_write_telemetry_payload()
 
 
 def _minimal_component_readiness(payload: Mapping[str, object]) -> dict[str, object]:

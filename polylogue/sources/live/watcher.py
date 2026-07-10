@@ -17,11 +17,11 @@ import os
 import sqlite3
 import stat as stat_module
 import time
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
@@ -143,13 +143,18 @@ class LiveWatcher:
         max_workers: int | None = None,
         converger: object | None = None,  # DaemonConverger | None — avoids circular import
         event_emitter: LiveBatchEventEmitter | None = None,
+        write_coordinator: object | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
         self._debounce_s = debounce_s
-        self._cursor = cursor or CursorStore(_cursor_db_path(polylogue))
+        self._cursor = cursor or CursorStore(
+            _cursor_db_path(polylogue),
+            initialize=write_coordinator is None,
+        )
         self._max_workers = max_workers
         self._converger = converger
+        self._write_coordinator = write_coordinator
         self._pending_paths: set[Path] = set()
         self._pending_scheduled = False
         self._drain_task: asyncio.Task[None] | None = None
@@ -170,7 +175,22 @@ class LiveWatcher:
             converger=converger,
             stop_requested=self._stop.is_set,
             event_emitter=event_emitter,
+            sync_runner=self._run_writer_sync,
         )
+
+    async def _run_writer_sync(
+        self,
+        actor: str,
+        function: Callable[..., Any],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Run blocking watcher writes without joining the loop executor at exit."""
+        run_sync = getattr(self._write_coordinator, "run_sync", None)
+        if callable(run_sync):
+            return await run_sync(actor, function, *args, **kwargs)
+        return await asyncio.to_thread(function, *args, **kwargs)
 
     @property
     def catch_up_complete(self) -> asyncio.Event:
@@ -246,10 +266,19 @@ class LiveWatcher:
 
     async def _catch_up(self, roots: list[Path]) -> None:
         candidates = self._scan_catch_up_candidates(roots)
-        if not candidates:
+        plan_holder: list[CatchUpPlan] = []
+
+        async def prepare_catch_up() -> None:
+            await self._run_writer_sync("watcher.catch_up.cursor_initialize", self._cursor.initialize)
+            if not candidates:
+                return
+            logger.info("live.watcher: catch-up scan over %d file(s)", len(candidates))
+            plan_holder.append(self._plan_catch_up(candidates))
+
+        await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
+        if not plan_holder:
             return
-        logger.info("live.watcher: catch-up scan over %d file(s)", len(candidates))
-        plan = self._plan_catch_up(candidates)
+        plan = plan_holder[0]
 
         if plan.needed:
             candidate_by_path = {candidate.path: candidate for candidate in plan.candidates}
@@ -272,18 +301,27 @@ class LiveWatcher:
                     len(chunk),
                     chunk_bytes / 1e6,
                 )
-                metrics = await self._ingest_files(
-                    list(chunk),
-                    queued_file_count=len(plan.candidates) if index == 1 else len(chunk),
-                    skipped_file_count=plan.skipped_file_count if index == 1 else 0,
-                )
-                if metrics is not None:
-                    _log_ingest_metrics(f"live.watcher: catch-up chunk {index}/{len(chunks)}", metrics)
-                    if (
-                        getattr(metrics, "succeeded_file_count", 0) == 0
-                        and getattr(metrics, "failed_file_count", 0) == 0
-                    ):
-                        self._defer_unaccounted_failed_retries(list(chunk))
+                chunk_index = index
+                chunk_paths = list(chunk)
+
+                async def ingest_chunk(
+                    chunk_index: int = chunk_index,
+                    chunk_paths: list[Path] = chunk_paths,
+                ) -> None:
+                    metrics = await self._ingest_files(
+                        chunk_paths,
+                        queued_file_count=len(plan.candidates) if chunk_index == 1 else len(chunk_paths),
+                        skipped_file_count=plan.skipped_file_count if chunk_index == 1 else 0,
+                    )
+                    if metrics is not None:
+                        _log_ingest_metrics(f"live.watcher: catch-up chunk {chunk_index}/{len(chunks)}", metrics)
+                        if (
+                            getattr(metrics, "succeeded_file_count", 0) == 0
+                            and getattr(metrics, "failed_file_count", 0) == 0
+                        ):
+                            self._defer_unaccounted_failed_retries(chunk_paths)
+
+                await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
             self._schedule_failed_retry_scan()
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
@@ -469,7 +507,8 @@ class LiveWatcher:
             paths = list(self._pending_paths)
             self._pending_paths.clear()
 
-        try:
+        async def flush_batch() -> None:
+            await self._run_writer_sync("watcher.live_batch.cursor_initialize", self._cursor.initialize)
             # Filter to files that actually need work.
             cursor_records = self._cursor.get_records(paths)
             needed = []
@@ -482,7 +521,7 @@ class LiveWatcher:
                     needed.append(path)
             if not needed:
                 self._defer_unaccounted_failed_retries(paths)
-                return bool(paths)
+                return
 
             logger.info("live.watcher: batching %d changed file(s)", len(needed))
             metrics = await self._ingest_files(
@@ -499,6 +538,9 @@ class LiveWatcher:
                 ):
                     self._defer_unaccounted_failed_retries(needed)
             self._schedule_failed_retry_scan()
+
+        try:
+            await self._run_coordinated("watcher.live_batch", flush_batch)
         except sqlite3.OperationalError as exc:
             if not _is_database_locked(exc):
                 raise
@@ -634,26 +676,41 @@ class LiveWatcher:
         """
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
-        if not source_db.exists():
+        index_db = archive_root / "index.db"
+        if not source_db.exists() or not index_db.exists():
             return False
         try:
             with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0) as conn:
-                row = conn.execute(
+                rows = conn.execute(
                     """
-                    SELECT origin, blob_hash, blob_size
+                    SELECT raw_id, origin, blob_hash, blob_size
                     FROM raw_sessions
                     WHERE source_path = ?
                       AND COALESCE(source_index, 0) >= 0
+                      AND parsed_at_ms IS NOT NULL
+                      AND parse_error IS NULL
                     ORDER BY acquired_at_ms DESC, raw_id DESC
-                    LIMIT 1
                     """,
                     (str(path),),
-                ).fetchone()
+                ).fetchall()
+            with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0) as conn:
+                row = next(
+                    (
+                        candidate
+                        for candidate in rows
+                        if conn.execute(
+                            "SELECT 1 FROM sessions WHERE raw_id = ? LIMIT 1",
+                            (candidate[0],),
+                        ).fetchone()
+                        is not None
+                    ),
+                    None,
+                )
         except sqlite3.Error:
             return False
         if row is None:
             return False
-        origin, blob_hash, blob_size = row
+        _raw_id, origin, blob_hash, blob_size = row
         archived_size = int(blob_size or 0)
         current_size = int(stat.st_size)
         if archived_size <= 0 or archived_size > current_size:
@@ -706,12 +763,25 @@ class LiveWatcher:
     ) -> LiveBatchMetrics:
         """Ingest files through the reusable daemon live batch processor."""
         async with self._ingest_lock:
-            metrics = await self._batch_processor.ingest_files(
-                paths,
-                queued_file_count=queued_file_count,
-                skipped_file_count=skipped_file_count,
-            )
+
+            async def ingest() -> LiveBatchMetrics:
+                return await self._batch_processor.ingest_files(
+                    paths,
+                    queued_file_count=queued_file_count,
+                    skipped_file_count=skipped_file_count,
+                )
+
+            run = getattr(self._write_coordinator, "run", None)
+            metrics = await run("watcher.live_ingest", ingest) if callable(run) else await ingest()
         return metrics
+
+    async def _run_coordinated(self, actor: str, operation: Callable[[], Awaitable[None]]) -> None:
+        """Run a complete watcher write batch under the injected coordinator."""
+        run = getattr(self._write_coordinator, "run", None)
+        if callable(run):
+            await run(actor, operation)
+            return
+        await operation()
 
     def _source_name_for(self, path: Path) -> str:
         resolved = path.resolve()
