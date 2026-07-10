@@ -262,6 +262,8 @@ def test_coordination_envelope_uses_beads_when_present(tmp_path: Path, monkeypat
     assert payload.beads.merge_slot is not None
     assert payload.beads.merge_slot.id == "polylogue-merge-slot"
     assert payload.beads.merge_slot.error == "not found"
+    assert payload.archive is not None
+    assert set(payload.archive.hook_flow_states) == {"claude-code", "codex"}
     assert payload.resource_episodes
     assert any(overlap.kind == "resource-episode" and not overlap.blocking for overlap in payload.overlaps)
 

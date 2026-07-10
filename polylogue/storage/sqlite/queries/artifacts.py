@@ -9,12 +9,15 @@ payload and are intentionally not stored.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 
 import aiosqlite
 
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.runtime import ArtifactObservationRecord
 
 __all__ = [
@@ -108,6 +111,100 @@ async def save_artifact_observation(
     existed = await exists_cursor.fetchone() is not None
 
     await conn.execute(RAW_ARTIFACT_UPSERT_SQL, artifact_observation_params(record))
+    if record.artifact_kind == "hook_event":
+        await _materialize_hook_events(conn, record)
     if transaction_depth == 0:
         await conn.commit()
     return not existed
+
+
+def _hook_observed_at_ms(value: object, fallback: str) -> int:
+    candidate = value if isinstance(value, str) else fallback
+    try:
+        return _iso_to_ms(candidate)
+    except (TypeError, ValueError):
+        return _iso_to_ms(fallback)
+
+
+def _hook_records_from_blob(blob_hash: str) -> list[dict[str, object]]:
+    path = get_blob_store().blob_path(blob_hash)
+    records: list[dict[str, object]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                value = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            candidates = value if isinstance(value, list) else [value]
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                if not all(isinstance(candidate.get(key), str) for key in ("event_type", "session_id", "provider")):
+                    continue
+                records.append(candidate)
+    return records
+
+
+async def _materialize_hook_events(
+    conn: aiosqlite.Connection,
+    record: ArtifactObservationRecord,
+) -> None:
+    """Project classified hook JSONL into the existing source-tier relation."""
+
+    cursor = await conn.execute("SELECT hex(blob_hash) FROM raw_sessions WHERE raw_id = ?", (record.raw_id,))
+    row = await cursor.fetchone()
+    if row is None or not row[0]:
+        return
+    blob_hash = str(row[0]).lower()
+    try:
+        hook_records = _hook_records_from_blob(blob_hash)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return
+    for index, hook_record in enumerate(hook_records):
+        provider = str(hook_record["provider"])
+        if provider not in {"claude-code", "codex"}:
+            continue
+        origin = origin_from_provider(Provider.from_string(provider)).value
+        event_type = str(hook_record["event_type"])
+        session_native_id = str(hook_record["session_id"])
+        digest_input = json.dumps(
+            hook_record,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        hook_event_id = (
+            "hook:"
+            + hashlib.sha256(
+                record.source_path.encode("utf-8") + b"\0" + str(index).encode("ascii") + b"\0" + digest_input
+            ).hexdigest()
+        )
+        await conn.execute(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, session_native_id, source_path,
+                event_type, payload_json, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(hook_event_id) DO UPDATE SET
+                origin = excluded.origin,
+                native_id = excluded.native_id,
+                session_native_id = excluded.session_native_id,
+                source_path = excluded.source_path,
+                event_type = excluded.event_type,
+                payload_json = excluded.payload_json,
+                observed_at_ms = excluded.observed_at_ms
+            """,
+            (
+                hook_event_id,
+                origin,
+                f"{session_native_id}:{event_type}:{index}",
+                session_native_id,
+                record.source_path,
+                event_type,
+                json.dumps(hook_record, ensure_ascii=False, default=str),
+                _hook_observed_at_ms(hook_record.get("timestamp"), record.last_observed_at),
+            ),
+        )

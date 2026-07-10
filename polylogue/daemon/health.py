@@ -343,6 +343,74 @@ def _check_schema_version_fast() -> HealthAlert:
         )
 
 
+def _check_hook_flow_fast() -> HealthAlert:
+    """Detect configured harnesses whose hook evidence stopped arriving."""
+
+    now = datetime.now(UTC).isoformat()
+    try:
+        from polylogue.hooks import hook_statuses
+
+        statuses = hook_statuses(coverage=True, archive_root_path=archive_root())
+        broken_commands = [
+            status.harness for status in statuses if status.wired_events and not status.executable_available
+        ]
+        gaps = [status for status in statuses if status.flow_state == "gap"]
+        partial = [status for status in statuses if status.flow_state == "partial"]
+        incomplete = [status for status in statuses if status.flow_state in {"disabled", "incomplete"}]
+        if broken_commands:
+            severity = HealthSeverity.ERROR
+            message = "polylogue-hook is unavailable for configured harness(es): " + ", ".join(broken_commands)
+        elif gaps:
+            severity = HealthSeverity.ERROR
+            message = "; ".join(
+                f"{status.harness}: {status.sessions_without_hook_events}/{status.eligible_session_count} "
+                "recent session(s) have no hook events"
+                for status in gaps
+            )
+        elif partial:
+            severity = HealthSeverity.WARNING
+            details: list[str] = []
+            for status in partial:
+                missing = [
+                    row.event for row in status.coverage if row.wired and row.missing_expected_count not in (None, 0)
+                ]
+                details.append(f"{status.harness}: partial event coverage ({', '.join(missing)})")
+            message = "; ".join(details)
+        elif incomplete:
+            severity = HealthSeverity.WARNING
+            message = "; ".join(
+                f"{status.harness}: hook wiring {status.flow_state}; missing "
+                f"{', '.join(status.missing_recommended_events) or 'feature enablement'}"
+                for status in incomplete
+            )
+        else:
+            severity = HealthSeverity.OK
+            configured = [status.harness for status in statuses if status.wired_events]
+            message = (
+                "hook flow healthy for " + ", ".join(configured)
+                if configured
+                else "no Polylogue harness hooks configured"
+            )
+        is_ok = severity == HealthSeverity.OK
+        return HealthAlert(
+            check_name="hook_flow",
+            tier=HealthTier.FAST,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("hook_flow", is_ok),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="hook_flow",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.ERROR,
+            message=f"hook flow check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("hook_flow", False),
+        )
+
+
 def _run_fast_checks() -> list[HealthAlert]:
     return [
         _check_daemon_liveness_fast(),
@@ -350,6 +418,7 @@ def _run_fast_checks() -> list[HealthAlert]:
         _check_disk_space_fast(),
         _check_wal_size_fast(),
         _check_source_availability_fast(),
+        _check_hook_flow_fast(),
     ]
 
 
@@ -1219,6 +1288,7 @@ __all__ = [
     "HealthAlert",
     "HealthSeverity",
     "HealthTier",
+    "_check_hook_flow_fast",
     "_check_schema_version_fast",
     "check_health",
     "format_health_lines",

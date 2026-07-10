@@ -93,6 +93,9 @@ class CoordinationArchivePayload(SurfacePayloadModel):
     index_user_version: int | None = None
     source_user_version: int | None = None
     user_user_version: int | None = None
+    hook_flow_states: dict[str, str] = Field(default_factory=dict)
+    hook_flow_healthy: bool | None = None
+    hook_flow_gaps: tuple[str, ...] = ()
     daemon_processes: tuple[CoordinationResourceEpisodePayload, ...] = ()
     provenance: CoordinationProvenancePayload
 

@@ -64,6 +64,8 @@ def _detect_provider(payload: dict[str, object]) -> str | None:
     forced = os.environ.get("POLYLOGUE_HOOK_PROVIDER")
     if forced:
         return forced
+    if "turn_id" in payload:
+        return "codex"
     if "permission_mode" in payload or "model" in payload:
         return "claude-code"
     if "source" in payload:
@@ -82,11 +84,25 @@ def _extract_session_id(payload: dict[str, object]) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        print("Usage: polylogue-hook <event-type>", file=sys.stderr)
+        print("Usage: polylogue-hook <event-type> [--provider claude-code|codex]", file=sys.stderr)
         return 1
 
     event_type = args[0]
-    if event_type not in _ALL_EVENTS:
+    provider_arg: str | None = None
+    if "--provider" in args[1:]:
+        index = args.index("--provider")
+        provider_arg = args[index + 1] if index + 1 < len(args) else None
+        if provider_arg not in ("claude-code", "codex"):
+            print("polylogue-hook: --provider must be claude-code or codex", file=sys.stderr)
+            return 2
+    allowed_events = (
+        _CLAUDE_CODE_EVENTS
+        if provider_arg == "claude-code"
+        else _CODEX_EVENTS
+        if provider_arg == "codex"
+        else _ALL_EVENTS
+    )
+    if event_type not in allowed_events:
         print(f"polylogue-hook: unsupported event type: {event_type}", file=sys.stderr)
         return 2
 
@@ -111,10 +127,10 @@ def main(argv: list[str] | None = None) -> int:
         print("polylogue-hook: could not extract session_id from payload", file=sys.stderr)
         return 1
 
-    provider = _detect_provider(payload)
+    provider = provider_arg or _detect_provider(payload)
     if provider not in ("claude-code", "codex"):
         print(
-            "polylogue-hook: could not detect provider; set POLYLOGUE_HOOK_PROVIDER=claude-code|codex",
+            "polylogue-hook: could not detect provider; pass --provider claude-code|codex",
             file=sys.stderr,
         )
         return 1

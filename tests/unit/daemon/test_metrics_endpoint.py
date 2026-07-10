@@ -79,6 +79,10 @@ EXPECTED_SERIES: frozenset[str] = frozenset(
         "polylogue_archive_ready",
         "polylogue_archive_blocker_count",
         "polylogue_archive_blocker",
+        "polylogue_hook_flow_healthy",
+        "polylogue_hook_flow_state",
+        "polylogue_hook_sessions",
+        "polylogue_hook_event_observed_ratio",
     }
 )
 
