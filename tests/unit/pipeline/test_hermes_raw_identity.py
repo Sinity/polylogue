@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from hashlib import sha256
@@ -31,6 +32,21 @@ def _write_minimal_hermes_state(path: Path) -> None:
                 model_config TEXT,
                 parent_session_id TEXT,
                 started_at REAL,
+                ended_at REAL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_read_tokens INTEGER,
+                cache_write_tokens INTEGER,
+                reasoning_tokens INTEGER,
+                api_call_count INTEGER,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
                 title TEXT
             );
             CREATE TABLE messages (
@@ -45,9 +61,16 @@ def _write_minimal_hermes_state(path: Path) -> None:
                 compacted INTEGER NOT NULL DEFAULT 0
             );
             INSERT INTO sessions (
-                id, source, model, model_config, parent_session_id, started_at, title
+                id, source, model, model_config, parent_session_id, started_at, ended_at,
+                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                reasoning_tokens, api_call_count, estimated_cost_usd, actual_cost_usd,
+                cost_status, cost_source, pricing_version, billing_provider,
+                billing_base_url, billing_mode, title
             ) VALUES (
-                'shared-session', 'hermes', 'test-model', '{}', NULL, 1775000000.0, 'Shared bytes'
+                'shared-session', 'hermes', 'test-model', '{}', NULL, 1775000000.0, 1775000002.0,
+                10, 20, 3, 4, 5, 2, 0.002, 0.0015,
+                'estimated', 'litellm', '2026-07-10', 'openrouter',
+                'https://openrouter.ai/api/v1', 'metered', 'Shared bytes'
             );
             INSERT INTO messages (
                 session_id, role, content, timestamp, tool_calls, observed, active, compacted
@@ -120,6 +143,40 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
         assert len(rows) == 2
         assert len({str(row["session_id"]) for row in rows}) == 2
         assert {str(row["raw_id"]) for row in rows} == set(acquired.raw_ids)
+        session_ids = [str(row["session_id"]) for row in rows]
+
+        async def durable_cost_payloads() -> list[dict[str, object]]:
+            async with backend.connection() as conn:
+                event_rows = list(
+                    await (
+                        await conn.execute(
+                            """
+                            SELECT payload_json
+                            FROM session_provider_usage_events
+                            WHERE provider_event_type = 'token_count'
+                            ORDER BY session_id, position
+                            """
+                        )
+                    ).fetchall()
+                )
+            return [json.loads(str(row["payload_json"])) for row in event_rows]
+
+        expected_cost_provenance = {
+            "estimated_cost_usd": 0.002,
+            "actual_cost_usd": 0.0015,
+            "cost_status": "estimated",
+            "cost_source": "litellm",
+            "pricing_version": "2026-07-10",
+            "billing_provider": "openrouter",
+            "billing_base_url": "https://openrouter.ai/api/v1",
+            "billing_mode": "metered",
+        }
+        cost_payloads = await durable_cost_payloads()
+        assert len(cost_payloads) == len(session_ids)
+        assert all(
+            {key: payload[key] for key in expected_cost_provenance} == expected_cost_provenance
+            for payload in cost_payloads
+        )
 
         async with backend.connection() as conn:
             await conn.execute("DELETE FROM sessions")
@@ -139,5 +196,7 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
         session_count = int(session_row[0])
         assert raw_count == 2
         assert session_count == 2
+        rebuilt_cost_payloads = await durable_cost_payloads()
+        assert rebuilt_cost_payloads == cost_payloads
     finally:
         await backend.close()
