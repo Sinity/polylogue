@@ -19,6 +19,7 @@ def test_provider_completeness_reports_representative_modes() -> None:
     codex = by_ref["provider-package:codex-session/session-jsonl@v1"]
     chatgpt = by_ref["provider-package:chatgpt-export/takeout-json@v1"]
     browser = by_ref["provider-package:browser-capture/live-receiver@v1"]
+    hermes = by_ref["provider-package:hermes-session/state-db@v1"]
 
     assert codex.origin == "codex-session"
     assert codex.capture_mode == "session-jsonl"
@@ -33,6 +34,9 @@ def test_provider_completeness_reports_representative_modes() -> None:
     assert browser.status == "proposed"
     assert browser.schema_package.status == "missing"
     assert not browser.blockers
+
+    assert hermes.schema_package.owner_path == ("polylogue/schemas/providers/hermes/state_db_v16.contract.json")
+    assert hermes.schema_package.status == "complete"
 
 
 def test_provider_completeness_origin_filter_accepts_origin_and_provider() -> None:

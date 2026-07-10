@@ -197,7 +197,7 @@ PACKAGE_MODE_SPECS: tuple[_PackageModeSpec, ...] = (
         parser_paths=("polylogue/sources/parsers/hermes_state.py",),
         normalizer_paths=("polylogue/sources/parsers/base_support.py",),
         fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
-        schema_paths=("polylogue/schemas/providers/hermes/catalog.json",),
+        schema_paths=("polylogue/schemas/providers/hermes/state_db_v16.contract.json",),
         docs_paths=("docs/providers/README.md", "docs/onboarding.md"),
         privacy_paths=("docs/provider-origin-identity.md",),
     ),

@@ -9,7 +9,7 @@ import pytest
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.config import Source
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, _parse_path_as_session_artifact
@@ -23,7 +23,7 @@ def _write_hermes_state_db(path: Path) -> None:
         conn.executescript(
             """
             CREATE TABLE schema_version(version INTEGER NOT NULL);
-            INSERT INTO schema_version(version) VALUES (17);
+            INSERT INTO schema_version(version) VALUES (16);
             CREATE TABLE sessions (
                 id TEXT PRIMARY KEY,
                 source TEXT,
@@ -47,8 +47,6 @@ def _write_hermes_state_db(path: Path) -> None:
                 cache_write_tokens INTEGER DEFAULT 0,
                 reasoning_tokens INTEGER DEFAULT 0,
                 cwd TEXT,
-                git_branch TEXT,
-                git_repo_root TEXT,
                 billing_provider TEXT,
                 billing_base_url TEXT,
                 billing_mode TEXT,
@@ -96,9 +94,10 @@ def _write_hermes_state_db(path: Path) -> None:
                 id, model, model_config, system_prompt, parent_session_id,
                 started_at, ended_at, end_reason, input_tokens, output_tokens,
                 cache_read_tokens, cache_write_tokens, reasoning_tokens, cwd,
-                git_branch, git_repo_root, estimated_cost_usd, actual_cost_usd,
+                estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                pricing_version, billing_provider, billing_base_url, billing_mode,
                 title, api_call_count, rewind_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "hermes-root",
@@ -115,10 +114,14 @@ def _write_hermes_state_db(path: Path) -> None:
                 4,
                 5,
                 "/realm/project/polylogue",
-                "feature/hermes",
-                "/realm/project/polylogue",
                 0.002,
                 0.0015,
+                "estimated",
+                "litellm",
+                "2026-07-10",
+                "openrouter",
+                "https://openrouter.ai/api/v1",
+                "metered",
                 "Hermes parser work",
                 2,
                 1,
@@ -148,6 +151,13 @@ def _write_hermes_state_db(path: Path) -> None:
         )
         conn.execute(
             """
+            INSERT INTO messages(session_id, role, content, timestamp, observed, active, compacted)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("hermes-root", "user", "ambient terminal output", 1_775_000_001.5, 1, 1, 0),
+        )
+        conn.execute(
+            """
             INSERT INTO messages(
                 session_id, role, content, tool_calls, timestamp, token_count,
                 finish_reason, reasoning_content, reasoning_details
@@ -171,6 +181,20 @@ def _write_hermes_state_db(path: Path) -> None:
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             ("hermes-root", "tool", "passed", "call-1", "shell", 1_775_000_003.0),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages(session_id, role, content, timestamp, observed, active, compacted)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("hermes-root", "assistant", "rewound answer", 1_775_000_004.0, 0, 0, 0),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages(session_id, role, content, timestamp, observed, active, compacted)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("hermes-root", "assistant", "compacted answer", 1_775_000_005.0, 0, 0, 1),
         )
         conn.execute(
             "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
@@ -293,23 +317,32 @@ def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:
 
     sessions = hermes_state.parse_state_db(db_path, fallback_id="fallback")
 
-    assert [session.provider_session_id for session in sessions] == ["hermes-root", "hermes-child"]
+    assert [session.provider_session_id.split("@", 1)[0] for session in sessions] == ["hermes-root", "hermes-child"]
+    assert all("@profile-" in session.provider_session_id for session in sessions)
     root = sessions[0]
     assert root.source_name is Provider.HERMES
     assert root.title == "Hermes parser work"
     assert root.instructions_text == "be precise"
     assert root.working_directories == ["/realm/project/polylogue"]
-    assert root.git_branch == "feature/hermes"
+    assert root.git_branch is None
+    assert root.git_repository_url is None
     assert root.reported_cost_usd == 0.0015
     assert root.messages[0].role == "system"
-    assert root.messages[2].provider_message_id == "hermes-root:message:2"
-    assert root.messages[2].output_tokens == 20
-    assert {block.type for block in root.messages[2].blocks} >= {
+    assert root.messages[3].provider_message_id == "hermes-root:message:3"
+    assert root.messages[3].output_tokens == 20
+    assert {block.type for block in root.messages[3].blocks} >= {
         BlockType.TEXT,
         BlockType.THINKING,
         BlockType.TOOL_USE,
     }
-    assert any(block.type is BlockType.TOOL_RESULT and block.tool_id == "call-1" for block in root.messages[3].blocks)
+    assert any(block.type is BlockType.TOOL_RESULT and block.tool_id == "call-1" for block in root.messages[4].blocks)
+    assert root.messages[2].material_origin is MaterialOrigin.RUNTIME_CONTEXT
+    assert root.messages[2].is_active_path is True
+    assert root.messages[5].is_active_path is False
+    assert root.messages[6].is_active_path is False
+    assert root.active_leaf_message_provider_id == root.messages[4].provider_message_id
+    assert root.messages[4].is_active_leaf is True
+    assert root.messages[6].is_active_leaf is False
     usage_events = [event for event in root.session_events if event.event_type == "token_count"]
     assert usage_events
     assert usage_events[0].payload["total_token_usage"] == {
@@ -320,11 +353,133 @@ def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:
         "reasoning_output_tokens": 5,
         "total_tokens": 42,
     }
+    assert {
+        key: usage_events[0].payload[key]
+        for key in (
+            "estimated_cost_usd",
+            "actual_cost_usd",
+            "cost_status",
+            "cost_source",
+            "pricing_version",
+            "billing_provider",
+            "billing_base_url",
+            "billing_mode",
+        )
+    } == {
+        "estimated_cost_usd": 0.002,
+        "actual_cost_usd": 0.0015,
+        "cost_status": "estimated",
+        "cost_source": "litellm",
+        "pricing_version": "2026-07-10",
+        "billing_provider": "openrouter",
+        "billing_base_url": "https://openrouter.ai/api/v1",
+        "billing_mode": "metered",
+    }
+    state_events = [event for event in root.session_events if event.event_type == "hermes_message_state"]
+    assert [event.payload["state"] for event in state_events] == [
+        "active",
+        "observed",
+        "active",
+        "active",
+        "rewound",
+        "compacted",
+    ]
+    identity = next(event for event in root.session_events if event.event_type == "hermes_identity")
+    assert identity.payload["raw_session_id"] == "hermes-root"
+    assert identity.payload["schema_version"] == 16
+    session_capabilities = identity.payload["session_capabilities"]
+    assert isinstance(session_capabilities, list)
+    assert "repository" not in session_capabilities
+    assert "cost_provenance" in session_capabilities
 
     child = sessions[1]
-    assert child.parent_session_provider_id == "hermes-root"
+    assert child.parent_session_provider_id == root.provider_session_id
     assert child.branch_type is not None
     assert child.branch_type.value == "subagent"
+
+
+def test_hermes_state_db_later_repository_capability_is_optional(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    _write_hermes_state_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE sessions ADD COLUMN git_branch TEXT")
+        conn.execute("ALTER TABLE sessions ADD COLUMN git_repo_root TEXT")
+        conn.execute("UPDATE schema_version SET version = 17")
+        conn.execute(
+            "UPDATE sessions SET git_branch = ?, git_repo_root = ? WHERE id = ?",
+            ("feature/hermes", "/realm/project/polylogue", "hermes-root"),
+        )
+
+    assert hermes_state.looks_like_state_db_path(db_path) is True
+    root = hermes_state.parse_state_db(db_path)[0]
+
+    assert root.git_branch == "feature/hermes"
+    assert root.git_repository_url == "/realm/project/polylogue"
+    identity = next(event for event in root.session_events if event.event_type == "hermes_identity")
+    assert identity.payload["schema_version"] == 17
+    session_capabilities = identity.payload["session_capabilities"]
+    assert isinstance(session_capabilities, list)
+    assert "repository" in session_capabilities
+
+
+def test_hermes_state_db_profile_qualifies_identity_and_retains_raw_id(tmp_path: Path) -> None:
+    first_path = tmp_path / "profile-a" / "state.db"
+    second_path = tmp_path / "profile-b" / "state.db"
+    first_path.parent.mkdir()
+    second_path.parent.mkdir()
+    _write_hermes_state_db(first_path)
+    _write_hermes_state_db(second_path)
+    retained_path = tmp_path / "blob-store" / "retained.db"
+    retained_path.parent.mkdir()
+    with sqlite3.connect(first_path) as source, sqlite3.connect(retained_path) as retained_conn:
+        source.backup(retained_conn)
+
+    first = hermes_state.parse_state_db(first_path)[0]
+    second = hermes_state.parse_state_db(second_path)[0]
+    retained = hermes_state.parse_state_db_payload(
+        hermes_state.marker_payload(retained_path, profile_root=first_path.parent),
+        fallback_id="unused",
+    )[0]
+
+    assert first.provider_session_id != second.provider_session_id
+    assert retained.provider_session_id == first.provider_session_id
+    assert first.provider_session_id.startswith("hermes-root@profile-")
+    assert second.provider_session_id.startswith("hermes-root@profile-")
+    for session in (first, second):
+        identity = next(event for event in session.session_events if event.event_type == "hermes_identity")
+        assert identity.payload["raw_session_id"] == "hermes-root"
+        assert ParsedSession.model_validate(session.model_dump()).session_events == session.session_events
+
+
+def test_hermes_state_db_rejects_tables_missing_required_core(tmp_path: Path) -> None:
+    db_path = tmp_path / "not-hermes.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions(id TEXT PRIMARY KEY, started_at REAL);
+            CREATE TABLE messages(id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, timestamp REAL);
+            """
+        )
+
+    assert hermes_state.looks_like_state_db_path(db_path) is False
+    with pytest.raises(ValueError, match="not a Hermes state.db"):
+        hermes_state.parse_state_db(db_path)
+
+
+def test_hermes_state_db_contract_matches_parser_capability_map() -> None:
+    contract_path = (
+        Path(__file__).parents[3] / "polylogue" / "schemas" / "providers" / "hermes" / "state_db_v16.contract.json"
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+
+    assert set(contract["tables"]["sessions"]["required_core"]) == hermes_state._REQUIRED_SESSION_COLUMNS
+    assert set(contract["tables"]["messages"]["required_core"]) == hermes_state._REQUIRED_MESSAGE_COLUMNS
+    assert {
+        name: frozenset(fields) for name, fields in contract["tables"]["sessions"]["optional_capabilities"].items()
+    } == hermes_state._SESSION_CAPABILITIES
+    assert {
+        name: frozenset(fields) for name, fields in contract["tables"]["messages"]["optional_capabilities"].items()
+    } == hermes_state._MESSAGE_CAPABILITIES
 
 
 def test_hermes_state_db_dispatch_marker_parses_multiple_sessions(tmp_path: Path) -> None:
@@ -335,7 +490,10 @@ def test_hermes_state_db_dispatch_marker_parses_multiple_sessions(tmp_path: Path
     assert detect_provider(payload) is Provider.HERMES
     sessions = parse_payload("hermes", payload, "fallback", source_path=str(db_path))
 
-    assert [session.provider_session_id for session in sessions] == ["hermes-root", "hermes-child"]
+    assert [session.provider_session_id.split("@", 1)[0] for session in sessions] == [
+        "hermes-root",
+        "hermes-child",
+    ]
 
 
 def test_hermes_state_db_source_iterator_captures_raw_blob(tmp_path: Path) -> None:
@@ -351,7 +509,10 @@ def test_hermes_state_db_source_iterator_captures_raw_blob(tmp_path: Path) -> No
         )
     )
 
-    assert [session.provider_session_id for _raw, session in rows] == ["hermes-root", "hermes-child"]
+    assert [session.provider_session_id.split("@", 1)[0] for _raw, session in rows] == [
+        "hermes-root",
+        "hermes-child",
+    ]
     raw = rows[0][0]
     assert raw is not None
     assert raw.raw_bytes == b""
