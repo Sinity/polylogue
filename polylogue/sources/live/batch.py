@@ -1309,6 +1309,10 @@ class LiveBatchProcessor:
                             error=ValueError("parsed raw payload produced no sessions"),
                         )
                         continue
+                    record_raw_id = source_raw_id
+                    record_session_ids: list[str] = []
+                    record_session_count = 0
+                    record_message_count = 0
                     for session in sessions:
                         raw_id, session_id = archive.write_parsed_for_retained_raw(
                             session,
@@ -1320,11 +1324,15 @@ class LiveBatchProcessor:
                             stage_timing_prefix="full",
                             finalize_raw_parse=False,
                         )
-                        result.raw_ids[record.raw_id] = raw_id
-                        result.session_ids.append(session_id)
-                        result.session_count += 1
-                        result.message_count += len(session.messages)
+                        record_raw_id = raw_id
+                        record_session_ids.append(session_id)
+                        record_session_count += 1
+                        record_message_count += len(session.messages)
                     archive.mark_raw_parse_succeeded(source_raw_id, provider=provider)
+                    result.raw_ids[record.raw_id] = record_raw_id
+                    result.session_ids.extend(record_session_ids)
+                    result.session_count += record_session_count
+                    result.message_count += record_message_count
                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
                 except Exception as exc:
                     if provider is not None and source_raw_id is not None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.raw.models import UNSET, RawSessionStateUpdate, _RawStateUnset
@@ -50,7 +52,7 @@ def compile_raw_state_update(
     if state.detection_warnings is not UNSET:
         warnings = state.detection_warnings
         set_clauses.append("detection_warnings_json = ?")
-        params.append((warnings[:2000] if isinstance(warnings, str) else warnings) or "[]")
+        params.append(json.dumps([warnings[:2000]]) if isinstance(warnings, str) and warnings else "[]")
     if state.validation_status is not UNSET or state.validation_error is not UNSET:
         set_clauses.append("validated_at_ms = ?")
         params.append(now_ms)
