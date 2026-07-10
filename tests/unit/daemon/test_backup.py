@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import backup_archive
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -223,6 +228,48 @@ def test_backup_archive_full_evidence_profile_includes_all_tiers(
     assert manifest["omitted_tiers"] == []
 
 
+def test_full_evidence_backup_restores_index_only_attachment_blob(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    archive_root = workspace_env["archive_root"]
+    payload = b"index-only attachment evidence"
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="backup-index-attachment",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="attachment", position=0)],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="a1",
+                message_provider_id="m1",
+                inline_bytes=payload,
+            )
+        ],
+    )
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        archive.write_parsed(session)
+
+    blob_hash = hashlib.sha256(payload).hexdigest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM blob_refs WHERE blob_hash = ?", (bytes.fromhex(blob_hash),)).fetchone()[
+                0
+            ]
+            == 0
+        )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok
+    assert result.verified
+    assert result.verification["index_attachment_blobs_resolved"] is True
+    backup_root = Path(result.output_path or "")
+    assert (backup_root / "blob" / blob_hash[:2] / blob_hash[2:]).read_bytes() == payload
+    inventory = json.loads((backup_root / "blob-inventory.json").read_text(encoding="utf-8"))
+    item = next(row for row in inventory if row["blob_hash"] == blob_hash)
+    assert item["protection"] == ["index_attachment"]
+
+
 def test_backup_archive_full_evidence_profile_treats_ops_as_optional(
     workspace_env: dict[str, Path],
     tmp_path: Path,
@@ -353,6 +400,7 @@ def test_backup_missing_blob_warnings_are_bounded(tmp_path: Path) -> None:
     count, size, debt = backup_mod._copy_referenced_blobs(
         source_db=source_db,
         source_blob_root=tmp_path / "blob-store",
+        index_db=None,
         backup_root=tmp_path / "backup",
         warnings=warnings,
     )

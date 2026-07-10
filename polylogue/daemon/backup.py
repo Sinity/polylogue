@@ -227,6 +227,21 @@ def _source_blob_hashes(source_db: Path) -> set[str]:
     return set(_source_blob_inventory(source_db))
 
 
+def _index_attachment_blob_hashes(index_db: Path) -> set[str]:
+    if not index_db.exists():
+        return set()
+    with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+        has_attachments = conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'attachments'"
+        ).fetchone()
+        if has_attachments is None:
+            return set()
+        return {
+            bytes(blob_hash).hex()
+            for (blob_hash,) in conn.execute("SELECT DISTINCT blob_hash FROM attachments WHERE blob_hash IS NOT NULL")
+        }
+
+
 def _write_blob_reference_debt_report(backup_root: Path, report: BlobReferenceDebtReport) -> Path:
     path = backup_root / "blob-reference-debt.json"
     path.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
@@ -237,10 +252,13 @@ def _copy_referenced_blobs(
     *,
     source_db: Path,
     source_blob_root: Path,
+    index_db: Path | None,
     backup_root: Path,
     warnings: list[str],
 ) -> tuple[int, int, BlobReferenceDebtReport]:
     inventory = _source_blob_inventory(source_db)
+    for blob_hash in _index_attachment_blob_hashes(index_db) if index_db is not None else ():
+        inventory.setdefault(blob_hash, set()).add("index_attachment")
     hashes = set(inventory)
     store = BlobStore(source_blob_root)
     debt_report = scan_blob_reference_debt(
@@ -256,11 +274,14 @@ def _copy_referenced_blobs(
     size = 0
     copied_inventory: list[dict[str, object]] = []
     missing_reserved: list[str] = []
+    missing_index_attachments: list[str] = []
     for hash_hex in sorted(hashes):
         src = store.blob_path(hash_hex)
         if not src.exists():
             if "reserved" in inventory[hash_hex]:
                 missing_reserved.append(hash_hex)
+            if "index_attachment" in inventory[hash_hex]:
+                missing_index_attachments.append(hash_hex)
             continue
         dst = blob_dst_root / hash_hex[:2] / hash_hex[2:]
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -286,6 +307,16 @@ def _copy_referenced_blobs(
             + (
                 f" (sample: {', '.join(missing_reserved[:_MISSING_BLOB_WARNING_SAMPLE_LIMIT])})"
                 if missing_reserved
+                else ""
+            )
+        )
+    if missing_index_attachments:
+        warnings.append(
+            "index-tier attachment references missing blob bytes: "
+            f"{len(missing_index_attachments)} total"
+            + (
+                f" (sample: {', '.join(missing_index_attachments[:_MISSING_BLOB_WARNING_SAMPLE_LIMIT])})"
+                if missing_index_attachments
                 else ""
             )
         )
@@ -423,6 +454,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
             blob_count, blob_size, blob_reference_debt = _copy_referenced_blobs(
                 source_db=backup_root / "source.db",
                 source_blob_root=root / "blob",
+                index_db=(backup_root / "index.db" if "index" in included_tiers else None),
                 backup_root=backup_root,
                 warnings=warnings,
             )
@@ -566,7 +598,9 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             and restored_hashes == expected_blobs
             and hashes_valid
         )
-        ok = all(tier_integrity.values()) and omitted_absent and blobs_ok
+        index_attachment_hashes = _index_attachment_blob_hashes(restored / "index.db")
+        index_attachment_blobs_resolved = index_attachment_hashes <= set(restored_hashes)
+        ok = all(tier_integrity.values()) and omitted_absent and blobs_ok and index_attachment_blobs_resolved
         return {
             "ok": ok,
             "mode": "archive_file_set",
@@ -576,6 +610,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "manifest_blob_count": blob_count,
             "restored_blob_count": restored_blob_count,
             "blob_inventory_exact": blobs_ok,
+            "index_attachment_blobs_resolved": index_attachment_blobs_resolved,
             "scratch_restore": "temporary",
             "scratch_parent": str(Path(raw_tmp).parent),
         }
