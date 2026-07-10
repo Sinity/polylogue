@@ -11,6 +11,8 @@ Design constraints:
 - The catalog_id is a deterministic slug so re-seeding is idempotent.
 - INSERT … ON CONFLICT DO NOTHING on both tables: re-running after a
   schema-version bump (wipe-and-reinit) or daemon restart is safe.
+
+Writer module: index.
 """
 
 from __future__ import annotations

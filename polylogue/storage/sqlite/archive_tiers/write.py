@@ -1,4 +1,8 @@
-"""Minimal archive index parsed-session writer/read helpers."""
+"""Minimal archive index parsed-session writer/read helpers.
+
+Writer module: index, user.
+Twin-write contract: session-tag-assertion-mirror.
+"""
 
 from __future__ import annotations
 

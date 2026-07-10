@@ -1,4 +1,7 @@
-"""Raw-capture writer/read helpers for source.db."""
+"""Raw-capture writer/read helpers for source.db.
+
+Writer module: source.
+"""
 
 from __future__ import annotations
 
