@@ -1,0 +1,78 @@
+{
+  "case_id": "hermes-truncated-unknown-input",
+  "claim": "Malformed tool input remains raw fallback evidence and does not crash classification.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "hermes",
+  "session_id": "fixture:hermes-truncated-unknown-input",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "mystery_tool",
+          "tool_id": "h1",
+          "tool_input": "{\"path\":\"/tmp/x\","
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "fallback"
+    ],
+    "outcomes": [
+      "unknown"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "fallback",
+      "title": "Tool evidence · mystery_tool",
+      "source": {
+        "session_id": "fixture:hermes-truncated-unknown-input",
+        "provider_family": "hermes",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "mystery_tool",
+        "tool_id": "h1"
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "mystery_tool"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "raw_input",
+          "text": "{\"path\":\"/tmp/x\",",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [
+        "tool classification is unknown; raw evidence is shown without a guessed semantic card type",
+        "tool input was retained as raw text because it was not valid JSON",
+        "no structurally paired tool result is present"
+      ],
+      "outcome": {
+        "state": "unknown"
+      },
+      "raw_evidence": {
+        "tool_input_raw": "{\"path\":\"/tmp/x\","
+      }
+    }
+  ]
+}

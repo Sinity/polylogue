@@ -100,6 +100,7 @@ def message_from_record(
             media_type = block_metadata.get("media_type")
         blocks.append(
             {
+                "id": b.block_id,
                 "type": str(b.type),
                 "text": b.text,
                 "tool_name": b.tool_name,

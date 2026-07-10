@@ -1,0 +1,87 @@
+{
+  "case_id": "codex-apply-patch-missing-result",
+  "claim": "Missing result remains outcome unknown while the exact patch stays visible.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "codex",
+  "session_id": "fixture:codex-apply-patch-missing-result",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "apply_patch",
+          "tool_id": "call-1",
+          "tool_input": {
+            "path": "src/core.py",
+            "patch": "--- a/src/core.py\n+++ b/src/core.py\n@@\n-old\n+new"
+          }
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "file_edit"
+    ],
+    "outcomes": [
+      "unknown"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "file_edit",
+      "title": "File edit",
+      "source": {
+        "session_id": "fixture:codex-apply-patch-missing-result",
+        "provider_family": "codex",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "apply_patch",
+        "tool_id": "call-1"
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "apply_patch"
+        },
+        {
+          "label": "path",
+          "value": "src/core.py"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "diff",
+          "text": "--- a/src/core.py\n+++ b/src/core.py\n@@\n-old\n+new",
+          "line_count": 5,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [
+        "no structurally paired tool result is present"
+      ],
+      "summary": "src/core.py",
+      "outcome": {
+        "state": "unknown"
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "path": "src/core.py",
+          "patch": "--- a/src/core.py\n+++ b/src/core.py\n@@\n-old\n+new"
+        }
+      }
+    }
+  ]
+}

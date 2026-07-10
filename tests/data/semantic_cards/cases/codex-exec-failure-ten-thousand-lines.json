@@ -1,0 +1,118 @@
+{
+  "case_id": "codex-exec-failure-ten-thousand-lines",
+  "claim": "A 10,000-line result is bounded head/tail evidence with an explicit omission count.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "codex",
+  "session_id": "fixture:codex-exec-failure-ten-thousand-lines",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "exec_command",
+          "tool_id": "call-1",
+          "tool_input": {
+            "cmd": "pytest tests/huge.py -q"
+          }
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "call-1",
+          "text": {
+            "text_fixture": "../payloads/ten-thousand-lines.txt"
+          },
+          "tool_result_is_error": true,
+          "tool_result_exit_code": 4
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "shell"
+    ],
+    "outcomes": [
+      "failed"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "shell",
+      "title": "Shell command",
+      "source": {
+        "session_id": "fixture:codex-exec-failure-ten-thousand-lines",
+        "provider_family": "codex",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "exec_command",
+        "tool_id": "call-1",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "exec_command"
+        },
+        {
+          "label": "command",
+          "value": "pytest tests/huge.py -q"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "output",
+          "text": "line 00001: deterministic shell output\nline 00002: deterministic shell output\nline 00003: deterministic shell output\nline 00004: deterministic shell output\nline 00005: deterministic shell output\nline 00006: deterministic shell output\nline 00007: deterministic shell output\nline 00008: deterministic shell output\nline 00009: deterministic shell output\nline 00010: deterministic shell output\nline 00011: deterministic shell output\nline 00012: deterministic shell output\nline 00013: deterministic shell output\nline 00014: deterministic shell output\nline 00015: deterministic shell output\nline 00016: deterministic shell output\nline 00017: deterministic shell output\nline 00018: deterministic shell output\nline 00019: deterministic shell output\nline 00020: deterministic shell output\nline 00021: deterministic shell output\nline 00022: deterministic shell output\nline 00023: deterministic shell output\nline 00024: deterministic shell output\nline 00025: deterministic shell output\nline 00026: deterministic shell output\nline 00027: deterministic shell output\nline 00028: deterministic shell output\nline 00029: deterministic shell output\nline 00030: deterministic shell output\nline 00031: deterministic shell output\nline 00032: deterministic shell output\nline 00033: deterministic shell output\nline 00034: deterministic shell output\nline 00035: deterministic shell output\nline 00036: deterministic shell output\nline 00037: deterministic shell output\nline 00038: deterministic shell output\nline 00039: deterministic shell output\nline 00040: deterministic shell output\nline 00041: deterministic shell output\nline 00042: deterministic shell output\nline 00043: deterministic shell output\nline 00044: deterministic shell output\nline 00045: deterministic shell output\nline 00046: deterministic shell output\nline 00047: deterministic shell output\nline 00048: deterministic shell output\nline 09985: deterministic shell output\nline 09986: deterministic shell output\nline 09987: deterministic shell output\nline 09988: deterministic shell output\nline 09989: deterministic shell output\nline 09990: deterministic shell output\nline 09991: deterministic shell output\nline 09992: deterministic shell output\nline 09993: deterministic shell output\nline 09994: deterministic shell output\nline 09995: deterministic shell output\nline 09996: deterministic shell output\nline 09997: deterministic shell output\nline 09998: deterministic shell output\nline 09999: deterministic shell output\nline 10000: deterministic shell output",
+          "line_count": 10000,
+          "omitted_lines": 9936,
+          "omitted_characters": 0,
+          "truncated": true,
+          "strategy": "head_tail",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [
+        "9936 output lines are omitted from the bounded preview"
+      ],
+      "summary": "pytest tests/huge.py -q",
+      "outcome": {
+        "state": "failed",
+        "is_error": true,
+        "exit_code": 4
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "cmd": "pytest tests/huge.py -q"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "line 00001: deterministic shell output\nline 00002: deterministic shell output\nline 00003: deterministic shell output\nline 00004: deterministic shell output\nline 00005: deterministic shell output\nline 00006: deterministic shell output\nline 00007: deterministic shell output\nline 00008: deterministic shell output\nline 00009: deterministic shell output\nline 00010: deterministic shell output\nline 00011: deterministic shell output\nline 00012: deterministic shell output\nline 00013: deterministic shell output\nline 00014: deterministic shell output\nline 00015: deterministic shell output\nline 00016: deterministic shell output\nline 00017: deterministic shell output\nline 00018: deterministic shell output\nline 00019: deterministic shell output\nline 00020: deterministic shell output\nline 00021: deterministic shell output\nline 00022: deterministic shell output\nline 00023: deterministic shell output\nline 00024: deterministic shell output\nline 00025: deterministic shell output\nline 00026: deterministic shell output\nline 00027: deterministic shell output\nline 00028: deterministic shell output\nline 00029: deterministic shell output\nline 00030: deterministic shell output\nline 00031: deterministic shell output\nline 00032: deterministic shell output\nline 00033: deterministic shell output\nline 00034: deterministic shell output\nline 00035: deterministic shell output\nline 00036: deterministic shell output\nline 00037: deterministic shell output\nline 00038: deterministic shell output\nline 00039: deterministic shell output\nline 00040: deterministic shell output\nline 00041: deterministic shell output\nline 00042: deterministic shell output\nline 00043: deterministic shell output\nline 00044: deterministic shell output\nline 00045: deterministic shell output\nline 00046: deterministic shell output\nline 00047: deterministic shell output\nline 00048: deterministic shell output\nline 09985: deterministic shell output\nline 09986: deterministic shell output\nline 09987: deterministic shell output\nline 09988: deterministic shell output\nline 09989: deterministic shell output\nline 09990: deterministic shell output\nline 09991: deterministic shell output\nline 09992: deterministic shell output\nline 09993: deterministic shell output\nline 09994: deterministic shell output\nline 09995: deterministic shell output\nline 09996: deterministic shell output\nline 09997: deterministic shell output\nline 09998: deterministic shell output\nline 09999: deterministic shell output\nline 10000: deterministic shell output",
+          "line_count": 10000,
+          "omitted_lines": 9936,
+          "omitted_characters": 0,
+          "truncated": true,
+          "strategy": "head_tail",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

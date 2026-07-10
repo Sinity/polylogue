@@ -1,0 +1,126 @@
+{
+  "case_id": "claude-edit-diff",
+  "claim": "An exact old/new edit becomes a unified diff card.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "claude-code",
+  "session_id": "fixture:claude-edit-diff",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "Edit",
+          "tool_id": "t1",
+          "tool_input": {
+            "file_path": "src/app.py",
+            "old_string": "return 1\n",
+            "new_string": "return 2\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "t1",
+          "text": "updated src/app.py",
+          "tool_result_is_error": false
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "file_edit"
+    ],
+    "outcomes": [
+      "succeeded"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "file_edit",
+      "title": "File edit",
+      "source": {
+        "session_id": "fixture:claude-edit-diff",
+        "provider_family": "claude-code",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "Edit",
+        "tool_id": "t1",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "Edit"
+        },
+        {
+          "label": "path",
+          "value": "src/app.py"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "diff",
+          "text": "--- a/src/app.py\n+++ b/src/app.py\n@@ -1 +1 @@\n-return 1\n\n+return 2\n",
+          "line_count": 6,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        },
+        {
+          "kind": "result",
+          "text": "updated src/app.py",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [],
+      "summary": "src/app.py",
+      "outcome": {
+        "state": "succeeded",
+        "is_error": false
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "file_path": "src/app.py",
+          "old_string": "return 1\n",
+          "new_string": "return 2\n"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "updated src/app.py",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "case_id": "gemini-shell-null-outcome",
+  "claim": "Success-like prose cannot upgrade NULL structural outcome; persisted semantic type safely specializes an open provider tool name.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "gemini-cli",
+  "session_id": "fixture:gemini-shell-null-outcome",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "run_shell_command",
+          "tool_id": "g1",
+          "tool_input": {
+            "command": "make verify"
+          },
+          "semantic_type": "shell"
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "g1",
+          "text": "SUCCESS: command completed"
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "shell"
+    ],
+    "outcomes": [
+      "unknown"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "shell",
+      "title": "Shell command",
+      "source": {
+        "session_id": "fixture:gemini-shell-null-outcome",
+        "provider_family": "gemini-cli",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "run_shell_command",
+        "tool_id": "g1",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "run_shell_command"
+        },
+        {
+          "label": "command",
+          "value": "make verify"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "output",
+          "text": "SUCCESS: command completed",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [
+        "tool result exists but carries no structural success/failure outcome"
+      ],
+      "summary": "make verify",
+      "outcome": {
+        "state": "unknown"
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "command": "make verify"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "SUCCESS: command completed",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

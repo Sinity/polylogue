@@ -1,0 +1,438 @@
+{
+  "schema_version": "semantic-card-tool-map.v1",
+  "card_schema_version": "semantic-card.v1",
+  "classification_policy": {
+    "precedence": [
+      "persisted_semantic_type",
+      "exact_provider_tool_alias",
+      "fallback"
+    ],
+    "unknown_tool": "fallback_raw_evidence",
+    "outcome_policy": "structural_fields_only",
+    "null_outcome": "unknown"
+  },
+  "provider_families": [
+    "chatgpt",
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "hermes"
+  ],
+  "card_kinds": [
+    "shell",
+    "file_edit",
+    "task",
+    "lineage",
+    "attachment",
+    "fallback"
+  ],
+  "status_counts": {
+    "fallback": 14,
+    "launch": 12,
+    "model_only": 2
+  },
+  "provider_namespace_policies": [
+    {
+      "provider_family": "chatgpt",
+      "namespace": "open",
+      "grounded_exact_aliases": 3,
+      "unlisted_behavior": "persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "provider_family": "claude-code",
+      "namespace": "open",
+      "grounded_exact_aliases": 14,
+      "unlisted_behavior": "persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "provider_family": "codex",
+      "namespace": "open",
+      "grounded_exact_aliases": 8,
+      "unlisted_behavior": "persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "provider_family": "gemini-cli",
+      "namespace": "open",
+      "grounded_exact_aliases": 1,
+      "unlisted_behavior": "persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "provider_family": "hermes",
+      "namespace": "open",
+      "grounded_exact_aliases": 2,
+      "unlisted_behavior": "persisted_semantic_type_then_fallback_raw_evidence"
+    }
+  ],
+  "semantic_type_policies": [
+    {
+      "semantic_type": "other",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "classification_basis": "persisted_semantic_type"
+    },
+    {
+      "semantic_type": "file_read",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "classification_basis": "persisted_semantic_type"
+    },
+    {
+      "semantic_type": "file_write",
+      "card_kind": "file_edit",
+      "rendering_status": "launch",
+      "classification_basis": "persisted_semantic_type"
+    },
+    {
+      "semantic_type": "file_edit",
+      "card_kind": "file_edit",
+      "rendering_status": "launch",
+      "classification_basis": "persisted_semantic_type"
+    },
+    {
+      "semantic_type": "shell",
+      "card_kind": "shell",
+      "rendering_status": "launch",
+      "classification_basis": "persisted_semantic_type"
+    },
+    {
+      "semantic_type": "git",
+      "card_kind": "shell",
+      "rendering_status": "launch",
+      "classification_basis": "persisted_semantic_type"
+    },
+    {
+      "semantic_type": "search",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "classification_basis": "persisted_semantic_type"
+    },
+    {
+      "semantic_type": "web",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "classification_basis": "persisted_semantic_type"
+    },
+    {
+      "semantic_type": "agent",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "classification_basis": "persisted_semantic_type"
+    },
+    {
+      "semantic_type": "subagent",
+      "card_kind": "task",
+      "rendering_status": "model_only",
+      "classification_basis": "persisted_semantic_type"
+    },
+    {
+      "semantic_type": "thinking",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "classification_basis": "persisted_semantic_type"
+    }
+  ],
+  "provider_semantic_coverage": [
+    {
+      "provider_family": "chatgpt",
+      "semantic_types": [
+        "file_edit",
+        "other",
+        "web"
+      ],
+      "exact_alias_count": 3
+    },
+    {
+      "provider_family": "claude-code",
+      "semantic_types": [
+        "agent",
+        "file_edit",
+        "file_read",
+        "file_write",
+        "search",
+        "shell",
+        "subagent",
+        "web"
+      ],
+      "exact_alias_count": 14
+    },
+    {
+      "provider_family": "codex",
+      "semantic_types": [
+        "file_edit",
+        "search",
+        "shell",
+        "subagent",
+        "web"
+      ],
+      "exact_alias_count": 8
+    },
+    {
+      "provider_family": "gemini-cli",
+      "semantic_types": [
+        "file_read"
+      ],
+      "exact_alias_count": 1
+    },
+    {
+      "provider_family": "hermes",
+      "semantic_types": [
+        "shell"
+      ],
+      "exact_alias_count": 2
+    }
+  ],
+  "rows": [
+    {
+      "provider_family": "claude-code",
+      "tool_name": "Bash",
+      "semantic_type": "shell",
+      "card_kind": "shell",
+      "rendering_status": "launch",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_base.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "Edit",
+      "semantic_type": "file_edit",
+      "card_kind": "file_edit",
+      "rendering_status": "launch",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_base.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "Write",
+      "semantic_type": "file_write",
+      "card_kind": "file_edit",
+      "rendering_status": "launch",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_base.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "NotebookEdit",
+      "semantic_type": "file_edit",
+      "card_kind": "file_edit",
+      "rendering_status": "launch",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_base.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "Task",
+      "semantic_type": "subagent",
+      "card_kind": "task",
+      "rendering_status": "model_only",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_base.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "Read",
+      "semantic_type": "file_read",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_base.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "Grep",
+      "semantic_type": "search",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_base.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "Glob",
+      "semantic_type": "search",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_base.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "MultiEdit",
+      "semantic_type": "file_edit",
+      "card_kind": "file_edit",
+      "rendering_status": "launch",
+      "evidence_kind": "classifier_contract",
+      "evidence": "polylogue/archive/viewport/tools.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "WebFetch",
+      "semantic_type": "web",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "classifier_contract",
+      "evidence": "polylogue/archive/viewport/tools.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "WebSearch",
+      "semantic_type": "web",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "classifier_contract",
+      "evidence": "polylogue/archive/viewport/tools.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "AskUserQuestion",
+      "semantic_type": "agent",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "classifier_contract",
+      "evidence": "polylogue/archive/viewport/tools.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "EnterPlanMode",
+      "semantic_type": "agent",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "classifier_contract",
+      "evidence": "polylogue/archive/viewport/tools.py"
+    },
+    {
+      "provider_family": "claude-code",
+      "tool_name": "ExitPlanMode",
+      "semantic_type": "agent",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "classifier_contract",
+      "evidence": "polylogue/archive/viewport/tools.py"
+    },
+    {
+      "provider_family": "codex",
+      "tool_name": "exec_command",
+      "semantic_type": "shell",
+      "card_kind": "shell",
+      "rendering_status": "launch",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_codex_event_stream_contract.py"
+    },
+    {
+      "provider_family": "codex",
+      "tool_name": "shell",
+      "semantic_type": "shell",
+      "card_kind": "shell",
+      "rendering_status": "launch",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_codex.py"
+    },
+    {
+      "provider_family": "codex",
+      "tool_name": "apply_patch",
+      "semantic_type": "file_edit",
+      "card_kind": "file_edit",
+      "rendering_status": "launch",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_codex.py"
+    },
+    {
+      "provider_family": "codex",
+      "tool_name": "search",
+      "semantic_type": "search",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_codex.py"
+    },
+    {
+      "provider_family": "codex",
+      "tool_name": "local_shell_call",
+      "semantic_type": "shell",
+      "card_kind": "shell",
+      "rendering_status": "launch",
+      "evidence_kind": "parser_record_type",
+      "evidence": "polylogue/sources/parsers/codex.py"
+    },
+    {
+      "provider_family": "codex",
+      "tool_name": "tool_search_call",
+      "semantic_type": "search",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "parser_record_type",
+      "evidence": "polylogue/sources/parsers/codex.py"
+    },
+    {
+      "provider_family": "codex",
+      "tool_name": "web_search_call",
+      "semantic_type": "web",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "parser_record_type",
+      "evidence": "polylogue/sources/parsers/codex.py"
+    },
+    {
+      "provider_family": "codex",
+      "tool_name": "spawn_agent",
+      "semantic_type": "subagent",
+      "card_kind": "task",
+      "rendering_status": "model_only",
+      "evidence_kind": "classifier_contract",
+      "evidence": "polylogue/archive/viewport/tools.py"
+    },
+    {
+      "provider_family": "gemini-cli",
+      "tool_name": "read_file",
+      "semantic_type": "file_read",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_local_agent.py"
+    },
+    {
+      "provider_family": "hermes",
+      "tool_name": "shell",
+      "semantic_type": "shell",
+      "card_kind": "shell",
+      "rendering_status": "launch",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_local_agent.py"
+    },
+    {
+      "provider_family": "hermes",
+      "tool_name": "run_shell_command",
+      "semantic_type": "shell",
+      "card_kind": "shell",
+      "rendering_status": "launch",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_local_agent.py"
+    },
+    {
+      "provider_family": "chatgpt",
+      "tool_name": "canmore.update_textdoc",
+      "semantic_type": "file_edit",
+      "card_kind": "file_edit",
+      "rendering_status": "launch",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_chatgpt.py"
+    },
+    {
+      "provider_family": "chatgpt",
+      "tool_name": "web",
+      "semantic_type": "web",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_chatgpt.py"
+    },
+    {
+      "provider_family": "chatgpt",
+      "tool_name": "dalle.text2im",
+      "semantic_type": "other",
+      "card_kind": "fallback",
+      "rendering_status": "fallback",
+      "evidence_kind": "fixture_observed",
+      "evidence": "tests/unit/sources/test_parsers_chatgpt.py"
+    }
+  ]
+}

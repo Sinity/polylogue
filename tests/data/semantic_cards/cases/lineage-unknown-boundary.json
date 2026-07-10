@@ -1,0 +1,73 @@
+{
+  "case_id": "lineage-unknown-boundary",
+  "claim": "A structural parent edge with unknown narrow relation is announced without guessing.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "codex",
+  "session_id": "fixture:lineage-unknown-boundary",
+  "messages": [
+    {
+      "id": "m-prose",
+      "role": "user",
+      "message_type": "message",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-prose",
+          "type": "text",
+          "text": "Continue from the inherited context."
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "lineage"
+    ],
+    "outcomes": [
+      null
+    ]
+  },
+  "lineage": {
+    "session_id": "fixture:lineage-unknown-boundary",
+    "root_session_id": "fixture:root",
+    "parent_session_id": "fixture:parent",
+    "relation": "unknown",
+    "resolved": true,
+    "cycle_detected": false
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "lineage",
+      "title": "Lineage boundary · unknown",
+      "source": {
+        "session_id": "fixture:lineage-unknown-boundary",
+        "provider_family": "unknown"
+      },
+      "fields": [
+        {
+          "label": "session",
+          "value": "session:fixture:lineage-unknown-boundary"
+        },
+        {
+          "label": "root",
+          "value": "session:fixture:root"
+        },
+        {
+          "label": "relation",
+          "value": "unknown"
+        },
+        {
+          "label": "parent",
+          "value": "session:fixture:parent"
+        }
+      ],
+      "previews": [],
+      "caveats": [
+        "the parent edge is structural but its narrower lineage relation is unknown"
+      ],
+      "summary": "session:fixture:lineage-unknown-boundary"
+    }
+  ]
+}

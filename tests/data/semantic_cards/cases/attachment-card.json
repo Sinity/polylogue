@@ -1,0 +1,66 @@
+{
+  "case_id": "attachment-card",
+  "claim": "Attachments produce source-addressed cards without pretending bytes are embedded.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "chatgpt",
+  "session_id": "fixture:attachment-card",
+  "messages": [
+    {
+      "id": "m-attachment",
+      "role": "user",
+      "message_type": "message",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-image",
+          "type": "image",
+          "name": "diagram.png",
+          "mime_type": "image/png",
+          "url": "blob:sha256:abc"
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "attachment"
+    ],
+    "outcomes": [
+      null
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "attachment",
+      "title": "Attachment",
+      "source": {
+        "session_id": "fixture:attachment-card",
+        "provider_family": "chatgpt",
+        "message_id": "m-attachment",
+        "block_id": "b-image",
+        "block_index": 0
+      },
+      "fields": [
+        {
+          "label": "name",
+          "value": "diagram.png"
+        },
+        {
+          "label": "media type",
+          "value": "image/png"
+        },
+        {
+          "label": "url",
+          "value": "blob:sha256:abc"
+        }
+      ],
+      "previews": [],
+      "caveats": [
+        "attachment bytes are not embedded in the transcript card"
+      ],
+      "summary": "diagram.png"
+    }
+  ]
+}

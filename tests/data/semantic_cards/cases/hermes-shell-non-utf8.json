@@ -1,0 +1,118 @@
+{
+  "case_id": "hermes-shell-non-utf8",
+  "claim": "Invalid UTF-8 is replaced visibly and counted in the preview caveats.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "hermes",
+  "session_id": "fixture:hermes-shell-non-utf8",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "shell",
+          "tool_id": "h1",
+          "tool_input": {
+            "command": "cat binary.log"
+          }
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "h1",
+          "text": {
+            "text_bytes_base64": "b2v/ZG9uZQo="
+          },
+          "tool_result_is_error": false,
+          "tool_result_exit_code": 0
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "shell"
+    ],
+    "outcomes": [
+      "succeeded"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "shell",
+      "title": "Shell command",
+      "source": {
+        "session_id": "fixture:hermes-shell-non-utf8",
+        "provider_family": "hermes",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "shell",
+        "tool_id": "h1",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "shell"
+        },
+        {
+          "label": "command",
+          "value": "cat binary.log"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "output",
+          "text": "ok�done\n",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 1
+        }
+      ],
+      "caveats": [
+        "1 invalid UTF-8 sequence(s) were rendered with replacement characters"
+      ],
+      "summary": "cat binary.log",
+      "outcome": {
+        "state": "succeeded",
+        "is_error": false,
+        "exit_code": 0
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "command": "cat binary.log"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "ok�done\n",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 1
+        }
+      }
+    }
+  ]
+}

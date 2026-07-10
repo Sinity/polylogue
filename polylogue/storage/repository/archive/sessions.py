@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.session.domain_models import Session, SessionSummary
+from polylogue.core.sources import provider_from_origin
 from polylogue.storage.archive_views import SessionRenderProjection
 from polylogue.storage.hydrators import (
     message_from_record,
@@ -123,7 +124,7 @@ class RepositoryArchiveSessionMixin:
         offset: int = 0,
     ) -> tuple[list[Message], int]:
         conv_record = await self.queries.get_session(session_id)
-        source_name = conv_record.origin.value if conv_record else None
+        source_name = provider_from_origin(conv_record.origin).value if conv_record else None
         records, total = await self.queries.get_messages_paginated(
             session_id,
             message_role=message_role,
@@ -243,7 +244,7 @@ class RepositoryArchiveSessionMixin:
         limit: int | None = None,
     ) -> AsyncIterator[Message]:
         conv_record = await self.queries.get_session(session_id)
-        source_name = conv_record.origin.value if conv_record else None
+        source_name = provider_from_origin(conv_record.origin).value if conv_record else None
         async for record in self.queries.iter_messages(
             session_id,
             message_roles=message_roles,
