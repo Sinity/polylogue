@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import Future
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -1890,7 +1891,7 @@ def test_process_ingest_batch_sync_reserves_inline_attachment_until_index_commit
     assert not legacy_blob_root.exists()
     with open_connection(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash = ?", (expected_hash,)).fetchone()[0] == 1
-    with open_connection(archive_root / "source.db") as conn:
+    with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
 
 

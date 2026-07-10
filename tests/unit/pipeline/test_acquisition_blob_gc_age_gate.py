@@ -304,10 +304,11 @@ def test_destructive_gc_serializes_final_recheck_and_unlink(
     allow_recheck = Event()
     original_references = blob_gc._reference_surfaces
 
-    def paused_recheck(*args, **kwargs):  # type: ignore[no-untyped-def]
-        recheck_entered.set()
-        assert allow_recheck.wait(timeout=2)
-        return original_references(*args, **kwargs)
+    def paused_recheck(conn, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if conn.in_transaction:
+            recheck_entered.set()
+            assert allow_recheck.wait(timeout=2)
+        return original_references(conn, *args, **kwargs)
 
     monkeypatch.setattr(blob_gc, "_reference_surfaces", paused_recheck)
     publisher = ArchiveBlobPublisher(archive_root / "source.db", store.root)
