@@ -632,6 +632,47 @@ def test_archive_tiers_archive_facade_replaces_same_size_changed_attachment_byte
     assert bytes(stored_blob_hash) == sha256(b"two").digest()
 
 
+def test_archive_tiers_archive_facade_acquires_empty_inline_attachment(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="empty-inline-attachment",
+        messages=[
+            ParsedMessage(
+                provider_message_id="message-1",
+                role=Role.USER,
+                text="empty attachment",
+            )
+        ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="attachment-1",
+                message_provider_id="message-1",
+                size_bytes=0,
+                inline_bytes=b"",
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as archive:
+        archive.write_raw_and_parsed_result(
+            session,
+            payload=b"raw",
+            source_path="/tmp/empty.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+
+    with sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True) as conn:
+        blob_hash, byte_count, acquisition_status = conn.execute(
+            "SELECT blob_hash, byte_count, acquisition_status FROM attachments"
+        ).fetchone()
+    expected_hash = sha256(b"").digest()
+    assert bytes(blob_hash) == expected_hash
+    assert byte_count == 0
+    assert acquisition_status == "acquired"
+    assert (root / "blob" / expected_hash.hex()[:2] / expected_hash.hex()[2:]).read_bytes() == b""
+
+
 def test_archive_tiers_archive_facade_repairs_missing_fts_on_identical_repeat(tmp_path: Path) -> None:
     session = ParsedSession(
         source_name=Provider.CHATGPT,

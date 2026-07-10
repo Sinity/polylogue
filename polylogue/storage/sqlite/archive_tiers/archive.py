@@ -907,7 +907,7 @@ class ArchiveStore:
         acquired: dict[int, tuple[bytes | None, int, str]] = {}
         refs: list[ArchiveSourceBlobRef] = []
         for attachment in session.attachments:
-            if not attachment.inline_bytes:
+            if attachment.inline_bytes is None:
                 continue
             hash_hex, size = self._blob_publisher.write_from_bytes(attachment.inline_bytes)
             blob_hash = bytes.fromhex(hash_hex)

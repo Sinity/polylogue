@@ -510,7 +510,7 @@ def _write_session(
     if blob_publisher is not None:
         preacquired_attachment_blobs = {}
         for attachment in session_to_write.attachments:
-            if not attachment.inline_bytes:
+            if attachment.inline_bytes is None:
                 continue
             hash_hex, size = blob_publisher.write_from_bytes(attachment.inline_bytes)
             receipt_id = blob_publisher.receipt_id(hash_hex)

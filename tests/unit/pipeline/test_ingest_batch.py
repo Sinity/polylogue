@@ -1809,9 +1809,11 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
     assert [hit.session_id for hit in second_result.hits] == [session_id]
 
 
+@pytest.mark.parametrize("payload", [b"production ingest attachment", b""], ids=["nonempty", "empty"])
 def test_process_ingest_batch_sync_reserves_inline_attachment_until_index_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
 ) -> None:
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
@@ -1821,7 +1823,6 @@ def test_process_ingest_batch_sync_reserves_inline_attachment_until_index_commit
     source_path.write_text("{}", encoding="utf-8")
     raw_id = "raw-inline-attachment"
     session_id = "codex-session:inline-attachment"
-    payload = b"production ingest attachment"
     attachment = _attachment_tuple("att-inline", mime_type="text/plain", inline_bytes=payload)
     session = _session_data(
         session_id,

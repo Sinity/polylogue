@@ -56,7 +56,7 @@ def _session_with_attachment(attachment: ParsedAttachment) -> ParsedSession:
 def _preacquired(store: BlobStore, session: ParsedSession) -> dict[int, tuple[bytes | None, int, str]]:
     acquired: dict[int, tuple[bytes | None, int, str]] = {}
     for attachment in session.attachments:
-        if not attachment.inline_bytes:
+        if attachment.inline_bytes is None:
             continue
         blob_hash, size = store.write_from_bytes(attachment.inline_bytes)
         acquired[id(attachment)] = (bytes.fromhex(blob_hash), size, "acquired")
@@ -172,13 +172,14 @@ def test_claude_extracted_attachment_content_is_acquired(tmp_path: Path, monkeyp
     assert remote["byte_count"] == 1024
 
 
-def test_low_level_writer_rejects_inline_bytes_without_preacquisition(tmp_path: Path) -> None:
+@pytest.mark.parametrize("payload", [b"must be reserved first", b""], ids=["nonempty", "empty"])
+def test_low_level_writer_rejects_inline_bytes_without_preacquisition(tmp_path: Path, payload: bytes) -> None:
     conn = _connect(tmp_path / "index.db")
     session = _session_with_attachment(
         ParsedAttachment(
             provider_attachment_id="att-unreserved",
             message_provider_id="m0",
-            inline_bytes=b"must be reserved first",
+            inline_bytes=payload,
         )
     )
 

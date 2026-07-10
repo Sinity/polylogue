@@ -4369,7 +4369,7 @@ def _acquire_attachment_blob(
     through an archive-owned publisher whose receipt spans the index commit.
     """
     del conn
-    if attachment.inline_bytes:
+    if attachment.inline_bytes is not None:
         raise ValueError("inline attachment bytes require preacquired_attachment_blobs from an archive-owned publisher")
     return (None, attachment.size_bytes or 0, "unfetched")
 
