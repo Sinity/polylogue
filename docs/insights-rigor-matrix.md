@@ -75,20 +75,26 @@ API.
 - Notes (heuristic-tier inventory, #b0b.1): the activity-type classifier
   (`inference.heuristic_label` — planning/debugging/testing/review/
   refactoring/documentation/configuration/data_analysis,
-  `archive/session/extraction.py` `_TEXT_SIGNAL_TABLE`) stays heuristic-tier
-  permanently. Unlike outcome/pathology fields (`tool_result_is_error`,
-  `tool_result_exit_code`), there is no structural signal for "what category
-  of work is this" to convert to — keyword text matching against user
-  messages is the only available signal. Coverage caveat: text-signal
-  density varies by origin — tool-heavy CLI sessions (Claude Code, Codex)
-  carry action-category evidence checked before falling back to text
-  signals, while low-tool-use chat exports lean more heavily on this text
-  classifier and so carry proportionally more heuristic-tier labels. As of
-  #b0b.1 the keyword match is word-boundary-anchored (previously a naive
+  `archive/session/extraction.py` `_TEXT_SIGNAL_TABLE`) has no structural
+  signal to convert to — unlike outcome/pathology fields
+  (`tool_result_is_error`, `tool_result_exit_code`), there is no structural
+  proxy for "what category of work is this"; keyword text matching against
+  user messages is the only available signal, and it is a fallback checked
+  only after action-category (tool-use) evidence, per `_classify_range`. As
+  of #b0b.1 the keyword match is word-boundary-anchored (previously a naive
   substring check that false-positived on unrelated words, e.g. `fix`
   inside `prefix`, `test` inside `latest`, `config` inside `reconfigured`)
-  — a correctness fix, not a change to the heuristic-vs-structural tier
-  itself.
+  — a correctness fix to the matching mechanism, not a claim about its
+  predictive value.
+  **Unverified accuracy (9e5.9):** this field's real-world precision has
+  never been measured against ground truth — 9e5.9's closing evidence found
+  the sibling keyword heuristic in the same file (`runtime.py`
+  `_terminal_state`'s `_ERROR_MARKERS` fallback) scores only 50.5% agreement
+  (coin-flip level) against structural ground truth
+  (`tool_result_is_error`/`exit_code`) on 14,377 real runs. Do not treat
+  `heuristic_label` as a reliable signal until this classifier gets its own
+  accuracy measurement; consumers should treat it as a weak, unverified
+  prior, not a trustworthy label.
 - Consumer-facing fields: `event_id`, `session_id`,
   `provider_name`, `event_index`, `evidence`, `inference`.
 
