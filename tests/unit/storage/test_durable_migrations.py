@@ -129,7 +129,7 @@ def test_user_tier_v3_migrates_to_v4_with_backup_manifest(tmp_path: Path) -> Non
 
 
 def test_source_tier_v1_migrates_to_current_without_native_uniqueness(tmp_path: Path) -> None:
-    """v1 -> current applies both additive migrations in sequence.
+    """v1 -> current applies all durable source migrations in sequence.
 
     002 relaxes the ``origin``/``native_id`` uniqueness constraint; 003 drops
     ``pending_blob_refs`` (polylogue-v7e0 — the lease mechanism it backed was
@@ -147,10 +147,13 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(tmp_path: 
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 1
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (2, 3)
+        assert result.applied_versions == (2, 3, 4)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
+        ).fetchone()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='blob_publication_reservations'"
         ).fetchone()
 
         index_rows = conn.execute("PRAGMA index_list('raw_sessions')").fetchall()
@@ -262,11 +265,66 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(tmp_path: Path
 
         assert result.from_version == 2
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (3,)
+        assert result.applied_versions == (3, 4)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
         ).fetchone()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='blob_publication_reservations'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def test_source_tier_v3_adds_publication_reservations_with_backup_manifest(tmp_path: Path) -> None:
+    db_path = tmp_path / "source.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32)
+            ) STRICT;
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+                ref_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                PRIMARY KEY(blob_hash, ref_type, ref_id)
+            ) STRICT;
+            PRAGMA user_version = 3;
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    manifest = _write_backup_manifest(tmp_path / "backup", included_tiers=["source.db"])
+
+    conn = sqlite3.connect(db_path)
+    try:
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
+        assert result.applied_versions == (4,)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 4
+        conn.execute(
+            """
+            INSERT INTO blob_publication_reservations (
+                publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+            ) VALUES ('receipt-1', ?, 32, 'publisher', 1)
+            """,
+            (b"r" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_publication_reservations (
+                publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+            ) VALUES ('receipt-2', ?, 32, 'publisher-2', 2)
+            """,
+            (b"r" * 32,),
+        )
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 2
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list('blob_publication_reservations')")}
+        assert "idx_blob_publication_reservations_hash" in indexes
     finally:
         conn.close()
 

@@ -255,3 +255,41 @@ def test_archive_tiers_source_writer_deterministic_ids() -> None:
     assert deterministic_history_sidecar_id(Origin.CLAUDE_CODE_SESSION, "/tmp/history.jsonl", blob_hash) != (
         deterministic_history_sidecar_id(Origin.CODEX_SESSION, "/tmp/history.jsonl", blob_hash)
     )
+
+
+def test_source_reference_commit_atomically_consumes_publication_reservation(tmp_path: Path) -> None:
+    db_path = tmp_path / "source.db"
+    conn = _connect(db_path)
+    payload = b"reserved raw payload"
+    blob_hash = deterministic_blob_hash(payload)
+    conn.execute(
+        """
+        INSERT INTO blob_publication_reservations (
+            publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+        ) VALUES ('receipt-1', ?, ?, 'publisher', 1)
+        """,
+        (blob_hash, len(payload)),
+    )
+    conn.commit()
+
+    write_source_raw_session(
+        conn,
+        origin=Origin.CHATGPT_EXPORT,
+        source_path="/captures/reserved.json",
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=2,
+        blob_publication_receipt_id="receipt-1",
+        manage_transaction=False,
+    )
+
+    observer = sqlite3.connect(db_path)
+    try:
+        assert observer.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+        assert observer.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        conn.commit()
+        assert observer.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+        assert observer.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+    finally:
+        observer.close()
+        conn.close()

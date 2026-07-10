@@ -18,6 +18,7 @@ from polylogue.core.enums import Provider
 from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_gc import read_gc_history
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitResult,
@@ -46,7 +47,7 @@ def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:
 
 
 def _write_gc_candidate(cli_workspace: dict[str, Path], blob_hash: str) -> Path:
-    blob_root = cli_workspace["data_root"] / "polylogue" / "blob"
+    blob_root = cli_workspace["archive_root"] / "blob"
     path = blob_root / blob_hash[:2] / blob_hash[2:]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"gc candidate")
@@ -290,7 +291,7 @@ def test_backup_plan_cli_reports_backup_profiles_and_tier_boundaries(
         "rebuildable_cache_exclude",
         "diagnostics_bundle",
     }
-    assert payload["blob_store"]["path"] == str(cli_workspace["data_root"] / "polylogue" / "blob")
+    assert payload["blob_store"]["path"] == str(cli_workspace["archive_root"] / "blob")
     assert payload["blob_store"]["backup_policy"] == "back_up_referenced_blobs_with_source_and_user_tiers"
 
 
@@ -432,7 +433,7 @@ def test_blob_gc_cli_plain_preview_names_skip_counts(
     assert "Blob GC dry-run" in result.output
     assert "Candidates: 1" in result.output
     assert "Result:     would delete 1 blob(s)" in result.output
-    assert "referenced=0 missing=0 unlink_error=0" in result.output
+    assert "referenced=0 reserved=0 missing=0 unlink_error=0" in result.output
 
 
 def test_blob_gc_cli_yes_deletes_and_records_generation(
@@ -463,6 +464,58 @@ def test_blob_gc_cli_yes_deletes_and_records_generation(
     assert len(history) == 1
     assert history[0].generation_id == payload["generation_id"]
     assert history[0].reclaimed_count == 1
+
+
+def test_blob_publications_cli_requires_confirmation_to_abandon(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    archive_root = cli_workspace["archive_root"]
+    publisher = ArchiveBlobPublisher(
+        archive_root / "source.db",
+        archive_root / "blob",
+    )
+    blob_hash, _ = publisher.write_from_bytes(b"operator-adjudicated receipt")
+    receipt_id = publisher.receipt_id(blob_hash)
+    publisher.flush()
+    assert receipt_id is not None
+
+    inspected = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "blob-publications", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+    assert inspected.exit_code == 0
+    payload = json.loads(inspected.output)
+    assert payload["mutates"] is False
+    assert payload["receipts"][0]["publication_id"] == receipt_id
+
+    refused = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "blob-publications", "--abandon", receipt_id],
+    )
+    assert refused.exit_code != 0
+    assert "--yes is required" in refused.output
+
+    abandoned = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-publications",
+            "--abandon",
+            receipt_id,
+            "--yes",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert abandoned.exit_code == 0
+    payload = json.loads(abandoned.output)
+    assert payload["abandonment"]["abandoned"] == 1
+    assert payload["receipts"] == []
 
 
 def test_blob_reference_debt_cli_classifies_missing_refs(

@@ -21,7 +21,7 @@ import logging
 import os
 import re
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +51,15 @@ def _write_all(fd: int, data: bytes) -> None:
         offset += written
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedBlob:
+    """Hashed bytes staged outside the content-addressed namespace."""
+
+    hash_hex: str
+    size_bytes: int
+    temporary_path: Path
+
+
 class BlobStore:
     """Content-addressed blob store backed by the local filesystem."""
 
@@ -71,6 +80,118 @@ class BlobStore:
     # Write
     # ------------------------------------------------------------------
 
+    def prepare_from_path(
+        self,
+        source: Path,
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> PreparedBlob:
+        """Stream-hash *source* into a private temporary file."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        fd: int | None = None
+        temporary_path: Path | None = None
+        try:
+            hasher = hashlib.sha256()
+            size = 0
+            fd, temporary_name = tempfile.mkstemp(dir=self.root, prefix=".blob.")
+            temporary_path = Path(temporary_name)
+            with open(source, "rb") as src:
+                while True:
+                    chunk = src.read(_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                    _write_all(fd, chunk)
+                    size += len(chunk)
+                    if heartbeat is not None:
+                        with suppress(Exception):
+                            heartbeat()
+            os.close(fd)
+            fd = None
+            os.chmod(temporary_path, 0o600)
+            return PreparedBlob(hasher.hexdigest(), size, temporary_path)
+        except Exception:
+            if fd is not None:
+                os.close(fd)
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
+
+    def prepare_from_fileobj(
+        self,
+        source: IO[bytes],
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> PreparedBlob:
+        """Stream-hash an open binary object into a private temporary file."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        fd: int | None = None
+        temporary_path: Path | None = None
+        try:
+            hasher = hashlib.sha256()
+            size = 0
+            fd, temporary_name = tempfile.mkstemp(dir=self.root, prefix=".blob.")
+            temporary_path = Path(temporary_name)
+            while True:
+                chunk = source.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                size += len(chunk)
+                _write_all(fd, chunk)
+                if heartbeat is not None:
+                    with suppress(Exception):
+                        heartbeat()
+            os.close(fd)
+            fd = None
+            os.chmod(temporary_path, 0o600)
+            return PreparedBlob(hasher.hexdigest(), size, temporary_path)
+        except Exception:
+            if fd is not None:
+                os.close(fd)
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
+
+    def prepare_from_bytes(self, data: bytes) -> PreparedBlob:
+        """Stage in-memory bytes without exposing their final hash path."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        fd: int | None = None
+        temporary_path: Path | None = None
+        try:
+            fd, temporary_name = tempfile.mkstemp(dir=self.root, prefix=".blob.")
+            temporary_path = Path(temporary_name)
+            _write_all(fd, data)
+            os.close(fd)
+            fd = None
+            os.chmod(temporary_path, 0o600)
+            return PreparedBlob(hashlib.sha256(data).hexdigest(), len(data), temporary_path)
+        except Exception:
+            if fd is not None:
+                os.close(fd)
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
+
+    def publish_prepared(self, prepared: PreparedBlob) -> tuple[str, int]:
+        """Atomically expose one prepared blob, preserving deduplication."""
+        dest = self.blob_path(prepared.hash_hex)
+        if dest.exists():
+            prepared.temporary_path.unlink(missing_ok=True)
+            return prepared.hash_hex, prepared.size_bytes
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(prepared.temporary_path, dest)
+        return prepared.hash_hex, prepared.size_bytes
+
+    def publish_many(self, prepared: Iterable[PreparedBlob]) -> tuple[tuple[str, int], ...]:
+        """Publish a prepared batch in input order."""
+        return tuple(self.publish_prepared(item) for item in prepared)
+
+    @staticmethod
+    def discard_prepared(prepared: PreparedBlob) -> None:
+        """Remove a private staged file that will not be published."""
+        prepared.temporary_path.unlink(missing_ok=True)
+
     def write_from_path(
         self,
         source: Path,
@@ -85,53 +206,11 @@ class BlobStore:
         If a blob with the same hash already exists, the write is skipped
         (content-addressed deduplication).
         """
-        # Single-pass: hash and write to temp file simultaneously. The temp
-        # lives at the blob-store root so the final ``os.replace`` to the
-        # sharded ``aa/bb/...`` destination stays on the same filesystem.
-        # Ensure the root exists; in a fresh archive (and in tests) it has
-        # not been created yet, and ``tempfile.mkstemp`` would raise
-        # ``FileNotFoundError`` — which the source-acquisition layer would
-        # then mis-attribute as a TOCTOU race against the source file.
-        self.root.mkdir(parents=True, exist_ok=True)
-        fd = None
-        tmp_path: str | None = None
+        prepared = self.prepare_from_path(source, heartbeat=heartbeat)
         try:
-            hasher = hashlib.sha256()
-            size = 0
-            fd, tmp_path = tempfile.mkstemp(dir=self.root, prefix=".blob.")
-            with open(source, "rb") as src:
-                while True:
-                    chunk = src.read(_CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    hasher.update(chunk)
-                    _write_all(fd, chunk)
-                    size += len(chunk)
-                    if heartbeat is not None:
-                        with suppress(Exception):
-                            heartbeat()
-            os.close(fd)
-            fd = None
-
-            hash_hex = hasher.hexdigest()
-            dest = self.blob_path(hash_hex)
-
-            if dest.exists():
-                os.unlink(tmp_path)
-                tmp_path = None
-                return hash_hex, size
-
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            os.chmod(tmp_path, 0o600)
-            os.replace(tmp_path, dest)
-            tmp_path = None
+            return self.publish_prepared(prepared)
         finally:
-            if fd is not None:
-                os.close(fd)
-            if tmp_path is not None and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-        return hash_hex, size
+            self.discard_prepared(prepared)
 
     def write_from_fileobj(
         self,
@@ -144,76 +223,22 @@ class BlobStore:
         Reads from ``source`` in 1 MiB chunks, hashing and writing to a
         temporary file in one pass. Returns ``(sha256_hex, byte_count)``.
         """
-        hasher = hashlib.sha256()
-        size = 0
-        self.root.mkdir(parents=True, exist_ok=True)
-        fd = None
-        tmp_path: str | None = None
+        prepared = self.prepare_from_fileobj(source, heartbeat=heartbeat)
         try:
-            fd, tmp_path = tempfile.mkstemp(dir=self.root, prefix=".blob.")
-            while True:
-                chunk = source.read(_CHUNK_SIZE)
-                if not chunk:
-                    break
-                hasher.update(chunk)
-                size += len(chunk)
-                _write_all(fd, chunk)
-                if heartbeat is not None:
-                    with suppress(Exception):
-                        heartbeat()
-
-            hash_hex = hasher.hexdigest()
-            dest = self.blob_path(hash_hex)
-            if dest.exists():
-                os.close(fd)
-                fd = None
-                os.unlink(tmp_path)
-                tmp_path = None
-                return hash_hex, size
-
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            os.close(fd)
-            fd = None
-            os.chmod(tmp_path, 0o600)
-            os.replace(tmp_path, dest)
-            tmp_path = None
+            return self.publish_prepared(prepared)
         finally:
-            if fd is not None:
-                os.close(fd)
-            if tmp_path is not None and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-        return hash_hex, size
+            self.discard_prepared(prepared)
 
     def write_from_bytes(self, data: bytes) -> tuple[str, int]:
         """Hash in-memory bytes and write to the store.
 
         Returns ``(sha256_hex, len(data))``. Skips write if blob exists.
         """
-        hash_hex = hashlib.sha256(data).hexdigest()
-        dest = self.blob_path(hash_hex)
-
-        if dest.exists():
-            return hash_hex, len(data)
-
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        fd = None
-        tmp_path: str | None = None
+        prepared = self.prepare_from_bytes(data)
         try:
-            fd, tmp_path = tempfile.mkstemp(dir=dest.parent, prefix=".blob.")
-            _write_all(fd, data)
-            os.close(fd)
-            fd = None
-            os.chmod(tmp_path, 0o600)
-            os.replace(tmp_path, dest)
-            tmp_path = None
+            return self.publish_prepared(prepared)
         finally:
-            if fd is not None:
-                os.close(fd)
-            if tmp_path is not None and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-        return hash_hex, len(data)
+            self.discard_prepared(prepared)
 
     # ------------------------------------------------------------------
     # Read
@@ -551,6 +576,7 @@ __all__ = [
     "BlobVerifyFailure",
     "CleanupOrphansResult",
     "OrphanDetectionResult",
+    "PreparedBlob",
     "get_blob_store",
     "load_raw_content",
     "reset_blob_store",

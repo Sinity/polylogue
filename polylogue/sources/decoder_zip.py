@@ -11,7 +11,7 @@ from typing import IO
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from .cursor import _record_cursor_failure
@@ -174,13 +174,20 @@ def process_zip(
     file_mtime: str | None,
     capture_raw: bool,
     cursor_state: CursorStatePayload | None,
+    blob_root: Path | None = None,
+    blob_store: BlobStore | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Process a ZIP file, yielding sessions from its entries."""
     del should_group
 
+    from polylogue.paths import blob_store_root
+    from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
+
     from .cursor import _ParseContext
     from .dispatch import GROUP_PROVIDERS
     from .emitter import _SessionEmitter
+
+    store = blob_store or BlobStore(blob_root or blob_store_root())
 
     validator = ZipEntryValidator(
         provider_hint,
@@ -211,7 +218,9 @@ def process_zip(
                     # ceiling during decompression, independent of the
                     # entry's (forgeable) declared header sizes.
                     with open_bounded_zip_entry(zf, name) as handle:
-                        blob_hash, blob_size = get_blob_store().write_from_fileobj(handle)
+                        blob_hash, blob_size = store.write_from_fileobj(handle)
+                    receipt_id = publication_receipt_id(store, blob_hash)
+                    flush_blob_publications(store)
                     precomputed_raw = RawSessionData(
                         raw_bytes=b"",
                         source_path=f"{zip_path}:{name}",
@@ -220,6 +229,7 @@ def process_zip(
                         provider_hint=entry_provider_hint,
                         blob_hash=blob_hash,
                         blob_size=blob_size,
+                        blob_publication_receipt_id=receipt_id,
                     )
                 with open_bounded_zip_entry(zf, name) as handle:
                     yield from emitter.emit(handle, name, precomputed_raw=precomputed_raw)

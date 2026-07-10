@@ -72,15 +72,18 @@ Restore expectations:
   daemon history matters.
 - A restored blob store is valid only when referenced blobs still match their
   SHA-256 paths and `source.db`/`user.db` references.
+- Blob backup includes the exact union of referenced and publication-reserved
+  bytes. `blob-inventory.json` records every hash and size; verification
+  re-hashes restored bytes rather than accepting an equal file count.
 
 ## Blob GC Safety Boundary
 
 Blob garbage collection is dry-run-first work. A safe GC report must prove:
 
 - the candidate blob is not referenced by `source.db.raw_sessions`;
-- the candidate is older than the generation/age gate (`MIN_AGE_S`, the sole
-  defense against a blob write racing a concurrent GC pass — see
-  `docs/internals.md` "GC concurrency model");
+- the candidate has neither a durable reference nor a publication reservation;
+- the candidate is older than the generation/age defense-in-depth gate
+  (`MIN_AGE_S`; see `docs/internals.md` "GC concurrency model");
 - the report names exact candidate counts and references before deletion.
 
 Do not delete blobs based only on filesystem age, directory mtime, or absence

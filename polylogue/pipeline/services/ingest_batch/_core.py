@@ -41,6 +41,7 @@ from polylogue.pipeline.services.ingest_worker import (
 )
 from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
@@ -377,6 +378,8 @@ def _write_session(
     force_write: bool = False,
     signature_cache: dict[str, list[tuple[str, str]]] | None = None,
     stage_timings_s: dict[str, float] | None = None,
+    blob_publisher: ArchiveBlobPublisher | None = None,
+    pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
 
@@ -502,6 +505,21 @@ def _write_session(
         counts["skipped_sessions"] = 1
         return False, counts
 
+    preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None
+    publication_receipts: list[tuple[str, bytes]] = []
+    if blob_publisher is not None:
+        preacquired_attachment_blobs = {}
+        for attachment in session_to_write.attachments:
+            if attachment.inline_bytes is None:
+                continue
+            hash_hex, size = blob_publisher.write_from_bytes(attachment.inline_bytes)
+            receipt_id = blob_publisher.receipt_id(hash_hex)
+            blob_hash = bytes.fromhex(hash_hex)
+            preacquired_attachment_blobs[id(attachment)] = (blob_hash, size, "acquired")
+            if receipt_id is not None:
+                publication_receipts.append((receipt_id, blob_hash))
+        blob_publisher.flush()
+
     write_parsed_session_to_archive(
         conn,
         session_to_write,
@@ -511,7 +529,10 @@ def _write_session(
         force_replace=force_write or browser_precedence == "replace",
         signature_cache=signature_cache,
         stage_timings_s=stage_timings_s,
+        preacquired_attachment_blobs=preacquired_attachment_blobs,
     )
+    if pending_attachment_receipts is not None:
+        pending_attachment_receipts.extend(publication_receipts)
     counts["sessions"] = 1
     counts["messages"] = len(session_to_write.messages)
     counts["attachments"] = len(session_to_write.attachments)
@@ -602,6 +623,8 @@ def _write_session_entry(
     summary: _IngestBatchSummary,
     force_write: bool = False,
     signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+    blob_publisher: ArchiveBlobPublisher | None = None,
+    pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
 ) -> bool:
     try:
         t_write = time.perf_counter()
@@ -612,6 +635,8 @@ def _write_session_entry(
             force_write=force_write,
             signature_cache=signature_cache,
             stage_timings_s=write_stage_timings,
+            blob_publisher=blob_publisher,
+            pending_attachment_receipts=pending_attachment_receipts,
         )
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
@@ -721,6 +746,8 @@ def _drain_ready_session_entries(
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
     force_write: bool = False,
+    blob_publisher: ArchiveBlobPublisher | None = None,
+    pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
 ) -> int:
     _delete_stale_sessions_for_raw_entries(conn, ready_entries)
     written_count = 0
@@ -731,7 +758,14 @@ def _drain_ready_session_entries(
     signature_cache: dict[str, list[tuple[str, str]]] = {}
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):
         wrote = _write_session_entry(
-            conn, raw_id, cdata, summary=summary, force_write=force_write, signature_cache=signature_cache
+            conn,
+            raw_id,
+            cdata,
+            summary=summary,
+            force_write=force_write,
+            signature_cache=signature_cache,
+            blob_publisher=blob_publisher,
+            pending_attachment_receipts=pending_attachment_receipts,
         )
         discard_session_data_payload(cdata)
         if not wrote:
@@ -932,6 +966,8 @@ def _drain_ingest_result(
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
     force_write: bool = False,
+    blob_publisher: ArchiveBlobPublisher | None = None,
+    pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
 ) -> None:
     _record_outcome(summary, ir)
     _observe_current_rss(summary)
@@ -951,6 +987,8 @@ def _drain_ingest_result(
         summary=summary,
         materialized_ids=materialized_ids,
         force_write=force_write,
+        blob_publisher=blob_publisher,
+        pending_attachment_receipts=pending_attachment_receipts,
     )
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
@@ -972,6 +1010,8 @@ def _consume_ingest_results(
     suspend_fts_triggers: bool = False,
     mark_fts_stale_on_suspend: bool = False,
     force_process_pool: bool = False,
+    blob_publisher: ArchiveBlobPublisher | None = None,
+    pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
 ) -> bool:
     result_iterator = iter(
         _iter_ingest_results_sync(
@@ -1010,6 +1050,8 @@ def _consume_ingest_results(
                 summary=summary,
                 materialized_ids=materialized_ids,
                 force_write=force_write,
+                blob_publisher=blob_publisher,
+                pending_attachment_receipts=pending_attachment_receipts,
             )
         finally:
             discard_ingest_result_payload(ir)
@@ -1087,6 +1129,9 @@ def _process_ingest_batch_sync(
     conn = _open_sync_connection(db_path)
     summary.setup_elapsed_s = time.perf_counter() - setup_started
     materialized_ids: set[str] = set()
+    archive_root = Path(archive_root_str)
+    blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+    pending_attachment_receipts: list[tuple[str, bytes]] = []
     _observe_current_rss(summary)
     transaction_started = False
     try:
@@ -1103,6 +1148,8 @@ def _process_ingest_batch_sync(
             suspend_fts_triggers=suspend_fts_triggers,
             mark_fts_stale_on_suspend=suspend_fts_triggers and not repair_message_fts,
             force_process_pool=force_process_pool,
+            blob_publisher=blob_publisher,
+            pending_attachment_receipts=pending_attachment_receipts,
         )
         _flush_ingest_results(
             conn,
@@ -1128,6 +1175,11 @@ def _process_ingest_batch_sync(
                 changed_session_ids=tuple(fts_repair_ids),
                 repair_message_fts=repair_message_fts,
             )
+            if pending_attachment_receipts:
+                with sqlite3.connect(archive_root / "source.db") as source_conn:
+                    source_conn.execute("BEGIN IMMEDIATE")
+                    for publication_id, blob_hash in pending_attachment_receipts:
+                        consume_blob_publication_receipt(source_conn, publication_id, blob_hash)
             summary.commit_elapsed_s = time.perf_counter() - commit_started
             from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
 
@@ -1175,6 +1227,7 @@ def _process_ingest_batch_sync(
                 conn.commit()
         raise
     finally:
+        blob_publisher.discard_pending()
         if suspend_fts_triggers:
             with contextlib.suppress(Exception):
                 conn.execute("PRAGMA foreign_keys = ON")

@@ -158,6 +158,11 @@ class SQLiteRawMixin:
                     acquired_at_ms,
                 ),
             )
+            if record.blob_publication_receipt_id is not None:
+                await conn.execute(
+                    "DELETE FROM blob_publication_reservations WHERE publication_id = ? AND blob_hash = ?",
+                    (record.blob_publication_receipt_id, blob_hash),
+                )
             await conn.commit()
             return not existed
 

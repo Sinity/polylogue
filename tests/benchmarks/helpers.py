@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar, cast
 
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -21,6 +21,11 @@ def _index_db_path(db_path: Path) -> Path:
 
 class BenchmarkFixture(Protocol):
     def __call__(self, func: Callable[[], T]) -> T: ...
+
+
+def benchmark_one_shot(benchmark: Any, operation: Callable[..., T], *args: object) -> T:
+    """Measure one mutating end-to-end operation against one fresh state."""
+    return cast(T, benchmark.pedantic(operation, args=args, rounds=1, iterations=1))
 
 
 @dataclass

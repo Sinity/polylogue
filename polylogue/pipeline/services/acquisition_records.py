@@ -10,6 +10,7 @@ from typing_extensions import TypedDict
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.sources.parsers.base import RawSessionData
 from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -35,6 +36,7 @@ def make_raw_record(
     source_name: str,
     *,
     blob_root: Path | None = None,
+    blob_store: BlobStore | None = None,
 ) -> RawSessionRecord:
     """Prepare a raw session record from acquisition data.
 
@@ -51,10 +53,14 @@ def make_raw_record(
     elif raw_data.raw_bytes:
         # Bytes provided without pre-computed blob hash (e.g. from tests
         # or legacy callers). Write to blob store and use the hash.
-        from polylogue.storage.blob_store import BlobStore, get_blob_store
+        from polylogue.paths import blob_store_root
 
-        blob_store = BlobStore(blob_root) if blob_root is not None else get_blob_store()
+        resolved_blob_root = blob_root or blob_store_root()
+        blob_store = blob_store or BlobStore(resolved_blob_root)
         raw_id, blob_size = blob_store.write_from_bytes(raw_data.raw_bytes)
+        from polylogue.storage.blob_publication import publication_receipt_id
+
+        raw_data.blob_publication_receipt_id = publication_receipt_id(blob_store, raw_id)
     else:
         raise ValueError("RawSessionData has neither blob_hash nor raw_bytes")
 
@@ -75,6 +81,7 @@ def make_raw_record(
     return RawSessionRecord(
         raw_id=raw_id,
         blob_hash=(blob_hash if source_name == "hermes" else None),
+        blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
         source_name=source_name,
         source_path=raw_data.source_path,
         source_index=raw_data.source_index,

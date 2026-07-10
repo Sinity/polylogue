@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from polylogue.cli.click_app import cli
+from polylogue.cli.commands import maintenance
 from polylogue.cli.commands.paths import paths_command
+from polylogue.daemon.provenance import _build_raw_preview
+from polylogue.paths import blob_store_root
+from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 
 _ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
@@ -81,6 +86,29 @@ def test_paths_command_json_output(cli_workspace: dict[str, Path], cli_runner: C
 
     # All path values should be strings.
     assert isinstance(payload["archive_root"], str)
+
+
+def test_archive_override_unifies_blob_write_read_maintenance_report_and_reset(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    archive = cli_workspace["archive_root"]
+    expected_blob_root = archive / "blob"
+    assert blob_store_root() == expected_blob_root
+
+    payload = b"override-authoritative blob"
+    blob_hash, _ = get_blob_store().write_from_bytes(payload)
+    assert (expected_blob_root / blob_hash[:2] / blob_hash[2:]).read_bytes() == payload
+    assert _build_raw_preview(blob_hash, len(payload), requested_bytes=None)["text"] == payload.decode()
+
+    maintenance_plan = maintenance._backup_plan_payload(archive)
+    assert maintenance_plan["blob_store"]["path"] == str(expected_blob_root)
+    paths_result = cli_runner.invoke(paths_command, ["--format", "json"], catch_exceptions=False)
+    assert json.loads(paths_result.output)["blob_store_root"] == str(expected_blob_root)
+
+    reset_result = cli_runner.invoke(cli, ["--plain", "ops", "reset", "--blob", "--yes"])
+    assert reset_result.exit_code == 0
+    assert not expected_blob_root.exists()
 
 
 def test_paths_json_reports_running_rebuild_as_not_ready(

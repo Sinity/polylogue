@@ -22,8 +22,6 @@ import sqlite3
 import time
 from pathlib import Path
 
-import pytest
-
 from polylogue.storage.blob_gc import MIN_AGE_S, run_blob_gc
 from polylogue.storage.blob_store import BlobStore
 
@@ -99,20 +97,19 @@ def test_db_reference_alone_protects_blob(tmp_path: Path) -> None:
     assert blob_store.exists(blob_hash)
 
 
-def test_doctor_repair_path_deletes_unreferenced_old_blob(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_repair_path_deletes_unreferenced_old_blob(tmp_path: Path) -> None:
     """An old, unreferenced blob is collectable via the ops-doctor repair path."""
     from polylogue.config import Config
     from polylogue.storage.blob_repair import repair_orphaned_blobs_data
 
     db_path = tmp_path / "archive.db"
-    blob_root = tmp_path / "blobs"
+    blob_root = tmp_path / "blob"
     blob_store = BlobStore(blob_root)
     _make_db(db_path).close()
 
     blob_hash, _ = blob_store.write_from_bytes(b"truly abandoned payload")
     _age_blob(blob_store, blob_hash, seconds=MIN_AGE_S + 5)
 
-    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: blob_root)
     config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=db_path)
 
     outcome = repair_orphaned_blobs_data(config, dry_run=False)
@@ -122,20 +119,19 @@ def test_doctor_repair_path_deletes_unreferenced_old_blob(tmp_path: Path, monkey
     assert outcome.success is True
 
 
-def test_doctor_repair_path_dry_run_never_deletes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_repair_path_dry_run_never_deletes(tmp_path: Path) -> None:
     """dry_run=True reports the count without touching disk, on the doctor path too."""
     from polylogue.config import Config
     from polylogue.storage.blob_repair import repair_orphaned_blobs_data
 
     db_path = tmp_path / "archive.db"
-    blob_root = tmp_path / "blobs"
+    blob_root = tmp_path / "blob"
     blob_store = BlobStore(blob_root)
     _make_db(db_path).close()
 
     blob_hash, _ = blob_store.write_from_bytes(b"dry run candidate")
     _age_blob(blob_store, blob_hash, seconds=MIN_AGE_S + 5)
 
-    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: blob_root)
     config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=db_path)
 
     outcome = repair_orphaned_blobs_data(config, dry_run=True)

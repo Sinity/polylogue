@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from polylogue.config import Source
     from polylogue.sources.drive.types import DriveConfigLike, DriveUILike
+    from polylogue.storage.blob_store import BlobStore
 
 logger = get_logger(__name__)
 ObservationCallback = Callable[[JSONDocument], None]
@@ -30,15 +31,22 @@ def _drain_batch(
     iterator: Iterator[RawSessionData],
     *,
     batch_size: int,
+    blob_store: BlobStore | None = None,
 ) -> list[RawSessionData]:
     """Read up to ``batch_size`` items without sentinel gymnastics."""
-    return list(islice(iterator, batch_size))
+    batch = list(islice(iterator, batch_size))
+    if blob_store is not None:
+        from polylogue.storage.blob_publication import flush_blob_publications
+
+        flush_blob_publications(blob_store)
+    return batch
 
 
 async def iter_source_raw_stream(
     source: Source,
     *,
     blob_root: Path | None = None,
+    blob_store: BlobStore | None = None,
     known_mtimes: dict[str, str] | None = None,
     known_cursors: dict[str, dict[str, object]] | None = None,
     observation_callback: ObservationCallback | None = None,
@@ -60,6 +68,7 @@ async def iter_source_raw_stream(
             known_mtimes=known_mtimes,
             known_cursors=known_cursors,
             blob_root=blob_root,
+            blob_store=blob_store,
             observation_callback=observation_callback,
             status_callback=_status_callback if progress_callback is not None else None,
         )
@@ -71,7 +80,7 @@ async def iter_source_raw_stream(
         while True:
             batch = await loop.run_in_executor(
                 executor,
-                partial(_drain_batch, iterator, batch_size=batch_size),
+                partial(_drain_batch, iterator, batch_size=batch_size, blob_store=blob_store),
             )
             if not batch:
                 break
@@ -82,6 +91,7 @@ async def iter_source_raw_stream(
 async def iter_drive_raw_stream(
     source: Source,
     *,
+    blob_store: BlobStore | None = None,
     known_mtimes: dict[str, str] | None = None,
     ui: DriveUILike | None = None,
     cursor_state: CursorStatePayload | None = None,
@@ -109,6 +119,7 @@ async def iter_drive_raw_stream(
             known_mtimes=known_mtimes,
             observation_callback=observation_callback,
             status_callback=_status_callback if progress_callback is not None else None,
+            blob_store=blob_store,
         )
     )
 
@@ -117,7 +128,7 @@ async def iter_drive_raw_stream(
         while True:
             batch = await loop.run_in_executor(
                 executor,
-                partial(_drain_batch, iterator, batch_size=batch_size),
+                partial(_drain_batch, iterator, batch_size=batch_size, blob_store=blob_store),
             )
             if not batch:
                 break
@@ -129,6 +140,7 @@ async def iter_raw_record_stream(
     source: Source,
     *,
     blob_root: Path | None = None,
+    blob_store: BlobStore | None = None,
     known_mtimes: dict[str, str] | None = None,
     known_cursors: dict[str, dict[str, object]] | None = None,
     ui: DriveUILike | None = None,
@@ -142,6 +154,7 @@ async def iter_raw_record_stream(
     if source.is_drive:
         raw_stream = iter_drive_raw_stream(
             source,
+            blob_store=blob_store,
             known_mtimes=known_mtimes,
             ui=ui,
             cursor_state=cursor_state,
@@ -153,6 +166,7 @@ async def iter_raw_record_stream(
         raw_stream = iter_source_raw_stream(
             source,
             blob_root=blob_root,
+            blob_store=blob_store,
             known_mtimes=known_mtimes,
             known_cursors=known_cursors,
             observation_callback=observation_callback,
@@ -164,7 +178,11 @@ async def iter_raw_record_stream(
             continue
         raw_source_path = raw_data.source_path
         try:
-            record = make_raw_record(raw_data, source.name, blob_root=blob_root)
+            record = make_raw_record(raw_data, source.name, blob_root=blob_root, blob_store=blob_store)
+            if blob_store is not None and raw_data.raw_bytes:
+                from polylogue.storage.blob_publication import flush_blob_publications
+
+                flush_blob_publications(blob_store)
             # Explicitly break reference to raw bytes so GC can collect them
             # before the next iteration reads the next file.
             del raw_data

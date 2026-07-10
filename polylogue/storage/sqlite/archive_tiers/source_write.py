@@ -21,6 +21,7 @@ class ArchiveSourceBlobRef:
     source_path: str | None = None
     size_bytes: int | None = None
     acquired_at_ms: int | None = None
+    publication_receipt_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +211,7 @@ def write_source_raw_session(
     validation_drift_count: int = 0,
     validation_mode: ValidationMode | str | None = None,
     detection_warnings: tuple[str, ...] = (),
+    blob_publication_receipt_id: str | None = None,
     additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
     artifact: ArchiveSourceArtifact | None = None,
     hook_event: ArchiveHookEvent | None = None,
@@ -274,6 +276,7 @@ def write_source_raw_session(
                 source_path=source_path,
                 size_bytes=blob_size,
                 acquired_at_ms=acquired_at_ms,
+                publication_receipt_id=blob_publication_receipt_id,
             ),
         )
         for blob_ref in additional_blob_refs:
@@ -286,6 +289,7 @@ def write_source_raw_session(
                     source_path=blob_ref.source_path,
                     size_bytes=blob_ref.size_bytes or 0,
                     acquired_at_ms=blob_ref.acquired_at_ms or acquired_at_ms,
+                    publication_receipt_id=blob_ref.publication_receipt_id,
                 ),
             )
         if artifact is not None:
@@ -307,6 +311,8 @@ def write_source_raw_session_blob_ref(
     acquired_at_ms: int,
     native_id: str | None = None,
     raw_id: str | None = None,
+    blob_publication_receipt_id: str | None = None,
+    additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
     manage_transaction: bool = True,
 ) -> str:
     """Insert one raw session that already has a materialized raw-payload blob.
@@ -352,8 +358,22 @@ def write_source_raw_session_blob_ref(
                 source_path=source_path,
                 size_bytes=blob_size,
                 acquired_at_ms=acquired_at_ms,
+                publication_receipt_id=blob_publication_receipt_id,
             ),
         )
+        for additional_ref in additional_blob_refs:
+            _insert_blob_ref(
+                conn,
+                ArchiveSourceBlobRef(
+                    blob_hash=additional_ref.blob_hash,
+                    raw_id=resolved_raw_id,
+                    ref_type=additional_ref.ref_type,
+                    source_path=additional_ref.source_path,
+                    size_bytes=additional_ref.size_bytes or 0,
+                    acquired_at_ms=additional_ref.acquired_at_ms or acquired_at_ms,
+                    publication_receipt_id=additional_ref.publication_receipt_id,
+                ),
+            )
     return resolved_raw_id
 
 
@@ -588,6 +608,9 @@ def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> Non
             ref.acquired_at_ms,
         ),
     )
+    from polylogue.storage.blob_publication import consume_blob_publication_receipt
+
+    consume_blob_publication_receipt(conn, ref.publication_receipt_id, ref.blob_hash)
 
 
 def _insert_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSourceArtifact) -> None:

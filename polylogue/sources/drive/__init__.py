@@ -6,6 +6,8 @@ from pathlib import Path
 
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
+from polylogue.storage.blob_publication import publication_receipt_id
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from ...assets import asset_path
@@ -202,6 +204,7 @@ def iter_drive_raw_data(
     known_mtimes: dict[str, str] | None = None,
     observation_callback: ObservationCallback | None = None,
     status_callback: StatusCallback | None = None,
+    blob_store: BlobStore | None = None,
 ) -> Iterable[RawSessionData]:
     """Iterate Drive payloads as raw bytes without writing a local cache.
 
@@ -235,9 +238,10 @@ def iter_drive_raw_data(
         ):
             continue
 
-        from polylogue.storage.blob_store import get_blob_store
+        if blob_store is None:
+            from polylogue.paths import blob_store_root
 
-        blob_store = get_blob_store()
+            blob_store = BlobStore(blob_store_root())
 
         # Check if a local cache file exists (drive-cache or legacy path).
         # If so, use it instead of re-downloading from Drive.
@@ -285,6 +289,7 @@ def iter_drive_raw_data(
             provider_hint=provider_hint,
             blob_hash=blob_hash,
             blob_size=blob_size,
+            blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
         )
 
 

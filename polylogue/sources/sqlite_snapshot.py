@@ -26,6 +26,7 @@ class SQLiteBlobSnapshot:
     blob_hash: str
     blob_size: int
     source_revision: str
+    blob_publication_receipt_id: str | None = None
 
 
 def hermes_profile_raw_id(source_path: Path | str, source_index: int, blob_hash: str) -> str:
@@ -160,10 +161,13 @@ def snapshot_sqlite_to_blob(
     try:
         snapshot_sqlite_database(source, temporary_path)
         blob_hash, blob_size = blob_store.write_from_path(temporary_path, heartbeat=heartbeat)
+        from polylogue.storage.blob_publication import publication_receipt_id
+
         return SQLiteBlobSnapshot(
             blob_hash=blob_hash,
             blob_size=blob_size,
             source_revision=source_revision,
+            blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
         )
     finally:
         temporary_path.unlink(missing_ok=True)

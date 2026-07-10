@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from polylogue.core.enums import ArtifactSupportStatus, Provider, ValidationMode, ValidationStatus
 
@@ -10,6 +10,7 @@ from polylogue.core.enums import ArtifactSupportStatus, Provider, ValidationMode
 class RawSessionRecord(BaseModel):
     raw_id: str
     blob_hash: str | None = None
+    blob_publication_receipt_id: str | None = Field(default=None, exclude=True)
     payload_provider: Provider | None = None
     source_name: str | None = None
     source_path: str
@@ -27,7 +28,7 @@ class RawSessionRecord(BaseModel):
     validation_mode: ValidationMode | None = None
     detection_warnings: str | None = None
 
-    @field_validator("raw_id", "blob_hash", "source_name", "source_path")
+    @field_validator("raw_id", "blob_hash", "blob_publication_receipt_id", "source_name", "source_path")
     @classmethod
     def non_empty_string(cls, v: str | None) -> str | None:
         # Runs after type validation: required ``str`` fields (raw_id, source_path)

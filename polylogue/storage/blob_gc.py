@@ -8,23 +8,22 @@ Safety invariants
 -----------------
 1. Never delete a blob that still has a DB reference (message text,
    content_blocks, attachments).
-2. Only delete blobs older than the previous completed GC generation
+2. Never delete a blob with a durable publication receipt. Archive
+   orchestration commits per-publication receipt IDs before exposing final
+   paths, and exact reference transactions consume only their own receipts.
+3. Serialize the final reference/reservation recheck and unlink under the
+   source-tier write lock.
+4. Only delete blobs older than the previous completed GC generation
    plus MIN_AGE seconds (defense-in-depth against clockskew and any
-   acquire-blob -> commit-row window a slow ingest leaves open — see
-   ``MIN_AGE_S`` below for the sizing rationale).
-3. Bound each run to ``max_batch`` deletions so GC does not monopolise
+   uninstrumented writer path).
+5. Bound each run to ``max_batch`` deletions so GC does not monopolise
    I/O.
 
-A prior revision of this module also carried a lease mechanism
+A prior revision carried a late write-effects lease mechanism
 (``pending_blob_refs``, ``acquire_blob_leases``/``release_operation_leases``)
-intended to bridge the acquire-blob -> write-DB-row commit window more
-tightly than a timing heuristic. It was removed (polylogue-v7e0) after a
-race-window audit found no production caller ever populated the lease
-payload keys (``_blob_hashes``/``_operation_id`` on
-``commit_archive_write_effects``) — the mechanism was fully wired end to
-end but never reachable, so the invariant it described never actually
-engaged. See ``docs/internals.md`` "GC concurrency model" for the current,
-lease-free contract and why ``MIN_AGE_S`` alone is judged sufficient.
+that no production caller populated. Source schema v4 replaces it with an
+archive-owned batched publisher over a substrate-neutral BlobStore, closing
+the actual final-path-visibility -> reference-commit window.
 """
 
 from __future__ import annotations
@@ -55,6 +54,7 @@ class GCRunEvidence:
     inspected: int = 0
     deleted: int = 0
     skipped_referenced: int = 0
+    skipped_reserved: int = 0
     skipped_missing: int = 0
     skipped_unlink_error: int = 0
     dry_run: bool = False
@@ -75,6 +75,7 @@ class BlobGCResult:
     deleted_count: int = 0
     reclaimed_bytes: int = 0
     skipped_referenced: int = 0
+    skipped_reserved: int = 0
     skipped_missing: int = 0
     skipped_unlink_error: int = 0
     generation_id: str | None = None
@@ -93,6 +94,7 @@ class BlobGCResult:
             "deleted_count": self.deleted_count,
             "reclaimed_bytes": self.reclaimed_bytes,
             "skipped_referenced": self.skipped_referenced,
+            "skipped_reserved": self.skipped_reserved,
             "skipped_missing": self.skipped_missing,
             "skipped_unlink_error": self.skipped_unlink_error,
             "generation_id": self.generation_id,
@@ -103,23 +105,9 @@ class BlobGCResult:
 
 # Minimum age in seconds for a blob to be eligible for deletion.
 #
-# This is the SOLE defense-in-depth mechanism protecting an in-flight
-# ingest's blob from a concurrent GC pass (polylogue-v7e0 removed the
-# never-reachable lease mechanism that this comment used to describe as
-# a second layer). The exposure window this must outlast is
-# blob-write-to-disk -> referencing-row-commit for a single ingest
-# operation. 60s comfortably covers ordinary ingest batches (parse +
-# materialize + FTS repair for a normal session count in the low
-# hundreds of ms to a few seconds per CLAUDE.md's convergence docs). The
-# documented risk class is the memory-bounded streaming path for
-# multi-GiB Claude Code JSONL (`sources/dispatch.py`), where a single
-# session's parse+materialize could plausibly exceed 60s; an operator
-# who runs `polylogue maintenance blob-gc --yes` concurrently with such
-# an ingest, within that window, is the one scenario this floor does not
-# fully cover. Mitigation until a real per-write lease lands: avoid
-# running blob-gc manually while a large corpus import is active; the
-# generation-age gate below (`gc_generations`) adds a second, independent
-# margin on top of this floor.
+# Publication reservations provide the exact acquire-to-reference defense.
+# This floor remains defense-in-depth for legacy/uninstrumented paths and
+# clock skew; it is not used to infer that a live publisher has expired.
 MIN_AGE_S = 60
 
 
@@ -153,6 +141,17 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
+def _database_has_table(path: Path, table: str) -> bool:
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return False
+    try:
+        return _table_exists(conn, table)
+    finally:
+        conn.close()
+
+
 def _blob_hash_bytes(blob_hash: str) -> bytes | None:
     if len(blob_hash) != 64:
         return None
@@ -173,7 +172,7 @@ def _archive_reference_surfaces(
         return []
 
     surfaces: list[str] = []
-    for table in ("raw_sessions", "blob_refs"):
+    for table in ("raw_sessions", "blob_refs", "attachments"):
         if not _table_exists(conn, table):
             continue
         row = conn.execute(f"SELECT 1 FROM {table} WHERE blob_hash = ? LIMIT 1", (blob_bytes,)).fetchone()
@@ -188,6 +187,7 @@ def _reference_surfaces(
     *,
     source_db_path: Path | None = None,
     source_conn: sqlite3.Connection | None = None,
+    index_conn: sqlite3.Connection | None = None,
 ) -> list[str]:
     surfaces = _archive_reference_surfaces(conn, blob_hash, surface_prefix="current")
 
@@ -203,6 +203,9 @@ def _reference_surfaces(
                 source_conn.close()
         except sqlite3.Error as exc:
             logger.warning("Could not inspect archive source blob references in %s: %s", source_db_path, exc)
+
+    if index_conn is not None:
+        surfaces.extend(_archive_reference_surfaces(index_conn, blob_hash, surface_prefix="index.db"))
 
     if _table_exists(conn, "raw_sessions"):
         row = conn.execute(
@@ -223,6 +226,19 @@ def _still_referenced(
 ) -> bool:
     """Return True if the blob hash is referenced by any archive row."""
     return bool(_reference_surfaces(conn, blob_hash, source_db_path=source_db_path))
+
+
+def _has_publication_reservation(conn: sqlite3.Connection, blob_hash: str) -> bool:
+    blob_bytes = _blob_hash_bytes(blob_hash)
+    if blob_bytes is None or not _table_exists(conn, "blob_publication_reservations"):
+        return False
+    return (
+        conn.execute(
+            "SELECT 1 FROM blob_publication_reservations WHERE blob_hash = ? LIMIT 1",
+            (blob_bytes,),
+        ).fetchone()
+        is not None
+    )
 
 
 def _candidate_blobs(
@@ -350,73 +366,106 @@ def run_blob_gc_report(
         logger.debug("Blob directory %s does not exist, skipping GC", blob_dir)
         return report
 
-    source_db_path: Path | None = db_path_obj.with_name("source.db")
-    if source_db_path == db_path_obj:
-        source_db_path = None
-    conn = open_connection(db_path)
-    conn.row_factory = sqlite3.Row
-    source_conn: sqlite3.Connection | None = None
+    sibling_source_db = db_path_obj.with_name("source.db")
+    control_db_path = (
+        sibling_source_db
+        if db_path_obj.name != "source.db" and _database_has_table(sibling_source_db, "gc_generations")
+        else db_path_obj
+    )
+    # Filesystem enumeration is deliberately outside the destructive source
+    # lock. The lock protects only the bounded final recheck+unlink window.
+    with sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True) as planning_conn:
+        prev_completed_at = _previous_generation_completed_at(planning_conn)
+    older_than = float(MIN_AGE_S)
+    if prev_completed_at is not None:
+        older_than = max(older_than, time.time() - prev_completed_at)
+    report.older_than_s = older_than
+    candidates = _candidate_blobs(blob_path, older_than=older_than)
+    report.candidate_count = len(candidates)
+    if not candidates:
+        return report
+
+    sibling_index_db = db_path_obj if db_path_obj.name == "index.db" else db_path_obj.with_name("index.db")
+    evidence = GCRunEvidence(dry_run=dry_run, max_batch=max_batch)
+    shortlist: list[tuple[str, float]] = []
+
+    # Filter the filesystem candidates without holding the source-tier write
+    # lock. Referenced archives can contain millions of old blobs, so walking
+    # past those rows under BEGIN IMMEDIATE would otherwise make max_batch a
+    # deletion bound but not a lock-time bound. Every shortlisted candidate is
+    # checked again under the destructive lock below.
+    planning_conn = sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)
+    planning_conn.row_factory = sqlite3.Row
+    planning_source_conn: sqlite3.Connection | None = None
+    planning_index_conn: sqlite3.Connection | None = None
     try:
-        if source_db_path is not None and source_db_path.exists():
-            try:
-                source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
-            except sqlite3.Error as exc:
-                logger.warning("Could not inspect archive source blob references in %s: %s", source_db_path, exc)
-
-        started_at_ms = int(time.time() * 1000)
-        # Safety invariant #2: a candidate must be older than BOTH the static
-        # MIN_AGE_S floor AND the previous completed GC generation. The
-        # generation high-water mark prevents a blob created during the same
-        # window as the previous GC pass from being reclaimed before its
-        # eventual reference can land (defense-in-depth against clock skew).
-        # Without a prior generation the floor applies.
-        prev_completed_at = _previous_generation_completed_at(conn)
-        older_than = float(MIN_AGE_S)
-        if prev_completed_at is not None:
-            since_prev_generation = time.time() - prev_completed_at
-            older_than = max(older_than, since_prev_generation)
-        report.older_than_s = older_than
-        candidates = _candidate_blobs(blob_path, older_than=older_than)
-        report.candidate_count = len(candidates)
-        if not candidates:
-            return report
-
-        evidence = GCRunEvidence(dry_run=dry_run, max_batch=max_batch)
-        deleted = 0
-        reclaimed_bytes = 0
-        for blob_hash, _mtime in candidates:
-            if deleted >= max_batch:
+        if control_db_path != sibling_source_db and sibling_source_db.exists():
+            planning_source_conn = sqlite3.connect(f"file:{sibling_source_db}?mode=ro", uri=True)
+        if control_db_path != sibling_index_db and sibling_index_db.exists():
+            planning_index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
+        for blob_hash, mtime in candidates:
+            if len(shortlist) >= max_batch:
                 break
-
             evidence.inspected += 1
-
-            # Safety check 1: still referenced in DB
             if _reference_surfaces(
-                conn,
+                planning_conn,
                 blob_hash,
-                source_db_path=source_db_path,
-                source_conn=source_conn,
+                source_db_path=(sibling_source_db if planning_source_conn is not None else None),
+                source_conn=planning_source_conn,
+                index_conn=planning_index_conn,
             ):
                 evidence.skipped_referenced += 1
                 continue
+            if _has_publication_reservation(planning_conn, blob_hash):
+                evidence.skipped_reserved += 1
+                continue
+            shortlist.append((blob_hash, mtime))
+    finally:
+        if planning_source_conn is not None:
+            planning_source_conn.close()
+        if planning_index_conn is not None:
+            planning_index_conn.close()
+        planning_conn.close()
+
+    connection_uri = f"file:{control_db_path}?mode=ro" if dry_run else str(control_db_path)
+    conn = sqlite3.connect(connection_uri, uri=dry_run)
+    conn.row_factory = sqlite3.Row
+    source_conn: sqlite3.Connection | None = None
+    index_conn: sqlite3.Connection | None = None
+    affected = 0
+    reclaimed_bytes = 0
+    started_at_ms = int(time.time() * 1000)
+    try:
+        if not dry_run:
+            conn.execute("BEGIN IMMEDIATE")
+        if control_db_path != sibling_source_db and sibling_source_db.exists():
+            source_conn = sqlite3.connect(f"file:{sibling_source_db}?mode=ro", uri=True)
+        if control_db_path != sibling_index_db and sibling_index_db.exists():
+            index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
+
+        for blob_hash, _mtime in shortlist:
+            if _reference_surfaces(
+                conn,
+                blob_hash,
+                source_db_path=(sibling_source_db if source_conn is not None else None),
+                source_conn=source_conn,
+                index_conn=index_conn,
+            ):
+                evidence.skipped_referenced += 1
+                continue
+            if _has_publication_reservation(conn, blob_hash):
+                evidence.skipped_reserved += 1
+                continue
 
             target = _sharded_blob_path(blob_path, blob_hash)
-
             if dry_run:
-                # In dry-run mode, account the would-be deletion only when
-                # the on-disk file actually exists at the sharded path.
                 if target.is_file():
-                    deleted += 1
+                    affected += 1
                     evidence.deleted += 1
                 else:
                     evidence.skipped_missing += 1
                 continue
 
-            # All checks passed — attempt the unlink at the sharded path.
-            # Stat the size first so a successful unlink can attribute the freed
-            # bytes to reclaimed_bytes; missing_ok=False so we observe whether a
-            # file actually went away. If it was already gone (concurrent GC,
-            # stale candidate) we record skipped_missing and do NOT count it.
             try:
                 freed_bytes = target.stat().st_size
             except OSError:
@@ -434,63 +483,40 @@ def run_blob_gc_report(
                 logger.warning("Failed to delete blob %s: %s", blob_hash, exc)
                 evidence.skipped_unlink_error += 1
                 continue
-
-            deleted += 1
+            affected += 1
             evidence.deleted += 1
             reclaimed_bytes += freed_bytes
 
         if dry_run:
-            # Dry run does not consume a generation slot — no row written,
-            # no commit needed. The caller still gets the would-be count.
-            logger.info(
-                "Blob GC dry-run: would delete %d blob(s); inspected=%d skipped_ref=%d skipped_missing=%d",
-                evidence.deleted,
-                evidence.inspected,
-                evidence.skipped_referenced,
-                evidence.skipped_missing,
+            report.would_delete_count = affected
+        else:
+            generation_id = f"gc-{uuid4().hex}"
+            conn.execute(
+                "INSERT INTO gc_generations "
+                "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (generation_id, started_at_ms, int(time.time() * 1000), affected, reclaimed_bytes),
             )
-            report.inspected_count = evidence.inspected
-            report.would_delete_count = evidence.deleted
-            report.skipped_referenced = evidence.skipped_referenced
-            report.skipped_missing = evidence.skipped_missing
-            report.skipped_unlink_error = evidence.skipped_unlink_error
-            return report
-
-        # Record the completed generation with typed reclaim counters. The
-        # per-skip tally stays an in-memory log aggregate; the durable record is
-        # reclaimed_count / reclaimed_bytes (#1743 — no JSON evidence column).
-        generation_id = f"gc-{uuid4().hex}"
-        conn.execute(
-            "INSERT INTO gc_generations "
-            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (generation_id, started_at_ms, int(time.time() * 1000), deleted, reclaimed_bytes),
-        )
-        conn.commit()
-
-        if deleted:
-            logger.info(
-                "Blob GC: deleted %d blob(s), reclaimed %d byte(s) in generation %s",
-                deleted,
-                reclaimed_bytes,
-                generation_id,
-            )
-
-        report.generation_id = generation_id
-        report.generation_written = True
+            conn.commit()
+            report.generation_id = generation_id
+            report.generation_written = True
+            report.deleted_count = affected
+            report.reclaimed_bytes = reclaimed_bytes
         report.inspected_count = evidence.inspected
-        report.reclaimed_bytes = reclaimed_bytes
-        report.deleted_count = deleted
         report.skipped_referenced = evidence.skipped_referenced
+        report.skipped_reserved = evidence.skipped_reserved
         report.skipped_missing = evidence.skipped_missing
         report.skipped_unlink_error = evidence.skipped_unlink_error
         return report
     except Exception:
-        conn.rollback()
+        if not dry_run:
+            conn.rollback()
         raise
     finally:
         if source_conn is not None:
             source_conn.close()
+        if index_conn is not None:
+            index_conn.close()
         conn.close()
 
 

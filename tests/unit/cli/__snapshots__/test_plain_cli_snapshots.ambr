@@ -870,12 +870,13 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 3,
-        "user_version": 3,
+        "expected_user_version": 4,
+        "user_version": 4,
         "version_status": "ok",
         "table_counts": {
           "raw_sessions": 2,
           "blob_refs": 2,
+          "blob_publication_reservations": 0,
           "raw_artifacts": 0,
           "raw_hook_events": 0,
           "history_sidecars": 0
@@ -883,6 +884,7 @@
         "table_count_precision": {
           "raw_sessions": "exact",
           "blob_refs": "exact",
+          "blob_publication_reservations": "exact",
           "raw_artifacts": "exact",
           "raw_hook_events": "exact",
           "history_sidecars": "exact"

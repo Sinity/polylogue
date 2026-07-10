@@ -234,6 +234,7 @@ def raw_data_record(
     blob_hash: str,
     blob_size: int,
     source_index: int | None = None,
+    blob_publication_receipt_id: str | None = None,
 ) -> RawSessionData:
     return RawSessionData(
         raw_bytes=b"",
@@ -243,6 +244,7 @@ def raw_data_record(
         provider_hint=provider_hint,
         blob_hash=blob_hash,
         blob_size=blob_size,
+        blob_publication_receipt_id=blob_publication_receipt_id,
     )
 
 
@@ -284,6 +286,8 @@ def make_split_entry_raw_data(
 ) -> RawSessionData:
     """Persist a split payload to the blob store and return raw metadata."""
     blob_hash, blob_size = blob_store.write_from_bytes(split_payload.payload_bytes)
+    from polylogue.storage.blob_publication import publication_receipt_id
+
     return raw_data_record(
         source_path=source_path,
         file_mtime=file_mtime,
@@ -291,6 +295,7 @@ def make_split_entry_raw_data(
         blob_hash=blob_hash,
         blob_size=blob_size,
         source_index=split_payload.source_index,
+        blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
     )
 
 
@@ -306,6 +311,7 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         )
         snapshot = snapshot_sqlite_to_blob(context.path, context.blob_store, heartbeat=heartbeat)
         blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
+        publication_id = snapshot.blob_publication_receipt_id
         detected_provider = Provider.HERMES
     else:
         blob_hash, blob_size = stream_path_to_blob(
@@ -321,12 +327,16 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             context.provider_hint,
             truncated_tail_ok=blob_size > len(prefix),
         )
+        from polylogue.storage.blob_publication import publication_receipt_id
+
+        publication_id = publication_receipt_id(context.blob_store, blob_hash)
     observe_acquisition(
         context.observation_callback,
         phase="source-file-streamed",
         source_path=str(context.path),
         provider_hint=detected_provider,
         blob_size=blob_size,
+        blob_publication_receipt_id=publication_id,
     )
     return raw_data_record(
         source_path=str(original_source_path or context.path),
@@ -334,6 +344,7 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         provider_hint=detected_provider,
         blob_hash=blob_hash,
         blob_size=blob_size,
+        blob_publication_receipt_id=publication_id,
     )
 
 
@@ -351,12 +362,16 @@ def _stream_preserved_zip_entry(
             source_name=context.source.name,
             source_path=context.source_path,
         )
+    from polylogue.storage.blob_publication import publication_receipt_id
+
+    publication_id = publication_receipt_id(context.blob_store, blob_hash)
     observe_acquisition(
         context.observation_callback,
         phase="zip-entry-streamed",
         source_path=context.source_path,
         provider_hint=provider_hint,
         blob_size=blob_size,
+        blob_publication_receipt_id=publication_id,
     )
     return raw_data_record(
         source_path=context.source_path,
@@ -364,6 +379,7 @@ def _stream_preserved_zip_entry(
         provider_hint=provider_hint,
         blob_hash=blob_hash,
         blob_size=blob_size,
+        blob_publication_receipt_id=publication_id,
     )
 
 

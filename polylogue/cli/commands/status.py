@@ -218,7 +218,14 @@ def _archive_tier_files(root: Path) -> dict[str, Path]:
 
 
 _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
-    "source": ("raw_sessions", "blob_refs", "raw_artifacts", "raw_hook_events", "history_sidecars"),
+    "source": (
+        "raw_sessions",
+        "blob_refs",
+        "blob_publication_reservations",
+        "raw_artifacts",
+        "raw_hook_events",
+        "history_sidecars",
+    ),
     "index": (
         "sessions",
         "messages",

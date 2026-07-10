@@ -83,10 +83,12 @@ def _surface_detail(surfaces: list[str]) -> str:
 
 
 def count_orphaned_blobs_sync(conn: sqlite3.Connection, *, db_path: Path | str | None = None) -> int:
-    from polylogue.storage.blob_store import get_blob_store
+    from polylogue.storage.blob_store import BlobStore, get_blob_store
 
-    referenced_hashes, _surfaces = _referenced_blob_hashes(conn, db_path=Path(db_path) if db_path else None)
-    return get_blob_store().detect_orphans(referenced_hashes).orphan_count
+    resolved_db_path = Path(db_path) if db_path else None
+    referenced_hashes, _surfaces = _referenced_blob_hashes(conn, db_path=resolved_db_path)
+    store = BlobStore(resolved_db_path.parent / "blob") if resolved_db_path is not None else get_blob_store()
+    return store.detect_orphans(referenced_hashes).orphan_count
 
 
 def repair_orphaned_blobs_data(config: Config, dry_run: bool = False) -> BlobRepairOutcome:
@@ -102,16 +104,20 @@ def repair_orphaned_blobs_data(config: Config, dry_run: bool = False) -> BlobRep
     any production ingest path; see ``docs/internals.md`` "GC concurrency
     model".)
     """
-    from polylogue.paths import blob_store_root
     from polylogue.storage.blob_gc import run_blob_gc_report
 
     report = run_blob_gc_report(
         config.db_path,
-        blob_store_root(),
+        config.archive_root / "blob",
         max_batch=100_000,
         dry_run=dry_run,
     )
-    protected_detail = f"; skipped {report.skipped_referenced} referenced" if report.skipped_referenced else ""
+    protected_parts: list[str] = []
+    if report.skipped_referenced:
+        protected_parts.append(f"{report.skipped_referenced} referenced")
+    if report.skipped_reserved:
+        protected_parts.append(f"{report.skipped_reserved} reserved")
+    protected_detail = f"; skipped {', '.join(protected_parts)}" if protected_parts else ""
     if dry_run:
         return BlobRepairOutcome(
             report.would_delete_count,

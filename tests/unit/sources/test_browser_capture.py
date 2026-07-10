@@ -606,11 +606,8 @@ async def test_browser_capture_receiver_artifact_lands_in_archive(
 async def test_browser_capture_embedded_attachments_are_acquired_in_archive(
     workspace_env: dict[str, Path],
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     del workspace_env
-    blob_store = BlobStore(tmp_path / "blob")
-    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: blob_store)
     payload = _capture_payload()
     session_payload = payload["session"]
     assert isinstance(session_payload, dict)
@@ -636,6 +633,7 @@ async def test_browser_capture_embedded_attachments_are_acquired_in_archive(
     envelope = BrowserCaptureEnvelope.model_validate(payload)
     artifact = write_capture_envelope(envelope, spool_path=tmp_path / "browser-capture").path
     config = get_config()
+    blob_store = BlobStore(config.archive_root / "blob")
     config.sources = [Source(name="browser-capture", path=artifact)]
 
     async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:

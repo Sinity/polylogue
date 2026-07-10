@@ -25,7 +25,7 @@ from polylogue.maintenance.registry import MaintenanceOperationRegistry, Operati
 from polylogue.maintenance.replay import ReplayProgress, execute_replay, rebuild_index_from_source
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
-from polylogue.paths import archive_file_set_root_for_paths, archive_root, blob_store_root, db_path, render_root
+from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path, render_root
 from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_integrity import (
     BlobReferenceDebtClassificationReport,
@@ -37,6 +37,10 @@ from polylogue.storage.blob_integrity import (
     prune_orphan_blob_reference_debt,
     replace_raw_backed_blob_reference_debt_from_source,
     scan_attachment_acquisition_debt,
+)
+from polylogue.storage.blob_publication import (
+    abandon_blob_publication_receipts,
+    inspect_blob_publication_receipts,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
@@ -595,7 +599,7 @@ def _backup_plan_payload(root: Path) -> dict[str, Any]:
             }
         )
 
-    blob_root = blob_store_root()
+    blob_root = root / "blob"
     return {
         "ok": True,
         "mode": "backup_plan",
@@ -1789,7 +1793,7 @@ def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
     )
     result = run_blob_gc_report(
         config.db_path,
-        blob_store_root(),
+        config.archive_root / "blob",
         max_batch=max_batch,
         dry_run=not yes,
     )
@@ -1815,6 +1819,7 @@ def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
     click.echo(
         "Skipped:    "
         f"referenced={result.skipped_referenced:,} "
+        f"reserved={result.skipped_reserved:,} "
         f"missing={result.skipped_missing:,} "
         f"unlink_error={result.skipped_unlink_error:,}"
     )
@@ -1822,6 +1827,80 @@ def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
         click.echo(f"Reclaimed:  {result.reclaimed_bytes:,} byte(s)")
         if result.generation_id is not None:
             click.echo(f"Generation: {result.generation_id}")
+
+
+@maintenance_group.command("blob-publications")
+@click.option(
+    "--abandon",
+    "publication_ids",
+    multiple=True,
+    help="Publication receipt ID to abandon. Repeat for multiple receipts.",
+)
+@click.option("--yes", is_flag=True, help="Confirm abandonment of the selected unreferenced receipts.")
+@click.option(
+    "--output-format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+def blob_publications_command(publication_ids: tuple[str, ...], yes: bool, output_format: str) -> None:
+    """Inspect publication receipts or explicitly abandon selected debt."""
+    root = archive_root()
+    source_db = root / "source.db"
+    if publication_ids and not yes:
+        raise click.UsageError("--yes is required with --abandon")
+    abandonment = None
+    if publication_ids:
+        abandonment = abandon_blob_publication_receipts(
+            source_db,
+            root / "blob",
+            publication_ids,
+            confirmed=True,
+            index_db_path=root / "index.db",
+        )
+    receipts = inspect_blob_publication_receipts(
+        source_db,
+        root / "blob",
+        index_db_path=root / "index.db",
+    )
+    payload = {
+        "mode": "blob_publications",
+        "mutates": bool(publication_ids),
+        "abandonment": (
+            {
+                "abandoned": abandonment.abandoned,
+                "skipped_referenced": abandonment.skipped_referenced,
+                "missing_receipts": abandonment.missing_receipts,
+            }
+            if abandonment is not None
+            else None
+        ),
+        "receipts": [
+            {
+                "publication_id": item.publication_id,
+                "blob_hash": item.blob_hash,
+                "size_bytes": item.size_bytes,
+                "publisher_id": item.publisher_id,
+                "reserved_at_ms": item.reserved_at_ms,
+                "blob_present": item.blob_present,
+                "referenced": item.referenced,
+            }
+            for item in receipts
+        ],
+    }
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if abandonment is not None:
+        click.echo(
+            "Abandoned: "
+            f"{abandonment.abandoned} receipt(s); "
+            f"referenced={abandonment.skipped_referenced}, missing={abandonment.missing_receipts}"
+        )
+    click.echo(f"Publication receipts: {len(receipts)}")
+    for item in receipts:
+        state = "referenced" if item.referenced else "present" if item.blob_present else "missing"
+        click.echo(f"  {item.publication_id} {item.blob_hash} {item.size_bytes}B {state}")
 
 
 @maintenance_group.command("blob-reference-debt")
@@ -2437,6 +2516,7 @@ __all__ = [
     "blob_reference_prune_orphans_command",
     "blob_reference_recovery_plan_command",
     "blob_reference_replace_from_source_command",
+    "blob_publications_command",
     "gc_history_command",
     "maintenance_group",
     "plan_command",

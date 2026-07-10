@@ -523,7 +523,13 @@ def test_archive_tiers_database_split_keeps_source_index_embeddings_user_and_ops
     user = tier_tables[ArchiveTier.USER]
     ops = tier_tables[ArchiveTier.OPS]
 
-    for expected in ("raw_sessions", "blob_refs", "raw_artifacts", "otlp_spans"):
+    for expected in (
+        "raw_sessions",
+        "blob_refs",
+        "blob_publication_reservations",
+        "raw_artifacts",
+        "otlp_spans",
+    ):
         assert expected in source
         assert expected not in index
     for expected in ("sessions", "messages", "blocks", "session_agent_policies", "attachment_native_ids"):
