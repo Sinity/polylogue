@@ -207,7 +207,9 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
 
     repeat = await parse_sources_archive(archive_root, sources)
 
-    assert sorted(repeat.processed_ids) == [row[0] for row in EXPECTED_DEMO_SESSIONS]
+    assert repeat.processed_ids == set()
+    assert repeat.changed_session_ids == ()
+    assert repeat.counts["skipped_sessions"] == len(EXPECTED_DEMO_SESSIONS)
     assert _session_rows(archive_root) == EXPECTED_DEMO_SESSIONS
     assert {
         "raw_sessions": _row_count(archive_root / "source.db", "raw_sessions"),
