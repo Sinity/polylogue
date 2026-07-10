@@ -347,7 +347,168 @@
     return null;
   }
 
-  function buildNativeEnvelope(payload) {
+  // --- Assistant-produced asset acquisition (sandbox + file-service) ------
+  //
+  // Deliverable files surface only as expiring links; the conversation JSON
+  // never carries bytes. Fetch them through the page bridge (authenticated
+  // session) at capture time and ship them as envelope attachments. Failures
+  // are normal (links expire with the sandbox container) and must never fail
+  // the capture itself — per-asset outcomes are disclosed in provider_meta.
+  const assetFetchRequestMessage = "polylogue.chatgpt.assetFetchRequest";
+  const assetFetchResponseMessage = "polylogue.chatgpt.assetFetchResponse";
+  const assetFetchTimeoutMs = 35000;
+  const assetMaxBytesPerFile = 25 * 1024 * 1024;
+  const assetMaxBytesTotal = 75 * 1024 * 1024;
+  const assetResponses = new Map();
+  const sandboxLinkPattern = /sandbox:(\/mnt\/data\/[^\s)\]"'>]+)/g;
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.origin !== window.location.origin) return;
+    const data = event.data || {};
+    if (data.type !== assetFetchResponseMessage || !data.requestId) return;
+    const pending = assetResponses.get(data.requestId);
+    if (!pending) return;
+    assetResponses.delete(data.requestId);
+    pending.resolve({ asset: data.asset || null, error: data.error || null });
+  });
+
+  function requestAssetFromPage(request) {
+    const requestId = `polylogue-asset-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const responsePromise = new Promise((resolve) => {
+      const timeout = window.setTimeout(() => {
+        assetResponses.delete(requestId);
+        resolve({ asset: null, error: "timeout" });
+      }, assetFetchTimeoutMs);
+      assetResponses.set(requestId, {
+        resolve(value) {
+          window.clearTimeout(timeout);
+          resolve(value);
+        }
+      });
+    });
+    window.postMessage({ type: assetFetchRequestMessage, requestId, request }, window.location.origin);
+    return responsePromise;
+  }
+
+  function sandboxPathsFromText(text) {
+    const paths = [];
+    for (const match of String(text).matchAll(sandboxLinkPattern)) {
+      const path = match[1].replace(/[.,;:!?*`]+$/, "");
+      if (path !== "/mnt/data/" && !paths.includes(path)) paths.push(path);
+    }
+    return paths;
+  }
+
+  function collectAssetDescriptors(payload) {
+    const mapping = payload && payload.mapping;
+    if (!mapping || typeof mapping !== "object") return [];
+    const descriptors = [];
+    const seen = new Set();
+    const add = (descriptor) => {
+      if (descriptor.provider_attachment_id && !seen.has(descriptor.provider_attachment_id)) {
+        seen.add(descriptor.provider_attachment_id);
+        descriptors.push(descriptor);
+      }
+    };
+    for (const [nodeId, node] of Object.entries(mapping)) {
+      const message = node && node.message;
+      if (!message) continue;
+      const messageId = String(message.id || node.id || nodeId);
+      const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
+      for (const attachment of Array.isArray(metadata.attachments) ? metadata.attachments : []) {
+        if (attachment && attachment.id) {
+          add({
+            kind: "file",
+            fileId: String(attachment.id),
+            provider_attachment_id: String(attachment.id),
+            message_provider_id: messageId,
+            name: attachment.name ? String(attachment.name) : null,
+            mime_type: attachment.mime_type ? String(attachment.mime_type) : null
+          });
+        }
+      }
+      const content = message.content;
+      const parts = content && Array.isArray(content.parts) ? content.parts : [];
+      const role = message.author && message.author.role;
+      for (const part of parts) {
+        if (part && typeof part === "object" && typeof part.asset_pointer === "string" && part.asset_pointer) {
+          const pointer = part.asset_pointer;
+          const pointerPath = pointer.includes("://") ? pointer.split("://").at(-1) : pointer;
+          const fileIdMatch = pointerPath.match(/file[-_][A-Za-z0-9]+/);
+          if (fileIdMatch) {
+            add({
+              kind: "file",
+              fileId: fileIdMatch[0],
+              provider_attachment_id: pointer,
+              message_provider_id: messageId,
+              name: null,
+              mime_type: null
+            });
+          }
+        }
+        if (typeof part === "string" && role === "assistant") {
+          for (const path of sandboxPathsFromText(part)) {
+            add({
+              kind: "sandbox",
+              sandboxPath: path,
+              provider_attachment_id: `sandbox:${messageId}:${path}`,
+              message_provider_id: messageId,
+              name: path.replace(/\/+$/, "").split("/").at(-1) || null,
+              mime_type: null
+            });
+          }
+        }
+      }
+    }
+    return descriptors;
+  }
+
+  async function acquireAssets(payload, conversationId) {
+    const descriptors = collectAssetDescriptors(payload);
+    const outcome = { attempted: descriptors.length, acquired: 0, failed: [], skipped_over_budget: 0 };
+    const attachments = [];
+    let totalBytes = 0;
+    for (const descriptor of descriptors) {
+      if (totalBytes >= assetMaxBytesTotal) {
+        outcome.skipped_over_budget += 1;
+        continue;
+      }
+      const request = {
+        kind: descriptor.kind,
+        conversationId,
+        messageId: descriptor.message_provider_id,
+        sandboxPath: descriptor.sandboxPath || null,
+        fileId: descriptor.fileId || null,
+        maxBytes: Math.min(assetMaxBytesPerFile, assetMaxBytesTotal - totalBytes)
+      };
+      const result = await requestAssetFromPage(request);
+      if (result.asset && result.asset.base64) {
+        totalBytes += result.asset.size_bytes || 0;
+        outcome.acquired += 1;
+        attachments.push({
+          provider_attachment_id: descriptor.provider_attachment_id,
+          message_provider_id: descriptor.message_provider_id,
+          name: result.asset.name || descriptor.name,
+          mime_type: result.asset.mime_type || descriptor.mime_type,
+          size_bytes: result.asset.size_bytes || null,
+          inline_base64: result.asset.base64,
+          provider_meta: {
+            capture_source: "chatgpt_page_asset_fetch",
+            asset_kind: descriptor.kind,
+            sandbox_path: descriptor.sandboxPath || null
+          }
+        });
+      } else {
+        outcome.failed.push({
+          provider_attachment_id: descriptor.provider_attachment_id,
+          error: result.error || "unknown"
+        });
+      }
+    }
+    return { attachments, outcome };
+  }
+
+  function buildNativeEnvelope(payload, assetAcquisition = null) {
     const turns = collectNativeTurns(payload);
     if (!turns.length) return null;
     return window.polylogueCapture.buildEnvelope({
@@ -365,15 +526,31 @@
         current_node: payload.current_node || null,
         mapping_node_count: payload.mapping ? Object.keys(payload.mapping).length : 0,
         is_temporary: payload.is_temporary === true,
-        session_kind: payload.is_temporary === true ? "temporary" : null
+        session_kind: payload.is_temporary === true ? "temporary" : null,
+        asset_acquisition: assetAcquisition ? assetAcquisition.outcome : null
       },
-      rawProviderPayload: payload
+      rawProviderPayload: payload,
+      attachments: assetAcquisition ? assetAcquisition.attachments : []
     });
   }
 
   async function capture() {
     const nativePayload = latestNativePayload() || (await fetchNativePayloadOnDemand());
-    const envelope = nativePayload ? buildNativeEnvelope(nativePayload) : null;
+    let assetAcquisition = null;
+    if (nativePayload) {
+      try {
+        assetAcquisition = await acquireAssets(
+          nativePayload,
+          String(nativePayload.conversation_id || nativePayload.id || conversationIdFromUrl())
+        );
+      } catch (error) {
+        assetAcquisition = {
+          attachments: [],
+          outcome: { attempted: 0, acquired: 0, failed: [{ provider_attachment_id: null, error: String(error && error.message ? error.message : error) }], skipped_over_budget: 0 }
+        };
+      }
+    }
+    const envelope = nativePayload ? buildNativeEnvelope(nativePayload, assetAcquisition) : null;
     const fallbackEnvelope = () => {
       const turns = collectTurns();
       if (!turns.length) return null;

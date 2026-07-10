@@ -1270,3 +1270,78 @@ def test_model_editable_context_memory_payload_is_kept_and_empty_is_dropped() ->
     assert messages[0].message_type is MessageType.CONTEXT
     assert messages[0].text is not None
     assert "Prefers rigorous verification" in messages[0].text
+
+
+def test_file_citation_nested_metadata_is_surfaced() -> None:
+    mapping = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "assistant"},
+                "content": {"parts": ["Cited claim."]},
+                "metadata": {
+                    "citations": [
+                        {
+                            "citation_format_type": "berry_file_search",
+                            "start_ix": 0,
+                            "end_ix": 12,
+                            "metadata": {
+                                "id": "file_00000000b074",
+                                "name": "06-strategy-falsification.md",
+                                "source": "my_files",
+                                "type": "file",
+                                "extra": {
+                                    "cited_message_id": "bd889688",
+                                    "library_file_id": "libfile_9eba",
+                                    "source_url": None,
+                                },
+                            },
+                        }
+                    ]
+                },
+            },
+        },
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    constructs = [c for b in messages[0].blocks for c in b.web_constructs if c.provider_key == "citations"]
+    assert len(constructs) == 1
+    citation = constructs[0]
+    # Source identity lives one level down (metadata) and two levels down
+    # (metadata.extra); losing it reduces a file citation to a bare span.
+    assert citation.title == "06-strategy-falsification.md"
+    assert citation.source_id == "file_00000000b074"
+    assert citation.start_index == 0
+    assert citation.end_index == 12
+
+
+def test_inline_citation_marker_tokens_become_anchored_constructs() -> None:
+    marked = "Claim text. \ue200filecite\ue202turn3file14\ue202L180-L293\ue201 More."
+    mapping = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "assistant"},
+                "content": {"parts": [marked]},
+                "metadata": {},
+            },
+        },
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    message = messages[0]
+    assert message.text is not None
+    assert "\ue200" not in message.text
+    markers = [c for b in message.blocks for c in b.web_constructs if c.provider_key == "inline_citation_marker"]
+    assert len(markers) == 1
+    marker = markers[0]
+    # Line ranges often exist ONLY in the marker tokens (metadata line_range
+    # is frequently null) — the construct must retain them.
+    assert marker.text == "filecite turn3file14 L180-L293"
+    # Anchored in ORIGINAL-text coordinates, matching citation start_ix/end_ix.
+    assert marker.start_index == marked.index("\ue200")
+    assert marker.end_index == marked.index("\ue201") + 1

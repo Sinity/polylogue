@@ -72,7 +72,8 @@
     createdAt = null,
     updatedAt = null,
     providerMeta = {},
-    rawProviderPayload = null
+    rawProviderPayload = null,
+    attachments = []
   }) {
     const sourceUrl = window.location.href;
     const urlSessionId = providerSessionId || sessionIdFromUrl(provider, sourceUrl);
@@ -132,7 +133,8 @@
           parent_turn_id: turn.parent_turn_id || null,
           attachments: Array.isArray(turn.attachments) ? turn.attachments : [],
           provider_meta: turn.provider_meta || {}
-        }))
+        })),
+        attachments: Array.isArray(attachments) ? attachments : []
       }
     };
     if (rawProviderPayload && typeof rawProviderPayload === "object") {

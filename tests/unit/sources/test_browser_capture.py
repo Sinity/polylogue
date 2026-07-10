@@ -849,3 +849,88 @@ async def test_browser_capture_raw_payload_coalesces_with_claude_ai_export(
     assert rows[0]["native_id"] == "claude-conv-123"
     assert rows[0]["title"] == "Claude browser title"
     assert rows[0]["message_count"] == 2
+
+
+def test_native_payload_delegation_keeps_envelope_acquired_assets() -> None:
+    """Extension-acquired bytes must survive the native-payload parse path.
+
+    The session structure comes from raw_provider_payload, but the envelope
+    carries attachments the extension fetched through the authenticated page
+    (sandbox deliverables). Regression: these were silently dropped.
+    """
+
+    import base64 as _b64
+
+    payload = _capture_payload()
+    payload["session"]["attachments"] = [  # type: ignore[index]
+        {
+            "provider_attachment_id": "sandbox:native-a1:/mnt/data/kit.zip",
+            "message_provider_id": "native-a1",
+            "name": "kit.zip",
+            "mime_type": "application/zip",
+            "inline_base64": _b64.b64encode(b"PK\x03\x04demo-bytes").decode("ascii"),
+            "provider_meta": {"capture_source": "chatgpt_page_asset_fetch", "asset_kind": "sandbox"},
+        }
+    ]
+    payload["raw_provider_payload"] = {
+        "id": "native-conv",
+        "title": "Native ChatGPT title",
+        "mapping": {
+            "assistant-node": {
+                "id": "assistant-node",
+                "parent": None,
+                "children": [],
+                "message": {
+                    "id": "native-a1",
+                    "author": {"role": "assistant"},
+                    "create_time": 1781442880.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Kit ready: [zip](sandbox:/mnt/data/kit.zip)"],
+                    },
+                    "metadata": {},
+                },
+            },
+        },
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    assert len(parsed) == 1
+    session = parsed[0]
+    by_id = {attachment.provider_attachment_id: attachment for attachment in session.attachments}
+    acquired = by_id["sandbox:native-a1:/mnt/data/kit.zip"]
+    assert acquired.inline_bytes == b"PK\x03\x04demo-bytes"
+    assert acquired.name == "kit.zip"
+    # The parser-derived sandbox row and the envelope row share one id: the
+    # envelope's byte-carrying version wins while keeping the parser's kind.
+    assert acquired.attachment_kind == "sandbox_file"
+    assert len([a for a in session.attachments if a.provider_attachment_id.startswith("sandbox:")]) == 1
+
+
+def test_native_payload_delegation_without_envelope_attachments_is_unchanged() -> None:
+    payload = _capture_payload()
+    payload["session"]["attachments"] = []  # type: ignore[index]
+    for turn in payload["session"]["turns"]:  # type: ignore[index]
+        turn.pop("attachments", None)
+    payload["raw_provider_payload"] = {
+        "id": "native-conv",
+        "mapping": {
+            "assistant-node": {
+                "id": "assistant-node",
+                "parent": None,
+                "children": [],
+                "message": {
+                    "id": "native-a1",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "text", "parts": ["plain answer"]},
+                    "metadata": {},
+                },
+            },
+        },
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    assert len(parsed) == 1
+    assert parsed[0].attachments == []

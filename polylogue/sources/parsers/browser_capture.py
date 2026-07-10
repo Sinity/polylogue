@@ -145,6 +145,44 @@ def _browser_capture_parsed_attachment(
     )
 
 
+def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
+    """Fold envelope attachments into a native-payload-delegated session.
+
+    When a capture carries a provider-native payload the session structure is
+    parsed from that payload, but the envelope may still carry attachments the
+    extension acquired itself (e.g. sandbox/file-service bytes fetched through
+    the authenticated page). Without this merge those bytes are silently
+    dropped. Envelope rows win on id collision when they carry inline bytes —
+    the native payload never does.
+    """
+
+    envelope_attachments = [
+        _browser_capture_parsed_attachment(attachment, message_provider_id=attachment.message_provider_id)
+        for attachment in (
+            *(a for turn in envelope.session.turns for a in turn.attachments),
+            *envelope.session.attachments,
+        )
+    ]
+    if not envelope_attachments:
+        return parsed
+    merged: dict[str, ParsedAttachment] = {a.provider_attachment_id: a for a in parsed.attachments}
+    for candidate in envelope_attachments:
+        existing = merged.get(candidate.provider_attachment_id)
+        if existing is None:
+            merged[candidate.provider_attachment_id] = candidate
+        elif candidate.inline_bytes is not None:
+            merged[candidate.provider_attachment_id] = candidate.model_copy(
+                update={
+                    "name": candidate.name or existing.name,
+                    "mime_type": candidate.mime_type or existing.mime_type,
+                    "message_provider_id": candidate.message_provider_id or existing.message_provider_id,
+                    "source_url": candidate.source_url or existing.source_url,
+                    "attachment_kind": existing.attachment_kind,
+                }
+            )
+    return parsed.model_copy(update={"attachments": list(merged.values())})
+
+
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)
@@ -155,7 +193,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
         return _apply_browser_capture_session_kind(
-            parse_chatgpt(raw_provider_payload, provider_session_id),
+            _merge_envelope_attachments(parse_chatgpt(raw_provider_payload, provider_session_id), envelope),
             envelope,
             provider_session_id,
             has_native_payload=True,
@@ -164,7 +202,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         from polylogue.sources.parsers.claude.ai_parser import parse_ai as parse_claude_ai
 
         return _apply_browser_capture_session_kind(
-            parse_claude_ai(raw_provider_payload, provider_session_id),
+            _merge_envelope_attachments(parse_claude_ai(raw_provider_payload, provider_session_id), envelope),
             envelope,
             provider_session_id,
             has_native_payload=True,

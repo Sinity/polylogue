@@ -104,6 +104,95 @@
     }
   });
 
+  // Asset acquisition: fetch assistant-produced files (Code Interpreter
+  // sandbox deliverables, file-service uploads/outputs) through the page's
+  // own authenticated session. Both endpoints return a JSON envelope with a
+  // signed download_url; the bytes are then fetched from that URL directly.
+  const assetFetchRequestMessage = "polylogue.chatgpt.assetFetchRequest";
+  const assetFetchResponseMessage = "polylogue.chatgpt.assetFetchResponse";
+  const assetFetchTimeoutMs = 30000;
+
+  function assetTimeoutError(label) {
+    const error = new Error(`${label}_timeout_after_${assetFetchTimeoutMs}ms`);
+    error.name = "PolylogueTimeoutError";
+    return error;
+  }
+
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + chunkSize));
+    }
+    return window.btoa(binary);
+  }
+
+  async function fetchWithAbort(url, options, label) {
+    const controller = new globalThis.AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(assetTimeoutError(label)), assetFetchTimeoutMs);
+    try {
+      return await originalFetch.call(window, url, { ...options, signal: controller.signal });
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }
+
+  async function fetchAssetBytes(request) {
+    let metaUrl;
+    if (request.kind === "sandbox") {
+      metaUrl = new URL(
+        `/backend-api/conversation/${encodeURIComponent(String(request.conversationId))}/interpreter/download`,
+        currentOrigin
+      );
+      metaUrl.searchParams.set("message_id", String(request.messageId));
+      metaUrl.searchParams.set("sandbox_path", String(request.sandboxPath));
+    } else if (request.kind === "file") {
+      metaUrl = new URL(`/backend-api/files/${encodeURIComponent(String(request.fileId))}/download`, currentOrigin);
+    } else {
+      throw new Error(`unsupported_asset_kind_${request.kind}`);
+    }
+    const metaResponse = await fetchWithAbort(
+      metaUrl.href,
+      { credentials: "include", cache: "no-store", headers: authHeaders() },
+      "asset_meta_fetch"
+    );
+    if (!metaResponse.ok) throw new Error(`asset_meta_status_${metaResponse.status}`);
+    const meta = await metaResponse.json();
+    const downloadUrl = meta && (meta.download_url || meta.downloadUrl || meta.url);
+    if (typeof downloadUrl !== "string" || !downloadUrl) throw new Error("asset_meta_missing_download_url");
+    const fileResponse = await fetchWithAbort(downloadUrl, { credentials: "omit", cache: "no-store" }, "asset_bytes_fetch");
+    if (!fileResponse.ok) throw new Error(`asset_bytes_status_${fileResponse.status}`);
+    const buffer = await fileResponse.arrayBuffer();
+    const maxBytes = Number(request.maxBytes) > 0 ? Number(request.maxBytes) : 25 * 1024 * 1024;
+    if (buffer.byteLength > maxBytes) throw new Error(`asset_too_large_${buffer.byteLength}`);
+    return {
+      base64: arrayBufferToBase64(buffer),
+      size_bytes: buffer.byteLength,
+      mime_type: fileResponse.headers.get("content-type") || null,
+      name: (meta && (meta.file_name || meta.fileName)) || null
+    };
+  }
+
+  window.addEventListener("message", async (event) => {
+    if (event.source !== window || event.origin !== currentOrigin) return;
+    const data = event.data || {};
+    if (data.type !== assetFetchRequestMessage || !data.requestId || !data.request) return;
+    try {
+      const asset = await fetchAssetBytes(data.request);
+      window.postMessage({ type: assetFetchResponseMessage, requestId: data.requestId, asset }, currentOrigin);
+    } catch (error) {
+      window.postMessage(
+        {
+          type: assetFetchResponseMessage,
+          requestId: data.requestId,
+          error: String(error && error.message ? error.message : error)
+        },
+        currentOrigin
+      );
+    }
+  });
+
   window.fetch = async function polylogueFetch(input) {
     const response = await originalFetch.apply(this, arguments);
     try {
