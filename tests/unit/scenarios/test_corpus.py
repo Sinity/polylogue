@@ -266,6 +266,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         "subagent_run_rows",
         "unfinished_terminal_state_rows",
         "error_terminal_state_rows",
+        "compaction_omits_failed_attempt",
     }
     assert "codex/terminal-error.jsonl" in lineage_family.source_paths
     assert tuple(spec.style for spec in specs) == (

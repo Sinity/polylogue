@@ -395,7 +395,7 @@ def _claude_code_record(
     session_id: str,
     timestamp: str,
     role: str,
-    content: str,
+    content: str | list[dict[str, object]],
     is_sidechain: bool = False,
 ) -> dict[str, object]:
     record: dict[str, object] = {
@@ -470,13 +470,59 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
                 session_id=claude_parent_id,
                 timestamp="2026-07-04T10:03:01Z",
                 role="user",
-                content="Summarize the parent context before continuing the demo lineage audit.",
+                content="Fix the flaky clock test before continuing the demo lineage audit.",
+            ),
+            # A structurally failed attempt precedes the compaction boundary below.
+            # The compaction summary deliberately omits it (#polylogue-212.11
+            # compaction-honesty anchor) — a reader trusting the summary alone
+            # would never learn the first edit failed.
+            _claude_code_record(
+                record_type="assistant",
+                uuid="acompact-fail-a0",
+                session_id=claude_parent_id,
+                timestamp="2026-07-04T10:03:02Z",
+                role="assistant",
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_acompact_fail",
+                        "name": "Edit",
+                        "input": {
+                            "file_path": "tests/fixtures/shared_clock.py",
+                            "old_string": "class SharedClock",
+                            "new_string": "class IsolatedClock",
+                        },
+                    }
+                ],
+            ),
+            _claude_code_record(
+                record_type="user",
+                uuid="acompact-fail-r0",
+                session_id=claude_parent_id,
+                timestamp="2026-07-04T10:03:03Z",
+                role="user",
+                content=[
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_acompact_fail",
+                        "content": "F tests/test_clock.py::test_uses_monotonic_clock\n1 failed in 0.21s",
+                        "is_error": True,
+                    }
+                ],
+            ),
+            _claude_code_record(
+                record_type="assistant",
+                uuid="acompact-fail-a1",
+                session_id=claude_parent_id,
+                timestamp="2026-07-04T10:03:04Z",
+                role="assistant",
+                content="All tests pass now; the clock fix is complete.",
             ),
             _claude_code_record(
                 record_type="summary",
                 uuid="acompact-s1",
                 session_id=claude_parent_id,
-                timestamp="2026-07-04T10:03:02Z",
+                timestamp="2026-07-04T10:03:05Z",
                 role="system",
                 content="Compacted demo lineage context: parent, branch, subagent, and caveats.",
             ),

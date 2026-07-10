@@ -15,14 +15,14 @@ This datasheet is generated from the deterministic demo family registry, the dec
 
 | Fact | Current |
 | --- | ---: |
-| Sessions | 13 |
-| Messages | 55 indexed |
-| Blocks | 99 |
-| Session profiles | 13 |
+| Sessions | 15 |
+| Messages | 62 indexed |
+| Blocks | 106 |
+| Session profiles | 15 |
 | Origins | aistudio-drive, chatgpt-export, claude-ai-export, claude-code-session, codex-session |
-| Run rows | 14 |
-| Observed-event rows | 45 |
-| Context-snapshot rows | 14 |
+| Run rows | 16 |
+| Observed-event rows | 49 |
+| Context-snapshot rows | 16 |
 
 ## Declared Source Families
 
@@ -31,11 +31,12 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | `chatgpt-dialogue` | `chatgpt` | `chatgpt/demo-00.json` | `multi_origin_sessions`<br>`session_profiles` | `true` |
 | `claude-code-tools` | `claude-code` | `claude-code/demo-00.jsonl` | `tool_use_blocks`<br>`tool_result_blocks`<br>`failed_tool_results`<br>`provider_usage_messages`<br>`run_projection_rows`<br>`observed_event_rows`<br>`context_snapshot_rows` | `true` |
 | `claude-ai-temporary` | `claude-ai` | `claude-ai/temporary-demo.json` | `temporary_session_rows`<br>`token_budget_web_constructs` | `false` |
-| `browser-capture-gap` | `browser-capture` | `browser-capture/chatgpt-raw-provider.json`<br>`browser-capture/chatgpt-dom-fallback.json` | `capture_gap_events`<br>`browser_capture_raw_variants`<br>`browser_capture_coalesced_session` | `false` |
+| `browser-capture-gap` | `browser-capture` | `browser-capture/chatgpt-raw-provider.json`<br>`browser-capture/chatgpt-dom-fallback.json` | `capture_gap_events`<br>`browser_capture_raw_variants`<br>`browser_capture_coalesced_session`<br>`source_outage_interval_events` | `false` |
+| `cross-material-duplicate` | `chatgpt` | `chatgpt/duplicate-source-export.json`<br>`browser-capture/duplicate-capture.json` | `ambiguous_cross_material_duplicate` | `false` |
 | `codex-tools` | `codex` | `codex/demo-00.jsonl` | `tool_use_blocks`<br>`tool_result_blocks`<br>`failed_tool_results` | `true` |
 | `evidence-lab-receipts` | `codex` | `codex/receipts.jsonl`<br>`codex/anti-grep-control.jsonl` | `receipts_failed_test_action`<br>`receipts_successful_recovery_action`<br>`receipts_conflicting_claim`<br>`anti_grep_control` | `false` |
 | `gemini-attachments` | `gemini` | `gemini/demo-00.json` | `attachment_rows`<br>`acquired_attachment_rows` | `true` |
-| `agent-lineage-matrix` | `mixed-agent` | `codex/lineage-parent.jsonl`<br>`codex/lineage-fork.jsonl`<br>`codex/lineage-subagent.jsonl`<br>`codex/terminal-error.jsonl`<br>`claude-code/agent-acompact-demo.jsonl`<br>`claude-code/lineage-sidechain.jsonl` | `session_link_rows`<br>`generic_branch_links`<br>`prefix_sharing_links`<br>`continuation_links`<br>`subagent_links`<br>`sidechain_sessions`<br>`compaction_events`<br>`subagent_context_snapshots`<br>`subagent_run_rows`<br>`unfinished_terminal_state_rows`<br>`error_terminal_state_rows` | `false` |
+| `agent-lineage-matrix` | `mixed-agent` | `codex/lineage-parent.jsonl`<br>`codex/lineage-fork.jsonl`<br>`codex/lineage-subagent.jsonl`<br>`codex/terminal-error.jsonl`<br>`claude-code/agent-acompact-demo.jsonl`<br>`claude-code/lineage-sidechain.jsonl` | `session_link_rows`<br>`generic_branch_links`<br>`prefix_sharing_links`<br>`continuation_links`<br>`subagent_links`<br>`sidechain_sessions`<br>`compaction_events`<br>`subagent_context_snapshots`<br>`subagent_run_rows`<br>`unfinished_terminal_state_rows`<br>`error_terminal_state_rows`<br>`compaction_omits_failed_attempt` | `false` |
 | `embedding-lane-prose` | `derived-embedding` | `claude-code/demo-00.jsonl`<br>`embeddings.db` | `embedding_candidate_prose_messages`<br>`synthetic_message_embedding_rows`<br>`embedding_status_rows` | `false` |
 
 ## Declared Construct Coverage
@@ -43,10 +44,10 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Construct | Observed | Minimum | Status |
 | --- | ---: | ---: | --- |
 | Multi-origin sessions (`multi_origin_sessions`) | 5 | 3 | `ok` |
-| Session profiles (`session_profiles`) | 13 | 3 | `ok` |
-| Tool-use blocks (`tool_use_blocks`) | 23 | 1 | `ok` |
-| Tool-result blocks (`tool_result_blocks`) | 25 | 1 | `ok` |
-| Failed tool results (`failed_tool_results`) | 6 | 1 | `ok` |
+| Session profiles (`session_profiles`) | 15 | 3 | `ok` |
+| Tool-use blocks (`tool_use_blocks`) | 24 | 1 | `ok` |
+| Tool-result blocks (`tool_result_blocks`) | 26 | 1 | `ok` |
+| Failed tool results (`failed_tool_results`) | 7 | 1 | `ok` |
 | Provider usage messages (`provider_usage_messages`) | 7 | 1 | `ok` |
 | Attachment rows (`attachment_rows`) | 1 | 1 | `ok` |
 | Acquired attachment rows (`acquired_attachment_rows`) | 1 | 1 | `ok` |
@@ -55,6 +56,9 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Capture-gap events (`capture_gap_events`) | 1 | 1 | `ok` |
 | Browser-capture raw variants (`browser_capture_raw_variants`) | 3 | 3 | `ok` |
 | Browser-capture coalesced session (`browser_capture_coalesced_session`) | 1 | 1 | `ok` |
+| Source-outage interval events (`source_outage_interval_events`) | 1 | 1 | `ok` |
+| Ambiguous cross-material duplicate (`ambiguous_cross_material_duplicate`) | 2 | 1 | `ok` |
+| Compaction omits a failed attempt (`compaction_omits_failed_attempt`) | 1 | 1 | `ok` |
 | Session-link rows (`session_link_rows`) | 3 | 1 | `ok` |
 | Generic branch links (`generic_branch_links`) | 1 | 1 | `ok` |
 | Prefix-sharing lineage links (`prefix_sharing_links`) | 1 | 1 | `ok` |
@@ -62,18 +66,18 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Subagent links (`subagent_links`) | 1 | 1 | `ok` |
 | Sidechain sessions (`sidechain_sessions`) | 1 | 1 | `ok` |
 | Compaction events (`compaction_events`) | 1 | 1 | `ok` |
-| Run projection rows (`run_projection_rows`) | 14 | 1 | `ok` |
-| Observed-event rows (`observed_event_rows`) | 45 | 1 | `ok` |
-| Context snapshot rows (`context_snapshot_rows`) | 14 | 1 | `ok` |
+| Run projection rows (`run_projection_rows`) | 16 | 1 | `ok` |
+| Observed-event rows (`observed_event_rows`) | 49 | 1 | `ok` |
+| Context snapshot rows (`context_snapshot_rows`) | 16 | 1 | `ok` |
 | Subagent context snapshots (`subagent_context_snapshots`) | 1 | 1 | `ok` |
 | Subagent run rows (`subagent_run_rows`) | 1 | 1 | `ok` |
-| Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 3 | 1 | `ok` |
+| Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 5 | 1 | `ok` |
 | Error terminal-state rows (`error_terminal_state_rows`) | 2 | 1 | `ok` |
 | Receipts failed test action (`receipts_failed_test_action`) | 1 | 1 | `ok` |
 | Receipts successful recovery action (`receipts_successful_recovery_action`) | 1 | 1 | `ok` |
 | Receipts conflicting claim (`receipts_conflicting_claim`) | 1 | 1 | `ok` |
 | Anti-grep negative control (`anti_grep_control`) | 1 | 1 | `ok` |
-| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 31 | 1 | `ok` |
+| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 36 | 1 | `ok` |
 | Synthetic message embedding rows (`synthetic_message_embedding_rows`) | 2 | 1 | `ok` |
 | Embedding status rows (`embedding_status_rows`) | 1 | 1 | `ok` |
 

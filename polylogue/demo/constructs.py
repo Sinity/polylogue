@@ -185,6 +185,31 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         """,
     ),
     DemoConstruct(
+        construct_id="compaction_omits_failed_attempt",
+        label="Compaction omits a failed attempt",
+        description=(
+            "A structurally failed tool result precedes a compaction boundary whose summary text "
+            "omits any mention of the failure, so compaction-honesty demos must diff full session "
+            "evidence against the summary rather than trusting the summary alone."
+        ),
+        sql="""
+            SELECT CASE WHEN
+                EXISTS (
+                    SELECT 1 FROM actions
+                    WHERE session_id = 'claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo'
+                      AND is_error = 1
+                )
+                AND EXISTS (
+                    SELECT 1 FROM session_events
+                    WHERE session_id = 'claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo'
+                      AND event_type = 'compaction'
+                      AND LOWER(summary) NOT LIKE '%fail%'
+                      AND LOWER(summary) NOT LIKE '%error%'
+                )
+            THEN 1 ELSE 0 END
+        """,
+    ),
+    DemoConstruct(
         construct_id="session_link_rows",
         label="Session-link rows",
         description="At least one parser-declared parent relationship is persisted.",

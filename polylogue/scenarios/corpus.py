@@ -279,10 +279,13 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "subagent_run_rows",
             "unfinished_terminal_state_rows",
             "error_terminal_state_rows",
+            "compaction_omits_failed_attempt",
         ),
         description=(
             "Explicit parent, prefix-sharing branch, spawned subagent, sidechain, compaction, and "
-            "structural unfinished/error terminal-state source files."
+            "structural unfinished/error terminal-state source files. The compaction fixture also "
+            "precedes its summary with a structurally failed tool result that the summary text omits, "
+            "proving compaction honesty must be checked against full session evidence."
         ),
         source_paths=(
             "codex/lineage-parent.jsonl",
