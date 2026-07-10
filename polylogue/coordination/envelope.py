@@ -51,7 +51,7 @@ _CHANGED_PATH_LIMIT = 40
 # Leave headroom for the MCP brief's fixed instructions while keeping the
 # complete default response below the bead's 8 KiB transport ceiling.
 _COMPACT_BYTE_BUDGET = 7_600
-_PROCESS_COMMAND = ("ps", "-eo", "pid=,ppid=,comm=,cgroup=,args=")
+_PROCESS_COMMAND = ("ps", "ww", "-eo", "pid=,ppid=,comm=,cgroup:200=,args=")
 _AGENT_NAMES = ("codex", "claude", "gemini")
 _SYSTEM_RESOURCE_NAMES = frozenset(
     {

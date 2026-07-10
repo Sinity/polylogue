@@ -213,7 +213,7 @@ class FakeRunner:
                 json.dumps(self.merge_slot or {"id": "polylogue-merge-slot", "available": False, "error": "not found"}),
                 "",
             )
-        if key == ("ps", "-eo", "pid=,ppid=,comm=,cgroup=,args="):
+        if key == ("ps", "ww", "-eo", "pid=,ppid=,comm=,cgroup:200=,args="):
             return CommandResult(
                 key,
                 0,
