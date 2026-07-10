@@ -479,6 +479,19 @@ def bind_source_raw_revision(conn: sqlite3.Connection, raw_id: str, revision: Ra
             ),
         )
         if cursor.rowcount != 1:
+            existing = conn.execute(
+                """
+                SELECT logical_source_key, revision_kind, source_revision
+                FROM raw_sessions WHERE raw_id = ?
+                """,
+                (raw_id,),
+            ).fetchone()
+            if existing == (
+                revision.logical_source_key,
+                revision.kind.value,
+                revision.source_revision,
+            ):
+                return
             raise ValueError(f"raw revision is already authoritative or missing: {raw_id}")
 
 

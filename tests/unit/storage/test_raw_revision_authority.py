@@ -22,7 +22,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
-from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision, write_source_raw_session
 
 
 def test_historical_full_classifier_proves_unique_prefix_chain_independent_of_order() -> None:
@@ -108,6 +108,33 @@ def test_unenveloped_raw_write_is_quarantined() -> None:
     assert conn.execute(
         "SELECT revision_kind, revision_authority FROM raw_sessions WHERE raw_id = ?", (raw_id,)
     ).fetchone() == ("unknown", "quarantined")
+
+
+def test_revision_binding_is_idempotent_but_rejects_conflicting_identity() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(SOURCE_DDL)
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        source_path="/capture/session.jsonl",
+        source_index=0,
+        payload=b"raw",
+        acquired_at_ms=10,
+    )
+    first = RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 0)
+    bind_source_raw_revision(conn, raw_id, first)
+
+    bind_source_raw_revision(
+        conn,
+        raw_id,
+        RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 99),
+    )
+    with pytest.raises(ValueError, match="already authoritative"):
+        bind_source_raw_revision(
+            conn,
+            raw_id,
+            RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "different", 1),
+        )
 
 
 def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(tmp_path: Path) -> None:
