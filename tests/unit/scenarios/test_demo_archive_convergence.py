@@ -15,7 +15,7 @@ from polylogue.scenarios import (
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, list_assertions_for_target
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, AssertionStatus, list_assertions_for_target
 
 EXPECTED_DEMO_SESSIONS = (
     (
@@ -185,7 +185,10 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     assert {assertion.key for assertion in assertions if assertion.kind == AssertionKind.DECISION} == {"pytest-triage"}
     fixture_assertions = [assertion for assertion in assertions if assertion.author_kind == "fixture"]
     assert fixture_assertions
-    assert all(assertion.context_policy == {"demo": True, "inject": False} for assertion in fixture_assertions)
+    assert all(assertion.status == AssertionStatus.CANDIDATE for assertion in fixture_assertions)
+    assert all(
+        assertion.context_policy == {"inject": False, "promotion_required": True} for assertion in fixture_assertions
+    )
     assert all(assertion.author_kind in {"fixture", "user"} for assertion in assertions)
     assert all("/tmp/" not in str(value) for row in _user_overlay_rows(archive_root) for value in row if value)
 

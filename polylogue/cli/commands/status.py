@@ -254,11 +254,14 @@ _LARGE_TIER_EXACT_COUNT_LIMIT_BYTES = 256 * 1024 * 1024
 _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "add_mark": ("archive_routed", "user", "writes user marks through user.db"),
     "add_tag": ("archive_routed", "user", "writes user tags through user.db"),
+    "aggregate_sessions": ("archive_routed", "index", "aggregates session profiles from index.db"),
     "archive_debt": ("archive_routed", "index", "reads unified archive debt rows from archive readiness surfaces"),
     "bulk_get_messages": ("archive_routed", "index", "reads messages from index.db"),
     "bulk_tag_sessions": ("archive_routed", "user", "writes user tags through user.db"),
     "clear_corrections": ("archive_routed", "user", "clears user corrections through user.db"),
     "close": ("not_archive_runtime", "none", "resource lifecycle method"),
+    "compare_sessions": ("archive_routed", "index", "compares session profiles from index.db"),
+    "correlate_sessions": ("archive_routed", "index", "correlates session profile metrics from index.db"),
     "cost_outlook": ("archive_routed", "index", "uses archive-routed session cost insight reads"),
     "count_sessions": ("archive_routed", "index", "counts sessions from index.db"),
     "create_recall_pack": ("archive_routed", "user", "writes recall packs through user.db"),
@@ -276,6 +279,12 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "export_otel": ("archive_routed", "index", "projects bounded archive evidence into OTel-style payloads"),
     "facets": ("archive_routed", "index", "computes scoped/global facets from index.db"),
     "find_resume_candidates": ("archive_routed", "index", "uses archive-routed resume operations"),
+    "find_abandoned_sessions": ("archive_routed", "index", "finds dangling work from index.db profiles"),
+    "find_similar_sessions_by_metadata": (
+        "archive_routed",
+        "index",
+        "finds metadata-similar sessions from index.db profiles",
+    ),
     "find_stuck_session_latency_profile_insights": ("archive_routed", "index", "reads latency profiles from index.db"),
     "explain_query_expression": ("archive_routed", "index", "explains query DSL parsing and lowering"),
     "get_actions": ("archive_direct", "index", "derives actions from index.db content blocks"),
@@ -393,8 +402,18 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "set_metadata": ("archive_routed", "user", "writes user metadata through user.db"),
     "stats": ("archive_routed", "index", "reads archive stats from index.db"),
     "storage_stats": ("archive_direct", "index", "reads lightweight archive counts from index.db"),
+    "tool_call_latency_distribution": (
+        "archive_routed",
+        "index",
+        "summarizes materialized tool-call latency from index.db",
+    ),
     "update_index": ("archive_direct", "index", "rebuilds the block-FTS index against index.db blocks"),
     "update_metadata": ("archive_routed", "user", "delegates to archive-routed metadata writes"),
+    "workflow_shape_distribution": (
+        "archive_routed",
+        "index",
+        "summarizes workflow-shape profiles from index.db",
+    ),
 }
 
 

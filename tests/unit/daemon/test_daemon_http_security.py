@@ -1041,15 +1041,16 @@ class TestIsLocalhost:
 
 
 class TestNoTokenLogging:
-    """Static grep over daemon and browser-capture sources confirms no
-    code path logs or prints the bearer token.
+    """Static analysis confirms no unintended output sink receives a token.
 
     A regression that adds ``logger.info(f"...token={auth_token}...")``
-    or similar to a daemon module would be caught here.
+    or similar to a daemon module is caught here. The explicit
+    ``browser-capture token show`` pairing command is the sole intentional
+    secret-output path.
     """
 
     def test_no_token_in_log_or_print_calls(self) -> None:
-        import re
+        import ast
         from pathlib import Path
 
         repo_root = Path(__file__).resolve().parents[3]
@@ -1057,26 +1058,79 @@ class TestNoTokenLogging:
             repo_root / "polylogue" / "daemon",
             repo_root / "polylogue" / "browser_capture",
         ]
-        # Match {logger,log,print,debug,info,warning,error,exception} that
-        # mention auth_token or "Bearer" anywhere on the same line.
-        pattern = re.compile(
-            r"(?:logger|log|print|debug|info|warning|error|exception)\b.*"
-            r"(?:auth_token|Bearer)",
-            re.IGNORECASE,
-        )
+        output_sinks = {"critical", "debug", "echo", "error", "exception", "info", "log", "print", "warning"}
+        intentional_secret_outputs = {
+            (Path("polylogue/daemon/browser_capture.py"), "token_show"),
+        }
+
+        def _call_sink_name(call: ast.Call) -> str | None:
+            if isinstance(call.func, ast.Name):
+                return call.func.id
+            if isinstance(call.func, ast.Attribute):
+                return call.func.attr
+            return None
+
+        def _contains_token_value(expression: ast.AST) -> bool:
+            for node in ast.walk(expression):
+                name: str | None = None
+                if isinstance(node, ast.Name):
+                    name = node.id
+                elif isinstance(node, ast.Attribute):
+                    name = node.attr
+                if name is not None and (name == "token" or name.endswith("_token")):
+                    return True
+            return False
+
+        class _SensitiveOutputVisitor(ast.NodeVisitor):
+            def __init__(self, relative_path: Path) -> None:
+                self.relative_path = relative_path
+                self.function_stack: list[str] = []
+                self.offenders: list[tuple[int, str]] = []
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self.function_stack.append(node.name)
+                self.generic_visit(node)
+                self.function_stack.pop()
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                self.function_stack.append(node.name)
+                self.generic_visit(node)
+                self.function_stack.pop()
+
+            def visit_Call(self, node: ast.Call) -> None:
+                sink_name = _call_sink_name(node)
+                expressions = [*node.args, *(keyword.value for keyword in node.keywords)]
+                function_name = self.function_stack[-1] if self.function_stack else "<module>"
+                if (
+                    sink_name in output_sinks
+                    and any(_contains_token_value(expression) for expression in expressions)
+                    and (self.relative_path, function_name) not in intentional_secret_outputs
+                ):
+                    self.offenders.append((node.lineno, function_name))
+                self.generic_visit(node)
+
+        seeded_violation = _SensitiveOutputVisitor(Path("seeded_violation.py"))
+        seeded_violation.visit(ast.parse("def leak(auth_token):\n    logger.info(auth_token)\n"))
+        assert seeded_violation.offenders == [(2, "leak")]
+
+        safe_literal = _SensitiveOutputVisitor(Path("safe_literal.py"))
+        safe_literal.visit(ast.parse('logger.warning("Bearer token required")\n'))
+        assert safe_literal.offenders == []
 
         offenders: list[str] = []
         for root in roots:
             if not root.exists():
                 continue
             for py_file in root.rglob("*.py"):
-                for lineno, line in enumerate(py_file.read_text().splitlines(), 1):
-                    if pattern.search(line):
-                        # Whitelist the legitimate non-logging usages:
-                        # passing the token to the checker is not a leak.
-                        if "_check_auth_logic" in line:
-                            continue
-                        offenders.append(f"{py_file.relative_to(repo_root)}:{lineno}: {line.strip()}")
+                relative_path = py_file.relative_to(repo_root)
+                source = py_file.read_text(encoding="utf-8")
+                visitor = _SensitiveOutputVisitor(relative_path)
+                visitor.visit(ast.parse(source, filename=str(relative_path)))
+                lines = source.splitlines()
+                offenders.extend(
+                    f"{relative_path}:{lineno} ({function_name}): {lines[lineno - 1].strip()}"
+                    for lineno, function_name in visitor.offenders
+                )
 
         assert not offenders, "potential token-logging code paths:\n" + "\n".join(offenders)
 
