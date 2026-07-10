@@ -295,10 +295,13 @@
         <div class="row"><span class="label">Receiver</span><span id="receiver" class="value">127.0.0.1:8765</span></div>
         <div class="row"><span class="label">Archive</span><span id="archive" class="value">Not checked</span></div>
         <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>
+        <div class="row"><span class="label">Fidelity</span><span id="fidelity" class="value">--</span></div>
         <div class="row"><span class="label">Turns</span><span id="turns" class="value">--</span></div>
+        <div class="row"><span class="label">Assets</span><span id="assets" class="value">--</span></div>
         <div class="row"><span class="label">Request</span><span id="receiver-request" class="value">--</span></div>
         <div class="row"><span class="label">Updated</span><span id="updated" class="value">--</span></div>
       </section>
+      <div id="asset-failures" class="log-meta"></div>
 
       <section>
         <p id="state">Checking receiver...</p>
@@ -309,7 +312,20 @@
           <button id="sync-open-tabs"><span class="button-label">Sync open tabs</span><span class="button-status"></span></button>
           <button id="copy-ref"><span class="button-label">Copy ref</span><span class="button-status"></span></button>
           <button id="open-polylogue"><span class="button-label">Open in Polylogue</span><span class="button-status"></span></button>
+          <button id="check-receiver"><span class="button-label">Check receiver</span><span class="button-status"></span></button>
         </div>
+      </section>
+
+      <section>
+        <div class="row"><span class="label">Receiver health</span><span id="receiver-health" class="value">--</span></div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <span class="label">Queued retries</span>
+          <span id="queue-count" class="value">0</span>
+        </div>
+        <div id="queue-log" class="log"></div>
       </section>
 
       <section>
