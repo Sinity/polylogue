@@ -1214,6 +1214,7 @@ def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp
         ("native", 2, "export", 1, "Native browser", 2, "raw-initial"),
         ("export", 1, "native", 2, "Native browser", 2, "raw-incoming"),
         ("native", 2, "export", 3, "Fuller export", 3, "raw-incoming"),
+        ("export", 3, "native", 2, "Fuller export", 3, "raw-initial"),
     ],
     ids=(
         "native-before-equal",
@@ -1221,6 +1222,7 @@ def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp
         "native-before-weaker",
         "native-after-weaker",
         "fuller-export-advances",
+        "fuller-export-resists-shorter-native",
     ),
 )
 def test_write_session_native_browser_precedence_matrix(

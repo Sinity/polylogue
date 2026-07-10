@@ -334,6 +334,7 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
         ("native", 2, "export", 1, "Native browser", 2, "initial"),
         ("export", 1, "native", 2, "Native browser", 2, "incoming"),
         ("native", 2, "export", 3, "Fuller export", 3, "incoming"),
+        ("export", 3, "native", 2, "Fuller export", 3, "initial"),
     ],
     ids=(
         "native-before-equal",
@@ -341,6 +342,7 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
         "native-before-weaker",
         "native-after-weaker",
         "fuller-export-advances",
+        "fuller-export-resists-shorter-native",
     ),
 )
 def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
