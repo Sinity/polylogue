@@ -174,7 +174,9 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     read_session_phases,
     read_session_work_events,
     rebuild_archive_messages_fts,
+    replace_parser_ingest_flag_tags,
     search_archive_blocks,
+    upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.connection_profile import (
@@ -850,11 +852,15 @@ class ArchiveStore:
         manage_transaction: bool,
     ) -> ArchiveRawParsedWriteResult:
         session_id = str(make_session_id(session.source_name, session.provider_session_id))
+        content_hash = str(session_content_hash(session))
         existing_row = self._conn.execute(
-            "SELECT raw_id, updated_at_ms FROM sessions WHERE session_id = ?",
+            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
+        existing_hash = existing_row["content_hash"] if existing_row is not None else None
+        existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
+        content_unchanged = existing_row is not None and existing_hash_hex == content_hash
         existing_is_dom_fallback = False
         incoming_is_dom_fallback = DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
         existing_has_native_browser_payload = False
@@ -921,10 +927,33 @@ class ArchiveStore:
                     counts=self._skipped_counts(session),
                 )
 
+        if content_unchanged:
+            if browser_precedence == "replace":
+                replace_parser_ingest_flag_tags(self._conn, session_id, session.ingest_flags)
+            elif session.ingest_flags:
+                upsert_parser_ingest_flag_tags(self._conn, session_id, session.ingest_flags)
+            raw_link_changed = False
+            if raw_id and raw_id != existing_raw_id:
+                cursor = self._conn.execute(
+                    "UPDATE sessions SET raw_id = ? WHERE session_id = ? AND (raw_id IS NULL OR raw_id != ?)",
+                    (raw_id, session_id, raw_id),
+                )
+                raw_link_changed = bool(cursor.rowcount)
+            if manage_transaction:
+                self._conn.commit()
+            counts = self._skipped_counts(session)
+            counts["raw_links"] = int(raw_link_changed)
+            return ArchiveRawParsedWriteResult(
+                raw_id=raw_id,
+                session_id=session_id,
+                content_changed=False,
+                counts=counts,
+            )
+
         write_parsed_session_to_archive(
             self._conn,
             session,
-            content_hash=str(session_content_hash(session)),
+            content_hash=content_hash,
             raw_id=raw_id,
             merge_append=source_index < 0,
             force_replace=browser_precedence == "replace",

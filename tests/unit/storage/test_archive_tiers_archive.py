@@ -500,6 +500,53 @@ def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
     assert (native_flag is not None) is expected_native_flag
 
 
+def test_archive_tiers_archive_facade_hash_skips_identical_content_and_refreshes_raw_link(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="content-identical-raw-refresh",
+        title="Stable content",
+        updated_at="2026-04-03T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="message-1",
+                role=Role.USER,
+                text="same parsed content",
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            session,
+            payload=b'[{"capture":"first"}]',
+            source_path="/tmp/first.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        second = facade.write_raw_and_parsed_result(
+            session,
+            payload=b'[{"capture":"second"}]',
+            source_path="/tmp/second.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        stored_raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            (first.session_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first.content_changed is True
+    assert second.content_changed is False
+    assert second.counts["sessions"] == 0
+    assert second.counts["skipped_sessions"] == 1
+    assert second.counts["raw_links"] == 1
+    assert stored_raw_id == second.raw_id
+
+
 def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,
