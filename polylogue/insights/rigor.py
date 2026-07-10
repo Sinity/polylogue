@@ -184,6 +184,31 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
             RigorVersionField(name="inference_version", current_version=SESSION_INFERENCE_VERSION),
         ),
+        notes=(
+            "Heuristic-tier inventory (#b0b.1): the activity-type classifier "
+            "(``inference.heuristic_label`` -- planning/debugging/testing/review/"
+            "refactoring/documentation/configuration/data_analysis, "
+            "archive/session/extraction.py _TEXT_SIGNAL_TABLE) has no structural "
+            "signal to convert to -- unlike outcome/pathology fields "
+            "(tool_result_is_error, tool_result_exit_code), there is no structural "
+            "proxy for 'what category of work is this'; keyword text matching "
+            "against user messages is the only available signal, and it is a "
+            "fallback checked only after action-category (tool-use) evidence, per "
+            "_classify_range. As of #b0b.1 the keyword match is word-boundary-"
+            "anchored (previously a naive substring check that false-positived on "
+            "unrelated words, e.g. 'fix' inside 'prefix', 'test' inside 'latest', "
+            "'config' inside 'reconfigured') -- a correctness fix to the matching "
+            "mechanism, not a claim about its predictive value. "
+            "UNVERIFIED ACCURACY (9e5.9): this field's real-world precision has "
+            "never been measured against ground truth -- 9e5.9's closing evidence "
+            "found the sibling keyword heuristic in the same file (runtime.py "
+            "_terminal_state's _ERROR_MARKERS fallback) scores only 50.5% "
+            "agreement (coin-flip level) against structural ground truth "
+            "(tool_result_is_error/exit_code) on 14,377 real runs. Do not treat "
+            "``heuristic_label`` as a reliable signal until this classifier gets "
+            "its own accuracy measurement; consumers should treat it as a weak, "
+            "unverified prior, not a trustworthy label."
+        ),
     ),
     RigorContract(
         insight_name="session_phases",
