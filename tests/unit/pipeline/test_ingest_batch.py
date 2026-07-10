@@ -15,6 +15,7 @@ import aiosqlite
 import pytest
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -178,6 +179,8 @@ def _session_data(
     attachment_tuples: list[ParsedAttachment] | None = None,
     attachment_ref_tuples: list[AttachmentRefSpec] | None = None,
     ingest_flags: list[str] | None = None,
+    provider: Provider = Provider.CODEX,
+    title: str = "Session",
     append_only: bool = False,
     created_at: str = "2026-04-02T00:00:00Z",
     updated_at: str = "2026-04-02T00:00:00Z",
@@ -200,9 +203,9 @@ def _session_data(
         for attachment in attachment_tuples or []
     ]
     parsed = ParsedSession(
-        source_name=Provider.CODEX,
+        source_name=provider,
         provider_session_id=session_id.split(":", 1)[-1],
-        title="Session",
+        title=title,
         created_at=created_at,
         updated_at=updated_at,
         parent_session_provider_id=parent_session_id.split(":", 1)[-1] if parent_session_id else None,
@@ -1012,7 +1015,7 @@ def test_write_session_dom_fallback_does_not_replace_native_source(tmp_path: Pat
             "codex-session:dom-precedence",
             content_hash="hash-dom-fallback",
             raw_id="raw-dom-fallback",
-            ingest_flags=["capture:dom-fallback"],
+            ingest_flags=[DOM_FALLBACK_INGEST_FLAG],
             message_tuples=[
                 _message_tuple(
                     "msg-1",
@@ -1092,7 +1095,7 @@ def test_write_session_same_content_dom_fallback_does_not_refresh_native_raw_lin
             "codex-session:same-content-dom-precedence",
             content_hash="same-hash",
             raw_id="raw-dom-fallback",
-            ingest_flags=["capture:dom-fallback"],
+            ingest_flags=[DOM_FALLBACK_INGEST_FLAG],
             message_tuples=[
                 _message_tuple(
                     "msg-1",
@@ -1133,7 +1136,7 @@ def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp
             "codex-session:native-over-dom",
             content_hash="hash-dom-fallback",
             raw_id="raw-dom-fallback",
-            ingest_flags=["capture:dom-fallback"],
+            ingest_flags=[DOM_FALLBACK_INGEST_FLAG],
             message_tuples=[
                 _message_tuple(
                     "msg-1",
@@ -1193,6 +1196,91 @@ def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp
         assert counts_native["sessions"] == 1
         assert [row["text"] for row in messages] == ["native body"]
         assert raw_id == "raw-native"
+
+
+@pytest.mark.parametrize(
+    (
+        "initial_kind",
+        "initial_count",
+        "incoming_kind",
+        "incoming_count",
+        "expected_title",
+        "expected_count",
+        "expected_raw_id",
+    ),
+    [
+        ("native", 2, "export", 2, "Native browser", 2, "raw-initial"),
+        ("export", 2, "native", 2, "Native browser", 2, "raw-incoming"),
+        ("native", 2, "export", 1, "Native browser", 2, "raw-initial"),
+        ("export", 1, "native", 2, "Native browser", 2, "raw-incoming"),
+        ("native", 2, "export", 3, "Fuller export", 3, "raw-incoming"),
+    ],
+    ids=(
+        "native-before-equal",
+        "native-after-equal",
+        "native-before-weaker",
+        "native-after-weaker",
+        "fuller-export-advances",
+    ),
+)
+def test_write_session_native_browser_precedence_matrix(
+    tmp_path: Path,
+    initial_kind: str,
+    initial_count: int,
+    incoming_kind: str,
+    incoming_count: int,
+    expected_title: str,
+    expected_count: int,
+    expected_raw_id: str,
+) -> None:
+    session_id = f"chatgpt-export:browser-precedence-{initial_kind}-{initial_count}-{incoming_kind}-{incoming_count}"
+
+    def payload(kind: str, message_count: int, raw_id: str) -> SessionWritePayload:
+        native = kind == "native"
+        title = "Native browser" if native else ("Fuller export" if message_count == 3 else "Ordinary export")
+        return _session_data(
+            session_id,
+            content_hash=f"{kind}-{raw_id}-{message_count}",
+            raw_id=raw_id,
+            provider=Provider.CHATGPT,
+            title=title,
+            ingest_flags=[NATIVE_BROWSER_CAPTURE_INGEST_FLAG] if native else [],
+            message_tuples=[
+                _message_tuple(
+                    f"{kind}-{position}",
+                    session_id,
+                    role="user" if position == 0 else "assistant",
+                    text=f"{kind} message {position}",
+                    content_hash=f"{kind}-{position}",
+                    sort_key=float(position),
+                )
+                for position in range(message_count)
+            ],
+        )
+
+    with open_connection(tmp_path / "index.db") as conn:
+        changed_initial, _counts_initial = _write_session(
+            conn,
+            payload(initial_kind, initial_count, "raw-initial"),
+        )
+        changed_incoming, counts_incoming = _write_session(
+            conn,
+            payload(incoming_kind, incoming_count, "raw-incoming"),
+        )
+        conn.commit()
+        stored = conn.execute(
+            "SELECT raw_id, title, message_count FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+
+    assert changed_initial is True
+    assert changed_incoming is (expected_raw_id == "raw-incoming")
+    assert counts_incoming["skipped_sessions"] == int(expected_raw_id == "raw-initial")
+    assert dict(stored) == {
+        "raw_id": expected_raw_id,
+        "title": expected_title,
+        "message_count": expected_count,
+    }
 
 
 def test_write_session_skips_new_with_zero_messages(tmp_path: Path) -> None:

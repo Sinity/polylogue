@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
@@ -316,6 +316,94 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
     assert stored["message_count"] == 2
     assert event["event_type"] == "capture_gap"
     assert "DOM browser-capture fallback" in event["summary"]
+
+
+@pytest.mark.parametrize(
+    (
+        "initial_kind",
+        "initial_count",
+        "incoming_kind",
+        "incoming_count",
+        "expected_title",
+        "expected_count",
+        "expected_owner",
+    ),
+    [
+        ("native", 2, "export", 2, "Native browser", 2, "initial"),
+        ("export", 2, "native", 2, "Native browser", 2, "incoming"),
+        ("native", 2, "export", 1, "Native browser", 2, "initial"),
+        ("export", 1, "native", 2, "Native browser", 2, "incoming"),
+        ("native", 2, "export", 3, "Fuller export", 3, "incoming"),
+    ],
+    ids=(
+        "native-before-equal",
+        "native-after-equal",
+        "native-before-weaker",
+        "native-after-weaker",
+        "fuller-export-advances",
+    ),
+)
+def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
+    tmp_path: Path,
+    initial_kind: str,
+    initial_count: int,
+    incoming_kind: str,
+    incoming_count: int,
+    expected_title: str,
+    expected_count: int,
+    expected_owner: str,
+) -> None:
+    session_native_id = f"browser-precedence-{initial_kind}-{initial_count}-{incoming_kind}-{incoming_count}"
+
+    def session(kind: str, message_count: int) -> ParsedSession:
+        native = kind == "native"
+        title = "Native browser" if native else ("Fuller export" if message_count == 3 else "Ordinary export")
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id=session_native_id,
+            title=title,
+            messages=[
+                ParsedMessage(
+                    provider_message_id=f"{kind}-{position}",
+                    role=Role.USER if position == 0 else Role.ASSISTANT,
+                    text=f"{kind} message {position}",
+                )
+                for position in range(message_count)
+            ],
+            ingest_flags=[NATIVE_BROWSER_CAPTURE_INGEST_FLAG] if native else [],
+        )
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        initial = facade.write_raw_and_parsed_result(
+            session(initial_kind, initial_count),
+            payload=f"{initial_kind}-initial".encode(),
+            source_path=f"/tmp/{initial_kind}-initial.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        incoming = facade.write_raw_and_parsed_result(
+            session(incoming_kind, incoming_count),
+            payload=f"{incoming_kind}-incoming-{incoming_count}".encode(),
+            source_path=f"/tmp/{incoming_kind}-incoming.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        stored = conn.execute(
+            "SELECT raw_id, title, message_count FROM sessions WHERE session_id = ?",
+            (initial.session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    expected_raw_id = initial.raw_id if expected_owner == "initial" else incoming.raw_id
+    assert dict(stored) == {
+        "raw_id": expected_raw_id,
+        "title": expected_title,
+        "message_count": expected_count,
+    }
 
 
 def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
