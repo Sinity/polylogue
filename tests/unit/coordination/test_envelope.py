@@ -481,6 +481,9 @@ def test_process_projection_collapses_components_and_uses_real_work_scopes(
     assert str(archive) in rebuild.resources
     assert all(name not in rebuild.command for name in ("timesyncd", "resolved", "udevd", "oomd", "earlyoom"))
 
+    compact = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None, process_rows=rows))
+    assert compact.resource_episodes[0].resources[0] == str(archive)
+
 
 def test_compact_projection_is_byte_bounded_and_detail_recovers_omitted_peers(
     tmp_path: Path,

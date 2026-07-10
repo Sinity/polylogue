@@ -943,7 +943,7 @@ def _resource_payload(
     process_cwd = _proc_cwd(representative.pid)
     resources = _command_resource_refs(representative.command, process_cwd, repo_cwd)
     if archive_resource and _resource_owns_archive(representative, unit):
-        resources = tuple(dict.fromkeys((*resources, archive_resource)))
+        resources = tuple(dict.fromkeys((archive_resource, *resources)))
     return CoordinationResourceEpisodePayload(
         pid=representative.pid,
         kind=kind,
