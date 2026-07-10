@@ -2673,7 +2673,7 @@ files:
     target: polylogue/sources/parsers/drive_support_text.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_state.py
-    loc: 629
+    loc: 636
     target: polylogue/sources/parsers/hermes_state.py
     owner: stable
   - path: polylogue/sources/parsers/local_agent.py

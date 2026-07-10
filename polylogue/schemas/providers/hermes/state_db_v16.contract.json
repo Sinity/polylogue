@@ -6,6 +6,24 @@
     "raw_session_column": "sessions.id",
     "archive_qualifier": "profile_root_sha256_12"
   },
+  "detection_signature": {
+    "tables": [
+      "schema_version",
+      "sessions",
+      "messages"
+    ],
+    "session_columns": [
+      "source",
+      "model_config",
+      "parent_session_id"
+    ],
+    "message_columns": [
+      "tool_calls",
+      "observed",
+      "active",
+      "compacted"
+    ]
+  },
   "tables": {
     "sessions": {
       "required_core": [

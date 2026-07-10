@@ -41,6 +41,8 @@ _REQUIRED_MESSAGE_COLUMNS = frozenset(
         "timestamp",
     }
 )
+_HERMES_SIGNATURE_SESSION_COLUMNS = frozenset({"source", "model_config", "parent_session_id"})
+_HERMES_SIGNATURE_MESSAGE_COLUMNS = frozenset({"tool_calls", "observed", "active", "compacted"})
 
 _SESSION_CAPABILITIES: dict[str, frozenset[str]] = {
     "model": frozenset({"model", "model_config", "system_prompt"}),
@@ -186,13 +188,18 @@ def _has_required_tables(conn: sqlite3.Connection) -> bool:
     tables = {
         str(row[0])
         for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sessions', 'messages')"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('schema_version', 'sessions', 'messages')"
         ).fetchall()
     }
-    if tables != {"sessions", "messages"}:
+    if tables != {"schema_version", "sessions", "messages"}:
         return False
-    return _REQUIRED_SESSION_COLUMNS.issubset(_columns(conn, "sessions")) and _REQUIRED_MESSAGE_COLUMNS.issubset(
-        _columns(conn, "messages")
+    session_columns = _columns(conn, "sessions")
+    message_columns = _columns(conn, "messages")
+    return (
+        _REQUIRED_SESSION_COLUMNS.issubset(session_columns)
+        and _REQUIRED_MESSAGE_COLUMNS.issubset(message_columns)
+        and _HERMES_SIGNATURE_SESSION_COLUMNS.issubset(session_columns)
+        and _HERMES_SIGNATURE_MESSAGE_COLUMNS.issubset(message_columns)
     )
 
 

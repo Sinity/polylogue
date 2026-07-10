@@ -456,8 +456,40 @@ def test_hermes_state_db_rejects_tables_missing_required_core(tmp_path: Path) ->
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
             CREATE TABLE sessions(id TEXT PRIMARY KEY, started_at REAL);
             CREATE TABLE messages(id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, timestamp REAL);
+            """
+        )
+
+    assert hermes_state.looks_like_state_db_path(db_path) is False
+    with pytest.raises(ValueError, match="not a Hermes state.db"):
+        hermes_state.parse_state_db(db_path)
+
+
+def test_hermes_state_db_rejects_versioned_chat_database_lookalike(tmp_path: Path) -> None:
+    db_path = tmp_path / "chat-app.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                started_at REAL,
+                source TEXT,
+                model_config TEXT,
+                parent_session_id TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT,
+                role TEXT,
+                content TEXT,
+                timestamp REAL,
+                tool_calls TEXT
+            );
             """
         )
 
@@ -474,6 +506,8 @@ def test_hermes_state_db_contract_matches_parser_capability_map() -> None:
 
     assert set(contract["tables"]["sessions"]["required_core"]) == hermes_state._REQUIRED_SESSION_COLUMNS
     assert set(contract["tables"]["messages"]["required_core"]) == hermes_state._REQUIRED_MESSAGE_COLUMNS
+    assert set(contract["detection_signature"]["session_columns"]) == hermes_state._HERMES_SIGNATURE_SESSION_COLUMNS
+    assert set(contract["detection_signature"]["message_columns"]) == hermes_state._HERMES_SIGNATURE_MESSAGE_COLUMNS
     assert {
         name: frozenset(fields) for name, fields in contract["tables"]["sessions"]["optional_capabilities"].items()
     } == hermes_state._SESSION_CAPABILITIES
