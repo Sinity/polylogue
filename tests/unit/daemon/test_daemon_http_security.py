@@ -1121,7 +1121,7 @@ class TestNoTokenLogging:
             def sensitive_names(self) -> set[str]:
                 return self.sensitive_name_stack[-1]
 
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
                 self.function_stack.append(node.name)
                 argument_names = {
                     argument.arg
@@ -1137,8 +1137,11 @@ class TestNoTokenLogging:
                 self.sensitive_name_stack.pop()
                 self.function_stack.pop()
 
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self._visit_function(node)
+
             def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                self.visit_FunctionDef(node)
+                self._visit_function(node)
 
             def visit_Assign(self, node: ast.Assign) -> None:
                 names = {name for target in node.targets for name in _assigned_names(target)}
