@@ -365,8 +365,13 @@ def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int, total_s
     return embedded_sessions / eligible_sessions * 100
 
 
-def _message_coverage_percent(*, embedded_messages: int, candidate_prose_messages: int | None) -> float | None:
-    if candidate_prose_messages is None:
+def _message_coverage_percent(
+    *,
+    embedded_messages: int,
+    candidate_prose_messages: int | None,
+    candidate_prose_messages_exact: bool,
+) -> float | None:
+    if candidate_prose_messages is None or not candidate_prose_messages_exact:
         return None
     if candidate_prose_messages <= 0:
         return 100.0 if embedded_messages > 0 else 0.0
@@ -389,9 +394,10 @@ def _archive_embedding_session_state_summary(
         conn,
         f"""
         SELECT COUNT(*)
-        FROM {status_table}
-        WHERE COALESCE(needs_reindex, 0) = 0
-          AND error_message IS NULL
+        FROM {status_table} AS e
+        JOIN sessions AS s ON s.session_id = e.session_id
+        WHERE COALESCE(e.needs_reindex, 0) = 0
+          AND e.error_message IS NULL
         """,
     )
     pending_sessions = max(total_sessions - embedded_sessions, 0)
@@ -560,6 +566,7 @@ def _payload_from_stats(
     message_coverage = _message_coverage_percent(
         embedded_messages=stats.embedded_messages,
         candidate_prose_messages=stats.candidate_prose_messages,
+        candidate_prose_messages_exact=stats.candidate_prose_messages_exact,
     )
     return {
         "config_enabled": config_enabled,
@@ -660,7 +667,11 @@ def _archive_embedding_status_payload(
         if has_status:
             embedded_messages = _scalar_int(
                 conn,
-                f"SELECT COALESCE(SUM(message_count_embedded), 0) FROM {status_table}",
+                f"""
+                SELECT COALESCE(SUM(e.message_count_embedded), 0)
+                FROM {status_table} AS e
+                JOIN sessions AS s ON s.session_id = e.session_id
+                """,
             )
         elif has_meta:
             exact_embedded_messages = _scalar_int_with_timeout(
@@ -675,7 +686,15 @@ def _archive_embedding_status_payload(
         else:
             embedded_messages = 0
         failure_count = (
-            _scalar_int(conn, f"SELECT COUNT(*) FROM {status_table} WHERE error_message IS NOT NULL")
+            _scalar_int(
+                conn,
+                f"""
+                SELECT COUNT(*)
+                FROM {status_table} AS e
+                JOIN sessions AS s ON s.session_id = e.session_id
+                WHERE e.error_message IS NOT NULL
+                """,
+            )
             if has_status
             else 0
         )
