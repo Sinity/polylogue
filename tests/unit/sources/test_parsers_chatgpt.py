@@ -1110,3 +1110,64 @@ def test_code_interpreter_content_is_preserved() -> None:
     assert any(b.type == BlockType.CODE for b in code_msg.blocks)
     out_msg = next(m for m in conv.messages if m.text == "1\n")
     assert any(b.type == BlockType.TOOL_RESULT for b in out_msg.blocks)
+
+
+# SANDBOX FILE LINKS (assistant-generated downloadable deliverables)
+
+
+def test_sandbox_links_become_unfetchable_attachments() -> None:
+    text = (
+        "Kit delivered.\n\n"
+        "**[Download the ZIP](sandbox:/mnt/data/compiler-kit.zip)**\n"
+        "[Checksum](sandbox:/mnt/data/compiler-kit.zip.sha256): `abc`\n"
+        "Also see [the prompts dir](sandbox:/mnt/data/compiler-kit/prompts/) "
+        "and again [the ZIP](sandbox:/mnt/data/compiler-kit.zip)."
+    )
+    mapping = {
+        "node1": make_chatgpt_node("msg1", "assistant", [text]),
+    }
+
+    _messages, attachments = extract_messages_from_mapping(mapping)
+
+    sandbox = [a for a in attachments if a.attachment_kind == "sandbox_file"]
+    assert [a.name for a in sandbox] == [
+        "compiler-kit.zip",
+        "compiler-kit.zip.sha256",
+        None,  # directory link keeps trailing slash; no file name
+    ]
+    assert [a.source_url for a in sandbox] == [
+        "sandbox:/mnt/data/compiler-kit.zip",
+        "sandbox:/mnt/data/compiler-kit.zip.sha256",
+        "sandbox:/mnt/data/compiler-kit/prompts/",
+    ]
+    assert all(a.message_provider_id == "msg1" for a in sandbox)
+    # Duplicate link in the same message is recorded once.
+    assert len(sandbox) == 3
+
+
+def test_sandbox_links_in_user_messages_are_not_attachments() -> None:
+    mapping = {
+        "node1": make_chatgpt_node("msg1", "user", ["please regenerate sandbox:/mnt/data/old.zip"]),
+    }
+
+    _messages, attachments = extract_messages_from_mapping(mapping)
+
+    assert not [a for a in attachments if a.attachment_kind == "sandbox_file"]
+
+
+def test_sandbox_link_trailing_punctuation_is_stripped() -> None:
+    mapping = {
+        "node1": make_chatgpt_node(
+            "msg1",
+            "assistant",
+            ["Saved to sandbox:/mnt/data/report.md. Enjoy, or see sandbox:/mnt/data/data.csv,"],
+        ),
+    }
+
+    _messages, attachments = extract_messages_from_mapping(mapping)
+
+    sandbox = [a for a in attachments if a.attachment_kind == "sandbox_file"]
+    assert [a.source_url for a in sandbox] == [
+        "sandbox:/mnt/data/report.md",
+        "sandbox:/mnt/data/data.csv",
+    ]

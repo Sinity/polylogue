@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
@@ -240,6 +241,25 @@ def _non_negative_int(value: object) -> int | None:
     return None
 
 
+_SANDBOX_FILE_RE = re.compile(r"sandbox:(/mnt/data/[^\s)\]\"'>]+)")
+
+
+def _sandbox_file_paths(text: str) -> list[str]:
+    """Ordered, deduplicated ``/mnt/data`` paths linked in assistant text.
+
+    Trailing prose punctuation is stripped so ``(sandbox:/mnt/data/kit.zip).``
+    yields ``/mnt/data/kit.zip``. Directory links keep their trailing slash in
+    the returned path.
+    """
+
+    seen: dict[str, None] = {}
+    for match in _SANDBOX_FILE_RE.finditer(text):
+        path = match.group(1).rstrip(".,;:!?*`")
+        if path != "/mnt/data/":
+            seen.setdefault(path)
+    return list(seen)
+
+
 def _extract_content_text(content: Mapping[str, object]) -> str:
     """Extract message text from a ChatGPT content block.
 
@@ -348,6 +368,26 @@ def extract_messages_from_mapping(
                                 upload_origin="oauth",
                             )
                         )
+
+        # Assistant-generated downloadable files (#sandbox links). Code
+        # Interpreter deliverables surface only as `sandbox:/mnt/data/...`
+        # links inside assistant prose; the export/capture carries no bytes
+        # and no metadata attachment row for them, and the links expire with
+        # the sandbox container. Record each as an unfetchable attachment so
+        # the archive knows the file existed, its name, and which message
+        # produced it. attachment_kind="sandbox_file" keeps every acquisition
+        # path away from it (there is nothing local to fetch).
+        if role is Role.ASSISTANT and text:
+            for sandbox_path in _sandbox_file_paths(text):
+                attachments.append(
+                    ParsedAttachment(
+                        provider_attachment_id=f"sandbox:{msg_id}:{sandbox_path}",
+                        message_provider_id=str(msg_id),
+                        name=sandbox_path.rsplit("/", 1)[-1] or None,
+                        attachment_kind="sandbox_file",
+                        source_url=f"sandbox:{sandbox_path}",
+                    )
+                )
 
         model_slug: object = None
         duration_raw: object = None
