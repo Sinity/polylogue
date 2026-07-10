@@ -1060,7 +1060,7 @@ class TestNoTokenLogging:
         ]
         output_sinks = {"critical", "debug", "echo", "error", "exception", "info", "log", "print", "warning"}
         intentional_secret_outputs = {
-            (Path("polylogue/daemon/browser_capture.py"), "token_show"),
+            (Path("polylogue/daemon/browser_capture.py"), "token_show", "echo"),
         }
 
         def _call_sink_name(call: ast.Call) -> str | None:
@@ -1171,6 +1171,18 @@ class TestNoTokenLogging:
                     self.sensitive_names.difference_update(names)
                 self.generic_visit(node)
 
+            def visit_If(self, node: ast.If) -> None:
+                self.visit(node.test)
+                baseline = set(self.sensitive_names)
+                self.sensitive_name_stack[-1] = set(baseline)
+                for statement in node.body:
+                    self.visit(statement)
+                body_names = set(self.sensitive_names)
+                self.sensitive_name_stack[-1] = set(baseline)
+                for statement in node.orelse:
+                    self.visit(statement)
+                self.sensitive_name_stack[-1] |= body_names
+
             def visit_Call(self, node: ast.Call) -> None:
                 sink_name = _call_sink_name(node)
                 expressions = [*node.args, *(keyword.value for keyword in node.keywords)]
@@ -1178,7 +1190,7 @@ class TestNoTokenLogging:
                 if (
                     sink_name in output_sinks
                     and any(_contains_token_value(expression, self.sensitive_names) for expression in expressions)
-                    and (self.relative_path, function_name) not in intentional_secret_outputs
+                    and (self.relative_path, function_name, sink_name) not in intentional_secret_outputs
                 ):
                     self.offenders.append((node.lineno, function_name))
                 self.generic_visit(node)
@@ -1198,6 +1210,25 @@ class TestNoTokenLogging:
             ast.parse("def leak(auth_token):\n    secret = auth_token.strip()\n    logger.info(secret)\n")
         )
         assert seeded_transform_violation.offenders == [(3, "leak")]
+
+        seeded_branch_violation = _SensitiveOutputVisitor(Path("seeded_branch_violation.py"))
+        seeded_branch_violation.visit(
+            ast.parse(
+                "def leak(auth_token, condition):\n"
+                "    if condition:\n"
+                "        secret = auth_token\n"
+                "    else:\n"
+                "        secret = 'safe'\n"
+                "    logger.info(secret)\n"
+            )
+        )
+        assert seeded_branch_violation.offenders == [(6, "leak")]
+
+        seeded_exception_scope = _SensitiveOutputVisitor(Path("polylogue/daemon/browser_capture.py"))
+        seeded_exception_scope.visit(
+            ast.parse("def token_show(token):\n    click.echo(token)\n    logger.info(token)\n")
+        )
+        assert seeded_exception_scope.offenders == [(3, "token_show")]
 
         safe_literal = _SensitiveOutputVisitor(Path("safe_literal.py"))
         safe_literal.visit(ast.parse('logger.warning("Bearer token required")\n'))
