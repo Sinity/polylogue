@@ -1059,6 +1059,8 @@ class TestNoTokenLogging:
             repo_root / "polylogue" / "browser_capture",
         ]
         output_sinks = {
+            "_send_error",
+            "_send_json",
             "critical",
             "debug",
             "echo",
@@ -1294,6 +1296,26 @@ class TestNoTokenLogging:
             ast.parse("def leak(auth_token, handler):\n    handler.wfile.write(auth_token.encode())\n")
         )
         assert seeded_http_violation.offenders == [(2, "leak")]
+
+        seeded_json_response_violation = _SensitiveOutputVisitor(Path("seeded_json_response_violation.py"))
+        seeded_json_response_violation.visit(
+            ast.parse(
+                "def leak(self, auth_token):\n"
+                "    payload = {'credential': auth_token}\n"
+                "    self._send_json(HTTPStatus.OK, payload)\n"
+            )
+        )
+        assert seeded_json_response_violation.offenders == [(3, "leak")]
+
+        seeded_error_response_violation = _SensitiveOutputVisitor(Path("seeded_error_response_violation.py"))
+        seeded_error_response_violation.visit(
+            ast.parse(
+                "def leak(self, auth_token):\n"
+                "    detail = auth_token.strip()\n"
+                "    self._send_error(HTTPStatus.BAD_REQUEST, 'invalid', detail)\n"
+            )
+        )
+        assert seeded_error_response_violation.offenders == [(3, "leak")]
 
         seeded_journal_violation = _SensitiveOutputVisitor(Path("seeded_journal_violation.py"))
         seeded_journal_violation.visit(ast.parse("def leak(auth_token, journal):\n    journal.send(auth_token)\n"))
