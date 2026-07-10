@@ -175,3 +175,124 @@ async def test_watcher_queues_behind_daemon_maintenance_writer(
     release_maintenance.set()
     await asyncio.gather(maintenance_task, watcher_task)
     assert ingest_entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_default_cursor_initialization_waits_for_batch_writer_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    source = root / "session.jsonl"
+    source.write_text('{"role":"user","content":"a"}\n')
+    watcher_queued = asyncio.Event()
+
+    def observe(event: DaemonWriteEvent) -> None:
+        if event.phase == "queued" and event.actor == "watcher.live_batch":
+            watcher_queued.set()
+
+    coordinator = DaemonWriteCoordinator(observer=observe)
+    polylogue = cast(
+        Any,
+        SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db")),
+    )
+    watcher = LiveWatcher(
+        polylogue,
+        (WatchSource(name="test", root=root),),
+        debounce_s=0,
+        write_coordinator=coordinator,
+    )
+    assert not (tmp_path / "ops.db").exists()
+    watcher._pending_paths.add(source)
+    monkeypatch.setattr(watcher, "_needs_work_from_state", lambda *_args, **_kwargs: False)
+    maintenance_entered = asyncio.Event()
+    release_maintenance = asyncio.Event()
+
+    async def maintenance() -> None:
+        maintenance_entered.set()
+        await release_maintenance.wait()
+
+    maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
+    await maintenance_entered.wait()
+    flush_task = asyncio.create_task(watcher._flush_pending())
+    await watcher_queued.wait()
+
+    assert not (tmp_path / "ops.db").exists()
+    release_maintenance.set()
+    assert await flush_task is True
+    await maintenance_task
+    assert (tmp_path / "ops.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    source = root / "session.jsonl"
+    complete = b'{"role":"user","content":"a"}\n'
+    source.write_bytes(complete)
+    cursor = CursorStore(tmp_path / "index.db")
+    stat = source.stat()
+    cursor.set(
+        source,
+        len(complete),
+        byte_offset=len(complete),
+        last_complete_newline=len(complete),
+        parser_fingerprint="live-batched-v2",
+        content_fingerprint="base",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    source.write_bytes(complete + b'{"role":"assistant"')
+    watcher_queued = asyncio.Event()
+    deferral_attempted = asyncio.Event()
+
+    def observe(event: DaemonWriteEvent) -> None:
+        if event.phase == "queued" and event.actor == "watcher.live_batch":
+            watcher_queued.set()
+
+    original_set = cursor.set
+
+    def observed_set(*args: Any, **kwargs: Any) -> None:
+        deferral_attempted.set()
+        original_set(*args, **kwargs)
+
+    monkeypatch.setattr(cursor, "set", observed_set)
+    coordinator = DaemonWriteCoordinator(observer=observe)
+    watcher = _make_watcher(tmp_path, root)
+    watcher._cursor = cursor
+    watcher._batch_processor._cursor = cursor
+    watcher._write_coordinator = coordinator
+    watcher._pending_paths.add(source)
+    maintenance_entered = asyncio.Event()
+    release_maintenance = asyncio.Event()
+
+    async def maintenance() -> None:
+        maintenance_entered.set()
+        await release_maintenance.wait()
+
+    maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
+    await maintenance_entered.wait()
+    flush_task = asyncio.create_task(watcher._flush_pending())
+    queued_wait = asyncio.create_task(watcher_queued.wait())
+    deferral_wait = asyncio.create_task(deferral_attempted.wait())
+    done, pending = await asyncio.wait((queued_wait, deferral_wait), return_when=asyncio.FIRST_COMPLETED)
+
+    assert queued_wait in done
+    assert deferral_wait in pending
+    before_release = cursor.get_record(source)
+    assert before_release is not None
+    assert before_release.byte_size == len(complete)
+    release_maintenance.set()
+    assert await flush_task is True
+    await maintenance_task
+    await deferral_wait
+    record = cursor.get_record(source)
+    assert record is not None
+    assert record.byte_size == source.stat().st_size
+    assert record.byte_offset == len(complete)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -236,11 +237,24 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
 class CursorStore:
     """SQLite-backed live cursor store keyed by source path."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, initialize: bool = True) -> None:
         self._db_path = db_path
         self._ops_db_path = db_path.with_name("ops.db")
-        initialize_archive_database(self._ops_db_path, ArchiveTier.OPS)
-        self._mark_interrupted_ops_attempts()
+        self._initialize_lock = threading.Lock()
+        self._initialized = False
+        if initialize:
+            self.initialize()
+
+    def initialize(self) -> None:
+        """Create ops state once; callers may place this under writer ownership."""
+        if self._initialized:
+            return
+        with self._initialize_lock:
+            if self._initialized:
+                return
+            initialize_archive_database(self._ops_db_path, ArchiveTier.OPS)
+            self._initialized = True
+            self._mark_interrupted_ops_attempts()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
