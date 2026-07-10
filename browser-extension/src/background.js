@@ -13,6 +13,26 @@ const inFlightPostCommands = new Set();
 const pendingPostCommandAcks = new Map();
 let postPollTimer = 0;
 
+// ---- Capture retry queue --------------------------------------------------
+//
+// When the receiver is unreachable or returns a 5xx/429, a capture envelope
+// is durable-queued in chrome.storage.local instead of being dropped. A
+// background alarm drains the queue with per-entry exponential backoff. The
+// queue is intentionally bounded (both by entry count and serialized byte
+// size) — a wedged/offline receiver must not let this grow unbounded; the
+// oldest entries are evicted first and counted in `dropped_count`.
+const CAPTURE_QUEUE_KEY = "polylogueCaptureQueue";
+const CAPTURE_QUEUE_MAX_ENTRIES = 20;
+const CAPTURE_QUEUE_MAX_BYTES = 40 * 1024 * 1024;
+const CAPTURE_QUEUE_EMPTY = Object.freeze({ entries: [], dropped_count: 0 });
+const CAPTURE_RETRY_ALARM = "polylogueCaptureRetry";
+const CAPTURE_RETRY_BASE_DELAY_MS = 30000;
+const CAPTURE_RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
+const CAPTURE_RETRY_ALARM_PERIOD_MINUTES = 1;
+// In-memory mirror of the queue length so badge rendering never needs an
+// extra storage round trip; reloaded from storage once at SW startup.
+let cachedQueueLength = 0;
+
 function timeoutError(label, timeoutMs) {
   const error = new Error(`${label}_timeout_after_${timeoutMs}ms`);
   error.name = "PolylogueTimeoutError";
@@ -83,6 +103,228 @@ function sessionKey(provider, providerSessionId) {
   return `${provider || "unknown"}:${providerSessionId || "unknown"}`;
 }
 
+function retryDelayForAttempt(attempts) {
+  const delay = CAPTURE_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempts);
+  return Math.min(delay, CAPTURE_RETRY_MAX_DELAY_MS);
+}
+
+function byteLength(value) {
+  return new TextEncoder().encode(JSON.stringify(value)).length;
+}
+
+function envelopeSessionSummary(envelope) {
+  const session = envelope?.session || {};
+  return {
+    provider: session.provider || null,
+    providerSessionId: session.provider_session_id || null,
+    captureMode: session.provider_meta?.capture_fidelity || null,
+    assetAcquisition: session.provider_meta?.asset_acquisition || null,
+    turnCount: Array.isArray(session.turns) ? session.turns.length : null,
+    attachmentCount: Array.isArray(session.turns)
+      ? session.turns.reduce((count, turn) => count + (Array.isArray(turn.attachments) ? turn.attachments.length : 0), 0)
+      : null,
+  };
+}
+
+async function getCaptureQueue() {
+  const stored = await chrome.storage.local.get({ [CAPTURE_QUEUE_KEY]: CAPTURE_QUEUE_EMPTY });
+  const queue = stored[CAPTURE_QUEUE_KEY];
+  if (!queue || !Array.isArray(queue.entries)) return { entries: [], dropped_count: 0 };
+  return { entries: queue.entries, dropped_count: queue.dropped_count || 0 };
+}
+
+async function refreshQueueBadge() {
+  const stored = await chrome.storage.local.get({ polylogueState: {} });
+  const badge = badgeForState(stored.polylogueState || {});
+  await chrome.action.setBadgeText({ text: badge.text });
+  await chrome.action.setBadgeBackgroundColor({ color: badge.color });
+}
+
+async function saveCaptureQueue(queue) {
+  await chrome.storage.local.set({ [CAPTURE_QUEUE_KEY]: queue });
+  cachedQueueLength = queue.entries.length;
+  await refreshQueueBadge();
+  return queue;
+}
+
+async function ensureRetryAlarm() {
+  if (!chrome.alarms?.create) return;
+  await chrome.alarms.create(CAPTURE_RETRY_ALARM, {
+    delayInMinutes: CAPTURE_RETRY_ALARM_PERIOD_MINUTES,
+    periodInMinutes: CAPTURE_RETRY_ALARM_PERIOD_MINUTES,
+  });
+}
+
+async function clearRetryAlarm() {
+  if (!chrome.alarms?.clear) return;
+  await chrome.alarms.clear(CAPTURE_RETRY_ALARM);
+}
+
+function isRetryableCaptureError(error) {
+  if (!error) return false;
+  if (typeof error.status === "number") return error.status >= 500 || error.status === 429;
+  // No HTTP status means fetch itself rejected (offline, DNS failure, refused
+  // connection, CORS) rather than the receiver answering with an error body.
+  return true;
+}
+
+async function enqueueCaptureForRetry({ envelope, reason, error }) {
+  const entry = {
+    id: buildReceiverRequestId(),
+    envelope,
+    reason: reason || "content_script_capture",
+    enqueued_at: new Date().toISOString(),
+    attempts: 0,
+    next_attempt_at: new Date(Date.now() + retryDelayForAttempt(0)).toISOString(),
+    last_error: String(error?.message || error || "unknown"),
+  };
+  if (byteLength(entry) > CAPTURE_QUEUE_MAX_BYTES) {
+    // A single envelope over budget can never fit; queueing it would only
+    // evict every other pending retry to make room for one that still won't
+    // fit. Surface it as an immediate drop instead.
+    const queue = await getCaptureQueue();
+    await saveCaptureQueue({ entries: queue.entries, dropped_count: (queue.dropped_count || 0) + 1 });
+    await appendCaptureLog({
+      ok: false,
+      reason: "capture_queue_entry_over_budget",
+      error: entry.last_error,
+    });
+    return getCaptureQueue();
+  }
+  const queue = await getCaptureQueue();
+  let entries = [...queue.entries, entry];
+  let droppedCount = queue.dropped_count || 0;
+  while (entries.length > CAPTURE_QUEUE_MAX_ENTRIES || byteLength(entries) > CAPTURE_QUEUE_MAX_BYTES) {
+    entries = entries.slice(1);
+    droppedCount += 1;
+  }
+  const nextQueue = { entries, dropped_count: droppedCount };
+  await saveCaptureQueue(nextQueue);
+  await ensureRetryAlarm();
+  await appendCaptureLog({
+    ok: false,
+    reason: "capture_queued_for_retry",
+    queued_id: entry.id,
+    error: entry.last_error,
+    queue_length: entries.length,
+  });
+  return nextQueue;
+}
+
+async function drainCaptureQueue(trigger = "alarm") {
+  const queue = await getCaptureQueue();
+  if (!queue.entries.length) {
+    await clearRetryAlarm();
+    return { drained: 0, remaining: 0 };
+  }
+  const now = Date.now();
+  const remaining = [];
+  let drained = 0;
+  for (const entry of queue.entries) {
+    const dueAt = Date.parse(entry.next_attempt_at || "") || 0;
+    if (dueAt > now) {
+      remaining.push(entry);
+      continue;
+    }
+    const summary = envelopeSessionSummary(entry.envelope);
+    try {
+      const result = await postJson("/v1/browser-captures", entry.envelope);
+      drained += 1;
+      await updateSessionLedger({
+        provider: summary.provider || result.provider,
+        providerSessionId: summary.providerSessionId || result.provider_session_id,
+        patch: {
+          capture_mode: summary.captureMode,
+          asset_acquisition: summary.assetAcquisition,
+          turn_count: summary.turnCount,
+          attachment_count: summary.attachmentCount,
+          receiver_request_id: result.receiver_request_id || null,
+          artifact_ref: result.artifact_ref || null,
+          last_error: null,
+        },
+      });
+      await appendCaptureLog({
+        ok: true,
+        reason: "capture_retry_drained",
+        provider: summary.provider || result.provider,
+        provider_session_id: summary.providerSessionId || result.provider_session_id,
+        capture_mode: summary.captureMode,
+        receiver_request_id: result.receiver_request_id || null,
+        artifact_ref: result.artifact_ref || null,
+        queued_id: entry.id,
+        attempts: entry.attempts,
+      });
+      await setState({
+        online: true,
+        captured: true,
+        last_capture: result,
+        provider: summary.provider || result.provider,
+        provider_session_id: summary.providerSessionId || result.provider_session_id,
+        capture_mode: summary.captureMode,
+        asset_acquisition: summary.assetAcquisition,
+        turn_count: summary.turnCount,
+        attachment_count: summary.attachmentCount,
+        last_receiver_request_id: result.receiver_request_id || null,
+      });
+    } catch (error) {
+      const attempts = entry.attempts + 1;
+      remaining.push({
+        ...entry,
+        attempts,
+        last_error: String(error.message || error),
+        next_attempt_at: new Date(now + retryDelayForAttempt(attempts)).toISOString(),
+      });
+      await appendCaptureLog({
+        ok: false,
+        reason: "capture_retry_failed",
+        queued_id: entry.id,
+        attempts,
+        error: String(error.message || error),
+      });
+    }
+  }
+  const nextQueue = { entries: remaining, dropped_count: queue.dropped_count || 0 };
+  await saveCaptureQueue(nextQueue);
+  if (!remaining.length) {
+    await clearRetryAlarm();
+  } else if (trigger === "alarm") {
+    await appendDebugLog({ stage: "capture_retry_drain", drained, remaining: remaining.length });
+  }
+  return { drained, remaining: remaining.length };
+}
+
+async function loadCaptureQueueIntoCache() {
+  const queue = await getCaptureQueue();
+  cachedQueueLength = queue.entries.length;
+  if (queue.entries.length) await ensureRetryAlarm();
+  return queue;
+}
+
+async function checkReceiverHealth() {
+  const settings = await receiverSettings();
+  const requestId = buildReceiverRequestId();
+  try {
+    const response = await fetch(`${settings.baseUrl}/api/health`, {
+      headers: await requestHeaders({ requestId }),
+    });
+    const body = await response.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return { ok: false, status: "unreachable", detail: "non_json_response" };
+    }
+    if (body.error === "unauthorized") {
+      return { ok: true, status: "unauthorized", detail: body.error };
+    }
+    if (body.ok === true) {
+      return { ok: true, status: "ok", detail: null };
+    }
+    // Any other well-formed JSON body still proves the receiver answered —
+    // report it as reachable with whatever error detail it supplied.
+    return { ok: true, status: "error", detail: body.error || `http_${response.status}` };
+  } catch (error) {
+    return { ok: false, status: "unreachable", detail: String(error.message || error) };
+  }
+}
+
 async function appendCaptureLog(entry) {
   const stored = await chrome.storage.local.get({ polylogueCaptureLog: [] });
   const prior = Array.isArray(stored.polylogueCaptureLog) ? stored.polylogueCaptureLog : [];
@@ -149,6 +391,9 @@ async function updateSessionLedger({ provider, providerSessionId, patch }) {
 }
 
 function badgeForState(state) {
+  if (cachedQueueLength > 0) {
+    return { text: cachedQueueLength > 99 ? "99+" : String(cachedQueueLength), color: "#9a5b00" };
+  }
   if (!state.online) return { text: "off", color: "#9b2c2c" };
   const archiveState = state.archive_state?.state;
   if (archiveState === "archived" || state.captured) return { text: "ok", color: "#14764e" };
@@ -208,6 +453,7 @@ async function postJson(path, payload) {
     if (!response.ok) {
       const error = new Error(body.error || `HTTP ${response.status}`);
       error.receiverRequestId = receiverRequestId;
+      error.status = response.status;
       throw error;
     }
     return { ...body, receiver_request_id: receiverRequestId };
@@ -350,6 +596,8 @@ async function captureTab(tab, reason = "background") {
         provider,
         provider_session_id: providerSessionId,
         capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
+        asset_acquisition: envelopeSession.provider_meta?.asset_acquisition || null,
+        turn_count: Array.isArray(envelopeSession.turns) ? envelopeSession.turns.length : null,
         last_receiver_request_id:
           resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null
       });
@@ -641,6 +889,13 @@ function stopPostPolling() {
 }
 
 void startPostPolling();
+void loadCaptureQueueIntoCache();
+
+chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (alarm?.name === CAPTURE_RETRY_ALARM) {
+    void drainCaptureQueue("alarm");
+  }
+});
 
 chrome.runtime.onInstalled?.addListener(() => {
   void refreshCurrentActiveTab("extension_installed");
@@ -672,17 +927,39 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.capture") {
-      const result = await postJson("/v1/browser-captures", message.envelope);
-      const session = message.envelope?.session || {};
+      const summary = envelopeSessionSummary(message.envelope);
+      let result;
+      try {
+        result = await postJson("/v1/browser-captures", message.envelope);
+      } catch (error) {
+        if (isRetryableCaptureError(error)) {
+          await enqueueCaptureForRetry({ envelope: message.envelope, reason: message.reason, error });
+          await setState({
+            online: false,
+            captured: false,
+            provider: summary.provider,
+            provider_session_id: summary.providerSessionId,
+            error: String(error.message || error),
+            last_receiver_request_id: error.receiverRequestId || null,
+          });
+          sendResponse({
+            ok: false,
+            queued: true,
+            error: String(error.message || error),
+            receiver_request_id: error.receiverRequestId || null,
+          });
+          return;
+        }
+        throw error;
+      }
       await updateSessionLedger({
-        provider: session.provider || result.provider,
-        providerSessionId: session.provider_session_id || result.provider_session_id,
+        provider: summary.provider || result.provider,
+        providerSessionId: summary.providerSessionId || result.provider_session_id,
         patch: {
-          capture_mode: session.provider_meta?.capture_fidelity || null,
-          turn_count: Array.isArray(session.turns) ? session.turns.length : null,
-          attachment_count: Array.isArray(session.turns)
-            ? session.turns.reduce((count, turn) => count + (Array.isArray(turn.attachments) ? turn.attachments.length : 0), 0)
-            : null,
+          capture_mode: summary.captureMode,
+          asset_acquisition: summary.assetAcquisition,
+          turn_count: summary.turnCount,
+          attachment_count: summary.attachmentCount,
           receiver_request_id: result.receiver_request_id || null,
           artifact_ref: result.artifact_ref || null,
           last_error: null,
@@ -691,9 +968,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       await appendCaptureLog({
         ok: true,
         reason: message.reason || "content_script_capture",
-        provider: session.provider || result.provider,
-        provider_session_id: session.provider_session_id || result.provider_session_id,
-        capture_mode: session.provider_meta?.capture_fidelity || null,
+        provider: summary.provider || result.provider,
+        provider_session_id: summary.providerSessionId || result.provider_session_id,
+        capture_mode: summary.captureMode,
         receiver_request_id: result.receiver_request_id || null,
         artifact_ref: result.artifact_ref || null,
       });
@@ -701,12 +978,46 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         online: true,
         captured: true,
         last_capture: result,
-        provider: session.provider || result.provider,
-        provider_session_id: session.provider_session_id || result.provider_session_id,
-        capture_mode: session.provider_meta?.capture_fidelity || null,
+        provider: summary.provider || result.provider,
+        provider_session_id: summary.providerSessionId || result.provider_session_id,
+        capture_mode: summary.captureMode,
+        asset_acquisition: summary.assetAcquisition,
+        turn_count: summary.turnCount,
+        attachment_count: summary.attachmentCount,
         last_receiver_request_id: result.receiver_request_id || null
       });
+      // Receiver just proved reachable — flush anything queued from earlier
+      // outages before returning this capture's result.
+      void drainCaptureQueue("post_success");
       sendResponse(result);
+      return;
+    }
+    if (message.type === "polylogue.getCaptureQueue") {
+      const queue = await getCaptureQueue();
+      sendResponse({
+        ok: true,
+        dropped_count: queue.dropped_count,
+        entries: queue.entries.map((entry) => ({
+          id: entry.id,
+          reason: entry.reason,
+          enqueued_at: entry.enqueued_at,
+          attempts: entry.attempts,
+          next_attempt_at: entry.next_attempt_at,
+          last_error: entry.last_error,
+          provider: entry.envelope?.session?.provider || null,
+          provider_session_id: entry.envelope?.session?.provider_session_id || null,
+        })),
+      });
+      return;
+    }
+    if (message.type === "polylogue.retryCaptureQueue") {
+      const outcome = await drainCaptureQueue("manual");
+      sendResponse({ ok: true, ...outcome });
+      return;
+    }
+    if (message.type === "polylogue.checkReceiverHealth") {
+      const health = await checkReceiverHealth();
+      sendResponse(health);
       return;
     }
     if (message.type === "polylogue.archiveState") {
