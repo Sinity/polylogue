@@ -8,7 +8,6 @@ import re
 import shlex
 import sqlite3
 import subprocess
-import sys
 from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass
@@ -66,7 +65,6 @@ _SYSTEM_RESOURCE_NAMES = frozenset(
     }
 )
 _WORK_SCOPE_RE = re.compile(r"(?:sinnix-(?:background|build|nix-build)|polylogue[^/]*(?:rebuild|verify|test))")
-_SESSION_ARG_RE = re.compile(r"(?:--session-id|--resume|--thread-id)(?:=|\s+)([^\s]+)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,11 +101,19 @@ def build_coordination_envelope(
     resource_limit = max(1, min(limit, 50))
 
     repo = _repo_payload(root_cwd, command_runner)
-    self_payload = _self_payload(root_cwd, repo)
+    process_result, process_rows = _process_snapshot(command_runner)
+    self_payload = _self_payload(root_cwd, repo, process_rows, process_result)
     work_item = _work_item_payload(root_cwd, repo, command_runner)
     beads = _beads_payload(root_cwd, repo, command_runner)
-    all_peers, all_resources = _process_payloads(
-        command_runner,
+    all_peers = _logical_peer_payloads(
+        process_rows,
+        process_result,
+        owner_pid=self_payload.owner_pid,
+        invocation_pid=self_payload.invocation_pid,
+    )
+    all_resources = _resource_scope_payloads(
+        process_rows,
+        process_result,
         root_cwd,
         archive_resource=_configured_archive_resource(),
     )
@@ -231,6 +237,21 @@ def _coordination_counts(payload: AgentCoordinationPayload) -> dict[str, int]:
         counts["beads_hooks"] = len(payload.beads.hooks)
         counts["beads_gates"] = len(payload.beads.gates)
         counts["beads_merge_waiters"] = len(payload.beads.merge_slot.waiters) if payload.beads.merge_slot else 0
+        counts["beads_gate_text_chars"] = sum(
+            _text_chars(gate.id, gate.title, gate.status, gate.gate_type, gate.await_id) for gate in payload.beads.gates
+        )
+        merge_slot = payload.beads.merge_slot
+        counts["beads_merge_text_chars"] = (
+            _text_chars(
+                merge_slot.id,
+                merge_slot.status,
+                merge_slot.holder,
+                merge_slot.error,
+                *merge_slot.waiters,
+            )
+            if merge_slot is not None
+            else 0
+        )
     if payload.archive is not None:
         counts["archive_hook_states"] = len(payload.archive.hook_flow_states)
         counts["archive_hook_gaps"] = len(payload.archive.hook_flow_gaps)
@@ -272,17 +293,7 @@ def _compact_coordination_payload(
         )
         for peer in payload.peers[:4]
     )
-    resources = tuple(
-        episode.model_copy(
-            update={
-                "command": _short_to(episode.command, 140),
-                "resources": episode.resources[:3],
-                "component_pids": episode.component_pids[:4],
-                "provenance": _compact_provenance(episode.provenance),
-            }
-        )
-        for episode in payload.resource_episodes[:4]
-    )
+    resources = tuple(_compact_resource_episode(episode) for episode in payload.resource_episodes[:4])
     overlaps = tuple(
         overlap.model_copy(update={"refs": overlap.refs[:4], "provenance": _compact_provenance(overlap.provenance)})
         for overlap in payload.overlaps[:4]
@@ -339,20 +350,20 @@ def _compact_coordination_payload(
             update={
                 "hook_flow_states": dict(tuple(sorted(archive.hook_flow_states.items()))[:6]),
                 "hook_flow_gaps": archive.hook_flow_gaps[:4],
-                "daemon_processes": (),
+                "daemon_processes": tuple(
+                    _compact_daemon_reference(episode) for episode in archive.daemon_processes[:2]
+                ),
                 "provenance": _compact_provenance(archive.provenance),
             }
         )
     beads = payload.beads
     if beads is not None:
-        merge_slot = beads.merge_slot
-        if merge_slot is not None:
-            merge_slot = merge_slot.model_copy(update={"waiters": merge_slot.waiters[:3]})
         beads = beads.model_copy(
             update={
+                "root": _short_to(beads.root, 200),
                 "hooks": beads.hooks[:3],
-                "gates": beads.gates[:2],
-                "merge_slot": merge_slot,
+                "gates": tuple(_compact_beads_gate(gate) for gate in beads.gates[:2]),
+                "merge_slot": _compact_beads_merge_slot(beads.merge_slot),
                 "provenance": _compact_provenance(beads.provenance),
             }
         )
@@ -371,6 +382,7 @@ def _compact_coordination_payload(
             "subagent_exchanges": (),
             "proof_refs": proofs,
             "context_flow_refs": context_refs,
+            "beads": beads,
             "advisories": tuple(_short_to(item, 180) for item in payload.advisories[:3]),
             "provenance": (),
         }
@@ -382,9 +394,7 @@ def _compact_coordination_payload(
         compact = compact.model_copy(update={family: ()})
         compact = _finalize_projection(compact, total_counts=total_counts, detail=False)
     if _serialized_size(compact) > _COMPACT_BYTE_BUDGET and compact.beads is not None:
-        compact = compact.model_copy(
-            update={"beads": compact.beads.model_copy(update={"hooks": (), "gates": (), "merge_slot": None})}
-        )
+        compact = compact.model_copy(update={"beads": compact.beads.model_copy(update={"hooks": ()})})
         compact = _finalize_projection(compact, total_counts=total_counts, detail=False)
     if _serialized_size(compact) > _COMPACT_BYTE_BUDGET and compact.archive is not None:
         compact = compact.model_copy(
@@ -396,11 +406,184 @@ def _compact_coordination_payload(
         )
         compact = _finalize_projection(compact, total_counts=total_counts, detail=False)
     if _serialized_size(compact) > _COMPACT_BYTE_BUDGET:
+        archive_writers = tuple(episode for episode in compact.resource_episodes if episode.kind == "daemon")[:2]
         compact = compact.model_copy(
-            update={"peers": compact.peers[:1], "resource_episodes": compact.resource_episodes[:1]}
+            update={
+                "peers": compact.peers[:1],
+                "resource_episodes": archive_writers or compact.resource_episodes[:1],
+            }
         )
         compact = _finalize_projection(compact, total_counts=total_counts, detail=False)
+    if _serialized_size(compact) > _COMPACT_BYTE_BUDGET and compact.repo.changed_paths:
+        compact = compact.model_copy(update={"repo": compact.repo.model_copy(update={"changed_paths": ()})})
+        compact = _finalize_projection(compact, total_counts=total_counts, detail=False)
+    if _serialized_size(compact) > _COMPACT_BYTE_BUDGET:
+        compact = _terminal_compact_payload(compact, total_counts=total_counts)
     return compact
+
+
+def _compact_resource_episode(
+    episode: CoordinationResourceEpisodePayload,
+) -> CoordinationResourceEpisodePayload:
+    return episode.model_copy(
+        update={
+            "command": _short_to(episode.command, 100),
+            "scope": None if episode.unit else episode.scope,
+            "resources": episode.resources[:2],
+            "component_pids": episode.component_pids[:4],
+            "provenance": _compact_provenance(episode.provenance),
+        }
+    )
+
+
+def _compact_daemon_reference(
+    episode: CoordinationResourceEpisodePayload,
+) -> CoordinationResourceEpisodePayload:
+    resources = episode.resources[:1]
+    return episode.model_copy(
+        update={
+            "command": "",
+            "scope": None,
+            "cwd": None,
+            "resource_count": len(resources),
+            "resources": resources,
+            "component_count": 0,
+            "component_pids": (),
+            "provenance": _compact_provenance(episode.provenance),
+        }
+    )
+
+
+def _compact_beads_gate(gate: CoordinationBeadsGatePayload, *, limit: int = 96) -> CoordinationBeadsGatePayload:
+    return gate.model_copy(
+        update={
+            "id": _short_optional(gate.id, limit),
+            "title": _short_optional(gate.title, limit),
+            "status": _short_optional(gate.status, 32),
+            "gate_type": _short_optional(gate.gate_type, 32),
+            "await_id": _short_optional(gate.await_id, limit),
+        }
+    )
+
+
+def _compact_beads_merge_slot(
+    merge_slot: CoordinationBeadsMergeSlotPayload | None,
+    *,
+    limit: int = 96,
+) -> CoordinationBeadsMergeSlotPayload | None:
+    if merge_slot is None:
+        return None
+    return merge_slot.model_copy(
+        update={
+            "id": _short_optional(merge_slot.id, limit),
+            "status": _short_optional(merge_slot.status, 32),
+            "holder": _short_optional(merge_slot.holder, limit),
+            "waiters": tuple(_short_to(waiter, limit) for waiter in merge_slot.waiters[:3]),
+            "error": _short_optional(merge_slot.error, 160),
+        }
+    )
+
+
+def _terminal_compact_payload(
+    payload: AgentCoordinationPayload,
+    *,
+    total_counts: dict[str, int],
+) -> AgentCoordinationPayload:
+    writers = tuple(
+        _compact_daemon_reference(episode) for episode in payload.resource_episodes if episode.kind == "daemon"
+    )[:2]
+    if not writers and payload.resource_episodes:
+        writers = (_compact_resource_episode(payload.resource_episodes[0]),)
+    archive = payload.archive
+    if archive is not None:
+        archive = archive.model_copy(
+            update={
+                "archive_root": _short_to(archive.archive_root, 160),
+                "index_db": _short_to(archive.index_db, 180),
+                "hook_flow_states": {},
+                "hook_flow_gaps": (),
+                "daemon_processes": tuple(
+                    _compact_daemon_reference(episode) for episode in archive.daemon_processes[:2]
+                ),
+                "provenance": _compact_provenance(archive.provenance),
+            }
+        )
+    beads = payload.beads
+    if beads is not None:
+        beads = beads.model_copy(
+            update={
+                "root": _short_to(beads.root, 120),
+                "hooks": (),
+                "gates": tuple(_compact_beads_gate(gate, limit=64) for gate in beads.gates[:1]),
+                "merge_slot": _compact_beads_merge_slot(beads.merge_slot, limit=64),
+                "provenance": _compact_provenance(beads.provenance),
+            }
+        )
+    minimal = payload.model_copy(
+        update={
+            "repo": payload.repo.model_copy(
+                update={
+                    "cwd": _short_to(payload.repo.cwd, 120),
+                    "root": _short_optional(payload.repo.root, 120),
+                    "branch": _short_optional(payload.repo.branch, 80),
+                    "changed_paths": (),
+                    "provenance": _compact_provenance(payload.repo.provenance),
+                }
+            ),
+            "self": payload.self.model_copy(
+                update={
+                    "logical_id": _short_optional(payload.self.logical_id, 120),
+                    "cwd": _short_to(payload.self.cwd, 120),
+                    "branch": _short_optional(payload.self.branch, 80),
+                    "session_ref": _short_optional(payload.self.session_ref, 120),
+                    "provenance": _compact_provenance(payload.self.provenance),
+                }
+            ),
+            "work_item": payload.work_item.model_copy(
+                update={
+                    "ref": _short_optional(payload.work_item.ref, 80),
+                    "title": _short_optional(payload.work_item.title, 120),
+                    "status": _short_optional(payload.work_item.status, 32),
+                    "assignee": _short_optional(payload.work_item.assignee, 80),
+                    "fields": {},
+                    "provenance": _compact_provenance(payload.work_item.provenance),
+                }
+            ),
+            "peers": (),
+            "resource_episodes": writers,
+            "overlaps": (),
+            "handoff": (),
+            "archive": archive,
+            "session_trees": (),
+            "activity_episodes": (),
+            "subagent_exchanges": (),
+            "proof_refs": (),
+            "context_flow_refs": (),
+            "beads": beads,
+            "advisories": (),
+            "provenance": (),
+        }
+    )
+    minimal = _finalize_projection(minimal, total_counts=total_counts, detail=False)
+    if _serialized_size(minimal) <= _COMPACT_BYTE_BUDGET:
+        return minimal
+    archive = minimal.archive
+    if archive is not None:
+        archive = archive.model_copy(update={"daemon_processes": ()})
+    beads = minimal.beads
+    if beads is not None:
+        beads = beads.model_copy(update={"merge_slot": None})
+    irreducible = minimal.model_copy(
+        update={
+            "resource_episodes": minimal.resource_episodes[:1],
+            "archive": archive,
+            "beads": beads,
+        }
+    )
+    irreducible = _finalize_projection(irreducible, total_counts=total_counts, detail=False)
+    if _serialized_size(irreducible) > _COMPACT_BYTE_BUDGET:
+        raise RuntimeError("compact coordination payload exceeds its fixed-field byte budget")
+    return irreducible
 
 
 def _compact_provenance(
@@ -408,7 +591,21 @@ def _compact_provenance(
     *,
     keep_note: bool = False,
 ) -> CoordinationProvenancePayload:
-    return provenance.model_copy(update={"command": (), "note": provenance.note if keep_note else None})
+    return provenance.model_copy(
+        update={
+            "command": (),
+            "path": _short_optional(provenance.path, 200),
+            "note": _short_optional(provenance.note, 160) if keep_note else None,
+        }
+    )
+
+
+def _short_optional(value: str | None, limit: int) -> str | None:
+    return _short_to(value, limit) if value is not None else None
+
+
+def _text_chars(*values: str | None) -> int:
+    return sum(len(value) for value in values if value is not None)
 
 
 def _short_to(value: str, limit: int) -> str:
@@ -522,26 +719,133 @@ def _git_one(root: Path, runner: CommandRunner, *args: str) -> str | None:
     return result.stdout.strip() or None
 
 
-def _self_payload(cwd: Path, repo: CoordinationRepoPayload) -> CoordinationSelfPayload:
-    agent_kind = _infer_agent_kind()
+def _self_payload(
+    cwd: Path,
+    repo: CoordinationRepoPayload,
+    rows: tuple[_ProcessRow, ...],
+    process_result: CommandResult,
+) -> CoordinationSelfPayload:
+    invocation_pid = os.getpid()
+    explicit = _explicit_session_identity()
+    if explicit is not None:
+        env_name, declared_kind, session_ref = explicit
+        owner = _nearest_logical_agent_owner(rows, invocation_pid, expected_kind=declared_kind)
+        agent_kind = declared_kind or (owner[1] if owner is not None else "unknown")
+        logical_id = _logical_agent_id(agent_kind, session_ref)
+        return CoordinationSelfPayload(
+            identity_status="resolved",
+            agent_kind=agent_kind,
+            logical_id=logical_id,
+            owner_pid=owner[0].pid if owner is not None else None,
+            invocation_pid=invocation_pid,
+            cwd=str(cwd),
+            branch=repo.branch,
+            session_ref=session_ref,
+            provenance=_prov(
+                "caller-environment",
+                command=process_result.args,
+                confidence=0.98,
+                freshness="live",
+                note=f"stable session identity from {env_name}; invocation PID retained separately",
+            ),
+        )
+    owner = _nearest_logical_agent_owner(rows, invocation_pid)
+    if owner is not None:
+        owner_row, agent_kind = owner
+        ancestor_session_ref = _session_ref(owner_row.command)
+        logical_id = _logical_agent_id(agent_kind, ancestor_session_ref, fallback_pid=owner_row.pid)
+        return CoordinationSelfPayload(
+            identity_status="resolved",
+            agent_kind=agent_kind,
+            logical_id=logical_id,
+            owner_pid=owner_row.pid,
+            invocation_pid=invocation_pid,
+            cwd=str(cwd),
+            branch=repo.branch,
+            session_ref=ancestor_session_ref,
+            provenance=_prov(
+                "process-tree",
+                command=process_result.args,
+                confidence=0.8 if ancestor_session_ref else 0.7,
+                freshness="live",
+                note="nearest logical agent ancestor owns the inspection subprocess",
+            ),
+        )
     return CoordinationSelfPayload(
-        agent_kind=agent_kind,
-        pid=os.getpid(),
+        identity_status="unknown",
+        agent_kind="unknown",
+        invocation_pid=invocation_pid,
         cwd=str(cwd),
         branch=repo.branch,
-        session_ref=os.environ.get("POLYLOGUE_SESSION_REF") or os.environ.get("CODEX_SESSION_ID"),
-        provenance=_prov("process", confidence=0.8, freshness="live", note="derived from current process environment"),
+        provenance=_prov(
+            "caller-identity",
+            command=process_result.args,
+            confidence=0.0,
+            freshness="live",
+            note="no stable session metadata or logical agent ancestor; invocation process is not treated as an agent",
+        ),
     )
 
 
-def _infer_agent_kind() -> str:
-    argv = " ".join(sys.argv).lower()
-    env = " ".join(f"{key}={value}" for key, value in os.environ.items() if key.startswith(("CODEX", "CLAUDE")))
-    needle = f"{argv} {env.lower()}"
-    for name in _AGENT_NAMES:
-        if name in needle:
-            return name
-    return "agent"
+def _explicit_session_identity() -> tuple[str, str | None, str] | None:
+    specs = (
+        ("POLYLOGUE_SESSION_REF", None),
+        ("CODEX_THREAD_ID", "codex"),
+        ("CODEX_SESSION_ID", "codex"),
+        ("CLAUDE_SESSION_ID", "claude"),
+        ("GEMINI_SESSION_ID", "gemini"),
+    )
+    for env_name, declared_kind in specs:
+        raw = os.environ.get(env_name)
+        if raw is None or not raw.strip():
+            continue
+        session_ref = raw.strip()
+        return env_name, declared_kind or _agent_kind_from_session_ref(session_ref), session_ref
+    return None
+
+
+def _agent_kind_from_session_ref(session_ref: str) -> str | None:
+    prefixes = {
+        "codex-session:": "codex",
+        "claude-code-session:": "claude",
+        "gemini-cli-session:": "gemini",
+    }
+    return next((kind for prefix, kind in prefixes.items() if session_ref.startswith(prefix)), None)
+
+
+def _nearest_logical_agent_owner(
+    rows: tuple[_ProcessRow, ...],
+    invocation_pid: int,
+    *,
+    expected_kind: str | None = None,
+) -> tuple[_ProcessRow, str] | None:
+    by_pid = {row.pid: row for row in rows}
+    current = by_pid.get(invocation_pid)
+    if current is None:
+        return None
+    parent_pid = current.ppid
+    seen = {invocation_pid}
+    while parent_pid in by_pid and parent_pid not in seen:
+        seen.add(parent_pid)
+        row = by_pid[parent_pid]
+        kind = _agent_kind_for_process(row)
+        if kind is not None and not _is_agent_component(row) and (expected_kind is None or kind == expected_kind):
+            return row, kind
+        parent_pid = row.ppid
+    return None
+
+
+def _logical_agent_id(agent_kind: str, session_ref: str | None, *, fallback_pid: int | None = None) -> str:
+    if session_ref is not None:
+        return f"{agent_kind}:{_logical_session_token(session_ref)}"
+    return f"{agent_kind}:pid:{fallback_pid}" if fallback_pid is not None else f"{agent_kind}:unknown"
+
+
+def _logical_session_token(session_ref: str) -> str:
+    for prefix in ("codex-session:", "claude-code-session:", "gemini-cli-session:"):
+        if session_ref.startswith(prefix):
+            return session_ref.removeprefix(prefix)
+    return session_ref
 
 
 def _work_item_payload(cwd: Path, repo: CoordinationRepoPayload, runner: CommandRunner) -> CoordinationWorkItemPayload:
@@ -738,22 +1042,12 @@ def _bool_or_none(value: object) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def _process_payloads(
-    runner: CommandRunner,
-    cwd: Path,
-    *,
-    archive_resource: str | None,
-) -> tuple[tuple[CoordinationPeerPayload, ...], tuple[CoordinationResourceEpisodePayload, ...]]:
+def _process_snapshot(runner: CommandRunner) -> tuple[CommandResult, tuple[_ProcessRow, ...]]:
     result = runner(_PROCESS_COMMAND, None)
     if result.returncode != 0:
-        return (), ()
+        return result, ()
     rows = tuple(parsed for line in result.stdout.splitlines() if (parsed := _parse_ps_row(line)) is not None)
-    return _logical_peer_payloads(rows, result), _resource_scope_payloads(
-        rows,
-        result,
-        cwd,
-        archive_resource=archive_resource,
-    )
+    return result, rows
 
 
 def _configured_archive_resource() -> str | None:
@@ -778,14 +1072,31 @@ def _parse_ps_row(row: str) -> _ProcessRow | None:
 def _logical_peer_payloads(
     rows: tuple[_ProcessRow, ...],
     result: CommandResult,
+    *,
+    owner_pid: int | None,
+    invocation_pid: int,
 ) -> tuple[CoordinationPeerPayload, ...]:
     by_pid = {row.pid: row for row in rows}
+    self_tree_pids: set[int] = set()
+    if owner_pid is not None and owner_pid in by_pid:
+        self_tree_pids.add(owner_pid)
+        self_tree_pids.update(row.pid for row in rows if _descends_from(row, owner_pid, by_pid))
+        owner_kind = _agent_kind_for_process(by_pid[owner_pid])
+        parent_pid = by_pid[owner_pid].ppid
+        # Sessionless same-provider ancestors are launch wrappers. A
+        # session-bearing ancestor is a distinct nested agent and stays visible.
+        while parent_pid in by_pid:
+            parent = by_pid[parent_pid]
+            if _agent_kind_for_process(parent) != owner_kind or _session_ref(parent.command) is not None:
+                break
+            self_tree_pids.add(parent_pid)
+            parent_pid = parent.ppid
     candidate_kinds = {row.pid: kind for row in rows if (kind := _agent_kind_for_process(row)) is not None}
     logical_kinds = {pid: kind for pid, kind in candidate_kinds.items() if not _is_agent_component(by_pid[pid])}
     roots: dict[int, list[_ProcessRow]] = {}
     component_ancestors: dict[int, set[int]] = {}
     for row in rows:
-        if row.pid not in logical_kinds or row.pid == os.getpid():
+        if row.pid not in logical_kinds or row.pid == invocation_pid or row.pid in self_tree_pids:
             continue
         root_pid = row.pid
         parent_pid = row.ppid
@@ -804,12 +1115,13 @@ def _logical_peer_payloads(
     peers: list[CoordinationPeerPayload] = []
     for root_pid, agent_rows in sorted(roots.items()):
         root = by_pid[root_pid]
-        current = by_pid.get(os.getpid())
-        if _is_agent_component(root) or (
-            current is not None and (current.pid == root_pid or _descends_from(current, root_pid, by_pid))
-        ):
+        if _is_agent_component(root) or root_pid == owner_pid:
             continue
-        descendants = tuple(row.pid for row in rows if row.pid != root_pid and _descends_from(row, root_pid, by_pid))
+        descendants = tuple(
+            row.pid
+            for row in rows
+            if row.pid != root_pid and row.pid not in self_tree_pids and _descends_from(row, root_pid, by_pid)
+        )
         kind = logical_kinds[root_pid]
         session_ref = _session_ref(root.command)
         component_pids = tuple(
@@ -825,7 +1137,7 @@ def _logical_peer_payloads(
             CoordinationPeerPayload(
                 pid=root_pid,
                 kind=kind,
-                logical_id=f"{kind}:{session_ref or root_pid}",
+                logical_id=_logical_agent_id(kind, session_ref, fallback_pid=root_pid),
                 session_ref=session_ref,
                 command=_short(root.command),
                 cwd=_proc_cwd(root_pid),
@@ -927,7 +1239,13 @@ def _resource_scope_payloads(
                     archive_resource=archive_resource,
                 )
             )
-    return tuple(sorted(episodes, key=lambda episode: (episode.unit or "", episode.pid)))
+    return tuple(sorted(episodes, key=_resource_priority))
+
+
+def _resource_priority(episode: CoordinationResourceEpisodePayload) -> tuple[int, str, int]:
+    text = f"{episode.unit or ''} {episode.command}".lower()
+    archive_writer = episode.kind == "daemon" or "polylogue-index-rebuild" in text or "rebuild-index" in text
+    return (0 if archive_writer else 1, episode.unit or "", episode.pid)
 
 
 def _resource_payload(
@@ -1017,8 +1335,23 @@ def _systemd_unit(cgroup: str) -> str | None:
 
 
 def _session_ref(command: str) -> str | None:
-    match = _SESSION_ARG_RE.search(command)
-    return match.group(1) if match else None
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    names = ("--session-id", "--resume", "--thread-id")
+    for index, token in enumerate(tokens):
+        for name in names:
+            prefix = f"{name}="
+            if token.startswith(prefix):
+                value = token.removeprefix(prefix)
+                return value if value and not value.startswith("-") else None
+            if token == name:
+                if index + 1 >= len(tokens):
+                    return None
+                value = tokens[index + 1]
+                return value if value and not value.startswith("-") else None
+    return None
 
 
 def _command_resource_refs(command: str, process_cwd: str | None, repo_cwd: Path) -> tuple[str, ...]:

@@ -31,7 +31,15 @@ def _payload(view: str = "status") -> AgentCoordinationPayload:
         generated_at="2026-07-04T18:00:00+00:00",
         repo=CoordinationRepoPayload(cwd="/repo", root="/repo", branch="feature/test", provenance=provenance),
         self=CoordinationSelfPayload(
-            agent_kind="codex", pid=123, cwd="/repo", branch="feature/test", provenance=provenance
+            identity_status="resolved",
+            agent_kind="codex",
+            logical_id="codex:thread",
+            owner_pid=123,
+            invocation_pid=456,
+            cwd="/repo",
+            branch="feature/test",
+            session_ref="thread",
+            provenance=provenance,
         ),
         work_item=CoordinationWorkItemPayload(
             source="beads", ref="polylogue-s7ae.1", confidence=0.95, provenance=provenance
@@ -105,6 +113,10 @@ def test_agent_coordination_tool_returns_shared_payload(
     body = json.loads(raw)
 
     assert body["view"] == "work-item"
+    assert body["self"]["identity_status"] == "resolved"
+    assert body["self"]["logical_id"] == "codex:thread"
+    assert body["self"]["owner_pid"] == 123
+    assert body["self"]["invocation_pid"] == 456
     assert body["work_item"]["source"] == "beads"
     assert body["work_item"]["ref"] == "polylogue-s7ae.1"
     assert body["session_trees"][0]["target_session_id"] == "codex-session:thread"

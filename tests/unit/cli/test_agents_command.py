@@ -35,7 +35,15 @@ def _payload(view: str = "status") -> AgentCoordinationPayload:
             provenance=provenance,
         ),
         self=CoordinationSelfPayload(
-            agent_kind="codex", pid=123, cwd="/repo", branch="feature/test", provenance=provenance
+            identity_status="resolved",
+            agent_kind="codex",
+            logical_id="codex:thread",
+            owner_pid=123,
+            invocation_pid=456,
+            cwd="/repo",
+            branch="feature/test",
+            session_ref="thread",
+            provenance=provenance,
         ),
         work_item=CoordinationWorkItemPayload(
             source="beads", ref="polylogue-s7ae.1", confidence=0.95, provenance=provenance
@@ -76,6 +84,22 @@ def test_agents_status_json_uses_shared_envelope(monkeypatch: pytest.MonkeyPatch
     assert result.exit_code == 0
     body = json.loads(result.output)
     assert body["view"] == "status"
+    assert body["self"] == {
+        "identity_status": "resolved",
+        "agent_kind": "codex",
+        "logical_id": "codex:thread",
+        "owner_pid": 123,
+        "invocation_pid": 456,
+        "cwd": "/repo",
+        "branch": "feature/test",
+        "session_ref": "thread",
+        "provenance": {
+            "source": "test",
+            "command": [],
+            "confidence": 1.0,
+            "freshness": "fixture",
+        },
+    }
     assert body["work_item"]["ref"] == "polylogue-s7ae.1"
     assert calls == [("status", Path("/repo"), 3, False)]
 
