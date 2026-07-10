@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.demo import render_demo_script, run_demo_tour, seed_demo_archive, verify_demo_archive
+from polylogue.demo import (
+    inspect_demo_receipts,
+    render_demo_receipts,
+    render_demo_script,
+    run_demo_tour,
+    seed_demo_archive,
+    verify_demo_archive,
+)
 from polylogue.paths import archive_root
 
 
@@ -61,6 +69,62 @@ def seed_command(
         f"  Overlays:     {'yes' if result.overlays_seeded else 'no'}\n"
         "  Verify:       polylogue demo verify"
     )
+
+
+@demo_command.command("receipts")
+@click.option(
+    "--root",
+    "root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Archive root to inspect. When neither --root nor POLYLOGUE_ARCHIVE_ROOT is set, "
+        "the command seeds ./polylogue-receipts-demo/archive first."
+    ),
+)
+@click.option(
+    "--seed/--no-seed",
+    default=None,
+    help="Seed the deterministic archive before inspection; defaults to yes only for the self-contained path.",
+)
+@click.option(
+    "--force/--no-force",
+    default=True,
+    show_default=True,
+    help="Replace the self-contained demo archive when seeding.",
+)
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+def receipts_command(root: Path | None, seed: bool | None, force: bool, output_format: str) -> None:
+    """Compare a demo assistant claim with structural tool evidence."""
+
+    has_configured_root = root is not None or "POLYLOGUE_ARCHIVE_ROOT" in os.environ
+    if root is not None:
+        resolved_root = root.expanduser().resolve()
+    elif has_configured_root:
+        resolved_root = archive_root().expanduser().resolve()
+    else:
+        resolved_root = (Path.cwd() / "polylogue-receipts-demo" / "archive").resolve()
+
+    should_seed = (not has_configured_root) if seed is None else seed
+    if should_seed:
+        asyncio.run(seed_demo_archive(resolved_root, force=force, with_overlays=False))
+
+    result = inspect_demo_receipts(resolved_root)
+    if output_format == "json":
+        payload = result.to_payload()
+        payload["seeded_for_command"] = should_seed
+        click.echo(json.dumps(payload, sort_keys=True))
+    else:
+        click.echo(render_demo_receipts(result), nl=False)
+    if not result.ok:
+        raise click.ClickException("demo receipts verification failed")
 
 
 @demo_command.command("verify")

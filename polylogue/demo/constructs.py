@@ -231,6 +231,64 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         sql="SELECT COUNT(*) FROM session_profiles WHERE terminal_state = 'error_left'",
     ),
     DemoConstruct(
+        construct_id="receipts_failed_test_action",
+        label="Receipts failed test action",
+        description="The Evidence Lab incident contains a structurally failed pytest action before the claim.",
+        sql="""
+            SELECT COUNT(*)
+            FROM actions
+            WHERE session_id = 'codex-session:demo-receipts'
+              AND is_error = 1
+              AND exit_code = 1
+              AND tool_input LIKE '%pytest tests/test_clock.py%'
+        """,
+    ),
+    DemoConstruct(
+        construct_id="receipts_successful_recovery_action",
+        label="Receipts successful recovery action",
+        description="The incident later contains a structurally successful verification run.",
+        sql="""
+            SELECT COUNT(*)
+            FROM actions
+            WHERE session_id = 'codex-session:demo-receipts'
+              AND is_error = 0
+              AND exit_code = 0
+              AND tool_input LIKE '%pytest tests/test_clock.py%'
+        """,
+    ),
+    DemoConstruct(
+        construct_id="receipts_conflicting_claim",
+        label="Receipts conflicting claim",
+        description="Assistant prose claims success after the failed run and before the successful recovery.",
+        sql="""
+            SELECT COUNT(*)
+            FROM blocks
+            WHERE session_id = 'codex-session:demo-receipts'
+              AND block_type = 'text'
+              AND text = 'All tests pass. The clock fix is complete.'
+        """,
+    ),
+    DemoConstruct(
+        construct_id="anti_grep_control",
+        label="Anti-grep negative control",
+        description="The word error appears in prose while the control session contains zero failed actions.",
+        sql="""
+            SELECT CASE WHEN
+                EXISTS (
+                    SELECT 1 FROM blocks
+                    WHERE session_id = 'codex-session:demo-anti-grep'
+                      AND block_type = 'text'
+                      AND LOWER(text) LIKE '%error%'
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM actions
+                    WHERE session_id = 'codex-session:demo-anti-grep'
+                      AND is_error = 1
+                )
+            THEN 1 ELSE 0 END
+        """,
+    ),
+    DemoConstruct(
         construct_id="embedding_candidate_prose_messages",
         label="Embedding candidate prose messages",
         description="Authored prose rows exist for the paid embedding selector without counting tool/protocol rows.",

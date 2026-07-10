@@ -755,7 +755,7 @@ files:
     target: polylogue/cli/commands/debt.py
     owner: stable
   - path: polylogue/cli/commands/demo.py
-    loc: 184
+    loc: 248
     target: polylogue/cli/commands/demo.py
     owner: stable
   - path: polylogue/cli/commands/diagnostics.py
@@ -1227,7 +1227,7 @@ files:
     target: polylogue/daemon/__init__.py
     owner: stable
   - path: polylogue/daemon/backup.py
-    loc: 663
+    loc: 677
     target: polylogue/daemon/backup.py
     owner: stable
   - path: polylogue/daemon/blob_integrity_alerts.py
@@ -1460,27 +1460,31 @@ files:
     target: polylogue/daemon/workspace_routes.py
     owner: stable
   - path: polylogue/demo/__init__.py
-    loc: 26
+    loc: 31
     target: polylogue/demo/__init__.py
     owner: stable
   - path: polylogue/demo/constructs.py
-    loc: 324
+    loc: 382
     target: polylogue/demo/constructs.py
     owner: stable
   - path: polylogue/demo/models.py
     loc: 131
     target: polylogue/demo/models.py
     owner: stable
+  - path: polylogue/demo/receipts.py
+    loc: 315
+    target: polylogue/demo/receipts.py
+    owner: stable
   - path: polylogue/demo/script.py
     loc: 31
     target: polylogue/demo/script.py
     owner: stable
   - path: polylogue/demo/seed.py
-    loc: 709
+    loc: 844
     target: polylogue/demo/seed.py
     owner: stable
   - path: polylogue/demo/tour.py
-    loc: 355
+    loc: 374
     target: polylogue/demo/tour.py
     owner: stable
   - path: polylogue/demo/verify.py
@@ -1759,7 +1763,7 @@ files:
     target: polylogue/operations/archive.py
     owner: stable
   - path: polylogue/operations/archive_debt.py
-    loc: 1137
+    loc: 1145
     target: polylogue/operations/archive_debt.py
     owner: stable
   - path: polylogue/operations/completion_aggregates.py
@@ -2015,7 +2019,7 @@ files:
     target: polylogue/rendering/renderers/html_template.py
     owner: stable
   - path: polylogue/scenarios/__init__.py
-    loc: 171
+    loc: 175
     target: polylogue/scenarios/__init__.py
     owner: stable
   - path: polylogue/scenarios/assertions.py
@@ -2027,7 +2031,7 @@ files:
     target: polylogue/scenarios/cli_surfaces.py
     owner: stable
   - path: polylogue/scenarios/corpus.py
-    loc: 1145
+    loc: 1166
     target: polylogue/scenarios/corpus.py
     owner: stable
   - path: polylogue/scenarios/executable.py
@@ -2876,7 +2880,7 @@ files:
     target: polylogue/storage/embeddings/sql.py
     owner: stable
   - path: polylogue/storage/embeddings/status_payload.py
-    loc: 976
+    loc: 995
     target: polylogue/storage/embeddings/status_payload.py
     owner: stable
   - path: polylogue/storage/embeddings/support.py

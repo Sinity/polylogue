@@ -4,15 +4,17 @@ Status: **passed**
 
 This report was produced by `polylogue demo tour` against the deterministic
 private-data-free demo archive. The transcript is ordered as an evidence story:
-one receipt, a structural aggregate, copied-lineage composition, then archive scope.
+one claim-versus-receipt contradiction, a structural aggregate, copied-lineage composition, then archive scope.
 
 ## What this tour proves
 
-- A provider-normalized tool result can retain structural failure evidence, including an exit code and output.
+- Assistant prose can be compared with provider-normalized structural evidence at the exact claim boundary.
+- A later successful run can be distinguished from the failed evidence that existed when the claim was made.
+- A prose-only negative control can contain the word error while contributing zero failed actions.
 - The query surface can aggregate failed actions from structured fields rather than keyword matching assistant prose.
 - A fork can be read as a logical chronicle while inherited messages keep their original refs.
 - One deterministic archive can expose multiple provider origins through the same read and analysis surfaces.
-- The fixture verifier found 30/30 declared constructs and no absolute-path leaks.
+- The fixture verifier found 34/34 declared constructs and no absolute-path leaks.
 
 ## What this tour does not prove
 
@@ -24,25 +26,25 @@ one receipt, a structural aggregate, copied-lineage composition, then archive sc
 
 ## Timings
 
-- First evidence result: 20.082s (budget 30s)
-- Full tour: 26.018s (budget 420s)
+- First evidence result: 5.177s (budget 30s)
+- Full tour: 11.026s (budget 420s)
 
 ## Archive
 
 - Archive root: `archive`
-- Sessions: 11
-- Messages: 43
+- Sessions: 13
+- Messages: 55
 - User overlays: present
-- Declared fixture constructs: 30/30 satisfied
+- Declared fixture constructs: 34/34 satisfied
 
 ## Steps
 
 | Step | Exit | Duration | Bytes | Output |
 | --- | ---: | ---: | ---: | --- |
-| structural failure receipt | 0 | 2.158s | 230 | `command-output/01-structural-failure-receipt.txt` |
-| failed actions aggregate | 0 | 1.898s | 44 | `command-output/02-failed-actions-aggregate.txt` |
-| composed lineage | 0 | 2.084s | 936 | `command-output/03-composed-lineage.txt` |
-| archive facets | 0 | 1.953s | 1426 | `command-output/04-archive-facets.txt` |
+| claim versus receipt | 0 | 1.662s | 1105 | `command-output/01-claim-versus-receipt.txt` |
+| failed actions aggregate | 0 | 1.933s | 44 | `command-output/02-failed-actions-aggregate.txt` |
+| composed lineage | 0 | 2.035s | 936 | `command-output/03-composed-lineage.txt` |
+| archive facets | 0 | 1.881s | 1426 | `command-output/04-archive-facets.txt` |
 
 ## Problems
 

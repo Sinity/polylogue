@@ -30,6 +30,7 @@ jobs:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
       - run: uv run devtools render all --check
+      - run: uv run devtools verify public-claims --json
       - run: uv run ruff check polylogue/ tests/ devtools/
       - run: uv run ruff format --check polylogue/ tests/ devtools/
 

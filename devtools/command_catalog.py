@@ -216,6 +216,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "verify public-claims",
+        "verification",
+        "Validate public claims, evidence paths, Beads owners, and retired copy.",
+        "devtools.public_claims",
+        use_when=(
+            "Check externally visible claims after changing README, demos, findings, proof artifacts, "
+            "or the claims ledger."
+        ),
+        examples=(
+            "devtools verify public-claims",
+            "devtools verify public-claims --json",
+        ),
+    ),
+    CommandSpec(
         "release readiness",
         "release",
         "Validate the externally-presentable release gate definition.",

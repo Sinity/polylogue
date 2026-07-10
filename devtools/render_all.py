@@ -5,7 +5,7 @@ Before rendering, a content hash of those files is compared against a
 stored stamp (``.cache/.render-<name>-stamp``). If the hash matches, the
 surface is skipped — its last render is still current.
 
-Independent surfaces render in parallel via a thread pool.
+Surfaces render in registry order because generators share process-global state.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import argparse
 import contextlib
 import hashlib
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from devtools.generated_surfaces import GENERATED_SURFACES, GeneratedSurface
@@ -121,13 +120,13 @@ def main(argv: list[str] | None = None) -> int:
                 exit_code = result if exit_code == 0 else exit_code
         return exit_code
 
-    # Generated surfaces are independent, so render them in parallel.
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(_render_one, s, bool(args.check)): s for s in selected}
-        for future in futures:
-            result = future.result()
-            if result != 0:
-                exit_code = result if exit_code == 0 else exit_code
+    # Render in registry order. Several generators temporarily change the process
+    # working directory or stage shared files, so thread-level parallelism can
+    # make unrelated surfaces resolve paths against the wrong directory.
+    for surface in selected:
+        result = _render_one(surface, check=False)
+        if result != 0:
+            exit_code = result if exit_code == 0 else exit_code
     return exit_code
 
 

@@ -27,6 +27,7 @@ Run these from a clean checkout inside the devshell:
 devtools release readiness
 devtools release readiness --release-body-file /tmp/release-pr-body.md
 devtools verify --quick
+devtools verify public-claims
 devtools verify --lab
 devtools release build-package
 devtools render pages

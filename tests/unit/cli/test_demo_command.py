@@ -14,7 +14,7 @@ from polylogue.demo.models import DemoSeedResult, DemoTourResult, DemoTourStep, 
 from polylogue.scenarios import (
     DEMO_CLAUDE_CODE_SESSION_ID,
     DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
-    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
+    DEMO_CODEX_RECEIPTS_SESSION_ID,
     DEMO_SESSION_IDS,
 )
 
@@ -42,6 +42,78 @@ def test_demo_seed_and_verify_json_roundtrip(tmp_path: Path, monkeypatch: pytest
     assert verify_payload["absolute_path_leaks"] == []
     assert verify_payload["construct_coverage"]
     assert all(row["ok"] for row in verify_payload["construct_coverage"])
+
+
+def test_demo_receipts_compares_claim_with_structural_outcomes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    runner = CliRunner()
+
+    seed = runner.invoke(cli, ["demo", "seed", "--format", "json"])
+    assert seed.exit_code == 0, seed.output
+
+    result = runner.invoke(cli, ["demo", "receipts", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+
+    assert payload["session_ref"] == f"session:{DEMO_CODEX_RECEIPTS_SESSION_ID}"
+    assert payload["verdict"] == "contradicted_at_claim_time_then_repaired"
+    assert payload["failed"]["tool_name"] == "exec_command"
+    assert payload["failed"]["semantic_type"] == "shell"
+    assert payload["failed"]["exit_code"] == 1
+    assert payload["failed"]["is_error"] is True
+    assert payload["recovery"]["exit_code"] == 0
+    assert payload["recovery"]["is_error"] is False
+    assert payload["anti_grep_control"]["text_hits_for_error"] >= 1
+    assert payload["anti_grep_control"]["failed_actions"] == 0
+    assert payload["source_material"]["raw_id"]
+    assert len(payload["source_material"]["blob_sha256"]) == 64
+    assert payload["claim_ref"].startswith("block:")
+    assert payload["failed"]["block_ref"].startswith("block:")
+
+
+def test_demo_receipts_is_self_contained_without_configured_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["demo", "receipts", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["seeded_for_command"] is True
+    assert payload["verdict"] == "contradicted_at_claim_time_then_repaired"
+    assert Path(payload["archive_root"]) == tmp_path / "polylogue-receipts-demo" / "archive"
+    assert (tmp_path / "polylogue-receipts-demo" / "archive" / "index.db").exists()
+
+
+def test_demo_receipts_uses_configured_archive_without_reseeding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    runner = CliRunner()
+    seed = runner.invoke(cli, ["demo", "seed", "--format", "json"])
+    assert seed.exit_code == 0, seed.output
+    index_mtime = (archive / "index.db").stat().st_mtime_ns
+
+    result = runner.invoke(cli, ["demo", "receipts", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["seeded_for_command"] is False
+    assert (archive / "index.db").stat().st_mtime_ns == index_mtime
 
 
 def test_demo_script_prints_copy_pastable_commands(tmp_path: Path) -> None:
@@ -126,7 +198,7 @@ def test_demo_tour_writes_report_transcript_and_recording(
     assert payload["seed"]["session_count"] == len(DEMO_SESSION_IDS)
     assert payload["verify"]["ok"] is True
     assert [step["name"] for step in payload["steps"]] == [
-        "structural failure receipt",
+        "claim versus receipt",
         "failed actions aggregate",
         "composed lineage",
         "archive facets",
@@ -144,11 +216,14 @@ def test_demo_tour_writes_report_transcript_and_recording(
     assert "What this tour proves" in report_text
     assert "What this tour does not prove" in report_text
     transcript_text = transcript.read_text(encoding="utf-8")
-    assert f"$ polylogue --id {DEMO_CODEX_TERMINAL_ERROR_SESSION_ID} read --view messages --limit 10" in transcript_text
+    assert "$ polylogue demo receipts" in transcript_text
+    assert "contradicted_at_claim_time_then_repaired" in transcript_text
     assert "$ polylogue 'actions where is_error:true | group by tool | count'" in transcript_text
     assert f"$ polylogue --id {DEMO_CODEX_LINEAGE_FORK_SESSION_ID} read --view chronicle" in transcript_text
     assert "$ polylogue analyze --facets" in transcript_text
     assert "construct_coverage" not in transcript_text
+    assert str(tmp_path.resolve()) not in transcript_text
+    assert "archive: <demo-archive>" in transcript_text
     recording_text = recording.read_text(encoding="utf-8")
     # The tape must reproduce the run it sits next to: commands reference the
     # actual out-dir basename, never a machine-local absolute path.

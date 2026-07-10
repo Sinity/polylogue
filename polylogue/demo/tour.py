@@ -13,10 +13,7 @@ import textwrap
 import time
 from pathlib import Path
 
-from polylogue.scenarios import (
-    DEMO_CODEX_LINEAGE_FORK_SESSION_ID,
-    DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
-)
+from polylogue.scenarios import DEMO_CODEX_LINEAGE_FORK_SESSION_ID
 
 from .models import DemoTourResult, DemoTourStep
 from .seed import seed_demo_archive
@@ -86,11 +83,12 @@ def run_demo_tour(
     env = _tour_env(resolved_archive)
     command_specs = (
         (
-            "structural failure receipt",
-            ("--id", DEMO_CODEX_TERMINAL_ERROR_SESSION_ID, "read", "--view", "messages", "--limit", "10"),
+            "claim versus receipt",
+            ("demo", "receipts"),
             (
-                "Start with the receipt, not a dashboard: the assistant acknowledges a failed test run, "
-                "and the tool result retains exit_code=4 plus the exact error output."
+                "Start with a falsifiable disagreement: assistant prose claims the tests pass, while the "
+                "provider-normalized tool result says exit 1. A later run repairs the result, and a prose-only "
+                "'error' control demonstrates why keyword matching is not the oracle."
             ),
         ),
         (
@@ -113,8 +111,8 @@ def run_demo_tour(
             "archive facets",
             ("analyze", "--facets"),
             (
-                "Only after inspecting evidence, zoom out to the archive: eleven sessions across five "
-                "origins, with deferred families labeled rather than silently guessed."
+                "Only after inspecting evidence, zoom out to the archive across five origins, with deferred "
+                "families labeled rather than silently guessed."
             ),
         ),
     )
@@ -124,6 +122,7 @@ def run_demo_tour(
             args=args,
             explanation=explanation,
             env=env,
+            archive_root=resolved_archive,
             output_path=command_output_dir / f"{index:02d}-{_slug(name)}.txt",
         )
         steps.append(step)
@@ -176,6 +175,7 @@ def _run_cli_step(
     args: tuple[str, ...],
     explanation: str,
     env: dict[str, str],
+    archive_root: Path,
     output_path: Path,
 ) -> tuple[DemoTourStep, str]:
     command = (sys.executable, "-m", "polylogue", *args)
@@ -185,6 +185,7 @@ def _run_cli_step(
     output = completed.stdout
     if completed.stderr:
         output = output + ("\n" if output else "") + completed.stderr
+    output = _sanitize_public_output(output, archive_root=archive_root)
     output_path.write_text(output, encoding="utf-8")
     step = DemoTourStep(
         name=name,
@@ -204,6 +205,22 @@ def _run_cli_step(
         ]
     )
     return step, rendered
+
+
+def _sanitize_public_output(output: str, *, archive_root: Path) -> str:
+    """Remove machine-local archive paths from committed proof artifacts.
+
+    The live command remains free to show its configured archive path. The public
+    tour, however, is regenerated on many machines and must be byte-stable and
+    safe to commit. Public refs and content digests remain unchanged.
+    """
+
+    candidates = {str(archive_root), archive_root.as_posix()}
+    sanitized = output
+    for candidate in sorted(candidates, key=len, reverse=True):
+        if candidate:
+            sanitized = sanitized.replace(candidate, "<demo-archive>")
+    return sanitized
 
 
 def _format_internal_step(name: str, summary: str) -> str:
@@ -241,11 +258,13 @@ def _render_report_markdown(result: DemoTourResult) -> str:
         "",
         "This report was produced by `polylogue demo tour` against the deterministic",
         "private-data-free demo archive. The transcript is ordered as an evidence story:",
-        "one receipt, a structural aggregate, copied-lineage composition, then archive scope.",
+        "one claim-versus-receipt contradiction, a structural aggregate, copied-lineage composition, then archive scope.",
         "",
         "## What this tour proves",
         "",
-        "- A provider-normalized tool result can retain structural failure evidence, including an exit code and output.",
+        "- Assistant prose can be compared with provider-normalized structural evidence at the exact claim boundary.",
+        "- A later successful run can be distinguished from the failed evidence that existed when the claim was made.",
+        "- A prose-only negative control can contain the word error while contributing zero failed actions.",
         "- The query surface can aggregate failed actions from structured fields rather than keyword matching assistant prose.",
         "- A fork can be read as a logical chronicle while inherited messages keep their original refs.",
         "- One deterministic archive can expose multiple provider origins through the same read and analysis surfaces.",

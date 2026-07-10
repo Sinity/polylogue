@@ -17,6 +17,8 @@ from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_CODEX_ANTI_GREP_SESSION_ID,
+    DEMO_CODEX_RECEIPTS_SESSION_ID,
     DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
     DEMO_EMBEDDING_PROSE_SESSION_ID,
     build_demo_corpus_specs,
@@ -65,6 +67,7 @@ def materialize_demo_source(root: Path, *, force: bool = False) -> Path:
     _write_demo_temporary_sources(source_root)
     _write_demo_browser_capture_gap_sources(source_root)
     _write_demo_lineage_sources(source_root)
+    _write_demo_receipts_sources(source_root)
     return source_root
 
 
@@ -470,6 +473,138 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
                 "assistant",
                 "2026-07-04T10:05:04Z",
                 [_output_text("I hit an error and need the missing test path corrected before continuing.")],
+            ),
+        ),
+    )
+
+
+def _codex_function_call(
+    *,
+    item_id: str,
+    call_id: str,
+    name: str,
+    arguments: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "id": item_id,
+            "call_id": call_id,
+            "name": name,
+            "arguments": json.dumps(arguments, sort_keys=True),
+        },
+    }
+
+
+def _codex_function_output(
+    *,
+    call_id: str,
+    output: str,
+    exit_code: int,
+) -> dict[str, object]:
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": json.dumps(
+                {"output": output, "metadata": {"exit_code": exit_code}},
+                sort_keys=True,
+            ),
+        },
+    }
+
+
+def _write_demo_receipts_sources(source_root: Path) -> None:
+    """Write the deterministic claim-versus-evidence incident and anti-grep control."""
+
+    receipts_id = DEMO_CODEX_RECEIPTS_SESSION_ID.removeprefix("codex-session:")
+    anti_grep_id = DEMO_CODEX_ANTI_GREP_SESSION_ID.removeprefix("codex-session:")
+    _write_jsonl(
+        source_root / "codex" / "receipts.jsonl",
+        (
+            _codex_session_meta(receipts_id, timestamp="2026-07-04T14:32:00Z"),
+            _codex_message(
+                "receipts-u0",
+                "user",
+                "2026-07-04T14:32:01Z",
+                [_input_text("Fix the clock-sensitive test and prove the suite passes.")],
+            ),
+            _codex_function_call(
+                item_id="fc-receipts-test-fail",
+                call_id="call-receipts-test-fail",
+                name="exec_command",
+                arguments={"cmd": "pytest tests/test_clock.py -q"},
+            ),
+            _codex_function_output(
+                call_id="call-receipts-test-fail",
+                output="F  tests/test_clock.py::test_uses_monotonic_clock\n1 failed in 0.18s",
+                exit_code=1,
+            ),
+            _codex_message(
+                "receipts-a-claim",
+                "assistant",
+                "2026-07-04T14:32:04Z",
+                [_output_text("All tests pass. The clock fix is complete.")],
+            ),
+            _codex_message(
+                "receipts-u1",
+                "user",
+                "2026-07-04T14:32:05Z",
+                [_input_text("The receipt disagrees. Correct the fixture and verify again.")],
+            ),
+            _codex_function_call(
+                item_id="fc-receipts-edit",
+                call_id="call-receipts-edit",
+                name="apply_patch",
+                arguments={
+                    "patch": "*** Begin Patch\n*** Update File: tests/test_clock.py\n@@\n- shared_clock\n+ isolated_clock\n*** End Patch"
+                },
+            ),
+            _codex_function_output(
+                call_id="call-receipts-edit",
+                output="Done!",
+                exit_code=0,
+            ),
+            _codex_function_call(
+                item_id="fc-receipts-test-pass",
+                call_id="call-receipts-test-pass",
+                name="exec_command",
+                arguments={"cmd": "pytest tests/test_clock.py -q"},
+            ),
+            _codex_function_output(
+                call_id="call-receipts-test-pass",
+                output=".  1 passed in 0.16s",
+                exit_code=0,
+            ),
+            _codex_message(
+                "receipts-a-verified",
+                "assistant",
+                "2026-07-04T14:32:10Z",
+                [_output_text("Verified after the correction: 1 passed in 0.16s.")],
+            ),
+        ),
+    )
+    _write_jsonl(
+        source_root / "codex" / "anti-grep-control.jsonl",
+        (
+            _codex_session_meta(anti_grep_id, timestamp="2026-07-04T14:31:00Z"),
+            _codex_message(
+                "anti-grep-u0",
+                "user",
+                "2026-07-04T14:31:01Z",
+                [_input_text("Explain error budgets without running a command.")],
+            ),
+            _codex_message(
+                "anti-grep-a0",
+                "assistant",
+                "2026-07-04T14:31:02Z",
+                [
+                    _output_text(
+                        "An error budget is a reliability-policy concept; this message is not a failed tool result."
+                    )
+                ],
             ),
         ),
     )
