@@ -143,6 +143,7 @@ class LiveWatcher:
         max_workers: int | None = None,
         converger: object | None = None,  # DaemonConverger | None — avoids circular import
         event_emitter: LiveBatchEventEmitter | None = None,
+        write_coordinator: object | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
@@ -150,6 +151,7 @@ class LiveWatcher:
         self._cursor = cursor or CursorStore(_cursor_db_path(polylogue))
         self._max_workers = max_workers
         self._converger = converger
+        self._write_coordinator = write_coordinator
         self._pending_paths: set[Path] = set()
         self._pending_scheduled = False
         self._drain_task: asyncio.Task[None] | None = None
@@ -706,11 +708,16 @@ class LiveWatcher:
     ) -> LiveBatchMetrics:
         """Ingest files through the reusable daemon live batch processor."""
         async with self._ingest_lock:
-            metrics = await self._batch_processor.ingest_files(
-                paths,
-                queued_file_count=queued_file_count,
-                skipped_file_count=skipped_file_count,
-            )
+
+            async def ingest() -> LiveBatchMetrics:
+                return await self._batch_processor.ingest_files(
+                    paths,
+                    queued_file_count=queued_file_count,
+                    skipped_file_count=skipped_file_count,
+                )
+
+            run = getattr(self._write_coordinator, "run", None)
+            metrics = await run("watcher.live_ingest", ingest) if callable(run) else await ingest()
         return metrics
 
     def _source_name_for(self, path: Path) -> str:

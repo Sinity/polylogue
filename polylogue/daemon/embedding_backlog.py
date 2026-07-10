@@ -31,7 +31,13 @@ async def periodic_embedding_backlog_check(
     while True:
         await asyncio.sleep(EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS)
         try:
-            processed = await asyncio.to_thread(drain_embedding_backlog_once, db)
+            from polylogue.daemon.write_coordinator import daemon_write_coordinator
+
+            processed = await daemon_write_coordinator().run_sync(
+                "maintenance.embedding_backlog",
+                drain_embedding_backlog_once,
+                db,
+            )
             if processed:
                 logger.info("embed: drained %d pending session(s)", processed)
         except sqlite3.OperationalError as exc:

@@ -414,6 +414,11 @@ class LiveBatchProcessor:
                     )
                     break
                 except Exception as exc:
+                    if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
+                        # Archive contention is infrastructure state, not a
+                        # poison payload. Let LiveWatcher requeue the source
+                        # group without advancing or excluding its cursors.
+                        raise
                     logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                     for path in source_paths:
                         failed_paths.append(str(path))
@@ -644,7 +649,7 @@ class LiveBatchProcessor:
     def _record_failed_cursor(self, path: Path) -> int:
         try:
             stat = path.stat()
-            fp, last_nl = fingerprint_file(path)
+            fp, _last_nl = fingerprint_file(path)
             tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
         except FileNotFoundError:
             try:
@@ -656,11 +661,18 @@ class LiveBatchProcessor:
             return 0
         try:
             existing = self._cursor.get_record(path)
+            # Persistence failed, so the durable consumption boundary stays at
+            # the last successful cursor.  Recording EOF here made retry state
+            # look consumed even though ``failure_count`` happened to force a
+            # later retry; a cleared/rebuilt retry ledger could then lose the
+            # append permanently.
+            committed_offset = existing.byte_offset if existing is not None else 0
+            committed_newline = existing.last_complete_newline if existing is not None else 0
             self._cursor.set(
                 path,
                 stat.st_size,
-                byte_offset=last_nl,
-                last_complete_newline=last_nl,
+                byte_offset=committed_offset,
+                last_complete_newline=committed_newline,
                 parser_fingerprint=self._current_parser_fingerprint(),
                 content_fingerprint=fp,
                 tail_hash=tail_hash,
@@ -1335,22 +1347,17 @@ class LiveBatchProcessor:
                     result.message_count += record_message_count
                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
                 except Exception as exc:
+                    if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
+                        raise
                     if provider is not None and source_raw_id is not None:
                         archive.mark_raw_parse_failed(source_raw_id, provider=provider, error=exc)
-                    if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
-                        logger.debug(
-                            "live.watcher: archive full ingest deferred for %s (retryable lock); will retry: %s",
-                            record.source_path,
-                            exc,
-                        )
-                    else:
-                        logger.warning(
-                            "live.watcher: archive full ingest failed for %s: %s: %s",
-                            record.source_path,
-                            type(exc).__name__,
-                            exc,
-                            exc_info=True,
-                        )
+                    logger.warning(
+                        "live.watcher: archive full ingest failed for %s: %s: %s",
+                        record.source_path,
+                        type(exc).__name__,
+                        exc,
+                        exc_info=True,
+                    )
         return result
 
     def _extract_zip_member_records(

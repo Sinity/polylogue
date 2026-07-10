@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 
@@ -133,3 +134,44 @@ async def test_ingest_files_serializes_batch_processor_calls(
 
     assert calls == [first, second]
     assert max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_watcher_queues_behind_daemon_maintenance_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    source = root / "session.jsonl"
+    source.write_text('{"role":"user","content":"a"}\n')
+    watcher_queued = asyncio.Event()
+
+    def observe(event: DaemonWriteEvent) -> None:
+        if event.phase == "queued" and event.actor == "watcher.live_ingest":
+            watcher_queued.set()
+
+    coordinator = DaemonWriteCoordinator(observer=observe)
+    watcher = _make_watcher(tmp_path, root)
+    watcher._write_coordinator = coordinator
+    maintenance_entered = asyncio.Event()
+    release_maintenance = asyncio.Event()
+    ingest_entered = asyncio.Event()
+
+    async def maintenance() -> None:
+        maintenance_entered.set()
+        await release_maintenance.wait()
+
+    async def ingest_files(*_args: object, **_kwargs: object) -> None:
+        ingest_entered.set()
+
+    monkeypatch.setattr(watcher._batch_processor, "ingest_files", ingest_files)
+    maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
+    await maintenance_entered.wait()
+    watcher_task = asyncio.create_task(watcher._ingest_files([source]))
+    await watcher_queued.wait()
+
+    assert not ingest_entered.is_set()
+    release_maintenance.set()
+    await asyncio.gather(maintenance_task, watcher_task)
+    assert ingest_entered.is_set()
