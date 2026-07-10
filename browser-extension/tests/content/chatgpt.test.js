@@ -400,3 +400,146 @@ describe("chatgpt fetchNativePayloadOnDemand", () => {
     ).resolves.toBe(null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Extracted from src/content/chatgpt.js — keep in sync (asset acquisition)
+// ---------------------------------------------------------------------------
+
+const sandboxLinkPattern = /sandbox:(\/mnt\/data\/[^\s)\]"'>]+)/g;
+
+function sandboxPathsFromText(text) {
+  const paths = [];
+  for (const match of String(text).matchAll(sandboxLinkPattern)) {
+    const path = match[1].replace(/[.,;:!?*`]+$/, "");
+    if (path !== "/mnt/data/" && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
+
+function collectAssetDescriptors(payload) {
+  const mapping = payload && payload.mapping;
+  if (!mapping || typeof mapping !== "object") return [];
+  const descriptors = [];
+  const seen = new Set();
+  const add = (descriptor) => {
+    if (descriptor.provider_attachment_id && !seen.has(descriptor.provider_attachment_id)) {
+      seen.add(descriptor.provider_attachment_id);
+      descriptors.push(descriptor);
+    }
+  };
+  for (const [nodeId, node] of Object.entries(mapping)) {
+    const message = node && node.message;
+    if (!message) continue;
+    const messageId = String(message.id || node.id || nodeId);
+    const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
+    for (const attachment of Array.isArray(metadata.attachments) ? metadata.attachments : []) {
+      if (attachment && attachment.id) {
+        add({
+          kind: "file",
+          fileId: String(attachment.id),
+          provider_attachment_id: String(attachment.id),
+          message_provider_id: messageId,
+          name: attachment.name ? String(attachment.name) : null,
+          mime_type: attachment.mime_type ? String(attachment.mime_type) : null
+        });
+      }
+    }
+    const content = message.content;
+    const parts = content && Array.isArray(content.parts) ? content.parts : [];
+    const role = message.author && message.author.role;
+    for (const part of parts) {
+      if (part && typeof part === "object" && typeof part.asset_pointer === "string" && part.asset_pointer) {
+        const pointer = part.asset_pointer;
+        const pointerPath = pointer.includes("://") ? pointer.split("://").at(-1) : pointer;
+        const fileIdMatch = pointerPath.match(/file[-_][A-Za-z0-9]+/);
+        if (fileIdMatch) {
+          add({
+            kind: "file",
+            fileId: fileIdMatch[0],
+            provider_attachment_id: pointer,
+            message_provider_id: messageId,
+            name: null,
+            mime_type: null
+          });
+        }
+      }
+      if (typeof part === "string" && role === "assistant") {
+        for (const path of sandboxPathsFromText(part)) {
+          add({
+            kind: "sandbox",
+            sandboxPath: path,
+            provider_attachment_id: `sandbox:${messageId}:${path}`,
+            message_provider_id: messageId,
+            name: path.replace(/\/+$/, "").split("/").at(-1) || null,
+            mime_type: null
+          });
+        }
+      }
+    }
+  }
+  return descriptors;
+}
+
+describe("asset descriptor collection", () => {
+  it("collects sandbox links, upload ids, and asset pointers with parser-matching ids", () => {
+    const payload = {
+      mapping: {
+        n1: {
+          id: "n1",
+          message: {
+            id: "msg-a",
+            author: { role: "assistant" },
+            content: {
+              parts: [
+                "Kit ready: [zip](sandbox:/mnt/data/kit.zip) and [sum](sandbox:/mnt/data/kit.zip.sha256). Again sandbox:/mnt/data/kit.zip."
+              ]
+            },
+            metadata: {}
+          }
+        },
+        n2: {
+          id: "n2",
+          message: {
+            id: "msg-b",
+            author: { role: "user" },
+            content: { parts: ["please use sandbox:/mnt/data/ignored.zip"] },
+            metadata: { attachments: [{ id: "file-UP1", name: "input.csv", mime_type: "text/csv" }] }
+          }
+        },
+        n3: {
+          id: "n3",
+          message: {
+            id: "msg-c",
+            author: { role: "assistant" },
+            content: {
+              parts: [{ content_type: "image_asset_pointer", asset_pointer: "file-service://file-IMG9" }]
+            },
+            metadata: {}
+          }
+        }
+      }
+    };
+
+    const descriptors = collectAssetDescriptors(payload);
+    const ids = descriptors.map((d) => d.provider_attachment_id);
+    expect(ids).toEqual([
+      "sandbox:msg-a:/mnt/data/kit.zip",
+      "sandbox:msg-a:/mnt/data/kit.zip.sha256",
+      "file-UP1",
+      "file-service://file-IMG9"
+    ]);
+    const sandbox = descriptors[0];
+    expect(sandbox.kind).toBe("sandbox");
+    expect(sandbox.sandboxPath).toBe("/mnt/data/kit.zip");
+    expect(sandbox.name).toBe("kit.zip");
+    const pointer = descriptors[3];
+    expect(pointer.kind).toBe("file");
+    expect(pointer.fileId).toBe("file-IMG9");
+  });
+
+  it("strips trailing punctuation and dedupes sandbox paths", () => {
+    expect(sandboxPathsFromText("see sandbox:/mnt/data/a.md. and sandbox:/mnt/data/a.md,")).toEqual([
+      "/mnt/data/a.md"
+    ]);
+  });
+});

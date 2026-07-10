@@ -76,17 +76,30 @@ def _construct_from_reference(
     group_id: str | None = None,
     group_title: str | None = None,
 ) -> ParsedWebConstruct:
+    # File-search citation rows nest their source identity one or two levels
+    # down (item.metadata carries the file name/id/source, item.metadata.extra
+    # carries cited_message_id, library_file_id, source_url, ...). Consult the
+    # nested layers whenever the top level misses — otherwise a file citation
+    # keeps only its answer-side anchor span and loses which document it cites.
+    metadata = item.get("metadata")
+    nested = metadata if isinstance(metadata, Mapping) else {}
+    extra_value = nested.get("extra")
+    extra = extra_value if isinstance(extra_value, Mapping) else {}
+
+    def pick(*keys: str) -> str | None:
+        return _string_value(item, *keys) or _string_value(nested, *keys) or _string_value(extra, *keys)
+
     return ParsedWebConstruct(
         construct_type=construct_type,
         provider_key=provider_key,
-        title=_string_value(item, "title", "name", "source_name"),
-        url=_string_value(item, "url", "link", "source_url"),
-        text=_string_value(item, "snippet", "text", "content", "description"),
-        source_id=_string_value(item, "id", "source_id", "ref_id", "attribution_id", "textdoc_id"),
+        title=pick("title", "name", "source_name", "source_label"),
+        url=pick("url", "link", "source_url", "cloud_doc_url"),
+        text=pick("snippet", "text", "content", "description", "quote"),
+        source_id=pick("id", "source_id", "ref_id", "attribution_id", "textdoc_id", "library_file_id"),
         group_id=group_id,
         group_title=group_title,
-        asset_pointer=_string_value(item, "asset_pointer"),
-        mime_type=_string_value(item, "mime_type", "media_type"),
+        asset_pointer=pick("asset_pointer"),
+        mime_type=pick("mime_type", "media_type"),
         rank=rank if rank is not None else _int_value(item, "rank", "index"),
         start_index=_int_value(item, "start_index", "start_idx", "start_ix", "start"),
         end_index=_int_value(item, "end_index", "end_idx", "end_ix", "end"),
@@ -250,6 +263,7 @@ def _non_negative_int(value: object) -> int | None:
 # glyphs into search text and rendered transcripts; the untouched original
 # remains in the source-tier raw payload.
 _CITATION_MARKER_RE = re.compile("\ue200.*?\ue201|[\ue200\ue201\ue202]")
+_CITATION_MARKER_SPAN_RE = re.compile("\ue200(.*?)\ue201")
 
 
 def _strip_citation_markers(text: str) -> str:
@@ -297,15 +311,15 @@ def _extract_content_text(content: Mapping[str, object]) -> str:
                     text_parts.append(t)
                 # Skip image_asset_pointer and other non-text dicts
         if text_parts:
-            return _strip_citation_markers("\n".join(text_parts))
+            return "\n".join(text_parts)
     # Non-parts content shapes: code / execution_output carry top-level text;
     # browsing display carries a result string.
     top_text = content.get("text")
     if isinstance(top_text, str) and top_text:
-        return _strip_citation_markers(top_text)
+        return top_text
     result = content.get("result")
     if isinstance(result, str) and result:
-        return _strip_citation_markers(result)
+        return result
     return ""
 
 
@@ -329,7 +343,8 @@ def extract_messages_from_mapping(
         if not isinstance(content, dict):
             continue
         parts = content.get("parts") or []
-        text = _extract_content_text(content)
+        raw_text = _extract_content_text(content)
+        text = _strip_citation_markers(raw_text)
         # Role is required - skip messages without one
         author = msg.get("author")
         raw_role = author.get("role") if isinstance(author, dict) else None
@@ -542,6 +557,23 @@ def extract_messages_from_mapping(
                     )
 
         web_constructs = _constructs_from_chatgpt_metadata(msg_metadata)
+        # Inline citation anchors are stripped from stored text (invisible
+        # glyphs), but their reference tokens — turn/file pointers and line
+        # ranges like "filecite turn3file14 L180-L293" — carry source-location
+        # detail the metadata rows sometimes lack (line_range is often null).
+        # Preserve each span as a construct anchored at its original-text
+        # offset, the same coordinate system the citation rows' start_ix/
+        # end_ix use.
+        web_constructs.extend(
+            ParsedWebConstruct(
+                construct_type=WebConstructType.CONTENT_REFERENCE,
+                provider_key="inline_citation_marker",
+                text=" ".join(token for token in marker.group(1).split("\ue202") if token),
+                start_index=marker.start(),
+                end_index=marker.end(),
+            )
+            for marker in _CITATION_MARKER_SPAN_RE.finditer(raw_text)
+        )
         if web_constructs:
             if not content_blocks:
                 content_blocks.append(ParsedContentBlock(type=BlockType.TEXT))
