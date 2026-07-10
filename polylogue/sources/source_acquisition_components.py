@@ -22,6 +22,7 @@ from . import decoders as _decoders
 from .decoders import _zip_entry_provider_hint
 from .dispatch import GROUP_PROVIDERS, _detect_provider_from_raw_bytes, detect_provider
 from .parsers.base import RawSessionData
+from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
 
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
@@ -295,19 +296,31 @@ def make_split_entry_raw_data(
 
 def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
     """Stream one non-ZIP source file into the blob store."""
-    blob_hash, blob_size = stream_path_to_blob(
-        context.blob_store,
-        context.path,
-        status_callback=context.status_callback,
-        source_name=context.source.name,
-    )
-    prefix = context.blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
-    detected_provider = _detect_provider_from_raw_bytes(
-        prefix,
-        context.path.name,
-        context.provider_hint,
-        truncated_tail_ok=blob_size > len(prefix),
-    )
+    sqlite_path = is_sqlite_path(context.path)
+    original_source_path = original_sqlite_source_path(context.path) if sqlite_path else None
+    if (context.provider_hint is Provider.HERMES or original_source_path is not None) and sqlite_path:
+        heartbeat = make_status_heartbeat(
+            context.status_callback,
+            source_name=context.source.name,
+            source_path=str(context.path),
+        )
+        snapshot = snapshot_sqlite_to_blob(context.path, context.blob_store, heartbeat=heartbeat)
+        blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
+        detected_provider = Provider.HERMES
+    else:
+        blob_hash, blob_size = stream_path_to_blob(
+            context.blob_store,
+            context.path,
+            status_callback=context.status_callback,
+            source_name=context.source.name,
+        )
+        prefix = context.blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
+        detected_provider = _detect_provider_from_raw_bytes(
+            prefix,
+            context.path.name,
+            context.provider_hint,
+            truncated_tail_ok=blob_size > len(prefix),
+        )
     observe_acquisition(
         context.observation_callback,
         phase="source-file-streamed",
@@ -316,7 +329,7 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         blob_size=blob_size,
     )
     return raw_data_record(
-        source_path=str(context.path),
+        source_path=str(original_source_path or context.path),
         file_mtime=context.file_mtime,
         provider_hint=detected_provider,
         blob_hash=blob_hash,

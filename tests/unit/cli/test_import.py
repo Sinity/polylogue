@@ -95,7 +95,7 @@ def test_import_command_stages_local_path_before_daemon_request(
     assert request.data is not None
     request_data = cast("bytes", request.data)
     body = json.loads(request_data.decode("utf-8"))
-    assert body == {"path": str(staged)}
+    assert body == {"path": str(staged), "source_path": str(source.resolve())}
     assert body["path"] != str(source)
     assert captured["timeout"] == 5
 
@@ -118,11 +118,17 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
+    from polylogue.config import Source
+    from polylogue.sources.parsers import hermes_state
+    from polylogue.sources.source_parsing import iter_source_sessions_with_raw
+    from polylogue.sources.sqlite_snapshot import original_sqlite_source_path
 
     source = tmp_path / "state.db"
     with sqlite3.connect(source) as conn:
         conn.executescript(
             """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
             CREATE TABLE sessions (
                 id TEXT PRIMARY KEY, source TEXT, user_id TEXT, session_key TEXT,
                 chat_id TEXT, chat_type TEXT, thread_id TEXT, model TEXT,
@@ -153,9 +159,16 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
             INSERT INTO messages(session_id, role, content, timestamp) VALUES ('h1', 'user', 'hello', 1.0);
             """
         )
-        # Leave a committed WAL-capable database; the staging path should still
-        # create a coherent independent SQLite file.
         conn.execute("PRAGMA journal_mode=WAL")
+
+    writer = sqlite3.connect(source)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    writer.execute(
+        "INSERT INTO messages(session_id, role, content, timestamp) VALUES ('h1', 'assistant', 'WAL turn', 2.0)"
+    )
+    writer.commit()
 
     captured: dict[str, Any] = {}
 
@@ -175,14 +188,58 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
             }
         )
 
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
-        result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"])
+    try:
+        with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+            result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"])
+    finally:
+        writer.close()
 
     assert result.exit_code == 0, result.output
     staged = workspace_env["archive_root"] / "inbox" / "state.db"
     with sqlite3.connect(staged) as conn:
         assert conn.execute("SELECT title FROM sessions WHERE id = 'h1'").fetchone()[0] == "Hermes"
-    assert json.loads(cast("bytes", cast("Request", captured["request"]).data).decode("utf-8")) == {"path": str(staged)}
+        assert conn.execute("SELECT content FROM messages ORDER BY id DESC LIMIT 1").fetchone()[0] == "WAL turn"
+    assert original_sqlite_source_path(staged) == source.resolve()
+    assert json.loads(cast("bytes", cast("Request", captured["request"]).data).decode("utf-8")) == {
+        "path": str(staged),
+        "source_path": str(source.resolve()),
+    }
+
+    direct = hermes_state.parse_state_db(source, profile_root=source.parent)[0]
+    [(raw, imported)] = list(
+        iter_source_sessions_with_raw(
+            Source(name="inbox", path=staged),
+            capture_raw=True,
+            blob_root=tmp_path / "blobs",
+        )
+    )
+    assert raw is not None and raw.source_path == str(source.resolve())
+    assert imported.provider_session_id == direct.provider_session_id
+
+
+def test_stage_for_daemon_removes_stale_sqlite_provenance(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    from polylogue.cli.commands.import_command import _stage_for_daemon
+    from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
+
+    first_root = tmp_path / "hermes"
+    first_root.mkdir()
+    first = first_root / "state.db"
+    with sqlite3.connect(first) as conn:
+        conn.execute("CREATE TABLE evidence(value TEXT)")
+
+    staged = workspace_env["archive_root"] / "inbox" / "state.db"
+    stage_sqlite_snapshot(first, staged)
+    metadata_path = sqlite_staging_metadata_path(staged)
+    assert metadata_path.exists()
+
+    replacement_root = tmp_path / "replacement"
+    replacement_root.mkdir()
+    replacement = replacement_root / "state.db"
+    replacement.write_bytes(b"not a Hermes database")
+
+    assert _stage_for_daemon(replacement, replace_existing=True) == staged
+    assert staged.read_bytes() == replacement.read_bytes()
+    assert not metadata_path.exists()
 
 
 def test_import_command_uses_daemon_url_env_by_default(
@@ -281,7 +338,7 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
     request = cast("Request", captured["request"])
     assert request.data is not None
     body = json.loads(cast("bytes", request.data).decode("utf-8"))
-    assert body == {"path": str(staged)}
+    assert body == {"path": str(staged), "source_path": str(source_root.resolve())}
     assert captured["timeout"] == 5
     assert str(staged) in result.output
     assert "polylogued status" in result.output

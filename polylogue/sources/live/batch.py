@@ -98,6 +98,11 @@ from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
 )
+from polylogue.sources.sqlite_snapshot import (
+    hermes_profile_raw_id,
+    original_sqlite_source_path,
+    snapshot_sqlite_to_blob,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -459,6 +464,7 @@ class LiveBatchProcessor:
                         raw_fingerprint=full_result.raw_fingerprints.get(path),
                         raw_byte_size=full_result.raw_byte_sizes.get(path),
                         source_name=full_result.raw_source_names.get(path),
+                        source_revision=full_result.raw_source_revisions.get(path),
                     )
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
@@ -681,19 +687,27 @@ class LiveBatchProcessor:
         raw_fingerprint: str | None = None,
         raw_byte_size: int | None = None,
         source_name: str | None = None,
+        source_revision: str | None = None,
     ) -> int:
         self._last_cursor_write_stale = False
         try:
             stat = path.stat()
         except FileNotFoundError:
             return 0
-        byte_size = stat.st_size if raw_byte_size is None else raw_byte_size
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
-        fp, last_nl, tail_hash, bytes_read = cursor_state_after_full_ingest(
-            path,
-            byte_size,
-            raw_fingerprint=raw_fingerprint,
-        )
+        if source_revision is not None:
+            byte_size = stat.st_size
+            fp = raw_fingerprint or ""
+            last_nl = byte_size
+            tail_hash = source_revision
+            bytes_read = 0
+        else:
+            byte_size = stat.st_size if raw_byte_size is None else raw_byte_size
+            fp, last_nl, tail_hash, bytes_read = cursor_state_after_full_ingest(
+                path,
+                byte_size,
+                raw_fingerprint=raw_fingerprint,
+            )
         updated = self._cursor.set(
             path,
             byte_size,
@@ -860,6 +874,7 @@ class LiveBatchProcessor:
         raw_byte_sizes: dict[Path, int] = {}
         raw_payloads: dict[str, bytes] = {}
         raw_source_names: dict[Path, str] = {}
+        raw_source_revisions: dict[Path, str] = {}
         failed: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
@@ -883,6 +898,7 @@ class LiveBatchProcessor:
             )
 
         for path in paths:
+            blob_hash: str | None = None
             try:
                 stat = path.stat()
             except OSError:
@@ -928,14 +944,19 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = blob_store.write_from_path(
+                    snapshot = snapshot_sqlite_to_blob(
                         path,
+                        blob_store,
                         heartbeat=_blob_copy_heartbeat(
                             heartbeat,
                             path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
+                    blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
+                    source_path = original_sqlite_source_path(path) or path
+                    raw_id = hermes_profile_raw_id(source_path, 0, blob_hash)
+                    raw_source_revisions[path] = snapshot.source_revision
                 except OSError:
                     failed.append(path)
                     continue
@@ -1070,9 +1091,12 @@ class LiveBatchProcessor:
             raw_records.append(
                 RawSessionRecord(
                     raw_id=raw_id,
+                    blob_hash=(blob_hash if provider is Provider.HERMES and blob_hash is not None else None),
                     payload_provider=provider,
                     source_name=source_name,
-                    source_path=str(path),
+                    source_path=(
+                        str(original_sqlite_source_path(path) or path) if path in raw_source_revisions else str(path)
+                    ),
                     source_index=0,
                     blob_size=blob_size,
                     acquired_at=datetime.now(UTC).isoformat(),
@@ -1138,6 +1162,7 @@ class LiveBatchProcessor:
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
             raw_source_names=raw_source_names,
+            raw_source_revisions=raw_source_revisions,
             summary=summary,
         )
         raw_records.clear()
@@ -1200,16 +1225,18 @@ class LiveBatchProcessor:
                     payload = raw_payloads.get(record.raw_id)
                     source_name = Path(record.source_path).name
                     fallback_id = Path(record.source_path).stem
+                    blob_hash = record.blob_hash or record.raw_id
                     if provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
-                        blob_store.blob_path(record.raw_id)
+                        blob_store.blob_path(blob_hash)
                     ):
                         sessions = hermes_state.parse_state_db(
-                            blob_store.blob_path(record.raw_id),
+                            blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
+                            profile_root=Path(record.source_path).parent,
                         )
                     elif is_stream_record_provider(record.source_path, str(provider)):
                         if payload is None:
-                            with blob_store.open(record.raw_id) as payload_handle:
+                            with blob_store.open(blob_hash) as payload_handle:
                                 sessions = parse_stream_payload(
                                     provider,
                                     _iter_json_stream(payload_handle, source_name),
@@ -1223,7 +1250,7 @@ class LiveBatchProcessor:
                             )
                     else:
                         if payload is None:
-                            with blob_store.open(record.raw_id) as payload_handle:
+                            with blob_store.open(blob_hash) as payload_handle:
                                 payloads = list(_iter_json_stream(payload_handle, source_name))
                         else:
                             payloads = list(_iter_json_stream(BytesIO(payload), source_name))
@@ -1243,10 +1270,11 @@ class LiveBatchProcessor:
                         if payload is None:
                             raw_id, session_id = archive.write_raw_blob_and_parsed(
                                 session,
-                                blob_hash_hex=record.raw_id,
+                                blob_hash_hex=blob_hash,
                                 blob_size=record.blob_size,
                                 source_path=record.source_path,
                                 source_index=record.source_index or 0,
+                                raw_id=(record.raw_id if provider is Provider.HERMES else None),
                                 acquired_at_ms=acquired_at_ms,
                                 stage_timings_s=record_timings,
                                 stage_timing_prefix="full",

@@ -1,0 +1,119 @@
+{
+  "artifact": "state.db",
+  "provider": "hermes",
+  "schema_version": 16,
+  "identity": {
+    "raw_session_column": "sessions.id",
+    "archive_qualifier": "profile_root_sha256_12"
+  },
+  "detection_signature": {
+    "tables": [
+      "schema_version",
+      "sessions",
+      "messages"
+    ],
+    "session_columns": [
+      "source",
+      "model_config",
+      "parent_session_id"
+    ],
+    "message_columns": [
+      "tool_calls",
+      "observed",
+      "active",
+      "compacted"
+    ]
+  },
+  "tables": {
+    "sessions": {
+      "required_core": [
+        "id",
+        "started_at"
+      ],
+      "optional_capabilities": {
+        "cost_provenance": [
+          "billing_provider",
+          "billing_base_url",
+          "billing_mode",
+          "estimated_cost_usd",
+          "actual_cost_usd",
+          "cost_status",
+          "cost_source",
+          "pricing_version"
+        ],
+        "handoff": [
+          "handoff_state",
+          "handoff_platform",
+          "handoff_error"
+        ],
+        "lifecycle": [
+          "ended_at",
+          "end_reason",
+          "rewind_count",
+          "archived"
+        ],
+        "lineage": [
+          "parent_session_id",
+          "end_reason"
+        ],
+        "model": [
+          "model",
+          "model_config",
+          "system_prompt"
+        ],
+        "repository": [
+          "cwd",
+          "git_branch",
+          "git_repo_root"
+        ],
+        "source_identity": [
+          "source",
+          "user_id"
+        ],
+        "usage": [
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "reasoning_tokens",
+          "api_call_count"
+        ]
+      }
+    },
+    "messages": {
+      "required_core": [
+        "id",
+        "session_id",
+        "role",
+        "content",
+        "timestamp"
+      ],
+      "optional_capabilities": {
+        "message_state": [
+          "observed",
+          "active",
+          "compacted"
+        ],
+        "provider_identity": [
+          "platform_message_id"
+        ],
+        "reasoning": [
+          "reasoning",
+          "reasoning_content",
+          "reasoning_details",
+          "codex_reasoning_items",
+          "codex_message_items"
+        ],
+        "tooling": [
+          "tool_call_id",
+          "tool_calls",
+          "tool_name",
+          "finish_reason"
+        ],
+        "usage": [
+          "token_count"
+        ]
+      }
+    }
+  }
+}

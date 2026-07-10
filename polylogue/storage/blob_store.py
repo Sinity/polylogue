@@ -2,8 +2,8 @@
 
 Blobs are stored as immutable files under a two-level directory structure:
 ``{root}/{hash[:2]}/{hash[2:]}``, where hash is the SHA-256 hex digest of
-the content. This is the same hash used as ``raw_id`` in the
-``raw_sessions`` table — no separate addressing scheme needed.
+the content. Most raw sources use that digest as ``raw_id`` too; sources whose
+identity requires additional provenance retain it separately as ``blob_hash``.
 
 Writes are atomic (tempfile + ``os.replace``). Files are never modified
 after creation. Deduplication is free: identical content produces the

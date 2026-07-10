@@ -26,6 +26,7 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
     ParsedWebConstruct,
 )
+from polylogue.storage.hydrators import session_event_from_record
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -49,6 +50,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     upsert_session_work_event,
     write_parsed_session_to_archive,
 )
+from polylogue.storage.sqlite.queries.session_events import sync_session_events_batch
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -1006,6 +1008,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             ),
             ParsedSessionEvent(
                 event_type="capture_gap",
+                source_message_provider_id="missing-provider-message",
                 timestamp="2026-01-01T00:00:02+00:00",
                 payload={"summary": "DOM fallback skipped; richer capture already exists"},
             ),
@@ -1022,7 +1025,8 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
 
     rows = conn.execute(
         """
-        SELECT event_id, source_message_id, position, event_type, summary, occurred_at_ms
+        SELECT event_id, source_message_id, source_message_provider_id,
+               position, event_type, summary, payload_json, occurred_at_ms
         FROM session_events
         WHERE session_id = ?
         ORDER BY position
@@ -1033,20 +1037,52 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
         {
             "event_id": f"{session_id}:0",
             "source_message_id": f"{session_id}:m1",
+            "source_message_provider_id": "m1",
             "position": 0,
             "event_type": "compaction",
             "summary": "compressed context",
+            "payload_json": '{"summary":"compressed context"}',
             "occurred_at_ms": 1_767_225_601_000,
         },
         {
             "event_id": f"{session_id}:1",
             "source_message_id": None,
+            "source_message_provider_id": "missing-provider-message",
             "position": 1,
             "event_type": "capture_gap",
             "summary": "DOM fallback skipped; richer capture already exists",
+            "payload_json": '{"summary":"DOM fallback skipped; richer capture already exists"}',
             "occurred_at_ms": 1_767_225_602_000,
         },
+        {
+            "event_id": f"{session_id}:2",
+            "source_message_id": None,
+            "source_message_provider_id": None,
+            "position": 2,
+            "event_type": "turn_context",
+            "summary": "",
+            "payload_json": '{"cwd":"/tmp"}',
+            "occurred_at_ms": None,
+        },
+        {
+            "event_id": f"{session_id}:3",
+            "source_message_id": None,
+            "source_message_provider_id": None,
+            "position": 3,
+            "event_type": "agent_policy",
+            "summary": "",
+            "payload_json": '{"approval":"on-request"}',
+            "occurred_at_ms": 1_767_225_603_000,
+        },
     ]
+    hydrated = sync_session_events_batch(conn, [session_id])[session_id]
+    assert hydrated[0].timestamp == "2026-01-01T00:00:01+00:00"
+    assert hydrated[0].source_message_provider_id == "m1"
+    assert hydrated[1].source_message_id is None
+    assert hydrated[1].source_message_provider_id == "missing-provider-message"
+    domain_event = session_event_from_record(hydrated[1])
+    assert domain_event.source_message_provider_id == "missing-provider-message"
+    assert hydrated[2].payload == {"cwd": "/tmp"}
     policies = conn.execute(
         """
         SELECT policy_id, source_message_id, position, approval_policy, sandbox_policy, network_policy, observed_at_ms
@@ -1058,14 +1094,53 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
     ).fetchall()
     assert [dict(row) for row in policies] == [
         {
-            "policy_id": f"{session_id}:2",
+            "policy_id": f"{session_id}:3",
             "source_message_id": None,
-            "position": 2,
+            "position": 3,
             "approval_policy": "on-request",
             "sandbox_policy": None,
             "network_policy": None,
             "observed_at_ms": 1_767_225_603_000,
         },
+    ]
+
+
+def test_archive_tiers_writer_round_trips_typed_session_event_payloads(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.HERMES,
+        provider_session_id="hermes-events-1",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="",
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="hermes_identity",
+                payload={"raw_session_id": "raw-1", "profile_key": "profile-a"},
+            ),
+            ParsedSessionEvent(
+                event_type="hermes_message_state",
+                source_message_provider_id="m1",
+                payload={"state": "rewound", "active": False, "compacted": False},
+            ),
+            ParsedSessionEvent(
+                event_type="rewind",
+                payload={"summary": "Hermes session was rewound", "rewind_count": 2},
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    records = sync_session_events_batch(conn, [session_id])[session_id]
+    assert [(record.event_type, record.payload) for record in records] == [
+        ("hermes_identity", {"profile_key": "profile-a", "raw_session_id": "raw-1"}),
+        ("hermes_message_state", {"active": False, "compacted": False, "state": "rewound"}),
+        ("rewind", {"rewind_count": 2, "summary": "Hermes session was rewound"}),
     ]
 
 

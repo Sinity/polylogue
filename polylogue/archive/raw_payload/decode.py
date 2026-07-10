@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
-from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias, cast
@@ -20,8 +18,6 @@ from polylogue.core.json import JSONDocument, JSONValue, is_json_value, loads
 from polylogue.sources.dispatch import detect_provider
 
 _HERMES_STATE_DB_MARKER = "hermes_state_db"
-_HERMES_SESSION_COLUMNS = frozenset({"id", "model", "model_config", "started_at", "title"})
-_HERMES_MESSAGE_COLUMNS = frozenset({"id", "session_id", "role", "content", "timestamp", "tool_calls"})
 
 WireFormat = Literal["json", "jsonl"]
 JSONRecord: TypeAlias = JSONDocument
@@ -266,6 +262,8 @@ def build_raw_payload_envelope(
     """
     if isinstance(raw_content, Path) and _looks_like_hermes_state_db(raw_content):
         marker: JSONDocument = {"polylogue_artifact": _HERMES_STATE_DB_MARKER, "state_db_path": str(raw_content)}
+        if source_path is not None:
+            marker["profile_root"] = str(Path(source_path).parent)
         provider = Provider.HERMES
         return RawPayloadEnvelope(
             payload=marker,
@@ -306,23 +304,13 @@ def build_raw_payload_envelope(
 
 
 def _looks_like_hermes_state_db(path: Path) -> bool:
-    try:
-        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
-            tables = {
-                str(row[0])
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sessions', 'messages')"
-                ).fetchall()
-            }
-            if tables != {"sessions", "messages"}:
-                return False
-            session_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
-            message_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
-            return _HERMES_SESSION_COLUMNS.issubset(session_columns) and _HERMES_MESSAGE_COLUMNS.issubset(
-                message_columns
-            )
-    except sqlite3.Error:
-        return False
+    # Import lazily: ``dispatch`` imports the Hermes parser while this module
+    # imports ``dispatch`` for ordinary JSON provider detection. At runtime the
+    # module graph is complete, and delegating here keeps raw inspection on the
+    # same versioned structural contract as actual parsing.
+    from polylogue.sources.parsers import hermes_state
+
+    return hermes_state.looks_like_state_db_path(path)
 
 
 __all__ = [

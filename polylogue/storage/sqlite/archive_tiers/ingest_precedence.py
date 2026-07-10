@@ -60,8 +60,9 @@ def record_capture_gap_event(
     conn.execute(
         """
         INSERT OR REPLACE INTO session_events (
-            session_id, source_message_id, position, event_type, summary, occurred_at_ms
-        ) VALUES (?, NULL, ?, 'capture_gap', ?, NULL)
+            session_id, source_message_id, source_message_provider_id,
+            position, event_type, summary, occurred_at_ms
+        ) VALUES (?, NULL, NULL, ?, 'capture_gap', ?, NULL)
         """,
         (session_id, position, summary),
     )

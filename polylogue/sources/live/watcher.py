@@ -35,6 +35,7 @@ from polylogue.sources.live.batch_support import (
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
+from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_source_revision
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -198,7 +199,9 @@ class LiveWatcher:
                 for change, raw_path in changes:
                     if change is Change.deleted:
                         continue
-                    path = Path(raw_path)
+                    path = self._canonical_watch_path(Path(raw_path))
+                    if path is None:
+                        continue
                     if not self._source_accepts(path):
                         continue
                     self._enqueue(path)
@@ -552,6 +555,8 @@ class LiveWatcher:
         parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
         if not parser_matches:
             return True
+        if self._is_hermes_database(path):
+            return cursor.tail_hash != sqlite_source_revision(path)
         if size == cursor.byte_size and cursor.content_fingerprint is not None:
             # Stable path + size + recorded content fingerprint is the hot
             # catch-up skip path. Device/inode churn across bind mounts,
@@ -728,6 +733,26 @@ class LiveWatcher:
                 continue
         return path.suffix == ".jsonl"
 
+    def _is_hermes_database(self, path: Path) -> bool:
+        resolved = path.resolve()
+        for source in self._sources:
+            if source.name != "hermes":
+                continue
+            try:
+                if resolved.is_relative_to(source.root.resolve()) and source.accepts(path):
+                    return is_sqlite_path(path)
+            except OSError:
+                continue
+        return False
+
+    def _canonical_watch_path(self, path: Path) -> Path | None:
+        if self._source_accepts(path):
+            return path
+        database = sqlite_database_for_sidecar(path)
+        if database is not None and self._is_hermes_database(database):
+            return database
+        return None
+
     def _watch_filter(self, _change: object, path: str) -> bool:
         """Accept configured source files under hidden canonical roots.
 
@@ -737,7 +762,7 @@ class LiveWatcher:
         writes. This filter keeps the project's own source/suffix predicate as
         the gate instead.
         """
-        return self._source_accepts(Path(path))
+        return self._canonical_watch_path(Path(path)) is not None
 
 
 def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[CandidateSourceFile]:

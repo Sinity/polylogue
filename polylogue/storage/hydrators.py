@@ -152,6 +152,7 @@ def session_event_from_record(record: SessionEventRecord) -> SessionEvent:
         sort_key=record.sort_key,
         payload=record.payload,
         source_message_id=record.source_message_id,
+        source_message_provider_id=record.source_message_provider_id,
         raw_id=record.raw_id,
         materializer_version=record.materializer_version,
     )

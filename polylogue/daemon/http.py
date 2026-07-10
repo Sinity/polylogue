@@ -3642,7 +3642,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             request = ImportRequest.model_validate(
                 {
-                    "source_path": body.get("path"),
+                    "source_path": body.get("source_path", body.get("path")),
                     "source_name": source.name,
                     "staged_path": str(source),
                     "idempotency_key": body.get("idempotency_key"),
