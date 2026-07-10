@@ -124,6 +124,7 @@ path = "packaging/hatch_build.py"
 [tool.pytest.ini_options]
 addopts = "-rfE --tb=line --benchmark-disable --benchmark-storage=file://./.cache/pytest-benchmark"
 testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py", "fuzz_*.py"]
 asyncio_mode = "auto"
 xfail_strict = true
 cache_dir = ".cache/pytest"
