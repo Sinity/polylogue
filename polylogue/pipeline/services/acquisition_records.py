@@ -9,6 +9,7 @@ from typing_extensions import TypedDict
 
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.sources.parsers.base import RawSessionData
+from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -38,10 +39,14 @@ def make_raw_record(
     """Prepare a raw session record from acquisition data.
 
     When ``blob_hash`` is set on the data (content already in blob store),
-    uses it as raw_id directly. Otherwise falls back to hashing raw_bytes.
+    most sources use it as ``raw_id`` directly. Hermes adds profile provenance
+    to ``raw_id`` because its native session IDs are profile-local. Otherwise
+    this falls back to hashing ``raw_bytes``.
     """
+    blob_hash: str | None = None
     if raw_data.blob_hash is not None:
         raw_id = raw_data.blob_hash
+        blob_hash = raw_data.blob_hash
         blob_size = raw_data.blob_size or 0
     elif raw_data.raw_bytes:
         # Bytes provided without pre-computed blob hash (e.g. from tests
@@ -58,9 +63,18 @@ def make_raw_record(
         str(raw_data.provider_hint) if raw_data.provider_hint is not None else None,
         source_name=source_name,
     )
+    if source_name == "hermes":
+        if blob_hash is None:
+            blob_hash = raw_id
+        raw_id = hermes_profile_raw_id(
+            raw_data.source_path,
+            raw_data.source_index or 0,
+            blob_hash,
+        )
 
     return RawSessionRecord(
         raw_id=raw_id,
+        blob_hash=(blob_hash if source_name == "hermes" else None),
         source_name=source_name,
         source_path=raw_data.source_path,
         source_index=raw_data.source_index,

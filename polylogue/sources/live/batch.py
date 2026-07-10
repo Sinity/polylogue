@@ -98,7 +98,11 @@ from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
 )
-from polylogue.sources.sqlite_snapshot import original_sqlite_source_path, snapshot_sqlite_to_blob
+from polylogue.sources.sqlite_snapshot import (
+    hermes_profile_raw_id,
+    original_sqlite_source_path,
+    snapshot_sqlite_to_blob,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -894,6 +898,7 @@ class LiveBatchProcessor:
             )
 
         for path in paths:
+            blob_hash: str | None = None
             try:
                 stat = path.stat()
             except OSError:
@@ -948,7 +953,9 @@ class LiveBatchProcessor:
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
-                    raw_id, blob_size = snapshot.blob_hash, snapshot.blob_size
+                    blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
+                    source_path = original_sqlite_source_path(path) or path
+                    raw_id = hermes_profile_raw_id(source_path, 0, blob_hash)
                     raw_source_revisions[path] = snapshot.source_revision
                 except OSError:
                     failed.append(path)
@@ -1084,6 +1091,7 @@ class LiveBatchProcessor:
             raw_records.append(
                 RawSessionRecord(
                     raw_id=raw_id,
+                    blob_hash=(blob_hash if provider is Provider.HERMES and blob_hash is not None else None),
                     payload_provider=provider,
                     source_name=source_name,
                     source_path=(
@@ -1217,11 +1225,12 @@ class LiveBatchProcessor:
                     payload = raw_payloads.get(record.raw_id)
                     source_name = Path(record.source_path).name
                     fallback_id = Path(record.source_path).stem
+                    blob_hash = record.blob_hash or record.raw_id
                     if provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
-                        blob_store.blob_path(record.raw_id)
+                        blob_store.blob_path(blob_hash)
                     ):
                         sessions = hermes_state.parse_state_db(
-                            blob_store.blob_path(record.raw_id),
+                            blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
                             profile_root=Path(record.source_path).parent,
                         )
@@ -1261,10 +1270,11 @@ class LiveBatchProcessor:
                         if payload is None:
                             raw_id, session_id = archive.write_raw_blob_and_parsed(
                                 session,
-                                blob_hash_hex=record.raw_id,
+                                blob_hash_hex=blob_hash,
                                 blob_size=record.blob_size,
                                 source_path=record.source_path,
                                 source_index=record.source_index or 0,
+                                raw_id=(record.raw_id if provider is Provider.HERMES else None),
                                 acquired_at_ms=acquired_at_ms,
                                 stage_timings_s=record_timings,
                                 stage_timing_prefix="full",

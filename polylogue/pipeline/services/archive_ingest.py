@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
@@ -19,6 +20,7 @@ from polylogue.sources.source_parsing import (
     parse_one_source_path,
 )
 from polylogue.sources.source_walk import _setup_source_walk
+from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
 from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
@@ -120,6 +122,10 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
             payload = _archive_raw_payload(raw_data, session, blob_root=blob_root)
             source_path = _archive_raw_source_path(raw_data, source)
             source_index = _archive_raw_source_index(raw_data)
+            raw_id = None
+            blob_hash = getattr(raw_data, "blob_hash", None)
+            if session.source_name is Provider.HERMES and isinstance(blob_hash, str) and blob_hash:
+                raw_id = hermes_profile_raw_id(source_path, source_index, blob_hash)
             try:
                 write_result = archive.write_raw_and_parsed_result(
                     session,
@@ -127,6 +133,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                     source_path=source_path,
                     acquired_at_ms=acquired_at_ms,
                     source_index=source_index,
+                    raw_id=raw_id,
                     stage_timings_s=result.stage_timings_s,
                     manage_transaction=not batched,
                 )
