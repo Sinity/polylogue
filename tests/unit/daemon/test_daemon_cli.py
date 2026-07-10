@@ -2464,10 +2464,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         def stop(self) -> None:
             events.append("stop")
 
-    async def fake_fts_startup() -> None:
+    def fake_fts_startup() -> None:
         events.append("fts")
 
-    async def fake_lineage_startup() -> int:
+    def fake_lineage_startup() -> int:
         events.append("lineage")
         return 0
 
@@ -2518,8 +2518,8 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
-        stack.enter_context(patch.object(daemon_cli, "_ensure_fts_startup_readiness", fake_fts_startup))
-        stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness", fake_lineage_startup))
+        stack.enter_context(patch.object(daemon_cli, "_ensure_fts_startup_readiness_sync", fake_fts_startup))
+        stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", fake_lineage_startup))
         stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", fake_reconcile_blob_publications))
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
         stack.enter_context(patch("polylogue.paths.archive_root", return_value=Path("/tmp/polylogue-test-archive")))
@@ -2783,6 +2783,9 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
     async def noop() -> None:
         return None
 
+    def noop_sync() -> None:
+        return None
+
     async def no_drive_changes() -> int:
         return 0
 
@@ -2820,7 +2823,8 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
 
     with (
         patch.object(daemon_cli, "make_server", return_value=browser_server),
-        patch.object(daemon_cli, "_ensure_fts_startup_readiness", noop),
+        patch.object(daemon_cli, "_ensure_fts_startup_readiness_sync", noop_sync),
+        patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", noop_sync),
         patch.object(daemon_cli, "_reconcile_blob_publications", noop),
         patch.object(daemon_cli, "_configure_fts_automerge", noop),
         patch.object(daemon_cli, "_run_drive_source_catchup_safely", no_drive_changes),

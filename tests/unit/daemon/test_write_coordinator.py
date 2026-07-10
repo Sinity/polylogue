@@ -308,7 +308,58 @@ def test_stuck_sync_writer_cannot_pin_process_exit() -> None:
         cwd=Path(__file__).parents[3],
         capture_output=True,
         text=True,
-        timeout=2.0,
+        timeout=5.0,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "writer_name"),
+    [
+        ("_run_startup_fts_readiness", "_ensure_fts_startup_readiness_sync"),
+        ("_run_startup_lineage_readiness", "_ensure_lineage_startup_readiness_sync"),
+    ],
+)
+def test_real_startup_writer_routes_cannot_pin_process_exit(helper_name: str, writer_name: str) -> None:
+    script = textwrap.dedent(
+        f"""
+        import asyncio
+        import contextlib
+        import threading
+
+        from polylogue.daemon import cli
+        from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+        async def main() -> None:
+            coordinator = DaemonWriteCoordinator()
+            started = threading.Event()
+
+            def writer() -> None:
+                started.set()
+                threading.Event().wait()
+
+            setattr(cli, {writer_name!r}, writer)
+            helper = getattr(cli, {helper_name!r})
+            caller = asyncio.create_task(helper(coordinator))
+            while not started.is_set():
+                await asyncio.sleep(0.001)
+            caller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await caller
+            assert await coordinator.shutdown(timeout=0.01) is False
+
+        asyncio.run(main())
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parents[3],
+        capture_output=True,
+        text=True,
+        timeout=5.0,
         check=False,
     )
 

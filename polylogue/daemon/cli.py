@@ -36,6 +36,9 @@ from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.fts_startup import (
     ensure_fts_startup_readiness as _ensure_fts_startup_readiness,
 )
+from polylogue.daemon.fts_startup import (
+    ensure_fts_startup_readiness_sync as _ensure_fts_startup_readiness_sync,
+)
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
@@ -45,7 +48,7 @@ from polylogue.daemon.health import (
     resolve_health_tiers,
 )
 from polylogue.daemon.lineage_startup import (
-    ensure_lineage_startup_readiness as _ensure_lineage_startup_readiness,
+    ensure_lineage_startup_readiness_sync as _ensure_lineage_startup_readiness_sync,
 )
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.daemon.write_coordinator import (
@@ -63,6 +66,18 @@ logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
 _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 25
+
+
+async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
+    """Run the real startup FTS writer on an exit-safe coordinator thread."""
+    await coordinator.run_sync("startup.fts_readiness", _ensure_fts_startup_readiness_sync)
+
+
+async def _run_startup_lineage_readiness(coordinator: DaemonWriteCoordinator) -> int:
+    """Run the real startup lineage writer on an exit-safe coordinator thread."""
+    return await coordinator.run_sync("startup.lineage_readiness", _ensure_lineage_startup_readiness_sync)
+
+
 _SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS = 60
 _SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT = 100
 _SESSION_INSIGHT_CONVERGENCE_BURST_LIMIT = 10
@@ -1169,14 +1184,14 @@ async def run_daemon_services(
             from polylogue.daemon.convergence_stages import make_default_convergence_stages
             from polylogue.daemon.embedding_backlog import periodic_embedding_backlog_check
 
-            await write_coordinator.run("startup.fts_readiness", _ensure_fts_startup_readiness)
+            await _run_startup_fts_readiness(write_coordinator)
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
                     "component_ready",
                     archive_root_path=archive_root_path,
                     component="fts_startup",
                 )
-            await write_coordinator.run("startup.lineage_readiness", _ensure_lineage_startup_readiness)
+            await _run_startup_lineage_readiness(write_coordinator)
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
                     "component_ready",

@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
@@ -175,7 +175,22 @@ class LiveWatcher:
             converger=converger,
             stop_requested=self._stop.is_set,
             event_emitter=event_emitter,
+            sync_runner=self._run_writer_sync,
         )
+
+    async def _run_writer_sync(
+        self,
+        actor: str,
+        function: Callable[..., Any],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Run blocking watcher writes without joining the loop executor at exit."""
+        run_sync = getattr(self._write_coordinator, "run_sync", None)
+        if callable(run_sync):
+            return await run_sync(actor, function, *args, **kwargs)
+        return await asyncio.to_thread(function, *args, **kwargs)
 
     @property
     def catch_up_complete(self) -> asyncio.Event:
@@ -254,7 +269,7 @@ class LiveWatcher:
         plan_holder: list[CatchUpPlan] = []
 
         async def prepare_catch_up() -> None:
-            await asyncio.to_thread(self._cursor.initialize)
+            await self._run_writer_sync("watcher.catch_up.cursor_initialize", self._cursor.initialize)
             if not candidates:
                 return
             logger.info("live.watcher: catch-up scan over %d file(s)", len(candidates))
@@ -493,7 +508,7 @@ class LiveWatcher:
             self._pending_paths.clear()
 
         async def flush_batch() -> None:
-            await asyncio.to_thread(self._cursor.initialize)
+            await self._run_writer_sync("watcher.live_batch.cursor_initialize", self._cursor.initialize)
             # Filter to files that actually need work.
             cursor_records = self._cursor.get_records(paths)
             needed = []

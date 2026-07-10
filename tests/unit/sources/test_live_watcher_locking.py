@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -25,6 +28,88 @@ def _make_watcher(tmp_path: Path, root: Path, *, debounce_s: float = 0.01) -> Li
     )
     cursor = CursorStore(tmp_path / "archive.sqlite")
     return LiveWatcher(polylogue, (WatchSource(name="test", root=root),), debounce_s=debounce_s, cursor=cursor)
+
+
+@pytest.mark.parametrize("route", ["append", "full"])
+def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
+    script = textwrap.dedent(
+        f"""
+        import asyncio
+        import contextlib
+        import tempfile
+        import threading
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+        from polylogue.sources.live import LiveWatcher, WatchSource
+        from polylogue.sources.live.batch_support import _AppendPlan
+        from polylogue.sources.live.cursor import CursorStore
+
+        async def main() -> None:
+            root = Path(tempfile.mkdtemp(prefix="polylogue-watcher-exit-"))
+            source_root = root / "sessions"
+            source_root.mkdir()
+            path = source_root / "session.jsonl"
+            path.write_text('{{"type":"session_meta","payload":{{"id":"exit-proof"}}}}\\n')
+            coordinator = DaemonWriteCoordinator()
+            cursor = CursorStore(root / "index.db")
+            polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
+            watcher = LiveWatcher(
+                polylogue,
+                (WatchSource(name="codex", root=source_root),),
+                cursor=cursor,
+                write_coordinator=coordinator,
+            )
+            started = threading.Event()
+
+            def stuck(*args, **kwargs):
+                started.set()
+                threading.Event().wait()
+
+            if {route!r} == "append":
+                stat = path.stat()
+                watcher._batch_processor._append_plan = lambda *args, **kwargs: _AppendPlan(
+                    path=path,
+                    source_name="codex",
+                    start_offset=0,
+                    last_complete_newline=stat.st_size,
+                    stat_size=stat.st_size,
+                    st_dev=stat.st_dev,
+                    st_ino=stat.st_ino,
+                    mtime_ns=stat.st_mtime_ns,
+                    payload=path.read_bytes(),
+                    payload_hash="exit-proof",
+                    cursor_fingerprint="base",
+                    bytes_read=stat.st_size,
+                )
+                watcher._batch_processor._ingest_append_plans = stuck
+            else:
+                watcher._batch_processor._append_plan = lambda *args, **kwargs: None
+                watcher._batch_processor._ingest_full_paths_sync = stuck
+
+            caller = asyncio.create_task(watcher._ingest_files([path]))
+            while not started.is_set():
+                await asyncio.sleep(0.001)
+            caller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await caller
+            assert await coordinator.shutdown(timeout=0.01) is False
+
+        asyncio.run(main())
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parents[3],
+        capture_output=True,
+        text=True,
+        timeout=6.0,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.asyncio
