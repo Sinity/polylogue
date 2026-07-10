@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -37,11 +38,15 @@ def _seed_resume_sessions(db_path: Path) -> None:
             timestamp="2026-04-20T10:05:00+00:00",
             blocks=[
                 {
+                    "type": "text",
+                    "text": "I will inspect command wiring and insight surfaces.",
+                },
+                {
                     "type": "tool_use",
                     "tool_name": "Read",
                     "semantic_type": "file_read",
                     "input": {"path": "/workspace/polylogue/polylogue/cli/click_app.py"},
-                }
+                },
             ],
         )
         .save()
@@ -67,11 +72,15 @@ def _seed_resume_sessions(db_path: Path) -> None:
             timestamp="2026-04-20T11:15:00+00:00",
             blocks=[
                 {
+                    "type": "text",
+                    "text": "Continuing implementation and running pytest for resume tests.",
+                },
+                {
                     "type": "tool_use",
                     "tool_name": "Bash",
                     "semantic_type": "shell",
                     "input": {"command": "pytest -q tests/unit/core/test_resume.py"},
-                }
+                },
             ],
         )
         .save()
@@ -174,6 +183,38 @@ async def test_resume_brief_degrades_when_insights_are_unavailable(cli_workspace
     # store, so it does not degrade — only the profile-derived projections do.
     assert {uncertainty.source for uncertainty in brief.uncertainties} >= {"session_profile"}
     assert all("session_insights" in uncertainty.detail for uncertainty in brief.uncertainties)
+    assert brief.next_steps == (
+        "Continue from latest assistant state: I will inspect command wiring and insight surfaces.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_brief_flags_partial_merged_profile(
+    cli_workspace: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = cli_workspace["db_path"]
+    _seed_resume_sessions(db_path)
+
+    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+    await archive.rebuild_insights()
+    profile = await archive.get_session_profile_insight(ROOT_ID)
+    assert profile is not None
+    partial_profile = profile.model_copy(
+        update={"evidence": None, "inference": None, "enrichment": None},
+    )
+    monkeypatch.setattr(
+        archive,
+        "get_session_profile_insight",
+        AsyncMock(return_value=partial_profile),
+    )
+
+    brief = await archive.resume_brief(ROOT_ID)
+
+    assert brief is not None
+    assert [uncertainty.detail for uncertainty in brief.uncertainties if uncertainty.source == "session_profile"] == [
+        "merged session profile is missing: evidence, inference, enrichment",
+    ]
 
 
 @pytest.mark.asyncio

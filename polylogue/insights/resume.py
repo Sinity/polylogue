@@ -542,6 +542,9 @@ def _next_steps(
     if last_message is not None and last_message.role == "user" and last_message.preview:
         steps.append(f"Respond to latest user request: {last_message.preview}")
 
+    if not steps and last_message is not None and last_message.role == "assistant" and last_message.preview:
+        steps.append(f"Continue from latest assistant state: {last_message.preview}")
+
     if not steps and inferences.intent_summary:
         steps.append(f"Continue intent: {inferences.intent_summary}")
     if not steps and inferences.outcome_summary:
@@ -578,6 +581,23 @@ async def build_resume_brief(
                 detail="session_insights not materialized for this session; run rebuild_insights",
             )
         )
+    elif profile is not None:
+        missing_profile_parts = tuple(
+            name
+            for name, value in (
+                ("evidence", profile.evidence),
+                ("inference", profile.inference),
+                ("enrichment", profile.enrichment),
+            )
+            if value is None
+        )
+        if missing_profile_parts:
+            uncertainties.append(
+                ResumeUncertainty(
+                    source="session_profile",
+                    detail=f"merged session profile is missing: {', '.join(missing_profile_parts)}",
+                )
+            )
 
     events: list[SessionWorkEventInsight] = []
     try:
