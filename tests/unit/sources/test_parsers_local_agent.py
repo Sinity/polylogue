@@ -556,6 +556,8 @@ def test_hermes_state_db_source_iterator_captures_raw_blob(tmp_path: Path) -> No
 
 
 def test_hermes_state_db_source_iterator_snapshots_wal_before_parsing(tmp_path: Path) -> None:
+    from polylogue.pipeline.ids import session_content_hash
+
     db_path = tmp_path / "state.db"
     blob_root = tmp_path / "blob"
     _write_hermes_state_db(db_path)
@@ -596,6 +598,13 @@ def test_hermes_state_db_source_iterator_snapshots_wal_before_parsing(tmp_path: 
     )
     assert reparsed_root.provider_session_id == root.provider_session_id
     assert reparsed_root.messages[-1].text == "committed only in WAL"
+    assert session_content_hash(reparsed_root) == session_content_hash(root)
+
+    corrupted_path = tmp_path / "corrupted-retained.db"
+    corrupted_path.write_bytes(retained_path.read_bytes())
+    corrupted_path.write_bytes(b"not a SQLite database")
+    with pytest.raises(sqlite3.DatabaseError):
+        hermes_state.parse_state_db(corrupted_path, profile_root=db_path.parent)
 
 
 def test_hermes_state_db_raw_payload_envelope_uses_marker(tmp_path: Path) -> None:
