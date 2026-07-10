@@ -38,8 +38,10 @@ async def save_raw_session(
             raw_id, origin, native_id, source_path, source_index, blob_hash,
             blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
             validated_at_ms, validation_status, validation_error, validation_drift_count,
-            validation_mode, detection_warnings_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            validation_mode, detection_warnings_json, logical_source_key, revision_kind,
+            source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
+            append_end_offset, acquisition_generation, revision_authority
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.raw_id,
@@ -59,6 +61,15 @@ async def save_raw_session(
             int(record.validation_drift_count or 0),
             record.validation_mode.value if record.validation_mode is not None else None,
             record.detection_warnings or "[]",
+            record.revision.logical_source_key if record.revision else None,
+            record.revision.kind.value if record.revision else "unknown",
+            record.revision.source_revision if record.revision else None,
+            record.revision.predecessor_raw_id if record.revision else None,
+            record.revision.baseline_raw_id if record.revision else None,
+            record.revision.append_start_offset if record.revision else None,
+            record.revision.append_end_offset if record.revision else None,
+            record.revision.acquisition_generation if record.revision else None,
+            record.revision.authority.value if record.revision else "quarantined",
         ),
     )
     inserted = bool(cursor.rowcount > 0)

@@ -5,10 +5,12 @@ from __future__ import annotations
 import sqlite3
 import time
 from datetime import UTC, datetime
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
 
+from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
@@ -128,6 +130,29 @@ def _ingest_append_plans_archive(
                             finalize_raw_parse=False,
                         )
                         _add_timing(timings, "append.raw_and_index_write", t0)
+                    if len(sessions) == 1:
+                        session = sessions[0]
+                        logical_source_key = f"{provider.value}:{session.provider_session_id}"
+                        parent = archive.raw_append_revision_parent(logical_source_key, plan.start_offset)
+                        if parent is not None:
+                            predecessor_raw_id, baseline_raw_id, generation = parent
+                            revision_material = (
+                                f"{plan.cursor_fingerprint or ''}:{plan.start_offset}:"
+                                f"{plan.last_complete_newline}:{plan.payload_hash}"
+                            ).encode()
+                            archive.bind_raw_revision(
+                                raw_id,
+                                RawRevisionEnvelope(
+                                    logical_source_key=logical_source_key,
+                                    kind=RawRevisionKind.APPEND,
+                                    source_revision=sha256(revision_material).hexdigest(),
+                                    acquisition_generation=max(generation, plan.source_generation),
+                                    predecessor_raw_id=predecessor_raw_id,
+                                    baseline_raw_id=baseline_raw_id,
+                                    append_start_offset=plan.start_offset,
+                                    append_end_offset=plan.last_complete_newline,
+                                ),
+                            )
                     archive.mark_raw_parse_succeeded(raw_id, provider=provider)
                     succeeded.append(plan)
                 except Exception as exc:

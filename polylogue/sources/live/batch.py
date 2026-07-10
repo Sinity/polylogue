@@ -16,6 +16,7 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
+from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
 from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
 from polylogue.core.enums import Provider
@@ -1141,6 +1142,7 @@ class LiveBatchProcessor:
             ingested.append(path)
             raw_byte_sizes[path] = stat.st_size
             raw_source_names[path] = source_name
+            prior_cursor = self._cursor.get_record(path)
             raw_records.append(
                 RawSessionRecord(
                     raw_id=raw_id,
@@ -1155,6 +1157,8 @@ class LiveBatchProcessor:
                     blob_publication_receipt_id=blob_publication_receipt_id,
                     acquired_at=datetime.now(UTC).isoformat(),
                     file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
+                    captured_source_revision=raw_source_revisions.get(path, raw_id),
+                    acquisition_generation=(prior_cursor.source_generation + 1) if prior_cursor is not None else 0,
                 )
             )
             raw_by_id[raw_id] = path
@@ -1373,6 +1377,17 @@ class LiveBatchProcessor:
                         record_session_ids.append(session_id)
                         record_session_count += 1
                         record_message_count += len(session.messages)
+                    if record_session_count == 1 and record.captured_source_revision is not None:
+                        session = sessions[0]
+                        archive.bind_raw_revision(
+                            source_raw_id,
+                            RawRevisionEnvelope(
+                                logical_source_key=f"{provider.value}:{session.provider_session_id}",
+                                kind=RawRevisionKind.FULL,
+                                source_revision=record.captured_source_revision,
+                                acquisition_generation=record.acquisition_generation or 0,
+                            ),
+                        )
                     archive.mark_raw_parse_succeeded(source_raw_id, provider=provider)
                     result.raw_ids[record.raw_id] = record_raw_id
                     result.session_ids.extend(record_session_ids)
@@ -1534,6 +1549,7 @@ class LiveBatchProcessor:
             payload_hash=tail_hash,
             cursor_fingerprint=cursor.content_fingerprint,
             bytes_read=len(payload),
+            source_generation=cursor.source_generation,
         )
 
     def _append_payload_for_provider(self, path: Path, source_name: str, payload: bytes) -> bytes | None:

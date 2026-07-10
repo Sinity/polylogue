@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from polylogue.archive.revision_authority import RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Provider, ValidationMode, ValidationStatus
 
 
@@ -27,6 +28,9 @@ class RawSessionRecord(BaseModel):
     validation_provider: Provider | None = None
     validation_mode: ValidationMode | None = None
     detection_warnings: str | None = None
+    revision: RawRevisionEnvelope | None = None
+    captured_source_revision: str | None = Field(default=None, exclude=True)
+    acquisition_generation: int | None = Field(default=None, exclude=True)
 
     @field_validator("raw_id", "blob_hash", "blob_publication_receipt_id", "source_name", "source_path")
     @classmethod

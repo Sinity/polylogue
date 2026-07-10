@@ -9,6 +9,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from polylogue.archive.revision_authority import RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
@@ -267,6 +268,7 @@ def write_source_raw_session(
     additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
     artifact: ArchiveSourceArtifact | None = None,
     hook_event: ArchiveHookEvent | None = None,
+    revision: RawRevisionEnvelope | None = None,
     manage_transaction: bool = True,
 ) -> str:
     """Insert one raw session and its required raw-payload blob reference.
@@ -296,8 +298,10 @@ def write_source_raw_session(
                 raw_id, origin, native_id, source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
                 validated_at_ms, validation_status, validation_error, validation_drift_count,
-                validation_mode, detection_warnings_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                validation_mode, detection_warnings_json, logical_source_key, revision_kind,
+                source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
+                append_end_offset, acquisition_generation, revision_authority
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resolved_raw_id,
@@ -317,6 +321,15 @@ def write_source_raw_session(
                 validation_drift_count,
                 _enum_value(validation_mode),
                 _json_dumps(detection_warnings),
+                revision.logical_source_key if revision else None,
+                revision.kind.value if revision else "unknown",
+                revision.source_revision if revision else None,
+                revision.predecessor_raw_id if revision else None,
+                revision.baseline_raw_id if revision else None,
+                revision.append_start_offset if revision else None,
+                revision.append_end_offset if revision else None,
+                revision.acquisition_generation if revision else None,
+                revision.authority.value if revision else "quarantined",
             ),
         )
         _insert_blob_ref(
@@ -365,6 +378,7 @@ def write_source_raw_session_blob_ref(
     raw_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
     additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
+    revision: RawRevisionEnvelope | None = None,
     manage_transaction: bool = True,
 ) -> str:
     """Insert one raw session that already has a materialized raw-payload blob.
@@ -387,8 +401,10 @@ def write_source_raw_session_blob_ref(
             """
             INSERT OR REPLACE INTO raw_sessions (
                 raw_id, origin, native_id, source_path, source_index, blob_hash,
-                blob_size, acquired_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
+                append_end_offset, acquisition_generation, revision_authority
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resolved_raw_id,
@@ -399,6 +415,15 @@ def write_source_raw_session_blob_ref(
                 blob_hash,
                 blob_size,
                 acquired_at_ms,
+                revision.logical_source_key if revision else None,
+                revision.kind.value if revision else "unknown",
+                revision.source_revision if revision else None,
+                revision.predecessor_raw_id if revision else None,
+                revision.baseline_raw_id if revision else None,
+                revision.append_start_offset if revision else None,
+                revision.append_end_offset if revision else None,
+                revision.acquisition_generation if revision else None,
+                revision.authority.value if revision else "quarantined",
             ),
         )
         _insert_blob_ref(
@@ -427,6 +452,34 @@ def write_source_raw_session_blob_ref(
                 ),
             )
     return resolved_raw_id
+
+
+def bind_source_raw_revision(conn: sqlite3.Connection, raw_id: str, revision: RawRevisionEnvelope) -> None:
+    """Bind acquisition evidence after a payload proves a single session identity."""
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = ?, revision_kind = ?, source_revision = ?,
+                predecessor_raw_id = ?, baseline_raw_id = ?, append_start_offset = ?,
+                append_end_offset = ?, acquisition_generation = ?, revision_authority = ?
+            WHERE raw_id = ? AND revision_authority = 'quarantined'
+            """,
+            (
+                revision.logical_source_key,
+                revision.kind.value,
+                revision.source_revision,
+                revision.predecessor_raw_id,
+                revision.baseline_raw_id,
+                revision.append_start_offset,
+                revision.append_end_offset,
+                revision.acquisition_generation,
+                revision.authority.value,
+                raw_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError(f"raw revision is already authoritative or missing: {raw_id}")
 
 
 def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> ArchiveRawSessionEnvelope:
