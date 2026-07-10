@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections.abc import Sequence
 from typing import Literal
+
+from polylogue.core.timestamps import parse_timestamp
+from polylogue.sources.parsers.base_models import ParsedSessionEvent
 
 BrowserCapturePrecedence = Literal["default", "replace", "skip"]
 
@@ -109,10 +114,72 @@ def record_capture_gap_event(
     )
 
 
+def record_source_outage_events(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    events: Sequence[ParsedSessionEvent],
+) -> int:
+    """Persist source-outage telemetry a capture declares about itself even
+    when its message content loses the browser-capture precedence merge and
+    is otherwise discarded.
+
+    A capture that loses the content merge can still be telling the truth
+    about when it was not observing the page: that claim does not depend on
+    whether its transcript content wins. Mirrors ``record_capture_gap_event``:
+    a lightweight write survives the skip path instead of the whole incoming
+    session's evidence being silently dropped alongside its discarded
+    messages.
+    """
+    outage_events = [event for event in events if event.event_type == "source_outage"]
+    if not outage_events:
+        return 0
+    row = conn.execute(
+        """
+        SELECT MAX(position) + 1
+        FROM (
+            SELECT position FROM session_events WHERE session_id = ?
+            UNION ALL
+            SELECT position FROM session_agent_policies WHERE session_id = ?
+            UNION ALL
+            SELECT position FROM session_provider_usage_events WHERE session_id = ?
+        )
+        """,
+        (session_id, session_id, session_id),
+    ).fetchone()
+    position = int(row[0] or 0) if row is not None else 0
+    for event in outage_events:
+        summary = str(event.payload.get("summary") or "")
+        occurred_at_ms: int | None = None
+        if event.timestamp:
+            parsed_timestamp = parse_timestamp(event.timestamp)
+            if parsed_timestamp is not None:
+                occurred_at_ms = int(parsed_timestamp.timestamp() * 1000)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO session_events (
+                session_id, source_message_id, source_message_provider_id,
+                position, event_type, summary, payload_json, occurred_at_ms
+            ) VALUES (?, NULL, NULL, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                position,
+                event.event_type,
+                summary,
+                json.dumps(event.payload, sort_keys=True, ensure_ascii=False),
+                occurred_at_ms,
+            ),
+        )
+        position += 1
+    return len(outage_events)
+
+
 __all__ = [
     "BrowserCapturePrecedence",
     "browser_capture_precedence",
     "record_capture_gap_event",
+    "record_source_outage_events",
     "session_has_parser_ingest_flag",
     "stored_message_count",
 ]

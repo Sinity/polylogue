@@ -124,6 +124,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     BrowserCapturePrecedence,
     browser_capture_precedence,
     record_capture_gap_event,
+    record_source_outage_events,
     session_has_parser_ingest_flag,
     stored_message_count,
 )
@@ -991,6 +992,11 @@ class ArchiveStore:
                         incoming_message_count=len(session.messages),
                     )
                     session_event_count = 1
+                session_event_count += record_source_outage_events(
+                    self._conn,
+                    session_id=session_id,
+                    events=session.session_events,
+                )
                 if manage_transaction:
                     self._conn.commit()
                 return ArchiveRawParsedWriteResult(

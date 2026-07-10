@@ -149,6 +149,14 @@ def _write_demo_browser_capture_gap_sources(source_root: Path) -> None:
                 "captured_at": "2026-07-04T09:54:00Z",
                 "adapter_name": "chatgpt-browser-native-v1",
                 "capture_mode": "snapshot",
+                # Declared source-outage interval (#polylogue-212.11): the extension
+                # host was suspended before this snapshot, so it has positive
+                # evidence of a coverage gap distinct from mere silence.
+                "capture_interruption": {
+                    "started_at": "2026-07-04T09:50:00Z",
+                    "ended_at": "2026-07-04T09:53:30Z",
+                    "reason": "extension host suspended while the tab was backgrounded",
+                },
             },
             "session": {
                 "provider": "chatgpt",

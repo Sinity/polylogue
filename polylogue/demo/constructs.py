@@ -147,6 +147,21 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         """,
     ),
     DemoConstruct(
+        construct_id="source_outage_interval_events",
+        label="Source-outage interval events",
+        description=(
+            "A capture adapter declares a bounded interval during which it was not observing the "
+            "session, distinct from ordinary conversational silence, which leaves no signal at all."
+        ),
+        sql="""
+            SELECT COUNT(*)
+            FROM session_events
+            WHERE event_type = 'source_outage'
+              AND json_extract(payload_json, '$.started_at') IS NOT NULL
+              AND json_extract(payload_json, '$.ended_at') IS NOT NULL
+        """,
+    ),
+    DemoConstruct(
         construct_id="session_link_rows",
         label="Session-link rows",
         description="At least one parser-declared parent relationship is persisted.",

@@ -183,10 +183,13 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "capture_gap_events",
             "browser_capture_raw_variants",
             "browser_capture_coalesced_session",
+            "source_outage_interval_events",
         ),
         description=(
             "Native-payload and lower-precedence DOM browser captures for an existing ChatGPT session, "
-            "proving source evidence remains durable while the indexed session stays canonical."
+            "proving source evidence remains durable while the indexed session stays canonical. The "
+            "native capture also declares a bounded pre-capture interval during which the extension "
+            "adapter reported no observation, distinct from ordinary conversational silence."
         ),
         source_paths=(
             "browser-capture/chatgpt-raw-provider.json",

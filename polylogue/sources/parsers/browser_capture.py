@@ -19,7 +19,12 @@ from polylogue.browser_capture.models import (
     looks_like_browser_capture,
 )
 from polylogue.core.enums import Provider, SessionKind
-from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base_models import (
+    ParsedAttachment,
+    ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
+)
 
 
 def _legacy_native_id(provider: Provider, provider_session_id: str | None) -> str | None:
@@ -183,6 +188,44 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
     return parsed.model_copy(update={"attachments": list(merged.values())})
 
 
+def _capture_interruption_session_events(envelope: BrowserCaptureEnvelope) -> list[ParsedSessionEvent]:
+    """Turn a source-declared capture interruption into a session event.
+
+    Distinct from the ``capture_gap`` event recorded when a lower-precedence
+    DOM capture is skipped during write (an artifact of merge precedence): this
+    is a positive, source-reported claim that observation stopped for a bounded
+    interval, so it is preserved as its own ``source_outage`` event even when
+    this capture otherwise wins outright.
+    """
+
+    interruption = envelope.provenance.capture_interruption
+    if interruption is None:
+        return []
+    summary = (
+        f"{envelope.provenance.adapter_name} reported no observation of this session "
+        f"from {interruption.started_at} to {interruption.ended_at}: {interruption.reason}."
+    )
+    return [
+        ParsedSessionEvent(
+            event_type="source_outage",
+            timestamp=interruption.ended_at,
+            payload={
+                "summary": summary,
+                "started_at": interruption.started_at,
+                "ended_at": interruption.ended_at,
+                "reason": interruption.reason,
+            },
+        )
+    ]
+
+
+def _merge_envelope_session_events(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
+    events = _capture_interruption_session_events(envelope)
+    if not events:
+        return parsed
+    return parsed.model_copy(update={"session_events": [*parsed.session_events, *events]})
+
+
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)
@@ -192,20 +235,26 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
     if envelope.session.provider is Provider.CHATGPT and _has_chatgpt_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
-        return _apply_browser_capture_session_kind(
-            _merge_envelope_attachments(parse_chatgpt(raw_provider_payload, provider_session_id), envelope),
+        return _merge_envelope_session_events(
+            _apply_browser_capture_session_kind(
+                _merge_envelope_attachments(parse_chatgpt(raw_provider_payload, provider_session_id), envelope),
+                envelope,
+                provider_session_id,
+                has_native_payload=True,
+            ),
             envelope,
-            provider_session_id,
-            has_native_payload=True,
         )
     if envelope.session.provider is Provider.CLAUDE_AI and _has_claude_ai_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.claude.ai_parser import parse_ai as parse_claude_ai
 
-        return _apply_browser_capture_session_kind(
-            _merge_envelope_attachments(parse_claude_ai(raw_provider_payload, provider_session_id), envelope),
+        return _merge_envelope_session_events(
+            _apply_browser_capture_session_kind(
+                _merge_envelope_attachments(parse_claude_ai(raw_provider_payload, provider_session_id), envelope),
+                envelope,
+                provider_session_id,
+                has_native_payload=True,
+            ),
             envelope,
-            provider_session_id,
-            has_native_payload=True,
         )
 
     seen_turns: set[str] = set()
@@ -265,6 +314,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
+        session_events=_capture_interruption_session_events(envelope),
         ingest_flags=[
             *dict.fromkeys(
                 [

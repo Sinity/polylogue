@@ -71,6 +71,21 @@ class BrowserCaptureTurn(BaseModel):
         return self
 
 
+class BrowserCaptureInterruption(BaseModel):
+    """A source-declared interval during which the capture adapter was not observing the page.
+
+    Extensions can legitimately detect and report their own non-observation
+    windows (the host was suspended, the tab was backgrounded, auth expired
+    mid-session, etc). This is distinct from ordinary conversational silence,
+    which leaves no signal in the archive at all — a declared interruption is
+    positive evidence of a coverage gap, not an absence of evidence.
+    """
+
+    started_at: str
+    ended_at: str
+    reason: str
+
+
 class BrowserCaptureProvenance(BaseModel):
     """How and where the capture was observed."""
 
@@ -82,6 +97,7 @@ class BrowserCaptureProvenance(BaseModel):
     adapter_name: str
     adapter_version: str | None = None
     capture_mode: Literal["snapshot", "tail"] = "snapshot"
+    capture_interruption: BrowserCaptureInterruption | None = None
     provider_meta: dict[str, object] = Field(default_factory=dict)
 
     @field_validator("provider_meta", mode="before")
@@ -357,6 +373,7 @@ __all__ = [
     "BrowserCaptureAttachment",
     "BrowserCaptureEnvelope",
     "BrowserCaptureErrorPayload",
+    "BrowserCaptureInterruption",
     "BrowserCaptureProvenance",
     "BrowserCaptureReceiverStatusPayload",
     "BrowserCaptureSession",

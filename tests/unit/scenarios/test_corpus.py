@@ -232,6 +232,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         "capture_gap_events",
         "browser_capture_raw_variants",
         "browser_capture_coalesced_session",
+        "source_outage_interval_events",
     )
     assert DEMO_CORPUS_FAMILIES[-1].synthetic is False
     assert set(DEMO_CORPUS_FAMILIES[-1].construct_ids) == {
