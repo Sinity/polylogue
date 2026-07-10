@@ -61,6 +61,19 @@ def test_distinct_archives_do_not_conflict(tmp_path: Path) -> None:
     assert identity.tier("index").resolved_path == active / "index.db"
 
 
+def test_sharing_only_one_durable_tier_does_not_conflate_archives(tmp_path: Path) -> None:
+    configured = tmp_path / "configured"
+    active = tmp_path / "active"
+    _touch_tiers(configured)
+    _touch_tiers(active)
+    (active / "source.db").unlink()
+    (active / "source.db").symlink_to(configured / "source.db")
+
+    identity = assert_writable_archive_identity(configured_root=configured, active_root=active)
+
+    assert identity.tier("user").stable_id != ArchiveIdentity.resolve(configured).tier("user").stable_id
+
+
 def test_archive_store_writer_route_enforces_identity_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -92,7 +92,7 @@ class ArchiveIdentity:
         return "|".join((self.tier("source").stable_id, self.tier("user").stable_id))
 
     def conflicts_with(self, other: ArchiveIdentity) -> bool:
-        shared_durable = self.tier("source").same_file(other.tier("source")) or self.tier("user").same_file(
+        shared_durable = self.tier("source").same_file(other.tier("source")) and self.tier("user").same_file(
             other.tier("user")
         )
         distinct_indexes = not self.tier("index").same_file(other.tier("index"))
