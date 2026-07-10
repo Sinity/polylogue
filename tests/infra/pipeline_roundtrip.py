@@ -13,9 +13,8 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.hydrators import session_from_records
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_scenarios import read_session_records
 
 
@@ -60,20 +59,28 @@ def write_and_hydrate(roundtrip: PipelineRoundtrip, db_conn: sqlite3.Connection)
     database_path = next(
         Path(str(path)) for _sequence, name, path in db_conn.execute("PRAGMA database_list") if name == "main" and path
     )
-    blob_store = BlobStore(database_path.parent / "blob")
-    preacquired: dict[int, tuple[bytes | None, int, str]] = {}
-    for attachment in parsed.attachments:
-        if attachment.inline_bytes is None:
-            continue
-        blob_hash, size = blob_store.write_from_bytes(attachment.inline_bytes)
-        preacquired[id(attachment)] = (bytes.fromhex(blob_hash), size, "acquired")
-    write_parsed_session_to_archive(
-        db_conn,
-        parsed,
-        content_hash=roundtrip.content_hash,
-        preacquired_attachment_blobs=preacquired,
-    )
+    with ArchiveStore.open_existing(database_path.parent, read_only=False) as archive:
+        archive.write_parsed(parsed, content_hash=roundtrip.content_hash)
     conv_record, msg_records, attachment_records = read_session_records(db_conn, session_id)
+    if any(attachment.inline_bytes is not None for attachment in parsed.attachments):
+        blob_hashes = {
+            bytes(blob_hash).hex()
+            for (blob_hash,) in db_conn.execute(
+                """
+                SELECT a.blob_hash
+                FROM attachments AS a
+                JOIN attachment_refs AS ar ON ar.attachment_id = a.attachment_id
+                WHERE ar.session_id = ? AND a.blob_hash IS NOT NULL
+                """,
+                (session_id,),
+            )
+        }
+        assert blob_hashes
+        assert all(
+            (database_path.parent / "blob" / blob_hash[:2] / blob_hash[2:]).exists() for blob_hash in blob_hashes
+        )
+        with sqlite3.connect(database_path.parent / "source.db") as source_conn:
+            assert source_conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
     return session_from_records(conv_record, msg_records, attachment_records)
 
 
