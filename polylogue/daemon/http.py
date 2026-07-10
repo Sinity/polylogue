@@ -3910,3 +3910,10 @@ class _StandaloneWriteRuntime:
             self.thread.join(timeout=1.0)
         else:
             logger.warning("standalone daemon HTTP writer still active during server close")
+            asyncio.run_coroutine_threadsafe(self._stop_when_idle(), self.loop)
+
+    async def _stop_when_idle(self) -> None:
+        assert self.coordinator is not None
+        while not await self.coordinator.shutdown(timeout=5.0):
+            logger.warning("standalone daemon HTTP writer still draining after server close")
+        self.loop.call_soon(self.loop.stop)

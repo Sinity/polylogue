@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Awaitable, Callable, Iterator
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -106,6 +106,21 @@ def test_standalone_http_server_owns_and_idempotently_closes_writer_runtime() ->
     server.server_close()
 
     assert not runtime.thread.is_alive()
+
+
+def test_standalone_http_server_stops_loop_after_late_writer_drain() -> None:
+    server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
+    runtime = server._owned_write_runtime
+    assert runtime is not None
+    assert runtime.coordinator is not None
+    shutdown = AsyncMock(side_effect=[False, True])
+
+    with patch.object(runtime.coordinator, "shutdown", shutdown):
+        server.server_close()
+        runtime.thread.join(timeout=1.0)
+
+    assert not runtime.thread.is_alive()
+    assert shutdown.await_count == 2
 
 
 def test_coordinated_mutation_does_not_use_timeout_detaching_read_executor() -> None:
