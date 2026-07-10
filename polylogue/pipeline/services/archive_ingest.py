@@ -28,13 +28,14 @@ from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wal
 logger = get_logger(__name__)
 
 # Work-based commit batching (#dogfood ingest-commit-batching). Re-ingest is
-# I/O-wait-bound: source.db and index.db each fsync per session under
-# per-session commit. Committing once ~8000 accumulated messages have been
-# written amortizes the fsync/WAL churn (validated ~1.37x throughput, ~4x fewer
-# bytes, peak WAL ~14 MB << 40 MB autocheckpoint). Session-count batching was
-# rejected (uneven transaction size -> larger WAL); one-shot was rejected
-# (slower + large WAL). Override with POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES;
-# a value <= 0 restores per-session commit (escape hatch).
+# I/O-wait-bound index writes benefit from committing once ~8000 accumulated
+# messages (validated ~1.37x throughput, ~4x fewer bytes, peak WAL ~14 MB <<
+# 40 MB autocheckpoint). Durable source references commit per raw artifact so
+# parallel workers can establish pre-publication reservations without blocking
+# behind a long source transaction. Session-count batching was rejected (uneven
+# index transaction size -> larger WAL); one-shot was rejected (slower + large
+# WAL). Override with POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES; a value <= 0
+# restores per-session index commit (escape hatch).
 COMMIT_BATCH_MESSAGE_THRESHOLD = 8000
 POST_COMMIT_UPKEEP_REASON = "archive_ingest_commit"
 
