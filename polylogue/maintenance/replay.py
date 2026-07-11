@@ -136,6 +136,7 @@ async def rebuild_index_from_source(
     ingest_workers: int | None,
     materialize: bool,
     progress_callback: StageProgressCallback | None,
+    owned_inactive_generation: tuple[str, str] | None = None,
 ) -> dict[str, object]:
     """Replay retained bytes through typed revision authority.
 
@@ -154,6 +155,7 @@ async def rebuild_index_from_source(
         backfill_historical_revision_evidence,
         Path(config.archive_root),
         selected_raw_ids=raw_ids,
+        owned_inactive_generation=owned_inactive_generation,
     )
     if progress_callback is not None:
         progress_callback(result.replayed_logical_sources, "revision replay complete")

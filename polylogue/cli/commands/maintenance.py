@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -1323,6 +1325,7 @@ def _rebuild_index_selection_plan(
     show_default=True,
     help="Output format.",
 )
+@click.option("--no-promote", is_flag=True, help="Leave an exact-ready generation inactive after rebuilding it.")
 def rebuild_index_command(
     only_missing: bool,
     raw_ids: tuple[str, ...],
@@ -1330,6 +1333,7 @@ def rebuild_index_command(
     plan_only: bool,
     plan_limit: int,
     output_format: str,
+    no_promote: bool,
 ) -> None:
     """Inspect or execute an authority-safe source-to-index rebuild.
 
@@ -1339,6 +1343,8 @@ def rebuild_index_command(
     configure_logging()
     if raw_ids and only_missing:
         raise click.UsageError("--raw-id cannot be combined with --only-missing")
+    if (raw_ids or only_missing) and not no_promote and not plan_only:
+        raise click.UsageError("partial rebuild selections require --no-promote and can never replace the active index")
     if max_blob_mb is not None and max_blob_mb <= 0:
         raise click.BadParameter("max blob size must be positive", param_hint="--max-blob-mb")
     if max_blob_mb is not None and not raw_ids and not only_missing:
@@ -1418,22 +1424,86 @@ def rebuild_index_command(
                         f"blob={int(group['blob_bytes']):,} source={group['source_path']}"
                     )
         return
-    config = Config(
-        archive_root=root,
-        render_root=render_root(),
-        sources=[],
-        db_path=root / "index.db",
+    from polylogue.cli.commands.status import _archive_readiness_status
+    from polylogue.maintenance.offline_guard import running_daemon_pid
+    from polylogue.storage.index_generation import (
+        IndexGenerationStore,
+        RebuildLease,
+        source_revision_snapshot,
     )
-    result = asyncio.run(
-        rebuild_index_from_source(
-            config,
-            raw_ids=selected_raw_ids,
-            raw_batch_size=500,
-            ingest_workers=None,
-            materialize=True,
-            progress_callback=None,
+
+    generation_store = IndexGenerationStore(root)
+    with RebuildLease(root):
+        active_config = Config(archive_root=root, render_root=render_root(), sources=[], db_path=root / "index.db")
+        daemon_pid = running_daemon_pid(active_config)
+        if daemon_pid is not None:
+            raise click.ClickException(f"offline rebuild refused while polylogued PID {daemon_pid} is running")
+        raw_count = _count_source_raw_sessions(root)
+        selected_raw_ids = (
+            list(dict.fromkeys(raw_ids))
+            if raw_ids
+            else _missing_index_raw_ids(root)
+            if only_missing
+            else _all_index_rebuild_raw_ids(root)
         )
-    )
+        unfiltered_selected_raw_count = len(selected_raw_ids)
+        selected_raw_ids = _filter_raw_ids_by_max_blob_size(root, selected_raw_ids, max_blob_mb)
+        selected_raw_count = len(selected_raw_ids)
+        skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
+        source_snapshot = source_revision_snapshot(root)
+        generation = generation_store.create(source_snapshot=source_snapshot)
+        try:
+            generation_root = Path(generation.index_path).parent
+            config = Config(
+                archive_root=generation_root,
+                render_root=render_root(),
+                sources=[],
+                db_path=Path(generation.index_path),
+            )
+            result = asyncio.run(
+                rebuild_index_from_source(
+                    config,
+                    raw_ids=selected_raw_ids,
+                    raw_batch_size=500,
+                    ingest_workers=None,
+                    materialize=True,
+                    progress_callback=None,
+                    owned_inactive_generation=(generation.generation_id, generation.owner_id),
+                )
+            )
+            from polylogue.storage.repair import repair_session_insights
+
+            insight_result = repair_session_insights(
+                config,
+                dry_run=False,
+                archive_root_override=generation_root,
+                owned_inactive_generation=(generation.generation_id, generation.owner_id),
+            )
+            if not insight_result.success:
+                raise click.ClickException(f"session insight materialization failed: {insight_result.detail}")
+            if source_revision_snapshot(root) != generation.source_snapshot:
+                raise click.ClickException(f"source evidence changed while rebuilding {generation.generation_id}")
+            readiness = _archive_readiness_status(generation_root)
+            if not readiness.get("checked") or int(readiness.get("blocked_surface_count", 1)) != 0:
+                blocked = [
+                    name
+                    for name, info in cast(dict[str, dict[str, object]], readiness.get("surfaces", {})).items()
+                    if info.get("ready") is not True
+                ]
+                detail = (
+                    f"reason: {readiness.get('reason')}"
+                    if not readiness.get("checked")
+                    else "blocked surfaces: " + ", ".join(blocked)
+                )
+                raise click.ClickException(
+                    f"inactive generation {generation.generation_id} is not exact-ready; {detail}"
+                )
+            if not no_promote:
+                generation = generation_store.promote(generation)
+        except Exception:
+            with contextlib.suppress(Exception):
+                generation_store.discard_if_inactive(generation)
+            raise
     payload = {
         "archive_root": str(root),
         "raw_session_count": raw_count,
@@ -1441,6 +1511,9 @@ def rebuild_index_command(
         "skipped_by_blob_limit_count": skipped_by_blob_limit_count,
         "status": "replayed",
         "materialized": True,
+        "materialization": insight_result.to_dict(),
+        "generation": asdict(generation),
+        "readiness": readiness,
         **result,
     }
     if output_format == "json":

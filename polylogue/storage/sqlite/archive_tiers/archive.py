@@ -737,15 +737,51 @@ class ArchiveStore:
         initialize: bool = True,
         read_only: bool = False,
         read_timeout: float = 5.0,
+        owned_inactive_generation: tuple[str, str] | None = None,
     ) -> None:
+        self._active_writer_lease = None
         if not read_only:
             from polylogue.paths import archive_root as configured_archive_root
             from polylogue.storage.archive_identity import assert_writable_archive_identity
 
-            assert_writable_archive_identity(
-                configured_root=configured_archive_root(),
-                active_root=archive_root,
-            )
+            if owned_inactive_generation is None:
+                from polylogue.storage.index_generation import ActiveWriterLease
+
+                self._active_writer_lease = ActiveWriterLease(archive_root)
+                self._active_writer_lease.acquire()
+                try:
+                    assert_writable_archive_identity(
+                        configured_root=configured_archive_root(),
+                        active_root=archive_root,
+                    )
+                except Exception:
+                    self._active_writer_lease.close()
+                    self._active_writer_lease = None
+                    raise
+            else:
+                from polylogue.storage.index_generation import IndexGenerationStore
+
+                generation_id, owner_id = owned_inactive_generation
+                configured_root = configured_archive_root()
+                generation = IndexGenerationStore(configured_root).load(generation_id)
+                if (
+                    generation.owner_id != owner_id
+                    or generation.state != "inactive"
+                    or Path(generation.index_path).parent.resolve(strict=True) != archive_root.resolve(strict=True)
+                ):
+                    raise RuntimeError("inactive index generation ownership validation failed")
+        try:
+            self._initialize_store(archive_root, initialize=initialize, read_only=read_only, read_timeout=read_timeout)
+        except Exception:
+            conn = getattr(self, "_conn", None)
+            if conn is not None:
+                conn.close()
+            if self._active_writer_lease is not None:
+                self._active_writer_lease.close()
+                self._active_writer_lease = None
+            raise
+
+    def _initialize_store(self, archive_root: Path, *, initialize: bool, read_only: bool, read_timeout: float) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
         self.index_db_path = archive_root / "index.db"
@@ -757,27 +793,18 @@ class ArchiveStore:
             initialize_active_archive_root(archive_root)
         if read_only:
             self._ensure_read_runtime_indexes()
-        if read_only:
             self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True, timeout=read_timeout)
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
             self._conn = sqlite3.connect(self.index_db_path)
             pragma_statements = WRITE_CONNECTION_PRAGMA_STATEMENTS
         self._conn.row_factory = sqlite3.Row
-        # Apply the canonical connection profile rather than relying on sqlite3
-        # defaults. Daemon read routes may opt into a shorter busy timeout so
-        # write-heavy catch-up surfaces as a typed degraded response instead of
-        # a client-side route timeout.
         for statement in pragma_statements:
             self._conn.execute(statement)
         if read_only:
             self._conn.execute(f"PRAGMA busy_timeout = {max(0, int(read_timeout * 1000))}")
         self._user_tier_attached = False
         self._tags_relation = "session_tags"
-        # Lazily opened persistent write connection to source.db. Keeping it open
-        # across writes lets a bulk caller batch raw-session commits (it is the
-        # twin of the index.db commit batched on self._conn) instead of paying a
-        # source-tier fsync per session. Opened on first raw write only.
         self._source_conn: sqlite3.Connection | None = None
         self._blob_publisher = None
         if not read_only:
@@ -798,6 +825,16 @@ class ArchiveStore:
         """
         initialize = not read_only
         return cls(archive_root, initialize=initialize, read_only=read_only, read_timeout=read_timeout)
+
+    @classmethod
+    def open_owned_inactive_generation(cls, archive_root: Path, *, generation_id: str, owner_id: str) -> ArchiveStore:
+        """Open a typed inactive generation without weakening normal identity checks."""
+        return cls(
+            archive_root,
+            initialize=True,
+            read_only=False,
+            owned_inactive_generation=(generation_id, owner_id),
+        )
 
     @staticmethod
     def _needs_tier_bootstrap(archive_root: Path) -> bool:
@@ -861,6 +898,9 @@ class ArchiveStore:
             self._source_conn.close()
             self._source_conn = None
         self._conn.close()
+        if self._active_writer_lease is not None:
+            self._active_writer_lease.close()
+            self._active_writer_lease = None
 
     def write_parsed(self, session: ParsedSession, *, content_hash: str | None = None) -> str:
         """Write a parsed session to index.db."""
