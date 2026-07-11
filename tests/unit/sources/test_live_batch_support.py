@@ -837,32 +837,106 @@ def test_append_plan_defers_when_tail_has_no_complete_line(tmp_path: Path) -> No
     assert processor._append_plan(path) is _DEFER_APPEND
 
 
-def test_browser_capture_json_replacement_bypasses_append_plan(tmp_path: Path) -> None:
-    root = tmp_path / "browser-capture" / "chatgpt"
-    root.mkdir(parents=True)
+@pytest.mark.asyncio
+async def test_inbox_browser_capture_json_replacement_uses_full_ingest(tmp_path: Path) -> None:
+    from polylogue.api import Polylogue
+
+    root = tmp_path / "inbox"
+    root.mkdir()
     path = root / "capture.json"
-    path.write_text('{"polylogue_capture_kind":"browser_llm_session"}', encoding="utf-8")
+
+    def capture(turns: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "polylogue_capture_kind": "browser_llm_session",
+            "schema_version": 1,
+            "capture_id": "chatgpt:inbox-replacement",
+            "provenance": {
+                "source_url": "https://chatgpt.com/c/inbox-replacement",
+                "page_title": "Inbox replacement",
+                "captured_at": "2026-07-11T00:00:00+00:00",
+                "adapter_name": "chatgpt-native-v1",
+                "capture_mode": "snapshot",
+            },
+            "session": {
+                "provider": "chatgpt",
+                "provider_session_id": "inbox-replacement",
+                "title": "Inbox replacement",
+                "updated_at": "2026-07-11T00:00:01+00:00",
+                "turns": turns,
+            },
+        }
+
+    first_turn = {
+        "provider_turn_id": "turn-1",
+        "role": "user",
+        "text": "first snapshot",
+        "ordinal": 0,
+    }
+    replacement_turn = {
+        "provider_turn_id": "turn-2",
+        "role": "assistant",
+        "text": "replacement snapshot",
+        "ordinal": 1,
+    }
+    path.write_text(json.dumps(capture([first_turn])), encoding="utf-8")
+    archive = Polylogue(archive_root=tmp_path / "archive")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="inbox", root=root, suffixes=(".json", ".jsonl")),),
+        cursor=CursorStore(archive.backend.db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    try:
+        first = await processor.ingest_files([path], emit_event=False)
+        path.write_text(json.dumps(capture([first_turn, replacement_turn])), encoding="utf-8")
+        second = await processor.ingest_files([path], emit_event=False)
+        assert first.full_file_count == 1
+        assert second.full_file_count == 1
+        assert second.append_file_count == 0
+        with sqlite3.connect(archive.archive_root / "source.db") as conn:
+            source_indexes = conn.execute(
+                "SELECT source_index FROM raw_sessions WHERE source_path = ? ORDER BY acquired_at_ms",
+                (str(path),),
+            ).fetchall()
+        assert source_indexes == [(0,), (0,)]
+    finally:
+        await archive.close()
+
+
+def test_jsonl_stream_retains_append_plan(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "session.jsonl"
+    original = b'{"type":"session_meta","payload":{"id":"append-safe"}}\n'
+    appended = b'{"type":"event_msg","payload":{"message":"new"}}\n'
+    path.write_bytes(original + appended)
     db_path = tmp_path / "archive.sqlite"
     cursor = CursorStore(db_path)
-    old_size = path.stat().st_size
+    stat = path.stat()
     cursor.set(
         path,
-        old_size,
-        byte_offset=old_size,
-        last_complete_newline=old_size,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
         parser_fingerprint="test-parser",
-        content_fingerprint="old-fingerprint",
-        source_name="chatgpt",
+        content_fingerprint="base",
+        source_name="inbox",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
     )
-    path.write_text('{"polylogue_capture_kind":"browser_llm_session","turns":["replacement"]}', encoding="utf-8")
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
-        (WatchSource(name="browser-capture", root=root.parent, suffixes=(".json",)),),
+        (WatchSource(name="inbox", root=root, suffixes=(".jsonl",)),),
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
 
-    assert processor._append_plan(path) is None
+    plan = processor._append_plan(path)
+
+    assert isinstance(plan, _AppendPlan)
+    assert plan.payload.endswith(appended)
 
 
 def test_incomplete_append_is_requeued_not_full_ingested(tmp_path: Path) -> None:
