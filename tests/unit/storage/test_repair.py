@@ -248,9 +248,9 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
         "raw_materialization_max_blob_bytes": float(replayable_size),
         "raw_materialization_selected_total_blob_bytes": float(replayable_size),
         "raw_materialization_selected_max_blob_bytes": float(replayable_size),
-        "raw_materialization_replay_blocked_count": 1.0,
+        "raw_materialization_adoption_deferred_count": 0.0,
     }
-    assert "raw source-to-index replay is disabled" in result.detail
+    assert "per-session revision authority" in result.detail
     assert "selected raw payload bytes total=" in result.detail
     assert "largest=" in result.detail
     assert "1 raw rows remain blocked by missing blobs (1 with source paths missing)" in result.detail
@@ -300,7 +300,7 @@ def test_raw_materialization_replays_same_native_when_index_raw_link_is_dangling
     assert result.metrics["raw_materialization_candidate_count"] == 1.0
 
 
-def test_raw_materialization_split_root_reports_containment_from_routed_archive(tmp_path: Path) -> None:
+def test_raw_materialization_split_root_routes_authority_replay(tmp_path: Path) -> None:
     configured_root = tmp_path / "configured"
     routed_root = tmp_path / "routed"
     configured_root.mkdir()
@@ -337,14 +337,50 @@ def test_raw_materialization_split_root_reports_containment_from_routed_archive(
     backlog = repair_mod.raw_materialization_replay_backlog(config)
     result = repair_mod.repair_raw_materialization(config)
 
-    assert backlog["execution_blocked"] is True
-    assert backlog["execution_block_reason"] == repair_mod.RAW_MATERIALIZATION_REPLAY_BLOCK_REASON
-    assert backlog["blocked_candidate_count"] == 1
+    assert backlog["execution_blocked"] is False
+    assert backlog["execution_block_reason"] is None
+    assert backlog["blocked_candidate_count"] == 0
     assert backlog["candidate_count"] == 1
-    assert result.success is False
-    assert result.repaired_count == 0
+    assert result.success is True
+    assert result.repaired_count == 1
     assert result.metrics["raw_materialization_candidate_count"] == 1.0
-    assert result.metrics["raw_materialization_replay_blocked_count"] == 1.0
+    assert result.metrics["raw_materialization_selected_count"] == 1.0
+
+
+def test_raw_materialization_retries_typed_transient_lock_failure(tmp_path: Path) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"lock-retry","timestamp":"2026-07-11T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"one","role":"user","content":'
+        b'[{"type":"input_text","text":"survives retry"}]}}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="lock-retry.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET parse_error = 'OperationalError: database is locked' WHERE raw_id = ?",
+            (raw_id,),
+        )
+        source_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=False)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert source_conn.execute(
+            "SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone() == (1, None)
 
 
 def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_blob(tmp_path: Path) -> None:
@@ -598,7 +634,7 @@ def test_raw_materialization_replays_parsed_rows_after_interrupted_index_rebuild
     assert "already parsed but not materialized" in result.detail
 
 
-def test_raw_materialization_blocks_before_batch_parse_call(
+def test_raw_materialization_uses_authority_replay_not_legacy_batch_parser(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -657,9 +693,9 @@ def test_raw_materialization_blocks_before_batch_parse_call(
 
     result = repair_mod.repair_raw_materialization(config)
 
-    assert result.success is False
-    assert result.repaired_count == 0
-    assert result.metrics["raw_materialization_replay_blocked_count"] == 2.0
+    assert result.success is True
+    assert result.repaired_count == 2
+    assert result.metrics["raw_materialization_selected_count"] == 2.0
     assert calls == []
 
 
@@ -746,13 +782,19 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
 
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
 
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_authority_before = source_conn.execute(
+            "SELECT revision_authority FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+
     result = repair_mod.repair_raw_materialization(config, dry_run=False)
 
     assert result.success is False
     assert result.repaired_count == 0
     assert result.metrics["raw_materialization_candidate_count"] == 1.0
-    assert result.metrics["raw_materialization_replay_blocked_count"] == 1.0
-    assert "raw source-to-index replay is disabled" in result.detail
+    assert result.metrics["raw_materialization_selected_count"] == 1.0
+    assert "typed revision authority" in result.detail
     with sqlite3.connect(tmp_path / "index.db") as index_conn:
         row = index_conn.execute(
             "SELECT raw_id, title, content_hash, message_count FROM sessions WHERE native_id = 'logical-session'"
@@ -772,10 +814,30 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
     assert fts_hits_after == fts_hits_before
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         raw_state = source_conn.execute(
-            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?",
+            "SELECT parsed_at_ms, parse_error, revision_authority FROM raw_sessions WHERE raw_id = ?",
             (raw_id,),
         ).fetchone()
-    assert raw_state == (None, None)
+    assert raw_state == (None, None, source_authority_before[0])
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        deferred = index_conn.execute(
+            "SELECT decision, detail FROM raw_revision_applications WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+    assert deferred == ("deferred", "ordinary_replay:incomparable_existing_index_state")
+    assert result.metrics["raw_materialization_adoption_deferred_count"] == 1.0
+    from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
+
+    readiness = raw_materialization_readiness_snapshot(tmp_path)
+    assert readiness["blocked"] == 1
+    assert readiness["affected_blocked"] == 1
+    readiness_categories = cast(dict[str, int], readiness["category_counts"])
+    assert readiness_categories["adoption_deferred"] == 1
+
+    retry = repair_mod.repair_raw_materialization(config, dry_run=False)
+    assert retry.success is False
+    assert retry.metrics["raw_materialization_candidate_count"] == 0.0
+    assert retry.metrics["raw_materialization_adoption_deferred_count"] == 1.0
+    assert "remain deferred" in retry.detail
 
 
 def test_raw_materialization_dry_run_reports_limited_selection(
@@ -807,7 +869,7 @@ def test_raw_materialization_dry_run_reports_limited_selection(
 
     assert result.success is False
     assert result.repaired_count == 0
-    assert "Preview only. Raw materialization blocked" in result.detail
+    assert "Would: classify and replay" in result.detail
     assert result.metrics["raw_materialization_candidate_count"] == 4.0
     assert result.metrics["raw_materialization_selected_count"] == 2.0
     assert result.metrics["raw_materialization_limit"] == 2.0
@@ -816,7 +878,7 @@ def test_raw_materialization_dry_run_reports_limited_selection(
     assert result.metrics["raw_materialization_selected_max_blob_bytes"] == 1024.0
 
 
-def test_raw_materialization_execute_blocks_limited_selection(
+def test_raw_materialization_execute_limits_authority_selection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -875,7 +937,7 @@ def test_raw_materialization_execute_blocks_limited_selection(
     assert "parse_kwargs" not in calls
     assert result.metrics["raw_materialization_candidate_count"] == 4.0
     assert result.metrics["raw_materialization_selected_count"] == 2.0
-    assert result.metrics["raw_materialization_replay_blocked_count"] == 2.0
+    assert result.metrics["raw_materialization_executed_count"] == 2.0
 
 
 def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Path) -> None:
@@ -1127,7 +1189,7 @@ def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path
     assert by_provider.metrics["raw_materialization_max_blob_bytes"] == float(max(claude_size, other_root_size))
 
 
-def test_raw_materialization_blocks_before_fts_or_ingest_stage(
+def test_raw_materialization_uses_authority_substrate_not_legacy_ingest_stage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1180,13 +1242,13 @@ def test_raw_materialization_blocks_before_fts_or_ingest_stage(
 
     assert result.success is False
     assert result.repaired_count == 0
-    assert "raw source-to-index replay is disabled" in result.detail
+    assert "typed revision authority" in result.detail
     assert "parse_kwargs" not in calls
     assert calls["raw_artifact_id"] is None
     assert "closed" not in calls
 
 
-def test_raw_materialization_block_reports_raw_payload_size_without_progress(
+def test_raw_materialization_reports_authority_progress_and_payload_size(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1237,10 +1299,11 @@ def test_raw_materialization_block_reports_raw_payload_size_without_progress(
     )
 
     assert result.success is False
-    assert progress == []
+    assert len(progress) == 1
+    assert "typed revision authority" in progress[0]
     assert result.metrics["raw_materialization_total_blob_bytes"] == float(256 * 1024 * 1024)
     assert result.metrics["raw_materialization_max_blob_bytes"] == float(256 * 1024 * 1024)
-    assert result.metrics["raw_materialization_replay_blocked_count"] == 1.0
+    assert result.metrics["raw_materialization_selected_count"] == 1.0
 
 
 def test_raw_materialization_blocks_oversized_actual_replay(
@@ -1269,13 +1332,14 @@ def test_raw_materialization_blocks_oversized_actual_replay(
 
     assert result.success is False
     assert result.repaired_count == 0
-    assert "also exceed replay size limit 1.0 GiB" in result.detail
-    assert "largest=2.0 GiB" in result.detail
+    assert "1 replay candidate(s) remain" in result.detail
     assert result.metrics["raw_materialization_oversized_count"] == 1.0
+    assert result.metrics["raw_materialization_resource_blocked_count"] == 1.0
+    assert result.metrics["raw_materialization_executed_count"] == 0.0
     assert result.metrics["raw_materialization_execute_blob_limit_bytes"] == float(1024 * 1024 * 1024)
 
 
-def test_raw_materialization_blocks_oversized_stream_record_replay(
+def test_raw_materialization_classifies_oversized_stream_record_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1326,12 +1390,12 @@ def test_raw_materialization_blocks_oversized_stream_record_replay(
     assert result.success is False
     assert result.repaired_count == 0
     assert result.metrics["raw_materialization_stream_oversized_count"] == 1.0
-    assert "oversized stream-record raw rows are stream-capable" in result.detail
+    assert "1 replay candidate(s) remain" in result.detail
     assert "parse_kwargs" not in calls
     assert "closed" not in calls
 
 
-def test_raw_materialization_blocks_before_parse_write_failures(
+def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1373,7 +1437,7 @@ def test_raw_materialization_blocks_before_parse_write_failures(
 
     assert result.success is False
     assert result.repaired_count == 0
-    assert "raw source-to-index replay is disabled" in result.detail
+    assert "typed revision authority" in result.detail
     assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
 
 

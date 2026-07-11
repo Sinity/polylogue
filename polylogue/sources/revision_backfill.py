@@ -27,6 +27,7 @@ class RevisionBackfillResult:
     classified_full: int
     replayed_logical_sources: int
     quarantined: int
+    adoption_deferred: int = 0
 
 
 def backfill_historical_revision_evidence(
@@ -45,6 +46,7 @@ def backfill_historical_revision_evidence(
     scanned = 0
     classified = 0
     quarantined = 0
+    adoption_deferred = 0
     logical_keys: set[str] = set()
     archive_context = (
         ArchiveStore.open_owned_inactive_generation(
@@ -108,6 +110,11 @@ def backfill_historical_revision_evidence(
                 retained_bytes += payload_bytes
             if retention_observer is not None:
                 retention_observer(len(parsed_by_raw_id), retained_bytes)
+            accepted_sessions = [parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids]
+            if not archive.raw_revision_replay_adoptable(accepted_sessions):
+                archive.defer_raw_revision_adoption(plan.logical_source_key, plan.accepted_raw_ids, accepted_sessions)
+                adoption_deferred += len(plan.accepted_raw_ids)
+                continue
             archive.apply_raw_revision_replay(plan, parsed_by_raw_id, acquired_at_ms=0)
             replayed += 1
 
@@ -129,6 +136,15 @@ def backfill_historical_revision_evidence(
             classification = classify_membership_revisions(revisions)
             if classification.ambiguous_raw_ids:
                 quarantined += len(classification.ambiguous_raw_ids)
+            accepted_sessions = [member_sessions[raw_id] for raw_id in classification.accepted_raw_ids]
+            if accepted_sessions and not archive.raw_revision_replay_adoptable(accepted_sessions):
+                archive.defer_raw_revision_adoption(
+                    logical_key,
+                    classification.accepted_raw_ids,
+                    accepted_sessions,
+                )
+                adoption_deferred += len(classification.accepted_raw_ids)
+                continue
             archive.apply_raw_membership_classification(
                 logical_key,
                 classification,
@@ -138,7 +154,7 @@ def backfill_historical_revision_evidence(
             )
             if classification.accepted_raw_ids:
                 replayed += 1
-    return RevisionBackfillResult(scanned, classified, replayed, quarantined)
+    return RevisionBackfillResult(scanned, classified, replayed, quarantined, adoption_deferred)
 
 
 def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:

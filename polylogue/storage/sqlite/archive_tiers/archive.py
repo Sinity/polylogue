@@ -1784,6 +1784,77 @@ class ArchiveStore:
         )
         return row is not None and bool(row[0])
 
+    def raw_revision_replay_adoptable(self, sessions: Sequence[ParsedSession]) -> bool:
+        """Return whether replay may adopt an existing ungoverned session."""
+        aggregate = merge_parsed_session_chunks(sessions)
+        if len(aggregate) != 1:
+            return False
+        session = aggregate[0]
+        session_id = str(make_session_id(session.source_name, session.provider_session_id))
+        row = self._conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return True
+        governed = self._conn.execute(
+            "SELECT 1 FROM raw_revision_heads WHERE session_id = ? LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if governed is not None:
+            return True
+        existing_hash = row[0]
+        existing_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
+        return existing_hex == session_content_hash(session)
+
+    def defer_raw_revision_adoption(
+        self,
+        logical_source_key: str,
+        raw_ids: Sequence[str],
+        sessions: Sequence[ParsedSession],
+    ) -> None:
+        """Receipt a derived replay decision without rewriting source evidence."""
+        if not raw_ids:
+            return
+        source_conn = self._ensure_source_conn()
+        decided_at_ms = int(time.time() * 1000)
+        aggregate = merge_parsed_session_chunks(sessions)
+        if len(aggregate) != 1:
+            raise RuntimeError("deferred revision cohort did not compose to one session")
+        session = aggregate[0]
+        session_id = str(make_session_id(session.source_name, session.provider_session_id))
+        with self._conn:
+            for raw_id in raw_ids:
+                row = source_conn.execute(
+                    """
+                    SELECT COALESCE(r.source_revision, m.source_revision),
+                           COALESCE(r.acquisition_generation, m.acquisition_generation, 0)
+                    FROM raw_sessions AS r
+                    LEFT JOIN raw_session_memberships AS m
+                      ON m.raw_id = r.raw_id AND m.logical_source_key = ?
+                    WHERE r.raw_id = ?
+                    """,
+                    (logical_source_key, raw_id),
+                ).fetchone()
+                if row is None or row[0] is None:
+                    raise RuntimeError(f"deferred raw revision lacks source evidence: {raw_id}")
+                record_revision_application_sync(
+                    self._conn,
+                    RevisionApplicationReceipt(
+                        raw_id=raw_id,
+                        session_id=session_id,
+                        logical_source_key=logical_source_key,
+                        source_revision=str(row[0]),
+                        acquisition_generation=int(row[1]),
+                        decision=ApplicationDecision.DEFERRED,
+                        accepted_raw_id=None,
+                        accepted_source_revision=None,
+                        accepted_content_hash=None,
+                        detail="ordinary_replay:incomparable_existing_index_state",
+                    ),
+                    decided_at_ms=decided_at_ms,
+                )
+
     def apply_raw_revision_replay(
         self,
         plan: RevisionReplayPlan,
