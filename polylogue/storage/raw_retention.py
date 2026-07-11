@@ -36,6 +36,17 @@ ORDER BY r.blob_size DESC, r.acquired_at_ms ASC, r.raw_id ASC
 LIMIT ?
 """
 
+_RAW_REVISION_CHAIN_COLUMNS = """
+raw_id, source_index, logical_source_key, revision_kind, source_revision,
+predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+append_start_offset, append_end_offset, acquisition_generation,
+revision_authority, blob_size
+"""
+
+
+class RawRetentionSafetyError(RuntimeError):
+    """Raised when active raw evidence cannot be proven safe for retention."""
+
 
 @dataclass(frozen=True)
 class RawSnapshotCleanupCandidate:
@@ -60,6 +71,34 @@ class RawSnapshotCleanupResult:
     skipped_missing_source_count: int
     skipped_referenced_count: int = 0
     errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RawRetentionAuthority:
+    """Index-proven source rows to preserve and rows authorized for deletion."""
+
+    protected_raw_ids: frozenset[str]
+    eligible_raw_ids: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _IndexRawRevisionHead:
+    logical_source_key: str
+    accepted_raw_id: str
+    accepted_source_revision: str
+    accepted_frontier_kind: str
+    accepted_frontier: int
+    acquisition_generation: int
+    append_end_offset: int | None
+
+
+@dataclass(frozen=True)
+class _EligibleRawReceipt:
+    raw_id: str
+    logical_source_key: str
+    source_revision: str
+    baseline_raw_id: str | None
+    predecessor_raw_id: str | None
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -93,6 +132,256 @@ def _timestamp_ms(value: str | None) -> int | None:
     except ValueError:
         pass
     return int(datetime.fromisoformat(value).timestamp() * 1000)
+
+
+def _active_index_raw_authority(
+    index_db_path: Path,
+) -> tuple[frozenset[str], tuple[_IndexRawRevisionHead, ...], tuple[_EligibleRawReceipt, ...]]:
+    """Read current raw references and explicit deletion receipts read-only."""
+    if not index_db_path.is_file():
+        raise RawRetentionSafetyError(f"index tier is unavailable: {index_db_path}")
+    try:
+        uri = f"{index_db_path.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as conn:
+            conn.execute("PRAGMA query_only = ON")
+            session_rows = conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
+            head_rows = conn.execute(
+                """SELECT logical_source_key, accepted_raw_id, accepted_source_revision,
+                          accepted_frontier_kind, accepted_frontier,
+                          acquisition_generation, append_end_offset
+                   FROM raw_revision_heads"""
+            ).fetchall()
+            eligible_rows = conn.execute(
+                """SELECT DISTINCT application.raw_id,
+                          application.logical_source_key,
+                          application.source_revision,
+                          application.baseline_raw_id,
+                          application.predecessor_raw_id
+                   FROM raw_revision_applications AS application
+                   JOIN raw_revision_heads AS head
+                     ON head.logical_source_key = application.logical_source_key
+                    AND head.session_id = application.session_id
+                    AND head.accepted_raw_id = application.accepted_raw_id
+                    AND head.accepted_source_revision = application.accepted_source_revision
+                    AND head.accepted_content_hash = application.accepted_content_hash
+                    AND head.acquisition_generation = application.acquisition_generation
+                    AND head.append_end_offset IS application.append_end_offset
+                    AND head.decided_at_ms = application.decided_at_ms
+                   WHERE application.decision = 'superseded'
+                     AND head.accepted_frontier_kind = 'byte'"""
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        raise RawRetentionSafetyError(f"index tier raw authority is unreadable: {exc}") from exc
+    session_raw_ids = frozenset(str(row[0]) for row in session_rows if row[0] is not None and str(row[0]))
+    heads = tuple(
+        _IndexRawRevisionHead(
+            logical_source_key=str(row[0]),
+            accepted_raw_id=str(row[1]),
+            accepted_source_revision=str(row[2]),
+            accepted_frontier_kind=str(row[3]),
+            accepted_frontier=int(row[4]),
+            acquisition_generation=int(row[5]),
+            append_end_offset=int(row[6]) if row[6] is not None else None,
+        )
+        for row in head_rows
+    )
+    eligible_receipts = tuple(
+        _EligibleRawReceipt(
+            raw_id=str(row[0]),
+            logical_source_key=str(row[1]),
+            source_revision=str(row[2]),
+            baseline_raw_id=str(row[3]) if row[3] is not None else None,
+            predecessor_raw_id=str(row[4]) if row[4] is not None else None,
+        )
+        for row in eligible_rows
+    )
+    return session_raw_ids, heads, eligible_receipts
+
+
+def _raw_revision_rows(
+    conn: sqlite3.Connection,
+    raw_ids: set[str],
+) -> dict[str, sqlite3.Row]:
+    rows_by_id: dict[str, sqlite3.Row] = {}
+    pending = set(raw_ids)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        try:
+            rows = conn.execute(
+                f"SELECT {_RAW_REVISION_CHAIN_COLUMNS} FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                batch,
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise RawRetentionSafetyError(f"source raw revision authority is unreadable: {exc}") from exc
+        found = {str(row["raw_id"]): row for row in rows}
+        missing = set(batch).difference(found)
+        if missing:
+            rendered = ", ".join(sorted(missing)[:3])
+            raise RawRetentionSafetyError(f"active index raw is missing from source tier: {rendered}")
+        rows_by_id.update(found)
+        for row in rows:
+            if str(row["revision_kind"]) != "append":
+                continue
+            predecessor = row["predecessor_raw_id"]
+            if predecessor is not None and str(predecessor) not in rows_by_id:
+                pending.add(str(predecessor))
+    return rows_by_id
+
+
+def _validate_active_revision_chain(
+    rows_by_id: dict[str, sqlite3.Row],
+    seed_raw_id: str,
+) -> frozenset[str]:
+    protected: set[str] = set()
+    current_raw_id = seed_raw_id
+    chain_baseline_raw_id: str | None = None
+    while True:
+        if current_raw_id in protected:
+            raise RawRetentionSafetyError(f"active raw revision chain contains a cycle at {current_raw_id}")
+        protected.add(current_raw_id)
+        row = rows_by_id[current_raw_id]
+        kind = str(row["revision_kind"])
+        if kind == "full":
+            if str(row["revision_authority"]) != "byte_proven":
+                raise RawRetentionSafetyError(f"active full raw lacks byte-proven authority: {current_raw_id}")
+            if chain_baseline_raw_id is not None and current_raw_id != chain_baseline_raw_id:
+                raise RawRetentionSafetyError(f"active append chain terminates at the wrong baseline: {current_raw_id}")
+            # A full payload is a self-contained reset even when historical
+            # classification records an older full predecessor.
+            return frozenset(protected)
+        if kind == "unknown":
+            if int(row["source_index"]) == -1:
+                raise RawRetentionSafetyError(f"active append raw lacks revision authority: {current_raw_id}")
+            return frozenset(protected)
+        if kind != "append":
+            raise RawRetentionSafetyError(f"active raw has unsupported revision kind {kind!r}: {current_raw_id}")
+        if str(row["revision_authority"]) != "byte_proven":
+            raise RawRetentionSafetyError(f"active append raw lacks byte-proven authority: {current_raw_id}")
+        logical_source_key = row["logical_source_key"]
+        predecessor_raw_id = row["predecessor_raw_id"]
+        predecessor_revision = row["predecessor_source_revision"]
+        declared_baseline_value = row["baseline_raw_id"]
+        if not all((logical_source_key, predecessor_raw_id, predecessor_revision, declared_baseline_value)):
+            raise RawRetentionSafetyError(f"active append raw has an incomplete predecessor envelope: {current_raw_id}")
+        declared_baseline = str(row["baseline_raw_id"])
+        if chain_baseline_raw_id is None:
+            chain_baseline_raw_id = declared_baseline
+        elif declared_baseline != chain_baseline_raw_id:
+            raise RawRetentionSafetyError(f"active append chain changes baseline identity: {current_raw_id}")
+        parent_id = str(predecessor_raw_id)
+        parent = rows_by_id.get(parent_id)
+        if parent is None:
+            raise RawRetentionSafetyError(f"active append predecessor is missing from source tier: {parent_id}")
+        if parent["logical_source_key"] != logical_source_key:
+            raise RawRetentionSafetyError(f"active append predecessor crosses logical sources: {current_raw_id}")
+        if parent["source_revision"] != predecessor_revision:
+            raise RawRetentionSafetyError(f"active append predecessor revision does not match: {current_raw_id}")
+        parent_kind = str(parent["revision_kind"])
+        if str(parent["revision_authority"]) != "byte_proven":
+            raise RawRetentionSafetyError(f"active append predecessor lacks byte-proven authority: {parent_id}")
+        if parent_kind == "append" and str(parent["baseline_raw_id"] or "") != chain_baseline_raw_id:
+            raise RawRetentionSafetyError(f"active append predecessor changes baseline identity: {current_raw_id}")
+        expected_offset = parent["blob_size"] if parent_kind == "full" else parent["append_end_offset"]
+        if parent_kind not in {"full", "append"} or expected_offset != row["append_start_offset"]:
+            raise RawRetentionSafetyError(f"active append predecessor is not byte-contiguous: {current_raw_id}")
+        parent_generation = parent["acquisition_generation"]
+        child_generation = row["acquisition_generation"]
+        if parent_generation is None or child_generation is None or int(child_generation) != int(parent_generation) + 1:
+            raise RawRetentionSafetyError(f"active append predecessor generation does not match: {current_raw_id}")
+        current_raw_id = parent_id
+
+
+def _validate_byte_head(row: sqlite3.Row, head: _IndexRawRevisionHead) -> None:
+    if str(row["revision_kind"]) not in {"full", "append"}:
+        raise RawRetentionSafetyError(
+            f"byte head references a raw without typed revision authority: {head.accepted_raw_id}"
+        )
+    if row["logical_source_key"] != head.logical_source_key:
+        raise RawRetentionSafetyError(f"accepted raw logical source disagrees with index head: {head.accepted_raw_id}")
+    if row["source_revision"] != head.accepted_source_revision:
+        raise RawRetentionSafetyError(f"accepted raw revision disagrees with index head: {head.accepted_raw_id}")
+    if row["acquisition_generation"] != head.acquisition_generation:
+        raise RawRetentionSafetyError(f"accepted raw generation disagrees with index head: {head.accepted_raw_id}")
+    is_append = str(row["revision_kind"]) == "append"
+    raw_frontier = row["append_end_offset"] if is_append else row["blob_size"]
+    if raw_frontier != head.accepted_frontier:
+        raise RawRetentionSafetyError(f"accepted raw frontier disagrees with index head: {head.accepted_raw_id}")
+    if (is_append and raw_frontier != head.append_end_offset) or (not is_append and head.append_end_offset is not None):
+        raise RawRetentionSafetyError(f"accepted raw append end disagrees with index head: {head.accepted_raw_id}")
+
+
+def _validate_eligible_receipt(row: sqlite3.Row, receipt: _EligibleRawReceipt) -> None:
+    if str(row["revision_kind"]) not in {"full", "append"}:
+        raise RawRetentionSafetyError(f"superseded receipt references an untyped raw: {receipt.raw_id}")
+    if str(row["revision_authority"]) != "byte_proven":
+        raise RawRetentionSafetyError(f"superseded receipt references unproven raw evidence: {receipt.raw_id}")
+    if row["logical_source_key"] != receipt.logical_source_key:
+        raise RawRetentionSafetyError(f"superseded receipt crosses logical sources: {receipt.raw_id}")
+    if row["source_revision"] != receipt.source_revision:
+        raise RawRetentionSafetyError(f"superseded receipt revision disagrees with source evidence: {receipt.raw_id}")
+    if row["baseline_raw_id"] != receipt.baseline_raw_id:
+        raise RawRetentionSafetyError(f"superseded receipt baseline disagrees with source evidence: {receipt.raw_id}")
+    if row["predecessor_raw_id"] != receipt.predecessor_raw_id:
+        raise RawRetentionSafetyError(
+            f"superseded receipt predecessor disagrees with source evidence: {receipt.raw_id}"
+        )
+
+
+def active_raw_retention_authority(
+    conn: sqlite3.Connection,
+    *,
+    index_db_path: Path,
+) -> RawRetentionAuthority:
+    """Return current protection plus explicitly authorized deletion rows.
+
+    The index selects active leaves. Source-tier predecessor evidence proves
+    which append fragments are required to reconstruct each leaf. Only an
+    immutable ``superseded`` receipt tied to the current head authorizes raw
+    deletion. Callers must serialize this read with source deletion under the
+    daemon's single-writer contract, or stop the daemon for manual cleanup.
+    """
+    original_row_factory = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        session_raw_ids, heads, eligible_receipts = _active_index_raw_authority(index_db_path)
+        seeds = set(session_raw_ids)
+        seeds.update(head.accepted_raw_id for head in heads)
+        if not seeds:
+            if conn.execute("SELECT 1 FROM raw_sessions LIMIT 1").fetchone() is not None:
+                raise RawRetentionSafetyError("source tier contains raw evidence but index has no raw authority")
+            return RawRetentionAuthority(protected_raw_ids=frozenset(), eligible_raw_ids=frozenset())
+        authority_raw_ids = seeds.union(receipt.raw_id for receipt in eligible_receipts)
+        rows_by_id = _raw_revision_rows(conn, authority_raw_ids)
+        protected: set[str] = set()
+        for seed_raw_id in sorted(session_raw_ids):
+            protected.update(_validate_active_revision_chain(rows_by_id, seed_raw_id))
+        for head in heads:
+            row = rows_by_id[head.accepted_raw_id]
+            if head.accepted_frontier_kind == "byte":
+                _validate_byte_head(row, head)
+            protected.update(_validate_active_revision_chain(rows_by_id, head.accepted_raw_id))
+        eligible: set[str] = set()
+        for receipt in eligible_receipts:
+            _validate_eligible_receipt(rows_by_id[receipt.raw_id], receipt)
+            eligible.add(receipt.raw_id)
+        protected_ids = frozenset(protected)
+        return RawRetentionAuthority(
+            protected_raw_ids=protected_ids,
+            eligible_raw_ids=frozenset(eligible.difference(protected_ids)),
+        )
+    finally:
+        conn.row_factory = original_row_factory
+
+
+def protected_active_raw_revision_ids(
+    conn: sqlite3.Connection,
+    *,
+    index_db_path: Path,
+) -> frozenset[str]:
+    """Compatibility projection for callers that only inspect protection."""
+    return active_raw_retention_authority(conn, index_db_path=index_db_path).protected_raw_ids
 
 
 def _superseded_archive_raw_session_candidates(
@@ -179,6 +468,7 @@ def cleanup_superseded_raw_snapshots(
     dry_run: bool = True,
     blob_store: BlobStore | None = None,
     protected_raw_ids: set[str] | frozenset[str] | None = None,
+    eligible_raw_ids: set[str] | frozenset[str] | None = None,
 ) -> RawSnapshotCleanupResult:
     all_candidates = superseded_raw_snapshot_candidates(
         conn,
@@ -189,8 +479,13 @@ def cleanup_superseded_raw_snapshots(
         limit=limit,
     )
     protected = protected_raw_ids or frozenset()
-    candidates = [candidate for candidate in all_candidates if candidate.raw_id not in protected]
-    skipped_referenced_count = len(all_candidates) - len(candidates)
+    eligible = eligible_raw_ids
+    candidates = [
+        candidate
+        for candidate in all_candidates
+        if candidate.raw_id not in protected and (eligible is None or candidate.raw_id in eligible)
+    ]
+    skipped_referenced_count = sum(candidate.raw_id in protected for candidate in all_candidates)
     if not candidates:
         return RawSnapshotCleanupResult(
             candidate_count=0,
@@ -228,6 +523,18 @@ def cleanup_superseded_raw_snapshots(
     deleted_blob_bytes = 0
     errors: list[str] = []
     for candidate in candidates:
+        if _column_exists(conn, "blob_refs", "blob_hash"):
+            try:
+                blob_hash = bytes.fromhex(candidate.blob_store_hash)
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            if conn.execute("SELECT 1 FROM blob_refs WHERE blob_hash = ? LIMIT 1", (blob_hash,)).fetchone():
+                continue
+        else:
+            # Without a reference catalog, row cleanup cannot prove that this
+            # process owns the final CAS reference. Leave bytes for typed GC.
+            continue
         try:
             path = store.blob_path(candidate.blob_store_hash)
         except ValueError as exc:
@@ -262,6 +569,8 @@ def compact_paths_superseded_raw_snapshots(
     limit_per_path: int = 25,
     min_acquired_at: str | None = None,
     dry_run: bool = False,
+    protected_raw_ids: set[str] | frozenset[str] | None = None,
+    eligible_raw_ids: set[str] | frozenset[str] | None = None,
 ) -> RawSnapshotCleanupResult:
     totals = RawSnapshotCleanupResult(
         candidate_count=0,
@@ -280,6 +589,8 @@ def compact_paths_superseded_raw_snapshots(
             min_acquired_at=min_acquired_at,
             limit=limit_per_path,
             dry_run=dry_run,
+            protected_raw_ids=protected_raw_ids,
+            eligible_raw_ids=eligible_raw_ids,
         )
         errors.extend(result.errors)
         totals = RawSnapshotCleanupResult(
@@ -289,6 +600,7 @@ def compact_paths_superseded_raw_snapshots(
             deleted_raw_bytes=totals.deleted_raw_bytes + result.deleted_raw_bytes,
             deleted_blob_bytes=totals.deleted_blob_bytes + result.deleted_blob_bytes,
             skipped_missing_source_count=totals.skipped_missing_source_count + result.skipped_missing_source_count,
+            skipped_referenced_count=totals.skipped_referenced_count + result.skipped_referenced_count,
             errors=tuple(errors),
         )
     return totals
@@ -297,7 +609,11 @@ def compact_paths_superseded_raw_snapshots(
 __all__ = [
     "RawSnapshotCleanupCandidate",
     "RawSnapshotCleanupResult",
+    "RawRetentionAuthority",
+    "RawRetentionSafetyError",
+    "active_raw_retention_authority",
     "cleanup_superseded_raw_snapshots",
     "compact_paths_superseded_raw_snapshots",
+    "protected_active_raw_revision_ids",
     "superseded_raw_snapshot_candidates",
 ]

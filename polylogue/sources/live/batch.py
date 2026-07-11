@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 import time
 import zipfile
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -74,9 +76,12 @@ from polylogue.sources.live.batch_support import (
     _parse_payload_as_session_artifact,
     _path_size,
     _throttled_phase_heartbeat,
+    cursor_prefix_hash,
     cursor_state_after_full_ingest,
+    encode_cursor_hash_authority,
     fingerprint_file,
     last_complete_newline_from_tail,
+    sha256_range_from_path,
     tail_hash_from_path,
 )
 from polylogue.sources.live.batch_support import (
@@ -124,6 +129,11 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+
+def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 LiveBatchSyncRunner = Callable[..., Awaitable[Any]]
 P = ParamSpec("P")
@@ -146,6 +156,46 @@ def _single_route_stage_payload(*, append_file_count: int, full_file_count: int)
 
 def _iso_to_epoch_ms(value: str) -> int:
     return int(datetime.fromisoformat(value).timestamp() * 1000)
+
+
+def _captured_jsonl_ends_at_record_boundary(
+    *,
+    source_path: str,
+    required: bool,
+    payload: bytes | None,
+    blob_store: BlobStore,
+    blob_hash: str,
+    blob_size: int,
+) -> bool:
+    path = Path(source_path)
+    if not required or path.suffix.lower() not in {".jsonl", ".ndjson"}:
+        return True
+    if blob_size <= 0:
+        return False
+    if payload is not None:
+        tail = payload.rsplit(b"\n", 1)[-1]
+    else:
+        chunks: list[bytes] = []
+        remaining = blob_size
+        with blob_store.open(blob_hash) as handle:
+            while remaining > 0:
+                chunk_size = min(64 * 1024, remaining)
+                remaining -= chunk_size
+                handle.seek(remaining)
+                chunk = handle.read(chunk_size)
+                newline = chunk.rfind(b"\n")
+                if newline >= 0:
+                    chunks.append(chunk[newline + 1 :])
+                    break
+                chunks.append(chunk)
+        tail = b"".join(reversed(chunks))
+    if not tail.strip():
+        return True
+    try:
+        json_loads(tail)
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return True
 
 
 @dataclass(slots=True)
@@ -349,6 +399,7 @@ class LiveBatchProcessor:
                 pending_append_plans.append(append_plan)
                 append_file_count += 1
                 source_payload_read_bytes += append_plan.bytes_read
+                cursor_fingerprint_read_bytes += append_plan.authority_bytes_read
                 if _append_plan_group_ready(pending_append_plans):
                     await flush_append_plans()
         await flush_append_plans()
@@ -497,6 +548,8 @@ class LiveBatchProcessor:
                         raw_byte_size=full_result.raw_byte_sizes.get(path),
                         source_name=full_result.raw_source_names.get(path),
                         source_revision=full_result.raw_source_revisions.get(path),
+                        captured_content_hash=full_result.captured_content_hashes.get(path),
+                        captured_file_observation=full_result.captured_file_observations.get(path),
                     )
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
@@ -681,8 +734,6 @@ class LiveBatchProcessor:
     def _record_failed_cursor(self, path: Path) -> int:
         try:
             stat = path.stat()
-            fp, _last_nl = fingerprint_file(path)
-            tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
         except FileNotFoundError:
             try:
                 self._cursor.mark_failed(path)
@@ -693,29 +744,29 @@ class LiveBatchProcessor:
             return 0
         try:
             existing = self._cursor.get_record(path)
-            # Persistence failed, so the durable consumption boundary stays at
-            # the last successful cursor.  Recording EOF here made retry state
-            # look consumed even though ``failure_count`` happened to force a
-            # later retry; a cleared/rebuilt retry ledger could then lose the
-            # append permanently.
-            committed_offset = existing.byte_offset if existing is not None else 0
-            committed_newline = existing.last_complete_newline if existing is not None else 0
-            self._cursor.set(
-                path,
-                stat.st_size,
-                byte_offset=committed_offset,
-                last_complete_newline=committed_newline,
-                parser_fingerprint=self._current_parser_fingerprint(),
-                content_fingerprint=fp,
-                tail_hash=tail_hash,
-                source_name=self._source_name_for(path),
-                st_dev=stat.st_dev,
-                st_ino=stat.st_ino,
-                mtime_ns=stat.st_mtime_ns,
-                failure_count=existing.failure_count if existing else 0,
-                next_retry_at=existing.next_retry_at if existing else None,
-                excluded=bool(existing.excluded) if existing else False,
-            )
+            # A failed write cannot adopt any observation from the unaccepted
+            # file state. In particular, pairing the accepted offset with the
+            # newer byte size makes the watcher's stable-size fast path hide a
+            # retry after failure metadata is cleared.
+            if existing is None:
+                try:
+                    tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
+                except FileNotFoundError:
+                    self._cursor.mark_failed(path)
+                    return 0
+                self._cursor.set(
+                    path,
+                    stat.st_size,
+                    byte_offset=0,
+                    last_complete_newline=0,
+                    parser_fingerprint=self._current_parser_fingerprint(),
+                    content_fingerprint=None,
+                    tail_hash=tail_hash,
+                    source_name=self._source_name_for(path),
+                    st_dev=stat.st_dev,
+                    st_ino=stat.st_ino,
+                    mtime_ns=stat.st_mtime_ns,
+                )
             self._cursor.mark_failed(path)
         except sqlite3.OperationalError as exc:
             if not is_transient_sqlite_lock(exc):
@@ -731,26 +782,76 @@ class LiveBatchProcessor:
         raw_byte_size: int | None = None,
         source_name: str | None = None,
         source_revision: str | None = None,
+        captured_content_hash: str | None = None,
+        captured_file_observation: tuple[int, int, int, int, int] | None = None,
     ) -> int:
         self._last_cursor_write_stale = False
+        resolved_source_name = source_name or self._source_name_for(path)
         try:
             stat = path.stat()
         except FileNotFoundError:
+            self._last_cursor_write_stale = True
+            self._invalidate_cursor_for_full_retry(
+                path,
+                source_name=resolved_source_name,
+                captured_file_observation=captured_file_observation,
+            )
             return 0
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
+        byte_size = stat.st_size if raw_byte_size is None else raw_byte_size
+        if not self._full_capture_still_matches(
+            path,
+            stat=stat,
+            byte_size=byte_size,
+            captured_content_hash=captured_content_hash,
+            captured_file_observation=captured_file_observation,
+        ):
+            self._last_cursor_write_stale = True
+            logger.warning(
+                "live.watcher: source changed after full capture; cursor invalidated for full retry: %s",
+                path,
+            )
+            self._invalidate_cursor_for_full_retry(path, source_name=resolved_source_name, stat=stat)
+            return 0
         if source_revision is not None:
-            byte_size = stat.st_size
             fp = source_revision
             last_nl = byte_size
             tail_hash = source_revision
             bytes_read = 0
+            if captured_content_hash is not None:
+                bounded_tail_hash, tail_bytes = tail_hash_from_path(path, byte_size)
+                tail_hash = encode_cursor_hash_authority(
+                    captured_content_hash,
+                    bounded_tail_hash,
+                    ctime_ns=stat.st_ctime_ns,
+                )
+                bytes_read = tail_bytes
         else:
-            byte_size = stat.st_size if raw_byte_size is None else raw_byte_size
             fp, last_nl, tail_hash, bytes_read = cursor_state_after_full_ingest(
                 path,
                 byte_size,
                 raw_fingerprint=raw_fingerprint,
             )
+            prefix_hash, prefix_bytes = sha256_range_from_path(
+                path,
+                start_offset=0,
+                end_offset=last_nl,
+            )
+            tail_hash = encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=stat.st_ctime_ns)
+            bytes_read += prefix_bytes
+        try:
+            final_stat = path.stat()
+        except FileNotFoundError:
+            final_stat = None
+        if final_stat is None or _file_observation(final_stat) != _file_observation(stat):
+            self._last_cursor_write_stale = True
+            self._invalidate_cursor_for_full_retry(
+                path,
+                source_name=resolved_source_name,
+                stat=final_stat,
+                captured_file_observation=captured_file_observation,
+            )
+            return bytes_read
         updated = self._cursor.set(
             path,
             byte_size,
@@ -759,15 +860,103 @@ class LiveBatchProcessor:
             parser_fingerprint=self._current_parser_fingerprint(),
             content_fingerprint=fp,
             tail_hash=tail_hash,
-            source_name=source_name or self._source_name_for(path),
+            source_name=resolved_source_name,
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
             allow_backward=stat.st_size <= byte_size,
         )
         self._last_cursor_write_stale = not updated
+        if not updated:
+            logger.warning(
+                "live.watcher: full cursor frontier was rejected; cursor invalidated for full retry: %s",
+                path,
+            )
+            self._invalidate_cursor_for_full_retry(
+                path,
+                source_name=resolved_source_name,
+                stat=final_stat,
+                captured_file_observation=captured_file_observation,
+            )
+            return bytes_read
         self._cursor.reset_failures(path)
         return bytes_read
+
+    def _full_capture_still_matches(
+        self,
+        path: Path,
+        *,
+        stat: os.stat_result,
+        byte_size: int,
+        captured_content_hash: str | None,
+        captured_file_observation: tuple[int, int, int, int, int] | None,
+    ) -> bool:
+        if captured_file_observation is None:
+            return True
+        captured_dev, captured_ino, _captured_size, _captured_mtime_ns, _captured_ctime_ns = captured_file_observation
+        if (stat.st_dev, stat.st_ino) != (captured_dev, captured_ino) or stat.st_size < byte_size:
+            return False
+        if captured_content_hash is None:
+            return _file_observation(stat) == captured_file_observation
+        normalized_fingerprint = captured_content_hash.lower()
+        if len(normalized_fingerprint) != 64 or any(char not in "0123456789abcdef" for char in normalized_fingerprint):
+            return False
+        try:
+            current_fingerprint, _bytes_read = sha256_range_from_path(
+                path,
+                start_offset=0,
+                end_offset=byte_size,
+            )
+            final_stat = path.stat()
+        except (EOFError, OSError):
+            return False
+        return current_fingerprint == normalized_fingerprint and _file_observation(final_stat) == _file_observation(
+            stat
+        )
+
+    def _invalidate_cursor_for_full_retry(
+        self,
+        path: Path,
+        *,
+        source_name: str,
+        stat: os.stat_result | None = None,
+        captured_file_observation: tuple[int, int, int, int, int] | None = None,
+    ) -> None:
+        existing = self._cursor.get_record(path)
+        if stat is not None:
+            observation = _file_observation(stat)
+        elif captured_file_observation is not None:
+            observation = captured_file_observation
+        elif existing is not None:
+            observation = (
+                existing.st_dev or 0,
+                existing.st_ino or 0,
+                existing.byte_size,
+                existing.mtime_ns or 0,
+                0,
+            )
+        else:
+            observation = (0, 0, 0, 0, 0)
+        st_dev, st_ino, byte_size, mtime_ns, _ctime_ns = observation
+        updated = self._cursor.set(
+            path,
+            byte_size,
+            byte_offset=0,
+            last_complete_newline=0,
+            parser_fingerprint=self._current_parser_fingerprint(),
+            content_fingerprint=None,
+            tail_hash=None,
+            source_name=source_name,
+            st_dev=st_dev or None,
+            st_ino=st_ino or None,
+            mtime_ns=mtime_ns or None,
+            failure_count=existing.failure_count if existing is not None else 0,
+            next_retry_at=existing.next_retry_at if existing is not None else None,
+            excluded=bool(existing.excluded) if existing is not None else False,
+            allow_backward=True,
+        )
+        if not updated:
+            raise sqlite3.OperationalError(f"failed to persist cursor invalidation for {path}")
 
     def _record_convergence_outcome(self, path: Path, debts: Iterable[ConvergenceDebt]) -> None:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
@@ -938,6 +1127,8 @@ class LiveBatchProcessor:
         raw_payloads: dict[str, bytes] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
+        captured_content_hashes: dict[Path, str] = {}
+        captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = {}
         failed: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
@@ -968,6 +1159,7 @@ class LiveBatchProcessor:
             except OSError:
                 failed.append(path)
                 continue
+            captured_file_observations[path] = _file_observation(stat)
             if heartbeat is not None:
                 heartbeat(
                     "full_file_scan",
@@ -1156,8 +1348,14 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             ingested.append(path)
-            raw_byte_sizes[path] = stat.st_size
+            # The source may grow while its blob is copied. The blob size is
+            # the durable acquisition boundary; the pre-copy stat is only a
+            # planning observation. SQLite snapshots are logical copies, so
+            # their cursor remains tied to the source file stat instead.
+            raw_byte_sizes[path] = stat.st_size if provider is Provider.HERMES else blob_size
             raw_source_names[path] = source_name
+            if provider is not Provider.HERMES:
+                captured_content_hashes[path] = raw_id
             raw_records.append(
                 RawSessionRecord(
                     raw_id=raw_id,
@@ -1173,6 +1371,7 @@ class LiveBatchProcessor:
                     acquired_at=datetime.now(UTC).isoformat(),
                     file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
                     captured_source_revision=raw_source_revisions.get(path, raw_id),
+                    requires_complete_record_boundary=path.suffix.lower() in {".jsonl", ".ndjson"},
                 )
             )
             raw_source_revisions.setdefault(path, raw_id)
@@ -1237,6 +1436,8 @@ class LiveBatchProcessor:
             raw_byte_sizes=raw_byte_sizes,
             raw_source_names=raw_source_names,
             raw_source_revisions=raw_source_revisions,
+            captured_content_hashes=captured_content_hashes,
+            captured_file_observations=captured_file_observations,
             summary=summary,
         )
         raw_records.clear()
@@ -1328,6 +1529,15 @@ class LiveBatchProcessor:
                         )
                         source_write_name = "full.source_raw_write"
                     record_timings[source_write_name] = time.perf_counter() - source_write_started
+                    if not _captured_jsonl_ends_at_record_boundary(
+                        source_path=record.source_path,
+                        required=record.requires_complete_record_boundary,
+                        payload=payload,
+                        blob_store=blob_store,
+                        blob_hash=blob_hash,
+                        blob_size=record.blob_size,
+                    ):
+                        raise ValueError("captured JSONL payload ends before a complete record boundary")
                     t0 = time.perf_counter()
                     if provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
                         blob_store.blob_path(blob_hash)
@@ -1597,29 +1807,61 @@ class LiveBatchProcessor:
         if path.suffix.lower() != ".jsonl":
             return None
         cursor = cursor or self._cursor.get_record(path)
-        if cursor is None or cursor.parser_fingerprint != self._current_parser_fingerprint():
+        if (
+            cursor is None
+            or cursor.parser_fingerprint != self._current_parser_fingerprint()
+            or cursor.content_fingerprint is None
+        ):
+            return None
+        expected_prefix_hash = cursor_prefix_hash(cursor.tail_hash)
+        if expected_prefix_hash is None:
             return None
         try:
-            stat = path.stat()
-        except FileNotFoundError:
+            with path.open("rb") as handle:
+                stat = os.fstat(handle.fileno())
+                if stat.st_size <= cursor.byte_offset:
+                    return None
+                if cursor.st_dev is not None and cursor.st_dev != stat.st_dev:
+                    return None
+                if cursor.st_ino is not None and cursor.st_ino != stat.st_ino:
+                    return None
+                start_offset = max(cursor.byte_offset, 0)
+                append_window = min(stat.st_size - start_offset, _MAX_APPEND_PLAN_PAYLOAD_BYTES)
+                handle.seek(start_offset)
+                payload = handle.read(append_window)
+                newline_at = payload.rfind(b"\n")
+                if newline_at < 0:
+                    return _DEFER_APPEND
+                complete_payload = payload[: newline_at + 1]
+                if not complete_payload:
+                    return _DEFER_APPEND
+                last_complete_newline = start_offset + newline_at + 1
+                tail_start = max(0, last_complete_newline - 64 * 1024)
+                handle.seek(tail_start)
+                accepted_tail = handle.read(last_complete_newline - tail_start)
+                handle.seek(0)
+                accepted_hasher = sha256()
+                remaining = start_offset
+                while remaining > 0:
+                    chunk = handle.read(min(1 << 20, remaining))
+                    if not chunk:
+                        return _DEFER_APPEND
+                    accepted_hasher.update(chunk)
+                    remaining -= len(chunk)
+                if accepted_hasher.hexdigest() != expected_prefix_hash:
+                    return None
+                remaining = last_complete_newline - start_offset
+                while remaining > 0:
+                    chunk = handle.read(min(1 << 20, remaining))
+                    if not chunk:
+                        return _DEFER_APPEND
+                    accepted_hasher.update(chunk)
+                    remaining -= len(chunk)
+                accepted_prefix_hash = accepted_hasher.hexdigest()
+                final_stat = os.fstat(handle.fileno())
+        except OSError:
             return None
-        if stat.st_size <= cursor.byte_offset:
-            return None
-        if cursor.st_dev is not None and cursor.st_dev != stat.st_dev:
-            return None
-        if cursor.st_ino is not None and cursor.st_ino != stat.st_ino:
-            return None
-
-        start_offset = max(cursor.byte_offset, 0)
-        append_window = min(stat.st_size - start_offset, _MAX_APPEND_PLAN_PAYLOAD_BYTES)
-        with path.open("rb") as handle:
-            handle.seek(start_offset)
-            payload = handle.read(append_window)
-        newline_at = payload.rfind(b"\n")
-        if newline_at < 0:
-            return _DEFER_APPEND
-        complete_payload = payload[: newline_at + 1]
-        if not complete_payload:
+        if _file_observation(final_stat) != _file_observation(stat):
             return _DEFER_APPEND
         append_payload = self._append_payload_for_provider(path, self._source_name_for(path), complete_payload)
         if append_payload is None:
@@ -1629,7 +1871,7 @@ class LiveBatchProcessor:
             path=path,
             source_name=self._source_name_for(path),
             start_offset=start_offset,
-            last_complete_newline=start_offset + newline_at + 1,
+            last_complete_newline=last_complete_newline,
             stat_size=stat.st_size,
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
@@ -1638,6 +1880,10 @@ class LiveBatchProcessor:
             payload_hash=tail_hash,
             cursor_fingerprint=cursor.content_fingerprint,
             bytes_read=len(payload),
+            accepted_tail_hash=sha256(accepted_tail).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+            accepted_prefix_hash=accepted_prefix_hash,
+            authority_bytes_read=last_complete_newline,
         )
 
     def _append_payload_for_provider(self, path: Path, source_name: str, payload: bytes) -> bytes | None:
@@ -1767,22 +2013,97 @@ class LiveBatchProcessor:
     def _compact_superseded_raw_snapshots(self, paths: list[Path]) -> None:
         if not paths:
             return
-        from polylogue.storage.raw_retention import compact_paths_superseded_raw_snapshots
+        from polylogue.storage.raw_retention import (
+            RawRetentionSafetyError,
+            active_raw_retention_authority,
+            compact_paths_superseded_raw_snapshots,
+        )
 
-        source_db = self._cursor._db_path.with_name("source.db")
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        source_db = archive_root / "source.db"
+        index_db = archive_root / "index.db"
         if not source_db.exists():
             return
-        with sqlite3.connect(source_db) as conn:
+        with closing(sqlite3.connect(source_db)) as conn, conn:
             conn.row_factory = sqlite3.Row
+            try:
+                retention_authority = active_raw_retention_authority(conn, index_db_path=index_db)
+            except RawRetentionSafetyError as exc:
+                logger.warning("live.watcher: skipped unsafe raw snapshot compaction: %s", exc)
+                return
             result = compact_paths_superseded_raw_snapshots(
-                conn, paths, limit_per_path=25, min_acquired_at=self._raw_compaction_min_acquired_at
+                conn,
+                paths,
+                limit_per_path=25,
+                min_acquired_at=self._raw_compaction_min_acquired_at,
+                protected_raw_ids=retention_authority.protected_raw_ids,
+                eligible_raw_ids=retention_authority.eligible_raw_ids,
             )
         if result.errors:
             logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
 
     def _record_append_cursor(self, plan: _AppendPlan) -> bool:
+        latest_stat: os.stat_result | None = None
+        expected_observation = (
+            plan.st_dev,
+            plan.st_ino,
+            plan.stat_size,
+            plan.mtime_ns,
+            plan.ctime_ns,
+        )
+        try:
+            stat = plan.path.stat()
+            latest_stat = stat
+            observed = _file_observation(stat)
+            if plan.ctime_ns is None:
+                if observed[:4] != expected_observation[:4]:
+                    raise ValueError("source observation changed")
+            elif observed != expected_observation:
+                raise ValueError("source observation changed")
+            payload_hash, _payload_bytes = sha256_range_from_path(
+                plan.path,
+                start_offset=plan.start_offset,
+                end_offset=plan.last_complete_newline,
+            )
+            tail_hash, _tail_bytes = tail_hash_from_path(plan.path, plan.last_complete_newline)
+            final_stat = plan.path.stat()
+            latest_stat = final_stat
+            final_observation = _file_observation(final_stat)
+            if final_observation != observed:
+                raise ValueError("source changed during cursor verification")
+            if payload_hash != plan.payload_hash:
+                raise ValueError("accepted append bytes changed")
+            if plan.accepted_tail_hash is not None and tail_hash != plan.accepted_tail_hash:
+                raise ValueError("accepted append tail changed")
+        except (EOFError, OSError, ValueError) as exc:
+            logger.warning(
+                "live.watcher: source changed after append persistence; cursor invalidated for full retry: %s: %s",
+                plan.path,
+                exc,
+            )
+            self._invalidate_cursor_for_full_retry(
+                plan.path,
+                source_name=plan.source_name,
+                stat=latest_stat,
+                captured_file_observation=(
+                    plan.st_dev,
+                    plan.st_ino,
+                    plan.stat_size,
+                    plan.mtime_ns,
+                    plan.ctime_ns or 0,
+                ),
+            )
+            return False
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
-        tail_hash, _tail_bytes = tail_hash_from_path(plan.path, plan.stat_size)
+        stored_tail_hash = (
+            encode_cursor_hash_authority(
+                plan.accepted_prefix_hash,
+                tail_hash,
+                ctime_ns=plan.ctime_ns or 0,
+            )
+            if plan.accepted_prefix_hash is not None
+            else tail_hash
+        )
         updated = self._cursor.set(
             plan.path,
             plan.stat_size,
@@ -1790,13 +2111,14 @@ class LiveBatchProcessor:
             last_complete_newline=plan.last_complete_newline,
             parser_fingerprint=self._current_parser_fingerprint(),
             content_fingerprint=content_fingerprint,
-            tail_hash=tail_hash,
+            tail_hash=stored_tail_hash,
             source_name=plan.source_name,
             st_dev=plan.st_dev,
             st_ino=plan.st_ino,
             mtime_ns=plan.mtime_ns,
         )
-        self._cursor.reset_failures(plan.path)
+        if updated:
+            self._cursor.reset_failures(plan.path)
         return updated
 
 

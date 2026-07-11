@@ -1340,43 +1340,63 @@ def count_superseded_raw_snapshots_sync(conn: sqlite3.Connection) -> int:
     return len(superseded_raw_snapshot_candidates(conn, limit=10_000))
 
 
-def _index_referenced_raw_ids(index_db_path: Path) -> set[str]:
-    if not index_db_path.exists():
-        return set()
-    try:
-        with sqlite3.connect(f"file:{index_db_path}?mode=ro", uri=True) as conn:
-            rows = conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
-    except sqlite3.Error:
-        return set()
-    return {str(row[0]) for row in rows if row[0] is not None}
-
-
 def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
-    import sqlite3
+    from polylogue.storage.raw_retention import (
+        RawRetentionSafetyError,
+        active_raw_retention_authority,
+        cleanup_superseded_raw_snapshots,
+    )
+    from polylogue.storage.sqlite.connection_profile import open_connection
 
-    from polylogue.storage.raw_retention import cleanup_superseded_raw_snapshots
-    from polylogue.storage.sqlite.connection import open_connection
-
-    repair_db_path = config.archive_root / "source.db"
+    archive_root = _raw_materialization_archive_root(config)
+    repair_db_path = archive_root / "source.db"
     if repair_db_path.exists():
-        index_db_path = config.archive_root / "index.db"
-        if not index_db_path.exists():
-            index_db_path = config.db_path
-        protected_raw_ids = _index_referenced_raw_ids(index_db_path)
-        with sqlite3.connect(repair_db_path) as conn:
+        index_db_path = archive_root / "index.db"
+        with closing(open_connection(repair_db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
+            try:
+                retention_authority = active_raw_retention_authority(
+                    conn,
+                    index_db_path=index_db_path,
+                )
+            except RawRetentionSafetyError as exc:
+                return _repair_result(
+                    "superseded_raw_snapshots",
+                    repaired_count=0,
+                    success=False,
+                    detail=f"Skipped destructive raw cleanup: {exc}",
+                )
             result = cleanup_superseded_raw_snapshots(
                 conn,
                 dry_run=dry_run,
                 limit=10_000,
-                protected_raw_ids=protected_raw_ids,
+                protected_raw_ids=retention_authority.protected_raw_ids,
+                eligible_raw_ids=retention_authority.eligible_raw_ids,
             )
     else:
-        with open_connection(config.db_path) as conn:
-            result = cleanup_superseded_raw_snapshots(conn, dry_run=dry_run, limit=10_000)
+        with closing(open_connection(config.db_path)) as conn, conn:
+            try:
+                retention_authority = active_raw_retention_authority(
+                    conn,
+                    index_db_path=config.db_path,
+                )
+            except RawRetentionSafetyError as exc:
+                return _repair_result(
+                    "superseded_raw_snapshots",
+                    repaired_count=0,
+                    success=False,
+                    detail=f"Skipped destructive raw cleanup: {exc}",
+                )
+            result = cleanup_superseded_raw_snapshots(
+                conn,
+                dry_run=dry_run,
+                limit=10_000,
+                protected_raw_ids=retention_authority.protected_raw_ids,
+                eligible_raw_ids=retention_authority.eligible_raw_ids,
+            )
     if dry_run:
         skipped_detail = (
-            f"; skipped {result.skipped_referenced_count:,} index-referenced raw rows"
+            f"; skipped {result.skipped_referenced_count:,} active revision raw rows"
             if result.skipped_referenced_count
             else ""
         )
@@ -1391,7 +1411,7 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
             ),
         )
     skipped_detail = (
-        f"; skipped {result.skipped_referenced_count:,} index-referenced raw rows"
+        f"; skipped {result.skipped_referenced_count:,} active revision raw rows"
         if result.skipped_referenced_count
         else ""
     )

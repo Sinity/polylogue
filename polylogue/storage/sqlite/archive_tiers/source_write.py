@@ -12,7 +12,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from polylogue.archive.revision_authority import RawRevisionEnvelope
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
@@ -173,6 +173,71 @@ def deterministic_history_sidecar_id(origin: Origin | str, source_path: str, con
     return digest.hexdigest()
 
 
+def _revision_values(revision: RawRevisionEnvelope) -> tuple[object, ...]:
+    return (
+        revision.logical_source_key,
+        revision.kind.value,
+        revision.source_revision,
+        revision.predecessor_source_revision,
+        revision.predecessor_raw_id,
+        revision.baseline_raw_id,
+        revision.append_start_offset,
+        revision.append_end_offset,
+        revision.acquisition_generation,
+        revision.authority.value,
+    )
+
+
+def _is_compatible_classification_refinement(
+    existing: tuple[object, ...],
+    revision: RawRevisionEnvelope,
+) -> bool:
+    """Accept retry of a provisional envelope already refined by classification."""
+    proposed = _revision_values(revision)
+    if revision.authority is not RawRevisionAuthority.QUARANTINED:
+        return False
+    if existing[9] != RawRevisionAuthority.BYTE_PROVEN.value:
+        return False
+    # Classification may fill the raw parent/baseline and generation, but it
+    # cannot change the acquired stream identity or its byte boundaries.
+    for index in (0, 1, 2, 3, 6, 7):
+        if existing[index] != proposed[index]:
+            return False
+    return all(proposed[index] is None or existing[index] == proposed[index] for index in (4, 5))
+
+
+def _assert_existing_raw_identity(
+    conn: sqlite3.Connection,
+    *,
+    raw_id: str,
+    origin: str,
+    native_id: str | None,
+    source_path: str,
+    source_index: int,
+    blob_hash: bytes,
+    blob_size: int,
+    revision: RawRevisionEnvelope | None,
+) -> None:
+    row = conn.execute(
+        """
+        SELECT origin, native_id, source_path, source_index, blob_hash, blob_size,
+               logical_source_key, revision_kind, source_revision,
+               predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+               append_start_offset, append_end_offset, acquisition_generation,
+               revision_authority
+        FROM raw_sessions WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"raw insert conflict lost its retained row: {raw_id}")
+    values = tuple(row)
+    if values[:6] != (origin, native_id, source_path, source_index, blob_hash, blob_size):
+        raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
+    if revision is not None and values[6:] != _revision_values(revision):
+        raise ValueError(f"raw id is already bound to a different revision envelope: {raw_id}")
+
+
 def apply_source_raw_state_update(
     conn: sqlite3.Connection,
     raw_id: str,
@@ -284,6 +349,8 @@ def write_source_raw_session(
     """
     conn.execute("PRAGMA foreign_keys = ON")
     origin_value = _enum_value(origin)
+    if origin_value is None:
+        raise ValueError("origin is required for raw sessions")
     blob_hash = deterministic_blob_hash(payload)
     blob_size = len(payload)
     resolved_raw_id = raw_id or deterministic_raw_session_id(
@@ -295,9 +362,9 @@ def write_source_raw_session(
     )
 
     with conn if manage_transaction else nullcontext():
-        conn.execute(
+        cursor = conn.execute(
             """
-            INSERT OR REPLACE INTO raw_sessions (
+            INSERT INTO raw_sessions (
                 raw_id, origin, native_id, source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
                 validated_at_ms, validation_status, validation_error, validation_drift_count,
@@ -305,6 +372,7 @@ def write_source_raw_session(
                 source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
                 append_end_offset, acquisition_generation, revision_authority
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(raw_id) DO NOTHING
             """,
             (
                 resolved_raw_id,
@@ -336,6 +404,18 @@ def write_source_raw_session(
                 revision.authority.value if revision else "quarantined",
             ),
         )
+        if cursor.rowcount == 0:
+            _assert_existing_raw_identity(
+                conn,
+                raw_id=resolved_raw_id,
+                origin=origin_value,
+                native_id=native_id,
+                source_path=source_path,
+                source_index=source_index,
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+                revision=revision,
+            )
         _insert_blob_ref(
             conn,
             ArchiveSourceBlobRef(
@@ -393,6 +473,8 @@ def write_source_raw_session_blob_ref(
         raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
     conn.execute("PRAGMA foreign_keys = ON")
     origin_value = _enum_value(origin)
+    if origin_value is None:
+        raise ValueError("origin is required for raw sessions")
     resolved_raw_id = raw_id or deterministic_raw_session_id(
         origin,
         source_path,
@@ -401,14 +483,15 @@ def write_source_raw_session_blob_ref(
         native_id,
     )
     with conn if manage_transaction else nullcontext():
-        conn.execute(
+        cursor = conn.execute(
             """
-            INSERT OR REPLACE INTO raw_sessions (
+            INSERT INTO raw_sessions (
                 raw_id, origin, native_id, source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, logical_source_key, revision_kind,
                 source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
                 append_end_offset, acquisition_generation, revision_authority
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(raw_id) DO NOTHING
             """,
             (
                 resolved_raw_id,
@@ -431,6 +514,18 @@ def write_source_raw_session_blob_ref(
                 revision.authority.value if revision else "quarantined",
             ),
         )
+        if cursor.rowcount == 0:
+            _assert_existing_raw_identity(
+                conn,
+                raw_id=resolved_raw_id,
+                origin=origin_value,
+                native_id=native_id,
+                source_path=source_path,
+                source_index=source_index,
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+                revision=revision,
+            )
         _insert_blob_ref(
             conn,
             ArchiveSourceBlobRef(
@@ -468,36 +563,34 @@ def bind_source_raw_revision(conn: sqlite3.Connection, raw_id: str, revision: Ra
             SET logical_source_key = ?, revision_kind = ?, source_revision = ?,
                 predecessor_source_revision = ?, predecessor_raw_id = ?, baseline_raw_id = ?, append_start_offset = ?,
                 append_end_offset = ?, acquisition_generation = ?, revision_authority = ?
-            WHERE raw_id = ? AND revision_authority = 'quarantined'
+            WHERE raw_id = ?
+              AND revision_kind = 'unknown'
+              AND revision_authority = 'quarantined'
+              AND logical_source_key IS NULL
+              AND source_revision IS NULL
             """,
             (
-                revision.logical_source_key,
-                revision.kind.value,
-                revision.source_revision,
-                revision.predecessor_source_revision,
-                revision.predecessor_raw_id,
-                revision.baseline_raw_id,
-                revision.append_start_offset,
-                revision.append_end_offset,
-                revision.acquisition_generation,
-                revision.authority.value,
+                *_revision_values(revision),
                 raw_id,
             ),
         )
         if cursor.rowcount != 1:
             existing = conn.execute(
                 """
-                SELECT logical_source_key, revision_kind, source_revision
+                SELECT logical_source_key, revision_kind, source_revision,
+                       predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+                       append_start_offset, append_end_offset, acquisition_generation,
+                       revision_authority
                 FROM raw_sessions WHERE raw_id = ?
                 """,
                 (raw_id,),
             ).fetchone()
-            if existing == (
-                revision.logical_source_key,
-                revision.kind.value,
-                revision.source_revision,
-            ):
-                return
+            if existing is not None:
+                existing_values = tuple(existing)
+                if existing_values == _revision_values(revision) or _is_compatible_classification_refinement(
+                    existing_values, revision
+                ):
+                    return
             raise ValueError(f"raw revision is already authoritative or missing: {raw_id}")
 
 

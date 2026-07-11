@@ -11,6 +11,7 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -31,6 +32,7 @@ from polylogue.sources.live.batch import (
     _FullIngestResult,
     last_complete_newline_from_tail,
 )
+from polylogue.sources.live.batch_support import encode_cursor_hash_authority
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
@@ -1018,6 +1020,11 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
         last_complete_newline=len(original),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(original).hexdigest(),
+            sha256(original).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
