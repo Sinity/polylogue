@@ -715,6 +715,56 @@ def test_raw_materialization_receipts_partition_terminal_deferred_and_executable
     assert candidates.adoption_deferred == 1
 
 
+def test_raw_materialization_retires_only_complete_governed_bundle_membership(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    raw_ids: list[str] = []
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        for position, decision in enumerate(("applied", "ambiguous", None), start=1):
+            raw_id, blob_size = blob_store.write_from_bytes(f'{{"bundle":{position}}}'.encode())
+            raw_ids.append(raw_id)
+            source_conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+                ) VALUES (?, 'chatgpt-export', ?, 0, ?, ?, ?)
+                """,
+                (raw_id, f"bundle-{position}.json", bytes.fromhex(raw_id), blob_size, position),
+            )
+            source_conn.execute(
+                """
+                INSERT INTO raw_membership_census (
+                    raw_id, parser_fingerprint, status, member_count, censused_at_ms
+                ) VALUES (?, 'test', 'complete', 1, 1)
+                """,
+                (raw_id,),
+            )
+            source_conn.execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id, source_revision,
+                    normalized_content_hash, message_count, decision, decided_at_ms
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    raw_id,
+                    f"bundle:{position}",
+                    f"session-{position}",
+                    f"revision-{position}",
+                    bytes.fromhex(raw_id),
+                    decision,
+                    1 if decision is not None else None,
+                ),
+            )
+        source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(config)
+
+    assert set(candidates.raw_ids) == {raw_ids[1], raw_ids[2]}
+
+
 def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
