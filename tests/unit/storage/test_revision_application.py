@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -87,7 +88,7 @@ def test_session_fts_proof_detects_missing_row_and_trigger_mutation() -> None:
         {"accepted_frontier_kind": "semantic"},
     ],
 )
-def test_equal_frontier_cas_rejects_conflicting_semantic_state(changes: dict[str, object]) -> None:
+def test_equal_frontier_cas_rejects_conflicting_semantic_state(changes: dict[str, Any]) -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(INDEX_DDL)
     receipt = _receipt()
@@ -113,8 +114,17 @@ def test_larger_full_snapshot_supersedes_deeper_append_generation() -> None:
 def test_equal_frontier_full_can_replace_equivalent_append_representation() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(INDEX_DDL)
+    full_zero = _receipt(generation=0, revision="full-0", frontier=100)
+    record_revision_application_sync(conn, full_zero, decided_at_ms=10)
+    append_one = replace(
+        _receipt(generation=1, revision="append-1", frontier=140),
+        decision=ApplicationDecision.APPLIED_APPEND,
+        append_end_offset=140,
+    )
+    record_revision_application_sync(conn, append_one, decided_at_ms=15)
     append_head = replace(
         _receipt(generation=2, revision="append-2", frontier=180),
+        decision=ApplicationDecision.APPLIED_APPEND,
         append_end_offset=180,
     )
     record_revision_application_sync(conn, append_head, decided_at_ms=20)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from io import BytesIO
 from pathlib import Path
@@ -12,6 +13,42 @@ from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+
+def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
+    mapping: dict[str, object] = {}
+    previous: str | None = None
+    for index, text in enumerate(texts):
+        node_id = f"{native_id}-node-{index}"
+        mapping[node_id] = {
+            "id": node_id,
+            "parent": previous,
+            "children": [],
+            "message": {
+                "id": f"{native_id}-message-{index}",
+                "author": {"role": "user" if index % 2 == 0 else "assistant"},
+                "content": {"content_type": "text", "parts": [text]},
+                "create_time": 1_700_000_000 + index,
+            },
+        }
+        if previous is not None:
+            previous_row = mapping[previous]
+            assert isinstance(previous_row, dict)
+            previous_row["children"] = [node_id]
+        previous = node_id
+    return {
+        "id": native_id,
+        "conversation_id": native_id,
+        "title": native_id,
+        "create_time": 1_700_000_000,
+        "update_time": 1_700_000_000 + len(texts),
+        "current_node": previous,
+        "mapping": mapping,
+    }
+
+
+def _bundle(*sessions: dict[str, object]) -> bytes:
+    return json.dumps(list(sessions), sort_keys=True).encode()
 
 
 def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_order(tmp_path: Path) -> None:
@@ -200,3 +237,115 @@ def test_backfill_resumes_after_only_some_source_markers_commit(
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT raw_id, content_hash FROM sessions").fetchone() == accepted_before
         assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0] == 2
+
+
+def test_cold_rebuild_restores_overlapping_multi_session_bundles(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    bundle_a = _bundle(_chatgpt_session("s1", "old"), _chatgpt_session("s2", "only-two"))
+    bundle_b = _bundle(
+        _chatgpt_session("s1", "old", "extended"),
+        _chatgpt_session("s3", "only-three"),
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_a = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=bundle_a,
+            source_path="conversations.json",
+            acquired_at_ms=1,
+        )
+        raw_b = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=bundle_b,
+            source_path="conversations.json",
+            acquired_at_ms=2,
+        )
+
+    result = backfill_historical_revision_evidence(tmp_path)
+    assert result.replayed_logical_sources == 3
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert set(conn.execute("SELECT native_id, message_count FROM sessions")) == {
+            ("s1", 2),
+            ("s2", 1),
+            ("s3", 1),
+        }
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert set(conn.execute("SELECT raw_id FROM raw_sessions WHERE parsed_at_ms IS NOT NULL")) == {
+            (raw_a,),
+            (raw_b,),
+        }
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_session_memberships WHERE decision IN ('ambiguous', 'deferred')"
+        ).fetchone() == (0,)
+
+    (tmp_path / "index.db").unlink()
+    initialize_active_archive_root(tmp_path)
+    rebuilt = backfill_historical_revision_evidence(tmp_path)
+    assert rebuilt.replayed_logical_sources == 3
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert set(conn.execute("SELECT native_id, message_count FROM sessions")) == {
+            ("s1", 2),
+            ("s2", 1),
+            ("s3", 1),
+        }
+
+
+def test_divergent_bundle_member_does_not_block_safe_members(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_a = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("s1", "base", "left"), _chatgpt_session("s2", "safe")),
+            source_path="conversations.json",
+            acquired_at_ms=1,
+        )
+        raw_b = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("s1", "base", "right"), _chatgpt_session("s3", "safe")),
+            source_path="conversations.json",
+            acquired_at_ms=2,
+        )
+
+    result = backfill_historical_revision_evidence(tmp_path)
+    assert result.quarantined == 2
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert set(conn.execute("SELECT native_id FROM sessions")) == {("s2",), ("s3",)}
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert set(conn.execute("SELECT raw_id FROM raw_sessions WHERE parsed_at_ms IS NULL")) == {
+            (raw_a,),
+            (raw_b,),
+        }
+        assert conn.execute("SELECT COUNT(*) FROM raw_session_memberships WHERE decision = 'ambiguous'").fetchone() == (
+            2,
+        )
+
+
+def test_targeted_rebuild_expands_same_session_across_source_paths_only(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        selected_raw = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("shared", "old")),
+            source_path="first.json",
+            acquired_at_ms=1,
+        )
+        archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("shared", "old", "new")),
+            source_path="second.json",
+            acquired_at_ms=2,
+        )
+        unrelated_raw = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("unrelated", "no")),
+            source_path="third.json",
+            acquired_at_ms=3,
+        )
+
+    result = backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[selected_raw])
+    assert result.replayed_logical_sources == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("shared", 2)]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT decision FROM raw_session_memberships WHERE raw_id = ?", (unrelated_raw,)
+        ).fetchone() == (None,)

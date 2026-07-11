@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
-from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Provider
+from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import is_stream_record_provider, parse_payload, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedSession
@@ -27,42 +28,51 @@ def backfill_historical_revision_evidence(
     *,
     selected_raw_ids: list[str] | None = None,
 ) -> RevisionBackfillResult:
-    """Parse retained legacy bytes, classify only single-session full captures."""
+    """Census every retained raw, then replay byte and bundle authority cohorts."""
     scanned = 0
     classified = 0
     quarantined = 0
     logical_keys: set[str] = set()
+    parsed_by_raw: dict[str, list[ParsedSession]] = {}
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        unclassified, selected_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
-        logical_keys.update(selected_keys)
-        for raw_id, source_index in unclassified:
+        for raw_id, source_index in archive.raw_membership_census_rows():
             scanned += 1
             if source_index < 0:
+                archive.replace_raw_membership_census(
+                    raw_id,
+                    None,
+                    parser_fingerprint="revision-membership-v1",
+                    censused_at_ms=0,
+                    detail="append fragments are governed by byte revision authority",
+                )
                 quarantined += 1
                 continue
             try:
                 provider, payload, source_path, _kind = archive.raw_revision_material(raw_id)
                 sessions = _parse_one(provider, payload, source_path)
-            except Exception:
+            except Exception as exc:
+                archive.replace_raw_membership_census(
+                    raw_id,
+                    None,
+                    parser_fingerprint="revision-membership-v1",
+                    censused_at_ms=0,
+                    detail=str(exc),
+                )
                 quarantined += 1
                 continue
-            if len(sessions) != 1:
-                quarantined += 1
-                continue
-            session = sessions[0]
-            logical_key = f"{provider.value}:{session.provider_session_id}"
-            archive.bind_raw_revision(
+            parsed_by_raw[raw_id] = sessions
+            archive.replace_raw_membership_census(
                 raw_id,
-                RawRevisionEnvelope(
-                    logical_source_key=logical_key,
-                    kind=RawRevisionKind.FULL,
-                    source_revision=raw_id,
-                    acquisition_generation=0,
-                    authority=RawRevisionAuthority.QUARANTINED,
-                ),
+                sessions,
+                parser_fingerprint="revision-membership-v1",
+                censused_at_ms=0,
             )
-            logical_keys.add(logical_key)
-            classified += 1
+
+        _unclassified, selected_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
+        logical_keys.update(selected_keys)
+        classified = sum(1 for sessions in parsed_by_raw.values() if len(sessions) == 1)
+
+        _selected_membership_raws, membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
 
         replayed = 0
         for logical_key in sorted(logical_keys):
@@ -71,13 +81,39 @@ def backfill_historical_revision_evidence(
                 continue
             parsed_by_raw_id: dict[str, ParsedSession] = {}
             for raw_id in plan.accepted_raw_ids:
-                provider, payload, source_path, _kind = archive.raw_revision_material(raw_id)
-                sessions = _parse_one(provider, payload, source_path)
+                sessions = parsed_by_raw.get(raw_id, [])
                 if len(sessions) != 1:
                     raise RuntimeError(f"classified raw revision {raw_id} no longer parses to one session")
                 parsed_by_raw_id[raw_id] = sessions[0]
             archive.apply_raw_revision_replay(plan, parsed_by_raw_id, acquired_at_ms=0)
             replayed += 1
+
+        for logical_key in membership_keys:
+            if logical_key in logical_keys:
+                continue
+            member_sessions: dict[str, ParsedSession] = {}
+            revisions: list[MembershipRevision] = []
+            projections = {}
+            for raw_id, sessions in parsed_by_raw.items():
+                for session in sessions:
+                    if f"{session.source_name.value}:{session.provider_session_id}" != logical_key:
+                        continue
+                    projection = session_revision_projection(session)
+                    member_sessions[raw_id] = session
+                    projections[raw_id] = projection
+                    revisions.append(MembershipRevision(raw_id, projection))
+            classification = classify_membership_revisions(revisions)
+            if classification.ambiguous_raw_ids:
+                quarantined += len(classification.ambiguous_raw_ids)
+            archive.apply_raw_membership_classification(
+                logical_key,
+                classification,
+                member_sessions,
+                projections,
+                acquired_at_ms=0,
+            )
+            if classification.accepted_raw_ids:
+                replayed += 1
     return RevisionBackfillResult(scanned, classified, replayed, quarantined)
 
 

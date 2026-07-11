@@ -53,6 +53,7 @@ from polylogue.archive.semantic.pricing import (
     _normalize_model,
 )
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost
+from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Origin, Provider
@@ -118,7 +119,7 @@ from polylogue.insights.readiness import (
 from polylogue.insights.rigor import list_rigor_contracts
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
-from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
@@ -1593,6 +1594,135 @@ class ArchiveStore:
         )
         return unclassified, logical_keys
 
+    def raw_membership_census_rows(self) -> tuple[tuple[str, int], ...]:
+        """Return every retained raw whose membership census may affect authority."""
+        rows = (
+            self._ensure_source_conn()
+            .execute("SELECT raw_id, source_index FROM raw_sessions ORDER BY raw_id")
+            .fetchall()
+        )
+        return tuple((str(row[0]), int(row[1])) for row in rows)
+
+    def replace_raw_membership_census(
+        self,
+        raw_id: str,
+        sessions: list[ParsedSession] | None,
+        *,
+        parser_fingerprint: str,
+        censused_at_ms: int,
+        detail: str = "",
+    ) -> None:
+        """Atomically replace one raw's complete parser census and memberships."""
+        conn = self._ensure_source_conn()
+        with conn:
+            conn.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (raw_id,))
+            if sessions is not None:
+                for session in sessions:
+                    projection = session_revision_projection(session)
+                    logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                    conn.execute(
+                        """
+                        INSERT INTO raw_session_memberships (
+                            raw_id, logical_source_key, provider_session_id,
+                            source_revision, normalized_content_hash, message_count
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            raw_id,
+                            logical_key,
+                            session.provider_session_id,
+                            projection.session_hash.hex(),
+                            projection.session_hash,
+                            len(projection.message_hashes),
+                        ),
+                    )
+            status = "failed" if sessions is None else ("non_session" if not sessions else "complete")
+            conn.execute(
+                """
+                INSERT INTO raw_membership_census (
+                    raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(raw_id) DO UPDATE SET
+                    parser_fingerprint=excluded.parser_fingerprint,
+                    status=excluded.status,
+                    member_count=excluded.member_count,
+                    censused_at_ms=excluded.censused_at_ms,
+                    detail=excluded.detail
+                """,
+                (raw_id, parser_fingerprint, status, len(sessions or []), censused_at_ms, detail),
+            )
+
+    def expand_raw_membership_selection(self, raw_ids: list[str] | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Expand scheduling hints to the complete transitive membership cohort."""
+        conn = self._ensure_source_conn()
+        if raw_ids is None:
+            selected = {str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")}
+        else:
+            selected = set(raw_ids)
+        changed = True
+        while changed and selected:
+            changed = False
+            placeholders = ",".join("?" for _ in selected)
+            paths = {
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT DISTINCT source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                    tuple(selected),
+                )
+            }
+            if paths:
+                path_marks = ",".join("?" for _ in paths)
+                selected.update(
+                    str(row[0])
+                    for row in conn.execute(
+                        f"SELECT raw_id FROM raw_sessions WHERE source_path IN ({path_marks})", tuple(paths)
+                    )
+                )
+            placeholders = ",".join("?" for _ in selected)
+            keys = {
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT DISTINCT logical_source_key FROM raw_session_memberships WHERE raw_id IN ({placeholders})",
+                    tuple(selected),
+                )
+            }
+            before = len(selected)
+            if keys:
+                key_marks = ",".join("?" for _ in keys)
+                selected.update(
+                    str(row[0])
+                    for row in conn.execute(
+                        f"SELECT DISTINCT raw_id FROM raw_session_memberships "
+                        f"WHERE logical_source_key IN ({key_marks})",
+                        tuple(keys),
+                    )
+                )
+            changed = len(selected) != before
+        if not selected:
+            return (), ()
+        placeholders = ",".join("?" for _ in selected)
+        logical_keys = tuple(
+            sorted(
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT DISTINCT logical_source_key FROM raw_session_memberships WHERE raw_id IN ({placeholders})",
+                    tuple(selected),
+                )
+            )
+        )
+        return tuple(sorted(selected)), logical_keys
+
+    def raw_membership_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
+        rows = (
+            self._ensure_source_conn()
+            .execute(
+                "SELECT raw_id FROM raw_session_memberships WHERE logical_source_key = ? ORDER BY raw_id",
+                (logical_source_key,),
+            )
+            .fetchall()
+        )
+        return tuple(str(row[0]) for row in rows)
+
     def apply_raw_revision_replay(
         self,
         plan: RevisionReplayPlan,
@@ -1687,6 +1817,153 @@ class ArchiveStore:
             provider, _payload, _source_path, _kind = self.raw_revision_material(raw_id)
             self.mark_raw_parse_succeeded(raw_id, provider=provider)
         return session_id, plan.accepted_raw_ids
+
+    def apply_raw_membership_classification(
+        self,
+        logical_source_key: str,
+        classification: MembershipClassification,
+        parsed_by_raw_id: dict[str, ParsedSession],
+        projections_by_raw_id: dict[str, SessionRevisionProjection],
+        *,
+        acquired_at_ms: int,
+    ) -> str | None:
+        """Apply one semantic member head and persist every membership decision."""
+        conn = self._ensure_source_conn()
+        decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
+        decisions: dict[str, str] = dict.fromkeys(classification.ambiguous_raw_ids, "ambiguous")
+        decisions.update(dict.fromkeys(classification.equivalent_raw_ids, "superseded_equivalent"))
+        for raw_id in classification.accepted_raw_ids[:-1]:
+            decisions[raw_id] = "superseded_prefix"
+        session_id: str | None = None
+        if not classification.accepted_raw_ids and classification.ambiguous_raw_ids:
+            ambiguous_session = parsed_by_raw_id[classification.ambiguous_raw_ids[0]]
+            ambiguous_session_id = str(
+                make_session_id(ambiguous_session.source_name, ambiguous_session.provider_session_id)
+            )
+            with self._conn:
+                self._conn.execute("DELETE FROM sessions WHERE session_id = ?", (ambiguous_session_id,))
+                self._conn.execute(
+                    "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
+                    (logical_source_key,),
+                )
+        if classification.accepted_raw_ids:
+            accepted_raw_id = classification.accepted_raw_ids[-1]
+            accepted_session = parsed_by_raw_id[accepted_raw_id]
+            _provider, _payload, source_path, _kind = self.raw_revision_material(accepted_raw_id)
+            attachments, refs = self._preacquire_attachment_blobs(
+                accepted_session,
+                source_path=source_path,
+                acquired_at_ms=acquired_at_ms,
+            )
+            if self._blob_publisher is not None:
+                self._blob_publisher.flush()
+            write_source_blob_refs(conn, accepted_raw_id, refs)
+            with self._conn:
+                result = self._index_parsed_for_retained_raw(
+                    accepted_session,
+                    raw_id=accepted_raw_id,
+                    source_index=0,
+                    stage_timings_s=None,
+                    stage_timing_prefix="membership_replay",
+                    manage_transaction=False,
+                    preacquired_attachment_blobs=attachments,
+                    finalize_raw_parse=False,
+                    revision_authoritative=True,
+                )
+                session_id = result.session_id
+                repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
+                assert_session_fts_exact_sync(self._conn, session_id)
+                stored = self._conn.execute(
+                    "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
+                ).fetchone()
+                if stored is None or not isinstance(stored[0], bytes):
+                    raise RuntimeError("accepted membership did not produce a hashed session")
+                accepted_projection = projections_by_raw_id[accepted_raw_id]
+                semantic_frontier = (
+                    len(accepted_projection.message_hashes)
+                    + len(accepted_projection.event_hashes)
+                    + len(accepted_projection.attachment_hashes)
+                )
+                cohort_raw_ids = (
+                    *classification.accepted_raw_ids,
+                    *classification.equivalent_raw_ids,
+                    *classification.ambiguous_raw_ids,
+                )
+                for generation, raw_id in enumerate(cohort_raw_ids):
+                    projection = projections_by_raw_id[raw_id]
+                    decision = decisions.get(raw_id, "applied")
+                    record_revision_application_sync(
+                        self._conn,
+                        RevisionApplicationReceipt(
+                            raw_id=raw_id,
+                            session_id=session_id,
+                            logical_source_key=logical_source_key,
+                            source_revision=projection.session_hash.hex(),
+                            acquisition_generation=generation,
+                            decision=(
+                                ApplicationDecision.AMBIGUOUS
+                                if decision == "ambiguous"
+                                else ApplicationDecision.SUPERSEDED
+                                if decision.startswith("superseded")
+                                else ApplicationDecision.SELECTED_BASELINE
+                            ),
+                            accepted_raw_id=accepted_raw_id if decision != "ambiguous" else None,
+                            accepted_source_revision=(
+                                accepted_projection.session_hash.hex() if decision != "ambiguous" else None
+                            ),
+                            accepted_content_hash=stored[0] if decision != "ambiguous" else None,
+                            accepted_frontier_kind="semantic" if decision != "ambiguous" else None,
+                            accepted_frontier=semantic_frontier if decision != "ambiguous" else None,
+                            detail=f"membership:{decision}",
+                        ),
+                        decided_at_ms=decided_at_ms,
+                    )
+            decisions[accepted_raw_id] = "applied"
+
+        with conn:
+            for raw_id, decision in decisions.items():
+                conn.execute(
+                    """
+                    UPDATE raw_session_memberships
+                    SET decision = ?, decided_at_ms = ?,
+                        revision_authority = ?,
+                        acquisition_generation = ?
+                    WHERE raw_id = ? AND logical_source_key = ?
+                    """,
+                    (
+                        decision,
+                        decided_at_ms,
+                        "quarantined" if decision in {"ambiguous", "deferred"} else "byte_proven",
+                        classification.accepted_raw_ids.index(raw_id)
+                        if raw_id in classification.accepted_raw_ids
+                        else 0,
+                        raw_id,
+                        logical_source_key,
+                    ),
+                )
+        for raw_id in decisions:
+            complete = conn.execute(
+                """
+                SELECT c.status = 'complete'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM raw_session_memberships AS m
+                       WHERE m.raw_id = c.raw_id
+                         AND (m.decision IS NULL OR m.decision IN ('ambiguous', 'deferred'))
+                   )
+                FROM raw_membership_census AS c WHERE c.raw_id = ?
+                """,
+                (raw_id,),
+            ).fetchone()
+            if complete is not None and bool(complete[0]):
+                provider, _payload, _source_path, _kind = self.raw_revision_material(raw_id)
+                self.mark_raw_parse_succeeded(raw_id, provider=provider)
+            else:
+                with conn:
+                    conn.execute(
+                        "UPDATE raw_sessions SET parsed_at_ms = NULL, parse_error = NULL WHERE raw_id = ?",
+                        (raw_id,),
+                    )
+        return session_id
 
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
         """Commit one typed source parse state after its index outcome."""

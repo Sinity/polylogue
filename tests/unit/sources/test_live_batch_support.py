@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
@@ -21,7 +22,7 @@ from polylogue.sources.live.batch_support import (
     _parse_path_as_session_artifact,
 )
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.raw.models import UNSET
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -1461,6 +1462,61 @@ def test_full_multi_session_failure_retries_without_success_mapping(
     assert parse_error is None
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
+
+
+def test_live_multi_session_divergence_reopens_raw_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    first = root / "first.jsonl"
+    second = root / "second.jsonl"
+    first.write_bytes(b'{"first":true}\n')
+    second.write_bytes(b'{"second":true}\n')
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    def session(native_id: str, *texts: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=native_id,
+            messages=[
+                ParsedMessage(provider_message_id=f"{native_id}-{index}", role=Role.USER, text=text)
+                for index, text in enumerate(texts)
+            ],
+        )
+
+    parsed_batches = iter(
+        [
+            [session("shared", "base", "left"), session("safe-1", "one")],
+            [session("shared", "base", "right"), session("safe-2", "two")],
+            [session("shared", "base", "left"), session("safe-1", "one")],
+        ]
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.parse_stream_payload",
+        lambda *_args, **_kwargs: next(parsed_batches),
+    )
+
+    assert processor._ingest_full_paths_sync([first], source_name="codex").failed == []
+    assert processor._ingest_full_paths_sync([second], source_name="codex").failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_session_memberships WHERE decision = 'ambiguous'").fetchone() == (
+            2,
+        )
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NULL").fetchone() == (2,)
+    with sqlite3.connect(index_db) as conn:
+        assert set(conn.execute("SELECT native_id FROM sessions")) == {("safe-1",), ("safe-2",)}
 
 
 def test_append_crash_after_index_commit_repairs_idempotently(
