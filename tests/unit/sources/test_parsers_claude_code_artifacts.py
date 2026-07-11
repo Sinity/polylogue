@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+from pathlib import Path
+
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import MaterialOrigin, Role
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.claude.common import normalize_timestamp
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
 def test_normalize_timestamp_returns_canonical_iso_text() -> None:
@@ -165,6 +170,260 @@ def test_parse_code_preserves_tool_result_reclassification_material_origin() -> 
 
     assert result.messages[0].role is Role.TOOL
     assert result.messages[0].material_origin is MaterialOrigin.TOOL_RESULT
+
+
+def _background_task_records() -> list[object]:
+    """Real Claude Code protocol shape, reduced from persisted JSONL evidence."""
+    return [
+        {
+            "type": "assistant",
+            "uuid": "assistant-ok",
+            "sessionId": "background-outcomes",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-ok",
+                        "name": "Bash",
+                        "input": {"command": "true"},
+                    }
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "start-ok",
+            "sessionId": "background-outcomes",
+            "toolUseResult": {"backgroundTaskId": "task-ok"},
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-ok",
+                        "content": "Command running in background with ID: task-ok.",
+                        "is_error": False,
+                    }
+                ],
+            },
+        },
+        {
+            "type": "assistant",
+            "uuid": "assistant-fail",
+            "sessionId": "background-outcomes",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-fail",
+                        "name": "Bash",
+                        "input": {"command": "false"},
+                    }
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "start-fail",
+            "sessionId": "background-outcomes",
+            "toolUseResult": {"backgroundTaskId": "task-fail"},
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-fail",
+                        "content": "Command running in background with ID: task-fail.",
+                        "is_error": False,
+                    }
+                ],
+            },
+        },
+        {
+            "type": "assistant",
+            "uuid": "assistant-foreground",
+            "sessionId": "background-outcomes",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-foreground",
+                        "name": "Bash",
+                        "input": {"command": "printf foreground"},
+                    }
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "result-foreground",
+            "sessionId": "background-outcomes",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-foreground",
+                        "content": "foreground",
+                        "is_error": False,
+                    }
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "notification-ok",
+            "sessionId": "background-outcomes",
+            "origin": {"kind": "task-notification"},
+            "message": {
+                "role": "user",
+                "content": """<task-notification>
+<task-id>task-ok</task-id>
+<tool-use-id>tool-ok</tool-use-id>
+<output-file>/tmp/task-ok.output</output-file>
+<status>completed</status>
+<summary>Background command \"true\" completed (exit code 0)</summary>
+</task-notification>""",
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "notification-fail",
+            "sessionId": "background-outcomes",
+            "origin": {"kind": "task-notification"},
+            "message": {
+                "role": "user",
+                "content": """<task-notification>
+<task-id>task-fail</task-id>
+<tool-use-id>tool-fail</tool-use-id>
+<output-file>/tmp/task-fail.output</output-file>
+<status>completed</status>
+<summary>Background command \"false\" completed (exit code 1)</summary>
+</task-notification>""",
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "notification-fail-update",
+            "sessionId": "background-outcomes",
+            "origin": {"kind": "task-notification"},
+            "message": {
+                "role": "user",
+                "content": """<task-notification>
+<task-id>task-fail</task-id>
+<tool-use-id>tool-fail</tool-use-id>
+<output-file>/tmp/task-fail-final.output</output-file>
+<status>completed</status>
+<summary>Background command \"false\" completed (exit code 1)</summary>
+</task-notification>""",
+            },
+        },
+    ]
+
+
+def test_parse_code_projects_background_completion_outcomes_through_actions(tmp_path: Path) -> None:
+    """Production route: ``parse_code`` -> ``ArchiveStore`` -> ``actions``.
+
+    This fails if ``_project_background_task_completions`` or the
+    ``background_task_completion`` event emission is removed, if the exact
+    task-id/tool-use-id join is replaced with no correlation, or if the
+    known-template exit-code extraction is removed from
+    ``ClaudeCodeBackgroundTaskNotification``.
+    """
+    parsed = parse_code(_background_task_records(), "background-outcomes")
+    by_id = {message.provider_message_id: message for message in parsed.messages}
+    failed_start = by_id["start-fail"].blocks[0]
+    assert failed_start.exit_code == 1
+    assert failed_start.is_error is True
+    assert failed_start.metadata == {
+        "claude_background_task_id": "task-fail",
+        "claude_background_completion_status": "completed",
+        "claude_background_output_file": "/tmp/task-fail-final.output",
+    }
+    assert by_id["notification-fail"].text is not None
+    assert "<task-notification>" in by_id["notification-fail"].text
+    completion_events = [event for event in parsed.session_events if event.event_type == "background_task_completion"]
+    assert [event.payload for event in completion_events] == [
+        {
+            "task_id": "task-ok",
+            "tool_use_id": "tool-ok",
+            "output_file": "/tmp/task-ok.output",
+            "status": "completed",
+            "summary": 'Background command "true" completed (exit code 0)',
+            "exit_code": 0,
+        },
+        {
+            "task_id": "task-fail",
+            "tool_use_id": "tool-fail",
+            "output_file": "/tmp/task-fail-final.output",
+            "status": "completed",
+            "summary": 'Background command "false" completed (exit code 1)',
+            "exit_code": 1,
+        },
+    ]
+
+    archive_root = tmp_path / "background-outcomes"
+    with ArchiveStore(archive_root) as archive:
+        session_id = archive.write_parsed(parsed)
+        actions = archive.query_session_actions([session_id], limit=10)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        event_rows = conn.execute(
+            """
+            SELECT source_message_provider_id, payload_json
+            FROM session_events
+            WHERE session_id = ? AND event_type = 'background_task_completion'
+            ORDER BY position
+            """,
+            (session_id,),
+        ).fetchall()
+
+    outcomes = {action.tool_command: (action.is_error, action.exit_code) for action in actions}
+    assert outcomes == {
+        "true": (0, 0),
+        "false": (1, 1),
+        "printf foreground": (0, None),
+    }
+    assert len(actions) == 3  # Duplicate notification updates one source action, never creates another.
+    assert [(source_id, json.loads(payload)) for source_id, payload in event_rows] == [
+        ("notification-ok", completion_events[0].payload),
+        ("notification-fail-update", completion_events[1].payload),
+    ]
+
+
+def test_parse_code_degrades_changed_background_completion_template_to_unknown() -> None:
+    """Production dependency: the strict typed notification parser in ``parse_code``.
+
+    This fails if the known-template ``fullmatch`` is loosened to extract an
+    arbitrary ``exit code 7`` phrase, or if background start acknowledgements
+    retain their provider ``is_error=false`` success flag.
+    """
+    records = _background_task_records()
+    notification = records[-2]
+    assert isinstance(notification, dict)
+    message = notification["message"]
+    assert isinstance(message, dict)
+    message["content"] = """<task-notification>
+<task-id>task-fail</task-id>
+<tool-use-id>tool-fail</tool-use-id>
+<output-file>/tmp/task-fail.output</output-file>
+<status>completed</status>
+<summary>Background command \"false\" ended unexpectedly; exit code 7</summary>
+</task-notification>"""
+    # Remove the duplicate so this drifted provider update is terminal.
+    records.pop()
+
+    parsed = parse_code(records, "background-outcomes-drift")
+    by_id = {message.provider_message_id: message for message in parsed.messages}
+    failed_start = by_id["start-fail"].blocks[0]
+    foreground = by_id["result-foreground"].blocks[0]
+    assert failed_start.exit_code is None
+    assert failed_start.is_error is None
+    assert foreground.exit_code is None
+    assert foreground.is_error is False
 
 
 def test_parse_code_drops_progress_hook_records() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .claude_code_models import (
+    ClaudeCodeBackgroundTaskNotification,
     ClaudeCodeMessageContent,
     ClaudeCodeTextBlock,
     ClaudeCodeThinkingBlock,
@@ -14,6 +15,7 @@ from .claude_code_models import (
 from .claude_code_record import ClaudeCodeRecord
 
 __all__ = [
+    "ClaudeCodeBackgroundTaskNotification",
     "ClaudeCodeMessageContent",
     "ClaudeCodeRecord",
     "ClaudeCodeTextBlock",
