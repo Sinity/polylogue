@@ -1724,6 +1724,25 @@ class ArchiveStore:
         )
         return tuple(str(row[0]) for row in rows)
 
+    def raw_membership_authority_complete(self, raw_id: str) -> bool:
+        row = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT c.status = 'complete'
+               AND NOT EXISTS (
+                   SELECT 1 FROM raw_session_memberships AS m
+                   WHERE m.raw_id = c.raw_id
+                     AND (m.decision IS NULL OR m.decision IN ('ambiguous', 'deferred'))
+               )
+            FROM raw_membership_census AS c WHERE c.raw_id = ?
+            """,
+                (raw_id,),
+            )
+            .fetchone()
+        )
+        return row is not None and bool(row[0])
+
     def apply_raw_revision_replay(
         self,
         plan: RevisionReplayPlan,

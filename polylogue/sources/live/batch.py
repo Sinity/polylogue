@@ -1377,6 +1377,7 @@ class LiveBatchProcessor:
                     record_session_ids: list[str] = []
                     record_session_count = 0
                     record_message_count = 0
+                    raw_authority_complete = True
                     if len(sessions) == 1:
                         session = sessions[0]
                         logical_source_key = f"{provider.value}:{session.provider_session_id}"
@@ -1445,7 +1446,9 @@ class LiveBatchProcessor:
                                 record_session_ids.append(membership_session_id)
                                 record_session_count += 1
                                 record_message_count += len(session.messages)
-                    result.raw_ids[record.raw_id] = record_raw_id
+                        raw_authority_complete = archive.raw_membership_authority_complete(source_raw_id)
+                    if raw_authority_complete:
+                        result.raw_ids[record.raw_id] = record_raw_id
                     result.session_ids.extend(record_session_ids)
                     result.session_count += record_session_count
                     result.message_count += record_message_count

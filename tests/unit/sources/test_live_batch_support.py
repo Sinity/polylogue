@@ -1509,7 +1509,9 @@ def test_live_multi_session_divergence_reopens_raw_authority(
     )
 
     assert processor._ingest_full_paths_sync([first], source_name="codex").failed == []
-    assert processor._ingest_full_paths_sync([second], source_name="codex").failed == []
+    second_result = processor._ingest_full_paths_sync([second], source_name="codex")
+    assert second_result.failed == [second]
+    assert second_result.succeeded == []
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_session_memberships WHERE decision = 'ambiguous'").fetchone() == (
             2,
