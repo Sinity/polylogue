@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Time Machine — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero .eyebrow { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); margin-bottom: 0.8rem; }
+        .home-hero h1 { font-size: clamp(2.4rem, 7vw, 4.5rem); line-height: 1.03; max-width: 820px; margin: 0 auto 1rem; letter-spacing: -0.04em; }
+        .home-hero .tagline { font-size: 1.18rem; color: var(--text-secondary); max-width: 760px; margin: 0 auto 1.3rem; }
+        .hero-command { margin: 0 auto 1rem; }
+        .hero-command code { display: inline-block; padding: 0.65rem 0.9rem; border: 1px solid var(--border); background: var(--bg-secondary); box-shadow: 0 10px 30px var(--shadow); }
+        .hero-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 0.45rem 1.2rem; margin: 0 auto 1.7rem; color: var(--text-tertiary); font-size: 0.8rem; }
+        .hero-stats strong { color: var(--text-primary); font-size: 0.92rem; margin-right: 0.18rem; }
+        .proof-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0 2rem; text-align: left; }
+        .proof-card { background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary)); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem; min-height: 155px; }
+        .proof-card strong { display: block; font-size: 1rem; margin: 0.35rem 0 0.5rem; }
+        .proof-card p { color: var(--text-secondary); font-size: 0.9rem; margin: 0; }
+        .proof-label { color: var(--accent); font-size: 0.73rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2.35rem; }
+            .proof-grid { grid-template-columns: 1fr; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="../../" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Start Here</div>
+                
+                <a href="../../demos/" >
+                    Demos
+                </a>
+                
+                <a href="../../findings/claim-vs-evidence/" >
+                    Finding: Structured Failure
+                </a>
+                
+                <a href="../../proof/" >
+                    Proof Artifacts
+                </a>
+                
+                <a href="../../architecture/sinex/" >
+                    Polylogue on Sinex
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="../../docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="../../docs/search/" >
+                    Search
+                </a>
+                
+                <a href="../../docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="../../docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="../../docs/export/" >
+                    Export
+                </a>
+                
+                <a href="../../docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="../../reference/cli/" >
+                    CLI
+                </a>
+                
+                <a href="../../reference/mcp/" >
+                    MCP
+                </a>
+                
+                <a href="../../reference/api/" >
+                    API
+                </a>
+                
+                <a href="../../reference/config/" >
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="../../architecture/rings/" >
+                    Rings
+                </a>
+                
+                <a href="../../architecture/internals/" >
+                    Internals
+                </a>
+                
+                <a href="../../architecture/schema/" >
+                    Schema
+                </a>
+                
+                <a href="../../architecture/contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="../../verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="../../verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="../../verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="../../verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="../second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="./" class="active">
+                    Time Machine
+                </a>
+                
+                <a href="../project-memory/" >
+                    Project Memory
+                </a>
+                
+                <a href="../agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="../archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="../whole-product/" >
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<h1>Time Machine</h1>
+<p>Chronological browsing of AI session archives. &quot;What was I working on in
+March 2025?&quot; — answered by navigating the archive as a temporal document, not
+a query language.</p>
+<h2>Problem</h2>
+<p>Answer &quot;what was I doing then&quot; without constructing a search query. The user
+knows <em>when</em> but not <em>what</em>. Existing search tools require filtering on
+content; time-based navigation should require only a date or month.</p>
+<p>The data is already there — <code>created_at</code> and <code>updated_at</code> on sessions,
+<code>canonical_session_date</code> on session profiles, timestamps on messages. The
+missing piece is temporal presentation surfaces that let the user pan and zoom
+through their own history.</p>
+<h2>Surfaces</h2>
+<h3>Calendar Heatmap</h3>
+<p>A GitHub-style contribution grid showing AI usage intensity per day over the
+full archive range. Each cell is a day; color intensity maps to session count,
+message volume, or cost.</p>
+<pre><code>       Jan              Feb              Mar
+   M  T  W  T  F     M  T  W  T  F     M  T  W  T  F
+   1  2  3  4  5     3  4  5  6  7     3  4  5  6  7
+   6  7  8  9 10     8  9 10 11 12     8  9 10 11 12
+  ...
+</code></pre>
+<p>The grid answers &quot;when was I active&quot; in one glance. High-activity weeks jump
+out. Gaps are visible. The eye catches patterns — weekend work, crunch weeks,
+quiet months — that would be invisible in a list or table.</p>
+<p>The heatmap can show three different metrics, toggled with a flag:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>SQL source</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session count</td>
+<td><code>COUNT(*)</code> from <code>session_profiles</code> per day</td>
+<td>Activity volume</td>
+</tr>
+<tr>
+<td>Message volume</td>
+<td><code>SUM(word_count)</code> from <code>messages</code> grouped by <code>canonical_session_date</code></td>
+<td>Output intensity</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td><code>SUM(total_cost_usd)</code> from <code>session_profiles</code> per day</td>
+<td>Spending awareness</td>
+</tr>
+</tbody>
+</table>
+<p>Default metric: session count (fastest, most intuitive).</p>
+<p>Implementation is a single aggregation query:</p>
+<pre><code class="language-sql">SELECT
+    canonical_session_date,
+    COUNT(*) AS session_count,
+    SUM(word_count) AS total_words,
+    SUM(total_cost_usd) AS total_cost
+FROM session_profiles
+WHERE canonical_session_date BETWEEN :start AND :end
+GROUP BY canonical_session_date
+ORDER BY canonical_session_date;
+</code></pre>
+<h3>Era Detection</h3>
+<p>An <em>era</em> is a contiguous period with a stable activity signature. Polylogue
+detects eras automatically from session density and project focus.</p>
+<p>Eras answer &quot;what phase of my AI usage was I in&quot; without manual tagging:</p>
+<table>
+<thead>
+<tr>
+<th>Era</th>
+<th>Detection signal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&quot;Exploration&quot;</td>
+<td>Low density (&lt;3 sessions/week), many different providers, no dominant repo</td>
+</tr>
+<tr>
+<td>&quot;Settled usage&quot;</td>
+<td>Medium density (3-10/week), one dominant provider, one primary repo</td>
+</tr>
+<tr>
+<td>&quot;Intensive phase&quot;</td>
+<td>High density (10+/week), single provider, single repo</td>
+</tr>
+<tr>
+<td>&quot;Multi-project&quot;</td>
+<td>High density but diverse repos, possibly multiple providers</td>
+</tr>
+<tr>
+<td>&quot;Dormant&quot;</td>
+<td>&lt;1 session/week for 3+ consecutive weeks</td>
+</tr>
+<tr>
+<td>&quot;Claude Code adoption&quot;</td>
+<td>Transition from claude-ai to claude-code as dominant provider</td>
+</tr>
+</tbody>
+</table>
+<p>Era boundaries are recalculated on pipeline runs. No manual labeling needed.
+The user sees named eras in the timeline, can rename them, and can jump to era
+boundaries.</p>
+<p>Detection algorithm (Python, ~80 LOC):</p>
+<ol>
+<li>Pull daily session counts and provider distribution from <code>session_profiles</code>.</li>
+<li>Apply a 7-day rolling window for density classification.</li>
+<li>Detect provider transitions (e.g., <code>claude-ai</code> share drops below 20% while
+<code>claude-code</code> share rises above 50%) — mark as era boundary.</li>
+<li>Detect density plateaus by looking for 14+ day runs at a consistent tier.</li>
+<li>Name eras heuristically; user can rename.</li>
+</ol>
+<h3>This Day in History</h3>
+<p>&quot;What was I doing on this day last year?&quot; A view that surfaces sessions from
+the same calendar day in previous years.</p>
+<p>The query:</p>
+<pre><code class="language-sql">SELECT
+    sp.session_id,
+    sp.title,
+    sp.canonical_session_date,
+    sp.provider_name,
+    sp.word_count,
+    sp.repo_names_json
+FROM session_profiles sp
+WHERE CAST(strftime('%m', sp.canonical_session_date) AS INTEGER) = :month
+  AND CAST(strftime('%d', sp.canonical_session_date) AS INTEGER) = :day
+  AND sp.canonical_session_date &lt;= date('now', :lookback)
+ORDER BY sp.canonical_session_date DESC
+LIMIT 10;
+</code></pre>
+<p>The <code>--lookback</code> flag controls how far back to exclude (default <code>-1 year</code>, so
+&quot;this day last year or earlier&quot;). The presentation groups results by year,
+showing a descending list of anniversaries.</p>
+<p>Bonus: &quot;this week in history&quot; variant that groups by ISO week and shows
+the top sessions from that week across all past years.</p>
+<h3>Session Filmstrip</h3>
+<p>A horizontal chronological view of sessions as a scrollable strip. Each session
+is a card (title, date, duration, repo, cost). The user pans left and right
+through time; clicking a card shows the full session.</p>
+<p>The filmstrip is the &quot;zoom in&quot; companion to the heatmap's &quot;pan out.&quot; The
+heatmap shows the year at a glance; the filmstrip shows a month or week in
+detail.</p>
+<p>Implementation: paginated query over <code>session_profiles</code> ordered by
+<code>canonical_session_date</code>. Each page returns 20 sessions. The UI renders them
+as a horizontal strip with Prev/Next pagination.</p>
+<pre><code class="language-sql">SELECT
+    session_id, title, canonical_session_date,
+    provider_name, word_count, tool_use_count,
+    total_cost_usd, total_duration_ms,
+    repo_names_json, tags_json
+FROM session_profiles
+WHERE canonical_session_date BETWEEN :start AND :end
+ORDER BY canonical_session_date ASC, first_message_at ASC
+LIMIT :limit OFFSET :offset;
+</code></pre>
+<h2>CLI Surface</h2>
+<p>Four commands, all read-only:</p>
+<pre><code>polylogue calendar [--metric sessions|words|cost] [--year 2025] [--output grid|json]
+polylogue eras [--list | --rename ERA NAME]
+polylogue this-day [--lookback &quot;1 year&quot;] [--week]
+polylogue timeline [--from DATE] [--to DATE] [--page N] [--limit 20]
+</code></pre>
+<h3><code>polylogue calendar</code></h3>
+<p>Prints the heatmap grid to the terminal. Uses Unicode block characters for
+color intensity (no terminal color library dependency needed for the first
+cut, though truecolor would be nice). JSON output for programmatic consumers.</p>
+<pre><code>polylogue calendar --year 2025
+
+2025
+    Jan  ░░█░░░█░░░░░░░░░█░░░░░░░█░░  4 sessions, 8,234 words
+    Feb  ░░░░░█░████░░░░░░██░░░░█░░░  7 sessions, 18,412 words
+    Mar  ███░█░████░░░██░░░█░░█░██░░  12 sessions, 45,011 words
+    Apr  ░░░░░░████░░░░░░░██░░░░░░░░  5 sessions, 12,345 words
+    ...
+</code></pre>
+<h3><code>polylogue eras</code></h3>
+<p>Lists detected eras with date ranges, labels, and session counts. Accepts
+<code>--rename</code> to assign a custom name to an era (stored in session metadata
+and honored on subsequent pipeline runs).</p>
+<h3><code>polylogue this-day</code></h3>
+<p>Shows sessions from this calendar day in previous years, ordered by recency.
+The <code>--week</code> variant shows the whole ISO week. If today is May 4 and the
+lookback is &quot;1 year&quot;, it shows May 4 sessions from 2025 and earlier.</p>
+<h3><code>polylogue timeline</code></h3>
+<p>The filmstrip in CLI form. Prints a paginated list of sessions in date order,
+each with title, date, repo context, and cost. Accepts <code>--from</code> and <code>--to</code>
+for date range, <code>--page</code> / <code>--limit</code> for pagination.</p>
+<h2>Data Sources</h2>
+<p>All queries run over existing tables. Zero new collection, zero new tables.</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Primary table</th>
+<th>Secondary table</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Calendar heatmap</td>
+<td><code>session_profiles</code></td>
+<td><code>session_stats</code> (for word counts)</td>
+</tr>
+<tr>
+<td>Era detection</td>
+<td><code>session_profiles</code></td>
+<td><code>sessions</code> (for provider distribution)</td>
+</tr>
+<tr>
+<td>This day in history</td>
+<td><code>session_profiles</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Session filmstrip</td>
+<td><code>session_profiles</code></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h2>Performance Budget</h2>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Target latency</th>
+<th>Data touched</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Calendar heatmap</td>
+<td>&lt;50ms</td>
+<td>Full scan of session_profiles (indexed on date)</td>
+</tr>
+<tr>
+<td>Era detection</td>
+<td>&lt;100ms (recompute)</td>
+<td>Full scan with grouping</td>
+</tr>
+<tr>
+<td>This day in history</td>
+<td>&lt;10ms</td>
+<td>Indexed point lookup on month+day</td>
+</tr>
+<tr>
+<td>Session filmstrip</td>
+<td>&lt;30ms per page</td>
+<td>Indexed range scan with LIMIT</td>
+</tr>
+</tbody>
+</table>
+<p>All within SQLite coprolite tier — single read-only connection, no background
+tasks, no caching layer needed for archive sizes under 50K sessions.</p>
+<h2>Presentation Tier</h2>
+<p>The CLI surfaces are the first delivery. Two presentation targets follow:</p>
+<ol>
+<li><strong>Web dashboard panel</strong>: the heatmap renders as an SVG or Canvas grid in the
+web UI. Clicking a day opens the filmstrip for that day.</li>
+<li><strong>MCP tools</strong>: <code>polylogue_calendar</code> and <code>polylogue_timeline</code> tools that
+return structured JSON, enabling agents to answer &quot;what was I doing&quot; queries.</li>
+</ol>
+<h2>Non-Goals</h2>
+<ul>
+<li>Not a full analytics dashboard. The heatmap is a single visualization, not
+a charting library. More complex analytics (cost trends, model comparisons)
+belong in a separate analytics surface.</li>
+<li>Not real-time. Era detection runs during pipeline execution, not on every
+query.</li>
+<li>Not a replacement for the search surface. Time-based browsing complements
+query-based search; it does not replace it.</li>
+</ul>
+<h2>Build Order</h2>
+<ol>
+<li><code>polylogue calendar</code> — heatmap query + terminal output (Unicode grid)</li>
+<li><code>polylogue timeline</code> — filmstrip query + paginated CLI output</li>
+<li><code>polylogue this-day</code> — anniversary query</li>
+<li><code>polylogue eras</code> — era detection algorithm + CLI listing + rename</li>
+<li>Web dashboard heatmap panel</li>
+<li>MCP tool equivalents</li>
+</ol>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="../second-brain/">← Second Brain</a>
+    <a href="../project-memory/">Project Memory →</a>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — local evidence for AI work</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>
