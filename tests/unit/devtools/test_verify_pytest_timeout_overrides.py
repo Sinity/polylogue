@@ -60,6 +60,14 @@ def _run_registered(root: Path, capsys: pytest.CaptureFixture[str]) -> tuple[int
             "import pytest\n\npytestmark = []\npytestmark += [pytest.mark.timeout(None)]\ndef test_target():\n    pass\n",
             "unbounded",
         ),
+        (
+            "import pytest\n\nCASE = pytest.param(1, marks=pytest.mark.timeout(None))\ndef test_target():\n    pass\n",
+            "unbounded",
+        ),
+        (
+            "import pytest as pt\n\nLIMIT = 30\nCASE = pt.param(1, marks=[pt.mark.timeout(LIMIT)])\ndef test_target():\n    pass\n",
+            "dynamic or malformed",
+        ),
     ],
 )
 def test_registered_verifier_rejects_invalid_decorator_overrides(
@@ -75,6 +83,26 @@ def test_registered_verifier_rejects_invalid_decorator_overrides(
 
     assert rc == 1
     assert expected in output
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import pytest\n\nCASE = pytest.param(1, marks=pytest.mark.timeout(30))\ndef test_target():\n    pass\n",
+        "from pytest import mark, param\n\nCASE = param(1, marks=[mark.timeout(30), mark.slow])\ndef test_target():\n    pass\n",
+    ],
+)
+def test_registered_verifier_accepts_bounded_pytest_param_marks(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    source: str,
+) -> None:
+    """Anti-vacuity: removing pytest.param marks scanning makes this production-command test fail."""
+    root = _make_tree(tmp_path, test_source=source)
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 0, output
 
 
 @pytest.mark.parametrize(

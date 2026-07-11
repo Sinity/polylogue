@@ -58,10 +58,11 @@ def _number_from_literal(node: ast.expr) -> float | None:
     return None
 
 
-def _pytest_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """Return local names bound to ``pytest`` and ``pytest.mark`` imports."""
+def _pytest_aliases(tree: ast.Module) -> tuple[set[str], set[str], set[str]]:
+    """Return local names bound to ``pytest``, ``pytest.mark``, and ``pytest.param``."""
     pytest_names: set[str] = set()
     mark_names: set[str] = set()
+    param_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -71,7 +72,9 @@ def _pytest_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
             for alias in node.names:
                 if alias.name == "mark":
                     mark_names.add(alias.asname or "mark")
-    return pytest_names, mark_names
+                elif alias.name == "param":
+                    param_names.add(alias.asname or "param")
+    return pytest_names, mark_names, param_names
 
 
 def _is_pytest_timeout_decorator(node: ast.expr, pytest_names: set[str], mark_names: set[str]) -> bool:
@@ -88,6 +91,15 @@ def _is_pytest_timeout_decorator(node: ast.expr, pytest_names: set[str], mark_na
                 and func.value.value.id in pytest_names
             )
         )
+    )
+
+
+def _is_pytest_param_call(node: ast.Call, pytest_names: set[str], param_names: set[str]) -> bool:
+    return (isinstance(node.func, ast.Name) and node.func.id in param_names) or (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "param"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id in pytest_names
     )
 
 
@@ -283,7 +295,7 @@ def _scan_python(
 
     overrides: list[TimeoutOverride] = []
     errors: list[str] = []
-    pytest_names, mark_names = _pytest_aliases(tree)
+    pytest_names, mark_names, param_names = _pytest_aliases(tree)
     assignments = _module_assignments(tree)
     if scan_decorators:
         for top_level in tree.body:
@@ -319,6 +331,25 @@ def _scan_python(
                     overrides.append(override)
                 if error is not None:
                     errors.append(error)
+        if (
+            scan_decorators
+            and isinstance(candidate, ast.Call)
+            and _is_pytest_param_call(candidate, pytest_names, param_names)
+        ):
+            for keyword in candidate.keywords:
+                if keyword.arg != "marks":
+                    continue
+                for marker in _pytestmark_values(keyword.value):
+                    override, error = _scan_timeout_marker(
+                        marker,
+                        path=relative,
+                        pytest_names=pytest_names,
+                        mark_names=mark_names,
+                    )
+                    if override is not None:
+                        overrides.append(override)
+                    if error is not None:
+                        errors.append(error)
         if not scan_commands:
             continue
         command_nodes: list[ast.expr] | None = None
