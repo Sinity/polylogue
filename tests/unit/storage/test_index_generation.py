@@ -12,6 +12,7 @@ from polylogue.storage.index_generation import (
     RebuildLease,
     RebuildLeaseUnavailableError,
 )
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -88,6 +89,68 @@ def test_promotion_removes_only_empty_active_sidecars(tmp_path: Path) -> None:
     store.promote(generation)
     assert not (tmp_path / "index.db-wal").exists()
     assert not (tmp_path / "index.db-shm").exists()
+
+
+def test_promotion_checkpoints_candidate_and_active_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    calls: list[tuple[Path, str]] = []
+    monkeypatch.setattr(
+        "polylogue.storage.index_generation._checkpoint_truncate",
+        lambda path, *, label: calls.append((path, label)),
+    )
+
+    store.promote(generation)
+
+    assert calls == [(Path(generation.index_path).resolve(), "new index"), (tmp_path / "index.db", "active index")]
+
+
+def test_recover_promotion_without_active_pointer_marks_inactive(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    store._write(replace(generation, state="promoting"))
+    (tmp_path / "index.db").unlink()
+
+    recovered = store.recover_promotion(generation.generation_id)
+
+    assert recovered.state == "inactive"
+
+
+def test_recover_promotion_after_pointer_swap_marks_active(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    store._write(replace(generation, state="promoting"))
+    (tmp_path / "index.db").unlink()
+    (tmp_path / "index.db").symlink_to(generation.index_path)
+
+    recovered = store.recover_promotion(generation.generation_id)
+
+    assert recovered.state == "active"
+
+
+def test_archive_store_init_failure_releases_writer_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.initialize_active_archive_root",
+        lambda _root: (_ for _ in ()).throw(RuntimeError("bootstrap failed")),
+    )
+    with pytest.raises(RuntimeError, match="bootstrap failed"):
+        ArchiveStore(tmp_path, read_only=False)
+
+    with RebuildLease(tmp_path):
+        pass
+
+
+def test_failed_inactive_generation_is_discarded(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+
+    assert store.discard_if_inactive(generation) is True
+    assert not Path(generation.index_path).parent.exists()
 
 
 def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) -> None:

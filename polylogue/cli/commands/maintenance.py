@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 from collections.abc import Callable
@@ -1451,51 +1452,58 @@ def rebuild_index_command(
         skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
         source_snapshot = source_revision_snapshot(root)
         generation = generation_store.create(source_snapshot=source_snapshot)
-        generation_root = Path(generation.index_path).parent
-        config = Config(
-            archive_root=generation_root,
-            render_root=render_root(),
-            sources=[],
-            db_path=Path(generation.index_path),
-        )
-        result = asyncio.run(
-            rebuild_index_from_source(
+        try:
+            generation_root = Path(generation.index_path).parent
+            config = Config(
+                archive_root=generation_root,
+                render_root=render_root(),
+                sources=[],
+                db_path=Path(generation.index_path),
+            )
+            result = asyncio.run(
+                rebuild_index_from_source(
+                    config,
+                    raw_ids=selected_raw_ids,
+                    raw_batch_size=500,
+                    ingest_workers=None,
+                    materialize=True,
+                    progress_callback=None,
+                    owned_inactive_generation=(generation.generation_id, generation.owner_id),
+                )
+            )
+            from polylogue.storage.repair import repair_session_insights
+
+            insight_result = repair_session_insights(
                 config,
-                raw_ids=selected_raw_ids,
-                raw_batch_size=500,
-                ingest_workers=None,
-                materialize=True,
-                progress_callback=None,
+                dry_run=False,
+                archive_root_override=generation_root,
                 owned_inactive_generation=(generation.generation_id, generation.owner_id),
             )
-        )
-        from polylogue.storage.repair import repair_session_insights
-
-        insight_result = repair_session_insights(
-            config,
-            dry_run=False,
-            archive_root_override=generation_root,
-            owned_inactive_generation=(generation.generation_id, generation.owner_id),
-        )
-        if not insight_result.success:
-            raise click.ClickException(f"session insight materialization failed: {insight_result.detail}")
-        if source_revision_snapshot(root) != generation.source_snapshot:
-            raise click.ClickException(
-                f"source evidence changed while rebuilding {generation.generation_id}; generation remains inactive"
-            )
-        readiness = _archive_readiness_status(generation_root)
-        if not readiness.get("checked") or int(readiness.get("blocked_surface_count", 1)) != 0:
-            blocked = [
-                name
-                for name, info in cast(dict[str, dict[str, object]], readiness.get("surfaces", {})).items()
-                if info.get("ready") is not True
-            ]
-            raise click.ClickException(
-                f"inactive generation {generation.generation_id} is not exact-ready; blocked surfaces: "
-                + ", ".join(blocked)
-            )
-        if not no_promote:
-            generation = generation_store.promote(generation)
+            if not insight_result.success:
+                raise click.ClickException(f"session insight materialization failed: {insight_result.detail}")
+            if source_revision_snapshot(root) != generation.source_snapshot:
+                raise click.ClickException(f"source evidence changed while rebuilding {generation.generation_id}")
+            readiness = _archive_readiness_status(generation_root)
+            if not readiness.get("checked") or int(readiness.get("blocked_surface_count", 1)) != 0:
+                blocked = [
+                    name
+                    for name, info in cast(dict[str, dict[str, object]], readiness.get("surfaces", {})).items()
+                    if info.get("ready") is not True
+                ]
+                detail = (
+                    f"reason: {readiness.get('reason')}"
+                    if not readiness.get("checked")
+                    else "blocked surfaces: " + ", ".join(blocked)
+                )
+                raise click.ClickException(
+                    f"inactive generation {generation.generation_id} is not exact-ready; {detail}"
+                )
+            if not no_promote:
+                generation = generation_store.promote(generation)
+        except Exception:
+            with contextlib.suppress(Exception):
+                generation_store.discard_if_inactive(generation)
+            raise
     payload = {
         "archive_root": str(root),
         "raw_session_count": raw_count,

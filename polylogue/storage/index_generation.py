@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shutil
 import socket
 import sqlite3
 import time
@@ -146,16 +147,12 @@ class IndexGenerationStore:
         if current.owner_id != generation.owner_id or current.state != "inactive":
             raise RuntimeError("only the owning inactive generation can be promoted")
         target = Path(current.index_path).resolve(strict=True)
-        with sqlite3.connect(target) as conn:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        _checkpoint_truncate(target, label="new index")
         pointer = self.active_pointer
         retired = self.generations_root / f"retired-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
         retired.mkdir(parents=True, exist_ok=False)
         if pointer.exists() or pointer.is_symlink():
-            with sqlite3.connect(pointer) as conn:
-                checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                if checkpoint is None or int(checkpoint[0]) != 0:
-                    raise RuntimeError(f"active index WAL checkpoint failed: {checkpoint!r}")
+            _checkpoint_truncate(pointer, label="active index")
             for suffix in ("-wal", "-shm"):
                 sidecar = pointer.with_name(pointer.name + suffix)
                 if sidecar.exists():
@@ -181,12 +178,25 @@ class IndexGenerationStore:
         if generation.state != "promoting":
             return generation
         pointer = self.active_pointer
-        state = (
-            "active" if pointer.resolve(strict=True) == Path(generation.index_path).resolve(strict=True) else "inactive"
-        )
+        state = "inactive"
+        if pointer.exists() or pointer.is_symlink():
+            state = (
+                "active"
+                if pointer.resolve(strict=True) == Path(generation.index_path).resolve(strict=True)
+                else "inactive"
+            )
         recovered = IndexGeneration(**{**asdict(generation), "state": state})
         self._write(recovered)
         return recovered
+
+    def discard_if_inactive(self, generation: IndexGeneration) -> bool:
+        """Remove a terminal failed candidate without risking an active target."""
+        current = self.load(generation.generation_id)
+        if current.owner_id != generation.owner_id or current.state != "inactive":
+            return False
+        shutil.rmtree(self._metadata_path(generation.generation_id).parent)
+        _fsync_directory(self.generations_root)
+        return True
 
     def _metadata_path(self, generation_id: str) -> Path:
         return self.generations_root / generation_id / "generation.json"
@@ -213,6 +223,13 @@ def source_revision_snapshot(archive_root: Path) -> str:
             digest.update(str(acquired_at_ms).encode())
             digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _checkpoint_truncate(path: Path, *, label: str) -> None:
+    with sqlite3.connect(path) as conn:
+        checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    if checkpoint is None or int(checkpoint[0]) != 0:
+        raise RuntimeError(f"{label} WAL checkpoint failed: {checkpoint!r}")
 
 
 def _fsync_directory(path: Path) -> None:
