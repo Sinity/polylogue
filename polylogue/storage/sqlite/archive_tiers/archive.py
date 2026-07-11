@@ -1636,14 +1636,30 @@ class ArchiveStore:
         )
         return unclassified, logical_keys
 
-    def raw_membership_census_rows(self) -> tuple[tuple[str, int], ...]:
+    def raw_membership_census_rows(self, raw_ids: Sequence[str] | None = None) -> tuple[tuple[str, int], ...]:
         """Return every retained raw whose membership census may affect authority."""
-        rows = (
-            self._ensure_source_conn()
-            .execute("SELECT raw_id, source_index FROM raw_sessions ORDER BY raw_id")
-            .fetchall()
-        )
+        conn = self._ensure_source_conn()
+        if raw_ids is None:
+            rows = conn.execute("SELECT raw_id, source_index FROM raw_sessions ORDER BY raw_id").fetchall()
+        elif raw_ids:
+            placeholders = ",".join("?" for _ in raw_ids)
+            rows = conn.execute(
+                f"SELECT raw_id, source_index FROM raw_sessions WHERE raw_id IN ({placeholders}) ORDER BY raw_id",
+                tuple(raw_ids),
+            ).fetchall()
+        else:
+            rows = []
         return tuple((str(row[0]), int(row[1])) for row in rows)
+
+    def raw_payload_sizes(self, raw_ids: Sequence[str]) -> dict[str, int]:
+        if not raw_ids:
+            return {}
+        placeholders = ",".join("?" for _ in raw_ids)
+        rows = self._ensure_source_conn().execute(
+            f"SELECT raw_id, blob_size FROM raw_sessions WHERE raw_id IN ({placeholders})",
+            tuple(raw_ids),
+        )
+        return {str(row[0]): int(row[1] or 0) for row in rows}
 
     def replace_raw_membership_census(
         self,
@@ -1696,7 +1712,34 @@ class ArchiveStore:
 
     def expand_raw_membership_selection(self, raw_ids: list[str] | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Expand scheduling hints to the complete transitive membership cohort."""
-        conn = self._ensure_source_conn()
+        return self.expand_raw_membership_selection_sync(self._ensure_source_conn(), raw_ids)
+
+    @staticmethod
+    def raw_membership_selection_components_sync(
+        conn: sqlite3.Connection,
+        raw_ids: list[str],
+    ) -> tuple[tuple[str, ...], ...]:
+        """Partition scheduling hints into transitive authority components."""
+        components: list[set[str]] = []
+        for raw_id in dict.fromkeys(raw_ids):
+            expanded, _keys = ArchiveStore.expand_raw_membership_selection_sync(conn, [raw_id])
+            component = set(expanded)
+            overlapping = [existing for existing in components if existing & component]
+            for existing in overlapping:
+                component.update(existing)
+                components.remove(existing)
+            components.append(component)
+        return tuple(tuple(sorted(component)) for component in sorted(components, key=lambda item: min(item)))
+
+    def raw_membership_selection_components(self, raw_ids: list[str]) -> tuple[tuple[str, ...], ...]:
+        return self.raw_membership_selection_components_sync(self._ensure_source_conn(), raw_ids)
+
+    @staticmethod
+    def expand_raw_membership_selection_sync(
+        conn: sqlite3.Connection,
+        raw_ids: list[str] | None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Expand raw scheduling hints using durable path/membership metadata."""
         if raw_ids is None:
             selected = {str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")}
         else:

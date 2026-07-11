@@ -10,6 +10,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -360,7 +361,9 @@ def test_divergent_bundle_member_preserves_last_accepted_session(tmp_path: Path)
         )
 
 
-def test_targeted_rebuild_expands_same_session_across_source_paths_only(tmp_path: Path) -> None:
+def test_targeted_rebuild_expands_same_session_across_source_paths_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         selected_raw = archive.write_raw_payload(
@@ -382,14 +385,42 @@ def test_targeted_rebuild_expands_same_session_across_source_paths_only(tmp_path
             acquired_at_ms=3,
         )
 
+    # Production ordinary convergence starts from the durable membership
+    # census established by ingestion/offline rebuild, not an empty source-v7
+    # authority catalog.
+    backfill_historical_revision_evidence(tmp_path)
+    (tmp_path / "index.db").unlink()
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        unrelated_before = conn.execute(
+            "SELECT parser_fingerprint, status, member_count, detail FROM raw_membership_census WHERE raw_id = ?",
+            (unrelated_raw,),
+        ).fetchone()
+
+    from polylogue.sources import revision_backfill
+
+    original_parse = revision_backfill._parse_retained_raw
+    opened: list[str] = []
+
+    def observed_parse(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
+        opened.append(raw_id)
+        return original_parse(archive, raw_id)
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", observed_parse)
     result = backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[selected_raw])
     assert result.replayed_logical_sources == 1
+    assert result.scanned == 2
+    assert unrelated_raw not in opened
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("shared", 2)]
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT decision FROM raw_session_memberships WHERE raw_id = ?", (unrelated_raw,)
-        ).fetchone() == (None,)
+        assert (
+            conn.execute(
+                "SELECT parser_fingerprint, status, member_count, detail FROM raw_membership_census WHERE raw_id = ?",
+                (unrelated_raw,),
+            ).fetchone()
+            == unrelated_before
+        )
 
 
 def test_membership_census_retains_only_one_logical_cohort_at_scale(tmp_path: Path) -> None:
