@@ -2737,6 +2737,68 @@ def test_single_session_full_cannot_overwrite_divergent_membership_head(
         ).fetchone() == ("ambiguous", None, None)
 
 
+def test_single_session_full_advances_authorized_metadata_only_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    bundle = root / "bundle.jsonl"
+    metadata_update = root / "metadata-update.jsonl"
+    bundle.write_bytes(b'{"bundle":true}\n')
+    metadata_update.write_bytes(b'{"metadata_update":true}\n')
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    def session(native_id: str, title: str, updated_at: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=native_id,
+            title=title,
+            updated_at=updated_at,
+            messages=[ParsedMessage(provider_message_id=f"{native_id}-0", role=Role.USER, text="same content")],
+        )
+
+    older = session("shared", "old title", "2026-01-01T00:00:00Z")
+    newer = session("shared", "new title", "2026-01-02T00:00:00Z")
+    bundle_sessions = [older, session("safe", "safe", "2026-01-01T00:00:00Z")]
+    parsed_batches = iter([bundle_sessions, [newer]])
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.parse_stream_payload",
+        lambda *_args, **_kwargs: next(parsed_batches),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_parse_retained_raw_sessions",
+        lambda _archive, _raw_id: bundle_sessions,
+    )
+
+    assert processor._ingest_full_paths_sync([bundle], source_name="codex").failed == []
+    update_result = processor._ingest_full_paths_sync([metadata_update], source_name="codex")
+
+    assert update_result.succeeded == [metadata_update]
+    assert update_result.failed == []
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute(
+            """
+            SELECT s.title, s.updated_at_ms, h.accepted_frontier_kind,
+                   h.accepted_content_hash = s.content_hash
+            FROM sessions AS s
+            JOIN raw_revision_heads AS h USING (session_id)
+            WHERE s.native_id = 'shared'
+            """
+        ).fetchone() == ("new title", 1767312000000, "semantic", 1)
+
+
 def test_bundle_promotes_prior_single_full_into_membership_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
