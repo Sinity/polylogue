@@ -79,6 +79,17 @@ def test_stale_owner_cannot_checkpoint_or_promote(tmp_path: Path) -> None:
         store.promote(stale)
 
 
+def test_promotion_removes_only_empty_active_sidecars(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    (tmp_path / "index.db-wal").touch()
+    (tmp_path / "index.db-shm").touch()
+    store.promote(generation)
+    assert not (tmp_path / "index.db-wal").exists()
+    assert not (tmp_path / "index.db-shm").exists()
+
+
 def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) -> None:
     configured = tmp_path / "configured"
     canonical = tmp_path / "canonical"

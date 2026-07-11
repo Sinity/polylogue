@@ -98,7 +98,10 @@ class IndexGenerationStore:
         configured_index = archive_root / "index.db"
         anchor = archive_root / ".index-active-pointer"
         if anchor.exists():
-            self.active_pointer = Path(anchor.read_text(encoding="utf-8").strip())
+            anchored = Path(anchor.read_text(encoding="utf-8").strip())
+            if not anchored.is_absolute() or anchored.name != "index.db" or ".index-generations" in anchored.parts:
+                raise RuntimeError(f"invalid canonical index pointer anchor: {anchored}")
+            self.active_pointer = anchored
         else:
             if configured_index.is_symlink():
                 target = Path(os.readlink(configured_index))
@@ -146,6 +149,17 @@ class IndexGenerationStore:
         with sqlite3.connect(target) as conn:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         pointer = self.active_pointer
+        if pointer.exists() or pointer.is_symlink():
+            with sqlite3.connect(pointer) as conn:
+                checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if checkpoint is None or int(checkpoint[0]) != 0:
+                    raise RuntimeError(f"active index WAL checkpoint failed: {checkpoint!r}")
+            for suffix in ("-wal", "-shm"):
+                sidecar = pointer.with_name(pointer.name + suffix)
+                if sidecar.exists():
+                    if sidecar.stat().st_size != 0:
+                        raise RuntimeError(f"non-empty active index sidecar blocks promotion: {sidecar}")
+                    sidecar.unlink()
         retired = self.generations_root / f"retired-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
         retired.mkdir(parents=True, exist_ok=False)
         if pointer.exists() or pointer.is_symlink():
