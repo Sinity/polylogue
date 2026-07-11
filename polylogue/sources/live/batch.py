@@ -538,6 +538,7 @@ class LiveBatchProcessor:
                         raw_byte_size=full_result.raw_byte_sizes.get(path),
                         source_name=full_result.raw_source_names.get(path),
                         source_revision=full_result.raw_source_revisions.get(path),
+                        captured_file_identity=full_result.captured_file_identities.get(path),
                     )
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
@@ -722,7 +723,6 @@ class LiveBatchProcessor:
     def _record_failed_cursor(self, path: Path) -> int:
         try:
             stat = path.stat()
-            tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
         except FileNotFoundError:
             try:
                 self._cursor.mark_failed(path)
@@ -733,31 +733,29 @@ class LiveBatchProcessor:
             return 0
         try:
             existing = self._cursor.get_record(path)
-            # Persistence failed, so the durable consumption boundary stays at
-            # the last successful cursor.  Recording EOF here made retry state
-            # look consumed even though ``failure_count`` happened to force a
-            # later retry; a cleared/rebuilt retry ledger could then lose the
-            # append permanently.
-            committed_offset = existing.byte_offset if existing is not None else 0
-            committed_newline = existing.last_complete_newline if existing is not None else 0
-            self._cursor.set(
-                path,
-                stat.st_size,
-                byte_offset=committed_offset,
-                last_complete_newline=committed_newline,
-                parser_fingerprint=(
-                    existing.parser_fingerprint if existing is not None else self._current_parser_fingerprint()
-                ),
-                content_fingerprint=existing.content_fingerprint if existing is not None else None,
-                tail_hash=existing.tail_hash if existing is not None else tail_hash,
-                source_name=self._source_name_for(path),
-                st_dev=stat.st_dev,
-                st_ino=stat.st_ino,
-                mtime_ns=stat.st_mtime_ns,
-                failure_count=existing.failure_count if existing else 0,
-                next_retry_at=existing.next_retry_at if existing else None,
-                excluded=bool(existing.excluded) if existing else False,
-            )
+            # A failed write cannot adopt any observation from the unaccepted
+            # file state. In particular, pairing the accepted offset with the
+            # newer byte size makes the watcher's stable-size fast path hide a
+            # retry after failure metadata is cleared.
+            if existing is None:
+                try:
+                    tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
+                except FileNotFoundError:
+                    self._cursor.mark_failed(path)
+                    return 0
+                self._cursor.set(
+                    path,
+                    stat.st_size,
+                    byte_offset=0,
+                    last_complete_newline=0,
+                    parser_fingerprint=self._current_parser_fingerprint(),
+                    content_fingerprint=None,
+                    tail_hash=tail_hash,
+                    source_name=self._source_name_for(path),
+                    st_dev=stat.st_dev,
+                    st_ino=stat.st_ino,
+                    mtime_ns=stat.st_mtime_ns,
+                )
             self._cursor.mark_failed(path)
         except sqlite3.OperationalError as exc:
             if not is_transient_sqlite_lock(exc):
@@ -773,11 +771,19 @@ class LiveBatchProcessor:
         raw_byte_size: int | None = None,
         source_name: str | None = None,
         source_revision: str | None = None,
+        captured_file_identity: tuple[int, int] | None = None,
     ) -> int:
         self._last_cursor_write_stale = False
         try:
             stat = path.stat()
         except FileNotFoundError:
+            return 0
+        if captured_file_identity is not None and (stat.st_dev, stat.st_ino) != captured_file_identity:
+            self._last_cursor_write_stale = True
+            logger.warning(
+                "live.watcher: source identity changed after full capture; cursor left retryable for %s",
+                path,
+            )
             return 0
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
         if source_revision is not None:
@@ -980,6 +986,7 @@ class LiveBatchProcessor:
         raw_payloads: dict[str, bytes] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
+        captured_file_identities: dict[Path, tuple[int, int]] = {}
         failed: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
@@ -1010,6 +1017,7 @@ class LiveBatchProcessor:
             except OSError:
                 failed.append(path)
                 continue
+            captured_file_identities[path] = (stat.st_dev, stat.st_ino)
             if heartbeat is not None:
                 heartbeat(
                     "full_file_scan",
@@ -1284,6 +1292,7 @@ class LiveBatchProcessor:
             raw_byte_sizes=raw_byte_sizes,
             raw_source_names=raw_source_names,
             raw_source_revisions=raw_source_revisions,
+            captured_file_identities=captured_file_identities,
             summary=summary,
         )
         raw_records.clear()

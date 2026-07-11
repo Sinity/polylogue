@@ -13,7 +13,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import parse_payload
-from polylogue.sources.live import WatchSource
+from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor, _ArchiveFullWriteResult
 from polylogue.sources.live.batch_support import (
@@ -1481,6 +1481,82 @@ def test_full_ingest_cursor_stops_at_captured_blob_boundary_when_file_grows(
         assert session_hash == accepted_hash
 
 
+def test_full_ingest_does_not_advance_cursor_across_atomic_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "replaced.jsonl"
+    replacement = root / "replacement.jsonl"
+    payload_a = (
+        b'{"type":"session_meta","payload":{"id":"atomic-replace-a"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-a","role":"user",'
+        b'"content":[{"type":"input_text","text":"alpha"}]}}\n'
+    )
+    payload_b = (
+        b'{"type":"session_meta","payload":{"id":"atomic-replace-b"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-b","role":"user",'
+        b'"content":[{"type":"input_text","text":"bravo"}]}}\n'
+    )
+    assert len(payload_a) == len(payload_b)
+    path.write_bytes(payload_a)
+    replacement.write_bytes(payload_b)
+    original_identity = (path.stat().st_dev, path.stat().st_ino)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    replaced = False
+
+    def replace_after_acquisition(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        nonlocal replaced
+        if not replaced:
+            replacement.replace(path)
+            replaced = True
+        return set(paths), 0.0, {}, []
+
+    monkeypatch.setattr(processor, "_converge_paths", replace_after_acquisition)
+
+    first = asyncio.run(processor.ingest_files([path]))
+
+    assert first.succeeded_file_count == 1
+    assert first.stale_cursor_write_count == 1
+    assert (path.stat().st_dev, path.stat().st_ino) != original_identity
+    assert cursor.get_record(path) is None
+    assert LiveWatcher(
+        polylogue,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+    )._needs_work(path)
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages").fetchall() == [("message-a",)]
+
+    second = asyncio.run(processor.ingest_files([path]))
+
+    assert second.full_file_count == 1
+    assert second.succeeded_file_count == 1
+    assert second.stale_cursor_write_count == 0
+    final_cursor = cursor.get_record(path)
+    assert final_cursor is not None
+    assert final_cursor.byte_offset == len(payload_b)
+    assert (final_cursor.st_dev, final_cursor.st_ino) == (path.stat().st_dev, path.stat().st_ino)
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages ORDER BY native_id").fetchall() == [
+            ("message-a",),
+            ("message-b",),
+        ]
+        assert conn.execute("SELECT search_text FROM blocks ORDER BY search_text").fetchall() == [
+            ("alpha",),
+            ("bravo",),
+        ]
+
+
 def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     root.mkdir()
@@ -1657,8 +1733,29 @@ def test_append_persistence_failure_preserves_frontier_for_next_tick(
     assert failed.failed_file_count == 1
     retry_cursor = cursor.get_record(path)
     assert retry_cursor is not None
-    assert retry_cursor.byte_offset == accepted_cursor.byte_offset
-    assert retry_cursor.content_fingerprint == accepted_cursor.content_fingerprint
+    assert (
+        retry_cursor.byte_size,
+        retry_cursor.byte_offset,
+        retry_cursor.last_complete_newline,
+        retry_cursor.parser_fingerprint,
+        retry_cursor.content_fingerprint,
+        retry_cursor.tail_hash,
+        retry_cursor.source_name,
+        retry_cursor.st_dev,
+        retry_cursor.st_ino,
+        retry_cursor.mtime_ns,
+    ) == (
+        accepted_cursor.byte_size,
+        accepted_cursor.byte_offset,
+        accepted_cursor.last_complete_newline,
+        accepted_cursor.parser_fingerprint,
+        accepted_cursor.content_fingerprint,
+        accepted_cursor.tail_hash,
+        accepted_cursor.source_name,
+        accepted_cursor.st_dev,
+        accepted_cursor.st_ino,
+        accepted_cursor.mtime_ns,
+    )
     assert index_state() == accepted_index_state
     with sqlite3.connect(tmp_path / "source.db") as conn:
         retained_append = conn.execute(
@@ -1672,6 +1769,19 @@ def test_append_persistence_failure_preserves_frontier_for_next_tick(
     assert retained_append[2:5] == (len(baseline), len(baseline) + len(append), "byte_proven")
     assert retained_append[5] is None
     assert "injected append persistence failure" in str(retained_append[6])
+
+    cursor.reset_failures(path)
+    monkeypatch.setattr("polylogue.sources.live.watcher._PARSER_FINGERPRINT", "test-parser")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+    )
+    assert watcher._needs_work(path)
+    cursor.mark_failed(path)
+    pending_retry = cursor.get_record(path)
+    assert pending_retry is not None
+    assert pending_retry.failure_count == 1
 
     retried = asyncio.run(processor.ingest_files([path]))
 
