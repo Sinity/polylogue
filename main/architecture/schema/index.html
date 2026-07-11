@@ -415,12 +415,12 @@ over the <code>CREATE TABLE</code> statement.</p>
 <tr>
 <td><code>source.py</code></td>
 <td><code>source.db</code></td>
-<td><code>SOURCE_SCHEMA_VERSION = 6</code></td>
+<td><code>SOURCE_SCHEMA_VERSION = 7</code></td>
 </tr>
 <tr>
 <td><code>index.py</code></td>
 <td><code>index.db</code></td>
-<td><code>INDEX_SCHEMA_VERSION = 31</code></td>
+<td><code>INDEX_SCHEMA_VERSION = 32</code></td>
 </tr>
 <tr>
 <td><code>embeddings.py</code></td>
@@ -430,7 +430,7 @@ over the <code>CREATE TABLE</code> statement.</p>
 <tr>
 <td><code>user.py</code></td>
 <td><code>user.db</code></td>
-<td><code>USER_SCHEMA_VERSION = 4</code></td>
+<td><code>USER_SCHEMA_VERSION = 5</code></td>
 </tr>
 <tr>
 <td><code>ops.py</code></td>
@@ -483,7 +483,9 @@ Candidate review uses the closed status vocabulary <code>candidate</code>, <code
 <code>rejected</code>, <code>deferred</code>, and <code>superseded</code>; active assertions are separate
 durable claims and are not returned by candidate-review reads. <code>index.db.session_tags</code>
 remains a rebuildable auto-tag/read-model projection; human-owned tag and
-metadata writes do not have separate user-tier tables.</p>
+metadata writes do not have separate user-tier tables. <code>user_settings</code> stores
+durable local settings, while <code>context_deliveries</code> records exact context-image
+delivery receipts without overloading epistemic assertions.</p>
 <h3><code>ops.db</code> — disposable daemon telemetry</h3>
 <p>Ingest cursors (<code>ingest_cursor</code>), ingest attempts (<code>ingest_attempts</code>),
 convergence debt (<code>convergence_debt</code>), cursor-lag samples, daemon stage/event
@@ -644,22 +646,27 @@ tokenizer (no porter stemmer in this SQLite build):</p>
 triggers. During bulk ingest these triggers are suspended for performance and
 restored before commit; see <a href="../internals/#fts5-model">Internals § FTS5 Model</a>
 for the drift-detection and repair behavior.</p>
-<h2>Schema Versioning — fresh-only, no upgrade chain</h2>
-<p>Polylogue has <strong>no in-place schema upgrade chain</strong>. On startup each tier's
-on-disk <code>PRAGMA user_version</code> is compared against its tier constant:</p>
+<h2>Schema Versioning — durability-keyed regimes</h2>
+<p>On startup each tier's on-disk <code>PRAGMA user_version</code> is compared against its
+tier constant:</p>
 <ul>
 <li><strong>Empty file</strong> (<code>user_version == 0</code>): bootstrap fresh.</li>
 <li><strong>Version match</strong>: open as-is.</li>
-<li><strong>Anything else</strong> (older or newer): the database is <strong>rejected</strong>.</li>
+<li><strong>Older durable tier</strong> (<code>source.db</code> or <code>user.db</code>): ordinary open is rejected;
+an explicit additive numbered migration may proceed only after a backup was
+scratch-restored, integrity-checked, and authenticated by the archive's
+local verification key.</li>
+<li><strong>Derived mismatch or newer durable tier</strong>: reject and require rebuild or a
+newer runtime as appropriate.</li>
 </ul>
-<p>A version mismatch is resolved by rebuilding the affected tier from source, not
-by patching the file in place. For index-tier schema bumps, the operator moves
-the index tier aside and re-ingests:</p>
+<p>Derived tiers (<code>index.db</code>, <code>embeddings.db</code>) have no migration chain. For an
+index-tier schema bump, the operator rebuilds from durable evidence:</p>
 <pre><code class="language-bash">polylogue ops reset --index &amp;&amp; polylogued run
 </code></pre>
-<p>Schema bumps are deletes-then-defines edits of the owning tier DDL, never
-deltas. The bootstrap branching that decides fresh-init vs. open vs. reject is
-shared across sync and async backends in
+<p>Durable source/user changes instead use additive SQL under
+<code>storage/sqlite/migrations/{source,user}/NNN_*.sql</code>, advancing exactly one
+version per step. The bootstrap branching that decides fresh-init, open,
+migrate, rebuild, or reject is shared across sync and async backends in
 <code>storage/sqlite/schema_bootstrap.py</code>. See
 <a href="../internals/#schema-versioning-model">Internals § Schema Versioning Model</a> and
 <a href="../contributing/#schema-touching-changes">CONTRIBUTING § Schema-Touching Changes</a>.</p>

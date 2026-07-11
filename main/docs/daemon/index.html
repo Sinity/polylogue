@@ -932,13 +932,12 @@ an extracted record inside the member, not the member file itself.</p>
 <h3>Vacuum Guidance</h3>
 <p>SQLite <code>VACUUM</code> rebuilds the database file, reclaiming free pages. It
 requires the full database size in free disk space. Two approaches:</p>
-<ol>
-<li><strong>Online</strong> (preferred): <code>polylogue ops backup</code> uses <code>VACUUM INTO</code> to
-produce a clean copy without blocking the daemon. Swap the new file
-in during a maintenance window.</li>
-<li><strong>Offline</strong>: Stop the daemon, run <code>sqlite3 &lt;db&gt; &quot;VACUUM&quot;</code>, then
-restart. Only needed when <code>VACUUM INTO</code> is unavailable (SQLite &lt; 3.27).</li>
-</ol>
+<p><code>polylogue ops backup</code> is not a vacuum operation. It creates a byte-exact,
+checkpointed snapshot and briefly holds the tier's SQLite writer lock; run large
+backups during a quiet window (and stop the daemon for durable-tier migration
+backups). To reclaim pages, stop the daemon, run <code>sqlite3 &lt;db&gt; &quot;VACUUM&quot;</code>, verify
+the database, then restart. Use <code>VACUUM INTO</code> manually only when a reviewed
+copy-and-swap maintenance plan requires it.</p>
 <h2>Systemd Integration</h2>
 <p>Example unit file for running <code>polylogued</code> as a user service:</p>
 <pre><code class="language-ini">[Unit]
