@@ -52,7 +52,12 @@ def cursor_prefix_hash(authority: str | None) -> str | None:
     if authority is None:
         return None
     parts = authority.split(":")
-    if len(parts) != 3 or parts[0] != _CURSOR_HASH_AUTHORITY_PREFIX or not _sha256_hex(parts[1]):
+    if (
+        len(parts) != 3
+        or parts[0] != _CURSOR_HASH_AUTHORITY_PREFIX
+        or not _sha256_hex(parts[1])
+        or not _sha256_hex(parts[2])
+    ):
         return None
     return parts[1]
 

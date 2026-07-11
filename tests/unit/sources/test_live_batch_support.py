@@ -1702,6 +1702,40 @@ def test_cursor_invalidation_lock_exhaustion_is_observable(
     assert unchanged.failure_count == 2
 
 
+def test_append_plan_rejects_malformed_hash_authority(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "malformed-authority.jsonl"
+    original = b'{"type":"session_meta","payload":{"id":"malformed-authority"}}\n'
+    path.write_bytes(original + b'{"type":"turn_context","payload":{}}\n')
+    stat = path.stat()
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    cursor.set(
+        path,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint="test-parser",
+        content_fingerprint="accepted-frontier",
+        tail_hash=f"sha256-prefix-v1:{sha256(original).hexdigest()}:invalid",
+        source_name="codex",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    record = cursor.get_record(path)
+    assert record is not None
+    assert processor._append_plan(path, cursor=record) is None
+
+
 @pytest.mark.parametrize("rewrite_mode", ["atomic-replacement", "in-place-prefix"])
 def test_append_cursor_forces_full_retry_after_source_rewrite(
     tmp_path: Path,

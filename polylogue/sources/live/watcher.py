@@ -626,7 +626,8 @@ class LiveWatcher:
                 final_stat.st_ino,
                 final_stat.st_size,
                 final_stat.st_mtime_ns,
-            ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                final_stat.st_ctime_ns,
+            ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         if size > cursor.byte_offset:
             return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:
