@@ -67,61 +67,65 @@ def backfill_historical_revision_evidence(
         else ArchiveStore.open_existing(archive_root, read_only=False)
     )
     with archive_context as archive, _ParsedSessionSpill(archive_root) as spill:
-        census_selection: tuple[str, ...] | None = None
-        if selected_raw_ids is not None:
-            census_selection, _keys = archive.expand_raw_membership_selection(selected_raw_ids)
+        census_selections: tuple[tuple[str, ...] | None, ...]
+        if selected_raw_ids is None:
+            census_selections = (None,)
+        else:
+            census_selections = archive.raw_membership_selection_components(selected_raw_ids)
         censused: set[str] = set()
-        while True:
-            rows = archive.raw_membership_census_rows(census_selection)
-            pending_rows = [(raw_id, source_index) for raw_id, source_index in rows if raw_id not in censused]
-            if max_payload_bytes is not None:
-                payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in rows])
-                total_payload_bytes = sum(payload_sizes.values())
-                oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
-                if oversized or total_payload_bytes > max_payload_bytes:
-                    blocked_ids = oversized or list(payload_sizes)
-                    raise RawRevisionReplayResourceBlockedError(
-                        sorted(blocked_ids), max_payload_bytes, total_payload_bytes
-                    )
-            for raw_id, source_index in pending_rows:
-                scanned += 1
-                censused.add(raw_id)
-                if source_index < 0:
+        for initial_selection in census_selections:
+            census_selection = initial_selection
+            while True:
+                rows = archive.raw_membership_census_rows(census_selection)
+                pending_rows = [(raw_id, source_index) for raw_id, source_index in rows if raw_id not in censused]
+                if max_payload_bytes is not None:
+                    payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in rows])
+                    total_payload_bytes = sum(payload_sizes.values())
+                    oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
+                    if oversized or total_payload_bytes > max_payload_bytes:
+                        blocked_ids = oversized or list(payload_sizes)
+                        raise RawRevisionReplayResourceBlockedError(
+                            sorted(blocked_ids), max_payload_bytes, total_payload_bytes
+                        )
+                for raw_id, source_index in pending_rows:
+                    scanned += 1
+                    censused.add(raw_id)
+                    if source_index < 0:
+                        archive.replace_raw_membership_census(
+                            raw_id,
+                            None,
+                            parser_fingerprint="revision-membership-v1",
+                            censused_at_ms=0,
+                            detail="append fragments are governed by byte revision authority",
+                        )
+                        quarantined += 1
+                        continue
+                    try:
+                        sessions, _payload_bytes = _parse_retained_raw(archive, raw_id)
+                    except Exception as exc:
+                        archive.replace_raw_membership_census(
+                            raw_id,
+                            None,
+                            parser_fingerprint="revision-membership-v1",
+                            censused_at_ms=0,
+                            detail=str(exc),
+                        )
+                        quarantined += 1
+                        continue
+                    classified += int(len(sessions) == 1)
+                    spill.add(raw_id, sessions, payload_bytes=_payload_bytes)
                     archive.replace_raw_membership_census(
                         raw_id,
-                        None,
+                        sessions,
                         parser_fingerprint="revision-membership-v1",
                         censused_at_ms=0,
-                        detail="append fragments are governed by byte revision authority",
                     )
-                    quarantined += 1
-                    continue
-                try:
-                    sessions, _payload_bytes = _parse_retained_raw(archive, raw_id)
-                except Exception as exc:
-                    archive.replace_raw_membership_census(
-                        raw_id,
-                        None,
-                        parser_fingerprint="revision-membership-v1",
-                        censused_at_ms=0,
-                        detail=str(exc),
-                    )
-                    quarantined += 1
-                    continue
-                classified += int(len(sessions) == 1)
-                spill.add(raw_id, sessions, payload_bytes=_payload_bytes)
-                archive.replace_raw_membership_census(
-                    raw_id,
-                    sessions,
-                    parser_fingerprint="revision-membership-v1",
-                    censused_at_ms=0,
-                )
-            if census_selection is None:
-                break
-            expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))
-            if set(expanded) == set(census_selection):
-                break
-            census_selection = expanded
+                if census_selection is None:
+                    break
+                expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))
+                if set(expanded) == set(census_selection):
+                    break
+                census_selection = expanded
 
         _unclassified, selected_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
         logical_keys.update(selected_keys)

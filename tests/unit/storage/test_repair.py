@@ -1324,6 +1324,9 @@ def test_raw_materialization_blocks_oversized_actual_replay(
             0,
             0,
             {"raw-1": 2 * 1024 * 1024 * 1024},
+            expanded_raw_ids=("raw-1",),
+            expanded_blob_bytes={"raw-1": 2 * 1024 * 1024 * 1024},
+            authority_components=(("raw-1",),),
         ),
     )
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
@@ -1379,6 +1382,9 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
             {"raw-1": 2 * 1024 * 1024 * 1024},
             {"raw-1": "claude-code-session"},
             {"raw-1": "/captures/claude/session.jsonl"},
+            expanded_raw_ids=("raw-1",),
+            expanded_blob_bytes={"raw-1": 2 * 1024 * 1024 * 1024},
+            authority_components=(("raw-1",),),
         ),
     )
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
@@ -1443,8 +1449,8 @@ def test_raw_materialization_blocks_oversized_expanded_cohort_before_blob_open(
 
     assert result.success is False
     assert result.repaired_count == 0
-    assert result.metrics["raw_materialization_resource_blocked_count"] == 1.0
-    assert "expanded-cohort" in result.detail
+    assert result.metrics["raw_materialization_resource_blocked_count"] == 2.0
+    assert "authority components" in result.detail
 
 
 def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
@@ -1482,7 +1488,7 @@ def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
     assert backlog["candidate_count"] == 1
     assert backlog["expanded_candidate_count"] == 2
     assert backlog["execution_blocked"] is True
-    assert backlog["blocked_candidate_count"] == 1
+    assert backlog["blocked_candidate_count"] == 2
 
     monkeypatch.setattr(
         "polylogue.sources.revision_backfill._parse_retained_raw",
@@ -1490,7 +1496,7 @@ def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
     )
     result = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_id=small_raw)
     assert result.success is False
-    assert "expanded-cohort" in result.detail
+    assert "authority components" in result.detail
 
 
 def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
@@ -1532,7 +1538,50 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
     result = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert result.success is False
     assert result.metrics["raw_materialization_resource_blocked_count"] == 2.0
-    assert "aggregate 1.2 GiB" in result.detail
+    assert "aggregate payload exceeds 1.0 GiB" in result.detail
+
+
+def test_raw_materialization_processes_independent_components_across_bounded_passes(tmp_path: Path) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    raw_count = 25
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = [
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f'{{"type":"session_meta","payload":{{"id":"independent-{index}"}}}}\n'.encode(),
+                source_path=f"independent-{index}.jsonl",
+                acquired_at_ms=index,
+            )
+            for index in range(raw_count)
+        ]
+    per_raw_size = 50 * 1024 * 1024
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+            ((per_raw_size, raw_id) for raw_id in raw_ids),
+        )
+        source_conn.commit()
+
+    config = _config(tmp_path)
+    backlog = repair_mod.raw_materialization_replay_backlog(config)
+    assert backlog["candidate_count"] == raw_count
+    assert backlog["authority_component_count"] == raw_count
+    assert (
+        int(cast(int, backlog["expanded_total_blob_bytes"])) > repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+    )
+    assert backlog["execution_blocked"] is False
+    assert backlog["executable_authority_component_count"] == raw_count
+
+    repaired_per_pass: list[int] = []
+    for _pass in range(5):
+        result = repair_mod.repair_raw_materialization(config, raw_artifact_limit=5)
+        repaired_per_pass.append(result.repaired_count)
+    assert repaired_per_pass == [5, 5, 5, 5, 5]
+    assert repair_mod.repair_raw_materialization(config, raw_artifact_limit=5).success is True
 
 
 def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(

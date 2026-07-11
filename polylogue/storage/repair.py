@@ -71,6 +71,7 @@ class RawMaterializationCandidates:
     adoption_deferred: int = 0
     expanded_raw_ids: tuple[str, ...] = ()
     expanded_blob_bytes: dict[str, int] = field(default_factory=dict)
+    authority_components: tuple[tuple[str, ...], ...] = ()
 
     @property
     def total_blob_bytes(self) -> int:
@@ -138,6 +139,7 @@ def _raw_materialization_candidate_ids(
     already_parsed = 0
     expanded_raw_ids: tuple[str, ...] = ()
     expanded_blob_bytes: dict[str, int] = {}
+    authority_components: tuple[tuple[str, ...], ...] = ()
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
@@ -232,7 +234,8 @@ def _raw_materialization_candidate_ids(
                     missing_blob_source_missing += 1
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        expanded_raw_ids, _keys = ArchiveStore.expand_raw_membership_selection_sync(conn, raw_ids)
+        authority_components = ArchiveStore.raw_membership_selection_components_sync(conn, raw_ids)
+        expanded_raw_ids = tuple(sorted({raw_id for component in authority_components for raw_id in component}))
         if expanded_raw_ids:
             placeholders = ",".join("?" for _ in expanded_raw_ids)
             expanded_blob_bytes = {
@@ -254,6 +257,7 @@ def _raw_materialization_candidate_ids(
         adoption_deferred=adoption_deferred,
         expanded_raw_ids=expanded_raw_ids,
         expanded_blob_bytes=expanded_blob_bytes,
+        authority_components=authority_components,
     )
 
 
@@ -365,10 +369,15 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
     ]
     # Retained-raw authority replay currently loads blob bytes before handing
     # them to the stream parser, so stream-capable format is diagnostic only.
-    aggregate_resource_blocked = expanded_total_blob_bytes > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
-    resource_blocked_count = len(oversized_raw_ids) or (
-        len(candidates.expanded_raw_ids) if aggregate_resource_blocked else 0
-    )
+    blocked_components = [
+        component
+        for component in candidates.authority_components
+        if sum(expanded_blob_bytes.get(raw_id, 0) for raw_id in component)
+        > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+    ]
+    blocked_component_raw_ids = {raw_id for component in blocked_components for raw_id in component}
+    aggregate_resource_blocked = bool(blocked_components)
+    resource_blocked_count = len(blocked_component_raw_ids)
     blocked_candidate_count = resource_blocked_count + candidates.adoption_deferred
     return {
         "available": True,
@@ -393,6 +402,9 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
         "expanded_candidate_count": len(candidates.expanded_raw_ids),
         "expanded_total_blob_bytes": expanded_total_blob_bytes,
         "expanded_aggregate_blocked": aggregate_resource_blocked,
+        "authority_component_count": len(candidates.authority_components),
+        "blocked_authority_component_count": len(blocked_components),
+        "executable_authority_component_count": len(candidates.authority_components) - len(blocked_components),
         "oversized_count": len(oversized_raw_ids),
         "oversized_stream_safe_count": len(oversized_stream_safe),
         "top_raw_rows": top_raw_rows,
@@ -1609,8 +1621,16 @@ def repair_raw_materialization(
     )
 
     archive_root = _raw_materialization_archive_root(config)
-    oversized_raw_id_set = set(oversized_raw_ids)
-    executable_raw_ids = [raw_id for raw_id in raw_ids if raw_id not in oversized_raw_id_set]
+    blocked_component_raw_ids = {
+        raw_id
+        for component in candidates.authority_components
+        if sum(candidates.expanded_blob_bytes.get(member, 0) for member in component)
+        > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+        for raw_id in component
+    }
+    if blocked_component_raw_ids:
+        metrics["raw_materialization_resource_blocked_count"] = float(len(blocked_component_raw_ids))
+    executable_raw_ids = [raw_id for raw_id in raw_ids if raw_id not in blocked_component_raw_ids]
     metrics["raw_materialization_executed_count"] = float(len(executable_raw_ids))
     if executable_raw_ids:
         try:
@@ -1674,6 +1694,11 @@ def repair_raw_materialization(
         detail += (
             f"; {len(oversized_raw_ids):,} non-stream-safe raw row(s) exceed execution limit "
             f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+        )
+    elif blocked_component_raw_ids:
+        detail += (
+            f"; {len(blocked_component_raw_ids):,} raw row(s) belong to authority components whose aggregate "
+            f"payload exceeds {_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
         )
     if remaining.missing_blobs:
         detail += f"; {_raw_materialization_missing_blob_detail(remaining, final=True)}"

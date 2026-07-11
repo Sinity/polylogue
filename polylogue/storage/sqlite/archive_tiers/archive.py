@@ -1715,6 +1715,26 @@ class ArchiveStore:
         return self.expand_raw_membership_selection_sync(self._ensure_source_conn(), raw_ids)
 
     @staticmethod
+    def raw_membership_selection_components_sync(
+        conn: sqlite3.Connection,
+        raw_ids: list[str],
+    ) -> tuple[tuple[str, ...], ...]:
+        """Partition scheduling hints into transitive authority components."""
+        components: list[set[str]] = []
+        for raw_id in dict.fromkeys(raw_ids):
+            expanded, _keys = ArchiveStore.expand_raw_membership_selection_sync(conn, [raw_id])
+            component = set(expanded)
+            overlapping = [existing for existing in components if existing & component]
+            for existing in overlapping:
+                component.update(existing)
+                components.remove(existing)
+            components.append(component)
+        return tuple(tuple(sorted(component)) for component in sorted(components, key=lambda item: min(item)))
+
+    def raw_membership_selection_components(self, raw_ids: list[str]) -> tuple[tuple[str, ...], ...]:
+        return self.raw_membership_selection_components_sync(self._ensure_source_conn(), raw_ids)
+
+    @staticmethod
     def expand_raw_membership_selection_sync(
         conn: sqlite3.Connection,
         raw_ids: list[str] | None,
