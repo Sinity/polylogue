@@ -722,7 +722,7 @@ def test_raw_materialization_retires_only_complete_governed_bundle_membership(tm
     blob_store = BlobStore(tmp_path / "blob")
     raw_ids: list[str] = []
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        for position, decision in enumerate(("applied", "ambiguous", None), start=1):
+        for position, decision in enumerate(("applied", "ambiguous", None, "applied"), start=1):
             raw_id, blob_size = blob_store.write_from_bytes(f'{{"bundle":{position}}}'.encode())
             raw_ids.append(raw_id)
             source_conn.execute(
@@ -766,7 +766,7 @@ def test_raw_materialization_retires_only_complete_governed_bundle_membership(tm
     assert candidates.authority_quarantined == 1
 
 
-def test_raw_materialization_does_not_replay_uncensused_append_fragments(tmp_path: Path) -> None:
+def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
@@ -784,9 +784,36 @@ def test_raw_materialization_does_not_replay_uncensused_append_fragments(tmp_pat
         source_conn.commit()
 
     candidates = repair_mod._raw_materialization_candidate_ids(config)
+    backlog = repair_mod.raw_materialization_replay_backlog(config)
+    targeted = repair_mod.repair_raw_materialization(config, raw_artifact_id=raw_id)
 
     assert candidates.raw_ids == []
-    assert candidates.byte_authority_fragments == 1
+    assert candidates.byte_authority_pending == 1
+    assert backlog["candidate_count"] == 0
+    assert backlog["execution_blocked"] is True
+    assert backlog["durable_authority_debt_count"] == 1
+    assert backlog["byte_authority_pending_count"] == 1
+    assert targeted.success is False
+    assert "pending byte-authority adjudication" in targeted.detail
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_membership_census (
+                raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+            ) VALUES (?, 'test', 'failed', 0, 2,
+                      'append fragments are governed by byte revision authority')
+            """,
+            (raw_id,),
+        )
+        source_conn.commit()
+
+    governed = repair_mod._raw_materialization_candidate_ids(config)
+    governed_target = repair_mod.repair_raw_materialization(config, raw_artifact_id=raw_id)
+
+    assert governed.byte_authority_pending == 0
+    assert governed.byte_authority_fragments == 1
+    assert governed_target.success is False
 
 
 def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_path: Path) -> None:
