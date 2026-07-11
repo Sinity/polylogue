@@ -435,8 +435,8 @@ nix develop -c polylogue demo tour
 <p>A view of exactly which evidence and reviewed assertions an agent received, what was omitted under budget, and which stale candidates were excluded. This is capability and experiment work under the judged-context program.</p>
 <h3>Resume Under Oath</h3>
 <p>A preregistered paired comparison between strong raw-reference access and a generated resume packet. A workflow demonstration is insufficient; any benefit claim requires fixed sampling, equal budgets, preserved outputs, and independent scoring.</p>
-<h2>Demo contract</h2>
-<p>The existing Demo Finding Packet contains:</p>
+<h2>Demo Packet v2 contract</h2>
+<p>The Demo Finding Packet contains:</p>
 <ul>
 <li>an executable prompt;</li>
 <li>a provenance stanza;</li>
@@ -445,7 +445,17 @@ nix develop -c polylogue demo tour
 <li>checks, unsupported claims, and coverage notes;</li>
 <li>the raw run transcript.</li>
 </ul>
-<p>The next packet revision should add an explicit primary construct, oracle, falsifier, positive/negative/missing-evidence controls, material manifest, scope, and recording parity. See <code>devtools/demo_packet.py</code> for the current executable contract.</p>
+<p>The versioned machine contract is
+<a href="https://github.com/Sinity/polylogue/blob/master/docs/schemas/demo-packet-v2.schema.json"><code>schemas/demo-packet-v2.schema.json</code></a>. It
+also requires exactly one primary construct, a receipt-backed claim declared
+before execution, an independent oracle, a comparative baseline, negative and
+missing-evidence controls, an explicit falsifier, bounded non-claims, and local
+SHA-256-bound receipt artifacts. <code>devtools lab policy demo-packet-registry</code>
+validates every registered packet and rejects unregistered v2 packets.</p>
+<p>A deterministic public packet proves a product contract on the approved seed
+1843 fixture world. It does not establish field prevalence, production scale,
+or model behavior in the wild. Private-archive benchmarks remain a separate
+local-only lane with their own sampling and privacy obligations.</p>
 <h2>Why the anti-demo belongs beside the successes</h2>
 <p>Polylogue’s category claim is not merely “it can answer difficult questions.” It is also “it can say when the archive does not support an answer.” A public portfolio that publishes only successful reconstructions would hide the project’s most important epistemic behavior.</p>
 
