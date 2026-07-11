@@ -74,6 +74,7 @@ def test_registered_verifier_rejects_invalid_decorator_overrides(
         ("COMMAND = ['pytest', '--timeout=0']\n", "must be positive"),
         ("COMMAND = ['pytest', '--timeout=-1']\n", "must be positive"),
         ("LIMIT = '30'\nCOMMAND = ['pytest', '--timeout', LIMIT]\n", "dynamic or malformed"),
+        ("LIMIT = 0\nCOMMAND = ['pytest', f'--timeout={LIMIT}']\n", "dynamic or malformed"),
         ("COMMAND = ['pytest', '--timeout=forever']\n", "malformed"),
         ("COMMAND = ['pytest', '--timeout']\n", "unbounded"),
         ("execution = pytest_execution('--timeout=')\n", "unbounded"),
@@ -92,6 +93,20 @@ def test_registered_verifier_rejects_invalid_managed_command_overrides(
 
     assert rc == 1
     assert expected in output
+
+
+def test_registered_verifier_scans_nested_devtools_commands(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Anti-vacuity: replacing the recursive devtools scan with glob() makes this test fail."""
+    root = _make_tree(tmp_path)
+    _write(root, "devtools/nested/managed_command.py", "COMMAND = ['pytest', '--timeout=0']\n")
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 1
+    assert "must be positive" in output
 
 
 def test_registered_verifier_requires_exact_rationale_manifest_for_longer_values(

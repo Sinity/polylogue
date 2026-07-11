@@ -97,11 +97,31 @@ def _is_literal_pytest_command(nodes: list[ast.expr]) -> bool:
     return any(isinstance(node, ast.Constant) and node.value == "pytest" for node in nodes)
 
 
+def _dynamic_string_fragments(node: ast.expr) -> tuple[str, ...]:
+    """Return literal pieces embedded in a dynamic string expression."""
+    if isinstance(node, ast.JoinedStr):
+        return tuple(
+            value.value for value in node.values if isinstance(value, ast.Constant) and isinstance(value.value, str)
+        )
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return (*_dynamic_string_fragments(node.left), *_dynamic_string_fragments(node.right))
+    return ()
+
+
+def _is_dynamic_timeout_option(node: ast.expr) -> bool:
+    return not isinstance(node, ast.Constant) and any(
+        "--timeout" in fragment for fragment in _dynamic_string_fragments(node)
+    )
+
+
 def _parse_command_overrides(path: str, line: int, nodes: list[ast.expr]) -> tuple[list[TimeoutOverride], list[str]]:
     overrides: list[TimeoutOverride] = []
     errors: list[str] = []
     for index, node in enumerate(nodes):
         if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            if _is_dynamic_timeout_option(node):
+                location = f"{path}:{getattr(node, 'lineno', line)}"
+                errors.append(f"{location}: dynamic or malformed pytest --timeout override is forbidden")
             continue
         token = node.value
         if token == "--timeout":
@@ -252,7 +272,7 @@ def check_timeout_overrides(
             errors.extend(found_errors)
     devtools_dir = root / "devtools"
     if devtools_dir.exists():
-        for path in sorted(devtools_dir.glob("*.py")):
+        for path in sorted(devtools_dir.rglob("*.py")):
             found, found_errors = _scan_python(path, root, scan_decorators=False, scan_commands=True)
             overrides.extend(found)
             errors.extend(found_errors)
