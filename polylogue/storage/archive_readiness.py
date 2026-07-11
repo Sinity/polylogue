@@ -13,6 +13,7 @@ from polylogue.archive.raw_materialization import (
     parsed_non_session_artifact_reason,
     source_path_native_id_candidates,
 )
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 
 ACTIVE_REBUILD_STALE_AFTER_S = 180.0
 """Maximum heartbeat/start age for a rebuild-index row to count as active."""
@@ -193,12 +194,15 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 WHERE NOT is_materialized
                 """,
             ).fetchall()
-            classified_counts = _classify_raw_gap_rows(
+            classified_counts, parse_failed_origins = _classify_raw_gap_rows(
                 conn,
                 active_archive,
                 gap_rows,
                 raw_columns=raw_columns,
                 session_columns=session_columns,
+                has_revision_applications=bool(_table_columns(conn, "main", "raw_revision_applications")),
+                has_membership_census=bool(_table_columns(conn, "source", "raw_membership_census")),
+                has_session_memberships=bool(_table_columns(conn, "source", "raw_session_memberships")),
             )
             adoption_deferred_count = 0
             if _table_columns(conn, "main", "raw_revision_applications"):
@@ -234,18 +238,6 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     parsed_without_index_session = int(row["parsed_without_index_session"] or 0)
     parse_failed = classified_counts.get("parse-failed", 0)
     classified = sum(count for category, count in classified_counts.items() if category != "parse-failed")
-    parse_failed_origins = {
-        str(item["origin"] or "unknown")
-        for item in gap_rows
-        if item["parse_error"] is not None
-        and (
-            not _retryable_decode_missing_blob_error(item["parse_error"])
-            or (
-                not _raw_gap_materialized_by_alias(conn, item, session_columns=session_columns)
-                and not _raw_gap_matches_missing_index_raw_link(conn, item, session_columns=session_columns)
-            )
-        )
-    }
     actionable = len(parse_failed_origins)
     critical = actionable
     affected_actionable = parse_failed
@@ -434,6 +426,8 @@ def _raw_gap_select_columns(raw_columns: frozenset[str]) -> str:
         "native_id",
         "source_path",
         "blob_hash",
+        "source_index",
+        "revision_authority",
         "validation_status",
         "parse_error",
         "parsed_at_ms",
@@ -448,24 +442,125 @@ def _classify_raw_gap_rows(
     *,
     raw_columns: frozenset[str],
     session_columns: frozenset[str],
-) -> Counter[str]:
+    has_revision_applications: bool,
+    has_membership_census: bool,
+    has_session_memberships: bool,
+) -> tuple[Counter[str], set[str]]:
     if not rows:
-        return Counter()
+        return Counter(), set()
     counts: Counter[str] = Counter()
+    parse_failed_origins: set[str] = set()
     for row in rows:
-        can_reconcile_alias = not row["parse_error"] or _retryable_decode_missing_blob_error(row["parse_error"])
-        if can_reconcile_alias and _raw_gap_materialized_by_alias(conn, row, session_columns=session_columns):
-            counts["materialized-alias"] += 1
-            continue
-        if can_reconcile_alias and _raw_gap_matches_missing_index_raw_link(conn, row, session_columns=session_columns):
-            counts["lost-source-evidence-alias"] += 1
-            continue
-        if _raw_gap_parsed_non_session_artifact(archive_root, row, raw_columns=raw_columns):
-            counts["parsed-non-session-artifact"] += 1
-            continue
-        if row["parse_error"]:
-            counts["parse-failed"] += 1
-    return counts
+        category = _raw_gap_category(
+            conn,
+            archive_root,
+            row,
+            raw_columns=raw_columns,
+            session_columns=session_columns,
+            has_revision_applications=has_revision_applications,
+            has_membership_census=has_membership_census,
+            has_session_memberships=has_session_memberships,
+        )
+        if category is not None:
+            counts[category] += 1
+            if category == "parse-failed":
+                parse_failed_origins.add(str(row["origin"] or "unknown"))
+    return counts, parse_failed_origins
+
+
+def _raw_gap_category(
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    row: sqlite3.Row,
+    *,
+    raw_columns: frozenset[str],
+    session_columns: frozenset[str],
+    has_revision_applications: bool,
+    has_membership_census: bool,
+    has_session_memberships: bool,
+) -> str | None:
+    can_reconcile_alias = not row["parse_error"] or _retryable_decode_missing_blob_error(row["parse_error"])
+    if can_reconcile_alias and _raw_gap_materialized_by_alias(conn, row, session_columns=session_columns):
+        return "materialized-alias"
+    if can_reconcile_alias and _raw_gap_matches_missing_index_raw_link(conn, row, session_columns=session_columns):
+        return "lost-source-evidence-alias"
+    if _raw_gap_parsed_non_session_artifact(archive_root, row, raw_columns=raw_columns):
+        return "parsed-non-session-artifact"
+    if row["parse_error"]:
+        return "parse-failed"
+    authority_category = _raw_gap_authority_category(
+        conn,
+        row,
+        has_revision_applications=has_revision_applications,
+        has_membership_census=has_membership_census,
+        has_session_memberships=has_session_memberships,
+    )
+    if authority_category is not None:
+        return authority_category
+    return None
+
+
+def _raw_gap_authority_category(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    has_revision_applications: bool,
+    has_membership_census: bool,
+    has_session_memberships: bool,
+) -> str | None:
+    raw_id = str(row["raw_id"])
+    if has_revision_applications:
+        terminal = conn.execute(
+            """
+            SELECT 1 FROM main.raw_revision_applications
+            WHERE raw_id = ?
+              AND decision IN ('selected_baseline', 'applied_append', 'superseded', 'ambiguous')
+            LIMIT 1
+            """,
+            (raw_id,),
+        ).fetchone()
+        if terminal is not None:
+            return "revision-application-terminal"
+
+    if has_membership_census and has_session_memberships:
+        membership = conn.execute(
+            """
+            SELECT 1
+            FROM source.raw_membership_census AS c
+            WHERE c.raw_id = ?
+              AND c.status = 'complete'
+              AND c.member_count > 0
+              AND c.member_count = (
+                SELECT COUNT(*) FROM source.raw_session_memberships AS counted
+                WHERE counted.raw_id = c.raw_id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM source.raw_session_memberships AS m
+                WHERE m.raw_id = c.raw_id
+                  AND (m.decision IS NULL OR m.decision = 'deferred')
+              )
+            LIMIT 1
+            """,
+            (raw_id,),
+        ).fetchone()
+        if membership is not None:
+            return "membership-authority-classified"
+
+    if row["source_index"] == -1:
+        if row["revision_authority"] == "byte_proven":
+            return "append-authority-proven"
+        if has_membership_census:
+            quarantined = conn.execute(
+                """
+                SELECT 1 FROM source.raw_membership_census
+                WHERE raw_id = ? AND status = 'failed' AND detail = ?
+                LIMIT 1
+                """,
+                (raw_id, BYTE_AUTHORITY_CENSUS_DETAIL),
+            ).fetchone()
+            if quarantined is not None:
+                return "append-authority-quarantined"
+    return None
 
 
 def _retryable_decode_missing_blob_error(parse_error: object) -> bool:
