@@ -1516,7 +1516,13 @@ def test_live_multi_session_divergence_reopens_raw_authority(
         )
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NULL").fetchone() == (2,)
     with sqlite3.connect(index_db) as conn:
-        assert set(conn.execute("SELECT native_id FROM sessions")) == {("safe-1",), ("safe-2",)}
+        # The first accepted branch remains queryable; the later divergence is
+        # nonterminal debt and has no deletion authority.
+        assert set(conn.execute("SELECT native_id FROM sessions")) == {
+            ("safe-1",),
+            ("safe-2",),
+            ("shared",),
+        }
 
 
 def test_append_crash_after_index_commit_repairs_idempotently(
