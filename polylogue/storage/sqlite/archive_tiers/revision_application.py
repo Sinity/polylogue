@@ -1,4 +1,7 @@
-"""Atomic index receipts for raw-revision replay decisions."""
+"""Atomic index receipts for raw-revision replay decisions.
+
+Writer module: index.
+"""
 
 from __future__ import annotations
 

@@ -1,6 +1,7 @@
 """Small archive-root façade over archive source/index/user tiers.
 
-Writer module: index.
+Writer module: index, source, user.
+Twin-write contract: raw-revision-authority.
 """
 
 from __future__ import annotations
