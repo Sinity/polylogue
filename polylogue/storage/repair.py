@@ -179,7 +179,18 @@ def _raw_materialization_candidate_ids(
                          AND a.decision IN (
                            'selected_baseline', 'applied_append', 'superseded', 'ambiguous'
                          )
-                   ) AS application_terminal
+                   ) AS application_terminal,
+                   EXISTS (
+                       SELECT 1
+                       FROM raw_membership_census AS c
+                       WHERE c.raw_id = r.raw_id
+                         AND c.status = 'complete'
+                         AND NOT EXISTS (
+                           SELECT 1 FROM raw_session_memberships AS m
+                           WHERE m.raw_id = c.raw_id
+                             AND (m.decision IS NULL OR m.decision IN ('ambiguous', 'deferred'))
+                         )
+                   ) AS membership_authority_complete
             FROM raw_sessions AS r
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
@@ -218,6 +229,8 @@ def _raw_materialization_candidate_ids(
                 adoption_deferred += 1
                 continue
             if bool(row["application_terminal"]):
+                continue
+            if bool(row["membership_authority_complete"]):
                 continue
             if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(row["parse_error"]):
                 continue
