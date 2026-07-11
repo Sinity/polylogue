@@ -489,6 +489,40 @@ def test_parse_code_keeps_task_only_completion_unknown_when_background_start_is_
     assert by_id["start-two"].blocks[0].is_error is None
 
 
+def test_parse_code_keeps_exact_pair_completion_unknown_when_start_is_duplicated() -> None:
+    """Production dependency: exact-pair start indexing in ``parse_code``.
+
+    This fails if exact-pair starts are collapsed with ``setdefault`` or if a
+    completion is applied to the first duplicate instead of requiring one
+    candidate just like the task-only fallback.
+    """
+    records: list[object] = []
+    records.extend(_background_start_records(task_id="same-task", tool_id="same-tool", command="true", suffix="first"))
+    records.extend(
+        _background_start_records(task_id="same-task", tool_id="same-tool", command="false", suffix="second")
+    )
+    records.append(
+        {
+            "type": "queue-operation",
+            "operation": "enqueue",
+            "sessionId": "background-sidecars",
+            "content": _task_notification(
+                task_id="same-task",
+                tool_id="same-tool",
+                status="failed",
+                summary='Background command "false" failed with exit code 1',
+            ),
+        }
+    )
+
+    parsed = parse_code(records, "background-exact-ambiguous")
+    by_id = {message.provider_message_id: message for message in parsed.messages}
+    assert by_id["start-first"].blocks[0].exit_code is None
+    assert by_id["start-first"].blocks[0].is_error is None
+    assert by_id["start-second"].blocks[0].exit_code is None
+    assert by_id["start-second"].blocks[0].is_error is None
+
+
 def test_parse_code_projects_background_completion_outcomes_through_actions(tmp_path: Path) -> None:
     """Production route: ``parse_code`` -> ``ArchiveStore`` -> ``actions``.
 

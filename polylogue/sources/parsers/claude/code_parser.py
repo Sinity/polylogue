@@ -295,7 +295,7 @@ def _project_background_task_completions(
     key. Later notifications deliberately replace earlier ones for the same
     pair, making duplicate delivery and provider updates deterministic.
     """
-    starts: dict[tuple[str, str], tuple[int, int]] = {}
+    starts: dict[tuple[str, str], list[tuple[int, int]]] = {}
     for message_index, message in enumerate(messages):
         for block_index, block in enumerate(message.blocks):
             if block.type is not BlockType.TOOL_RESULT or not block.tool_id:
@@ -303,16 +303,16 @@ def _project_background_task_completions(
             metadata = block.metadata or {}
             task_id = metadata.get(_BACKGROUND_TASK_ID_METADATA_KEY)
             if isinstance(task_id, str) and task_id:
-                starts.setdefault((task_id, block.tool_id), (message_index, block_index))
+                starts.setdefault((task_id, block.tool_id), []).append((message_index, block_index))
 
     starts_by_task: dict[str, list[tuple[int, int]]] = {}
-    for (task_id, _), location in starts.items():
-        starts_by_task.setdefault(task_id, []).append(location)
+    for (task_id, _), locations in starts.items():
+        starts_by_task.setdefault(task_id, []).extend(locations)
 
     terminal_by_start: dict[tuple[int, int], ClaudeCodeBackgroundTaskNotification] = {}
     for notification in notifications:
         matched_location: tuple[int, int] | None = (
-            starts.get((notification.task_id, notification.tool_use_id))
+            _unique_background_start(starts.get((notification.task_id, notification.tool_use_id), []))
             if notification.tool_use_id is not None
             else _unique_background_start(starts_by_task.get(notification.task_id, []))
         )
