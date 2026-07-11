@@ -171,7 +171,15 @@ def _raw_materialization_candidate_ids(
                        WHERE a.raw_id = r.raw_id
                          AND a.decision = 'deferred'
                          AND a.detail = 'ordinary_replay:incomparable_existing_index_state'
-                   ) AS adoption_deferred
+                   ) AS adoption_deferred,
+                   EXISTS (
+                       SELECT 1
+                       FROM index_tier.raw_revision_applications AS a
+                       WHERE a.raw_id = r.raw_id
+                         AND a.decision IN (
+                           'selected_baseline', 'applied_append', 'superseded', 'ambiguous'
+                         )
+                   ) AS application_terminal
             FROM raw_sessions AS r
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
@@ -208,6 +216,8 @@ def _raw_materialization_candidate_ids(
         for row in rows:
             if bool(row["adoption_deferred"]):
                 adoption_deferred += 1
+                continue
+            if bool(row["application_terminal"]):
                 continue
             if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(row["parse_error"]):
                 continue
