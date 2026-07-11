@@ -601,19 +601,13 @@ class LiveWatcher:
         if self._is_hermes_database(path):
             return cursor.tail_hash != sqlite_source_revision(path)
         if size == cursor.byte_size and cursor.content_fingerprint is not None:
-            # Stable path + size + recorded content fingerprint is the hot
-            # catch-up skip path. Device/inode churn across bind mounts,
-            # restored homes, or filesystem rebuilds must not force a full
-            # content rehash of every historical session file.
+            # Only an exact recorded observation authorizes the hot skip.
+            # A bounded tail cannot prove that an earlier same-size prefix was
+            # not rewritten, so any changed observation with modern tail
+            # authority must return to the full route.
             if _cursor_stat_matches(cursor, stat):
                 return False
-            if cursor.tail_hash is None:
-                return False
-            try:
-                current_tail_hash, _bytes_read = tail_hash_from_path(path, size)
-            except FileNotFoundError:
-                return False
-            return current_tail_hash != cursor.tail_hash
+            return cursor.tail_hash is not None
         if size > cursor.byte_offset:
             return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:

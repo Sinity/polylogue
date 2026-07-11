@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sqlite3
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1575,6 +1576,71 @@ def test_full_ingest_does_not_advance_cursor_across_same_size_replacement(
         ]
 
 
+def test_rejected_full_cursor_frontier_forces_full_retry(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "rejected-frontier.jsonl"
+    captured = (
+        b'{"type":"session_meta","payload":{"id":"rejected-frontier"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-a","role":"user",'
+        b'"content":[{"type":"input_text","text":"alpha"}]}}\n'
+    )
+    growth = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-b","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"bravo"}]}}\n'
+    )
+    path.write_bytes(captured)
+    captured_stat = path.stat()
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    obsolete_offset = len(captured) + 1
+    cursor.set(
+        path,
+        obsolete_offset,
+        byte_offset=obsolete_offset,
+        last_complete_newline=obsolete_offset,
+        parser_fingerprint="test-parser",
+        content_fingerprint="obsolete-frontier",
+        tail_hash="obsolete-tail",
+        source_name="codex",
+        st_dev=captured_stat.st_dev,
+        st_ino=captured_stat.st_ino,
+        mtime_ns=captured_stat.st_mtime_ns,
+        failure_count=2,
+    )
+    with path.open("ab") as handle:
+        handle.write(growth)
+
+    processor._record_full_cursor(
+        path,
+        raw_fingerprint=sha256(captured).hexdigest(),
+        raw_byte_size=len(captured),
+        source_name="codex",
+        captured_content_hash=sha256(captured).hexdigest(),
+        captured_file_observation=(
+            captured_stat.st_dev,
+            captured_stat.st_ino,
+            captured_stat.st_size,
+            captured_stat.st_mtime_ns,
+            captured_stat.st_ctime_ns,
+        ),
+    )
+
+    assert processor._last_cursor_write_stale is True
+    invalidated = cursor.get_record(path)
+    assert invalidated is not None
+    assert invalidated.byte_offset == 0
+    assert invalidated.content_fingerprint is None
+    assert invalidated.failure_count == 2
+    assert processor._append_plan(path, cursor=invalidated) is None
+
+
 @pytest.mark.parametrize("rewrite_mode", ["atomic-replacement", "in-place-prefix"])
 def test_append_cursor_forces_full_retry_after_source_rewrite(
     tmp_path: Path,
@@ -1585,10 +1651,11 @@ def test_append_cursor_forces_full_retry_after_source_rewrite(
     root.mkdir()
     path = root / "append-replaced.jsonl"
     replacement = root / "append-replacement.jsonl"
+    prefix_padding = b"p" * (70 * 1024)
     baseline_a = (
         b'{"type":"session_meta","payload":{"id":"append-replace-a"}}\n'
         b'{"type":"response_item","payload":{"type":"message","id":"message-0a","role":"user",'
-        b'"content":[{"type":"input_text","text":"zeroa"}]}}\n'
+        b'"content":[{"type":"input_text","text":"zeroa' + prefix_padding + b'"}]}}\n'
     )
     append_a = (
         b'{"type":"response_item","payload":{"type":"message","id":"message-aa","role":"assistant",'
@@ -1597,11 +1664,12 @@ def test_append_cursor_forces_full_retry_after_source_rewrite(
     replacement_b = (
         b'{"type":"session_meta","payload":{"id":"append-replace-b"}}\n'
         b'{"type":"response_item","payload":{"type":"message","id":"message-0b","role":"user",'
-        b'"content":[{"type":"input_text","text":"zerob"}]}}\n'
+        b'"content":[{"type":"input_text","text":"zerob' + prefix_padding + b'"}]}}\n'
         b'{"type":"response_item","payload":{"type":"message","id":"message-bb","role":"assistant",'
         b'"content":[{"type":"output_text","text":"bravo"}]}}\n'
     )
     assert len(baseline_a + append_a) == len(replacement_b)
+    assert len(baseline_a) > 64 * 1024
     path.write_bytes(baseline_a)
     replacement.write_bytes(replacement_b)
     index_db = tmp_path / "index.db"
@@ -1617,6 +1685,7 @@ def test_append_cursor_forces_full_retry_after_source_rewrite(
     with path.open("ab") as handle:
         handle.write(append_a)
     pre_rewrite_stat = path.stat()
+    accepted_tail_before_rewrite = path.read_bytes()[-64 * 1024 :]
     replaced = False
 
     def replace_after_append(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
@@ -1660,13 +1729,14 @@ def test_append_cursor_forces_full_retry_after_source_rewrite(
             ("message-0a",),
             ("message-aa",),
         ]
-        assert conn.execute("SELECT search_text FROM blocks ORDER BY search_text").fetchall() == [
+        assert conn.execute("SELECT substr(search_text, 1, 5) FROM blocks ORDER BY search_text").fetchall() == [
             ("alpha",),
             ("zeroa",),
         ]
 
     if rewrite_mode == "in-place-prefix":
         assert b"zerob" in path.read_bytes()
+        assert path.read_bytes()[-64 * 1024 :] == accepted_tail_before_rewrite
         return
 
     retried = asyncio.run(processor.ingest_files([path]))

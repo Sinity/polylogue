@@ -128,8 +128,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int]:
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
@@ -780,7 +780,7 @@ class LiveBatchProcessor:
         source_name: str | None = None,
         source_revision: str | None = None,
         captured_content_hash: str | None = None,
-        captured_file_observation: tuple[int, int, int, int] | None = None,
+        captured_file_observation: tuple[int, int, int, int, int] | None = None,
     ) -> int:
         self._last_cursor_write_stale = False
         resolved_source_name = source_name or self._source_name_for(path)
@@ -849,8 +849,19 @@ class LiveBatchProcessor:
             allow_backward=stat.st_size <= byte_size,
         )
         self._last_cursor_write_stale = not updated
-        if updated:
-            self._cursor.reset_failures(path)
+        if not updated:
+            logger.warning(
+                "live.watcher: full cursor frontier was rejected; cursor invalidated for full retry: %s",
+                path,
+            )
+            self._invalidate_cursor_for_full_retry(
+                path,
+                source_name=resolved_source_name,
+                stat=final_stat,
+                captured_file_observation=captured_file_observation,
+            )
+            return bytes_read
+        self._cursor.reset_failures(path)
         return bytes_read
 
     def _full_capture_still_matches(
@@ -860,17 +871,15 @@ class LiveBatchProcessor:
         stat: os.stat_result,
         byte_size: int,
         captured_content_hash: str | None,
-        captured_file_observation: tuple[int, int, int, int] | None,
+        captured_file_observation: tuple[int, int, int, int, int] | None,
     ) -> bool:
         if captured_file_observation is None:
             return True
-        captured_dev, captured_ino, _captured_size, _captured_mtime_ns = captured_file_observation
+        captured_dev, captured_ino, _captured_size, _captured_mtime_ns, _captured_ctime_ns = captured_file_observation
         if (stat.st_dev, stat.st_ino) != (captured_dev, captured_ino) or stat.st_size < byte_size:
             return False
-        if _file_observation(stat) == captured_file_observation:
-            return True
         if captured_content_hash is None:
-            return False
+            return _file_observation(stat) == captured_file_observation
         normalized_fingerprint = captured_content_hash.lower()
         if len(normalized_fingerprint) != 64 or any(char not in "0123456789abcdef" for char in normalized_fingerprint):
             return False
@@ -893,7 +902,7 @@ class LiveBatchProcessor:
         *,
         source_name: str,
         stat: os.stat_result | None = None,
-        captured_file_observation: tuple[int, int, int, int] | None = None,
+        captured_file_observation: tuple[int, int, int, int, int] | None = None,
     ) -> None:
         existing = self._cursor.get_record(path)
         if stat is not None:
@@ -906,10 +915,11 @@ class LiveBatchProcessor:
                 existing.st_ino or 0,
                 existing.byte_size,
                 existing.mtime_ns or 0,
+                0,
             )
         else:
-            observation = (0, 0, 0, 0)
-        st_dev, st_ino, byte_size, mtime_ns = observation
+            observation = (0, 0, 0, 0, 0)
+        st_dev, st_ino, byte_size, mtime_ns, _ctime_ns = observation
         self._cursor.set(
             path,
             byte_size,
@@ -1098,7 +1108,7 @@ class LiveBatchProcessor:
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         captured_content_hashes: dict[Path, str] = {}
-        captured_file_observations: dict[Path, tuple[int, int, int, int]] = {}
+        captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = {}
         failed: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
@@ -1829,6 +1839,7 @@ class LiveBatchProcessor:
             cursor_fingerprint=cursor.content_fingerprint,
             bytes_read=len(payload),
             accepted_tail_hash=sha256(accepted_tail).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
         )
 
     def _append_payload_for_provider(self, path: Path, source_name: str, payload: bytes) -> bytes | None:
@@ -1989,13 +2000,22 @@ class LiveBatchProcessor:
 
     def _record_append_cursor(self, plan: _AppendPlan) -> bool:
         latest_stat: os.stat_result | None = None
+        expected_observation = (
+            plan.st_dev,
+            plan.st_ino,
+            plan.stat_size,
+            plan.mtime_ns,
+            plan.ctime_ns,
+        )
         try:
             stat = plan.path.stat()
             latest_stat = stat
-            if (stat.st_dev, stat.st_ino) != (plan.st_dev, plan.st_ino):
-                raise ValueError("source identity changed")
-            if stat.st_size < plan.last_complete_newline:
-                raise ValueError("source is shorter than the accepted append frontier")
+            observed = _file_observation(stat)
+            if plan.ctime_ns is None:
+                if observed[:4] != expected_observation[:4]:
+                    raise ValueError("source observation changed")
+            elif observed != expected_observation:
+                raise ValueError("source observation changed")
             payload_hash, _payload_bytes = sha256_range_from_path(
                 plan.path,
                 start_offset=plan.start_offset,
@@ -2004,7 +2024,8 @@ class LiveBatchProcessor:
             tail_hash, _tail_bytes = tail_hash_from_path(plan.path, plan.last_complete_newline)
             final_stat = plan.path.stat()
             latest_stat = final_stat
-            if _file_observation(final_stat) != _file_observation(stat):
+            final_observation = _file_observation(final_stat)
+            if final_observation != observed:
                 raise ValueError("source changed during cursor verification")
             if payload_hash != plan.payload_hash:
                 raise ValueError("accepted append bytes changed")
@@ -2020,7 +2041,13 @@ class LiveBatchProcessor:
                 plan.path,
                 source_name=plan.source_name,
                 stat=latest_stat,
-                captured_file_observation=(plan.st_dev, plan.st_ino, plan.stat_size, plan.mtime_ns),
+                captured_file_observation=(
+                    plan.st_dev,
+                    plan.st_ino,
+                    plan.stat_size,
+                    plan.mtime_ns,
+                    plan.ctime_ns or 0,
+                ),
             )
             return False
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)

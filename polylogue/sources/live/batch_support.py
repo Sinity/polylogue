@@ -80,6 +80,7 @@ class _AppendPlan:
     cursor_fingerprint: str | None
     bytes_read: int
     accepted_tail_hash: str | None = None
+    ctime_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +109,7 @@ class _FullIngestResult:
     raw_source_names: dict[Path, str] = field(default_factory=dict)
     raw_source_revisions: dict[Path, str] = field(default_factory=dict)
     captured_content_hashes: dict[Path, str] = field(default_factory=dict)
-    captured_file_observations: dict[Path, tuple[int, int, int, int]] = field(default_factory=dict)
+    captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = field(default_factory=dict)
     worker_count: int = 0
     ingested_session_count: int = 0
     ingested_message_count: int = 0
@@ -133,7 +134,7 @@ def _full_ingest_result_from_summary(
     raw_source_names: dict[Path, str] | None = None,
     raw_source_revisions: dict[Path, str] | None = None,
     captured_content_hashes: dict[Path, str] | None = None,
-    captured_file_observations: dict[Path, tuple[int, int, int, int]] | None = None,
+    captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     summary: object | None,
 ) -> _FullIngestResult:
     error = getattr(summary, "wal_checkpoint_error", None) if summary is not None else None

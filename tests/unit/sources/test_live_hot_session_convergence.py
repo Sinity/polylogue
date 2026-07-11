@@ -36,20 +36,24 @@ def test_cursor_allows_explicit_backward_write_for_truncation(tmp_path: Path) ->
     assert record.byte_offset == 100
 
 
-def test_same_size_rewrite_uses_tail_hash_without_full_prefingerprint(
+def test_same_size_prefix_rewrite_outside_tail_returns_to_full_route(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
-    f.write_text('{"a":1}\n')
+    original = '{"a":"alpha' + ("p" * (70 * 1024)) + '"}\n'
+    rewritten = original.replace("alpha", "bravo", 1)
+    assert len(original) == len(rewritten)
+    assert original.encode()[-64 * 1024 :] == rewritten.encode()[-64 * 1024 :]
+    f.write_text(original)
     watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(_ingest_one(watcher, f))
     assert parse_sources.await_count == 1
 
-    f.write_text('{"b":2}\n')
-    assert f.stat().st_size == len('{"a":1}\n')
+    f.write_text(rewritten)
+    assert f.stat().st_size == len(original)
 
     def fail_fingerprint(path: Path) -> tuple[str, int]:
         raise AssertionError(f"same-size rewrite should not full-fingerprint before ingest: {path}")
