@@ -9,7 +9,8 @@ This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
 - a single-process worker default (``-n 0``) for fast focused runs, overridable
   with ``-n`` in the selection or ``POLYLOGUE_PYTEST_WORKERS``;
 - live, streamed output (unlike ``devtools verify``, which captures);
-- the same pytest progress ledger, heartbeat, and stall timeout used by
+- the same pytest progress ledger, external deadline supervisor, owned process
+  group/cgroup containment, heartbeat, and stall timeout used by
   ``devtools verify``;
 - a checkout-scoped lock that serializes overlapping runs so two suites from
   the same checkout do not race and burn CPU. Concurrency is already
@@ -31,6 +32,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from devtools.verify import (
+    PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
     PYTEST_OUTPUT_PATH,
     PYTEST_PROGRESS_PATH,
@@ -141,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         run.finish(exit_code=rc, duration_s=time.monotonic() - started, diagnosis=metadata.get("diagnosis"))
     sys.stderr.write(
         f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
-        f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} output={PYTEST_OUTPUT_PATH}\n"
+        f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} containment={PYTEST_CONTAINMENT_PATH} "
+        f"output={PYTEST_OUTPUT_PATH}\n"
     )
     return rc
