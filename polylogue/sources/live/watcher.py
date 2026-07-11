@@ -29,6 +29,8 @@ from polylogue.logging import get_logger
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
 from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
+    cursor_prefix_hash,
+    encode_cursor_hash_authority,
     sha256_range_from_path,
     tail_hash_and_last_complete_newline_from_path,
     tail_hash_from_path,
@@ -607,7 +609,24 @@ class LiveWatcher:
             # authority must return to the full route.
             if _cursor_stat_matches(cursor, stat):
                 return False
-            return cursor.tail_hash is not None
+            prefix_hash = cursor_prefix_hash(cursor.tail_hash)
+            if prefix_hash is None:
+                return cursor.tail_hash is not None
+            try:
+                current_prefix_hash, _bytes_read = sha256_range_from_path(
+                    path,
+                    start_offset=0,
+                    end_offset=cursor.byte_offset,
+                )
+                final_stat = path.stat()
+            except (EOFError, OSError):
+                return True
+            return current_prefix_hash != prefix_hash or (
+                final_stat.st_dev,
+                final_stat.st_ino,
+                final_stat.st_size,
+                final_stat.st_mtime_ns,
+            ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
         if size > cursor.byte_offset:
             return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:
@@ -752,7 +771,7 @@ class LiveWatcher:
             last_complete_newline=last_complete_newline,
             parser_fingerprint=_PARSER_FINGERPRINT,
             content_fingerprint=content_fingerprint,
-            tail_hash=tail_hash,
+            tail_hash=encode_cursor_hash_authority(content_fingerprint, tail_hash),
             source_name=provider_from_origin(Origin.from_string(str(origin))).value
             if origin is not None
             else self._source_name_for(path),

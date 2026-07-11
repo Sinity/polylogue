@@ -76,7 +76,9 @@ from polylogue.sources.live.batch_support import (
     _parse_payload_as_session_artifact,
     _path_size,
     _throttled_phase_heartbeat,
+    cursor_prefix_hash,
     cursor_state_after_full_ingest,
+    encode_cursor_hash_authority,
     fingerprint_file,
     last_complete_newline_from_tail,
     sha256_range_from_path,
@@ -397,6 +399,7 @@ class LiveBatchProcessor:
                 pending_append_plans.append(append_plan)
                 append_file_count += 1
                 source_payload_read_bytes += append_plan.bytes_read
+                cursor_fingerprint_read_bytes += append_plan.authority_bytes_read
                 if _append_plan_group_ready(pending_append_plans):
                     await flush_append_plans()
         await flush_append_plans()
@@ -815,12 +818,23 @@ class LiveBatchProcessor:
             last_nl = byte_size
             tail_hash = source_revision
             bytes_read = 0
+            if captured_content_hash is not None:
+                bounded_tail_hash, tail_bytes = tail_hash_from_path(path, byte_size)
+                tail_hash = encode_cursor_hash_authority(captured_content_hash, bounded_tail_hash)
+                bytes_read = tail_bytes
         else:
             fp, last_nl, tail_hash, bytes_read = cursor_state_after_full_ingest(
                 path,
                 byte_size,
                 raw_fingerprint=raw_fingerprint,
             )
+            prefix_hash, prefix_bytes = sha256_range_from_path(
+                path,
+                start_offset=0,
+                end_offset=last_nl,
+            )
+            tail_hash = encode_cursor_hash_authority(prefix_hash, tail_hash)
+            bytes_read += prefix_bytes
         try:
             final_stat = path.stat()
         except FileNotFoundError:
@@ -920,7 +934,7 @@ class LiveBatchProcessor:
         else:
             observation = (0, 0, 0, 0, 0)
         st_dev, st_ino, byte_size, mtime_ns, _ctime_ns = observation
-        self._cursor.set(
+        updated = self._cursor.set(
             path,
             byte_size,
             byte_offset=0,
@@ -937,6 +951,8 @@ class LiveBatchProcessor:
             excluded=bool(existing.excluded) if existing is not None else False,
             allow_backward=True,
         )
+        if not updated:
+            raise sqlite3.OperationalError(f"failed to persist cursor invalidation for {path}")
 
     def _record_convergence_outcome(self, path: Path, debts: Iterable[ConvergenceDebt]) -> None:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
@@ -1793,6 +1809,9 @@ class LiveBatchProcessor:
             or cursor.content_fingerprint is None
         ):
             return None
+        expected_prefix_hash = cursor_prefix_hash(cursor.tail_hash)
+        if expected_prefix_hash is None:
+            return None
         try:
             with path.open("rb") as handle:
                 stat = os.fstat(handle.fileno())
@@ -1816,6 +1835,25 @@ class LiveBatchProcessor:
                 tail_start = max(0, last_complete_newline - 64 * 1024)
                 handle.seek(tail_start)
                 accepted_tail = handle.read(last_complete_newline - tail_start)
+                handle.seek(0)
+                accepted_hasher = sha256()
+                remaining = start_offset
+                while remaining > 0:
+                    chunk = handle.read(min(1 << 20, remaining))
+                    if not chunk:
+                        return _DEFER_APPEND
+                    accepted_hasher.update(chunk)
+                    remaining -= len(chunk)
+                if accepted_hasher.hexdigest() != expected_prefix_hash:
+                    return None
+                remaining = last_complete_newline - start_offset
+                while remaining > 0:
+                    chunk = handle.read(min(1 << 20, remaining))
+                    if not chunk:
+                        return _DEFER_APPEND
+                    accepted_hasher.update(chunk)
+                    remaining -= len(chunk)
+                accepted_prefix_hash = accepted_hasher.hexdigest()
                 final_stat = os.fstat(handle.fileno())
         except OSError:
             return None
@@ -1840,6 +1878,8 @@ class LiveBatchProcessor:
             bytes_read=len(payload),
             accepted_tail_hash=sha256(accepted_tail).hexdigest(),
             ctime_ns=stat.st_ctime_ns,
+            accepted_prefix_hash=accepted_prefix_hash,
+            authority_bytes_read=last_complete_newline,
         )
 
     def _append_payload_for_provider(self, path: Path, source_name: str, payload: bytes) -> bytes | None:
@@ -2051,6 +2091,11 @@ class LiveBatchProcessor:
             )
             return False
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
+        stored_tail_hash = (
+            encode_cursor_hash_authority(plan.accepted_prefix_hash, tail_hash)
+            if plan.accepted_prefix_hash is not None
+            else tail_hash
+        )
         updated = self._cursor.set(
             plan.path,
             plan.stat_size,
@@ -2058,7 +2103,7 @@ class LiveBatchProcessor:
             last_complete_newline=plan.last_complete_newline,
             parser_fingerprint=self._current_parser_fingerprint(),
             content_fingerprint=content_fingerprint,
-            tail_hash=tail_hash,
+            tail_hash=stored_tail_hash,
             source_name=plan.source_name,
             st_dev=plan.st_dev,
             st_ino=plan.st_ino,

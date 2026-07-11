@@ -24,6 +24,7 @@ from polylogue.sources.live.batch_support import (
     _AppendResult,
     _detect_provider_from_path_sample,
     _parse_path_as_session_artifact,
+    encode_cursor_hash_authority,
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -41,6 +42,13 @@ def _write_archive_blob(archive_root: Path, blob_hash: bytes | str, payload: byt
     blob_path = archive_root / "blob" / blob_hash_hex[:2] / blob_hash_hex[2:]
     blob_path.parent.mkdir(parents=True, exist_ok=True)
     blob_path.write_bytes(payload)
+
+
+def _cursor_hash_authority(payload: bytes) -> str:
+    return encode_cursor_hash_authority(
+        sha256(payload).hexdigest(),
+        sha256(payload[-64 * 1024 :]).hexdigest(),
+    )
 
 
 def _append_plan(path: Path, payload: bytes, *, payload_hash: str) -> _AppendPlan:
@@ -791,6 +799,7 @@ def test_append_plan_chunks_large_tail_without_full_ingest(tmp_path: Path) -> No
         last_complete_newline=len(original),
         parser_fingerprint="test-parser",
         content_fingerprint="base",
+        tail_hash=_cursor_hash_authority(original),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
@@ -834,6 +843,7 @@ def test_append_plan_defers_when_tail_has_no_complete_line(tmp_path: Path) -> No
         last_complete_newline=len(original),
         parser_fingerprint="test-parser",
         content_fingerprint="base",
+        tail_hash=_cursor_hash_authority(original),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
@@ -926,6 +936,7 @@ def test_jsonl_stream_retains_append_plan(tmp_path: Path) -> None:
         last_complete_newline=len(original),
         parser_fingerprint="test-parser",
         content_fingerprint="base",
+        tail_hash=_cursor_hash_authority(original),
         source_name="inbox",
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
@@ -965,6 +976,7 @@ def test_incomplete_append_is_requeued_not_full_ingested(tmp_path: Path) -> None
         last_complete_newline=len(original),
         parser_fingerprint="test-parser",
         content_fingerprint="base",
+        tail_hash=_cursor_hash_authority(original),
         source_name="chatgpt",
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
@@ -1037,6 +1049,7 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
         last_complete_newline=len(original),
         parser_fingerprint="test-parser",
         content_fingerprint="base-cursor",
+        tail_hash=_cursor_hash_authority(original),
         source_name="codex",
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
@@ -1110,6 +1123,7 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
         last_complete_newline=len(original),
         parser_fingerprint="test-parser",
         content_fingerprint="base-cursor",
+        tail_hash=_cursor_hash_authority(original),
         source_name="codex",
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
@@ -1576,7 +1590,7 @@ def test_full_ingest_does_not_advance_cursor_across_same_size_replacement(
         ]
 
 
-def test_rejected_full_cursor_frontier_forces_full_retry(tmp_path: Path) -> None:
+def test_rejected_full_cursor_frontier_requires_reauthorization(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     root.mkdir()
     path = root / "rejected-frontier.jsonl"
@@ -1638,7 +1652,54 @@ def test_rejected_full_cursor_frontier_forces_full_retry(tmp_path: Path) -> None
     assert invalidated.byte_offset == 0
     assert invalidated.content_fingerprint is None
     assert invalidated.failure_count == 2
+    assert LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+    )._needs_work(path)
     assert processor._append_plan(path, cursor=invalidated) is None
+
+
+def test_cursor_invalidation_lock_exhaustion_is_observable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "locked-invalidation.jsonl"
+    path.write_bytes(b'{"type":"session_meta","payload":{"id":"locked-invalidation"}}\n')
+    stat = path.stat()
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    cursor.set(
+        path,
+        stat.st_size,
+        byte_offset=stat.st_size,
+        parser_fingerprint="test-parser",
+        content_fingerprint="accepted-frontier",
+        tail_hash="accepted-tail",
+        source_name="codex",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        failure_count=2,
+    )
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr(cursor, "_sync_cursor_record_to_ops", lambda _record: False)
+
+    with pytest.raises(sqlite3.OperationalError, match="failed to persist cursor invalidation"):
+        processor._invalidate_cursor_for_full_retry(path, source_name="codex", stat=stat)
+
+    unchanged = cursor.get_record(path)
+    assert unchanged is not None
+    assert unchanged.byte_offset == stat.st_size
+    assert unchanged.content_fingerprint == "accepted-frontier"
+    assert unchanged.failure_count == 2
 
 
 @pytest.mark.parametrize("rewrite_mode", ["atomic-replacement", "in-place-prefix"])
@@ -1702,9 +1763,12 @@ def test_append_cursor_forces_full_retry_after_source_rewrite(
                     path,
                     ns=(
                         current_stat.st_atime_ns,
-                        max(current_stat.st_mtime_ns, pre_rewrite_stat.st_mtime_ns) + 1_000_000,
+                        pre_rewrite_stat.st_mtime_ns,
                     ),
                 )
+                restored_stat = path.stat()
+                assert restored_stat.st_mtime_ns == pre_rewrite_stat.st_mtime_ns
+                assert restored_stat.st_ctime_ns != pre_rewrite_stat.st_ctime_ns
             replaced = True
         return set(paths), 0.0, {}, []
 
@@ -1754,6 +1818,53 @@ def test_append_cursor_forces_full_retry_after_source_rewrite(
             ("message-aa",),
             ("message-bb",),
         ]
+
+
+def test_rewrite_plus_growth_before_planning_fails_closed_to_full_route(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "rewrite-before-plan.jsonl"
+    padding = b"p" * (70 * 1024)
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"rewrite-before-plan"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zeroa' + padding + b'"}]}}\n'
+    )
+    appended = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"alpha"}]}}\n'
+    )
+    path.write_bytes(baseline)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    assert asyncio.run(processor.ingest_files([path])).succeeded_file_count == 1
+    rewritten = baseline.replace(b"zeroa", b"zerob", 1)
+    assert rewritten[-64 * 1024 :] == baseline[-64 * 1024 :]
+    path.write_bytes(rewritten + appended)
+
+    second = asyncio.run(processor.ingest_files([path]))
+
+    assert second.full_file_count == 1
+    assert second.append_file_count == 0
+    assert second.succeeded_file_count == 0
+    assert second.failed_file_count == 1
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages ORDER BY native_id").fetchall() == [("message-0",)]
+        assert conn.execute("SELECT substr(search_text, 1, 5) FROM blocks ORDER BY search_text").fetchall() == [
+            ("zeroa",),
+        ]
+    failed_cursor = cursor.get_record(path)
+    assert failed_cursor is not None
+    assert failed_cursor.byte_offset == len(baseline)
+    assert failed_cursor.failure_count == 1
+    assert failed_cursor.next_retry_at is not None
 
 
 def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(tmp_path: Path) -> None:

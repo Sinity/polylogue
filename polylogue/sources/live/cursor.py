@@ -330,11 +330,11 @@ class CursorStore:
         with self._connect_ops() as conn:
             self._write_cursor_record_on_conn(conn, record)
 
-    def _sync_cursor_record_to_ops(self, record: CursorRecord) -> None:
+    def _sync_cursor_record_to_ops(self, record: CursorRecord) -> bool:
         def write() -> None:
             self._write_cursor_record_to_ops(record)
 
-        best_effort_cursor_write("archive ops cursor sync", write)
+        return best_effort_cursor_write("archive ops cursor sync", write)
 
     def _read_modify_write_cursor_record(
         self, path: Path, mutate: Callable[[CursorRecord | None], CursorRecord | None]
@@ -1011,7 +1011,7 @@ class CursorStore:
                 and existing.byte_offset > offset
             ):
                 return False
-        self._sync_cursor_record_to_ops(
+        return self._sync_cursor_record_to_ops(
             CursorRecord(
                 source_path=str(path),
                 byte_size=byte_size,
@@ -1032,7 +1032,6 @@ class CursorStore:
                 excluded=bool(excluded),
             )
         )
-        return True
 
     def mark_failed(self, path: Path) -> None:
         """Increment failure count and set exponential backoff.
