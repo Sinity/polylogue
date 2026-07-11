@@ -1636,14 +1636,30 @@ class ArchiveStore:
         )
         return unclassified, logical_keys
 
-    def raw_membership_census_rows(self) -> tuple[tuple[str, int], ...]:
+    def raw_membership_census_rows(self, raw_ids: Sequence[str] | None = None) -> tuple[tuple[str, int], ...]:
         """Return every retained raw whose membership census may affect authority."""
-        rows = (
-            self._ensure_source_conn()
-            .execute("SELECT raw_id, source_index FROM raw_sessions ORDER BY raw_id")
-            .fetchall()
-        )
+        conn = self._ensure_source_conn()
+        if raw_ids is None:
+            rows = conn.execute("SELECT raw_id, source_index FROM raw_sessions ORDER BY raw_id").fetchall()
+        elif raw_ids:
+            placeholders = ",".join("?" for _ in raw_ids)
+            rows = conn.execute(
+                f"SELECT raw_id, source_index FROM raw_sessions WHERE raw_id IN ({placeholders}) ORDER BY raw_id",
+                tuple(raw_ids),
+            ).fetchall()
+        else:
+            rows = []
         return tuple((str(row[0]), int(row[1])) for row in rows)
+
+    def raw_payload_sizes(self, raw_ids: Sequence[str]) -> dict[str, int]:
+        if not raw_ids:
+            return {}
+        placeholders = ",".join("?" for _ in raw_ids)
+        rows = self._ensure_source_conn().execute(
+            f"SELECT raw_id, blob_size FROM raw_sessions WHERE raw_id IN ({placeholders})",
+            tuple(raw_ids),
+        )
+        return {str(row[0]): int(row[1] or 0) for row in rows}
 
     def replace_raw_membership_census(
         self,

@@ -1533,10 +1533,9 @@ def repair_raw_materialization(
     oversized_stream_safe_raw_ids = [
         raw_id for raw_id in oversized_candidate_raw_ids if _raw_materialization_stream_safe(candidates, raw_id)
     ]
-    oversized_stream_safe_raw_id_set = set(oversized_stream_safe_raw_ids)
-    oversized_raw_ids = [
-        raw_id for raw_id in oversized_candidate_raw_ids if raw_id not in oversized_stream_safe_raw_id_set
-    ]
+    # The retained-raw reader materializes bytes before stream parsing, so
+    # stream-capable format is diagnostic only until that reader is replaced.
+    oversized_raw_ids = oversized_candidate_raw_ids
     if oversized_raw_ids:
         metrics["raw_materialization_oversized_count"] = float(len(oversized_raw_ids))
         metrics["raw_materialization_resource_blocked_count"] = float(len(oversized_raw_ids))
@@ -1580,17 +1579,35 @@ def repair_raw_materialization(
             "raw_materialization", repaired_count=0, success=False, detail=detail, metrics=metrics
         )
 
-    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+    from polylogue.sources.revision_backfill import (
+        RawRevisionReplayResourceBlockedError,
+        backfill_historical_revision_evidence,
+    )
 
     archive_root = _raw_materialization_archive_root(config)
     oversized_raw_id_set = set(oversized_raw_ids)
     executable_raw_ids = [raw_id for raw_id in raw_ids if raw_id not in oversized_raw_id_set]
     metrics["raw_materialization_executed_count"] = float(len(executable_raw_ids))
     if executable_raw_ids:
-        replay = backfill_historical_revision_evidence(
-            archive_root,
-            selected_raw_ids=executable_raw_ids,
-        )
+        try:
+            replay = backfill_historical_revision_evidence(
+                archive_root,
+                selected_raw_ids=executable_raw_ids,
+                max_payload_bytes=RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+            )
+        except RawRevisionReplayResourceBlockedError as exc:
+            metrics["raw_materialization_resource_blocked_count"] = float(len(exc.raw_ids))
+            metrics["raw_materialization_executed_count"] = 0.0
+            return _internal_derived_repair_result(
+                "raw_materialization",
+                repaired_count=0,
+                success=False,
+                detail=(
+                    f"Raw materialization blocked: {len(exc.raw_ids):,} expanded-cohort raw row(s) exceed "
+                    f"execution limit {_format_bytes(exc.limit_bytes)}"
+                ),
+                metrics=metrics,
+            )
     else:
         from polylogue.sources.revision_backfill import RevisionBackfillResult
 

@@ -1384,6 +1384,10 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
     monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
     monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+    monkeypatch.setattr(
+        "polylogue.sources.revision_backfill.backfill_historical_revision_evidence",
+        lambda *_args, **_kwargs: pytest.fail("oversized stream raw must be blocked before backfill"),
+    )
 
     result = repair_mod.repair_raw_materialization(config, dry_run=False)
 
@@ -1393,6 +1397,54 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
     assert "1 replay candidate(s) remain" in result.detail
     assert "parse_kwargs" not in calls
     assert "closed" not in calls
+
+
+def test_raw_materialization_blocks_oversized_expanded_cohort_before_blob_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"expanded-size","timestamp":"2026-07-11T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"one","role":"user","content":'
+        b'[{"type":"input_text","text":"one"}]}}\n'
+    )
+    newest = baseline + (
+        b'{"type":"response_item","payload":{"type":"message","id":"two","role":"assistant","content":'
+        b'[{"type":"output_text","text":"two"}]}}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        small_raw = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=baseline, source_path="expanded.jsonl", acquired_at_ms=1
+        )
+        oversized_raw = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=newest, source_path="expanded.jsonl", acquired_at_ms=2
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+            (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, oversized_raw),
+        )
+        source_conn.commit()
+
+    monkeypatch.setattr(
+        "polylogue.sources.revision_backfill._parse_retained_raw",
+        lambda *_args, **_kwargs: pytest.fail("expanded cohort size must be checked before opening any blob"),
+    )
+    result = repair_mod.repair_raw_materialization(
+        _config(tmp_path),
+        raw_artifact_id=small_raw,
+        dry_run=False,
+    )
+
+    assert result.success is False
+    assert result.repaired_count == 0
+    assert result.metrics["raw_materialization_resource_blocked_count"] == 1.0
+    assert "expanded-cohort" in result.detail
 
 
 def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(
