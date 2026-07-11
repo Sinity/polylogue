@@ -236,19 +236,52 @@ Target repository: Sinex.
   and test-inventory owners, rerun it, and retain only the missing compiler
   slice with a combinatorial budget and anti-vacuity controls.
 
+## Implementation outcomes
+
+Recovery was followed by current-master review, selective adaptation, focused
+verification, and merge. The result is deliberately smaller than the proposed
+campaigns:
+
+- Branch 13: PR #2700 landed provider-neutral semantic evidence cards for
+  shell, edit, lineage, task, and attachment events. Web parity, permalinks,
+  visual proof, and profile-driven rendering remain owned by `polylogue-ap7`.
+- Branch 14: no cockpit package was copied. Its category correction landed in
+  PR #2698; remaining web contracts stay with the existing `bby` program.
+- Branch 15: PR #2704 landed a versioned Demo Packet v2 contract, validator,
+  registry, migrated packets, and anti-vacuity tests. `polylogue-212.12` closed
+  with that evidence.
+- Branch 16: the expired archive was not reconstructed. PR #2705 independently
+  implemented constrained `next` and `within` sequence operators, preserving
+  bare-arrow behavior and unknown-time semantics. Repetition/span capture and
+  percentiles remain on `polylogue-fnm.3` and `.1`.
+- Branch 17: no duplicate proof world landed. Existing PR #2674 remains the
+  base; the parser-version and cross-source event-hook residual stays open.
+- Branch 18: Sinex PR #2468 reviewed all 79 proposed graph operations against
+  live authority: 36 were accepted, 43 rejected, and no unreviewed drift was
+  applied.
+- Branch 19: PR #2698 replaced the primary flight-recorder/system-of-record
+  framing with the narrower local-evidence and receipts category.
+- Branch 20: PR #2703 landed an additive durable context-delivery receipt
+  ledger with exact-image hashing, recipient/actor/run/boundary attribution,
+  omissions and caveats, idempotent retry, and same-reference drift refusal.
+  Authenticated delivery surfaces remain `polylogue-37t.22`.
+- Branch 21: Sinex PR #2469 landed one calibrated compatibility-mutation
+  witness registry rather than importing the unsupported bulk finding count.
+- Branch 22: Sinex PR #2467 landed the bounded, non-executing proof-obligation
+  manifest compiler. It validates strength, references, controls, and budgets;
+  it does not claim to execute the compiled proofs.
+
+PR #2699 first made this adjudication durable, and PR #2706 reconciled the
+Polylogue Beads state. The authenticated acquisition defect discovered during
+recovery is tracked as `polylogue-5k5l.1`; it must distinguish authorization,
+pod expiry, missing interpreter files, and signed-URL expiry rather than
+reporting all failures as missing bytes.
+
 ## Result
 
-The ten branches are now classified, but recovery does not make them ten
-apply-ready deliveries. Recovered code remains candidate code until rebased,
-reviewed, and rerun against current source. Three Polylogue branches warrant
-bounded implementation against current source (13, 15, 16); one warrants only
-its residual constructs (17);
-one warrants contract refinement through existing web children (14); one
-requires a real missing persistence slice (20); one supplies launch strategy
-with a necessary positioning correction (19). The three Sinex branches are
-research inputs whose missing executable artifacts prevent direct graph or code
-changes.
-
-Durable Beads notes must cite this report and the corresponding escrow folder.
-Any future implementation should cite the current owning bead, not the expired
-ChatGPT sandbox package.
+The ten branches were neither discarded nor accepted wholesale. Six yielded
+bounded Polylogue changes, three yielded bounded Sinex changes, and the
+remainder sharpened existing owners without creating a parallel delivery
+system. Recovered code was treated as evidence and candidate implementation,
+never as proof of its own claims. Future work must cite the current owning bead
+and these merged outcomes, not the ChatGPT sandbox package.
