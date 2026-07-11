@@ -83,9 +83,9 @@ A view of exactly which evidence and reviewed assertions an agent received, what
 
 A preregistered paired comparison between strong raw-reference access and a generated resume packet. A workflow demonstration is insufficient; any benefit claim requires fixed sampling, equal budgets, preserved outputs, and independent scoring.
 
-## Demo contract
+## Demo Packet v2 contract
 
-The existing Demo Finding Packet contains:
+The Demo Finding Packet contains:
 
 - an executable prompt;
 - a provenance stanza;
@@ -94,7 +94,18 @@ The existing Demo Finding Packet contains:
 - checks, unsupported claims, and coverage notes;
 - the raw run transcript.
 
-The next packet revision should add an explicit primary construct, oracle, falsifier, positive/negative/missing-evidence controls, material manifest, scope, and recording parity. See `devtools/demo_packet.py` for the current executable contract.
+The versioned machine contract is
+[`schemas/demo-packet-v2.schema.json`](schemas/demo-packet-v2.schema.json). It
+also requires exactly one primary construct, a receipt-backed claim declared
+before execution, an independent oracle, a comparative baseline, negative and
+missing-evidence controls, an explicit falsifier, bounded non-claims, and local
+SHA-256-bound receipt artifacts. `devtools lab policy demo-packet-registry`
+validates every registered packet and rejects unregistered v2 packets.
+
+A deterministic public packet proves a product contract on the approved seed
+1843 fixture world. It does not establish field prevalence, production scale,
+or model behavior in the wild. Private-archive benchmarks remain a separate
+local-only lane with their own sampling and privacy obligations.
 
 ## Why the anti-demo belongs beside the successes
 

@@ -155,11 +155,71 @@ def run_demo_tour(
         problems=problems,
     )
     report_json_path.write_text(
-        json.dumps(_public_payload(result.to_payload(), base_dir=resolved_output), indent=2, sort_keys=True) + "\n",
+        json.dumps(_public_payload(_tour_report_payload(result), base_dir=resolved_output), indent=2, sort_keys=True)
+        + "\n",
         encoding="utf-8",
     )
     report_markdown_path.write_text(_render_report_markdown(result), encoding="utf-8")
     return result
+
+
+def _tour_report_payload(result: DemoTourResult) -> dict[str, object]:
+    """Return the report payload with the Demo Packet v2 epistemic fields.
+
+    The tour report is not itself a committed packet directory, so it does not
+    claim to validate against the packet schema.  It carries the same claim,
+    oracle, control, falsifier, and non-claim vocabulary so publication code
+    cannot silently strip the tour's epistemic boundary.
+    """
+
+    payload = result.to_payload()
+    payload.update(
+        {
+            "demo_packet_contract_version": "2.0.0",
+            "primary_construct": {
+                "id": "demo.public-tour",
+                "statement": "The deterministic tour exercises public read and analysis paths over a verified fixture archive.",
+                "product_primitives": ["demo seed", "demo verify", "find", "read", "analyze"],
+            },
+            "claim": {
+                "statement": "The recorded tour commands complete successfully against the deterministic private-data-free archive.",
+                "declared_before_execution": True,
+                "scope": "the generated fixture archive and commands in this report only",
+                "status": "supported" if result.ok else "refuted",
+            },
+            "oracle": {
+                "independent": True,
+                "description": "The semantic fixture verifier checks planted archive constructs independently of the tour narration.",
+                "method": "Run demo verification before the public CLI steps and retain its structured result.",
+                "expected": {"verify_ok": True, "command_exit_codes": [0 for _ in result.steps]},
+            },
+            "baseline": {
+                "name": "command-exit-only smoke test",
+                "result": {"would_not_verify_planted_constructs": True},
+            },
+            "controls": {
+                "negative": {
+                    "description": "A failed command or failed semantic verifier makes the tour fail.",
+                    "passed": result.ok,
+                },
+                "missing_evidence": {
+                    "description": "The report retains verifier problems and does not convert absent overlays or constructs into success.",
+                    "passed": not result.problems,
+                },
+            },
+            "falsifier": {
+                "condition": "The semantic verifier fails, a public command exits nonzero, or a timing budget is exceeded.",
+                "triggered": not result.ok,
+                "result": "pass" if result.ok else "fail",
+            },
+            "non_claims": [
+                "The deterministic tour does not establish field prevalence, production scale, or provider completeness.",
+                "The deterministic tour does not establish memory uplift, invoice accuracy, selective deletion, or the Sinex backend.",
+                "The private-archive Receipts benchmark is a separate local-only lane and is not simulated by this fixture.",
+            ],
+        }
+    )
+    return payload
 
 
 def _tour_env(archive_root: Path) -> dict[str, str]:
@@ -277,6 +337,20 @@ def _render_report_markdown(result: DemoTourResult) -> str:
         "- It does not prove that semantic retrieval, reviewed memory, or context injection improves agent outcomes.",
         "- It does not prove the proposed Sinex-backed storage architecture or selective physical deletion.",
         "- It is a deterministic product-contract demonstration, not a provider invoice or general model-behavior study.",
+        "",
+        "## Claim",
+        "",
+        "The recorded public commands complete successfully against the verified fixture archive.",
+        "",
+        "## Oracle",
+        "",
+        "The semantic fixture verifier runs before the narrated commands and checks planted constructs independently of the report prose.",
+        "",
+        "## Non-claims",
+        "",
+        "- This deterministic tour does not establish field prevalence, production scale, or provider completeness.",
+        "- It does not establish memory uplift, invoice accuracy, selective deletion, or the Sinex backend.",
+        "- The private-archive Receipts benchmark is a separate local-only lane and is not simulated here.",
         "",
         "## Timings",
         "",

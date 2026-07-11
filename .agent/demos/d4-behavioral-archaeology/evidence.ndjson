@@ -1,3 +1,4 @@
+{"ref": "artifact:d4-behavioral-archaeology-evidence", "cited_for": "Demo Packet v2 receipt root", "verified_via": "committed evidence.ndjson"}
 {"ref": "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6", "cited_for": "Q1 SEQ thrash-loop match (repeated shell action)", "verified_via": "then select --json"}
 {"ref": "codex-session:demo-00", "cited_for": "Q1 SEQ thrash-loop match (repeated shell action)", "verified_via": "then select --json"}
 {"ref": "actions.group_by=tool", "cited_for": "Q2 tool call volume: Bash=9, Read=8, Task=1, Write=1, exec_command=1", "verified_via": "actions where exit_code:>=0 | group by tool | count"}

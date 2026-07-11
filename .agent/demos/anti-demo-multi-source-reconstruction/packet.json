@@ -1,0 +1,120 @@
+{
+  "baseline": {
+    "method": "Use the recorded simpler comparison path rather than the structural product path.",
+    "name": "plausible narrative completion",
+    "receipts": [
+      "artifact:anti-demo-multi-source-reconstruction-evidence"
+    ],
+    "result": "Infer missing ambient activity from nearby transcript text."
+  },
+  "claim": {
+    "declared_before_execution": true,
+    "scope": "the current Polylogue archive tiers at the recorded revision",
+    "statement": "Minute-by-minute fusion of transcript, window-focus, shell-history, and browser-tab evidence is not supported by this Polylogue schema.",
+    "status": "not_supported"
+  },
+  "controls": {
+    "missing_evidence": [
+      {
+        "expected": "No matching ambient source table must produce a refusal, not an empty successful timeline.",
+        "id": "absent-source-control",
+        "observed": {
+          "status": "not_supported"
+        },
+        "passed": true,
+        "purpose": "Require missing evidence to remain explicit rather than converted into a positive claim.",
+        "receipts": [
+          "artifact:anti-demo-multi-source-reconstruction-evidence"
+        ]
+      }
+    ],
+    "negative": [
+      {
+        "expected": "Existing session-to-repository and session-to-commit rows must not be mislabeled as minute-level ambient evidence.",
+        "id": "existing-git-correlation",
+        "observed": {
+          "ambient_timeline": false
+        },
+        "passed": true,
+        "purpose": "Prevent an adjacent easier signal from being counted as the primary construct.",
+        "receipts": [
+          "artifact:anti-demo-multi-source-reconstruction-evidence"
+        ]
+      }
+    ]
+  },
+  "falsifier": {
+    "condition": "A current archive-tier table is found that stores minute-grained window-focus, independent shell-history, and browser-tab observations.",
+    "evaluation_method": "Apply the stated condition to the committed evidence and run log.",
+    "receipts": [
+      "artifact:anti-demo-multi-source-reconstruction-evidence"
+    ],
+    "result": "pass",
+    "triggered": false
+  },
+  "mode": "anti-demo",
+  "non_claims": [
+    "This refusal does not claim that cross-source reconstruction is impossible in a federated Sinex-backed architecture.",
+    "This packet does not measure production source coverage or the quality of any external activity system."
+  ],
+  "oracle": {
+    "description": "The archive DDL independently determines which source domains can exist in Polylogue.",
+    "expected": {
+      "ambient_sources_present": false
+    },
+    "independent": true,
+    "method": "Inspect every archive-tier CREATE TABLE declaration for the required ambient source domains.",
+    "receipts": [
+      "artifact:anti-demo-multi-source-reconstruction-evidence"
+    ]
+  },
+  "packet_id": "anti-demo-multi-source-reconstruction",
+  "primary_construct": {
+    "id": "evidence.refusal",
+    "product_primitives": [
+      "schema inspection",
+      "evidence gap reporting"
+    ],
+    "statement": "The product refuses a cross-source reconstruction when required source domains are absent."
+  },
+  "provenance": {
+    "archive_cursor": "polylogue-demo-seed-fixture-world",
+    "commit_sha": "e5a68ec51",
+    "measure_version": "demo-packet-v2",
+    "run_date": "2026-07-10",
+    "sample_frame_predicate": "all Polylogue archive-tier DDL files at the recorded revision"
+  },
+  "receipts": [
+    {
+      "artifact_path": "evidence.ndjson",
+      "description": "Committed evidence rows and references for this packet.",
+      "kind": "artifact",
+      "ref": "artifact:anti-demo-multi-source-reconstruction-evidence",
+      "resolved": true
+    }
+  ],
+  "reproduction": {
+    "commands": [
+      "python -m devtools.verify_demo_packet_registry"
+    ],
+    "deterministic": true,
+    "fixture": "current archive-tier DDL and deterministic demo seed",
+    "private_data": false
+  },
+  "results": {
+    "measurements": [
+      {
+        "name": "required_ambient_source_tables",
+        "receipts": [
+          "artifact:anti-demo-multi-source-reconstruction-evidence"
+        ],
+        "unit": "tables",
+        "value": 0
+      }
+    ],
+    "status": "pass",
+    "summary": "The claim is refused on structural schema grounds and the narrower existing correlations are named."
+  },
+  "schema_version": "2.0.0",
+  "title": "Multi-source reconstruction refusal"
+}

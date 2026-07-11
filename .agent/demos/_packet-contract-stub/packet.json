@@ -1,0 +1,119 @@
+{
+  "baseline": {
+    "method": "Use the recorded simpler comparison path rather than the structural product path.",
+    "name": "legacy filename checklist",
+    "receipts": [
+      "artifact:packet-contract-stub-evidence"
+    ],
+    "result": "Check only that the legacy packet filenames exist."
+  },
+  "claim": {
+    "declared_before_execution": true,
+    "scope": "this validator fixture only",
+    "statement": "The complete committed fixture passes the Demo Packet v2 validation gate.",
+    "status": "supported"
+  },
+  "controls": {
+    "missing_evidence": [
+      {
+        "expected": "Removing the receipt artifact must make the packet invalid.",
+        "id": "missing-receipt",
+        "observed": {
+          "valid": false
+        },
+        "passed": true,
+        "purpose": "Require missing evidence to remain explicit rather than converted into a positive claim.",
+        "receipts": [
+          "artifact:packet-contract-stub-evidence"
+        ]
+      }
+    ],
+    "negative": [
+      {
+        "expected": "Removing the falsifier must make the packet invalid.",
+        "id": "missing-falsifier",
+        "observed": {
+          "valid": false
+        },
+        "passed": true,
+        "purpose": "Prevent an adjacent easier signal from being counted as the primary construct.",
+        "receipts": [
+          "artifact:packet-contract-stub-evidence"
+        ]
+      }
+    ]
+  },
+  "falsifier": {
+    "condition": "The v2 validator accepts the committed packet after its falsifier field is removed.",
+    "evaluation_method": "Apply the stated condition to the committed evidence and run log.",
+    "receipts": [
+      "artifact:packet-contract-stub-evidence"
+    ],
+    "result": "pass",
+    "triggered": false
+  },
+  "mode": "fixture",
+  "non_claims": [
+    "This fixture does not prove an archive, search, lineage, memory, or agent capability.",
+    "This fixture does not establish field prevalence, scale, or performance."
+  ],
+  "oracle": {
+    "description": "The normative JSON Schema and packet validator independently enumerate the required contract fields.",
+    "expected": {
+      "valid": true
+    },
+    "independent": true,
+    "method": "Validate the committed packet against docs/schemas/demo-packet-v2.schema.json.",
+    "receipts": [
+      "artifact:packet-contract-stub-evidence"
+    ]
+  },
+  "packet_id": "packet-contract-stub",
+  "primary_construct": {
+    "id": "demo.packet-v2.shape",
+    "product_primitives": [
+      "demo packet registry validator"
+    ],
+    "statement": "The committed fixture demonstrates the complete Demo Packet v2 directory and epistemic shape."
+  },
+  "provenance": {
+    "archive_cursor": "seeded-corpus-seed-1843",
+    "commit_sha": "ffba3ec0c",
+    "measure_version": "demo-packet-v2",
+    "run_date": "2026-07-10",
+    "sample_frame_predicate": "the committed packet-contract fixture"
+  },
+  "receipts": [
+    {
+      "artifact_path": "evidence.ndjson",
+      "description": "Committed evidence rows and references for this packet.",
+      "kind": "artifact",
+      "ref": "artifact:packet-contract-stub-evidence",
+      "resolved": true
+    }
+  ],
+  "reproduction": {
+    "commands": [
+      "python -m devtools.verify_demo_packet_registry"
+    ],
+    "deterministic": true,
+    "fixture": "seeded-corpus contract fixture",
+    "private_data": false
+  },
+  "results": {
+    "measurements": [
+      {
+        "name": "schema_errors",
+        "receipts": [
+          "artifact:packet-contract-stub-evidence"
+        ],
+        "unit": "errors",
+        "value": 0
+      }
+    ],
+    "status": "pass",
+    "summary": "The fixture satisfies the complete Demo Packet v2 contract."
+  },
+  "schema_version": "2.0.0",
+  "title": "Demo Packet contract fixture"
+}

@@ -1,11 +1,11 @@
-"""Verify every registered demo has a conforming Demo Finding Packet (polylogue-212.7).
+"""Verify every registered demo has a conforming Demo Packet v2 (polylogue-212.12).
 
 Background
 ----------
 
 The 212 demo portfolio manifest (``.agent/demos/registry.json``) lists every
 demo prompt and its expected packet directory. This lint enumerates the
-manifest and validates each entry's packet against the Demo Finding Packet
+manifest and validates each entry against the Demo Packet v2 epistemic
 contract (``devtools.demo_packet``) -- catching a demo whose packet is
 missing entirely, distinct from one whose packet exists but is malformed.
 """
@@ -54,6 +54,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print("demo packet registry: violations found")
+    for error in result.registry_errors:
+        print(f"  registry: {error}")
+    for packet_dir in result.unregistered_packet_dirs:
+        print(f"  unregistered v2 packet: {packet_dir}")
     for slug, validation in result.entry_results:
         if validation is None:
             print(f"  {slug}: packet directory missing")
@@ -66,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    missing provenance stanza field: {name}")
             for name in validation.malformed_sections:
                 print(f"    missing report.md section: {name}")
+            for error in validation.schema_errors:
+                print(f"    schema: {error}")
+            for error in validation.receipt_errors:
+                print(f"    receipt: {error}")
             for error in validation.errors:
                 print(f"    {error}")
     return 1

@@ -31,6 +31,11 @@ None — this is a trivial reproducibility check by construction.
 This packet is a fixture for `devtools lab policy demo-packet-registry`, not
 a real 212 demo. Do not cite its "claim" externally.
 
+## Non-claims
+
+- This fixture does not prove an archive, search, lineage, memory, or agent capability.
+- This fixture does not establish field prevalence, scale, or performance.
+
 ## Reproduce
 
 ```bash

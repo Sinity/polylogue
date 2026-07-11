@@ -1,0 +1,123 @@
+{
+  "baseline": {
+    "method": "Use the recorded simpler comparison path rather than the structural product path.",
+    "name": "ordinary transcript browsing",
+    "receipts": [
+      "artifact:d4-behavioral-archaeology-evidence"
+    ],
+    "result": "Inspect sessions one by one without structural predicates or grouped action rows."
+  },
+  "claim": {
+    "declared_before_execution": true,
+    "scope": "the committed 11-session seed fixture and recorded commands",
+    "statement": "The recorded six-query run exercises the documented query primitives against the deterministic demo archive.",
+    "status": "supported"
+  },
+  "controls": {
+    "missing_evidence": [
+      {
+        "expected": "A missing ambient-activity source must remain unsupported rather than inferred from transcript prose.",
+        "id": "unsupported-cross-source-control",
+        "observed": {
+          "status": "not_supported"
+        },
+        "passed": true,
+        "purpose": "Require missing evidence to remain explicit rather than converted into a positive claim.",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-evidence"
+        ]
+      }
+    ],
+    "negative": [
+      {
+        "expected": "Sparse embedding coverage must return no semantic hit instead of fabricating one.",
+        "id": "sparse-semantic-control",
+        "observed": {
+          "semantic_hits": 0
+        },
+        "passed": true,
+        "purpose": "Prevent an adjacent easier signal from being counted as the primary construct.",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-evidence"
+        ]
+      }
+    ]
+  },
+  "falsifier": {
+    "condition": "Any recorded query output cannot be reproduced from the deterministic archive or resolves to different cited rows.",
+    "evaluation_method": "Apply the stated condition to the committed evidence and run log.",
+    "receipts": [
+      "artifact:d4-behavioral-archaeology-evidence"
+    ],
+    "result": "pass",
+    "triggered": false
+  },
+  "mode": "public",
+  "non_claims": [
+    "The fixture counts do not estimate production prevalence, archive scale, or provider-wide behavior.",
+    "The packet does not prove that semantic search is complete when embeddings are sparse.",
+    "The packet does not prove that a chat UI could never implement equivalent features."
+  ],
+  "oracle": {
+    "description": "The command log and cited deterministic rows are independent of the report prose.",
+    "expected": {
+      "commands_exit_zero": true
+    },
+    "independent": true,
+    "method": "Re-run the exact commands and compare selected refs and grouped counts with evidence.ndjson.",
+    "receipts": [
+      "artifact:d4-behavioral-archaeology-evidence"
+    ]
+  },
+  "packet_id": "d4-behavioral-archaeology",
+  "primary_construct": {
+    "id": "query.dsl.composition",
+    "product_primitives": [
+      "polylogue find",
+      "polylogue select",
+      "polylogue read",
+      "polylogue --explain"
+    ],
+    "statement": "The query DSL composes structural predicates, aggregations, reads, and explanations over the deterministic archive."
+  },
+  "provenance": {
+    "archive_cursor": "polylogue-demo-seed-fixture-world",
+    "commit_sha": "fdd5ea848",
+    "measure_version": "demo-packet-v2",
+    "run_date": "2026-07-10",
+    "sample_frame_predicate": "all 11 sessions in the deterministic demo archive"
+  },
+  "receipts": [
+    {
+      "artifact_path": "evidence.ndjson",
+      "description": "Committed evidence rows and references for this packet.",
+      "kind": "artifact",
+      "ref": "artifact:d4-behavioral-archaeology-evidence",
+      "resolved": true
+    }
+  ],
+  "reproduction": {
+    "commands": [
+      "python -m devtools.verify_demo_packet_registry"
+    ],
+    "deterministic": true,
+    "fixture": "polylogue demo seed 1843",
+    "private_data": false
+  },
+  "results": {
+    "measurements": [
+      {
+        "name": "recorded_query_commands",
+        "receipts": [
+          "artifact:d4-behavioral-archaeology-evidence"
+        ],
+        "unit": "commands",
+        "value": 6
+      }
+    ],
+    "status": "pass",
+    "summary": "The recorded commands exercise the intended query surfaces; documented defects and sparse coverage remain explicit."
+  },
+  "schema_version": "2.0.0",
+  "title": "Behavioral archaeology DSL packet"
+}

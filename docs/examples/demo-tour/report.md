@@ -24,6 +24,20 @@ one claim-versus-receipt contradiction, a structural aggregate, copied-lineage c
 - It does not prove the proposed Sinex-backed storage architecture or selective physical deletion.
 - It is a deterministic product-contract demonstration, not a provider invoice or general model-behavior study.
 
+## Claim
+
+The recorded public commands complete successfully against the verified fixture archive.
+
+## Oracle
+
+The semantic fixture verifier runs before the narrated commands and checks planted constructs independently of the report prose.
+
+## Non-claims
+
+- This deterministic tour does not establish field prevalence, production scale, or provider completeness.
+- It does not establish memory uplift, invoice accuracy, selective deletion, or the Sinex backend.
+- The private-archive Receipts benchmark is a separate local-only lane and is not simulated here.
+
 ## Timings
 
 - First evidence result: 5.177s (budget 30s)

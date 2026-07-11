@@ -3,8 +3,11 @@
     "slug": "packet-contract-stub",
     "prompt_path": ".agent/demos/_packet-contract-stub/PROMPT.md",
     "packet_dir": ".agent/demos/_packet-contract-stub",
-    "mode": "private",
-    "required_primitives": ["polylogue demo seed", "polylogue find"]
+    "mode": "fixture",
+    "required_primitives": [
+      "polylogue demo seed",
+      "polylogue find"
+    ]
   },
   {
     "slug": "d4-behavioral-archaeology",
@@ -23,7 +26,9 @@
     "slug": "anti-demo-multi-source-reconstruction",
     "prompt_path": ".agent/demos/anti-demo-multi-source-reconstruction/PROMPT.md",
     "packet_dir": ".agent/demos/anti-demo-multi-source-reconstruction",
-    "mode": "public",
-    "required_primitives": ["schema inspection (grep over archive_tiers DDL)"]
+    "mode": "anti-demo",
+    "required_primitives": [
+      "schema inspection (grep over archive_tiers DDL)"
+    ]
   }
 ]
