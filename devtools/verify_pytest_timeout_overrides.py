@@ -237,11 +237,18 @@ def _is_dynamic_timeout_option(node: ast.expr, assignments: dict[str, ast.expr])
 
 
 def _parse_command_overrides(
-    path: str, line: int, nodes: list[ast.expr], assignments: dict[str, ast.expr]
+    path: str,
+    line: int,
+    nodes: list[ast.expr],
+    assignments: dict[str, ast.expr],
+    rebound: set[str],
 ) -> tuple[list[TimeoutOverride], list[str]]:
     overrides: list[TimeoutOverride] = []
     errors: list[str] = []
     for index, node in enumerate(nodes):
+        if isinstance(node, ast.Name) and node.id in rebound:
+            errors.append(f"{path}:{node.lineno}: rebound managed pytest command alias is forbidden")
+            continue
         resolved_node = _resolve_alias(node, assignments)
         if not isinstance(resolved_node, ast.Constant) or not isinstance(resolved_node.value, str):
             if _is_dynamic_timeout_option(node, assignments):
@@ -301,12 +308,14 @@ def _flatten_marker_values(
     rebound: set[str],
     seen: set[str] | None = None,
 ) -> tuple[list[ast.expr], str | None]:
-    """Resolve safe list/tuple marker aliases without evaluating Python."""
+    """Resolve only immutable tuple marker aliases without evaluating Python."""
     if isinstance(node, ast.Name):
         if node.id in rebound:
             return [], "rebound pytest marker alias is forbidden"
         if node.id not in assignments:
             return [], "dynamic pytest marker alias is forbidden"
+        if isinstance(assignments[node.id], ast.List):
+            return [], "mutable pytest marker alias is forbidden; use an inline mark or tuple"
         seen = set() if seen is None else seen
         if node.id in seen:
             return [], "cyclic pytest marker alias is forbidden"
@@ -321,6 +330,10 @@ def _flatten_marker_values(
             markers.extend(nested)
         return markers, None
     return [node], None
+
+
+def _mentions_rebound_alias(node: ast.AST, rebound: set[str]) -> bool:
+    return any(isinstance(descendant, ast.Name) and descendant.id in rebound for descendant in ast.walk(node))
 
 
 def _scan_timeout_markers(
@@ -427,6 +440,8 @@ def _scan_python(
                 is_pytest_command = _is_literal_pytest_command(command_nodes)
                 if is_pytest_command and dynamic_expression and _is_dynamic_timeout_option(candidate, assignments):
                     errors.append(f"{relative}:{line}: dynamic managed pytest command expression is forbidden")
+                if is_pytest_command and _mentions_rebound_alias(candidate, rebound):
+                    errors.append(f"{relative}:{line}: rebound managed pytest command alias is forbidden")
         elif isinstance(candidate, ast.Call) and _is_pytest_execution_call(candidate):
             flattened = _flatten_command_expression(ast.Tuple(elts=candidate.args, ctx=ast.Load()), assignments)
             if flattened is None:
@@ -449,8 +464,10 @@ def _scan_python(
                     for argument in candidate.args
                 ):
                     errors.append(f"{relative}:{line}: dynamic managed pytest command expression is forbidden")
+                if _mentions_rebound_alias(candidate, rebound):
+                    errors.append(f"{relative}:{line}: rebound managed pytest command alias is forbidden")
         if command_nodes is not None and is_pytest_command:
-            found, found_errors = _parse_command_overrides(relative, line, command_nodes, assignments)
+            found, found_errors = _parse_command_overrides(relative, line, command_nodes, assignments, rebound)
             overrides.extend(found)
             errors.extend(found_errors)
     return overrides, errors

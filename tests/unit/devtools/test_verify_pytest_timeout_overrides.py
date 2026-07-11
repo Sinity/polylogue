@@ -113,7 +113,7 @@ def test_registered_verifier_rejects_module_timeout_mark_alias(
     root = _make_tree(
         tmp_path,
         test_source=(
-            "import pytest\n\nTIMEOUT_MARKS = [pytest.mark.timeout(None)]\npytestmark = TIMEOUT_MARKS\n"
+            "import pytest\n\nTIMEOUT_MARKS = (pytest.mark.timeout(None),)\npytestmark = TIMEOUT_MARKS\n"
             "def test_target():\n    pass\n"
         ),
     )
@@ -132,7 +132,7 @@ def test_registered_verifier_rejects_incremental_timeout_mark_alias(
     root = _make_tree(
         tmp_path,
         test_source=(
-            "import pytest\n\nEXTRA_MARKS = [pytest.mark.timeout(None)]\npytestmark = []\n"
+            "import pytest\n\nEXTRA_MARKS = (pytest.mark.timeout(None),)\npytestmark = []\n"
             "pytestmark += EXTRA_MARKS\ndef test_target():\n    pass\n"
         ),
     )
@@ -235,12 +235,63 @@ def test_registered_verifier_rejects_rebound_parameter_marker_alias(
     assert "rebound pytest marker alias" in output
 
 
+def test_registered_verifier_rejects_rebound_managed_command_alias(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Anti-vacuity: resolving a final command binding makes this source-order timeout argument pass."""
+    root = _make_tree(
+        tmp_path,
+        devtools_source="TIMEOUT_ARG = '--timeout=0'\nCOMMAND = ['pytest', TIMEOUT_ARG]\nTIMEOUT_ARG = '--timeout=30'\n",
+    )
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 1
+    assert "rebound managed pytest command alias" in output
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "import pytest\n\nMARKS = []\nMARKS.append(pytest.mark.timeout(None))\npytestmark = MARKS\n"
+            "def test_target():\n    pass\n",
+            "mutable pytest marker alias",
+        ),
+        (
+            "import pytest\n\nMARKS = []\nMARKS.append(pytest.mark.timeout(None))\n"
+            "pytest.param(1, marks=MARKS)\ndef test_target():\n    pass\n",
+            "mutable pytest marker alias",
+        ),
+        (
+            "import pytest\n\nMARKS = [pytest.mark.timeout(30)]\nMARKS[0] = pytest.mark.timeout(None)\n"
+            "pytestmark = MARKS\ndef test_target():\n    pass\n",
+            "mutable pytest marker alias",
+        ),
+    ],
+)
+def test_registered_verifier_rejects_mutable_marker_aliases(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    source: str,
+    expected: str,
+) -> None:
+    """Anti-vacuity: interpreting mutable list aliases makes these runtime-effective marks false-green."""
+    root = _make_tree(tmp_path, test_source=source)
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 1
+    assert expected in output
+
+
 @pytest.mark.parametrize(
     "source",
     [
-        "import pytest\n\nMARKS = [pytest.mark.timeout(30)]\npytestmark = MARKS\ndef test_target():\n    pass\n",
+        "import pytest\n\nMARKS = (pytest.mark.timeout(30),)\npytestmark = MARKS\ndef test_target():\n    pass\n",
         (
-            "import pytest\n\nEXTRA = [pytest.mark.timeout(30)]\npytestmark = []\n"
+            "import pytest\n\nEXTRA = (pytest.mark.timeout(30),)\npytestmark = []\n"
             "pytestmark += EXTRA\ndef test_target():\n    pass\n"
         ),
         "import pytest\n\nCASE = pytest.mark.timeout(30)\npytest.param(1, marks=CASE)\ndef test_target():\n    pass\n",
@@ -262,9 +313,9 @@ def test_registered_verifier_accepts_single_assignment_marker_aliases(
 @pytest.mark.parametrize(
     "source",
     [
-        "import pytest\n\nMARKS = [pytest.mark.timeout(30)]\npytestmark = MARKS\ndef test_target():\n    pass\n",
+        "import pytest\n\nMARKS = (pytest.mark.timeout(30),)\npytestmark = MARKS\ndef test_target():\n    pass\n",
         (
-            "import pytest\n\nEXTRA_MARKS = [pytest.mark.timeout(30)]\npytestmark = []\n"
+            "import pytest\n\nEXTRA_MARKS = (pytest.mark.timeout(30),)\npytestmark = []\n"
             "pytestmark += EXTRA_MARKS\ndef test_target():\n    pass\n"
         ),
         (
