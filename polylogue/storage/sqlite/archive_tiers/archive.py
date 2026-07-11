@@ -1866,6 +1866,14 @@ class ArchiveStore:
         )
         return tuple(str(row[0]) for row in rows)
 
+    def raw_revision_head_raw_id(self, logical_source_key: str) -> str | None:
+        """Return the currently indexed accepted raw for one logical session."""
+        row = self._conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
+            (logical_source_key,),
+        ).fetchone()
+        return None if row is None else str(row[0])
+
     def raw_membership_authority_complete(self, raw_id: str) -> bool:
         row = (
             self._ensure_source_conn()
@@ -2134,6 +2142,12 @@ class ArchiveStore:
                         or bytes(existing_head[1]) != existing_projection.session_hash
                     ):
                         raise RuntimeError("membership replay cannot retire an unrelated accepted head")
+                    existing_is_byte_governed = conn.execute(
+                        "SELECT 1 FROM raw_sessions WHERE raw_id = ? AND logical_source_key = ?",
+                        (existing_raw_id, logical_source_key),
+                    ).fetchone()
+                    if existing_is_byte_governed is not None and accepted_raw_id != existing_raw_id:
+                        raise RuntimeError("membership replay cannot replace an unconvertible byte head")
                     self._conn.execute(
                         "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
                         (logical_source_key,),

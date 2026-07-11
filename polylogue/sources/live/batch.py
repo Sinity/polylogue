@@ -1726,7 +1726,11 @@ class LiveBatchProcessor:
             member_sessions: dict[str, Any] = {}
             projections: dict[str, Any] = {}
             revisions: list[MembershipRevision] = []
-            for member_raw_id in archive.raw_membership_raw_ids(logical_source_key):
+            member_raw_ids = list(archive.raw_membership_raw_ids(logical_source_key))
+            accepted_head_raw_id = archive.raw_revision_head_raw_id(logical_source_key)
+            if accepted_head_raw_id is not None and accepted_head_raw_id not in member_raw_ids:
+                member_raw_ids.append(accepted_head_raw_id)
+            for member_raw_id in member_raw_ids:
                 retained_sessions = (
                     sessions
                     if member_raw_id == source_raw_id
