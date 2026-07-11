@@ -79,6 +79,7 @@ class _AppendPlan:
     payload_hash: str
     cursor_fingerprint: str | None
     bytes_read: int
+    accepted_tail_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +107,8 @@ class _FullIngestResult:
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     raw_source_names: dict[Path, str] = field(default_factory=dict)
     raw_source_revisions: dict[Path, str] = field(default_factory=dict)
-    captured_file_identities: dict[Path, tuple[int, int]] = field(default_factory=dict)
+    captured_content_hashes: dict[Path, str] = field(default_factory=dict)
+    captured_file_observations: dict[Path, tuple[int, int, int, int]] = field(default_factory=dict)
     worker_count: int = 0
     ingested_session_count: int = 0
     ingested_message_count: int = 0
@@ -130,7 +132,8 @@ def _full_ingest_result_from_summary(
     raw_byte_sizes: dict[Path, int],
     raw_source_names: dict[Path, str] | None = None,
     raw_source_revisions: dict[Path, str] | None = None,
-    captured_file_identities: dict[Path, tuple[int, int]] | None = None,
+    captured_content_hashes: dict[Path, str] | None = None,
+    captured_file_observations: dict[Path, tuple[int, int, int, int]] | None = None,
     summary: object | None,
 ) -> _FullIngestResult:
     error = getattr(summary, "wal_checkpoint_error", None) if summary is not None else None
@@ -142,7 +145,8 @@ def _full_ingest_result_from_summary(
         raw_byte_sizes=raw_byte_sizes,
         raw_source_names=raw_source_names or {},
         raw_source_revisions=raw_source_revisions or {},
-        captured_file_identities=captured_file_identities or {},
+        captured_content_hashes=captured_content_hashes or {},
+        captured_file_observations=captured_file_observations or {},
         worker_count=int(getattr(summary, "worker_count", 0)) if summary is not None else 0,
         ingested_session_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
@@ -191,6 +195,31 @@ def fingerprint_file(path: Path, *, chunk_size: int = _FINGERPRINT_STREAM_CHUNK)
                 last_complete_newline = offset + newline_at + 1
             offset += len(chunk)
     return hasher.hexdigest(), last_complete_newline
+
+
+def sha256_range_from_path(
+    path: Path,
+    *,
+    start_offset: int,
+    end_offset: int,
+    chunk_size: int = _FINGERPRINT_STREAM_CHUNK,
+) -> tuple[str, int]:
+    """Hash one exact byte range, rejecting a short read."""
+    if start_offset < 0 or end_offset < start_offset:
+        raise ValueError("invalid source byte range")
+    hasher = hashlib.sha256()
+    remaining = end_offset - start_offset
+    bytes_read = 0
+    with path.open("rb") as handle:
+        handle.seek(start_offset)
+        while remaining > 0:
+            chunk = handle.read(min(chunk_size, remaining))
+            if not chunk:
+                raise EOFError(f"source ended before byte offset {end_offset}")
+            hasher.update(chunk)
+            bytes_read += len(chunk)
+            remaining -= len(chunk)
+    return hasher.hexdigest(), bytes_read
 
 
 def tail_hash_from_path(path: Path, byte_size: int, *, chunk_size: int = 64 * 1024) -> tuple[str, int]:

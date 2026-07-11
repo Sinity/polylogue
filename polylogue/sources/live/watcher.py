@@ -13,7 +13,6 @@ each file triggered a full source-tree rescan via ``parse_file()``.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import sqlite3
 import stat as stat_module
@@ -30,6 +29,7 @@ from polylogue.logging import get_logger
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
 from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
+    sha256_range_from_path,
     tail_hash_and_last_complete_newline_from_path,
     tail_hash_from_path,
 )
@@ -48,19 +48,6 @@ _CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 _PERIODIC_CATCH_UP_INTERVAL_S = 15.0
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
-
-
-def _sha256_prefix(path: Path, byte_size: int) -> str | None:
-    hasher = hashlib.sha256()
-    remaining = byte_size
-    with path.open("rb") as handle:
-        while remaining > 0:
-            chunk = handle.read(min(1 << 20, remaining))
-            if not chunk:
-                return None
-            hasher.update(chunk)
-            remaining -= len(chunk)
-    return hasher.hexdigest()
 
 
 def _stage_timing_summary(stage_timings_s: dict[str, float], *, limit: int = 8) -> str:
@@ -738,7 +725,12 @@ class LiveWatcher:
         if not _archive_blob_exists(archive_root, content_fingerprint):
             return False
         try:
-            if _sha256_prefix(path, archived_size) != content_fingerprint:
+            current_fingerprint, _fingerprint_bytes = sha256_range_from_path(
+                path,
+                start_offset=0,
+                end_offset=archived_size,
+            )
+            if current_fingerprint != content_fingerprint:
                 return False
             if archived_size == current_size:
                 tail_hash, last_complete_newline, _bytes_read = tail_hash_and_last_complete_newline_from_path(

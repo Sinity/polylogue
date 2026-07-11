@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -1481,9 +1482,11 @@ def test_full_ingest_cursor_stops_at_captured_blob_boundary_when_file_grows(
         assert session_hash == accepted_hash
 
 
-def test_full_ingest_does_not_advance_cursor_across_atomic_replacement(
+@pytest.mark.parametrize("replacement_mode", ["atomic", "in-place"])
+def test_full_ingest_does_not_advance_cursor_across_same_size_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    replacement_mode: str,
 ) -> None:
     root = tmp_path / "sessions"
     root.mkdir()
@@ -1502,7 +1505,8 @@ def test_full_ingest_does_not_advance_cursor_across_atomic_replacement(
     assert len(payload_a) == len(payload_b)
     path.write_bytes(payload_a)
     replacement.write_bytes(payload_b)
-    original_identity = (path.stat().st_dev, path.stat().st_ino)
+    original_stat = path.stat()
+    original_identity = (original_stat.st_dev, original_stat.st_ino)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
@@ -1517,7 +1521,15 @@ def test_full_ingest_does_not_advance_cursor_across_atomic_replacement(
     def replace_after_acquisition(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
         nonlocal replaced
         if not replaced:
-            replacement.replace(path)
+            if replacement_mode == "atomic":
+                replacement.replace(path)
+            else:
+                path.write_bytes(payload_b)
+                current_stat = path.stat()
+                os.utime(
+                    path,
+                    ns=(current_stat.st_atime_ns, max(current_stat.st_mtime_ns, original_stat.st_mtime_ns) + 1_000_000),
+                )
             replaced = True
         return set(paths), 0.0, {}, []
 
@@ -1527,8 +1539,14 @@ def test_full_ingest_does_not_advance_cursor_across_atomic_replacement(
 
     assert first.succeeded_file_count == 1
     assert first.stale_cursor_write_count == 1
-    assert (path.stat().st_dev, path.stat().st_ino) != original_identity
-    assert cursor.get_record(path) is None
+    if replacement_mode == "atomic":
+        assert (path.stat().st_dev, path.stat().st_ino) != original_identity
+    else:
+        assert (path.stat().st_dev, path.stat().st_ino) == original_identity
+    stale_cursor = cursor.get_record(path)
+    assert stale_cursor is not None
+    assert stale_cursor.byte_offset == 0
+    assert stale_cursor.content_fingerprint is None
     assert LiveWatcher(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -1554,6 +1572,117 @@ def test_full_ingest_does_not_advance_cursor_across_atomic_replacement(
         assert conn.execute("SELECT search_text FROM blocks ORDER BY search_text").fetchall() == [
             ("alpha",),
             ("bravo",),
+        ]
+
+
+@pytest.mark.parametrize("rewrite_mode", ["atomic-replacement", "in-place-prefix"])
+def test_append_cursor_forces_full_retry_after_source_rewrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    rewrite_mode: str,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "append-replaced.jsonl"
+    replacement = root / "append-replacement.jsonl"
+    baseline_a = (
+        b'{"type":"session_meta","payload":{"id":"append-replace-a"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0a","role":"user",'
+        b'"content":[{"type":"input_text","text":"zeroa"}]}}\n'
+    )
+    append_a = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-aa","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"alpha"}]}}\n'
+    )
+    replacement_b = (
+        b'{"type":"session_meta","payload":{"id":"append-replace-b"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0b","role":"user",'
+        b'"content":[{"type":"input_text","text":"zerob"}]}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-bb","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"bravo"}]}}\n'
+    )
+    assert len(baseline_a + append_a) == len(replacement_b)
+    path.write_bytes(baseline_a)
+    replacement.write_bytes(replacement_b)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    assert asyncio.run(processor.ingest_files([path])).succeeded_file_count == 1
+    with path.open("ab") as handle:
+        handle.write(append_a)
+    pre_rewrite_stat = path.stat()
+    replaced = False
+
+    def replace_after_append(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        nonlocal replaced
+        if not replaced:
+            if rewrite_mode == "atomic-replacement":
+                replacement.replace(path)
+            else:
+                rewritten = path.read_bytes().replace(b"zeroa", b"zerob", 1)
+                assert len(rewritten) == pre_rewrite_stat.st_size
+                path.write_bytes(rewritten)
+                current_stat = path.stat()
+                os.utime(
+                    path,
+                    ns=(
+                        current_stat.st_atime_ns,
+                        max(current_stat.st_mtime_ns, pre_rewrite_stat.st_mtime_ns) + 1_000_000,
+                    ),
+                )
+            replaced = True
+        return set(paths), 0.0, {}, []
+
+    monkeypatch.setattr(processor, "_converge_paths", replace_after_append)
+
+    appended = asyncio.run(processor.ingest_files([path]))
+
+    assert appended.append_file_count == 1
+    assert appended.succeeded_file_count == 1
+    assert appended.stale_cursor_write_count == 1
+    stale_cursor = cursor.get_record(path)
+    assert stale_cursor is not None
+    assert stale_cursor.byte_offset == 0
+    assert stale_cursor.content_fingerprint is None
+    assert LiveWatcher(
+        polylogue,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+    )._needs_work(path)
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages ORDER BY native_id").fetchall() == [
+            ("message-0a",),
+            ("message-aa",),
+        ]
+        assert conn.execute("SELECT search_text FROM blocks ORDER BY search_text").fetchall() == [
+            ("alpha",),
+            ("zeroa",),
+        ]
+
+    if rewrite_mode == "in-place-prefix":
+        assert b"zerob" in path.read_bytes()
+        return
+
+    retried = asyncio.run(processor.ingest_files([path]))
+
+    assert retried.full_file_count == 1
+    assert retried.succeeded_file_count == 1
+    assert retried.stale_cursor_write_count == 0
+    final_cursor = cursor.get_record(path)
+    assert final_cursor is not None
+    assert final_cursor.byte_offset == len(replacement_b)
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages ORDER BY native_id").fetchall() == [
+            ("message-0a",),
+            ("message-0b",),
+            ("message-aa",),
+            ("message-bb",),
         ]
 
 
