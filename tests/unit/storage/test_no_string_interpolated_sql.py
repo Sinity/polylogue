@@ -117,12 +117,6 @@ _AUDITED_SITES: Final[dict[_AuditedSiteKey, str]] = {
     ): "provider usage summary interpolates closed counter-column expressions and WHERE fragments; filter values are bound.",
     (
         "polylogue/storage/usage.py",
-        "_provider_cumulative_usage",
-        "ad7bb9d262cfceb3",
-        0,
-    ): "provider cumulative usage interpolates closed counter-column expressions and origin SELECT/JOIN fragments; origin is bound.",
-    (
-        "polylogue/storage/usage.py",
         "_sample_event_sessions",
         "f437ad380e1b12d6",
         0,

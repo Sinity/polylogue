@@ -574,13 +574,19 @@ def test_provider_usage_report_stale_rollups_use_one_bounded_sql_diagnostic(tmp_
     assert row.stale_rollup_session_count == stale_count
     assert row.sample_stale_rollup_sessions == tuple(f"codex-session:{native_id}" for native_id in stale_native_ids[:3])
 
-    stale_diagnostics = [statement for statement in traced_sql if "provider_usage_stale_rollups" in statement]
-    assert len(stale_diagnostics) == 1
-    stale_sql = stale_diagnostics[0]
-    assert "json_group_array" in stale_sql
-    assert "ROW_NUMBER() OVER" in stale_sql
-    assert "GROUP BY origin" in stale_sql
-    assert stale_sql.count("session_provider_usage_events AS e") == 1
+    stale_latest = [statement for statement in traced_sql if "provider_usage_stale_latest" in statement]
+    assert len(stale_latest) == 1
+    assert "ORDER BY e.position DESC" in stale_latest[0]
+    assert "LIMIT 1" in stale_latest[0]
+    stale_plan = [str(plan[3]) for plan in conn.execute("EXPLAIN QUERY PLAN " + stale_latest[0])]
+    assert any("CORRELATED SCALAR SUBQUERY" in detail for detail in stale_plan)
+    assert any("SEARCH e USING INDEX idx_session_provider_usage_events_session" in detail for detail in stale_plan)
+    assert not any(detail.startswith("SCAN e") for detail in stale_plan)
+
+    cumulative_latest = [statement for statement in traced_sql if "provider_usage_latest_cumulative" in statement]
+    assert len(cumulative_latest) == 1
+    assert "ORDER BY e.position DESC" in cumulative_latest[0]
+    assert "LIMIT 1" in cumulative_latest[0]
 
 
 def test_provider_usage_report_preserves_control_characters_in_stale_sample_ids(tmp_path: Path) -> None:
@@ -628,6 +634,53 @@ def test_provider_usage_report_preserves_control_characters_in_stale_sample_ids(
     assert report.origins[0].sample_stale_rollup_sessions == (session_id,)
 
 
+def test_provider_usage_report_handles_large_accepted_last_usage_totals(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    input_tokens = 2**62
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="large-accepted-usage",
+        title="large accepted usage",
+        models_used=["gpt-large"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-large",
+                    "last_token_usage": {"input_tokens": input_tokens, "cached_input_tokens": 1},
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-large",
+                    "last_token_usage": {"input_tokens": input_tokens, "cached_input_tokens": 1},
+                },
+            ),
+        ],
+    )
+    write_parsed_session_to_archive(conn, session)
+
+    report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+
+    row = report.origins[0]
+    # Anti-vacuity: SQLite SUM over the accepted input rows raises integer
+    # overflow; exact streaming must preserve the provider and stale audits.
+    assert row.provider_request_usage.input_tokens == 2**63
+    assert row.provider_request_usage.cached_input_tokens == 2
+    assert row.stale_rollup_session_count == 0
+    assert row.sample_stale_rollup_sessions == ()
+
+
 def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Path) -> None:
     index_conn = _connect(tmp_path / "index.db")
     source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)
@@ -665,6 +718,55 @@ def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Pa
     assert row.acquired_not_materialized_count == 0
     assert row.sample_acquired_not_materialized_raw_ids == ()
     assert row.coverage_state == "no_sessions"
+
+
+def test_provider_usage_report_uses_membership_census_before_raw_blob_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index_conn = _connect(tmp_path / "index.db")
+    source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)
+    census_rows = (
+        ("raw-codex-censused-complete", "complete", 1),
+        ("raw-codex-censused-failed", "failed", 0),
+        ("raw-codex-censused-non-session", "non_session", 0),
+    )
+    source_conn.executemany(
+        """
+        INSERT INTO raw_sessions (
+            raw_id, origin, native_id, source_path, source_index, blob_hash,
+            blob_size, acquired_at_ms, parsed_at_ms, validation_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (raw_id, "codex-session", status, f"missing-{status}.jsonl", 0, bytes(32), 1, 1, 2, "passed")
+            for raw_id, status, _member_count in census_rows
+        ],
+    )
+    source_conn.executemany(
+        """
+        INSERT INTO raw_membership_census (
+            raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+        ) VALUES (?, 'test-parser', ?, ?, 2, 'classified')
+        """,
+        census_rows,
+    )
+    source_conn.commit()
+    source_conn.close()
+
+    def fail_blob_probe(_path: Path, *, limit: int) -> set[str]:
+        raise AssertionError(f"censused raw payload was reopened with limit={limit}")
+
+    monkeypatch.setattr("polylogue.storage.usage._raw_jsonl_type_set", fail_blob_probe)
+    report = provider_usage_report_from_connection(index_conn, archive_root=tmp_path, origin="codex-session")
+
+    row = report.origins[0]
+    # Anti-vacuity: removing any census short-circuit calls fail_blob_probe.
+    assert row.raw_session_count == 3
+    assert row.acquired_not_materialized_count == 2
+    assert row.sample_acquired_not_materialized_raw_ids == (
+        "raw-codex-censused-complete",
+        "raw-codex-censused-failed",
+    )
 
 
 def test_provider_usage_coverage_matrix_marks_estimate_only_exports(tmp_path: Path) -> None:
