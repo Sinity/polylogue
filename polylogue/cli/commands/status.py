@@ -178,12 +178,21 @@ def _valid_port(value: str) -> int | None:
     return port if 0 < port < 65536 else None
 
 
-def _table_exists(conn: Any, table_name: str) -> bool:
+def _schema_object_exists(conn: Any, name: str, *, types: Sequence[str]) -> bool:
+    placeholders = ", ".join("?" for _ in types)
     row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
+        f"SELECT 1 FROM sqlite_master WHERE type IN ({placeholders}) AND name = ? LIMIT 1",
+        (*types, name),
     ).fetchone()
     return row is not None
+
+
+def _table_exists(conn: Any, table_name: str) -> bool:
+    return _schema_object_exists(conn, table_name, types=("table",))
+
+
+def _view_exists(conn: Any, view_name: str) -> bool:
+    return _schema_object_exists(conn, view_name, types=("view",))
 
 
 def _archive_index_path(db: Any) -> Any | None:
@@ -825,12 +834,35 @@ def _archive_readiness_counts(
         "root_thread_count": insight_status.root_threads,
         "stale_thread_count": insight_status.stale_thread_count,
         "orphan_thread_count": insight_status.orphan_thread_count,
-        "action_count": _fast_count(conn, "SELECT COUNT(*) FROM actions") if _table_exists(conn, "actions") else 0,
+        **_action_readiness_counts(conn),
         "missing_session_profile_materialization": insight_status.missing_session_profile_materialization_count,
         "missing_work_events_materialization": insight_status.missing_work_event_materialization_count,
         "missing_phases_materialization": insight_status.missing_phase_materialization_count,
         "missing_thread_materialization": insight_status.missing_thread_materialization_count,
         "missing_latency_materialization": insight_status.missing_latency_materialization_count,
+    }
+
+
+def _action_readiness_counts(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return exact, non-vacuous evidence for the derived ``actions`` view."""
+    tool_use_block_count = (
+        _fast_count(conn, "SELECT COUNT(*) FROM blocks WHERE block_type = 'tool_use'")
+        if _table_exists(conn, "blocks")
+        else 0
+    )
+    actions_view_present = _view_exists(conn, "actions")
+    action_count = 0
+    actions_view_error: str | None = None
+    if actions_view_present:
+        try:
+            action_count = _fast_count(conn, "SELECT COUNT(*) FROM actions")
+        except sqlite3.Error as exc:
+            actions_view_error = str(exc)
+    return {
+        "action_count": action_count,
+        "tool_use_block_count": tool_use_block_count,
+        "actions_view_present": actions_view_present,
+        "actions_view_error": actions_view_error,
     }
 
 
@@ -897,6 +929,13 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
     )
     thread_blockers.extend(mismatch_blocker("thread_count", "root_thread_count", "thread_root_mismatch"))
     latency_ready, latency_blockers = materialized("latency")
+    tool_usage_blockers: list[str] = []
+    if not bool(counts.get("actions_view_present", False)):
+        tool_usage_blockers.append("actions_view_missing")
+    elif counts.get("actions_view_error"):
+        tool_usage_blockers.append("actions_view_unreadable")
+    elif count("tool_use_block_count") != count("action_count"):
+        tool_usage_blockers.append("actions_tool_use_count_mismatch")
 
     return {
         "archive_sessions": surface(
@@ -968,7 +1007,16 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
                 "orphan_thread_count": count("orphan_thread_count"),
             },
         ),
-        "tool_usage": surface(ready=True, blockers=[], evidence={"action_count": count("action_count")}),
+        "tool_usage": surface(
+            ready=not tool_usage_blockers,
+            blockers=tool_usage_blockers,
+            evidence={
+                "action_count": count("action_count"),
+                "tool_use_block_count": count("tool_use_block_count"),
+                "actions_view_present": bool(counts.get("actions_view_present", False)),
+                "actions_view_error": counts.get("actions_view_error"),
+            },
+        ),
         "latency_profiles": surface(
             ready=latency_ready,
             blockers=latency_blockers,

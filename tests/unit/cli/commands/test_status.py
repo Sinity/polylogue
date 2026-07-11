@@ -12,6 +12,7 @@ from polylogue.cli.commands.status import (
     _ARCHIVE_FACADE_ROUTES,
     _ARCHIVE_TIER_ENUM,
     _BUILTIN_DAEMON_URL,
+    _action_readiness_counts,
     _archive_cli_route_status,
     _archive_facade_route_status,
     _archive_one_tier_status,
@@ -31,6 +32,7 @@ from polylogue.cli.commands.status import (
     _fmt_bytes,
     _parse_cmdline_api_port,
     _table_exists,
+    _view_exists,
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -443,6 +445,60 @@ class TestTableExists:
         finally:
             conn.close()
 
+    def test_view_is_not_a_table_but_is_a_schema_view(self, tmp_path: Path) -> None:
+        conn = sqlite3.connect(tmp_path / "test.db")
+        try:
+            conn.execute("CREATE TABLE base (id INTEGER)")
+            conn.execute("CREATE VIEW derived AS SELECT id FROM base")
+            assert _table_exists(conn, "derived") is False
+            assert _view_exists(conn, "derived") is True
+        finally:
+            conn.close()
+
+
+class TestActionReadinessCounts:
+    def test_real_index_schema_exposes_queryable_empty_actions_view(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        initialize_archive_database(db_path, ArchiveTier.INDEX)
+        with sqlite3.connect(db_path) as conn:
+            assert _action_readiness_counts(conn) == {
+                "action_count": 0,
+                "tool_use_block_count": 0,
+                "actions_view_present": True,
+                "actions_view_error": None,
+            }
+
+    def test_removed_actions_view_is_reported_absent(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        initialize_archive_database(db_path, ArchiveTier.INDEX)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP VIEW actions")
+            counts = _action_readiness_counts(conn)
+        assert counts["actions_view_present"] is False
+
+    def test_broken_actions_view_is_reported_unreadable(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        initialize_archive_database(db_path, ArchiveTier.INDEX)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP VIEW actions")
+            conn.execute("CREATE VIEW actions AS SELECT * FROM missing_action_source")
+            counts = _action_readiness_counts(conn)
+        assert counts["actions_view_present"] is True
+        assert counts["actions_view_error"] is not None
+
+    def test_partial_actions_view_exposes_exact_cardinality_mismatch(self, tmp_path: Path) -> None:
+        with sqlite3.connect(tmp_path / "partial.db") as conn:
+            conn.execute("CREATE TABLE blocks (block_type TEXT NOT NULL)")
+            conn.executemany("INSERT INTO blocks VALUES (?)", [("tool_use",), ("tool_use",)])
+            conn.execute("CREATE INDEX blocks_type_idx ON blocks(block_type)")
+            conn.execute("CREATE VIEW actions AS SELECT rowid FROM blocks WHERE block_type = 'tool_use' AND rowid = 1")
+            counts = _action_readiness_counts(conn)
+        result = _archive_status_surfaces({**counts, "missing_latency_materialization": 0}, source_check_available=True)
+        assert counts["tool_use_block_count"] == 2
+        assert counts["action_count"] == 1
+        assert result["tool_usage"]["ready"] is False
+        assert result["tool_usage"]["blockers"] == ["actions_tool_use_count_mismatch"]
+
 
 class TestColumnExists:
     """Tests for _column_exists()."""
@@ -790,9 +846,8 @@ class TestArchiveStatusSurfaces:
         assert result["archive_sessions"]["ready"] is True
         assert result["archive_sessions"]["blockers"] == []
 
-    def test_tool_usage_always_ready(self) -> None:
-        """tool_usage surface is always ready=True."""
-        counts: dict[str, int] = {
+    def test_tool_usage_ready_for_genuine_zero_tool_archive(self) -> None:
+        counts: dict[str, object] = {
             "session_count": 0,
             "raw_link_count": 0,
             "missing_raw_session_count": 0,
@@ -808,11 +863,38 @@ class TestArchiveStatusSurfaces:
             "thread_count": 0,
             "missing_thread_materialization": 0,
             "action_count": 0,
+            "tool_use_block_count": 0,
+            "actions_view_present": True,
+            "actions_view_error": None,
             "missing_session_profile_materialization": 0,
             "missing_latency_materialization": 0,
         }
         result = _archive_status_surfaces(counts, source_check_available=True)
         assert result["tool_usage"]["ready"] is True
+
+    @pytest.mark.parametrize(
+        ("overrides", "blocker"),
+        [
+            ({"actions_view_present": False}, "actions_view_missing"),
+            ({"actions_view_present": True, "actions_view_error": "broken"}, "actions_view_unreadable"),
+            (
+                {"actions_view_present": True, "actions_view_error": None, "tool_use_block_count": 1},
+                "actions_tool_use_count_mismatch",
+            ),
+        ],
+    )
+    def test_tool_usage_blocks_on_non_vacuous_action_failures(self, overrides: dict[str, object], blocker: str) -> None:
+        counts: dict[str, object] = {
+            "action_count": 0,
+            "tool_use_block_count": 0,
+            "actions_view_present": True,
+            "actions_view_error": None,
+            "missing_latency_materialization": 0,
+        }
+        counts.update(overrides)
+        result = _archive_status_surfaces(counts, source_check_available=True)
+        assert result["tool_usage"]["ready"] is False
+        assert result["tool_usage"]["blockers"] == [blocker]
 
     def test_raw_artifacts_unavailable_when_source_check_unavailable(self) -> None:
         """raw_artifacts shows ready=None when source_check_available is False."""
