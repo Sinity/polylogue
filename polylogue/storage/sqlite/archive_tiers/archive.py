@@ -1930,6 +1930,22 @@ class ArchiveStore:
             write_source_blob_refs(self._ensure_source_conn(), raw_id, refs)
         session_ids: set[str] = set()
         with self._conn:
+            existing_head = self._conn.execute(
+                "SELECT accepted_frontier_kind FROM raw_revision_heads WHERE logical_source_key = ?",
+                (plan.logical_source_key,),
+            ).fetchone()
+            accepted_frontier_kind = (
+                "semantic" if existing_head is not None and str(existing_head[0]) == "semantic" else "byte"
+            )
+            if accepted_frontier_kind == "semantic":
+                accepted_projection = session_revision_projection(aggregate_sessions[0])
+                accepted_frontier = (
+                    len(accepted_projection.message_hashes)
+                    + len(accepted_projection.event_hashes)
+                    + len(accepted_projection.attachment_hashes)
+                )
+            else:
+                accepted_frontier = None
             for position, raw_id in enumerate(plan.accepted_raw_ids):
                 result = self._index_parsed_for_retained_raw(
                     parsed_by_raw_id[raw_id],
@@ -1977,8 +1993,14 @@ class ArchiveStore:
                         accepted_raw_id=accepted_raw_id if has_head else None,
                         accepted_source_revision=accepted.source_revision if has_head else None,
                         accepted_content_hash=stored[0] if has_head else None,
-                        accepted_frontier_kind="byte" if has_head else None,
-                        accepted_frontier=(accepted.append_end_offset or accepted.blob_size) if has_head else None,
+                        accepted_frontier_kind=accepted_frontier_kind if has_head else None,
+                        accepted_frontier=(
+                            accepted_frontier
+                            if accepted_frontier_kind == "semantic"
+                            else accepted.append_end_offset or accepted.blob_size
+                        )
+                        if has_head
+                        else None,
                         baseline_raw_id=candidate.baseline_raw_id,
                         predecessor_raw_id=candidate.predecessor_raw_id,
                         append_end_offset=accepted.append_end_offset,
