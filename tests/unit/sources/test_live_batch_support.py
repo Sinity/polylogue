@@ -11,6 +11,8 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor, _ArchiveFullWriteResult
@@ -1228,9 +1230,11 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
-def test_append_ingest_writes_archive_file_set_through_archive_tiers(
+@pytest.mark.parametrize("protect_chain", [True, False], ids=["protected", "protection-disabled"])
+def test_live_append_chain_survives_post_ingest_compaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    protect_chain: bool,
 ) -> None:
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -1241,7 +1245,8 @@ def test_append_ingest_writes_archive_file_set_through_archive_tiers(
     path = root / "append-v1.jsonl"
     payload = (
         b'{"type":"session_meta","payload":{"id":"append-v1","timestamp":"2026-06-02T00:00:00Z"}}\n'
-        b'{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
     )
     path.write_bytes(payload)
     index_db = tmp_path / "index.db"
@@ -1263,32 +1268,346 @@ def test_append_ingest_writes_archive_file_set_through_archive_tiers(
         return original_publish(publisher, raw)
 
     monkeypatch.setattr(ArchiveBlobPublisher, "write_from_bytes", counted_publish)
+    if not protect_chain:
+        from polylogue.storage.raw_retention import RawRetentionAuthority
+
+        def unsafe_retention_authority(conn: sqlite3.Connection, **_kwargs: object) -> RawRetentionAuthority:
+            raw_ids = frozenset(str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions"))
+            return RawRetentionAuthority(protected_raw_ids=frozenset(), eligible_raw_ids=raw_ids)
+
+        monkeypatch.setattr(
+            "polylogue.storage.raw_retention.active_raw_retention_authority",
+            unsafe_retention_authority,
+        )
+
+    append_chunks = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"one"}]}}\n',
+        b'{"type":"response_item","payload":{"type":"message","id":"message-2","role":"user",'
+        b'"content":[{"type":"input_text","text":"two"}]}}\n',
+        b'{"type":"response_item","payload":{"type":"message","id":"message-3","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"three"}]}}\n',
+    )
+    results = [asyncio.run(processor.ingest_files([path]))]
+    for chunk in append_chunks:
+        with path.open("ab") as handle:
+            handle.write(chunk)
+        results.append(asyncio.run(processor.ingest_files([path])))
+
+    assert results[0].full_file_count == 1
+    assert results[0].succeeded_file_count == 1
+    assert all(result.append_file_count == 1 for result in results[1:])
+    append_identity = b'{"type":"session_meta","payload":{"id":"append-v1"}}\n'
+    assert published_payloads == [payload, *(append_identity + chunk for chunk in append_chunks)]
+    if not protect_chain:
+        assert [result.succeeded_file_count for result in results] == [1, 1, 1, 0]
+        assert [result.failed_file_count for result in results] == [0, 0, 0, 1]
+        cursor_record = cursor.get_record(path)
+        assert cursor_record is not None
+        assert cursor_record.byte_offset == len(payload) + sum(len(chunk) for chunk in append_chunks[:2])
+        assert cursor_record.failure_count == 1
+        with sqlite3.connect(index_db) as conn:
+            head_raw_id = str(conn.execute("SELECT accepted_raw_id FROM raw_revision_heads").fetchone()[0])
+            assert {str(row[0]) for row in conn.execute("SELECT native_id FROM messages")} == {
+                "message-0",
+                "message-1",
+                "message-2",
+            }
+        with sqlite3.connect(source_db) as conn:
+            predecessor_raw_id = str(
+                conn.execute(
+                    "SELECT predecessor_raw_id FROM raw_sessions WHERE raw_id = ?",
+                    (head_raw_id,),
+                ).fetchone()[0]
+            )
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?",
+                (predecessor_raw_id,),
+            ).fetchone() == (0,)
+        return
+
+    assert all(result.succeeded_file_count == 1 for result in results)
+    assert all(result.failed_file_count == 0 for result in results)
+    expected_sessions = parse_payload(
+        Provider.CODEX,
+        [json.loads(line) for line in path.read_bytes().splitlines()],
+        path.stem,
+        source_path=str(path),
+    )
+    assert len(expected_sessions) == 1
+    expected_session_hash = bytes.fromhex(session_content_hash(expected_sessions[0]))
+    with sqlite3.connect(source_db) as conn:
+        raw_rows = conn.execute(
+            """SELECT raw_id, revision_kind, predecessor_raw_id, baseline_raw_id,
+                      parsed_at_ms, parse_error
+               FROM raw_sessions ORDER BY acquisition_generation"""
+        ).fetchall()
+        assert len(raw_rows) == 4
+        assert [row[1] for row in raw_rows] == ["full", "append", "append", "append"]
+        assert all(row[4] is not None and row[5] is None for row in raw_rows)
+        raw_by_id = {str(row[0]): row for row in raw_rows}
+    with sqlite3.connect(index_db) as conn:
+        session_native_id, session_hash = conn.execute("SELECT native_id, content_hash FROM sessions").fetchone()
+        assert session_native_id == "append-v1"
+        assert {str(row[0]) for row in conn.execute("SELECT native_id FROM messages")} == {
+            "message-0",
+            "message-1",
+            "message-2",
+            "message-3",
+        }
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 4
+        assert conn.execute(
+            """SELECT b.search_text
+               FROM messages_fts AS f JOIN blocks AS b ON b.rowid = f.rowid
+               ORDER BY b.message_id"""
+        ).fetchall() == [("zero",), ("one",), ("two",), ("three",)]
+        head_raw_id, accepted_hash = conn.execute(
+            "SELECT accepted_raw_id, accepted_content_hash FROM raw_revision_heads"
+        ).fetchone()
+        head_raw_id = str(head_raw_id)
+        assert session_hash == accepted_hash
+        assert session_hash == expected_session_hash
+        assert conn.execute("SELECT COUNT(DISTINCT raw_id) FROM raw_revision_applications").fetchone()[0] == 4
+        assert conn.execute(
+            """SELECT decision, COUNT(DISTINCT raw_id)
+               FROM raw_revision_applications GROUP BY decision ORDER BY decision"""
+        ).fetchall() == [("applied_append", 3), ("selected_baseline", 1)]
+        receipt_decisions = {
+            str(raw_id): str(decision)
+            for raw_id, decision in conn.execute("SELECT DISTINCT raw_id, decision FROM raw_revision_applications")
+        }
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone() is None
+    chain: list[str] = []
+    current_raw_id: str | None = head_raw_id
+    while current_raw_id is not None:
+        chain.append(current_raw_id)
+        row = raw_by_id[current_raw_id]
+        current_raw_id = str(row[2]) if row[2] is not None else None
+    assert len(chain) == 4
+    assert raw_by_id[chain[-1]][1] == "full"
+    assert receipt_decisions == {
+        chain[-1]: "selected_baseline",
+        **dict.fromkeys(chain[:-1], "applied_append"),
+    }
+    cursor_record = cursor.get_record(path)
+    assert cursor_record is not None
+    assert cursor_record.byte_offset == len(payload) + sum(len(chunk) for chunk in append_chunks)
+
+
+def test_full_ingest_cursor_stops_at_captured_blob_boundary_when_file_grows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "hot.jsonl"
+    captured = (
+        b'{"type":"session_meta","payload":{"id":"hot-growth","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"captured","role":"user",'
+        b'"content":[{"type":"input_text","text":"captured"}]}}\n'
+    )
+    appended_during_parse = (
+        b'{"type":"response_item","payload":{"type":"message","id":"later","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"later"}]}}\n'
+    )
+    path.write_bytes(captured)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    grew = False
+
+    def grow_after_acquisition(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        nonlocal grew
+        if not grew:
+            with path.open("ab") as handle:
+                handle.write(appended_during_parse)
+            grew = True
+        return set(paths), 0.0, {}, []
+
+    monkeypatch.setattr(processor, "_converge_paths", grow_after_acquisition)
 
     first = asyncio.run(processor.ingest_files([path]))
-    appended = (
-        b'{"type":"response_item","payload":{"type":"message","role":"assistant",'
-        b'"content":[{"type":"output_text","text":"hello"}]}}\n'
-    )
-    with path.open("ab") as handle:
-        handle.write(appended)
-    second = asyncio.run(processor.ingest_files([path]))
 
     assert first.full_file_count == 1
     assert first.succeeded_file_count == 1
+    record = cursor.get_record(path)
+    assert record is not None
+    assert record.byte_size == len(captured)
+    assert record.byte_offset == len(captured)
+    assert record.last_complete_newline == len(captured)
+    plan = processor._append_plan(path)
+    assert isinstance(plan, _AppendPlan)
+    assert plan.start_offset == len(captured)
+    assert plan.payload.endswith(appended_during_parse)
+
+    second = asyncio.run(processor.ingest_files([path]))
+
     assert second.append_file_count == 1
     assert second.succeeded_file_count == 1
-    assert published_payloads == [payload, b'{"type":"session_meta","payload":{"id":"append-v1"}}\n' + appended]
-    with sqlite3.connect(source_db) as conn:
-        raw_state = conn.execute(
-            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE source_index = -1"
+    final_record = cursor.get_record(path)
+    assert final_record is not None
+    assert final_record.byte_offset == len(captured) + len(appended_during_parse)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        full_blob_size, append_start, append_blob_hash = conn.execute(
+            """SELECT
+                   MAX(CASE WHEN revision_kind = 'full' THEN blob_size END),
+                   MAX(CASE WHEN revision_kind = 'append' THEN append_start_offset END),
+                   MAX(CASE WHEN revision_kind = 'append' THEN hex(blob_hash) END)
+               FROM raw_sessions"""
         ).fetchone()
-        assert raw_state is not None
-        assert raw_state[0] is not None
-        assert raw_state[1] is None
+    assert full_blob_size == len(captured)
+    assert append_start == len(captured)
+    assert isinstance(append_blob_hash, str)
+    from polylogue.storage.blob_store import BlobStore
+
+    append_identity = b'{"type":"session_meta","payload":{"id":"hot-growth"}}\n'
+    assert BlobStore(tmp_path / "blob").read_all(append_blob_hash.lower()) == (append_identity + appended_during_parse)
     with sqlite3.connect(index_db) as conn:
-        assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "append-v1"
-        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
-        assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone() is None
+        assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [
+            ("captured",),
+            ("later",),
+        ]
+        assert conn.execute(
+            "SELECT b.search_text FROM messages_fts AS f JOIN blocks AS b ON b.rowid = f.rowid ORDER BY b.message_id"
+        ).fetchall() == [("captured",), ("later",)]
+        session_hash = conn.execute("SELECT content_hash FROM sessions").fetchone()[0]
+        accepted_hash = conn.execute("SELECT accepted_content_hash FROM raw_revision_heads").fetchone()[0]
+        assert session_hash == accepted_hash
+
+
+def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "split-record.jsonl"
+    prefix = (
+        b'{"type":"session_meta","payload":{"id":"split-record"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    split_record = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"one"}]}}\n'
+    )
+    split_at = len(split_record) // 2
+    path.write_bytes(prefix + split_record[:split_at])
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    first = asyncio.run(processor.ingest_files([path]))
+
+    assert first.full_file_count == 1
+    assert first.succeeded_file_count == 0
+    assert first.failed_file_count == 1
+    failed_cursor = cursor.get_record(path)
+    assert failed_cursor is not None
+    assert failed_cursor.byte_offset == 0
+    assert failed_cursor.content_fingerprint is None
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        parse_error = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()[0]
+        assert "complete record boundary" in str(parse_error)
+
+    with path.open("ab") as handle:
+        handle.write(split_record[split_at:])
+    second = asyncio.run(processor.ingest_files([path]))
+
+    assert second.full_file_count == 1
+    assert second.append_file_count == 0
+    assert second.succeeded_file_count == 1
+    assert second.failed_file_count == 0
+    final_cursor = cursor.get_record(path)
+    assert final_cursor is not None
+    assert final_cursor.byte_offset == path.stat().st_size
+    assert final_cursor.failure_count == 0
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [
+            ("message-0",),
+            ("message-1",),
+        ]
+        assert conn.execute(
+            "SELECT b.search_text FROM messages_fts AS f JOIN blocks AS b ON b.rowid = f.rowid ORDER BY b.message_id"
+        ).fetchall() == [("zero",), ("one",)]
+
+
+def test_append_persistence_failure_preserves_frontier_for_next_tick(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "retry.jsonl"
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"retry"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    append = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"one"}]}}\n'
+    )
+    path.write_bytes(baseline)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    assert asyncio.run(processor.ingest_files([path])).succeeded_file_count == 1
+    accepted_cursor = cursor.get_record(path)
+    assert accepted_cursor is not None
+    with path.open("ab") as handle:
+        handle.write(append)
+
+    original_apply = ArchiveStore.apply_raw_revision_replay
+    fail_once = True
+
+    def injected_failure(self: ArchiveStore, *args: Any, **kwargs: Any) -> tuple[str, tuple[str, ...]]:
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise sqlite3.IntegrityError("injected append persistence failure")
+        return original_apply(self, *args, **kwargs)
+
+    monkeypatch.setattr(ArchiveStore, "apply_raw_revision_replay", injected_failure)
+    failed = asyncio.run(processor.ingest_files([path]))
+
+    assert failed.succeeded_file_count == 0
+    assert failed.failed_file_count == 1
+    retry_cursor = cursor.get_record(path)
+    assert retry_cursor is not None
+    assert retry_cursor.byte_offset == accepted_cursor.byte_offset
+    assert retry_cursor.content_fingerprint == accepted_cursor.content_fingerprint
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages").fetchall() == [("message-0",)]
+
+    retried = asyncio.run(processor.ingest_files([path]))
+
+    assert retried.append_file_count == 1
+    assert retried.succeeded_file_count == 1
+    assert retried.failed_file_count == 0
+    final_cursor = cursor.get_record(path)
+    assert final_cursor is not None
+    assert final_cursor.byte_offset == path.stat().st_size
+    assert final_cursor.failure_count == 0
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [
+            ("message-0",),
+            ("message-1",),
+        ]
 
 
 def test_append_parse_failure_retains_typed_raw_failure(

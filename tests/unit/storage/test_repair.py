@@ -249,6 +249,10 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
         "raw_materialization_selected_total_blob_bytes": float(replayable_size),
         "raw_materialization_selected_max_blob_bytes": float(replayable_size),
         "raw_materialization_adoption_deferred_count": 0.0,
+        "raw_materialization_authority_quarantined_count": 0.0,
+        "raw_materialization_byte_authority_fragment_count": 0.0,
+        "raw_materialization_byte_authority_pending_count": 0.0,
+        "raw_materialization_byte_authority_quarantined_count": 0.0,
     }
     assert "per-session revision authority" in result.detail
     assert "selected raw payload bytes total=" in result.detail
@@ -478,7 +482,99 @@ def test_superseded_raw_cleanup_protects_split_index_referenced_raw_ids(tmp_path
     result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=True)
 
     assert result.repaired_count == 0
-    assert "skipped 1 index-referenced raw rows" in result.detail
+    assert "skipped 1 active revision raw rows" in result.detail
+
+
+def test_superseded_raw_cleanup_allows_history_before_active_full(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    source_file = tmp_path / "source.jsonl"
+    source_file.write_text("{}", encoding="utf-8")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                source_revision, acquisition_generation, revision_authority
+            ) VALUES (?, 'codex-session', 'session-1', ?, 0, ?, ?, ?,
+                      'codex:session-1', 'full', ?, ?, 'byte_proven')
+            """,
+            (
+                ("raw-old-full", str(source_file), bytes.fromhex("11" * 32), 10, 1, "revision-old", 0),
+                ("raw-new-full", str(source_file), bytes.fromhex("22" * 32), 20, 2, "revision-new", 1),
+            ),
+        )
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+               VALUES ('session-1', 'codex-session', 'raw-new-full', 'session', ?)""",
+            (bytes(32),),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_revision_heads (
+                logical_source_key, session_id, accepted_raw_id,
+                accepted_source_revision, accepted_content_hash,
+                accepted_frontier_kind, accepted_frontier,
+                acquisition_generation, append_end_offset, decided_at_ms
+            ) VALUES ('codex:session-1', 'codex-session:session-1', 'raw-new-full',
+                      'revision-new', ?, 'byte', 20, 1, 20, 1)
+            """,
+            (bytes(32),),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_revision_applications (
+                decision_id, raw_id, session_id, logical_source_key,
+                source_revision, acquisition_generation, decision,
+                accepted_raw_id, accepted_source_revision, accepted_content_hash,
+                detail, decided_at_ms
+            ) VALUES ('old-superseded', 'raw-old-full', 'codex-session:session-1',
+                      'codex:session-1', 'revision-old', 0, 'superseded',
+                      'raw-new-full', 'revision-new', ?, 'superseded by accepted full', 2)
+            """,
+            (bytes(32),),
+        )
+
+    result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=True)
+
+    # Anti-vacuity: traversing a full raw's historical cohort would protect
+    # raw-old-full and reduce this production repair preview to zero.
+    assert result.success is True
+    assert result.repaired_count == 1
+
+
+def test_superseded_raw_cleanup_fails_closed_without_index(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    # This valid but unrelated legacy anchor must never authorize deletion
+    # from the split archive_root/source.db file set.
+    initialize_archive_database(config.db_path, ArchiveTier.INDEX)
+    source_file = tmp_path / "source.jsonl"
+    source_file.write_text("{}", encoding="utf-8")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, 'chatgpt-export', ?, 0, ?, 10, ?)
+            """,
+            (
+                ("raw-old", str(source_file), bytes.fromhex("11" * 32), 1),
+                ("raw-new", str(source_file), bytes.fromhex("22" * 32), 2),
+            ),
+        )
+
+    result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=False)
+
+    # Anti-vacuity: the old fail-open empty-set fallback would delete raw-old.
+    assert result.success is False
+    assert result.repaired_count == 0
+    assert "index tier is unavailable" in result.detail
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
 
 
 def test_raw_materialization_retries_restored_missing_blob_parse_errors(tmp_path: Path) -> None:

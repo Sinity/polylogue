@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -153,7 +154,7 @@ def test_unenveloped_raw_write_is_quarantined() -> None:
     ).fetchone() == ("unknown", "quarantined")
 
 
-def test_revision_binding_is_idempotent_but_rejects_conflicting_identity() -> None:
+def test_revision_binding_is_idempotent_only_for_the_exact_envelope() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(SOURCE_DDL)
     raw_id = write_source_raw_session(
@@ -167,17 +168,76 @@ def test_revision_binding_is_idempotent_but_rejects_conflicting_identity() -> No
     first = RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 0)
     bind_source_raw_revision(conn, raw_id, first)
 
-    bind_source_raw_revision(
-        conn,
-        raw_id,
-        RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 99),
-    )
+    bind_source_raw_revision(conn, raw_id, first)
+    with pytest.raises(ValueError, match="already authoritative"):
+        bind_source_raw_revision(
+            conn,
+            raw_id,
+            RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 99),
+        )
     with pytest.raises(ValueError, match="already authoritative"):
         bind_source_raw_revision(
             conn,
             raw_id,
             RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "different", 1),
         )
+    with pytest.raises(ValueError, match="already authoritative or missing"):
+        bind_source_raw_revision(conn, "missing", first)
+
+
+@pytest.mark.parametrize("write_mode", ["payload", "blob-ref"])
+def test_reacquiring_same_raw_cannot_reset_its_authoritative_envelope(
+    tmp_path: Path,
+    write_mode: str,
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    payload = b'{"type":"session_meta","payload":{"id":"session-1"}}\n'
+    first = RawRevisionEnvelope(
+        "codex:session-1",
+        RawRevisionKind.FULL,
+        "revision-1",
+        0,
+        authority=RawRevisionAuthority.BYTE_PROVEN,
+    )
+    conflicting = RawRevisionEnvelope(
+        "codex:session-1",
+        RawRevisionKind.FULL,
+        "revision-2",
+        99,
+        authority=RawRevisionAuthority.BYTE_PROVEN,
+    )
+
+    def acquire(archive: ArchiveStore, acquired_at_ms: int) -> str:
+        if write_mode == "payload":
+            return archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=str(tmp_path / "session.jsonl"),
+                acquired_at_ms=acquired_at_ms,
+            )
+        return archive.write_raw_blob_ref(
+            provider=Provider.CODEX,
+            blob_hash_hex=sha256(payload).hexdigest(),
+            blob_size=len(payload),
+            source_path=str(tmp_path / "session.jsonl"),
+            acquired_at_ms=acquired_at_ms,
+        )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = acquire(archive, 1)
+        archive.bind_raw_revision(raw_id, first)
+
+        reacquired_raw_id = acquire(archive, 2)
+        assert reacquired_raw_id == raw_id
+        with pytest.raises(ValueError, match="already authoritative"):
+            archive.bind_raw_revision(raw_id, conflicting)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            """SELECT source_revision, acquisition_generation, revision_authority
+               FROM raw_sessions WHERE raw_id = ?""",
+            (raw_id,),
+        ).fetchone() == ("revision-1", 0, "byte_proven")
 
 
 def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(tmp_path: Path) -> None:

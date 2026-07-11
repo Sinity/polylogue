@@ -148,6 +148,26 @@ def _iso_to_epoch_ms(value: str) -> int:
     return int(datetime.fromisoformat(value).timestamp() * 1000)
 
 
+def _captured_jsonl_ends_at_record_boundary(
+    *,
+    source_path: str,
+    payload: bytes | None,
+    blob_store: BlobStore,
+    blob_hash: str,
+    blob_size: int,
+) -> bool:
+    path = Path(source_path)
+    if path.suffix.lower() not in {".jsonl", ".ndjson"} or not path.is_file():
+        return True
+    if blob_size <= 0:
+        return False
+    if payload is not None:
+        return payload.endswith(b"\n")
+    with blob_store.open(blob_hash) as handle:
+        handle.seek(-1, 2)
+        return handle.read(1) == b"\n"
+
+
 @dataclass(slots=True)
 class _ArchiveFullWriteResult:
     raw_ids: dict[str, str] = field(default_factory=dict)
@@ -681,7 +701,7 @@ class LiveBatchProcessor:
     def _record_failed_cursor(self, path: Path) -> int:
         try:
             stat = path.stat()
-            fp, _last_nl = fingerprint_file(path)
+            _fingerprint, _last_nl = fingerprint_file(path)
             tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
         except FileNotFoundError:
             try:
@@ -706,8 +726,8 @@ class LiveBatchProcessor:
                 byte_offset=committed_offset,
                 last_complete_newline=committed_newline,
                 parser_fingerprint=self._current_parser_fingerprint(),
-                content_fingerprint=fp,
-                tail_hash=tail_hash,
+                content_fingerprint=existing.content_fingerprint if existing is not None else None,
+                tail_hash=existing.tail_hash if existing is not None else tail_hash,
                 source_name=self._source_name_for(path),
                 st_dev=stat.st_dev,
                 st_ino=stat.st_ino,
@@ -739,7 +759,7 @@ class LiveBatchProcessor:
             return 0
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
         if source_revision is not None:
-            byte_size = stat.st_size
+            byte_size = stat.st_size if raw_byte_size is None else raw_byte_size
             fp = source_revision
             last_nl = byte_size
             tail_hash = source_revision
@@ -1156,7 +1176,11 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             ingested.append(path)
-            raw_byte_sizes[path] = stat.st_size
+            # The source may grow while its blob is copied. The blob size is
+            # the durable acquisition boundary; the pre-copy stat is only a
+            # planning observation. SQLite snapshots are logical copies, so
+            # their cursor remains tied to the source file stat instead.
+            raw_byte_sizes[path] = stat.st_size if provider is Provider.HERMES else blob_size
             raw_source_names[path] = source_name
             raw_records.append(
                 RawSessionRecord(
@@ -1328,6 +1352,14 @@ class LiveBatchProcessor:
                         )
                         source_write_name = "full.source_raw_write"
                     record_timings[source_write_name] = time.perf_counter() - source_write_started
+                    if not _captured_jsonl_ends_at_record_boundary(
+                        source_path=record.source_path,
+                        payload=payload,
+                        blob_store=blob_store,
+                        blob_hash=blob_hash,
+                        blob_size=record.blob_size,
+                    ):
+                        raise ValueError("captured JSONL payload ends before a complete record boundary")
                     t0 = time.perf_counter()
                     if provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
                         blob_store.blob_path(blob_hash)
@@ -1597,7 +1629,11 @@ class LiveBatchProcessor:
         if path.suffix.lower() != ".jsonl":
             return None
         cursor = cursor or self._cursor.get_record(path)
-        if cursor is None or cursor.parser_fingerprint != self._current_parser_fingerprint():
+        if (
+            cursor is None
+            or cursor.parser_fingerprint != self._current_parser_fingerprint()
+            or cursor.content_fingerprint is None
+        ):
             return None
         try:
             stat = path.stat()
@@ -1767,15 +1803,31 @@ class LiveBatchProcessor:
     def _compact_superseded_raw_snapshots(self, paths: list[Path]) -> None:
         if not paths:
             return
-        from polylogue.storage.raw_retention import compact_paths_superseded_raw_snapshots
+        from polylogue.storage.raw_retention import (
+            RawRetentionSafetyError,
+            active_raw_retention_authority,
+            compact_paths_superseded_raw_snapshots,
+        )
 
-        source_db = self._cursor._db_path.with_name("source.db")
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        source_db = archive_root / "source.db"
+        index_db = archive_root / "index.db"
         if not source_db.exists():
             return
         with sqlite3.connect(source_db) as conn:
             conn.row_factory = sqlite3.Row
+            try:
+                retention_authority = active_raw_retention_authority(conn, index_db_path=index_db)
+            except RawRetentionSafetyError as exc:
+                logger.warning("live.watcher: skipped unsafe raw snapshot compaction: %s", exc)
+                return
             result = compact_paths_superseded_raw_snapshots(
-                conn, paths, limit_per_path=25, min_acquired_at=self._raw_compaction_min_acquired_at
+                conn,
+                paths,
+                limit_per_path=25,
+                min_acquired_at=self._raw_compaction_min_acquired_at,
+                protected_raw_ids=retention_authority.protected_raw_ids,
+                eligible_raw_ids=retention_authority.eligible_raw_ids,
             )
         if result.errors:
             logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
