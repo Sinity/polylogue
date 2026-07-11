@@ -577,10 +577,55 @@ def test_provider_usage_report_stale_rollups_use_one_bounded_sql_diagnostic(tmp_
     stale_diagnostics = [statement for statement in traced_sql if "provider_usage_stale_rollups" in statement]
     assert len(stale_diagnostics) == 1
     stale_sql = stale_diagnostics[0]
-    assert "GROUP_CONCAT" in stale_sql
+    assert "json_group_array" in stale_sql
     assert "ROW_NUMBER() OVER" in stale_sql
     assert "GROUP BY origin" in stale_sql
     assert stale_sql.count("session_provider_usage_events AS e") == 1
+
+
+def test_provider_usage_report_preserves_control_characters_in_stale_sample_ids(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    native_id = "stale\x1fsession"
+    session_id = f"codex-session:{native_id}"
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            origin, native_id, title, session_kind,
+            created_at_ms, updated_at_ms, message_count, word_count, content_hash
+        ) VALUES ('codex-session', ?, 'usage', 'standard', 1, 1, 0, 0, zeroblob(32))
+        """,
+        (native_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens
+        ) VALUES (?, 'gpt-5-codex', 0, 0, 0, 0)
+        """,
+        (session_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO session_provider_usage_events (
+            session_id, position, provider_event_type, model_name,
+            total_input_tokens, total_output_tokens, total_cached_input_tokens
+        ) VALUES (?, 0, 'token_count', 'gpt-5-codex', 100, 20, 80)
+        """,
+        (session_id,),
+    )
+
+    report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+
+    # Anti-vacuity: delimiter packing or lossy decoding splits this one
+    # production session identity into multiple sample entries.
+    assert report.origins[0].sample_stale_rollup_sessions == (session_id,)
 
 
 def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Path) -> None:

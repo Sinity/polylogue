@@ -807,10 +807,12 @@ def _stale_provider_rollup_stats(
     in SQLite so a full diagnostic does not fetch the event table, model table,
     and session table into Python before comparing them.
 
-    ``GROUP_CONCAT`` sees only the requested sample rows.  The query therefore
-    returns one row per stale origin regardless of the number of stale
-    sessions; ``limit=None`` intentionally preserves the existing all-sample
-    behavior for callers that explicitly request it.
+    ``json_group_array`` sees only the requested sample rows.  JSON keeps
+    provider-native identifiers lossless even when they contain control
+    characters.  The query therefore returns one row per stale origin
+    regardless of the number of stale sessions; ``limit=None`` intentionally
+    preserves the existing all-sample behavior for callers that explicitly
+    request it.
     """
 
     rows = conn.execute(
@@ -934,11 +936,10 @@ def _stale_provider_rollup_stats(
         SELECT origin,
                MAX(stale_count) AS stale_count,
                COALESCE(
-                   GROUP_CONCAT(
-                       CASE WHEN ? IS NULL OR sample_rank <= ? THEN session_id END,
-                       char(31)
+                   json_group_array(session_id) FILTER (
+                       WHERE ? IS NULL OR sample_rank <= ?
                    ),
-                   ''
+                   '[]'
                ) AS sample_session_ids
         FROM ranked_stale_sessions
         GROUP BY origin
@@ -948,8 +949,7 @@ def _stale_provider_rollup_stats(
     ).fetchall()
     counts = {str(row["origin"]): _int(row["stale_count"]) for row in rows}
     samples = {
-        str(row["origin"]): tuple(sample for sample in str(row["sample_session_ids"]).split("\x1f") if sample)
-        for row in rows
+        str(row["origin"]): tuple(str(sample) for sample in json.loads(str(row["sample_session_ids"]))) for row in rows
     }
     return counts, samples
 
