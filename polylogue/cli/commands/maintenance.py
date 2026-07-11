@@ -1342,6 +1342,8 @@ def rebuild_index_command(
     configure_logging()
     if raw_ids and only_missing:
         raise click.UsageError("--raw-id cannot be combined with --only-missing")
+    if (raw_ids or only_missing) and not no_promote and not plan_only:
+        raise click.UsageError("partial rebuild selections require --no-promote and can never replace the active index")
     if max_blob_mb is not None and max_blob_mb <= 0:
         raise click.BadParameter("max blob size must be positive", param_hint="--max-blob-mb")
     if max_blob_mb is not None and not raw_ids and not only_missing:

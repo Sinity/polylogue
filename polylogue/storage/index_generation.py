@@ -149,6 +149,8 @@ class IndexGenerationStore:
         with sqlite3.connect(target) as conn:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         pointer = self.active_pointer
+        retired = self.generations_root / f"retired-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+        retired.mkdir(parents=True, exist_ok=False)
         if pointer.exists() or pointer.is_symlink():
             with sqlite3.connect(pointer) as conn:
                 checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
@@ -157,11 +159,9 @@ class IndexGenerationStore:
             for suffix in ("-wal", "-shm"):
                 sidecar = pointer.with_name(pointer.name + suffix)
                 if sidecar.exists():
-                    if sidecar.stat().st_size != 0:
+                    if suffix == "-wal" and sidecar.stat().st_size != 0:
                         raise RuntimeError(f"non-empty active index sidecar blocks promotion: {sidecar}")
-                    sidecar.unlink()
-        retired = self.generations_root / f"retired-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
-        retired.mkdir(parents=True, exist_ok=False)
+                    os.replace(sidecar, retired / sidecar.name)
         if pointer.exists() or pointer.is_symlink():
             os.link(pointer, retired / "index.db", follow_symlinks=False)
             _fsync_directory(retired)

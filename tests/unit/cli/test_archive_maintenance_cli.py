@@ -1145,6 +1145,7 @@ def test_rebuild_index_source_replay_expands_every_execution_selection_to_author
             "maintenance",
             "rebuild-index",
             *selection_args,
+            *(["--no-promote"] if selection_args else []),
         ],
         catch_exceptions=False,
     )
@@ -1165,6 +1166,22 @@ def test_rebuild_index_force_write_option_is_retired(cli_runner: CliRunner) -> N
     assert result.exit_code == 2
     assert "No such option" in result.output
     assert "--force-write" in result.output
+
+
+@pytest.mark.parametrize("selection_args", [["--only-missing"], ["--raw-id", "raw-a"]])
+def test_partial_rebuild_requires_no_promote_before_archive_mutation(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, selection_args: list[str]
+) -> None:
+    index_path = cli_workspace["archive_root"] / "index.db"
+    inode_before = index_path.stat().st_ino
+    generations_before = tuple(cli_workspace["archive_root"].glob(".index-generations/*"))
+
+    result = cli_runner.invoke(cli, ["--plain", "ops", "maintenance", "rebuild-index", *selection_args])
+
+    assert result.exit_code == 2
+    assert "partial rebuild selections require --no-promote" in result.output
+    assert index_path.stat().st_ino == inode_before
+    assert tuple(cli_workspace["archive_root"].glob(".index-generations/*")) == generations_before
 
 
 def test_all_index_rebuild_raw_ids_uses_source_acquisition_order(
