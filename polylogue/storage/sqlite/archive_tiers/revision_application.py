@@ -124,16 +124,47 @@ def record_revision_application_sync(
             """,
             (receipt.decision_id,),
         ).fetchone()
-        expected = (
-            receipt.raw_id,
-            receipt.session_id,
-            receipt.decision.value,
-            receipt.accepted_raw_id,
-            receipt.accepted_source_revision,
-            receipt.accepted_content_hash,
-        )
-        if existing is None or tuple(existing) != expected:
-            raise RuntimeError(f"conflicting raw revision application receipt: {receipt.decision_id}")
+        if existing is not None:
+            expected = (
+                receipt.raw_id,
+                receipt.session_id,
+                receipt.decision.value,
+                receipt.accepted_raw_id,
+                receipt.accepted_source_revision,
+                receipt.accepted_content_hash,
+            )
+            if tuple(existing) != expected:
+                raise RuntimeError(f"conflicting raw revision application receipt: {receipt.decision_id}")
+        else:
+            if receipt.decision is not ApplicationDecision.SUPERSEDED:
+                raise RuntimeError(f"conflicting raw revision application receipt: {receipt.decision_id}")
+            semantic_identity = conn.execute(
+                """
+                SELECT raw_id, session_id, logical_source_key, decision,
+                       accepted_source_revision, accepted_content_hash
+                FROM raw_revision_applications
+                WHERE raw_id = ? AND session_id = ? AND decision = ?
+                  AND source_revision = ?
+                  AND COALESCE(accepted_source_revision, '') = COALESCE(?, '')
+                """,
+                (
+                    receipt.raw_id,
+                    receipt.session_id,
+                    receipt.decision.value,
+                    receipt.source_revision,
+                    receipt.accepted_source_revision,
+                ),
+            ).fetchone()
+            expected_identity = (
+                receipt.raw_id,
+                receipt.session_id,
+                receipt.logical_source_key,
+                receipt.decision.value,
+                receipt.accepted_source_revision,
+                receipt.accepted_content_hash,
+            )
+            if semantic_identity is None or tuple(semantic_identity) != expected_identity:
+                raise RuntimeError(f"conflicting raw revision application receipt: {receipt.decision_id}")
     if receipt.accepted_raw_id is None or receipt.decision not in {
         ApplicationDecision.SELECTED_BASELINE,
         ApplicationDecision.APPLIED_APPEND,
