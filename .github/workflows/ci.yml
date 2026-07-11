@@ -98,6 +98,29 @@ jobs:
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
 
+  web-first-party-auth:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.0
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev --frozen
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci
+        working-directory: webui
+      - run: npm run install:e2e-browser:ci
+        working-directory: webui
+      - run: npm run test:e2e
+        working-directory: webui
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+
   distribution:
     # Build wheel + sdist from the checkout, rebuild a wheel from the unpacked
     # sdist, install each into fresh venvs, and smoke the runtime entrypoints

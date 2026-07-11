@@ -36,23 +36,36 @@ loopback ports.
 
 | Endpoint | Method | Risk | Auth | Origin |
 |---|---|---|---|---|
-| `/api/status` | GET | Read-only metadata | Token (when configured) | Any |
-| `/api/health`, `/api/health/check` | GET | Health probe | Token (when configured) | Any |
-| `/api/sessions`, `/api/sessions/:id`, `/.../messages`, `/.../raw` | GET | Read session data | Token | Any |
-| `/api/facets` | GET | Read-only aggregations | Token | Any |
-| `/api/sources` | GET | Returns absolute filesystem paths to authenticated callers | Token | Any |
-| `/api/raw_artifacts/:id` | GET | Returns raw session payload | Token | Any |
-| `/api/reset` | POST | **Destructive** — resets archive state | Token | Same-origin |
-| `/api/ingest` | POST | **Mutating** — schedules ingestion | Token | Same-origin |
-| `/api/maintenance/plan`, `/api/maintenance/run` | POST | **Mutating** — runs maintenance backfills | Token | Same-origin |
+| `/api/web-auth/session` | POST/DELETE | Mint/rotate or revoke a browser credential | Exact-origin bootstrap; current web credential for revoke | Exact origin |
+| `/api/status` | GET | Read-only metadata | Bearer or web credential (when configured) | Credential-bound |
+| `/api/health`, `/api/health/check` | GET | Health probe | Bearer or web credential (when configured) | Credential-bound |
+| `/api/sessions`, `/api/sessions/:id`, `/.../messages`, `/.../raw` | GET | Read session data | Bearer or web credential | Credential-bound |
+| `/api/facets` | GET | Read-only aggregations | Bearer or web credential | Credential-bound |
+| `/api/sources` | GET | Returns absolute filesystem paths to authenticated callers | Bearer or web credential | Credential-bound |
+| `/api/raw_artifacts/:id` | GET | Returns raw session payload | Bearer or web credential | Credential-bound |
+| `/api/reset` | POST | **Destructive** — resets archive state | Bearer only when auth is configured | Exact origin |
+| `/api/ingest` | POST | **Mutating** — schedules ingestion | Bearer only when auth is configured | Exact origin |
+| `/api/maintenance/plan`, `/api/maintenance/run` | POST | **Mutating** — runs maintenance backfills | Bearer only when auth is configured | Exact origin |
 
 ## Mitigations
 
-1. **Bearer token auth.** When `--api-auth-token` is configured, every
-   request — including from loopback — must present a matching
-   `Authorization: Bearer <token>` header. The pure-logic check lives
-   at `polylogue/daemon/http.py:_check_auth_logic` and is invoked by
-   `_dispatch_get` and `do_POST` before any handler runs.
+1. **Separate machine and browser credentials.** When `--api-auth-token`
+   is configured, machine clients present `Authorization: Bearer <token>`.
+   The first-party shell instead rotates a short-lived `read`/`user_state`/
+   `events` credential through `POST /api/web-auth/session`. It can update
+   marks, annotations, saved views, recall packs, and workspaces, but archive
+   reset, ingest, and maintenance operations remain machine-bearer capabilities.
+   The opaque value
+   is stored in an `HttpOnly; SameSite=Strict; Path=/` cookie; the daemon keeps
+   only its SHA-256 digest. It is never returned in JSON or accepted in a URL.
+   Credential-shaped query parameters are rejected with `400
+   credential_in_query`; route metadata and disconnect logs omit query strings
+   entirely, including values under unrecognized parameter names.
+   Missing, invalid, expired, revoked, wrong-origin, and insufficient-scope
+   decisions use explicit response codes. The lifecycle lives in
+   `polylogue/daemon/web_auth.py`; fetch and EventSource consume the same cookie.
+   The digest registry prunes on issue/validate/revoke and enforces hard global
+   and per-origin record bounds, so rotation cannot create unbounded retention.
 
 2. **Loopback-only by default.** The daemon binds to `127.0.0.1` by
    default. The "loopback" predicate is the shared
@@ -63,20 +76,12 @@ loopback ports.
    enforcement lives in `polylogue/daemon/cli.py` and rejects either
    missing flag at startup.
 
-3. **Origin allowlist for mutating endpoints.** POST endpoints reject
-   requests whose `Origin` header points to a non-loopback host. The
-   loopback host definition is shared with the browser-capture
-   receiver via `polylogue/core/loopback.py:is_loopback_host` (which
-   the receiver uses for bind validation); the daemon HTTP API
-   additionally uses `is_loopback_origin` from the same module to
-   parse browser-supplied `Origin` headers. Both follow RFC 5735: the
-   entire `127.0.0.0/8` block, `::1`, and the literal `localhost`
-   name (both `http` and `https` schemes). The `Origin` parser rejects
-   malformed bracketed IPv6 forms such as `http://[::1].evil.com` or
-   `http://[::1]:bad`. This is the CSRF boundary: a hostile page
-   loaded in the user's browser cannot POST to the daemon even if it
-   somehow learned the bearer token, because the browser attaches its
-   own `Origin`. The check lives at
+3. **Exact origin for browser credentials and mutations.** A loopback origin
+   on a different port is still a different origin. Bootstrap therefore
+   requires the browser `Origin` authority to match `Host` exactly, credentials
+   are bound to that canonical origin, and mutation requests repeat the exact
+   authority check. Missing `Origin` remains valid for trusted non-browser
+   bearer clients. The checks live in `polylogue/daemon/web_auth.py` and
    `polylogue/daemon/http.py:_check_cross_origin`.
 
 4. **No CORS preflight.** `OPTIONS` requests return `405 Method Not

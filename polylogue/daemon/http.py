@@ -22,12 +22,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
-from urllib.parse import parse_qs, unquote, urlparse, urlsplit
+from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES, read_view_http_capability_payloads
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.json import JSONDocument
-from polylogue.core.loopback import is_loopback_host, is_loopback_origin
+from polylogue.core.loopback import is_loopback_host
 from polylogue.core.sources import source_name_to_origin
 from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import (
@@ -36,6 +36,20 @@ from polylogue.daemon.events import (
 )
 from polylogue.daemon.route_contracts import RouteContract, route_contract_for_pattern
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload
+from polylogue.daemon.web_auth import (
+    WEB_CREDENTIAL_SCOPES,
+    WebCredentialBootstrapPayload,
+    WebCredentialDecision,
+    WebCredentialRegistry,
+    WebCredentialRevocationPayload,
+    WebCredentialRevokedPayload,
+    WebCredentialScope,
+    credential_cookie,
+    exact_origin_allowed,
+    expired_credential_cookie,
+    read_web_credential_cookie,
+    same_origin_from_headers,
+)
 from polylogue.daemon.web_shell_attachments import (
     LibraryEntry,
     attachment_to_envelope,
@@ -347,6 +361,8 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
         ("GET", "/healthz/live"),
         ("GET", "/healthz/ready"),
         ("GET", "/metrics"),
+        ("POST", "/api/web-auth/session"),
+        ("DELETE", "/api/web-auth/session"),
     ]
     routes.extend(("GET", route.pattern) for route in _static_get_routes())
     routes.extend(("GET", route.pattern) for route in _parameterized_get_routes())
@@ -395,12 +411,34 @@ def _utc_timestamp_json() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+_CREDENTIAL_QUERY_PARAMETERS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "api_token",
+        "auth_token",
+        "bearer_token",
+        "client_secret",
+        "credential",
+        "id_token",
+        "password",
+        "refresh_token",
+        "secret",
+        "token",
+    }
+)
+
+
 def _public_route_from_request_path(raw_path: str) -> str:
-    parsed = urlparse(raw_path)
-    route = parsed.path or "/"
-    if parsed.query:
-        route = f"{route}?{parsed.query}"
-    return route
+    """Project a request to route identity without reflecting query values."""
+
+    return urlparse(raw_path).path or "/"
+
+
+def _request_path_for_log(raw_path: str) -> str:
+    """Keep all query values, including misnamed secrets, out of daemon logs."""
+
+    return urlparse(raw_path).path or "/"
 
 
 def _route_readiness_payload(
@@ -1079,40 +1117,79 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return getattr(self.server, "api_host", "127.0.0.1")
 
     @property
+    def _web_credentials(self) -> WebCredentialRegistry:
+        return self.server.web_credentials
+
+    @property
     def _client_host(self) -> str:
         """Extract client IP from the request."""
         # The client_address is (host, port) from the underlying socket.
         return str(self.client_address[0])
 
-    _SSE_ROUTE_PATH = "/api/events"
+    def _web_credential_token(self) -> str | None:
+        return read_web_credential_cookie(self.headers.get("Cookie", ""))
 
-    def _check_auth(self) -> bool:
-        """Validate the Authorization header against the daemon token.
+    def _web_credential_decision(self, required_scope: WebCredentialScope) -> WebCredentialDecision:
+        return self._web_credentials.validate(
+            self._web_credential_token(),
+            required_scope=required_scope,
+            host_header=self.headers.get("Host", ""),
+            origin_header=self.headers.get("Origin", ""),
+            referer_header=self.headers.get("Referer", ""),
+            fetch_site=self.headers.get("Sec-Fetch-Site", ""),
+        )
+
+    def _is_web_client_request(self) -> bool:
+        return self.headers.get("X-Polylogue-Web-Client", "") == "1" or bool(self.headers.get("Sec-Fetch-Site", ""))
+
+    def _send_web_credential_error(self, decision: WebCredentialDecision) -> None:
+        status = (
+            HTTPStatus.FORBIDDEN
+            if decision.state in {"web_credential_wrong_origin", "web_credential_insufficient_scope"}
+            else HTTPStatus.UNAUTHORIZED
+        )
+        self._send_error(status, decision.state, extra_headers=decision.response_headers())
+
+    def _check_auth(self, required_scope: WebCredentialScope = "read", *, allow_web: bool = True) -> bool:
+        """Validate a machine bearer or a scoped first-party web credential.
 
         When no token is configured the API is open (local dev default).
         When a token IS configured, all clients — including localhost —
         must present it. Loopback is not a security boundary when a
         browser on the same host can reach the daemon.
 
-        The ``access_token`` query parameter is accepted as a fallback
-        ONLY on the SSE route (``/api/events``) — ``EventSource`` cannot
-        set custom headers, so it is the sole legitimate use case.
-        Accepting it broadly would leak bearer tokens into server logs,
-        proxies, and the ``Referer`` header on every other route.
+        Native ``EventSource`` receives the same HttpOnly cookie as fetch, so
+        no credential is ever accepted from a query parameter.
         """
         auth_header = self.headers.get("Authorization", "")
-        parsed = urlparse(self.path)
-        if not auth_header and self._auth_token and parsed.path == self._SSE_ROUTE_PATH:
-            qs_params = parse_qs(parsed.query)
-            qs_token = qs_params.get("access_token", [None])[0]
-            if qs_token:
-                auth_header = f"Bearer {qs_token}"
-        result = _check_auth_logic(self._auth_token, self._client_host, auth_header)
-        if not result.allowed:
-            self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
-        return result.allowed
+        if not self._auth_token:
+            return True
+        if auth_header:
+            result = _check_auth_logic(self._auth_token, self._client_host, auth_header)
+            if not result.allowed:
+                self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
+            return result.allowed
+        if allow_web and self._web_credential_token():
+            decision = self._web_credential_decision(required_scope)
+            if decision.allowed:
+                return True
+            self._send_web_credential_error(decision)
+            return False
+        if allow_web and self._is_web_client_request():
+            decision = self._web_credentials.validate(
+                None,
+                required_scope=required_scope,
+                host_header=self.headers.get("Host", ""),
+                origin_header=self.headers.get("Origin", ""),
+                referer_header=self.headers.get("Referer", ""),
+                fetch_site=self.headers.get("Sec-Fetch-Site", ""),
+            )
+            self._send_web_credential_error(decision)
+            return False
+        self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
+        return False
 
-    def _check_host_admission(self) -> bool:
+    def _check_host_admission(self, *, credential_request: bool = False) -> bool:
         """Reject requests whose Host header does not name this daemon.
 
         See :func:`_check_host_admission_logic` for the rationale. Applied
@@ -1132,7 +1209,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         host_header = self.headers.get("Host", "")
         if _check_host_admission_logic(host_header, self._api_host):
             return True
-        self._send_error(HTTPStatus.FORBIDDEN, "host_not_allowed")
+        if credential_request:
+            self._send_web_credential_error(WebCredentialDecision(False, "web_credential_wrong_origin"))
+        else:
+            self._send_error(HTTPStatus.FORBIDDEN, "host_not_allowed")
         return False
 
     # ------------------------------------------------------------------
@@ -1180,6 +1260,32 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.send_response(status.value)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self._send_request_id_header()
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _send_json_with_cookie(
+        self,
+        status: HTTPStatus,
+        payload: object,
+        *,
+        set_cookie: str,
+        credential_state: str,
+    ) -> None:
+        """Send public lifecycle JSON while isolating protected cookie transport."""
+
+        raw = _json_bytes(payload)
+        self.send_response(status.value)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Set-Cookie", set_cookie)
+        self.send_header("X-Polylogue-Web-Credential-State", credential_state)
         self._send_request_id_header()
         self.end_headers()
         self.wfile.write(raw)
@@ -1204,7 +1310,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _send_error(self, status: HTTPStatus, code: str, detail: str | None = None) -> None:
+    def _send_error(
+        self,
+        status: HTTPStatus,
+        code: str,
+        detail: str | None = None,
+        *,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> None:
         """Emit the canonical daemon error envelope.
 
         Every daemon error response shares one machine-output contract
@@ -1217,6 +1330,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_json(
             status,
             QueryErrorPayload(error=code, detail=detail).model_dump(mode="json"),
+            extra_headers=extra_headers,
         )
 
     def _parse_path(self) -> tuple[list[str], dict[str, list[str]]]:
@@ -1332,6 +1446,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         """Dispatch GET requests via route table."""
         if not self._check_host_admission():
             return
+        if self._reject_credential_query():
+            return
 
         # Web shell is the only unauthenticated endpoint (localhost only).
         if (
@@ -1391,7 +1507,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             handle_metrics(self, active_index_db_path())
             return
 
-        if not self._check_auth():
+        required_scope: WebCredentialScope = "events" if path == ["api", "events"] else "read"
+        if not self._check_auth(required_scope):
             return
 
         static_route = next((route for route in _static_get_routes() if tuple(path) == route.segments), None)
@@ -1439,7 +1556,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             path, params = self._parse_path()
             self._dispatch_get(path, params)
         except self._CLIENT_DISCONNECT as exc:
-            logger.debug("daemon.http.client_disconnected", method="GET", path=self.path, error=repr(exc))
+            logger.debug(
+                "daemon.http.client_disconnected",
+                method="GET",
+                path=_request_path_for_log(self.path),
+                error=repr(exc),
+            )
+
+    def _reject_credential_query(self) -> bool:
+        names = {
+            key.lower()
+            for key, _value in parse_qsl(urlparse(self.path).query, keep_blank_values=True)
+            if key.lower() in _CREDENTIAL_QUERY_PARAMETERS
+        }
+        if not names:
+            return False
+        self._send_error(
+            HTTPStatus.BAD_REQUEST,
+            "credential_in_query",
+            "credentials must use Authorization or the protected first-party cookie",
+        )
+        return True
 
     def _check_cross_origin(self) -> bool:
         """Reject browser cross-origin POSTs to mutating endpoints.
@@ -1448,9 +1585,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         False if the Origin header indicates a cross-origin browser request.
         """
         origin = self.headers.get("Origin", "")
-        if not origin:
-            return True  # Not a browser request
-        if is_loopback_origin(origin):
+        if exact_origin_allowed(origin, self.headers.get("Host", "")):
             return True
         self._send_error(HTTPStatus.FORBIDDEN, "cross_origin_denied")
         return False
@@ -1460,18 +1595,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         if is_loopback_host(self._api_host) and is_loopback_host(self._client_host):
             return True
-        return self._check_auth()
+        return self._check_auth(allow_web=False)
 
     def do_POST(self) -> None:
         try:
             self._do_post_impl()
         except self._CLIENT_DISCONNECT as exc:
-            logger.debug("daemon.http.client_disconnected", method="POST", path=self.path, error=repr(exc))
+            logger.debug(
+                "daemon.http.client_disconnected",
+                method="POST",
+                path=_request_path_for_log(self.path),
+                error=repr(exc),
+            )
 
     def _do_post_impl(self) -> None:
         path, params = self._parse_path()
+        web_auth_request = path == ["api", "web-auth", "session"]
 
-        if not self._check_host_admission():
+        if not self._check_host_admission(credential_request=web_auth_request):
+            return
+        if self._reject_credential_query():
+            return
+
+        if web_auth_request:
+            self._handle_web_auth_bootstrap()
             return
 
         # OTLP receiver endpoints (#1321) gated on the explicit
@@ -1490,7 +1637,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if not load_polylogue_config().observability_enabled:
                 self._send_error(HTTPStatus.NOT_FOUND, "not_found")
                 return
-            if not is_loopback_host(self._api_host) and not self._check_auth():
+            if not is_loopback_host(self._api_host) and not self._check_auth(allow_web=False):
                 return
             handler = cast(Callable[..., None], getattr(self, observability_route.handler_name))
             with self._write_gate(f"http.otlp.{path[1]}"):
@@ -1500,15 +1647,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     handler()
             return
 
-        if not self._check_auth():
-            return
-        if not self._check_cross_origin():
-            return
-
         authenticated_route = next(
             (route for route in _authenticated_post_routes() if tuple(path) == route.segments), None
         )
         if authenticated_route is not None:
+            # Archive control operations remain machine-client capabilities.
+            # A first-party shell cookie can mutate user overlays, but cannot
+            # reset, ingest, or run maintenance against the archive.
+            if not self._check_auth(allow_web=False):
+                return
+            if not self._check_cross_origin():
+                return
             handler = cast(Callable[..., None], getattr(self, authenticated_route.handler_name))
             mutating_actor = {
                 "_handle_reset": "http.reset",
@@ -1522,6 +1671,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 else:
                     handler()
             return
+        if not self._check_auth("user_state"):
+            return
+        if not self._check_cross_origin():
+            return
         if path[:2] == ["api", "user"]:
             with self._write_gate(f"http.user.{path[2] if len(path) > 2 else 'unknown'}.post"):
                 if user_state_http.dispatch_post(self, path[2:]):
@@ -1532,14 +1685,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             self._do_delete_impl()
         except self._CLIENT_DISCONNECT as exc:
-            logger.debug("daemon.http.client_disconnected", method="DELETE", path=self.path, error=repr(exc))
+            logger.debug(
+                "daemon.http.client_disconnected",
+                method="DELETE",
+                path=_request_path_for_log(self.path),
+                error=repr(exc),
+            )
 
     def _do_delete_impl(self) -> None:
         path, params = self._parse_path()
+        web_auth_request = path == ["api", "web-auth", "session"]
 
-        if not self._check_host_admission():
+        if not self._check_host_admission(credential_request=web_auth_request):
             return
-        if not self._check_auth():
+        if self._reject_credential_query():
+            return
+
+        if web_auth_request:
+            self._handle_web_auth_revoke()
+            return
+
+        if not self._check_auth("user_state"):
             return
         if not self._check_cross_origin():
             return
@@ -1553,6 +1719,60 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
     # Web shell
     # ------------------------------------------------------------------
+
+    def _handle_web_auth_bootstrap(self) -> None:
+        """Rotate a short-lived first-party credential into an HttpOnly cookie."""
+
+        if not (is_loopback_host(self._api_host) and is_loopback_host(self._client_host)):
+            self._send_web_credential_error(WebCredentialDecision(False, "web_credential_wrong_origin"))
+            return
+        origin = same_origin_from_headers(
+            self.headers.get("Origin", ""),
+            self.headers.get("Host", ""),
+        )
+        if origin is None:
+            self._send_error(
+                HTTPStatus.FORBIDDEN,
+                "web_credential_wrong_origin",
+                extra_headers={
+                    "Cache-Control": "no-store",
+                    "X-Polylogue-Web-Credential-State": "web_credential_wrong_origin",
+                },
+            )
+            return
+        issued = self._web_credentials.issue(
+            origin,
+            previous_token=self._web_credential_token(),
+            scopes=WEB_CREDENTIAL_SCOPES,
+        )
+        self._send_json_with_cookie(
+            HTTPStatus.CREATED,
+            WebCredentialBootstrapPayload(credential=issued.public_payload()).model_dump(mode="json"),
+            set_cookie=credential_cookie(
+                issued.token,
+                ttl_s=self._web_credentials.ttl_s,
+                secure=issued.origin.startswith("https://"),
+            ),
+            credential_state="ready",
+        )
+
+    def _handle_web_auth_revoke(self) -> None:
+        """Revoke the current first-party credential and clear its cookie."""
+
+        decision = self._web_credential_decision("user_state")
+        if not decision.allowed:
+            self._send_web_credential_error(decision)
+            return
+        self._web_credentials.revoke(self._web_credential_token())
+        origin = self.headers.get("Origin", "")
+        self._send_json_with_cookie(
+            HTTPStatus.OK,
+            WebCredentialRevocationPayload(
+                credential=WebCredentialRevokedPayload(),
+            ).model_dump(mode="json"),
+            set_cookie=expired_credential_cookie(secure=origin.startswith("https://")),
+            credential_state="web_credential_revoked",
+        )
 
     def _serve_web_shell(self) -> None:
         from polylogue.daemon.web_shell import WEB_SHELL_HTML
@@ -2936,7 +3156,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 message_type=self._get_param(params, "message_type"),
             )
         except ExpressionCompileError as exc:
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_query", "message": str(exc)})
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_query", str(exc))
             return
         archive_root = _web_reader_archive_root()
         if archive_root is None:
@@ -3843,10 +4063,12 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         auth_token: str | None = None,
         api_host: str = "127.0.0.1",
         write_bridge: DaemonWriteThreadBridge | None = None,
+        web_credentials: WebCredentialRegistry | None = None,
     ) -> None:
         super().__init__(server_address, handler_class)
         self.auth_token = auth_token
         self.api_host = api_host
+        self.web_credentials = web_credentials or WebCredentialRegistry()
         self._owned_write_runtime: _StandaloneWriteRuntime | None = None
         if write_bridge is None:
             self._owned_write_runtime = _StandaloneWriteRuntime()

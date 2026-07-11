@@ -2080,7 +2080,25 @@ class TestReaderQueryUnits:
 
         assert status == 400
         assert payload["error"] == "invalid_query"
-        assert terminal_query_source_list() in str(payload["message"])
+        assert terminal_query_source_list() in str(payload["detail"])
+
+    def test_query_units_malformed_expression_returns_canonical_error(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.surfaces.payloads import QueryErrorPayload
+
+        expression = quote("messages where (")
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, f"/api/query-units?expression={expression}")
+
+        assert status == 400
+        error = QueryErrorPayload.model_validate(payload)
+        assert error.ok is False
+        assert error.error == "invalid_query"
+        assert error.detail
+        assert error.field is None
+        assert set(payload) == {"ok", "error", "detail", "field"}
 
 
 class TestReaderViewProfiles:

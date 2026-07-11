@@ -26,8 +26,10 @@ RouteKind = Literal[
 RouteStability = Literal["stable", "shell_supported", "operational", "private"]
 AuthPolicy = Literal[
     "unauthenticated_loopback",
-    "bearer_if_configured",
-    "bearer_and_same_origin",
+    "credential_if_configured",
+    "credential_and_same_origin",
+    "bearer_if_configured_and_same_origin",
+    "first_party_same_origin",
     "observability_flag_then_loopback_or_bearer",
 ]
 
@@ -53,7 +55,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "shell_supported",
         "unauthenticated_loopback",
         "text/html web shell",
-        "HTML bootstrap only; shell JavaScript calls authenticated /api routes.",
+        "HTML bootstrap only; shell JavaScript obtains an HttpOnly first-party credential before /api calls.",
     ),
     RouteContract(
         "GET",
@@ -120,6 +122,24 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "POST",
+        "/api/web-auth/session",
+        "browser_shell",
+        "shell_supported",
+        "first_party_same_origin",
+        "WebCredentialBootstrapPayload",
+        "Rotates a scoped HttpOnly credential; no credential bytes appear in the response body.",
+    ),
+    RouteContract(
+        "DELETE",
+        "/api/web-auth/session",
+        "browser_shell",
+        "shell_supported",
+        "first_party_same_origin",
+        "WebCredentialRevocationPayload",
+        "Revokes the current first-party credential and expires its cookie.",
+    ),
+    RouteContract(
+        "POST",
         "/v1/traces",
         "observability",
         "private",
@@ -142,25 +162,25 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "observability_flag_then_loopback_or_bearer",
         "OTLP protobuf response",
     ),
-    RouteContract("GET", "/api/health/check", "operational", "stable", "bearer_if_configured", "JSON"),
-    RouteContract("GET", "/api/health", "operational", "stable", "bearer_if_configured", "JSON"),
-    RouteContract("GET", "/api/status", "operational", "stable", "bearer_if_configured", "Daemon status JSON"),
+    RouteContract("GET", "/api/health/check", "operational", "stable", "credential_if_configured", "JSON"),
+    RouteContract("GET", "/api/health", "operational", "stable", "credential_if_configured", "JSON"),
+    RouteContract("GET", "/api/status", "operational", "stable", "credential_if_configured", "Daemon status JSON"),
     RouteContract(
         "GET",
         "/api/dev-loop",
         "operational",
         "shell_supported",
-        "bearer_if_configured",
+        "credential_if_configured",
         "DevLoopDebugPayload",
         "Branch-local launcher metadata for the web shell; allowlisted fields only, no raw environment dump.",
     ),
-    RouteContract("GET", "/api/events", "operational", "stable", "bearer_if_configured", "SSE or JSON event poll"),
+    RouteContract("GET", "/api/events", "operational", "stable", "credential_if_configured", "SSE or JSON event poll"),
     RouteContract(
         "GET",
         "/api/agents/coordination",
         "operational",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "AgentCoordinationPayload",
         "Shared coordination envelope used by CLI, MCP, and the web mission-control projection.",
     ),
@@ -169,7 +189,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/sessions",
         "read_query",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "SearchEnvelope / SessionListResponse with route_state",
     ),
     RouteContract(
@@ -177,17 +197,19 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/facets",
         "read_query",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "FacetsResponse with route-state metadata",
         "Repo and action facet families are deferred from first paint unless explicitly requested.",
     ),
-    RouteContract("GET", "/api/query-units", "read_query", "stable", "bearer_if_configured", "QueryUnitResultEnvelope"),
+    RouteContract(
+        "GET", "/api/query-units", "read_query", "stable", "credential_if_configured", "QueryUnitResultEnvelope"
+    ),
     RouteContract(
         "GET",
         "/api/provider-usage",
         "operational",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "ProviderUsageReport",
         "Usage-accounting diagnostics; separates provider events, cumulative counters, transcript words, and model rollups.",
     ),
@@ -196,7 +218,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/archive-debt",
         "operational",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "ArchiveDebtListPayload",
         "Unified archive debt rows shared by CLI, Python API, MCP, and daemon clients.",
     ),
@@ -205,19 +227,19 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/import/explain",
         "operational",
         "shell_supported",
-        "bearer_if_configured",
+        "credential_if_configured",
         "ImportExplainPayload",
         "Local import/source evidence explanation; paths are redacted unless explicitly requested.",
     ),
     RouteContract(
-        "GET", "/api/refs/resolve", "read_query", "stable", "bearer_if_configured", "PublicRefResolutionPayload"
+        "GET", "/api/refs/resolve", "read_query", "stable", "credential_if_configured", "PublicRefResolutionPayload"
     ),
     RouteContract(
         "GET",
         "/api/query-completions",
         "read_query",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "query completion metadata",
     ),
     RouteContract(
@@ -225,7 +247,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/action-affordances",
         "read_query",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "ActionAffordanceListPayload",
         "Shared query-action affordance inventory for CLI, daemon, and automation clients.",
     ),
@@ -234,7 +256,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/read-view-profiles",
         "read_query",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "read-view profile metadata",
     ),
     RouteContract(
@@ -242,18 +264,22 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/assertions",
         "user_overlay",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "AssertionClaimListPayload",
         "Read-only assertion-backed overlay claims shared by the web workbench and API clients.",
     ),
-    RouteContract("GET", "/api/sources", "read_detail", "shell_supported", "bearer_if_configured", "source list JSON"),
-    RouteContract("GET", "/api/sessions/:id", "read_detail", "stable", "bearer_if_configured", "Session detail JSON"),
+    RouteContract(
+        "GET", "/api/sources", "read_detail", "shell_supported", "credential_if_configured", "source list JSON"
+    ),
+    RouteContract(
+        "GET", "/api/sessions/:id", "read_detail", "stable", "credential_if_configured", "Session detail JSON"
+    ),
     RouteContract(
         "GET",
         "/api/sessions/:id/messages",
         "read_detail",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "session messages JSON",
     ),
     RouteContract(
@@ -261,7 +287,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/sessions/:id/read",
         "read_detail",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "SessionReadViewEnvelope",
         "Executes supported single-session read profiles over shared DTO/facade payload helpers.",
     ),
@@ -270,19 +296,19 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/sessions/:id/raw",
         "read_detail",
         "shell_supported",
-        "bearer_if_configured",
+        "credential_if_configured",
         "raw session payload JSON",
         "Raw preview is opt-in and authenticated.",
     ),
     RouteContract(
-        "GET", "/api/sessions/:id/cost", "read_detail", "shell_supported", "bearer_if_configured", "cost JSON"
+        "GET", "/api/sessions/:id/cost", "read_detail", "shell_supported", "credential_if_configured", "cost JSON"
     ),
     RouteContract(
         "GET",
         "/api/sessions/:id/provenance",
         "read_detail",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "provenance envelope",
         "Raw bytes require the include_raw query parameter.",
     ),
@@ -291,7 +317,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/sessions/:id/topology",
         "read_detail",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "topology envelope",
     ),
     RouteContract(
@@ -299,7 +325,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/sessions/:id/topology/parent-chain",
         "read_detail",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "parent-chain topology envelope",
     ),
     RouteContract(
@@ -307,7 +333,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/sessions/:id/similar",
         "read_detail",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "similar-session envelope",
     ),
     RouteContract(
@@ -315,7 +341,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/sessions/:id/attachments",
         "read_detail",
         "shell_supported",
-        "bearer_if_configured",
+        "credential_if_configured",
         "session attachment envelope",
     ),
     RouteContract(
@@ -323,7 +349,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/insights/sessions/:id",
         "read_detail",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "session insights envelope",
     ),
     RouteContract(
@@ -331,7 +357,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/raw_artifacts/:id",
         "read_detail",
         "shell_supported",
-        "bearer_if_configured",
+        "credential_if_configured",
         "raw artifact preview",
         "Authenticated raw preview helper for the local shell.",
     ),
@@ -340,44 +366,57 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/thread-continue-templates",
         "read_detail",
         "shell_supported",
-        "bearer_if_configured",
+        "credential_if_configured",
         "thread continuation templates",
     ),
     RouteContract(
-        "GET", "/api/paste-browser", "read_query", "shell_supported", "bearer_if_configured", "paste browser JSON"
+        "GET", "/api/paste-browser", "read_query", "shell_supported", "credential_if_configured", "paste browser JSON"
     ),
     RouteContract(
-        "GET", "/api/attachments", "read_query", "shell_supported", "bearer_if_configured", "attachment library JSON"
-    ),
-    RouteContract("GET", "/api/stack", "workspace", "shell_supported", "bearer_if_configured", "stack workspace JSON"),
-    RouteContract(
-        "GET", "/api/compare", "workspace", "shell_supported", "bearer_if_configured", "compare workspace JSON"
-    ),
-    RouteContract("GET", "/api/user/marks", "user_overlay", "stable", "bearer_if_configured", "marks JSON"),
-    RouteContract("GET", "/api/user/annotations", "user_overlay", "stable", "bearer_if_configured", "annotations JSON"),
-    RouteContract(
-        "GET", "/api/user/annotations/:id", "user_overlay", "stable", "bearer_if_configured", "annotation JSON"
-    ),
-    RouteContract("GET", "/api/user/saved-views", "user_overlay", "stable", "bearer_if_configured", "saved views JSON"),
-    RouteContract(
-        "GET", "/api/user/saved-views/:id", "user_overlay", "stable", "bearer_if_configured", "saved view JSON"
+        "GET",
+        "/api/attachments",
+        "read_query",
+        "shell_supported",
+        "credential_if_configured",
+        "attachment library JSON",
     ),
     RouteContract(
-        "GET", "/api/user/recall-packs", "user_overlay", "stable", "bearer_if_configured", "recall packs JSON"
+        "GET", "/api/stack", "workspace", "shell_supported", "credential_if_configured", "stack workspace JSON"
     ),
     RouteContract(
-        "GET", "/api/user/recall-packs/:id", "user_overlay", "stable", "bearer_if_configured", "recall pack JSON"
+        "GET", "/api/compare", "workspace", "shell_supported", "credential_if_configured", "compare workspace JSON"
     ),
-    RouteContract("GET", "/api/user/workspaces", "user_overlay", "stable", "bearer_if_configured", "workspaces JSON"),
+    RouteContract("GET", "/api/user/marks", "user_overlay", "stable", "credential_if_configured", "marks JSON"),
     RouteContract(
-        "GET", "/api/user/workspaces/:id", "user_overlay", "stable", "bearer_if_configured", "workspace JSON"
+        "GET", "/api/user/annotations", "user_overlay", "stable", "credential_if_configured", "annotations JSON"
+    ),
+    RouteContract(
+        "GET", "/api/user/annotations/:id", "user_overlay", "stable", "credential_if_configured", "annotation JSON"
+    ),
+    RouteContract(
+        "GET", "/api/user/saved-views", "user_overlay", "stable", "credential_if_configured", "saved views JSON"
+    ),
+    RouteContract(
+        "GET", "/api/user/saved-views/:id", "user_overlay", "stable", "credential_if_configured", "saved view JSON"
+    ),
+    RouteContract(
+        "GET", "/api/user/recall-packs", "user_overlay", "stable", "credential_if_configured", "recall packs JSON"
+    ),
+    RouteContract(
+        "GET", "/api/user/recall-packs/:id", "user_overlay", "stable", "credential_if_configured", "recall pack JSON"
+    ),
+    RouteContract(
+        "GET", "/api/user/workspaces", "user_overlay", "stable", "credential_if_configured", "workspaces JSON"
+    ),
+    RouteContract(
+        "GET", "/api/user/workspaces/:id", "user_overlay", "stable", "credential_if_configured", "workspace JSON"
     ),
     RouteContract(
         "GET",
         "/api/maintenance/operations",
         "maintenance",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "maintenance operations JSON",
     ),
     RouteContract(
@@ -385,17 +424,31 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/maintenance/status/:id",
         "maintenance",
         "stable",
-        "bearer_if_configured",
+        "credential_if_configured",
         "maintenance operation status JSON",
     ),
-    RouteContract("POST", "/api/reset", "maintenance", "stable", "bearer_and_same_origin", "reset result JSON"),
-    RouteContract("POST", "/api/ingest", "maintenance", "stable", "bearer_and_same_origin", "ingest result JSON"),
+    RouteContract(
+        "POST",
+        "/api/reset",
+        "maintenance",
+        "stable",
+        "bearer_if_configured_and_same_origin",
+        "reset result JSON",
+    ),
+    RouteContract(
+        "POST",
+        "/api/ingest",
+        "maintenance",
+        "stable",
+        "bearer_if_configured_and_same_origin",
+        "ingest result JSON",
+    ),
     RouteContract(
         "POST",
         "/api/maintenance/plan",
         "maintenance",
         "stable",
-        "bearer_and_same_origin",
+        "bearer_if_configured_and_same_origin",
         "maintenance operation preview",
     ),
     RouteContract(
@@ -403,34 +456,58 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "/api/maintenance/run",
         "maintenance",
         "stable",
-        "bearer_and_same_origin",
+        "bearer_if_configured_and_same_origin",
         "maintenance operation result",
     ),
-    RouteContract("POST", "/api/user/marks", "user_overlay", "stable", "bearer_and_same_origin", "mutation envelope"),
     RouteContract(
-        "POST", "/api/user/annotations", "user_overlay", "stable", "bearer_and_same_origin", "mutation envelope"
+        "POST", "/api/user/marks", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
     ),
     RouteContract(
-        "POST", "/api/user/saved-views", "user_overlay", "stable", "bearer_and_same_origin", "mutation envelope"
+        "POST", "/api/user/annotations", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
     ),
     RouteContract(
-        "POST", "/api/user/recall-packs", "user_overlay", "stable", "bearer_and_same_origin", "mutation envelope"
+        "POST", "/api/user/saved-views", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
     ),
     RouteContract(
-        "POST", "/api/user/workspaces", "user_overlay", "stable", "bearer_and_same_origin", "mutation envelope"
-    ),
-    RouteContract("DELETE", "/api/user/marks", "user_overlay", "stable", "bearer_and_same_origin", "mutation envelope"),
-    RouteContract(
-        "DELETE", "/api/user/annotations/:id", "user_overlay", "stable", "bearer_and_same_origin", "mutation envelope"
+        "POST", "/api/user/recall-packs", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
     ),
     RouteContract(
-        "DELETE", "/api/user/saved-views/:id", "user_overlay", "stable", "bearer_and_same_origin", "mutation envelope"
+        "POST", "/api/user/workspaces", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
     ),
     RouteContract(
-        "DELETE", "/api/user/recall-packs/:id", "user_overlay", "stable", "bearer_and_same_origin", "mutation envelope"
+        "DELETE", "/api/user/marks", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
     ),
     RouteContract(
-        "DELETE", "/api/user/workspaces/:id", "user_overlay", "stable", "bearer_and_same_origin", "mutation envelope"
+        "DELETE",
+        "/api/user/annotations/:id",
+        "user_overlay",
+        "stable",
+        "credential_and_same_origin",
+        "mutation envelope",
+    ),
+    RouteContract(
+        "DELETE",
+        "/api/user/saved-views/:id",
+        "user_overlay",
+        "stable",
+        "credential_and_same_origin",
+        "mutation envelope",
+    ),
+    RouteContract(
+        "DELETE",
+        "/api/user/recall-packs/:id",
+        "user_overlay",
+        "stable",
+        "credential_and_same_origin",
+        "mutation envelope",
+    ),
+    RouteContract(
+        "DELETE",
+        "/api/user/workspaces/:id",
+        "user_overlay",
+        "stable",
+        "credential_and_same_origin",
+        "mutation envelope",
     ),
 )
 

@@ -29,6 +29,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue.daemon.web_auth import WebCredentialRegistry
+
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 
@@ -458,40 +460,38 @@ class TestBackpressureCoalescing:
         assert b'"coalesced": true' in out or b'"coalesced":true' in out
 
 
-class TestAccessTokenQueryFallback:
-    """When a token is configured, EventSource clients can use ``?access_token=``."""
+class TestAccessTokenQueryRejected:
+    """SSE credentials never travel in URLs; EventSource uses the web cookie."""
 
-    def test_access_token_in_query_string_authenticates(self, empty_events_db: Path) -> None:
-        from polylogue.daemon.http import _check_auth_logic
-
-        # The pure logic accepts a Bearer header; the handler-level fallback
-        # rewrites ?access_token=X into Bearer X before delegating.
-        handler = _make_handler("GET", "/api/events?poll=1&since=0&access_token=secret")
+    @pytest.mark.parametrize("credential_param", ["access_token", "api_key", "secret"])
+    def test_credential_in_query_string_is_rejected(
+        self,
+        empty_events_db: Path,
+        credential_param: str,
+    ) -> None:
+        handler = _make_handler("GET", f"/api/events?poll=1&since=0&{credential_param}=secret")
         handler.server = cast(
             "DaemonAPIHTTPServer",
             type(
                 "_Srv",
                 (),
-                {"auth_token": "secret", "api_host": "127.0.0.1"},
+                {
+                    "auth_token": "secret",
+                    "api_host": "127.0.0.1",
+                    "web_credentials": WebCredentialRegistry(),
+                },
             )(),
         )
-        send_json = _capture_json(handler)
+        send_error = MagicMock()
+        handler._send_error = send_error  # type: ignore[method-assign]
         handler.do_GET()
-        # Should succeed (200), not 401.
-        status, _ = send_json.call_args.args
-        assert status == HTTPStatus.OK
+        send_error.assert_called_once_with(
+            HTTPStatus.BAD_REQUEST,
+            "credential_in_query",
+            "credentials must use Authorization or the protected first-party cookie",
+        )
 
-        # Sanity: the raw logic still rejects when no header is present.
-        assert _check_auth_logic("secret", "127.0.0.1", "").allowed is False
-
-    def test_access_token_in_query_string_is_ignored_on_non_sse_routes(self, empty_events_db: Path) -> None:
-        """The query-token fallback is scoped to /api/events only (kwsb.1).
-
-        Accepting ?access_token= broadly would leak bearer tokens into
-        server logs, proxies, and the Referer header on every route —
-        EventSource's header limitation is the sole legitimate reason for
-        the fallback to exist at all.
-        """
+    def test_access_token_in_query_string_is_rejected_on_non_sse_routes(self, empty_events_db: Path) -> None:
         handler = _make_handler("GET", "/api/status?access_token=secret")
         handler.server = cast(
             "DaemonAPIHTTPServer",
@@ -504,4 +504,50 @@ class TestAccessTokenQueryFallback:
         send_error = MagicMock()
         handler._send_error = send_error  # type: ignore[method-assign]
         handler.do_GET()
-        send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
+        send_error.assert_called_once_with(
+            HTTPStatus.BAD_REQUEST,
+            "credential_in_query",
+            "credentials must use Authorization or the protected first-party cookie",
+        )
+
+    def test_valid_cookie_cannot_make_query_credential_reach_dispatch(self, empty_events_db: Path) -> None:
+        registry = WebCredentialRegistry()
+        issued = registry.issue("http://127.0.0.1:8766")
+        handler = _make_handler(
+            "GET",
+            "/api/status?access_token=must-not-surface",
+            extra_headers={
+                "Cookie": f"polylogue_web_credential={issued.token}",
+                "Host": "127.0.0.1:8766",
+                "Sec-Fetch-Site": "same-origin",
+                "X-Polylogue-Web-Client": "1",
+            },
+        )
+        handler.server = cast(
+            "DaemonAPIHTTPServer",
+            type(
+                "_Srv",
+                (),
+                {"auth_token": "secret", "api_host": "127.0.0.1", "web_credentials": registry},
+            )(),
+        )
+        status_handler = MagicMock()
+        handler._handle_status = status_handler  # type: ignore[method-assign]
+        send_error = MagicMock()
+        handler._send_error = send_error  # type: ignore[method-assign]
+
+        handler.do_GET()
+
+        send_error.assert_called_once_with(
+            HTTPStatus.BAD_REQUEST,
+            "credential_in_query",
+            "credentials must use Authorization or the protected first-party cookie",
+        )
+        status_handler.assert_not_called()
+
+    def test_route_metadata_redacts_and_disconnect_log_path_drops_query_values(self) -> None:
+        from polylogue.daemon.http import _public_route_from_request_path, _request_path_for_log
+
+        raw = "/api/sessions?query=normal&unknown_name=must-not-surface"
+        assert _public_route_from_request_path(raw) == "/api/sessions"
+        assert _request_path_for_log(raw) == "/api/sessions"

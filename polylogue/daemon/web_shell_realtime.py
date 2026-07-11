@@ -38,7 +38,8 @@ var realtime = {
   refreshTimer: null,
   status: 'connecting',
   subscribedKinds: null,
-  lastTickTs: null
+  lastTickTs: null,
+  reauthenticating: false
 };
 
 // All event kinds the client knows how to dispatch. Order matters only
@@ -223,7 +224,7 @@ function startRealtimeChannel() {
   if (typeof EventSource === 'undefined') { startPollingFallback(); return; }
   try {
     var url = buildEventsURL({});
-    realtime.source = new EventSource(url);
+    realtime.source = new EventSource(url, {withCredentials: true});
     setLiveChip('connecting', realtime.lastEventId);
     realtime.source.onopen = function() { setLiveChip('live', realtime.lastEventId); };
     var consumeMessage = function(e) {
@@ -235,8 +236,21 @@ function startRealtimeChannel() {
     REALTIME_LEGACY_KINDS.concat(REALTIME_GRANULAR_KINDS).forEach(function(kind) {
       realtime.source.addEventListener(kind, consumeMessage);
     });
-    realtime.source.onerror = function() {
+    realtime.source.onerror = async function() {
       setLiveChip('stale', realtime.lastEventId);
+      if (!realtime.reauthenticating) {
+        realtime.reauthenticating = true;
+        try {
+          await bootstrapWebCredential();
+          try { realtime.source && realtime.source.close(); } catch(_) {}
+          realtime.source = null;
+          realtime.reauthenticating = false;
+          startRealtimeChannel();
+          return;
+        } catch(_) {
+          realtime.reauthenticating = false;
+        }
+      }
       // EventSource retries automatically; if it never reopens within 15s,
       // switch to polling fallback.
       setTimeout(function() {
@@ -267,7 +281,7 @@ function restartRealtimeForView() {
   startRealtimeChannel();
 }
 
-startRealtimeChannel();
+ensureWebCredential().then(startRealtimeChannel).catch(startPollingFallback);
 """
 
 __all__ = ["REALTIME_JS"]

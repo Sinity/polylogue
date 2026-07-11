@@ -10,14 +10,17 @@ The daemon binds to `127.0.0.1` by default. Non-loopback bind requires
 to start otherwise (`daemon/cli.py:309-319`).
 
 Authentication: optional bearer token (`--api-auth-token`). When set,
-every request — including from loopback — must present a matching
-`Authorization: Bearer <token>` header. When unset, the API is open
-on loopback; the loopback bind is the access boundary in that mode.
+machine clients present the bearer; the first-party shell uses a separate,
+short-lived, scoped HttpOnly cookie minted only for the exact daemon origin.
+That cookie is limited to reads, events, and user-overlay writes; reset, ingest,
+and maintenance control routes accept only the machine bearer when configured.
+When unset, the API is open on loopback; the loopback bind is the access
+boundary in that mode.
 
-Cross-origin POSTs (CSRF) are refused via an `Origin` allowlist of
-loopback URLs (`http://127.0.0.1:*`, `http://localhost:*`, and HTTPS
-equivalents). The web shell and same-machine clients pass; browser
-pages from any other origin are rejected with 403.
+Cross-origin POSTs (CSRF) are refused by exact `Origin`-to-`Host` authority
+matching. Another loopback port is not trusted. First-party credentials are
+also origin-bound and expose explicit missing/invalid/expired/revoked/wrong-origin
+states without putting secret bytes in URLs or response bodies.
 
 For the full security policy and explicit decisions on raw-artifact
 redaction, `/api/sources` paths, and `OPTIONS` handling, see
@@ -61,13 +64,16 @@ These are explicitly out of scope for the daemon threat model:
 - **Multi-user access**: Polylogue is a single-user tool. There is no user isolation.
 - **Network exposure**: The daemon does not bind to `0.0.0.0` or non-loopback interfaces.
 - **Encryption at rest**: Archive content is stored as plaintext SQLite. Disk encryption is the OS's responsibility.
-- **Multi-user authentication**: No user accounts, RBAC, or per-user tokens. Bearer-token auth (`--api-auth-token`) gates the entire API uniformly when configured.
+- **Multi-user authentication**: No user accounts, RBAC, or per-user tokens. The configured machine bearer and its scoped first-party browser adapter are same-user access controls, not user identities.
 
 ## API Roles
 
-The daemon HTTP API is **read-only by default**. Write operations (tags,
-metadata mutations, deletes) require explicit opt-in via the MCP server's
-`--role write` flag and are not exposed through the daemon HTTP surface.
+The daemon HTTP API exposes archive reads plus explicit user-overlay writes.
+Those overlay writes require either the machine bearer or the scoped
+first-party cookie and an exact-origin request. Archive reset, ingest, and
+maintenance controls are separate machine-bearer capabilities when auth is
+configured. MCP write operations remain gated by the server's `--role write`
+flag.
 
 The MCP server has three roles:
 

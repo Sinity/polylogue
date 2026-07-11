@@ -90,9 +90,10 @@ classified with explicit auth and response posture.
 |-------------|-------------|----------|
 | Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /s/:id`, `GET /p`, `GET /a` |
 | Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
-| Stable read/query API | bearer token when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
-| User overlay reads | bearer token when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
-| Browser-accessible mutations | bearer token plus same-origin browser request | `POST /api/user/marks`, `DELETE /api/user/saved-views/:id`, `POST /api/maintenance/run` |
+| Stable read/query API | bearer or scoped web credential when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
+| User overlay reads | bearer or scoped web credential when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
+| Browser-accessible user-state mutations | bearer or scoped web credential plus exact-origin browser request | `POST /api/user/marks`, `DELETE /api/user/saved-views/:id` |
+| Archive control mutations | machine bearer when configured plus exact-origin browser request | `POST /api/reset`, `POST /api/ingest`, `POST /api/maintenance/run` |
 | Observability ingest | explicit config flag plus loopback-or-bearer policy | `POST /v1/traces`, `POST /v1/metrics`, `POST /v1/logs` |
 
 User overlay mutation routes return the shared mutation result envelope
@@ -177,17 +178,21 @@ querying the archive through the daemon.
 
 ### Authentication
 
-When an API auth token is configured, `/api/*` routes require it even from
-loopback. Pass it as a Bearer token:
+When an API auth token is configured, machine clients pass it as a bearer:
 
 ```bash
 curl -H "Authorization: Bearer <token>" http://host:8766/api/status
 ```
 
-Mutating browser-accessible routes also reject cross-origin `Origin` headers,
-even when the Bearer token is valid. `GET /healthz/*` and `GET /metrics` remain
-unauthenticated so health checks and Prometheus scrapers can operate without
-credentials.
+The first-party web shell does not receive that bearer. It obtains a separate
+short-lived, scoped HttpOnly cookie from `POST /api/web-auth/session`; ordinary
+fetch and SSE reconnects use the same cookie. Mutation routes require exact
+`Origin`-to-`Host` authority in addition to authentication. The cookie carries
+only `read`, `events`, and `user_state` scopes; archive reset, ingest, and
+maintenance controls require the machine bearer when authentication is enabled.
+`GET /healthz/*`
+and `GET /metrics` remain unauthenticated so health checks and Prometheus
+scrapers can operate without credentials.
 
 ## Browser Capture Receiver
 
