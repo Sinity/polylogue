@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS raw_revision_heads (
     accepted_raw_id          TEXT NOT NULL,
     accepted_source_revision TEXT NOT NULL,
     accepted_content_hash    BLOB NOT NULL CHECK(length(accepted_content_hash) = 32),
-    accepted_byte_frontier   INTEGER NOT NULL CHECK(accepted_byte_frontier >= 0),
+    accepted_frontier_kind   TEXT NOT NULL CHECK(accepted_frontier_kind IN ('byte', 'semantic')),
+    accepted_frontier        INTEGER NOT NULL CHECK(accepted_frontier >= 0),
     acquisition_generation  INTEGER NOT NULL CHECK(acquisition_generation >= 0),
     append_end_offset        INTEGER CHECK(append_end_offset IS NULL OR append_end_offset >= 0),
     decided_at_ms            INTEGER NOT NULL CHECK(decided_at_ms >= 0)

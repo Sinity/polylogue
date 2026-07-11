@@ -27,7 +27,8 @@ def _receipt(
         accepted_raw_id=f"raw-{generation}",
         accepted_source_revision=revision,
         accepted_content_hash=bytes([generation]) * 32,
-        accepted_byte_frontier=frontier if frontier is not None else generation * 100,
+        accepted_frontier_kind="byte",
+        accepted_frontier=frontier if frontier is not None else generation * 100,
     )
 
 
@@ -43,7 +44,7 @@ def test_application_receipt_is_idempotent_and_rejects_older_head() -> None:
     ).fetchone() == ("revision-1",)
 
     record_revision_application_sync(conn, _receipt(generation=2, revision="revision-2"), decided_at_ms=30)
-    with pytest.raises(RuntimeError, match="older accepted byte frontier"):
+    with pytest.raises(RuntimeError, match="older accepted frontier"):
         record_revision_application_sync(conn, _receipt(generation=1, revision="revision-old"), decided_at_ms=40)
 
 
@@ -82,7 +83,8 @@ def test_session_fts_proof_detects_missing_row_and_trigger_mutation() -> None:
     [
         {"session_id": "codex-session:other"},
         {"accepted_content_hash": b"x" * 32},
-        {"accepted_byte_frontier": 99},
+        {"accepted_frontier": 99},
+        {"accepted_frontier_kind": "semantic"},
     ],
 )
 def test_equal_frontier_cas_rejects_conflicting_semantic_state(changes: dict[str, object]) -> None:
@@ -102,9 +104,10 @@ def test_larger_full_snapshot_supersedes_deeper_append_generation() -> None:
     record_revision_application_sync(conn, _receipt(generation=2, revision="append-2", frontier=180), decided_at_ms=20)
     later_full = _receipt(generation=1, revision="full-1", frontier=220)
     record_revision_application_sync(conn, later_full, decided_at_ms=30)
-    assert conn.execute(
-        "SELECT accepted_source_revision, accepted_byte_frontier FROM raw_revision_heads"
-    ).fetchone() == ("full-1", 220)
+    assert conn.execute("SELECT accepted_source_revision, accepted_frontier FROM raw_revision_heads").fetchone() == (
+        "full-1",
+        220,
+    )
 
 
 def test_equal_frontier_full_can_replace_equivalent_append_representation() -> None:

@@ -603,6 +603,10 @@ files:
     target: polylogue/archive/session/threads.py
     owner: archive-session
     reason: archive-domain semantics
+  - path: polylogue/archive/session_revision_membership.py
+    loc: 71
+    target: polylogue/archive/session_revision_membership.py
+    owner: stable
   - path: polylogue/archive/stats.py
     loc: 96
     target: polylogue/archive/stats.py
@@ -795,7 +799,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 2321
+    loc: 2351
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/ops.py
@@ -1691,7 +1695,7 @@ files:
     target: polylogue/maintenance/registry.py
     owner: stable
   - path: polylogue/maintenance/replay.py
-    loc: 774
+    loc: 796
     target: polylogue/maintenance/replay.py
     owner: stable
   - path: polylogue/maintenance/scope.py
@@ -1815,7 +1819,7 @@ files:
     target: polylogue/pipeline/__init__.py
     owner: stable
   - path: polylogue/pipeline/ids.py
-    loc: 174
+    loc: 208
     target: polylogue/pipeline/ids.py
     owner: stable
   - path: polylogue/pipeline/ingest_support.py
@@ -2568,7 +2572,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1767
+    loc: 1768
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2757,7 +2761,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 95
+    loc: 101
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
@@ -3283,7 +3287,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 9686
+    loc: 9778
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3311,7 +3315,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 1289
+    loc: 1291
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
@@ -3331,7 +3335,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_application.py
-    loc: 189
+    loc: 217
     target: polylogue/storage/sqlite/archive_tiers/revision_application.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/self_verify.py
@@ -3339,7 +3343,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/self_verify.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 175
+    loc: 211
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py

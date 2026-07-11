@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+from dataclasses import dataclass
 from typing import TypeAlias
 
 from polylogue.core.enums import Origin, Provider
@@ -17,6 +18,14 @@ from polylogue.types import ContentHash, MessageId, SessionEventId, SessionId
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"
 _EMPTY_SENTINEL = "__POLYLOGUE_EMPTY__"
 HashScalar: TypeAlias = str | int | float | bool | None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRevisionProjection:
+    session_hash: bytes
+    message_hashes: tuple[bytes, ...]
+    attachment_hashes: frozenset[bytes]
+    event_hashes: tuple[bytes, ...]
 
 
 def _normalize_for_hash(value: HashScalar) -> JSONValue:
@@ -171,4 +180,29 @@ def session_content_hash(convo: ParsedSession) -> ContentHash:
                 session_events=session_events_payload,
             )
         )
+    )
+
+
+def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjection:
+    """Project canonical content hashes used to prove append-only session growth."""
+    message_payloads = [
+        _message_hash_payload(message, message.provider_message_id or f"msg-{index}")
+        for index, message in enumerate(convo.messages, start=1)
+    ]
+    attachment_payloads = [_attachment_hash_payload(attachment) for attachment in convo.attachments]
+    event_payloads = [
+        {
+            "event_index": event_index,
+            "event_type": _normalize_for_hash(event.event_type),
+            "timestamp": _normalize_for_hash(event.timestamp),
+            "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
+            "payload": hash_payload(event.payload),
+        }
+        for event_index, event in enumerate(convo.session_events)
+    ]
+    return SessionRevisionProjection(
+        session_hash=bytes.fromhex(session_content_hash(convo)),
+        message_hashes=tuple(bytes.fromhex(hash_payload(payload)) for payload in message_payloads),
+        attachment_hashes=frozenset(bytes.fromhex(hash_payload(payload)) for payload in attachment_payloads),
+        event_hashes=tuple(bytes.fromhex(hash_payload(payload)) for payload in event_payloads),
     )
