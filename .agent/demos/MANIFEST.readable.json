@@ -3,19 +3,24 @@
   "root": ".agent/demos",
   "input_closure": {
     "mode": "git-tracked",
-    "included_count": 69,
+    "included_count": 75,
     "excluded_count": 0,
     "exclusion_reason_counts": {},
     "exclusion_samples": "bounded samples are emitted in the command JSON payload"
   },
   "packaging": "Use devtools workspace read-package for portable readable bundles; this helper only writes indexes.",
   "curation_policy": "This is not append-only. Keep the best current demos here; replace, consolidate, or move stale demos out.",
-  "file_count": 69,
-  "readable_count": 59,
+  "file_count": 75,
+  "readable_count": 65,
   "files": [
     {
+      "path": "_packet-contract-stub/NON-CLAIMS.md",
+      "bytes": 177,
+      "readable": true
+    },
+    {
       "path": "_packet-contract-stub/PROMPT.md",
-      "bytes": 1035,
+      "bytes": 1108,
       "readable": true
     },
     {
@@ -25,12 +30,17 @@
     },
     {
       "path": "_packet-contract-stub/evidence.ndjson",
-      "bytes": 119,
+      "bytes": 258,
       "readable": false
     },
     {
       "path": "_packet-contract-stub/finding.yaml",
-      "bytes": 275,
+      "bytes": 266,
+      "readable": true
+    },
+    {
+      "path": "_packet-contract-stub/packet.json",
+      "bytes": 4230,
       "readable": true
     },
     {
@@ -40,7 +50,7 @@
     },
     {
       "path": "_packet-contract-stub/report.md",
-      "bytes": 897,
+      "bytes": 1076,
       "readable": true
     },
     {
@@ -159,8 +169,13 @@
       "readable": true
     },
     {
+      "path": "anti-demo-multi-source-reconstruction/NON-CLAIMS.md",
+      "bytes": 239,
+      "readable": true
+    },
+    {
       "path": "anti-demo-multi-source-reconstruction/PROMPT.md",
-      "bytes": 1624,
+      "bytes": 1714,
       "readable": true
     },
     {
@@ -170,12 +185,17 @@
     },
     {
       "path": "anti-demo-multi-source-reconstruction/evidence.ndjson",
-      "bytes": 879,
+      "bytes": 1035,
       "readable": false
     },
     {
       "path": "anti-demo-multi-source-reconstruction/finding.yaml",
-      "bytes": 538,
+      "bytes": 529,
+      "readable": true
+    },
+    {
+      "path": "anti-demo-multi-source-reconstruction/packet.json",
+      "bytes": 4907,
       "readable": true
     },
     {
@@ -185,7 +205,7 @@
     },
     {
       "path": "anti-demo-multi-source-reconstruction/report.md",
-      "bytes": 3947,
+      "bytes": 4188,
       "readable": true
     },
     {
@@ -219,8 +239,13 @@
       "readable": false
     },
     {
+      "path": "d4-behavioral-archaeology/NON-CLAIMS.md",
+      "bytes": 291,
+      "readable": true
+    },
+    {
       "path": "d4-behavioral-archaeology/PROMPT.md",
-      "bytes": 1722,
+      "bytes": 1800,
       "readable": true
     },
     {
@@ -230,12 +255,17 @@
     },
     {
       "path": "d4-behavioral-archaeology/evidence.ndjson",
-      "bytes": 1558,
+      "bytes": 1702,
       "readable": false
     },
     {
       "path": "d4-behavioral-archaeology/finding.yaml",
-      "bytes": 410,
+      "bytes": 401,
+      "readable": true
+    },
+    {
+      "path": "d4-behavioral-archaeology/packet.json",
+      "bytes": 4822,
       "readable": true
     },
     {
@@ -245,7 +275,7 @@
     },
     {
       "path": "d4-behavioral-archaeology/report.md",
-      "bytes": 5263,
+      "bytes": 5556,
       "readable": true
     },
     {
@@ -255,7 +285,7 @@
     },
     {
       "path": "registry.json",
-      "bytes": 950,
+      "bytes": 983,
       "readable": true
     },
     {

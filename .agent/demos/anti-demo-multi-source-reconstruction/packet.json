@@ -9,6 +9,9 @@
   },
   "claim": {
     "declared_before_execution": true,
+    "receipts": [
+      "artifact:anti-demo-multi-source-reconstruction-predeclaration"
+    ],
     "scope": "the current Polylogue archive tiers at the recorded revision",
     "statement": "Minute-by-minute fusion of transcript, window-focus, shell-history, and browser-tab evidence is not supported by this Polylogue schema.",
     "status": "not_supported"
@@ -90,7 +93,16 @@
       "description": "Committed evidence rows and references for this packet.",
       "kind": "artifact",
       "ref": "artifact:anti-demo-multi-source-reconstruction-evidence",
-      "resolved": true
+      "resolved": true,
+      "sha256": "4e71bc7bda5121b7e933faf014b025ef66ad659f53cd1e0a3adda3c8e9ef1108"
+    },
+    {
+      "artifact_path": "PROMPT.md",
+      "description": "The committed prompt that states the packet claim before execution.",
+      "kind": "artifact",
+      "ref": "artifact:anti-demo-multi-source-reconstruction-predeclaration",
+      "resolved": true,
+      "sha256": "ec64079d33664dad1fdfc4af633687b2dbadeff9f28463e6c24d1b773332c03f"
     }
   ],
   "reproduction": {

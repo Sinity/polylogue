@@ -11,6 +11,9 @@
   },
   "claim": {
     "declared_before_execution": true,
+    "receipts": [
+      "artifact:fixture-receipt"
+    ],
     "scope": "this committed validator fixture only",
     "statement": "A complete Demo Packet v2 passes schema validation.",
     "status": "supported"
@@ -60,7 +63,8 @@
       "description": "The fixture receipt used by validator tests.",
       "kind": "artifact",
       "ref": "artifact:fixture-receipt",
-      "resolved": true
+      "resolved": true,
+      "sha256": "d25cfbf1587e267e9c82d5667ed43cd6b6d668e899e73976757a8e616164d95c"
     }
   ],
   "reproduction": {

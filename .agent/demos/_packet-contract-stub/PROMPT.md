@@ -1,5 +1,7 @@
 # Packet Contract Stub
 
+Predeclaration receipt: `artifact:packet-contract-stub-predeclaration`.
+
 This is a deliberately minimal, hand-authored fixture packet proving the
 Demo Finding Packet contract (polylogue-212.7) end to end — it is NOT one of
 the real 212 demos (D1/D2/D4/D5/D8/post-hoc-Q&A/anti-demo/foreman-rhetoric).

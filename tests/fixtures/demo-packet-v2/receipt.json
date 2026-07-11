@@ -1,4 +1,1 @@
-{
-  "ref": "artifact:fixture-receipt",
-  "ok": true
-}
+{"ref": "artifact:fixture-receipt", "status": "resolved"}

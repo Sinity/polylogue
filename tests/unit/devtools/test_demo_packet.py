@@ -37,7 +37,7 @@ def _write_conforming_packet(packet_dir: Path, *, payload: dict[str, object] | N
     )
     stanza_lines = "\n".join(f"{field}: value-{field}" for field in PROVENANCE_STANZA_FIELDS)
     (packet_dir / "finding.yaml").write_text(f"{stanza_lines}\nclaim: a claim\n", encoding="utf-8")
-    report_sections = "\n".join(f"## {section}\ntext\n" for section in REPORT_SECTION_ORDER)
+    report_sections = "\n".join(f"## {section[0].upper()}{section[1:]}\ntext\n" for section in REPORT_SECTION_ORDER)
     (packet_dir / "report.md").write_text(report_sections, encoding="utf-8")
     (packet_dir / "evidence.ndjson").write_text(
         json.dumps({"ref": receipt_ref, "evidence": "fixture receipt"}) + "\n",
@@ -121,13 +121,28 @@ def test_validate_packet_reports_missing_stanza_fields(tmp_path: Path) -> None:
 def test_validate_packet_reports_missing_report_sections(tmp_path: Path) -> None:
     packet_dir = tmp_path / "packet"
     _write_conforming_packet(packet_dir)
-    (packet_dir / "report.md").write_text("## claim\nonly one section\n", encoding="utf-8")
+    (packet_dir / "report.md").write_text("## Claim\nonly one section\n", encoding="utf-8")
 
     result = validate_packet(packet_dir)
 
     assert result.ok is False
     assert "reproduce" in result.malformed_sections
     assert "claim" not in result.malformed_sections
+
+
+def test_validate_packet_requires_canonical_report_section_order(tmp_path: Path) -> None:
+    packet_dir = tmp_path / "packet"
+    _write_conforming_packet(packet_dir)
+    report_path = packet_dir / "report.md"
+    report = report_path.read_text(encoding="utf-8")
+    report_path.write_text(
+        report.replace("## Claim\ntext\n\n## Corpus", "## Corpus\ntext\n\n## Claim"), encoding="utf-8"
+    )
+
+    result = validate_packet(packet_dir)
+
+    assert result.ok is False
+    assert result.malformed_sections == ("section-order",)
 
 
 def test_validate_packet_reports_invalid_checks_json(tmp_path: Path) -> None:
@@ -150,6 +165,107 @@ def test_validate_packet_reports_invalid_ndjson(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert any("evidence.ndjson" in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "production_guard", "expected_fragment"),
+    [
+        pytest.param(
+            "missing-claim-receipts",
+            "schema $defs.claim.required",
+            "'receipts' is a required property",
+            id="missing-claim-receipts",
+        ),
+        pytest.param(
+            "missing-receipt-sha256",
+            "schema $defs.receipt.required",
+            "'sha256' is a required property",
+            id="missing-receipt-sha256",
+        ),
+        pytest.param(
+            "noncanonical-claim-heading",
+            "_validate_report_sections exact-heading check",
+            '"malformed_sections": ["claim"]',
+            id="noncanonical-claim-heading",
+        ),
+        pytest.param(
+            "triggered-falsifier-passes",
+            "_validate_semantic_consistency falsifier check",
+            "falsifier.triggered=true requires falsifier.result='fail'",
+            id="triggered-falsifier-passes",
+        ),
+        pytest.param(
+            "duplicate-control-id",
+            "_validate_semantic_consistency control-id check",
+            "control id is duplicated across packet controls: 'invalid-packet'",
+            id="duplicate-control-id",
+        ),
+        pytest.param(
+            "duplicate-measurement-name",
+            "_validate_semantic_consistency measurement-name check",
+            "measurement name is duplicated: 'schema_errors'",
+            id="duplicate-measurement-name",
+        ),
+    ],
+)
+def test_production_validator_rejects_reproduced_false_green_mutations(
+    tmp_path: Path,
+    mutation: str,
+    production_guard: str,
+    expected_fragment: str,
+) -> None:
+    """Each case names the production guard whose removal recreates the false green."""
+
+    packet_dir = tmp_path / "packet"
+    payload = _valid_packet_payload()
+    _write_conforming_packet(packet_dir, payload=payload)
+
+    if mutation == "noncanonical-claim-heading":
+        report_path = packet_dir / "report.md"
+        report_path.write_text(
+            report_path.read_text(encoding="utf-8").replace("## Claim", "## Claimant"),
+            encoding="utf-8",
+        )
+    else:
+        claim = cast(dict[str, object], payload["claim"])
+        receipts = cast(list[dict[str, object]], payload["receipts"])
+        falsifier = cast(dict[str, object], payload["falsifier"])
+        controls = cast(dict[str, list[dict[str, object]]], payload["controls"])
+        results = cast(dict[str, object], payload["results"])
+        measurements = cast(list[dict[str, object]], results["measurements"])
+        if mutation == "missing-claim-receipts":
+            claim.pop("receipts")
+        elif mutation == "missing-receipt-sha256":
+            receipts[0].pop("sha256")
+        elif mutation == "triggered-falsifier-passes":
+            falsifier["triggered"] = True
+        elif mutation == "duplicate-control-id":
+            controls["missing_evidence"][0]["id"] = controls["negative"][0]["id"]
+        elif mutation == "duplicate-measurement-name":
+            measurements.append(dict(measurements[0]))
+        (packet_dir / "packet.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    result = validate_packet(packet_dir)
+    rendered = json.dumps(result.to_dict(), sort_keys=True)
+
+    assert result.ok is False, f"removing {production_guard} would recreate the false green"
+    assert expected_fragment in rendered, f"mutation is not bound to {production_guard}"
+
+
+def test_validate_packet_rejects_receipt_digest_mismatch(tmp_path: Path) -> None:
+    packet_dir = tmp_path / "packet"
+    payload = _valid_packet_payload()
+    receipts = cast(list[dict[str, object]], payload["receipts"])
+    receipts[0]["sha256"] = "0" * 64
+    _write_conforming_packet(packet_dir, payload=payload)
+
+    result = validate_packet(packet_dir)
+
+    assert result.ok is False
+    assert any("sha256 mismatch" in error for error in result.receipt_errors)
 
 
 def test_validate_packet_rejects_a_missing_receipt_artifact(tmp_path: Path) -> None:
@@ -189,7 +305,7 @@ def test_validate_packet_rejects_unresolved_receipt_text(tmp_path: Path) -> None
 def test_validate_packet_rejects_an_undeclared_receipt_reference(tmp_path: Path) -> None:
     packet_dir = tmp_path / "packet"
     payload = _valid_packet_payload()
-    payload["falsifier"]["receipts"] = ["artifact:not-declared"]  # type: ignore[index]
+    payload["claim"]["receipts"] = ["artifact:not-declared"]  # type: ignore[index]
     _write_conforming_packet(packet_dir, payload=payload)
 
     result = validate_packet(packet_dir)

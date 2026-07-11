@@ -1,5 +1,7 @@
 # The Honesty Anti-Demo: Minute-by-Minute Multi-Source Reconstruction
 
+Predeclaration receipt: `artifact:anti-demo-multi-source-reconstruction-predeclaration`.
+
 This demo's success is refusal. Attempt the tempting claim below against the
 archive; the correct outcome is a `checks.json` with `verdict:
 "not_supported"`, naming every missing modality/ref and the bead that would

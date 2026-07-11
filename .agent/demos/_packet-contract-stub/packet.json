@@ -9,6 +9,9 @@
   },
   "claim": {
     "declared_before_execution": true,
+    "receipts": [
+      "artifact:packet-contract-stub-predeclaration"
+    ],
     "scope": "this validator fixture only",
     "statement": "The complete committed fixture passes the Demo Packet v2 validation gate.",
     "status": "supported"
@@ -89,7 +92,16 @@
       "description": "Committed evidence rows and references for this packet.",
       "kind": "artifact",
       "ref": "artifact:packet-contract-stub-evidence",
-      "resolved": true
+      "resolved": true,
+      "sha256": "cdcfa78a44335e29068683c317cf83c09e85e0414b3271306138b58e404baa70"
+    },
+    {
+      "artifact_path": "PROMPT.md",
+      "description": "The committed prompt that states the packet claim before execution.",
+      "kind": "artifact",
+      "ref": "artifact:packet-contract-stub-predeclaration",
+      "resolved": true,
+      "sha256": "4c0d59f421e04714276ce03b509e585abd14a3bc83cbb6b94597e64dbd118465"
     }
   ],
   "reproduction": {

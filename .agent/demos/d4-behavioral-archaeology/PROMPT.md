@@ -1,5 +1,7 @@
 # D4 "Behavioral Archaeology": Six DSL Queries, Rapid Fire
 
+Predeclaration receipt: `artifact:d4-behavioral-archaeology-predeclaration`.
+
 Run these six queries against a seeded demo archive (`polylogue demo seed`).
 Each answers a question an engineering lead would ask about their team's AI
 coding sessions — each impossible to answer from a chat UI transcript view.

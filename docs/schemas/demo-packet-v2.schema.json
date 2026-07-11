@@ -71,12 +71,17 @@
     "claim": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["statement", "declared_before_execution", "scope", "status"],
+      "required": ["statement", "declared_before_execution", "scope", "status", "receipts"],
       "properties": {
         "statement": {"type": "string", "minLength": 12},
         "declared_before_execution": {"const": true},
         "scope": {"type": "string", "minLength": 8},
-        "status": {"enum": ["supported", "refuted", "inconclusive", "not_supported"]}
+        "status": {"enum": ["supported", "refuted", "inconclusive", "not_supported"]},
+        "receipts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/refString"}
+        }
       }
     },
     "oracle": {
@@ -196,7 +201,7 @@
     "receipt": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ref", "kind", "description", "artifact_path", "resolved"],
+      "required": ["ref", "kind", "description", "artifact_path", "resolved", "sha256"],
       "properties": {
         "ref": {"$ref": "#/$defs/refString"},
         "kind": {
@@ -207,6 +212,7 @@
             "action",
             "query",
             "artifact",
+            "demo",
             "file",
             "assertion",
             "run",
