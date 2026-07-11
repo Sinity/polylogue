@@ -52,7 +52,7 @@ _BOUNDARY_TABLES: tuple[str, ...] = (
     "raw_sessions",
     "sessions",
     "messages",
-    "artifact_observations",
+    "raw_artifacts",
     "messages_fts_docsize",
     "message_embeddings",
     "session_profiles",
@@ -1007,13 +1007,14 @@ def _boundary_table_counts_and_precision(
         try:
             source_conn = open_readonly_connection(source_db)
             try:
-                for table in ("raw_sessions",):
+                for table in ("raw_sessions", "raw_artifacts"):
                     counts[table], precision[table] = _table_count_with_precision(source_conn, table, exact=exact)
             finally:
                 source_conn.close()
         except sqlite3.Error:
-            counts.setdefault("raw_sessions", -1)
-            precision.setdefault("raw_sessions", "missing")
+            for table in ("raw_sessions", "raw_artifacts"):
+                counts.setdefault(table, -1)
+                precision.setdefault(table, "missing")
     if ops_db is not None and ops_db.exists():
         try:
             ops_conn = open_readonly_connection(ops_db)
