@@ -1434,15 +1434,15 @@ class LiveBatchProcessor:
                                 projections[member_raw_id] = projection
                                 revisions.append(MembershipRevision(member_raw_id, projection))
                             classification = classify_membership_revisions(revisions)
-                            session_id = archive.apply_raw_membership_classification(
+                            membership_session_id = archive.apply_raw_membership_classification(
                                 logical_source_key,
                                 classification,
                                 member_sessions,
                                 projections,
                                 acquired_at_ms=acquired_at_ms,
                             )
-                            if session_id is not None:
-                                record_session_ids.append(session_id)
+                            if membership_session_id is not None:
+                                record_session_ids.append(membership_session_id)
                                 record_session_count += 1
                                 record_message_count += len(session.messages)
                     result.raw_ids[record.raw_id] = record_raw_id
