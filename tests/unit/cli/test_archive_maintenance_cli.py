@@ -17,7 +17,6 @@ from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.repair import RAW_MATERIALIZATION_REPLAY_BLOCK_REASON
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitResult,
@@ -1122,7 +1121,7 @@ def test_archive_read_cli_searches_archive_blocks(
     ],
     ids=["all", "only-missing", "explicit"],
 )
-def test_rebuild_index_source_replay_is_blocked_for_every_execution_selection(
+def test_rebuild_index_source_replay_expands_every_execution_selection_to_authority_cohorts(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
@@ -1150,8 +1149,9 @@ def test_rebuild_index_source_replay_is_blocked_for_every_execution_selection(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 1
-    assert RAW_MATERIALIZATION_REPLAY_BLOCK_REASON in result.output
+    assert result.exit_code == 0
+    assert "Classified:" in result.output
+    assert "Replayed:" in result.output
     with sqlite3.connect(cli_workspace["archive_root"] / "ops.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM ingest_attempts WHERE phase = 'rebuild-index'").fetchone() == (0,)
 
@@ -1198,7 +1198,7 @@ def test_all_index_rebuild_raw_ids_uses_source_acquisition_order(
     ]
 
 
-def test_rebuild_index_helper_fails_closed_before_opening_archive(tmp_path: Path) -> None:
+def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path) -> None:
     config = Config(
         archive_root=tmp_path,
         render_root=tmp_path / "render",
@@ -1206,19 +1206,24 @@ def test_rebuild_index_helper_fails_closed_before_opening_archive(tmp_path: Path
         db_path=tmp_path / "index.db",
     )
 
-    with pytest.raises(RuntimeError) as exc_info:
-        asyncio.run(
-            rebuild_index_from_source(
-                config,
-                raw_ids=["raw-a", "raw-b"],
-                raw_batch_size=7,
-                ingest_workers=1,
-                materialize=True,
-                progress_callback=None,
-            )
+    result = asyncio.run(
+        rebuild_index_from_source(
+            config,
+            raw_ids=["raw-a", "raw-b"],
+            raw_batch_size=7,
+            ingest_workers=1,
+            materialize=True,
+            progress_callback=None,
         )
+    )
 
-    assert str(exc_info.value) == RAW_MATERIALIZATION_REPLAY_BLOCK_REASON
+    assert result == {
+        "scanned_raw_count": 0,
+        "classified_full_count": 0,
+        "replayed_logical_source_count": 0,
+        "quarantined_raw_count": 0,
+        "authority_selection_expanded": True,
+    }
 
 
 def test_rebuild_index_explicit_raw_ids_remain_inspectable_in_plan_mode(

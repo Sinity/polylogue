@@ -21,8 +21,8 @@ over the `CREATE TABLE` statement.
 
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
-| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 4` |
-| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 30` |
+| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 6` |
+| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 31` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
 | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 4` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |

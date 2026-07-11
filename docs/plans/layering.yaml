@@ -26,9 +26,24 @@ writer_modules:
         - tier: index
           durability: rebuildable
           interruption: replayable
+        - tier: source
+          durability: durable
+          interruption: atomic
+        - tier: user
+          durability: durable
+          interruption: atomic
       entrypoints:
-        [delete_sessions, write_parsed_for_retained_raw, write_raw_and_parsed,
+        [apply_raw_membership_classification, apply_raw_revision_replay, classify_raw_revision_cohort,
+        delete_sessions, replace_raw_membership_census,
+        write_parsed_for_retained_raw, write_raw_and_parsed,
         write_raw_and_parsed_result, write_raw_blob_and_parsed, write_raw_blob_and_parsed_result]
+      twin_write_contract: raw-revision-authority
+    - path: polylogue/storage/sqlite/archive_tiers/revision_application.py
+      surfaces:
+        - tier: index
+          durability: rebuildable
+          interruption: replayable
+      entrypoints: [record_revision_application_sync]
     - path: polylogue/storage/sqlite/archive_tiers/source_write.py
       surfaces:
         - tier: source
@@ -88,6 +103,11 @@ writer_modules:
           interruption: replayable
       entrypoints: [seed_price_catalog]
   twin_write_contracts:
+    - name: raw-revision-authority
+      module: polylogue/storage/sqlite/archive_tiers/archive.py
+      surfaces: [index, source, user]
+      entrypoints: [apply_raw_membership_classification]
+      reason: "A replay decision commits the derived session/receipt before advancing durable per-membership authority."
     - name: session-tag-assertion-mirror
       module: polylogue/storage/sqlite/archive_tiers/write.py
       surfaces: [index, user]

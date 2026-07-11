@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 5
+SOURCE_SCHEMA_VERSION = 7
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     ,revision_kind           TEXT NOT NULL DEFAULT 'unknown'
         CHECK(revision_kind IN ('full', 'append', 'unknown'))
     ,source_revision         TEXT
+    ,predecessor_source_revision TEXT
     ,predecessor_raw_id      TEXT
     ,baseline_raw_id         TEXT
     ,append_start_offset     INTEGER CHECK(append_start_offset >= 0)
@@ -62,6 +63,42 @@ WHERE parsed_at_ms IS NULL
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_logical_revision
 ON raw_sessions(logical_source_key, acquisition_generation, raw_id)
 WHERE logical_source_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS raw_session_memberships (
+    raw_id                  TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    logical_source_key      TEXT NOT NULL,
+    provider_session_id     TEXT NOT NULL,
+    source_revision         TEXT NOT NULL,
+    normalized_content_hash BLOB NOT NULL CHECK(length(normalized_content_hash) = 32),
+    message_count           INTEGER NOT NULL CHECK(message_count >= 0),
+    predecessor_raw_id      TEXT,
+    acquisition_generation  INTEGER NOT NULL DEFAULT 0 CHECK(acquisition_generation >= 0),
+    revision_authority      TEXT NOT NULL DEFAULT 'quarantined'
+        CHECK(revision_authority IN ('byte_proven', 'quarantined')),
+    decision                TEXT CHECK(decision IN (
+                                'applied', 'superseded_equivalent', 'superseded_prefix',
+                                'ambiguous', 'deferred'
+                            )),
+    decided_at_ms           INTEGER CHECK(decided_at_ms >= 0),
+    PRIMARY KEY(raw_id, logical_source_key),
+    CHECK((decision IS NULL) = (decided_at_ms IS NULL))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_session_memberships_logical
+ON raw_session_memberships(logical_source_key, acquisition_generation, raw_id);
+
+CREATE INDEX IF NOT EXISTS idx_raw_session_memberships_pending
+ON raw_session_memberships(raw_id)
+WHERE decision IS NULL OR decision IN ('ambiguous', 'deferred');
+
+CREATE TABLE IF NOT EXISTS raw_membership_census (
+    raw_id             TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    parser_fingerprint TEXT NOT NULL,
+    status             TEXT NOT NULL CHECK(status IN ('complete', 'failed', 'non_session')),
+    member_count       INTEGER NOT NULL CHECK(member_count >= 0),
+    censused_at_ms     INTEGER NOT NULL CHECK(censused_at_ms >= 0),
+    detail             TEXT NOT NULL DEFAULT ''
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS blob_refs (
     blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),

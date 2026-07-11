@@ -16,7 +16,13 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
-from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind, append_source_revision
+from polylogue.archive.revision_authority import (
+    RawRevisionAuthority,
+    RawRevisionEnvelope,
+    RawRevisionKind,
+    append_source_revision,
+)
+from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
 from polylogue.core.enums import Provider
@@ -33,6 +39,7 @@ from polylogue.core.metrics import (
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.logging import get_logger
+from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
@@ -311,6 +318,15 @@ class LiveBatchProcessor:
             for plan in append_result.failed:
                 failed_paths.append(str(plan.path))
                 cursor_fingerprint_read_bytes += self._record_failed_cursor(plan.path)
+            for plan in append_result.deferred:
+                cursor_fingerprint_read_bytes += record_deferred_append_cursor(
+                    self._cursor,
+                    plan.path,
+                    cursor=self._cursor.get_record(plan.path),
+                    parser_fingerprint=self._current_parser_fingerprint(),
+                    source_name=plan.source_name,
+                )
+                deferred_paths.append(plan.path)
 
         for path in paths:
             if is_degraded():
@@ -724,7 +740,7 @@ class LiveBatchProcessor:
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
         if source_revision is not None:
             byte_size = stat.st_size
-            fp = raw_fingerprint or ""
+            fp = source_revision
             last_nl = byte_size
             tail_hash = source_revision
             bytes_read = 0
@@ -1159,6 +1175,7 @@ class LiveBatchProcessor:
                     captured_source_revision=raw_source_revisions.get(path, raw_id),
                 )
             )
+            raw_source_revisions.setdefault(path, raw_id)
             raw_by_id[raw_id] = path
 
         summary: _IngestBatchSummary | None = None
@@ -1360,36 +1377,78 @@ class LiveBatchProcessor:
                     record_session_ids: list[str] = []
                     record_session_count = 0
                     record_message_count = 0
-                    for session in sessions:
-                        raw_id, session_id = archive.write_parsed_for_retained_raw(
-                            session,
-                            raw_id=source_raw_id,
-                            source_path=record.source_path,
-                            source_index=record.source_index or 0,
-                            acquired_at_ms=acquired_at_ms,
-                            stage_timings_s=record_timings,
-                            stage_timing_prefix="full",
-                            finalize_raw_parse=False,
-                        )
-                        record_raw_id = raw_id
-                        record_session_ids.append(session_id)
-                        record_session_count += 1
-                        record_message_count += len(session.messages)
-                    if record_session_count == 1 and record.captured_source_revision is not None:
+                    raw_authority_complete = True
+                    if len(sessions) == 1:
                         session = sessions[0]
+                        logical_source_key = f"{provider.value}:{session.provider_session_id}"
                         archive.bind_raw_revision(
                             source_raw_id,
                             RawRevisionEnvelope(
-                                logical_source_key=f"{provider.value}:{session.provider_session_id}",
+                                logical_source_key=logical_source_key,
                                 kind=RawRevisionKind.FULL,
-                                source_revision=record.captured_source_revision,
-                                acquisition_generation=archive.raw_full_revision_generation(
-                                    f"{provider.value}:{session.provider_session_id}"
-                                ),
+                                source_revision=record.captured_source_revision or source_raw_id,
+                                acquisition_generation=0,
+                                authority=RawRevisionAuthority.QUARANTINED,
                             ),
                         )
-                    archive.mark_raw_parse_succeeded(source_raw_id, provider=provider)
-                    result.raw_ids[record.raw_id] = record_raw_id
+                        plan = archive.classify_raw_revision_cohort(logical_source_key)
+                        if not plan.accepted_raw_ids:
+                            continue
+                        parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
+                        session_id, applied_raw_ids = archive.apply_raw_revision_replay(
+                            plan,
+                            parsed_by_raw_id,
+                            acquired_at_ms=acquired_at_ms,
+                        )
+                        record_session_ids.append(session_id)
+                        record_session_count = 1
+                        record_message_count = sum(len(parsed_by_raw_id[raw_id].messages) for raw_id in applied_raw_ids)
+                    else:
+                        archive.replace_raw_membership_census(
+                            source_raw_id,
+                            sessions,
+                            parser_fingerprint=self._current_parser_fingerprint(),
+                            censused_at_ms=acquired_at_ms,
+                        )
+                        for session in sessions:
+                            logical_source_key = f"{session.source_name.value}:{session.provider_session_id}"
+                            member_sessions: dict[str, Any] = {}
+                            projections: dict[str, Any] = {}
+                            revisions: list[MembershipRevision] = []
+                            for member_raw_id in archive.raw_membership_raw_ids(logical_source_key):
+                                retained_sessions = (
+                                    sessions
+                                    if member_raw_id == source_raw_id
+                                    else self._parse_retained_raw_sessions(archive, member_raw_id)
+                                )
+                                matches = [
+                                    item
+                                    for item in retained_sessions
+                                    if f"{item.source_name.value}:{item.provider_session_id}" == logical_source_key
+                                ]
+                                if len(matches) != 1:
+                                    raise RuntimeError(
+                                        f"membership {member_raw_id}:{logical_source_key} no longer parses uniquely"
+                                    )
+                                projection = session_revision_projection(matches[0])
+                                member_sessions[member_raw_id] = matches[0]
+                                projections[member_raw_id] = projection
+                                revisions.append(MembershipRevision(member_raw_id, projection))
+                            classification = classify_membership_revisions(revisions)
+                            membership_session_id = archive.apply_raw_membership_classification(
+                                logical_source_key,
+                                classification,
+                                member_sessions,
+                                projections,
+                                acquired_at_ms=acquired_at_ms,
+                            )
+                            if membership_session_id is not None:
+                                record_session_ids.append(membership_session_id)
+                                record_session_count += 1
+                                record_message_count += len(session.messages)
+                        raw_authority_complete = archive.raw_membership_authority_complete(source_raw_id)
+                    if raw_authority_complete:
+                        result.raw_ids[record.raw_id] = record_raw_id
                     result.session_ids.extend(record_session_ids)
                     result.session_count += record_session_count
                     result.message_count += record_message_count
@@ -1413,6 +1472,33 @@ class LiveBatchProcessor:
                         exc_info=True,
                     )
         return result
+
+    def _parse_raw_revision_chain(self, archive: Any, plan: Any) -> dict[str, Any]:
+        parsed_by_raw_id: dict[str, Any] = {}
+        for raw_id in plan.accepted_raw_ids:
+            sessions = self._parse_retained_raw_sessions(archive, raw_id)
+            if len(sessions) != 1:
+                raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
+            parsed_by_raw_id[raw_id] = sessions[0]
+        return parsed_by_raw_id
+
+    @staticmethod
+    def _parse_retained_raw_sessions(archive: Any, raw_id: str) -> list[Any]:
+        provider, payload, source_path, _kind = archive.raw_revision_material(raw_id)
+        source_name = Path(source_path).name
+        fallback_id = Path(source_path).stem
+        if is_stream_record_provider(source_path, str(provider)):
+            return parse_stream_payload(
+                provider,
+                _iter_json_stream(BytesIO(payload), source_name),
+                fallback_id,
+            )
+        return parse_payload(
+            provider,
+            list(_iter_json_stream(BytesIO(payload), source_name)),
+            fallback_id,
+            source_path=source_path,
+        )
 
     def _extract_zip_member_records(
         self,

@@ -147,13 +147,18 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(tmp_path: 
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 1
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (2, 3, 4, 5)
+        assert result.applied_versions == (2, 3, 4, 5, 6, 7)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('raw_sessions')")}
+        assert "predecessor_source_revision" in columns
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
         ).fetchone()
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='blob_publication_reservations'"
+        ).fetchone()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_session_memberships'"
         ).fetchone()
 
         index_rows = conn.execute("PRAGMA index_list('raw_sessions')").fetchall()
@@ -265,7 +270,7 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(tmp_path: Path
 
         assert result.from_version == 2
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (3, 4, 5)
+        assert result.applied_versions == (3, 4, 5, 6, 7)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
@@ -304,7 +309,7 @@ def test_source_tier_v3_adds_publication_reservations_with_backup_manifest(tmp_p
     conn = sqlite3.connect(db_path)
     try:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.applied_versions == (4, 5)
+        assert result.applied_versions == (4, 5, 6, 7)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         conn.execute(
             """

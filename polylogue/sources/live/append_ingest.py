@@ -9,7 +9,12 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
 
-from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind, append_source_revision
+from polylogue.archive.revision_authority import (
+    RawRevisionAuthority,
+    RawRevisionEnvelope,
+    RawRevisionKind,
+    append_source_revision,
+)
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
@@ -79,6 +84,7 @@ def _ingest_append_plans_archive(
     t0 = time.perf_counter()
     succeeded: list[_AppendPlan] = []
     failed: list[_AppendPlan] = []
+    deferred: list[_AppendPlan] = []
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     try:
         t0 = time.perf_counter()
@@ -117,43 +123,68 @@ def _ingest_append_plans_archive(
                         )
                         failed.append(plan)
                         continue
-                    for session in sessions:
-                        t0 = time.perf_counter()
-                        archive.write_parsed_for_retained_raw(
-                            session,
-                            raw_id=raw_id,
-                            source_path=str(plan.path),
-                            source_index=-1,
-                            acquired_at_ms=acquired_at_ms,
-                            stage_timings_s=timings,
-                            finalize_raw_parse=False,
+                    if len(sessions) != 1 or plan.cursor_fingerprint is None:
+                        archive.mark_raw_parse_failed(
+                            raw_id,
+                            provider=provider,
+                            error=ValueError("append payload did not prove one session and cursor identity"),
                         )
-                        _add_timing(timings, "append.raw_and_index_write", t0)
-                    if len(sessions) == 1:
-                        session = sessions[0]
-                        logical_source_key = f"{provider.value}:{session.provider_session_id}"
-                        parent = archive.raw_append_revision_parent(
-                            logical_source_key,
-                            plan.start_offset,
-                            plan.cursor_fingerprint,
+                        failed.append(plan)
+                        continue
+                    session = sessions[0]
+                    logical_source_key = f"{provider.value}:{session.provider_session_id}"
+                    parent = archive.raw_append_revision_parent(
+                        logical_source_key,
+                        plan.start_offset,
+                        plan.cursor_fingerprint,
+                    )
+                    predecessor_raw_id: str | None = None
+                    baseline_raw_id: str | None = None
+                    generation = archive.raw_full_revision_generation(logical_source_key)
+                    authority = RawRevisionAuthority.QUARANTINED
+                    if parent is not None:
+                        predecessor_raw_id, baseline_raw_id, generation = parent
+                        authority = RawRevisionAuthority.BYTE_PROVEN
+                    archive.bind_raw_revision(
+                        raw_id,
+                        RawRevisionEnvelope(
+                            logical_source_key=logical_source_key,
+                            kind=RawRevisionKind.APPEND,
+                            source_revision=append_source_revision(plan.cursor_fingerprint, plan.payload_hash),
+                            acquisition_generation=generation,
+                            predecessor_source_revision=plan.cursor_fingerprint,
+                            predecessor_raw_id=predecessor_raw_id,
+                            baseline_raw_id=baseline_raw_id,
+                            append_start_offset=plan.start_offset,
+                            append_end_offset=plan.last_complete_newline,
+                            authority=authority,
+                        ),
+                    )
+                    if authority is RawRevisionAuthority.QUARANTINED:
+                        deferred.append(plan)
+                        continue
+                    replay_plan = archive.classify_raw_revision_cohort(logical_source_key)
+                    parsed_by_raw_id: dict[str, Any] = {}
+                    for replay_raw_id in replay_plan.accepted_raw_ids:
+                        replay_provider, replay_payload, replay_source_path, _kind = archive.raw_revision_material(
+                            replay_raw_id
                         )
-                        if parent is not None:
-                            predecessor_raw_id, baseline_raw_id, generation = parent
-                            assert plan.cursor_fingerprint is not None
-                            archive.bind_raw_revision(
-                                raw_id,
-                                RawRevisionEnvelope(
-                                    logical_source_key=logical_source_key,
-                                    kind=RawRevisionKind.APPEND,
-                                    source_revision=append_source_revision(plan.cursor_fingerprint, plan.payload_hash),
-                                    acquisition_generation=generation,
-                                    predecessor_raw_id=predecessor_raw_id,
-                                    baseline_raw_id=baseline_raw_id,
-                                    append_start_offset=plan.start_offset,
-                                    append_end_offset=plan.last_complete_newline,
-                                ),
-                            )
-                    archive.mark_raw_parse_succeeded(raw_id, provider=provider)
+                        replay_sessions = parse_payload(
+                            replay_provider,
+                            list(_iter_json_stream(BytesIO(replay_payload), Path(replay_source_path).name)),
+                            Path(replay_source_path).stem,
+                            source_path=replay_source_path,
+                        )
+                        if len(replay_sessions) != 1:
+                            raise RuntimeError(f"raw revision {replay_raw_id} did not replay to exactly one session")
+                        parsed_by_raw_id[replay_raw_id] = replay_sessions[0]
+                    t0 = time.perf_counter()
+                    archive.apply_raw_revision_replay(
+                        replay_plan,
+                        parsed_by_raw_id,
+                        acquired_at_ms=acquired_at_ms,
+                    )
+                    _add_timing(timings, "append.raw_and_index_write", t0)
                     succeeded.append(plan)
                 except Exception as exc:
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
@@ -176,7 +207,13 @@ def _ingest_append_plans_archive(
             raise
         logger.warning("live.watcher: archive append ingest failed: %s", exc)
         return _AppendResult(succeeded=[], failed=plans, worker_count=0, stage_timings_s=timings)
-    return _AppendResult(succeeded=succeeded, failed=failed, worker_count=1, stage_timings_s=timings)
+    return _AppendResult(
+        succeeded=succeeded,
+        failed=failed,
+        deferred=deferred,
+        worker_count=1,
+        stage_timings_s=timings,
+    )
 
 
 __all__ = ["ingest_append_plans", "reset_transient_raw_parse_state"]

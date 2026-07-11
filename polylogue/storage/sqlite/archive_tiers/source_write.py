@@ -302,9 +302,9 @@ def write_source_raw_session(
                 blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
                 validated_at_ms, validation_status, validation_error, validation_drift_count,
                 validation_mode, detection_warnings_json, logical_source_key, revision_kind,
-                source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
+                source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
                 append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resolved_raw_id,
@@ -327,6 +327,7 @@ def write_source_raw_session(
                 revision.logical_source_key if revision else None,
                 revision.kind.value if revision else "unknown",
                 revision.source_revision if revision else None,
+                revision.predecessor_source_revision if revision else None,
                 revision.predecessor_raw_id if revision else None,
                 revision.baseline_raw_id if revision else None,
                 revision.append_start_offset if revision else None,
@@ -405,9 +406,9 @@ def write_source_raw_session_blob_ref(
             INSERT OR REPLACE INTO raw_sessions (
                 raw_id, origin, native_id, source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, logical_source_key, revision_kind,
-                source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
+                source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
                 append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resolved_raw_id,
@@ -421,6 +422,7 @@ def write_source_raw_session_blob_ref(
                 revision.logical_source_key if revision else None,
                 revision.kind.value if revision else "unknown",
                 revision.source_revision if revision else None,
+                revision.predecessor_source_revision if revision else None,
                 revision.predecessor_raw_id if revision else None,
                 revision.baseline_raw_id if revision else None,
                 revision.append_start_offset if revision else None,
@@ -464,7 +466,7 @@ def bind_source_raw_revision(conn: sqlite3.Connection, raw_id: str, revision: Ra
             """
             UPDATE raw_sessions
             SET logical_source_key = ?, revision_kind = ?, source_revision = ?,
-                predecessor_raw_id = ?, baseline_raw_id = ?, append_start_offset = ?,
+                predecessor_source_revision = ?, predecessor_raw_id = ?, baseline_raw_id = ?, append_start_offset = ?,
                 append_end_offset = ?, acquisition_generation = ?, revision_authority = ?
             WHERE raw_id = ? AND revision_authority = 'quarantined'
             """,
@@ -472,6 +474,7 @@ def bind_source_raw_revision(conn: sqlite3.Connection, raw_id: str, revision: Ra
                 revision.logical_source_key,
                 revision.kind.value,
                 revision.source_revision,
+                revision.predecessor_source_revision,
                 revision.predecessor_raw_id,
                 revision.baseline_raw_id,
                 revision.append_start_offset,

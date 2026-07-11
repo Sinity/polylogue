@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import click
 
@@ -21,7 +22,7 @@ from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import preview_backfill
 from polylogue.maintenance.preview import ALL_SCOPES, staleness_inventory
 from polylogue.maintenance.registry import MaintenanceOperationRegistry, OperationRecord
-from polylogue.maintenance.replay import ReplayProgress, execute_replay
+from polylogue.maintenance.replay import ReplayProgress, execute_replay, rebuild_index_from_source
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path, render_root
@@ -1330,10 +1331,10 @@ def rebuild_index_command(
     plan_limit: int,
     output_format: str,
 ) -> None:
-    """Inspect source rows selected for an authority-safe index rebuild.
+    """Inspect or execute an authority-safe source-to-index rebuild.
 
-    Use ``--plan`` for read-only inspection. Execution is temporarily disabled
-    until raw revisions have a typed per-session authority order.
+    Execution expands the requested rows to complete logical revision cohorts;
+    selection order and batch boundaries never participate in authority.
     """
     configure_logging()
     if raw_ids and only_missing:
@@ -1417,9 +1418,38 @@ def rebuild_index_command(
                         f"blob={int(group['blob_bytes']):,} source={group['source_path']}"
                     )
         return
-    from polylogue.storage.repair import RAW_MATERIALIZATION_REPLAY_BLOCK_REASON
-
-    raise click.ClickException(RAW_MATERIALIZATION_REPLAY_BLOCK_REASON)
+    config = Config(
+        archive_root=root,
+        render_root=render_root(),
+        sources=[],
+        db_path=root / "index.db",
+    )
+    result = asyncio.run(
+        rebuild_index_from_source(
+            config,
+            raw_ids=selected_raw_ids,
+            raw_batch_size=500,
+            ingest_workers=None,
+            materialize=True,
+            progress_callback=None,
+        )
+    )
+    payload = {
+        "archive_root": str(root),
+        "raw_session_count": raw_count,
+        "selected_raw_count": selected_raw_count,
+        "skipped_by_blob_limit_count": skipped_by_blob_limit_count,
+        "status": "replayed",
+        "materialized": True,
+        **result,
+    }
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    click.echo(f"Archive root: {root}")
+    click.echo(f"Classified:   {int(cast(Any, result['classified_full_count'])):,} full revision(s)")
+    click.echo(f"Replayed:     {int(cast(Any, result['replayed_logical_source_count'])):,} logical source(s)")
+    click.echo(f"Quarantined:  {int(cast(Any, result['quarantined_raw_count'])):,} raw row(s)")
 
 
 @maintenance_group.command("missing-raw-blob-cursors")
