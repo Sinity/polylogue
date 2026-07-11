@@ -28,6 +28,7 @@ from polylogue.archive.query.predicate import (
     QueryLineagePredicate,
     QueryNotPredicate,
     QueryPredicate,
+    QuerySequenceConstraint,
     QuerySequencePredicate,
     QueryTextPredicate,
 )
@@ -9131,7 +9132,7 @@ def _boolean_predicate_clause(
     if isinstance(predicate, QuerySequencePredicate):
         if len(predicate.steps) < 2:
             raise ValueError("action sequence predicates require at least two steps")
-        return _action_sequence_steps_clause(table_alias, predicate.steps)
+        return _action_sequence_steps_clause(table_alias, predicate.steps, predicate.constraints)
     if isinstance(predicate, QueryTextPredicate):
         return _fts_predicate_clause(table_alias, predicate)
     if isinstance(predicate, QueryLineagePredicate):
@@ -9466,13 +9467,18 @@ def _action_sequence_clause(table_alias: str, action_sequence: tuple[str, ...]) 
     return _action_sequence_steps_clause(table_alias, steps)
 
 
-def _action_sequence_steps_clause(table_alias: str, steps: tuple[QueryPredicate, ...]) -> tuple[str, list[object]]:
+def _action_sequence_steps_clause(
+    table_alias: str,
+    steps: tuple[QueryPredicate, ...],
+    constraints: tuple[QuerySequenceConstraint, ...] = (),
+) -> tuple[str, list[object]]:
     needs_followup = any(_predicate_uses_unit_field(step, "followup_class", unit="action") for step in steps)
     relation_sql = _ACTION_FOLLOWUP_RELATION_SQL if needs_followup else ""
     action_relation = "action_rows" if needs_followup else "actions"
     joins: list[str] = []
     predicates: list[str] = []
     params: list[object] = []
+    edge_constraints = constraints or tuple(QuerySequenceConstraint() for _ in range(len(steps) - 1))
     for index, step in enumerate(steps):
         action_alias = f"seq_a{index}"
         message_alias = f"seq_m{index}"
@@ -9493,6 +9499,16 @@ def _action_sequence_steps_clause(table_alias: str, steps: tuple[QueryPredicate,
             params.extend(step_params)
         if index > 0:
             predicates.append(_action_after_predicate(index - 1, index))
+            constraint = edge_constraints[index - 1]
+            if constraint.kind == "next":
+                predicates.append(_no_action_between_predicate(index - 1, index, action_relation))
+            elif constraint.kind == "within":
+                predicates.append(
+                    f"{message_alias}.occurred_at_ms IS NOT NULL AND seq_m{index - 1}.occurred_at_ms IS NOT NULL "
+                    f"AND {message_alias}.occurred_at_ms >= seq_m{index - 1}.occurred_at_ms "
+                    f"AND {message_alias}.occurred_at_ms - seq_m{index - 1}.occurred_at_ms <= ?"
+                )
+                params.append(constraint.within_ms)
     sql = (
         "EXISTS ("
         f"{relation_sql} "
@@ -9505,7 +9521,7 @@ def _action_sequence_steps_clause(table_alias: str, steps: tuple[QueryPredicate,
     return sql, params
 
 
-def _action_after_predicate(previous: int, current: int) -> str:
+def _action_after_predicate(previous: int | str, current: int | str) -> str:
     prev_message = f"seq_m{previous}"
     curr_message = f"seq_m{current}"
     prev_block = f"seq_b{previous}"
@@ -9518,6 +9534,20 @@ def _action_after_predicate(previous: int, current: int) -> str:
         f"OR ({curr_message}.position = {prev_message}.position "
         f"AND {curr_message}.variant_index = {prev_message}.variant_index "
         f"AND {curr_block}.position > {prev_block}.position)"
+        ")"
+    )
+
+
+def _no_action_between_predicate(previous: int, current: int, action_relation: str) -> str:
+    after_previous = _action_after_predicate(previous, "between")
+    before_current = _action_after_predicate("between", current)
+    return (
+        "NOT EXISTS ("
+        f"SELECT 1 FROM {action_relation} seq_abetween "
+        "JOIN messages seq_mbetween ON seq_mbetween.message_id = seq_abetween.message_id "
+        "JOIN blocks seq_bbetween ON seq_bbetween.block_id = seq_abetween.tool_use_block_id "
+        f"WHERE seq_abetween.session_id = seq_a{previous}.session_id "
+        f"AND {after_previous} AND {before_current}"
         ")"
     )
 

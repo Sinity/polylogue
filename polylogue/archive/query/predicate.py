@@ -19,6 +19,21 @@ QueryExistsUnit: TypeAlias = Literal[
     "observed-event",
     "context-snapshot",
 ]
+QuerySequenceConstraintKind: TypeAlias = Literal["ordered", "next", "within"]
+
+
+@dataclass(frozen=True)
+class QuerySequenceConstraint:
+    """Constraint on the edge between two action-sequence steps."""
+
+    kind: QuerySequenceConstraintKind = "ordered"
+    within_ms: int | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"kind": self.kind}
+        if self.within_ms is not None:
+            payload["within_ms"] = self.within_ms
+        return payload
 
 
 @dataclass(frozen=True)
@@ -119,6 +134,7 @@ class QuerySequencePredicate:
 
     steps: tuple[QueryPredicate, ...] = ()
     action_terms: tuple[str, ...] = ()
+    constraints: tuple[QuerySequenceConstraint, ...] = ()
 
     def __post_init__(self) -> None:
         if self.steps:
@@ -129,6 +145,14 @@ class QuerySequencePredicate:
                 "steps",
                 tuple(QueryFieldPredicate(field="action", values=(term,), op="=") for term in self.action_terms),
             )
+        if self.steps and not self.constraints:
+            object.__setattr__(
+                self,
+                "constraints",
+                tuple(QuerySequenceConstraint() for _ in range(len(self.steps) - 1)),
+            )
+        if len(self.constraints) != max(0, len(self.steps) - 1):
+            raise ValueError("sequence constraints must describe every edge between steps")
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -136,6 +160,8 @@ class QuerySequencePredicate:
             "unit": "action",
             "steps": [step.to_payload() for step in self.steps],
         }
+        if any(constraint.kind != "ordered" for constraint in self.constraints):
+            payload["constraints"] = [constraint.to_payload() for constraint in self.constraints]
         if self.action_terms:
             payload["actions"] = list(self.action_terms)
         return payload
@@ -212,5 +238,7 @@ __all__ = [
     "QueryPredicate",
     "QuerySemanticPredicate",
     "QuerySequencePredicate",
+    "QuerySequenceConstraint",
+    "QuerySequenceConstraintKind",
     "QueryTextPredicate",
 ]

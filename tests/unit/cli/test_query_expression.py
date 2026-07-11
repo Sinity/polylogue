@@ -55,6 +55,7 @@ from polylogue.archive.query.predicate import (
     QueryLineagePredicate,
     QueryNotPredicate,
     QuerySemanticPredicate,
+    QuerySequenceConstraint,
     QuerySequencePredicate,
     QueryTextPredicate,
 )
@@ -1185,6 +1186,24 @@ class TestBooleanQueryExpression:
         ast = parse_expression_ast("seq(action:file_edit -> action:shell -> action:file_edit)")
 
         assert ast.boolean_predicate == QuerySequencePredicate(action_terms=("file_edit", "shell", "file_edit"))
+
+    def test_sequence_ast_exposes_next_and_within_constraints(self) -> None:
+        ast = parse_expression_ast("seq(action:file_edit ->[next] action:shell ->[within:5m] action:file_edit)")
+
+        assert isinstance(ast.boolean_predicate, QuerySequencePredicate)
+        assert ast.boolean_predicate.constraints == (
+            QuerySequenceConstraint(kind="next"),
+            QuerySequenceConstraint(kind="within", within_ms=300_000),
+        )
+        assert ast.boolean_predicate.to_payload()["constraints"] == [
+            {"kind": "next"},
+            {"kind": "within", "within_ms": 300_000},
+        ]
+
+    @pytest.mark.parametrize("modifier", ["within:0s", "within:5weeks", "adjacent"])
+    def test_sequence_rejects_invalid_constraints(self, modifier: str) -> None:
+        with pytest.raises(ExpressionCompileError):
+            compile_expression(f"seq(action:file_edit ->[{modifier}] action:shell)")
 
     def test_sequence_predicate_derives_action_terms_from_steps_when_both_are_supplied(self) -> None:
         predicate = QuerySequencePredicate(
@@ -4585,6 +4604,67 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["claude-code-session:ext-hit"]
+
+    def test_constrained_sequence_predicates_execute_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+
+        def add_action(builder: SessionBuilder, message_id: str, action: str, timestamp: str | None) -> None:
+            tool_name = {"file_edit": "Edit", "search": "Grep", "shell": "Bash"}[action]
+            builder.add_message(
+                message_id,
+                role="assistant",
+                text=action,
+                timestamp=timestamp,
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": tool_name,
+                        "tool_id": f"tool-{message_id}",
+                        "input": {"command": action},
+                        "semantic_type": action,
+                    }
+                ],
+            )
+
+        adjacent = SessionBuilder(index_db, "constrained-adjacent").provider("claude-code")
+        add_action(adjacent, "a1", "file_edit", "2026-01-01T00:00:00+00:00")
+        add_action(adjacent, "a2", "shell", "2026-01-01T00:05:00+00:00")
+        adjacent.save()
+
+        intervening = SessionBuilder(index_db, "constrained-intervening").provider("claude-code")
+        add_action(intervening, "i1", "file_edit", "2026-01-01T00:00:00+00:00")
+        add_action(intervening, "i2", "search", "2026-01-01T00:01:00+00:00")
+        add_action(intervening, "i3", "shell", "2026-01-01T00:02:00+00:00")
+        intervening.save()
+
+        timeless = SessionBuilder(index_db, "constrained-timeless").provider("claude-code")
+        add_action(timeless, "t1", "file_edit", None)
+        add_action(timeless, "t2", "shell", None)
+        timeless.save()
+
+        def selected(expression: str) -> list[str]:
+            spec = compile_expression(expression)
+            assert spec.boolean_predicate is not None
+            with ArchiveStore.open_existing(index_db.parent) as archive:
+                rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+            return sorted(row.session_id for row in rows)
+
+        assert selected("seq(action:file_edit -> action:shell)") == [
+            "claude-code-session:ext-constrained-adjacent",
+            "claude-code-session:ext-constrained-intervening",
+            "claude-code-session:ext-constrained-timeless",
+        ]
+        assert selected("seq(action:file_edit ->[next] action:shell)") == [
+            "claude-code-session:ext-constrained-adjacent",
+            "claude-code-session:ext-constrained-timeless",
+        ]
+        assert selected("seq(action:file_edit ->[within:5m] action:shell)") == [
+            "claude-code-session:ext-constrained-adjacent",
+            "claude-code-session:ext-constrained-intervening",
+        ]
 
     def test_single_action_sequence_filter_still_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

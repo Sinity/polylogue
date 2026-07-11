@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.query.plan import SessionQueryPlan
-from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryFieldRef
+from polylogue.archive.query.predicate import (
+    QueryBoolPredicate,
+    QueryFieldPredicate,
+    QueryFieldRef,
+    QuerySequenceConstraint,
+)
 from polylogue.archive.query.runtime_matching import (
     matches_action_predicate_sequence,
     matches_action_sequence,
@@ -39,11 +44,12 @@ def _event(
     output_text: str | None = None,
     search_text: str = "",
     index: int = 0,
+    timestamp: datetime | None = datetime(2026, 1, 1, tzinfo=timezone.utc),
 ) -> Action:
     return Action(
         action_id=f"action-{index}",
         message_id="message-1",
-        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        timestamp=timestamp,
         sequence_index=index,
         kind=kind,
         tool_name=tool_name,
@@ -209,3 +215,46 @@ def test_matches_action_predicate_sequence_treats_field_values_as_alternatives(
     )
 
     assert matches_action_predicate_sequence(steps, session) is True
+
+
+def test_matches_action_predicate_sequence_enforces_next(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session()
+    _patch_events(
+        monkeypatch,
+        (
+            _event(ToolCategory.FILE_EDIT, index=0),
+            _event(ToolCategory.SEARCH, index=1),
+            _event(ToolCategory.SHELL, index=2),
+        ),
+    )
+    steps = (_action_predicate("action", "file_edit"), _action_predicate("action", "shell"))
+
+    assert matches_action_predicate_sequence(steps, session) is True
+    assert matches_action_predicate_sequence(steps, session, (QuerySequenceConstraint(kind="next"),)) is False
+
+
+def test_matches_action_predicate_sequence_enforces_known_within_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session()
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    steps = (_action_predicate("action", "file_edit"), _action_predicate("action", "shell"))
+    constraint = (QuerySequenceConstraint(kind="within", within_ms=300_000),)
+
+    _patch_events(
+        monkeypatch,
+        (
+            _event(ToolCategory.FILE_EDIT, index=0, timestamp=start),
+            _event(ToolCategory.SHELL, index=1, timestamp=start + timedelta(minutes=5)),
+        ),
+    )
+    assert matches_action_predicate_sequence(steps, session, constraint) is True
+
+    _patch_events(
+        monkeypatch,
+        (
+            _event(ToolCategory.FILE_EDIT, index=0, timestamp=start),
+            _event(ToolCategory.SHELL, index=1, timestamp=None),
+        ),
+    )
+    assert matches_action_predicate_sequence(steps, session, constraint) is False
