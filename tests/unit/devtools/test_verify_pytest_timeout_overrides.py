@@ -51,6 +51,9 @@ def _run_registered(root: Path, capsys: pytest.CaptureFixture[str]) -> tuple[int
         ),
         ("import pytest\n\n@pytest.mark.timeout()\ndef test_target():\n    pass\n", "malformed"),
         ("import pytest\n\n@pytest.mark.timeout(None)\ndef test_target():\n    pass\n", "unbounded"),
+        ("import pytest\n\n@pytest.mark.timeout\ndef test_target():\n    pass\n", "missing a timeout value"),
+        ("from pytest import mark\n\n@mark.timeout(None)\ndef test_target():\n    pass\n", "unbounded"),
+        ("import pytest as pt\n\n@pt.mark.timeout(0)\ndef test_target():\n    pass\n", "must be positive"),
     ],
 )
 def test_registered_verifier_rejects_invalid_decorator_overrides(
@@ -75,6 +78,17 @@ def test_registered_verifier_rejects_invalid_decorator_overrides(
         ("COMMAND = ['pytest', '--timeout=-1']\n", "must be positive"),
         ("LIMIT = '30'\nCOMMAND = ['pytest', '--timeout', LIMIT]\n", "dynamic or malformed"),
         ("LIMIT = 0\nCOMMAND = ['pytest', f'--timeout={LIMIT}']\n", "dynamic or malformed"),
+        (
+            "LIMIT = 0\nTIMEOUT_ARG = f'--timeout={LIMIT}'\nCOMMAND = ['pytest', TIMEOUT_ARG]\n",
+            "dynamic or malformed",
+        ),
+        (
+            "LIMIT = 0\nTIMEOUT_ARGS = [f'--timeout={LIMIT}']\nexecution = pytest_execution(*TIMEOUT_ARGS)\n",
+            "dynamic or malformed",
+        ),
+        ("TIMEOUT_ARGS = ['--timeout=0']\nexecution = pytest_execution(*TIMEOUT_ARGS)\n", "must be positive"),
+        ("COMMAND = ['pytest'] + ['--timeout=0']\n", "must be positive"),
+        ("COMMAND = ['pytest', *['--timeout=0']]\n", "must be positive"),
         ("COMMAND = ['pytest', '--timeout=forever']\n", "malformed"),
         ("COMMAND = ['pytest', '--timeout']\n", "unbounded"),
         ("execution = pytest_execution('--timeout=')\n", "unbounded"),
@@ -93,6 +107,26 @@ def test_registered_verifier_rejects_invalid_managed_command_overrides(
 
     assert rc == 1
     assert expected in output
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import pytest\n\n@pytest.mark.timeout(30, method='thread')\ndef test_target():\n    pass\n",
+        "import pytest\n\n@pytest.mark.timeout(timeout=30, func_only=True)\ndef test_target():\n    pass\n",
+    ],
+)
+def test_registered_verifier_accepts_supported_static_decorator_options(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    source: str,
+) -> None:
+    """Anti-vacuity: rejecting every keyword option makes this production-command test fail."""
+    root = _make_tree(tmp_path, test_source=source)
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 0, output
 
 
 def test_registered_verifier_scans_nested_devtools_commands(

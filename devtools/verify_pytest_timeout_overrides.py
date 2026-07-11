@@ -58,23 +58,69 @@ def _number_from_literal(node: ast.expr) -> float | None:
     return None
 
 
-def _is_pytest_timeout_decorator(node: ast.Call) -> bool:
-    func = node.func
+def _pytest_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """Return local names bound to ``pytest`` and ``pytest.mark`` imports."""
+    pytest_names: set[str] = set()
+    mark_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "pytest":
+                    pytest_names.add(alias.asname or "pytest")
+        elif isinstance(node, ast.ImportFrom) and node.module == "pytest":
+            for alias in node.names:
+                if alias.name == "mark":
+                    mark_names.add(alias.asname or "mark")
+    return pytest_names, mark_names
+
+
+def _is_pytest_timeout_decorator(node: ast.expr, pytest_names: set[str], mark_names: set[str]) -> bool:
+    func = node.func if isinstance(node, ast.Call) else node
     return (
         isinstance(func, ast.Attribute)
         and func.attr == "timeout"
-        and isinstance(func.value, ast.Attribute)
-        and func.value.attr == "mark"
-        and isinstance(func.value.value, ast.Name)
-        and func.value.value.id == "pytest"
+        and (
+            (isinstance(func.value, ast.Name) and func.value.id in mark_names)
+            or (
+                isinstance(func.value, ast.Attribute)
+                and func.value.attr == "mark"
+                and isinstance(func.value.value, ast.Name)
+                and func.value.value.id in pytest_names
+            )
+        )
     )
 
 
 def _parse_decorator_override(path: str, node: ast.Call) -> tuple[TimeoutOverride | None, str | None]:
     location = f"{path}:{node.lineno}"
-    if node.keywords or len(node.args) != 1:
-        return None, f"{location}: malformed pytest timeout decorator; use exactly one numeric literal argument"
-    argument = node.args[0]
+    if len(node.args) > 2:
+        return None, f"{location}: malformed pytest timeout decorator; too many positional arguments"
+    timeout_argument: ast.expr | None = node.args[0] if node.args else None
+    method_argument: ast.expr | None = node.args[1] if len(node.args) == 2 else None
+    seen_keywords: set[str] = set()
+    for keyword in node.keywords:
+        if keyword.arg not in {"timeout", "method", "func_only"} or keyword.arg in seen_keywords:
+            return None, f"{location}: malformed pytest timeout decorator keyword"
+        seen_keywords.add(keyword.arg)
+        if keyword.arg == "timeout":
+            if timeout_argument is not None:
+                return None, f"{location}: malformed pytest timeout decorator has multiple timeout values"
+            timeout_argument = keyword.value
+        elif keyword.arg == "method":
+            if method_argument is not None:
+                return None, f"{location}: malformed pytest timeout decorator has multiple method values"
+            method_argument = keyword.value
+        elif not (isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, bool)):
+            return None, f"{location}: dynamic or malformed pytest timeout func_only option is forbidden"
+    if timeout_argument is None:
+        return None, f"{location}: malformed pytest timeout decorator is missing a timeout value"
+    if method_argument is not None and (
+        not isinstance(method_argument, ast.Constant)
+        or not isinstance(method_argument.value, str)
+        or method_argument.value not in {"signal", "thread"}
+    ):
+        return None, f"{location}: dynamic or malformed pytest timeout method option is forbidden"
+    argument = timeout_argument
     if isinstance(argument, ast.Constant) and argument.value is None:
         return None, f"{location}: unbounded pytest timeout decorator is forbidden"
     value = _number_from_literal(argument)
@@ -89,8 +135,54 @@ def _is_pytest_execution_call(node: ast.Call) -> bool:
     return isinstance(node.func, ast.Name) and node.func.id == "pytest_execution"
 
 
-def _literal_tokens(nodes: list[ast.expr]) -> list[ast.expr]:
-    return list(nodes)
+def _module_assignments(tree: ast.Module) -> dict[str, ast.expr]:
+    assignments: dict[str, ast.expr] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assignments[target.id] = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+            assignments[node.target.id] = node.value
+    return assignments
+
+
+def _resolve_alias(node: ast.expr, assignments: dict[str, ast.expr], seen: set[str] | None = None) -> ast.expr:
+    if not isinstance(node, ast.Name) or node.id not in assignments:
+        return node
+    seen = set() if seen is None else seen
+    if node.id in seen:
+        return node
+    seen.add(node.id)
+    return _resolve_alias(assignments[node.id], assignments, seen)
+
+
+def _flatten_command_expression(node: ast.expr, assignments: dict[str, ast.expr]) -> tuple[list[ast.expr], bool] | None:
+    node = _resolve_alias(node, assignments)
+    if isinstance(node, (ast.List, ast.Tuple)):
+        items: list[ast.expr] = []
+        dynamic = False
+        for item in node.elts:
+            if isinstance(item, ast.Starred):
+                flattened = _flatten_command_expression(item.value, assignments)
+                if flattened is None:
+                    dynamic = True
+                else:
+                    nested_items, nested_dynamic = flattened
+                    items.extend(nested_items)
+                    dynamic = dynamic or nested_dynamic
+            else:
+                items.append(item)
+        return items, dynamic
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _flatten_command_expression(node.left, assignments)
+        right = _flatten_command_expression(node.right, assignments)
+        if left is None or right is None:
+            if left is None and right is None:
+                return None
+            return [*(left[0] if left is not None else []), *(right[0] if right is not None else [])], True
+        return [*left[0], *right[0]], left[1] or right[1]
+    return None
 
 
 def _is_literal_pytest_command(nodes: list[ast.expr]) -> bool:
@@ -108,22 +200,26 @@ def _dynamic_string_fragments(node: ast.expr) -> tuple[str, ...]:
     return ()
 
 
-def _is_dynamic_timeout_option(node: ast.expr) -> bool:
+def _is_dynamic_timeout_option(node: ast.expr, assignments: dict[str, ast.expr]) -> bool:
+    node = _resolve_alias(node, assignments)
     return not isinstance(node, ast.Constant) and any(
         "--timeout" in fragment for fragment in _dynamic_string_fragments(node)
     )
 
 
-def _parse_command_overrides(path: str, line: int, nodes: list[ast.expr]) -> tuple[list[TimeoutOverride], list[str]]:
+def _parse_command_overrides(
+    path: str, line: int, nodes: list[ast.expr], assignments: dict[str, ast.expr]
+) -> tuple[list[TimeoutOverride], list[str]]:
     overrides: list[TimeoutOverride] = []
     errors: list[str] = []
     for index, node in enumerate(nodes):
-        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
-            if _is_dynamic_timeout_option(node):
+        resolved_node = _resolve_alias(node, assignments)
+        if not isinstance(resolved_node, ast.Constant) or not isinstance(resolved_node.value, str):
+            if _is_dynamic_timeout_option(node, assignments):
                 location = f"{path}:{getattr(node, 'lineno', line)}"
                 errors.append(f"{location}: dynamic or malformed pytest --timeout override is forbidden")
             continue
-        token = node.value
+        token = resolved_node.value
         if token == "--timeout":
             location = f"{path}:{getattr(node, 'lineno', line)}"
             if index + 1 >= len(nodes):
@@ -167,26 +263,59 @@ def _scan_python(
 
     overrides: list[TimeoutOverride] = []
     errors: list[str] = []
+    pytest_names, mark_names = _pytest_aliases(tree)
+    assignments = _module_assignments(tree)
     for node in ast.walk(tree):
-        if scan_decorators and isinstance(node, ast.Call) and _is_pytest_timeout_decorator(node):
-            override, error = _parse_decorator_override(relative, node)
-            if override is not None:
-                overrides.append(override)
-            if error is not None:
-                errors.append(error)
+        if scan_decorators and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for decorator in node.decorator_list:
+                if not _is_pytest_timeout_decorator(decorator, pytest_names, mark_names):
+                    continue
+                if not isinstance(decorator, ast.Call):
+                    errors.append(
+                        f"{relative}:{decorator.lineno}: malformed pytest timeout decorator is missing a timeout value"
+                    )
+                    continue
+                override, error = _parse_decorator_override(relative, decorator)
+                if override is not None:
+                    overrides.append(override)
+                if error is not None:
+                    errors.append(error)
         if not scan_commands:
             continue
         command_nodes: list[ast.expr] | None = None
         is_pytest_command = False
         line = getattr(node, "lineno", 0)
-        if isinstance(node, (ast.List, ast.Tuple)):
-            command_nodes = _literal_tokens(node.elts)
-            is_pytest_command = _is_literal_pytest_command(command_nodes)
+        if isinstance(node, (ast.List, ast.Tuple, ast.BinOp)):
+            flattened = _flatten_command_expression(node, assignments)
+            if flattened is not None:
+                command_nodes, dynamic_expression = flattened
+                is_pytest_command = _is_literal_pytest_command(command_nodes)
+                if is_pytest_command and dynamic_expression and _is_dynamic_timeout_option(node, assignments):
+                    errors.append(f"{relative}:{line}: dynamic managed pytest command expression is forbidden")
         elif isinstance(node, ast.Call) and _is_pytest_execution_call(node):
-            command_nodes = _literal_tokens(node.args)
-            is_pytest_command = True
+            flattened = _flatten_command_expression(ast.Tuple(elts=node.args, ctx=ast.Load()), assignments)
+            if flattened is None:
+                if any(
+                    _is_dynamic_timeout_option(
+                        argument.value if isinstance(argument, ast.Starred) else argument,
+                        assignments,
+                    )
+                    for argument in node.args
+                ):
+                    errors.append(f"{relative}:{line}: dynamic managed pytest command expression is forbidden")
+            else:
+                command_nodes, dynamic_expression = flattened
+                is_pytest_command = True
+                if dynamic_expression and any(
+                    _is_dynamic_timeout_option(
+                        argument.value if isinstance(argument, ast.Starred) else argument,
+                        assignments,
+                    )
+                    for argument in node.args
+                ):
+                    errors.append(f"{relative}:{line}: dynamic managed pytest command expression is forbidden")
         if command_nodes is not None and is_pytest_command:
-            found, found_errors = _parse_command_overrides(relative, line, command_nodes)
+            found, found_errors = _parse_command_overrides(relative, line, command_nodes, assignments)
             overrides.extend(found)
             errors.extend(found_errors)
     return overrides, errors
