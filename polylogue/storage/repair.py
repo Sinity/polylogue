@@ -44,6 +44,7 @@ _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
 RAW_MATERIALIZATION_RESOURCE_BLOCK_REASON = "non-stream-safe raw payload exceeds the bounded replay limit"
 _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
+_BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision authority"
 
 
 def _format_bytes(value: int) -> str:
@@ -69,6 +70,8 @@ class RawMaterializationCandidates:
     missing_blob_source_available: int = 0
     missing_blob_source_missing: int = 0
     adoption_deferred: int = 0
+    authority_quarantined: int = 0
+    byte_authority_fragments: int = 0
     expanded_raw_ids: tuple[str, ...] = ()
     expanded_blob_bytes: dict[str, int] = field(default_factory=dict)
     authority_components: tuple[tuple[str, ...], ...] = ()
@@ -185,12 +188,32 @@ def _raw_materialization_candidate_ids(
                        FROM raw_membership_census AS c
                        WHERE c.raw_id = r.raw_id
                          AND c.status = 'complete'
+                         AND c.member_count > 0
+                         AND c.member_count = (
+                           SELECT COUNT(*) FROM raw_session_memberships AS counted
+                           WHERE counted.raw_id = c.raw_id
+                         )
                          AND NOT EXISTS (
                            SELECT 1 FROM raw_session_memberships AS m
                            WHERE m.raw_id = c.raw_id
                              AND (m.decision IS NULL OR m.decision IN ('ambiguous', 'deferred'))
                          )
                    ) AS membership_authority_complete
+                   , EXISTS (
+                       SELECT 1
+                       FROM raw_membership_census AS c
+                       JOIN raw_session_memberships AS m ON m.raw_id = c.raw_id
+                       WHERE c.raw_id = r.raw_id
+                         AND c.status = 'complete'
+                         AND m.decision = 'ambiguous'
+                   ) AS membership_authority_quarantined
+                   , (r.source_index = -1 OR EXISTS (
+                       SELECT 1
+                       FROM raw_membership_census AS c
+                       WHERE c.raw_id = r.raw_id
+                         AND c.status = 'failed'
+                         AND c.detail = ?
+                   )) AS byte_authority_fragment
             FROM raw_sessions AS r
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
@@ -221,9 +244,11 @@ def _raw_materialization_candidate_ids(
               {source_root_filter}
             ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
             """,
-            params,
+            [_BYTE_AUTHORITY_CENSUS_DETAIL, *params],
         ).fetchall()
         adoption_deferred = 0
+        authority_quarantined = 0
+        byte_authority_fragments = 0
         for row in rows:
             if bool(row["adoption_deferred"]):
                 adoption_deferred += 1
@@ -231,6 +256,12 @@ def _raw_materialization_candidate_ids(
             if bool(row["application_terminal"]):
                 continue
             if bool(row["membership_authority_complete"]):
+                continue
+            if bool(row["membership_authority_quarantined"]):
+                authority_quarantined += 1
+                continue
+            if bool(row["byte_authority_fragment"]):
+                byte_authority_fragments += 1
                 continue
             if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(row["parse_error"]):
                 continue
@@ -278,6 +309,8 @@ def _raw_materialization_candidate_ids(
         missing_blob_source_available=missing_blob_source_available,
         missing_blob_source_missing=missing_blob_source_missing,
         adoption_deferred=adoption_deferred,
+        authority_quarantined=authority_quarantined,
+        byte_authority_fragments=byte_authority_fragments,
         expanded_raw_ids=expanded_raw_ids,
         expanded_blob_bytes=expanded_blob_bytes,
         authority_components=authority_components,
@@ -1581,6 +1614,8 @@ def repair_raw_materialization(
         "raw_materialization_selected_total_blob_bytes": float(selected_total_bytes),
         "raw_materialization_selected_max_blob_bytes": float(selected_max_bytes),
         "raw_materialization_adoption_deferred_count": float(candidates.adoption_deferred),
+        "raw_materialization_authority_quarantined_count": float(candidates.authority_quarantined),
+        "raw_materialization_byte_authority_fragment_count": float(candidates.byte_authority_fragments),
     }
     if raw_artifact_limit is not None:
         metrics["raw_materialization_limit"] = float(raw_artifact_limit)
@@ -1603,6 +1638,11 @@ def repair_raw_materialization(
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
     if not raw_ids:
         detail = "Raw materialization ready"
+        if candidates.authority_quarantined or candidates.byte_authority_fragments:
+            detail += (
+                f"; {candidates.authority_quarantined:,} explicit authority quarantine(s), "
+                f"{candidates.byte_authority_fragments:,} byte-authority fragment(s) excluded from replay"
+            )
         if candidates.adoption_deferred:
             detail = (
                 f"Raw materialization blocked: {candidates.adoption_deferred:,} revision adoption decision(s) "

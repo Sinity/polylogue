@@ -737,9 +737,9 @@ def test_raw_materialization_retires_only_complete_governed_bundle_membership(tm
                 """
                 INSERT INTO raw_membership_census (
                     raw_id, parser_fingerprint, status, member_count, censused_at_ms
-                ) VALUES (?, 'test', 'complete', 1, 1)
+                ) VALUES (?, 'test', 'complete', ?, 1)
                 """,
-                (raw_id,),
+                (raw_id, 2 if position == 1 else 1),
             )
             source_conn.execute(
                 """
@@ -762,7 +762,31 @@ def test_raw_materialization_retires_only_complete_governed_bundle_membership(tm
 
     candidates = repair_mod._raw_materialization_candidate_ids(config)
 
-    assert set(candidates.raw_ids) == {raw_ids[1], raw_ids[2]}
+    assert set(candidates.raw_ids) == {raw_ids[0], raw_ids[2]}
+    assert candidates.authority_quarantined == 1
+
+
+def test_raw_materialization_does_not_replay_uncensused_append_fragments(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    raw_id, blob_size = blob_store.write_from_bytes(b'{"fragment":true}')
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, 'codex-session', 'session.jsonl', -1, ?, ?, 1)
+            """,
+            (raw_id, bytes.fromhex(raw_id), blob_size),
+        )
+        source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(config)
+
+    assert candidates.raw_ids == []
+    assert candidates.byte_authority_fragments == 1
 
 
 def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_path: Path) -> None:
