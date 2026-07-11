@@ -634,6 +634,155 @@ def test_provider_usage_report_preserves_control_characters_in_stale_sample_ids(
     assert report.origins[0].sample_stale_rollup_sessions == (session_id,)
 
 
+def test_provider_usage_report_ignores_whitespace_only_cumulative_tail_for_stale_audit(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="whitespace-model-tail",
+        title="whitespace model tail",
+        models_used=["model-a", "model-b"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "model-a",
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "cached_input_tokens": 80,
+                    },
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "\t\x1f",
+                    "total_token_usage": {
+                        "input_tokens": 200,
+                        "output_tokens": 40,
+                        "cached_input_tokens": 150,
+                    },
+                },
+            ),
+        ],
+    )
+    write_parsed_session_to_archive(conn, session)
+    conn.execute(
+        """
+        UPDATE session_model_usage
+        SET input_tokens = 0, output_tokens = 0, cache_read_tokens = 0
+        WHERE session_id = 'codex-session:whitespace-model-tail'
+          AND model_name = 'model-a'
+        """
+    )
+
+    report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+
+    row = report.origins[0]
+    # Anti-vacuity: SQLite's default space-only TRIM selects the unresolved
+    # tail, which Python then rejects, and this stale session disappears.
+    assert row.stale_rollup_session_count == 1
+    assert row.sample_stale_rollup_sessions == ("codex-session:whitespace-model-tail",)
+
+
+def test_provider_usage_report_overflow_fallback_uses_model_whitespace_contract(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    event = ParsedSessionEvent(
+        event_type="token_count",
+        payload={
+            "type": "token_count",
+            "model": "\t\x1f",
+            "last_token_usage": {"input_tokens": 2**62, "cached_input_tokens": 1},
+        },
+    )
+
+    def write_session(event_count: int) -> None:
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="overflow-whitespace-model",
+                title="overflow whitespace model",
+                models_used=["gpt-large"],
+                messages=[],
+                session_events=[event] * event_count,
+            ),
+        )
+
+    write_session(1)
+    fast_report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+    assert fast_report.origins[0].missing_model_event_count == 1
+
+    write_session(2)
+    overflow_report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+
+    row = overflow_report.origins[0]
+    # Anti-vacuity: two accepted counters overflow SQLite SUM, so the streaming
+    # fallback must retain both the exact total and the same missing-model rule.
+    assert row.provider_request_usage.input_tokens == 2**63
+    assert row.missing_model_event_count == 2
+    assert row.stale_rollup_session_count == 0
+
+
+def test_provider_usage_report_does_not_mark_event_only_origin_stale_without_rollup_basis(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="event-only-origin",
+        title="event only origin",
+        models_used=["gpt-large"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-large",
+                    "total_token_usage": {"input_tokens": 100, "output_tokens": 20},
+                },
+            )
+        ],
+    )
+    write_parsed_session_to_archive(conn, session)
+    conn.execute("DELETE FROM session_model_usage WHERE session_id = 'codex-session:event-only-origin'")
+
+    report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+
+    row = report.origins[0]
+    # Anti-vacuity: without the compatibility early return, the event-derived
+    # expected row has no actual row and changes the public coverage state.
+    assert row.stale_rollup_session_count == 0
+    assert row.sample_stale_rollup_sessions == ()
+    assert row.coverage_state == "exact_provider_telemetry"
+
+
 def test_provider_usage_report_handles_large_accepted_last_usage_totals(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     input_tokens = 2**62

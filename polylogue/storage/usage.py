@@ -26,6 +26,21 @@ from polylogue.core.enums import Origin, Provider
 
 UsageReportDetail = Literal["headline", "full"]
 
+# Match the whitespace contract of Python ``str.strip()``, which the provider
+# usage writer uses when resolving model names. SQLite ``TRIM`` removes only
+# U+0020 by default, so SQL predicates must receive this explicit character set.
+_MODEL_NAME_STRIP_CHARS = (
+    "\t\n\v\f\r"
+    "\x1c\x1d\x1e\x1f"
+    " \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+def _normalize_model_name(value: object) -> str:
+    return str(value).strip(_MODEL_NAME_STRIP_CHARS) if value else ""
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderUsageCoverage:
@@ -824,11 +839,11 @@ def _stale_provider_rollup_stats(
         WITH session_models AS MATERIALIZED (
             SELECT s.origin,
                    s.session_id,
-                   COUNT(NULLIF(TRIM(u.model_name), '')) AS model_count,
-                   MIN(NULLIF(TRIM(u.model_name), '')) AS sole_model
+                   COUNT(NULLIF(TRIM(u.model_name, :model_strip_chars), '')) AS model_count,
+                   MIN(NULLIF(TRIM(u.model_name, :model_strip_chars), '')) AS sole_model
             FROM sessions AS s
             LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
-            WHERE (? IS NULL OR s.origin = ?)
+            WHERE (:origin IS NULL OR s.origin = :origin)
             GROUP BY s.origin, s.session_id
         ),
         latest_positions AS MATERIALIZED (
@@ -845,7 +860,7 @@ def _stale_provider_rollup_stats(
                              OR e.total_cache_write_tokens != 0
                          )
                          AND COALESCE(
-                             NULLIF(TRIM(e.model_name), ''),
+                             NULLIF(TRIM(e.model_name, :model_strip_chars), ''),
                              CASE WHEN sm.model_count = 1 THEN sm.sole_model END
                          ) IS NOT NULL
                        ORDER BY e.position DESC
@@ -865,11 +880,16 @@ def _stale_provider_rollup_stats(
                e.total_cache_write_tokens
         FROM latest_positions AS lp
         LEFT JOIN session_provider_usage_events AS e
-          ON e.session_id = lp.session_id
+         ON e.session_id = lp.session_id
          AND e.position = lp.latest_position
         """,
-        (origin, origin),
+        {"model_strip_chars": _MODEL_NAME_STRIP_CHARS, "origin": origin},
     ).fetchall()
+
+    # Preserve the established payload contract: without any model rollup rows,
+    # the report has no comparison basis and does not classify the origin stale.
+    if not any(_int(row["model_count"]) for row in latest_rows):
+        return {}, {}
 
     origin_by_session: dict[str, str] = {}
     sole_model_by_session: dict[str, str | None] = {}
@@ -878,12 +898,12 @@ def _stale_provider_rollup_stats(
     for row in latest_rows:
         session_id = str(row["session_id"])
         origin_by_session[session_id] = str(row["origin"])
-        sole_model = str(row["sole_model"]) if _int(row["model_count"]) == 1 else None
+        sole_model = _normalize_model_name(row["sole_model"]) if _int(row["model_count"]) == 1 else None
         sole_model_by_session[session_id] = sole_model
         if row["latest_position"] is None:
             fallback_session_ids.append(session_id)
             continue
-        model_name = str(row["model_name"] or "").strip() or sole_model or ""
+        model_name = _normalize_model_name(row["model_name"]) or sole_model or ""
         if not model_name:
             continue
         expected[session_id][model_name] = _provider_usage_disjoint_lanes(
@@ -912,7 +932,7 @@ def _stale_provider_rollup_stats(
             """,
             (session_id,),
         ):
-            model_name = str(row["model_name"] or "").strip() or sole_model_by_session[session_id] or ""
+            model_name = _normalize_model_name(row["model_name"]) or sole_model_by_session[session_id] or ""
             if not model_name:
                 continue
             last_values = (
@@ -1331,14 +1351,15 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     origin_select = "? AS origin" if origin is not None else "s.origin AS origin"
     join_sessions = "" if origin is not None else "JOIN sessions s ON s.session_id = e.session_id"
     where_clause = _event_origin_where(origin)
-    args = _event_origin_args(origin)
+    event_args = _event_origin_args(origin)
+    args = (*event_args[:1], _MODEL_NAME_STRIP_CHARS, *event_args[1:])
     select_parts = [
         origin_select,
         "COUNT(*) AS provider_event_count",
         "COUNT(DISTINCT e.session_id) AS provider_event_session_count",
         "COALESCE(SUM(CASE WHEN e.provider_event_type = 'token_count' THEN 1 ELSE 0 END), 0) AS token_count_event_count",
         "COALESCE(SUM(CASE WHEN e.provider_event_type = 'message_usage' THEN 1 ELSE 0 END), 0) AS message_usage_event_count",
-        "COALESCE(SUM(CASE WHEN e.model_name IS NULL OR TRIM(e.model_name) = '' THEN 1 ELSE 0 END), 0) AS missing_model_event_count",
+        "COALESCE(SUM(CASE WHEN e.model_name IS NULL OR TRIM(e.model_name, ?) = '' THEN 1 ELSE 0 END), 0) AS missing_model_event_count",
     ]
     last_cols = _counter_columns(columns, prefix="last")
     total_cols = _counter_columns(columns, prefix="total")
@@ -1420,7 +1441,7 @@ def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None
         counts["provider_event_count"] += 1
         sessions_by_origin[origin_name].add(str(row["session_id"]))
         counts[f"{row['provider_event_type']}_event_count"] += 1
-        if row["model_name"] is None or not str(row["model_name"]).strip():
+        if not _normalize_model_name(row["model_name"]):
             counts["missing_model_event_count"] += 1
         last_values = (
             _int(row["last_input_tokens"]),
