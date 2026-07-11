@@ -109,7 +109,17 @@ function makeDom(adapter) {
     runScripts: "outside-only",
   });
   openDoms.push(dom);
-  Object.defineProperty(dom.window, "crypto", { configurable: true, value: webcrypto });
+  // Node 20 rejects ArrayBuffers created by a separate jsdom VM realm. Keep
+  // the production dependency on Web Crypto, but adapt test bytes into the
+  // host realm before invoking the real digest implementation.
+  const cryptoAdapter = {
+    subtle: {
+      digest(algorithm, data) {
+        return webcrypto.subtle.digest(algorithm, Buffer.from(new dom.window.Uint8Array(data)));
+      },
+    },
+  };
+  Object.defineProperty(dom.window, "crypto", { configurable: true, value: cryptoAdapter });
   Object.defineProperty(dom.window, "fetch", { configurable: true, value: adapter.fetch });
   return dom;
 }
