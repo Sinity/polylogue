@@ -520,7 +520,7 @@ def test_superseded_raw_cleanup_allows_history_before_active_full(tmp_path: Path
                 accepted_frontier_kind, accepted_frontier,
                 acquisition_generation, append_end_offset, decided_at_ms
             ) VALUES ('codex:session-1', 'codex-session:session-1', 'raw-new-full',
-                      'revision-new', ?, 'byte', 20, 1, 20, 1)
+                      'revision-new', ?, 'byte', 20, 1, NULL, 1)
             """,
             (bytes(32),),
         )
@@ -532,8 +532,8 @@ def test_superseded_raw_cleanup_allows_history_before_active_full(tmp_path: Path
                 accepted_raw_id, accepted_source_revision, accepted_content_hash,
                 detail, decided_at_ms
             ) VALUES ('old-superseded', 'raw-old-full', 'codex-session:session-1',
-                      'codex:session-1', 'revision-old', 0, 'superseded',
-                      'raw-new-full', 'revision-new', ?, 'superseded by accepted full', 2)
+                      'codex:session-1', 'revision-old', 1, 'superseded',
+                      'raw-new-full', 'revision-new', ?, 'superseded by accepted full', 1)
             """,
             (bytes(32),),
         )

@@ -92,6 +92,15 @@ class _IndexRawRevisionHead:
     append_end_offset: int | None
 
 
+@dataclass(frozen=True)
+class _EligibleRawReceipt:
+    raw_id: str
+    logical_source_key: str
+    source_revision: str
+    baseline_raw_id: str | None
+    predecessor_raw_id: str | None
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ? LIMIT 1",
@@ -127,7 +136,7 @@ def _timestamp_ms(value: str | None) -> int | None:
 
 def _active_index_raw_authority(
     index_db_path: Path,
-) -> tuple[frozenset[str], tuple[_IndexRawRevisionHead, ...], frozenset[str]]:
+) -> tuple[frozenset[str], tuple[_IndexRawRevisionHead, ...], tuple[_EligibleRawReceipt, ...]]:
     """Read current raw references and explicit deletion receipts read-only."""
     if not index_db_path.is_file():
         raise RawRetentionSafetyError(f"index tier is unavailable: {index_db_path}")
@@ -143,13 +152,23 @@ def _active_index_raw_authority(
                    FROM raw_revision_heads"""
             ).fetchall()
             eligible_rows = conn.execute(
-                """SELECT DISTINCT application.raw_id
+                """SELECT DISTINCT application.raw_id,
+                          application.logical_source_key,
+                          application.source_revision,
+                          application.baseline_raw_id,
+                          application.predecessor_raw_id
                    FROM raw_revision_applications AS application
                    JOIN raw_revision_heads AS head
                      ON head.logical_source_key = application.logical_source_key
+                    AND head.session_id = application.session_id
                     AND head.accepted_raw_id = application.accepted_raw_id
                     AND head.accepted_source_revision = application.accepted_source_revision
-                   WHERE application.decision = 'superseded'"""
+                    AND head.accepted_content_hash = application.accepted_content_hash
+                    AND head.acquisition_generation = application.acquisition_generation
+                    AND head.append_end_offset IS application.append_end_offset
+                    AND head.decided_at_ms = application.decided_at_ms
+                   WHERE application.decision = 'superseded'
+                     AND head.accepted_frontier_kind = 'byte'"""
             ).fetchall()
     except (OSError, sqlite3.Error) as exc:
         raise RawRetentionSafetyError(f"index tier raw authority is unreadable: {exc}") from exc
@@ -166,8 +185,17 @@ def _active_index_raw_authority(
         )
         for row in head_rows
     )
-    eligible_raw_ids = frozenset(str(row[0]) for row in eligible_rows if row[0] is not None and str(row[0]))
-    return session_raw_ids, heads, eligible_raw_ids
+    eligible_receipts = tuple(
+        _EligibleRawReceipt(
+            raw_id=str(row[0]),
+            logical_source_key=str(row[1]),
+            source_revision=str(row[2]),
+            baseline_raw_id=str(row[3]) if row[3] is not None else None,
+            predecessor_raw_id=str(row[4]) if row[4] is not None else None,
+        )
+        for row in eligible_rows
+    )
+    return session_raw_ids, heads, eligible_receipts
 
 
 def _raw_revision_rows(
@@ -276,9 +304,29 @@ def _validate_byte_head(row: sqlite3.Row, head: _IndexRawRevisionHead) -> None:
         raise RawRetentionSafetyError(f"accepted raw revision disagrees with index head: {head.accepted_raw_id}")
     if row["acquisition_generation"] != head.acquisition_generation:
         raise RawRetentionSafetyError(f"accepted raw generation disagrees with index head: {head.accepted_raw_id}")
-    raw_frontier = row["append_end_offset"] if str(row["revision_kind"]) == "append" else row["blob_size"]
-    if raw_frontier != head.append_end_offset or raw_frontier != head.accepted_frontier:
+    is_append = str(row["revision_kind"]) == "append"
+    raw_frontier = row["append_end_offset"] if is_append else row["blob_size"]
+    if raw_frontier != head.accepted_frontier:
         raise RawRetentionSafetyError(f"accepted raw frontier disagrees with index head: {head.accepted_raw_id}")
+    if (is_append and raw_frontier != head.append_end_offset) or (not is_append and head.append_end_offset is not None):
+        raise RawRetentionSafetyError(f"accepted raw append end disagrees with index head: {head.accepted_raw_id}")
+
+
+def _validate_eligible_receipt(row: sqlite3.Row, receipt: _EligibleRawReceipt) -> None:
+    if str(row["revision_kind"]) not in {"full", "append"}:
+        raise RawRetentionSafetyError(f"superseded receipt references an untyped raw: {receipt.raw_id}")
+    if str(row["revision_authority"]) != "byte_proven":
+        raise RawRetentionSafetyError(f"superseded receipt references unproven raw evidence: {receipt.raw_id}")
+    if row["logical_source_key"] != receipt.logical_source_key:
+        raise RawRetentionSafetyError(f"superseded receipt crosses logical sources: {receipt.raw_id}")
+    if row["source_revision"] != receipt.source_revision:
+        raise RawRetentionSafetyError(f"superseded receipt revision disagrees with source evidence: {receipt.raw_id}")
+    if row["baseline_raw_id"] != receipt.baseline_raw_id:
+        raise RawRetentionSafetyError(f"superseded receipt baseline disagrees with source evidence: {receipt.raw_id}")
+    if row["predecessor_raw_id"] != receipt.predecessor_raw_id:
+        raise RawRetentionSafetyError(
+            f"superseded receipt predecessor disagrees with source evidence: {receipt.raw_id}"
+        )
 
 
 def active_raw_retention_authority(
@@ -297,14 +345,15 @@ def active_raw_retention_authority(
     original_row_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
     try:
-        session_raw_ids, heads, eligible_raw_ids = _active_index_raw_authority(index_db_path)
+        session_raw_ids, heads, eligible_receipts = _active_index_raw_authority(index_db_path)
         seeds = set(session_raw_ids)
         seeds.update(head.accepted_raw_id for head in heads)
         if not seeds:
             if conn.execute("SELECT 1 FROM raw_sessions LIMIT 1").fetchone() is not None:
                 raise RawRetentionSafetyError("source tier contains raw evidence but index has no raw authority")
             return RawRetentionAuthority(protected_raw_ids=frozenset(), eligible_raw_ids=frozenset())
-        rows_by_id = _raw_revision_rows(conn, set(seeds))
+        authority_raw_ids = seeds.union(receipt.raw_id for receipt in eligible_receipts)
+        rows_by_id = _raw_revision_rows(conn, authority_raw_ids)
         protected: set[str] = set()
         for seed_raw_id in sorted(session_raw_ids):
             protected.update(_validate_active_revision_chain(rows_by_id, seed_raw_id))
@@ -313,10 +362,14 @@ def active_raw_retention_authority(
             if head.accepted_frontier_kind == "byte":
                 _validate_byte_head(row, head)
             protected.update(_validate_active_revision_chain(rows_by_id, head.accepted_raw_id))
+        eligible: set[str] = set()
+        for receipt in eligible_receipts:
+            _validate_eligible_receipt(rows_by_id[receipt.raw_id], receipt)
+            eligible.add(receipt.raw_id)
         protected_ids = frozenset(protected)
         return RawRetentionAuthority(
             protected_raw_ids=protected_ids,
-            eligible_raw_ids=frozenset(eligible_raw_ids.difference(protected_ids)),
+            eligible_raw_ids=frozenset(eligible.difference(protected_ids)),
         )
     finally:
         conn.row_factory = original_row_factory

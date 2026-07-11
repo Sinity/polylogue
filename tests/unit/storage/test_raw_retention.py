@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.roles import Role
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.core.enums import Provider
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_retention import (
     RawRetentionAuthority,
@@ -16,7 +20,8 @@ from polylogue.storage.raw_retention import (
     protected_active_raw_revision_ids,
     superseded_raw_snapshot_candidates,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -135,6 +140,7 @@ def _seed_index_authority(
     accepted_revision: str,
     generation: int,
     frontier: int,
+    append_end_offset: int | None,
 ) -> None:
     with sqlite3.connect(index_db_path) as conn:
         conn.execute(
@@ -152,9 +158,9 @@ def _seed_index_authority(
                 accepted_frontier_kind, accepted_frontier,
                 acquisition_generation, append_end_offset, decided_at_ms
             ) VALUES ('codex:session-1', 'codex-session:session-1', ?, ?, ?,
-                      'byte', ?, ?, ?, 1)
+                      'byte', ?, ?, ?, 2)
             """,
-            (accepted_raw_id, accepted_revision, bytes(32), frontier, generation, frontier),
+            (accepted_raw_id, accepted_revision, bytes(32), frontier, generation, append_end_offset),
         )
 
 
@@ -163,9 +169,10 @@ def _seed_superseded_application(
     *,
     raw_id: str,
     source_revision: str,
-    generation: int,
+    accepted_generation: int,
     accepted_raw_id: str,
     accepted_revision: str,
+    accepted_append_end_offset: int | None,
 ) -> None:
     with sqlite3.connect(index_db_path) as conn:
         conn.execute(
@@ -174,20 +181,81 @@ def _seed_superseded_application(
                 decision_id, raw_id, session_id, logical_source_key,
                 source_revision, acquisition_generation, decision,
                 accepted_raw_id, accepted_source_revision, accepted_content_hash,
-                detail, decided_at_ms
+                append_end_offset, detail, decided_at_ms
             ) VALUES (?, ?, 'codex-session:session-1', 'codex:session-1', ?, ?,
-                      'superseded', ?, ?, ?, 'superseded by accepted full', 2)
+                      'superseded', ?, ?, ?, ?, 'superseded by accepted full', 2)
             """,
             (
                 f"decision-{raw_id}",
                 raw_id,
                 source_revision,
-                generation,
+                accepted_generation,
                 accepted_raw_id,
                 accepted_revision,
                 bytes(32),
+                accepted_append_end_offset,
             ),
         )
+
+
+def _parsed_session(*message_ids: str) -> ParsedSession:
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="session-1",
+        messages=[
+            ParsedMessage(provider_message_id=message_id, role=Role.USER, text=message_id) for message_id in message_ids
+        ],
+    )
+
+
+def _seed_real_full_supersession(root: Path) -> tuple[str, str]:
+    source_path = root / "session.jsonl"
+    source_path.write_bytes(b"a" * 20)
+    initialize_active_archive_root(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        old_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"a" * 10,
+            source_path=str(source_path),
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            old_raw_id,
+            RawRevisionEnvelope(
+                "codex:session-1",
+                RawRevisionKind.FULL,
+                "revision-old",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.apply_raw_revision_replay(
+            archive.raw_revision_replay_plan("codex:session-1"),
+            {old_raw_id: _parsed_session("m0")},
+            acquired_at_ms=1,
+        )
+        new_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"a" * 20,
+            source_path=str(source_path),
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            new_raw_id,
+            RawRevisionEnvelope(
+                "codex:session-1",
+                RawRevisionKind.FULL,
+                "revision-new",
+                1,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.apply_raw_revision_replay(
+            archive.raw_revision_replay_plan("codex:session-1"),
+            {new_raw_id: _parsed_session("m0", "m1")},
+            acquired_at_ms=2,
+        )
+    return old_raw_id, new_raw_id
 
 
 def test_active_raw_protection_joins_index_seeds_to_transitive_source_chain(tmp_path: Path) -> None:
@@ -257,6 +325,7 @@ def test_active_raw_protection_joins_index_seeds_to_transitive_source_chain(tmp_
         accepted_revision="revision-2",
         generation=2,
         frontier=20,
+        append_end_offset=20,
     )
 
     with sqlite3.connect(source_db) as conn:
@@ -305,14 +374,16 @@ def test_active_full_head_resets_retention_chain(tmp_path: Path) -> None:
         accepted_revision="revision-new",
         generation=1,
         frontier=20,
+        append_end_offset=None,
     )
     _seed_superseded_application(
         index_db,
         raw_id="raw-old-full",
         source_revision="revision-old",
-        generation=0,
+        accepted_generation=1,
         accepted_raw_id="raw-new-full",
         accepted_revision="revision-new",
+        accepted_append_end_offset=None,
     )
 
     with sqlite3.connect(source_db) as conn:
@@ -324,6 +395,95 @@ def test_active_full_head_resets_retention_chain(tmp_path: Path) -> None:
         protected_raw_ids=frozenset({"raw-new-full"}),
         eligible_raw_ids=frozenset({"raw-old-full"}),
     )
+
+
+def test_real_revision_receipt_authorizes_only_current_byte_head_supersession(tmp_path: Path) -> None:
+    old_raw_id, new_raw_id = _seed_real_full_supersession(tmp_path)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        authority = active_raw_retention_authority(conn, index_db_path=tmp_path / "index.db")
+
+    assert authority == RawRetentionAuthority(
+        protected_raw_ids=frozenset({new_raw_id}),
+        eligible_raw_ids=frozenset({old_raw_id}),
+    )
+
+
+def test_semantic_head_receipt_authorizes_no_raw_deletion(tmp_path: Path) -> None:
+    old_raw_id, new_raw_id = _seed_real_full_supersession(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("UPDATE raw_revision_heads SET accepted_frontier_kind = 'semantic', accepted_frontier = 2")
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        authority = active_raw_retention_authority(conn, index_db_path=tmp_path / "index.db")
+
+    assert authority == RawRetentionAuthority(
+        protected_raw_ids=frozenset({new_raw_id}),
+        eligible_raw_ids=frozenset(),
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (old_raw_id,)).fetchone() == (1,)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("session_id", "codex-session:other"),
+        ("logical_source_key", "codex:other"),
+        ("accepted_raw_id", "other-raw"),
+        ("accepted_source_revision", "other-revision"),
+        ("accepted_content_hash", bytes(32)),
+        ("acquisition_generation", 99),
+        ("append_end_offset", 99),
+        ("decided_at_ms", 99),
+    ],
+)
+def test_real_revision_receipt_binding_drift_authorizes_no_deletion(
+    tmp_path: Path,
+    column: str,
+    value: object,
+) -> None:
+    old_raw_id, new_raw_id = _seed_real_full_supersession(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            f"UPDATE raw_revision_applications SET {column} = ? WHERE decision = 'superseded'",
+            (value,),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        authority = active_raw_retention_authority(conn, index_db_path=tmp_path / "index.db")
+
+    assert authority == RawRetentionAuthority(
+        protected_raw_ids=frozenset({new_raw_id}),
+        eligible_raw_ids=frozenset(),
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (old_raw_id,)).fetchone() == (1,)
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "error_match"),
+    [
+        ("source_revision", "tampered", "revision disagrees"),
+        ("baseline_raw_id", "tampered", "baseline disagrees"),
+        ("predecessor_raw_id", "tampered", "predecessor disagrees"),
+    ],
+)
+def test_real_revision_receipt_rejects_conflicting_source_evidence(
+    tmp_path: Path,
+    column: str,
+    value: object,
+    error_match: str,
+) -> None:
+    old_raw_id, _new_raw_id = _seed_real_full_supersession(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(f"UPDATE raw_sessions SET {column} = ? WHERE raw_id = ?", (value, old_raw_id))
+
+    with (
+        sqlite3.connect(tmp_path / "source.db") as conn,
+        pytest.raises(RawRetentionSafetyError, match=error_match),
+    ):
+        active_raw_retention_authority(conn, index_db_path=tmp_path / "index.db")
 
 
 @pytest.mark.parametrize("index_kind", ["missing", "malformed"])
@@ -419,6 +579,7 @@ def test_active_raw_protection_rejects_incomplete_predecessor_chain(tmp_path: Pa
         accepted_revision="revision-1",
         generation=1,
         frontier=15,
+        append_end_offset=15,
     )
 
     with (
@@ -498,6 +659,7 @@ def test_active_raw_protection_rejects_corrupt_chain_invariants(
         accepted_revision="revision-1",
         generation=1,
         frontier=15,
+        append_end_offset=15,
     )
 
     with sqlite3.connect(source_db) as conn, pytest.raises(RawRetentionSafetyError, match=error_match):
@@ -560,6 +722,7 @@ def test_active_raw_protection_rejects_index_head_mismatch(
         accepted_revision="revision-1",
         generation=1,
         frontier=15,
+        append_end_offset=15,
     )
     if mutation == "source_end":
         with sqlite3.connect(source_db) as conn:

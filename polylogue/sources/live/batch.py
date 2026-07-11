@@ -7,6 +7,7 @@ import sqlite3
 import time
 import zipfile
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -151,21 +152,41 @@ def _iso_to_epoch_ms(value: str) -> int:
 def _captured_jsonl_ends_at_record_boundary(
     *,
     source_path: str,
+    required: bool,
     payload: bytes | None,
     blob_store: BlobStore,
     blob_hash: str,
     blob_size: int,
 ) -> bool:
     path = Path(source_path)
-    if path.suffix.lower() not in {".jsonl", ".ndjson"} or not path.is_file():
+    if not required or path.suffix.lower() not in {".jsonl", ".ndjson"}:
         return True
     if blob_size <= 0:
         return False
     if payload is not None:
-        return payload.endswith(b"\n")
-    with blob_store.open(blob_hash) as handle:
-        handle.seek(-1, 2)
-        return handle.read(1) == b"\n"
+        tail = payload.rsplit(b"\n", 1)[-1]
+    else:
+        chunks: list[bytes] = []
+        remaining = blob_size
+        with blob_store.open(blob_hash) as handle:
+            while remaining > 0:
+                chunk_size = min(64 * 1024, remaining)
+                remaining -= chunk_size
+                handle.seek(remaining)
+                chunk = handle.read(chunk_size)
+                newline = chunk.rfind(b"\n")
+                if newline >= 0:
+                    chunks.append(chunk[newline + 1 :])
+                    break
+                chunks.append(chunk)
+        tail = b"".join(reversed(chunks))
+    if not tail.strip():
+        return True
+    try:
+        json_loads(tail)
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return True
 
 
 @dataclass(slots=True)
@@ -701,7 +722,6 @@ class LiveBatchProcessor:
     def _record_failed_cursor(self, path: Path) -> int:
         try:
             stat = path.stat()
-            _fingerprint, _last_nl = fingerprint_file(path)
             tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
         except FileNotFoundError:
             try:
@@ -725,7 +745,9 @@ class LiveBatchProcessor:
                 stat.st_size,
                 byte_offset=committed_offset,
                 last_complete_newline=committed_newline,
-                parser_fingerprint=self._current_parser_fingerprint(),
+                parser_fingerprint=(
+                    existing.parser_fingerprint if existing is not None else self._current_parser_fingerprint()
+                ),
                 content_fingerprint=existing.content_fingerprint if existing is not None else None,
                 tail_hash=existing.tail_hash if existing is not None else tail_hash,
                 source_name=self._source_name_for(path),
@@ -1197,6 +1219,7 @@ class LiveBatchProcessor:
                     acquired_at=datetime.now(UTC).isoformat(),
                     file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
                     captured_source_revision=raw_source_revisions.get(path, raw_id),
+                    requires_complete_record_boundary=path.suffix.lower() in {".jsonl", ".ndjson"},
                 )
             )
             raw_source_revisions.setdefault(path, raw_id)
@@ -1354,6 +1377,7 @@ class LiveBatchProcessor:
                     record_timings[source_write_name] = time.perf_counter() - source_write_started
                     if not _captured_jsonl_ends_at_record_boundary(
                         source_path=record.source_path,
+                        required=record.requires_complete_record_boundary,
                         payload=payload,
                         blob_store=blob_store,
                         blob_hash=blob_hash,
@@ -1814,7 +1838,7 @@ class LiveBatchProcessor:
         index_db = archive_root / "index.db"
         if not source_db.exists():
             return
-        with sqlite3.connect(source_db) as conn:
+        with closing(sqlite3.connect(source_db)) as conn, conn:
             conn.row_factory = sqlite3.Row
             try:
                 retention_authority = active_raw_retention_authority(conn, index_db_path=index_db)

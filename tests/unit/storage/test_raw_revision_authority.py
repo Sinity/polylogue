@@ -185,6 +185,64 @@ def test_revision_binding_is_idempotent_only_for_the_exact_envelope() -> None:
         bind_source_raw_revision(conn, "missing", first)
 
 
+def test_provisional_revision_rebind_accepts_only_classifier_refinement() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(SOURCE_DDL)
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        source_path="/capture/session.jsonl",
+        source_index=0,
+        payload=b"raw",
+        acquired_at_ms=10,
+    )
+    provisional = RawRevisionEnvelope(
+        "codex:session-1",
+        RawRevisionKind.FULL,
+        "revision-1",
+        0,
+        authority=RawRevisionAuthority.QUARANTINED,
+    )
+    bind_source_raw_revision(conn, raw_id, provisional)
+    conn.execute(
+        """UPDATE raw_sessions
+           SET revision_authority = 'byte_proven', predecessor_raw_id = ?,
+               baseline_raw_id = ?, acquisition_generation = 4
+           WHERE raw_id = ?""",
+        ("older-full", "older-full", raw_id),
+    )
+
+    bind_source_raw_revision(conn, raw_id, provisional)
+
+    assert conn.execute(
+        """SELECT logical_source_key, revision_kind, source_revision,
+                  predecessor_raw_id, baseline_raw_id, acquisition_generation,
+                  revision_authority
+           FROM raw_sessions WHERE raw_id = ?""",
+        (raw_id,),
+    ).fetchone() == (
+        "codex:session-1",
+        "full",
+        "revision-1",
+        "older-full",
+        "older-full",
+        4,
+        "byte_proven",
+    )
+    with pytest.raises(ValueError, match="already authoritative"):
+        bind_source_raw_revision(
+            conn,
+            raw_id,
+            RawRevisionEnvelope(
+                "codex:session-1",
+                RawRevisionKind.FULL,
+                "different-revision",
+                0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+
+
 @pytest.mark.parametrize("write_mode", ["payload", "blob-ref"])
 def test_reacquiring_same_raw_cannot_reset_its_authoritative_envelope(
     tmp_path: Path,

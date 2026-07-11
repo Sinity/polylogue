@@ -1341,20 +1341,18 @@ def count_superseded_raw_snapshots_sync(conn: sqlite3.Connection) -> int:
 
 
 def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
-    import sqlite3
-
     from polylogue.storage.raw_retention import (
         RawRetentionSafetyError,
         active_raw_retention_authority,
         cleanup_superseded_raw_snapshots,
     )
-    from polylogue.storage.sqlite.connection import open_connection
+    from polylogue.storage.sqlite.connection_profile import open_connection
 
     archive_root = _raw_materialization_archive_root(config)
     repair_db_path = archive_root / "source.db"
     if repair_db_path.exists():
         index_db_path = archive_root / "index.db"
-        with sqlite3.connect(repair_db_path) as conn:
+        with closing(open_connection(repair_db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             try:
                 retention_authority = active_raw_retention_authority(
@@ -1376,7 +1374,7 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
                 eligible_raw_ids=retention_authority.eligible_raw_ids,
             )
     else:
-        with open_connection(config.db_path) as conn:
+        with closing(open_connection(config.db_path)) as conn, conn:
             try:
                 retention_authority = active_raw_retention_authority(
                     conn,

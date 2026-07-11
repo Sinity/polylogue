@@ -26,6 +26,7 @@ from polylogue.sources.live.batch_support import (
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.raw.models import UNSET
+from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
@@ -1491,7 +1492,7 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(tmp_p
     )
     split_record = (
         b'{"type":"response_item","payload":{"type":"message","id":"message-1","role":"assistant",'
-        b'"content":[{"type":"output_text","text":"one"}]}}\n'
+        b'"content":[{"type":"output_text","text":"one"}]}}'
     )
     split_at = len(split_record) // 2
     path.write_bytes(prefix + split_record[:split_at])
@@ -1541,6 +1542,49 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(tmp_p
         ).fetchall() == [("zero",), ("one",)]
 
 
+def test_captured_incomplete_jsonl_is_rejected_after_source_disappears(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "disappearing.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"disappearing"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"complete"}]}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1"'
+    )
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    original_ingest = processor._ingest_full_records_archive
+
+    def remove_source_after_capture(*args: Any, **kwargs: Any) -> _ArchiveFullWriteResult:
+        path.unlink()
+        return original_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(processor, "_ingest_full_records_archive", remove_source_after_capture)
+
+    result = asyncio.run(processor.ingest_files([path]))
+
+    assert result.succeeded_file_count == 0
+    assert result.failed_file_count == 1
+    failed_cursor = cursor.get_record(path)
+    assert failed_cursor is None or failed_cursor.byte_offset == 0
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        parse_error = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()[0]
+        assert "complete record boundary" in str(parse_error)
+
+
 def test_append_persistence_failure_preserves_frontier_for_next_tick(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1569,20 +1613,44 @@ def test_append_persistence_failure_preserves_frontier_for_next_tick(
     assert asyncio.run(processor.ingest_files([path])).succeeded_file_count == 1
     accepted_cursor = cursor.get_record(path)
     assert accepted_cursor is not None
+
+    def index_state() -> tuple[object, ...]:
+        with sqlite3.connect(index_db) as conn:
+            return (
+                conn.execute(
+                    "SELECT session_id, message_count, content_hash FROM sessions ORDER BY session_id"
+                ).fetchall(),
+                conn.execute("SELECT message_id, position, content_hash FROM messages ORDER BY message_id").fetchall(),
+                conn.execute("SELECT block_id, message_id, search_text FROM blocks ORDER BY block_id").fetchall(),
+                conn.execute("SELECT id, sz FROM messages_fts_docsize ORDER BY id").fetchall(),
+                conn.execute(
+                    """SELECT logical_source_key, accepted_raw_id, accepted_source_revision,
+                              accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+                              acquisition_generation, append_end_offset
+                       FROM raw_revision_heads ORDER BY logical_source_key"""
+                ).fetchall(),
+                conn.execute(
+                    """SELECT decision_id, raw_id, decision, accepted_raw_id,
+                              accepted_source_revision, accepted_content_hash
+                       FROM raw_revision_applications ORDER BY decision_id"""
+                ).fetchall(),
+            )
+
+    accepted_index_state = index_state()
     with path.open("ab") as handle:
         handle.write(append)
 
-    original_apply = ArchiveStore.apply_raw_revision_replay
+    original_record = archive_tier_module.__dict__["record_revision_application_sync"]
     fail_once = True
 
-    def injected_failure(self: ArchiveStore, *args: Any, **kwargs: Any) -> tuple[str, tuple[str, ...]]:
+    def injected_failure(*args: Any, **kwargs: Any) -> None:
         nonlocal fail_once
         if fail_once:
             fail_once = False
             raise sqlite3.IntegrityError("injected append persistence failure")
-        return original_apply(self, *args, **kwargs)
+        original_record(*args, **kwargs)
 
-    monkeypatch.setattr(ArchiveStore, "apply_raw_revision_replay", injected_failure)
+    monkeypatch.setattr(archive_tier_module, "record_revision_application_sync", injected_failure)
     failed = asyncio.run(processor.ingest_files([path]))
 
     assert failed.succeeded_file_count == 0
@@ -1591,8 +1659,19 @@ def test_append_persistence_failure_preserves_frontier_for_next_tick(
     assert retry_cursor is not None
     assert retry_cursor.byte_offset == accepted_cursor.byte_offset
     assert retry_cursor.content_fingerprint == accepted_cursor.content_fingerprint
-    with sqlite3.connect(index_db) as conn:
-        assert conn.execute("SELECT native_id FROM messages").fetchall() == [("message-0",)]
+    assert index_state() == accepted_index_state
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        retained_append = conn.execute(
+            """SELECT revision_kind, predecessor_raw_id, append_start_offset,
+                      append_end_offset, revision_authority, parsed_at_ms, parse_error
+               FROM raw_sessions WHERE source_index = -1"""
+        ).fetchone()
+    assert retained_append is not None
+    assert retained_append[0] == "append"
+    assert retained_append[1] is not None
+    assert retained_append[2:5] == (len(baseline), len(baseline) + len(append), "byte_proven")
+    assert retained_append[5] is None
+    assert "injected append persistence failure" in str(retained_append[6])
 
     retried = asyncio.run(processor.ingest_files([path]))
 
@@ -1608,6 +1687,76 @@ def test_append_persistence_failure_preserves_frontier_for_next_tick(
             ("message-0",),
             ("message-1",),
         ]
+
+
+def test_failed_parser_upgrade_preserves_accepted_parser_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "parser-upgrade.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"parser-upgrade"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor_a = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="parser-a",
+    )
+    assert asyncio.run(processor_a.ingest_files([path])).succeeded_file_count == 1
+    accepted = cursor.get_record(path)
+    assert accepted is not None
+    assert accepted.parser_fingerprint == "parser-a"
+
+    with path.open("ab") as handle:
+        handle.write(
+            b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
+            b'"role":"assistant","content":[{"type":"output_text","text":"one"}]}}\n'
+        )
+    processor_b = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="parser-b",
+    )
+    original_record = archive_tier_module.__dict__["record_revision_application_sync"]
+    fail_once = True
+
+    def injected_failure(*args: Any, **kwargs: Any) -> None:
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise sqlite3.IntegrityError("injected parser-upgrade persistence failure")
+        original_record(*args, **kwargs)
+
+    monkeypatch.setattr(archive_tier_module, "record_revision_application_sync", injected_failure)
+
+    failed = asyncio.run(processor_b.ingest_files([path]))
+
+    assert failed.full_file_count == 1
+    assert failed.failed_file_count == 1
+    retry = cursor.get_record(path)
+    assert retry is not None
+    assert retry.parser_fingerprint == "parser-a"
+    assert retry.byte_offset == accepted.byte_offset
+    assert retry.content_fingerprint == accepted.content_fingerprint
+
+    cursor.reset_failures(path)
+    retried = asyncio.run(processor_b.ingest_files([path]))
+
+    assert retried.full_file_count == 1
+    assert retried.append_file_count == 0
+    assert retried.succeeded_file_count == 1
+    final = cursor.get_record(path)
+    assert final is not None
+    assert final.parser_fingerprint == "parser-b"
+    assert final.byte_offset == path.stat().st_size
 
 
 def test_append_parse_failure_retains_typed_raw_failure(

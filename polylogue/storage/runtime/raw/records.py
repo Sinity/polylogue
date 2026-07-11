@@ -30,6 +30,7 @@ class RawSessionRecord(BaseModel):
     detection_warnings: str | None = None
     revision: RawRevisionEnvelope | None = None
     captured_source_revision: str | None = Field(default=None, exclude=True)
+    requires_complete_record_boundary: bool = Field(default=False, exclude=True)
 
     @field_validator("raw_id", "blob_hash", "blob_publication_receipt_id", "source_name", "source_path")
     @classmethod

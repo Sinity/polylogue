@@ -12,7 +12,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from polylogue.archive.revision_authority import RawRevisionEnvelope
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
@@ -186,6 +186,24 @@ def _revision_values(revision: RawRevisionEnvelope) -> tuple[object, ...]:
         revision.acquisition_generation,
         revision.authority.value,
     )
+
+
+def _is_compatible_classification_refinement(
+    existing: tuple[object, ...],
+    revision: RawRevisionEnvelope,
+) -> bool:
+    """Accept retry of a provisional envelope already refined by classification."""
+    proposed = _revision_values(revision)
+    if revision.authority is not RawRevisionAuthority.QUARANTINED:
+        return False
+    if existing[9] != RawRevisionAuthority.BYTE_PROVEN.value:
+        return False
+    # Classification may fill the raw parent/baseline and generation, but it
+    # cannot change the acquired stream identity or its byte boundaries.
+    for index in (0, 1, 2, 3, 6, 7):
+        if existing[index] != proposed[index]:
+            return False
+    return all(proposed[index] is None or existing[index] == proposed[index] for index in (4, 5))
 
 
 def _assert_existing_raw_identity(
@@ -567,8 +585,12 @@ def bind_source_raw_revision(conn: sqlite3.Connection, raw_id: str, revision: Ra
                 """,
                 (raw_id,),
             ).fetchone()
-            if existing is not None and tuple(existing) == _revision_values(revision):
-                return
+            if existing is not None:
+                existing_values = tuple(existing)
+                if existing_values == _revision_values(revision) or _is_compatible_classification_refinement(
+                    existing_values, revision
+                ):
+                    return
             raise ValueError(f"raw revision is already authoritative or missing: {raw_id}")
 
 
