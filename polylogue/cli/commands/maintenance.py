@@ -882,6 +882,7 @@ def migrate_tier_command(tier: str, backup_manifest: Path, output_format: str) -
         "tier": tier,
         "path": str(path),
         "backup_manifest": str(backup_manifest),
+        "backup_receipt": str(result.backup_receipt) if result.backup_receipt is not None else None,
         "from_version": result.from_version,
         "to_version": result.to_version,
         "applied_versions": list(result.applied_versions),
@@ -891,7 +892,10 @@ def migrate_tier_command(tier: str, backup_manifest: Path, output_format: str) -
         return
 
     applied = ", ".join(str(version) for version in result.applied_versions) or "none"
-    click.echo(f"Migrated {tier}: {result.from_version} -> {result.to_version} (applied: {applied})")
+    click.echo(
+        f"Migrated {tier}: {result.from_version} -> {result.to_version} "
+        f"(applied: {applied}; receipt: {result.backup_receipt})"
+    )
 
 
 @maintenance_group.command("run")

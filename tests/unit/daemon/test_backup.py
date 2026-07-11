@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from polylogue.core.enums import Provider
 from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import backup_archive
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.storage.backup_attestation import attestation_key_path
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -112,6 +114,127 @@ def test_backup_archive_includes_archive_files(
     assert marker == "native-user"
 
 
+def test_backup_retries_a_writer_commit_between_checkpoint_and_lock(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = workspace_env["archive_root"]
+    archive_root.mkdir(parents=True, exist_ok=True)
+    user_db = archive_root / "user.db"
+    with sqlite3.connect(user_db) as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("CREATE TABLE events (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO events VALUES ('before')")
+
+    original_checkpoint = backup_mod._checkpoint_sqlite_for_snapshot
+    injected = False
+
+    def checkpoint_then_commit(conn: sqlite3.Connection, path: Path) -> None:
+        nonlocal injected
+        original_checkpoint(conn, path)
+        if not injected:
+            injected = True
+            with sqlite3.connect(user_db) as writer:
+                writer.execute("INSERT INTO events VALUES ('during-gap')")
+
+    monkeypatch.setattr(backup_mod, "_checkpoint_sqlite_for_snapshot", checkpoint_then_commit)
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays")
+
+    assert result.ok
+    assert injected
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    with sqlite3.connect(backup_root / "user.db") as conn:
+        assert conn.execute("SELECT value FROM events ORDER BY rowid").fetchall() == [
+            ("before",),
+            ("during-gap",),
+        ]
+    manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
+    fingerprint = manifest["tier_source_fingerprints"]["user.db"]
+    assert fingerprint["sha256"] == hashlib.sha256((backup_root / "user.db").read_bytes()).hexdigest()
+
+
+def test_backup_verifier_refuses_artifact_source_fingerprint_mismatch(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_setup(workspace_env)
+    other_db = tmp_path / "other-user.db"
+    with sqlite3.connect(other_db) as conn:
+        conn.execute("CREATE TABLE other_state (value TEXT)")
+        conn.execute("PRAGMA user_version = 3")
+
+    original_backup = backup_mod._backup_sqlite
+
+    def copy_with_wrong_fingerprint(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
+        size, fingerprint = original_backup(src, dst)
+        if src.name == "user.db":
+            fingerprint = backup_mod._sqlite_source_fingerprint(other_db)
+        return size, fingerprint
+
+    monkeypatch.setattr(backup_mod, "_backup_sqlite", copy_with_wrong_fingerprint)
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=True)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert "backup artifact does not match its live source fingerprint" in str(result.error)
+    assert result.output_path is not None
+    assert not (Path(result.output_path) / "verification-receipt.json").exists()
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_backup_verification_refuses_tier_artifact_aliases(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    alias_kind: str,
+) -> None:
+    db_setup(workspace_env)
+    live_user_db = workspace_env["archive_root"] / "user.db"
+    with sqlite3.connect(live_user_db) as conn:
+        live_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=False)
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    copied_user_db = backup_root / "user.db"
+    copied_user_db.unlink()
+    if alias_kind == "symlink":
+        copied_user_db.symlink_to(live_user_db)
+    else:
+        os.link(live_user_db, copied_user_db)
+
+    backup_mod._verify_backup_result(result)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert "real regular file" in str(result.error) or "multiple hard links" in str(result.error)
+    assert not (backup_root / "verification-receipt.json").exists()
+    with sqlite3.connect(live_user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == live_version
+
+
+def test_backup_verification_refuses_linked_sqlite_sidecar(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_setup(workspace_env)
+    live_user_db = workspace_env["archive_root"] / "user.db"
+    result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=False)
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    (backup_root / "user.db-wal").symlink_to(live_user_db)
+
+    backup_mod._verify_backup_result(result)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert "unbound SQLite sidecar" in str(result.error)
+    assert not (backup_root / "verification-receipt.json").exists()
+
+
 @pytest.mark.contract
 def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     workspace_env: dict[str, Path],
@@ -172,6 +295,54 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     assert not (backup_root / "index.db").exists()
     assert not (backup_root / "ops.db").exists()
     assert (backup_root / "blob" / blob_hash[:2] / blob_hash[2:]).read_bytes() == payload
+    receipt_path = backup_root / "verification-receipt.json"
+    assert receipt_path.exists()
+    assert result.verification["receipt_path"] == str(receipt_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["format"] == "polylogue-backup-verification-receipt-v2"
+    attestations = {item["tier"]: item for item in receipt["attestations"]}
+    assert set(attestations) == {"source", "user"}
+    assert attestations["user"]["algorithm"] == "hmac-sha256"
+    assert len(attestations["user"]["mac"]) == 64
+    key_path = attestation_key_path(workspace_env["archive_root"] / "user.db")
+    assert key_path.exists()
+    assert len(key_path.read_bytes()) == 32
+    assert key_path.stat().st_mode & 0o777 == 0o600
+    assert not (backup_root / key_path.name).exists()
+    assert receipt["verdict"] == "success"
+    assert receipt["manifest_sha256"] == hashlib.sha256((backup_root / "manifest.json").read_bytes()).hexdigest()
+    artifact_inventory = {item["path"]: item for item in receipt["artifact_inventory"]}
+    assert set(artifact_inventory) == {
+        "blob",
+        f"blob/{blob_hash[:2]}",
+        f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
+        "blob-inventory.json",
+        "embeddings.db",
+        "manifest.json",
+        "source.db",
+        "user.db",
+    }
+    assert artifact_inventory["user.db"]["sha256"] == hashlib.sha256((backup_root / "user.db").read_bytes()).hexdigest()
+    assert "verification-receipt.json" not in artifact_inventory
+    assert {artifact["path"] for artifact in receipt["tier_artifacts"]} == {
+        "source.db",
+        "user.db",
+        "embeddings.db",
+    }
+    for artifact in receipt["tier_artifacts"]:
+        fingerprint = artifact["source_fingerprint"]
+        copied_tier = backup_root / artifact["path"]
+        assert fingerprint["sha256"] == hashlib.sha256(copied_tier.read_bytes()).hexdigest()
+        assert fingerprint["size_bytes"] == copied_tier.stat().st_size
+    assert receipt["blobs"] == [
+        {
+            "blob_hash": blob_hash,
+            "path": f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
+            "protection": ["referenced"],
+            "sha256": blob_hash,
+            "size_bytes": len(payload),
+        }
+    ]
 
     with sqlite3.connect(backup_root / "source.db") as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -321,6 +492,20 @@ def test_backup_archive_user_overlays_profile_copies_only_user_tier(
     assert manifest["profile"] == "user_overlays"
     assert manifest["included_tiers"] == ["user.db"]
     assert manifest["omitted_tiers"] == ["source.db", "index.db", "embeddings.db", "ops.db"]
+
+
+def test_backup_archive_verify_false_does_not_write_success_receipt(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_setup(workspace_env)
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=False)
+
+    assert result.ok
+    assert result.verified is False
+    assert result.output_path is not None
+    assert not (Path(result.output_path) / "verification-receipt.json").exists()
 
 
 def test_backup_archive_diagnostics_profile_copies_only_ops_tier(
@@ -537,3 +722,54 @@ def test_backup_archive_verify_marks_failed_artifact_unhealthy(
     assert result.backup_mode == "archive_file_set"
     assert result.verified is False
     assert result.error == "bad"
+    assert result.output_path is not None
+    assert not (Path(result.output_path) / "verification-receipt.json").exists()
+
+
+def test_backup_verification_removes_stale_receipt_after_failure(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_setup(workspace_env)
+    result = backup_archive(output_dir=tmp_path / "backups", verify=False)
+    assert result.output_path is not None
+    receipt = Path(result.output_path) / "verification-receipt.json"
+    receipt.write_text('{"verdict":"success"}', encoding="utf-8")
+    monkeypatch.setattr(
+        backup_mod,
+        "_verify_archive_file_set_backup",
+        lambda _path: {"ok": False, "error": "forced verification failure"},
+    )
+
+    backup_mod._verify_backup_result(result)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert not receipt.exists()
+
+
+def test_backup_verification_refuses_receipt_when_backup_changes_after_scratch_restore(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_setup(workspace_env)
+    result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=False)
+    assert result.output_path is not None
+    original_verify = backup_mod._verify_archive_file_set_backup
+
+    def verify_then_mutate(path: Path) -> dict[str, object]:
+        verification = original_verify(path)
+        copied_tier = path / "user.db"
+        copied_tier.write_bytes(copied_tier.read_bytes() + b"x")
+        return verification
+
+    monkeypatch.setattr(backup_mod, "_verify_archive_file_set_backup", verify_then_mutate)
+
+    backup_mod._verify_backup_result(result)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert "backup changed after scratch verification" in str(result.error)
+    assert not (Path(result.output_path) / "verification-receipt.json").exists()

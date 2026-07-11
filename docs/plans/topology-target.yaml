@@ -308,7 +308,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 3020
+    loc: 3040
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -353,7 +353,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/predicate.py
-    loc: 216
+    loc: 244
     target: polylogue/archive/query/predicate.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -383,7 +383,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/runtime_matching.py
-    loc: 161
+    loc: 184
     target: polylogue/archive/query/runtime_matching.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -799,7 +799,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 2424
+    loc: 2428
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/ops.py
@@ -1239,7 +1239,7 @@ files:
     target: polylogue/daemon/__init__.py
     owner: stable
   - path: polylogue/daemon/backup.py
-    loc: 677
+    loc: 1036
     target: polylogue/daemon/backup.py
     owner: stable
   - path: polylogue/daemon/blob_integrity_alerts.py
@@ -1500,7 +1500,7 @@ files:
     target: polylogue/demo/seed.py
     owner: stable
   - path: polylogue/demo/tour.py
-    loc: 374
+    loc: 448
     target: polylogue/demo/tour.py
     owner: stable
   - path: polylogue/demo/verify.py
@@ -2847,13 +2847,18 @@ files:
     loc: 58
     target: polylogue/storage/artifacts/views.py
     owner: stable
+  - path: polylogue/storage/backup_attestation.py
+    loc: 181
+    target: polylogue/storage/backup_attestation.py
+    owner: storage-root
+    reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_gc.py
     loc: 572
     target: polylogue/storage/blob_gc.py
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_integrity.py
-    loc: 2081
+    loc: 2084
     target: polylogue/storage/blob_integrity.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3308,7 +3313,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 10255
+    loc: 10285
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3424,7 +3429,7 @@ files:
     target: polylogue/storage/sqlite/maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/migration_runner.py
-    loc: 161
+    loc: 565
     target: polylogue/storage/sqlite/migration_runner.py
     owner: stable
   - path: polylogue/storage/sqlite/migrations/__init__.py

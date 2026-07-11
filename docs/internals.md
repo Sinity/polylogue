@@ -94,7 +94,24 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   migrations. Migration SQL lives under
   `storage/sqlite/migrations/{source,user}/NNN_name.sql`, advances
   `PRAGMA user_version` one step at a time, and requires a verified backup
-  manifest containing the affected tier before it runs. Additive means
+  manifest containing the affected tier before it runs. Verification restores
+  the backup into scratch, checks every included SQLite tier and referenced
+  blob, then writes a versioned receipt authenticated by a per-tier HMAC key
+  under the Polylogue XDG state directory. The key path is derived independently
+  from the live archive path and is never copied into the backup. This prevents
+  public backup hashes or a transplanted receipt from impersonating successful
+  verification. It is an artifact-integrity boundary, not protection against
+  hostile arbitrary code running as the same Unix user, which can read the
+  local `0600` key. Every accepted bundle artifact must also be a contained,
+  single-link regular file: symlinks, hardlinks, non-regular files, linked blob
+  ancestry, and a target tier that aliases the live database are rejected so
+  migration cannot mutate its own recovery copy. SQLite `-wal`, `-shm`, and
+  rollback-journal sidecars are forbidden in a verified bundle; checkpointed
+  copies are read in immutable mode, so no unsigned sidecar can change their
+  logical contents. The receipt also binds a closed recursive inventory of
+  every directory and file (except the receipt itself), including auxiliary
+  debt reports, so no undeclared artifact can appear, disappear, or change.
+  Additive means
   `CREATE TABLE`, `CREATE INDEX`, `ADD COLUMN`, and bounded backfills.
   Destructive durable-tier changes require a copy-forward design and explicit
   operator consent.
@@ -120,6 +137,11 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   migrations are allowed only under the numbered migration resource roots, while
   derived-tier upgrade helpers remain forbidden.
 
+- User schema version 5 adds `context_deliveries`, an immutable receipt ledger
+  for the exact context image delivered to an agent, including recipient,
+  actor, run/boundary, included refs, omissions, caveats, and image digest.
+  Existing v4 tiers migrate additively after an authenticated verified-backup
+  receipt; fresh user tiers create the table directly.
 - User schema version 4 adds `user_settings`, a durable key/value table for
   workspace/settings state that is not an epistemic assertion. Existing v3
   user tiers migrate additively after a verified backup manifest; fresh user

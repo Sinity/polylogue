@@ -26,6 +26,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitActio
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
 _ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
@@ -154,23 +155,26 @@ def _create_user_v3(path: Path) -> None:
         )
 
 
-def _write_backup_manifest(path: Path, *, included_tiers: list[str]) -> Path:
-    path.mkdir()
-    manifest_path = path / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "format": "polylogue-backup-v1",
-                "profile": "user_overlays",
-                "included_tiers": included_tiers,
-                "omitted_tiers": [],
-                "backed_up_files": [],
-                "warnings": [],
-            }
-        ),
-        encoding="utf-8",
+def _run_verified_backup_cli(cli_runner: CliRunner, output_dir: Path, *, profile: str) -> Path:
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "backup",
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            profile,
+            "--verify",
+        ],
+        catch_exceptions=False,
     )
-    return manifest_path
+    assert result.exit_code == 0, result.output
+    backup_line = next(line for line in result.output.splitlines() if line.startswith("Backup complete: "))
+    backup_root = Path(backup_line.removeprefix("Backup complete: "))
+    assert (backup_root / "verification-receipt.json").exists()
+    return backup_root / "manifest.json"
 
 
 def _seed_blob_reference_debt(archive_root: Path, source: Path) -> None:
@@ -825,14 +829,14 @@ def test_archive_init_cli_executes_confirmed_initialization(
     ]
 
 
-def test_migrate_tier_cli_applies_user_migration_with_backup_manifest(
+def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
     tmp_path: Path,
 ) -> None:
     user_db = cli_workspace["archive_root"] / "user.db"
     _create_user_v3(user_db)
-    manifest = _write_backup_manifest(tmp_path / "backup", included_tiers=["user.db"])
+    manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="user_overlays")
 
     result = cli_runner.invoke(
         cli,
@@ -855,10 +859,95 @@ def test_migrate_tier_cli_applies_user_migration_with_backup_manifest(
     assert payload["ok"] is True
     assert payload["tier"] == "user"
     assert payload["from_version"] == 3
-    assert payload["to_version"] == 4
-    assert payload["applied_versions"] == [4]
+    assert payload["to_version"] == USER_SCHEMA_VERSION
+    assert payload["applied_versions"] == [4, 5]
+    assert payload["backup_receipt"] == str(manifest.with_name("verification-receipt.json"))
     with sqlite3.connect(user_db) as conn:
         assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='context_deliveries'"
+        ).fetchone()
+
+
+def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    user_db = cli_workspace["archive_root"] / "user.db"
+    _create_user_v3(user_db)
+    backup = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "backup",
+            "--output-dir",
+            str(tmp_path / "backup"),
+            "--profile",
+            "user_overlays",
+        ],
+        catch_exceptions=False,
+    )
+    assert backup.exit_code == 0, backup.output
+    backup_line = next(line for line in backup.output.splitlines() if line.startswith("Backup complete: "))
+    backup_root = Path(backup_line.removeprefix("Backup complete: "))
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "user",
+            "--backup-manifest",
+            str(backup_root / "manifest.json"),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "successful backup verification receipt" in json.loads(result.output)["error"]
+    with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+
+
+def test_migrate_tier_cli_rejects_one_byte_tampered_backup_before_user_version_changes(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    user_db = cli_workspace["archive_root"] / "user.db"
+    _create_user_v3(user_db)
+    manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="user_overlays")
+    copied_tier = manifest.with_name("user.db")
+    copied_bytes = bytearray(copied_tier.read_bytes())
+    copied_bytes[-1] ^= 1
+    copied_tier.write_bytes(copied_bytes)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "user",
+            "--backup-manifest",
+            str(manifest),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "tier artifact hash mismatch" in json.loads(result.output)["error"]
+    with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
 
 
 def test_migrate_tier_cli_refuses_manifest_missing_target_tier(
@@ -868,7 +957,7 @@ def test_migrate_tier_cli_refuses_manifest_missing_target_tier(
 ) -> None:
     user_db = cli_workspace["archive_root"] / "user.db"
     _create_user_v3(user_db)
-    manifest = _write_backup_manifest(tmp_path / "backup", included_tiers=["source.db"])
+    manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="diagnostics_bundle")
 
     result = cli_runner.invoke(
         cli,
@@ -1239,6 +1328,7 @@ def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path)
         "classified_full_count": 0,
         "replayed_logical_source_count": 0,
         "quarantined_raw_count": 0,
+        "adoption_deferred_raw_count": 0,
         "authority_selection_expanded": True,
     }
 

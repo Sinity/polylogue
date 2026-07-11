@@ -21,10 +21,10 @@ over the `CREATE TABLE` statement.
 
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
-| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 6` |
-| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 31` |
+| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 7` |
+| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 32` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
-| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 4` |
+| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 5` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
 
 There is no single global "schema version" number. Each tier is versioned and
@@ -84,7 +84,9 @@ Candidate review uses the closed status vocabulary `candidate`, `accepted`,
 `rejected`, `deferred`, and `superseded`; active assertions are separate
 durable claims and are not returned by candidate-review reads. `index.db.session_tags`
 remains a rebuildable auto-tag/read-model projection; human-owned tag and
-metadata writes do not have separate user-tier tables.
+metadata writes do not have separate user-tier tables. `user_settings` stores
+durable local settings, while `context_deliveries` records exact context-image
+delivery receipts without overloading epistemic assertions.
 
 ### `ops.db` — disposable daemon telemetry
 
@@ -191,26 +193,31 @@ triggers. During bulk ingest these triggers are suspended for performance and
 restored before commit; see [Internals § FTS5 Model](internals.md#fts5-model)
 for the drift-detection and repair behavior.
 
-## Schema Versioning — fresh-only, no upgrade chain
+## Schema Versioning — durability-keyed regimes
 
-Polylogue has **no in-place schema upgrade chain**. On startup each tier's
-on-disk `PRAGMA user_version` is compared against its tier constant:
+On startup each tier's on-disk `PRAGMA user_version` is compared against its
+tier constant:
 
 - **Empty file** (`user_version == 0`): bootstrap fresh.
 - **Version match**: open as-is.
-- **Anything else** (older or newer): the database is **rejected**.
+- **Older durable tier** (`source.db` or `user.db`): ordinary open is rejected;
+  an explicit additive numbered migration may proceed only after a backup was
+  scratch-restored, integrity-checked, and authenticated by the archive's
+  local verification key.
+- **Derived mismatch or newer durable tier**: reject and require rebuild or a
+  newer runtime as appropriate.
 
-A version mismatch is resolved by rebuilding the affected tier from source, not
-by patching the file in place. For index-tier schema bumps, the operator moves
-the index tier aside and re-ingests:
+Derived tiers (`index.db`, `embeddings.db`) have no migration chain. For an
+index-tier schema bump, the operator rebuilds from durable evidence:
 
 ```bash
 polylogue ops reset --index && polylogued run
 ```
 
-Schema bumps are deletes-then-defines edits of the owning tier DDL, never
-deltas. The bootstrap branching that decides fresh-init vs. open vs. reject is
-shared across sync and async backends in
+Durable source/user changes instead use additive SQL under
+`storage/sqlite/migrations/{source,user}/NNN_*.sql`, advancing exactly one
+version per step. The bootstrap branching that decides fresh-init, open,
+migrate, rebuild, or reject is shared across sync and async backends in
 `storage/sqlite/schema_bootstrap.py`. See
 [Internals § Schema Versioning Model](internals.md#schema-versioning-model) and
 [CONTRIBUTING § Schema-Touching Changes](../CONTRIBUTING.md#schema-touching-changes).
