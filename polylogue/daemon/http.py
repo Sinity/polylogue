@@ -3156,7 +3156,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 message_type=self._get_param(params, "message_type"),
             )
         except ExpressionCompileError as exc:
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_query", "message": str(exc)})
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_query", str(exc))
             return
         archive_root = _web_reader_archive_root()
         if archive_root is None:
