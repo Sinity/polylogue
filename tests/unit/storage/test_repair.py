@@ -634,6 +634,154 @@ def test_raw_materialization_replays_parsed_rows_after_interrupted_index_rebuild
     assert "already parsed but not materialized" in result.detail
 
 
+def test_raw_materialization_receipts_partition_terminal_deferred_and_executable(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    decisions = (
+        "selected_baseline",
+        "applied_append",
+        "superseded",
+        "ambiguous",
+        "deferred",
+        None,
+    )
+    raw_rows: list[tuple[object, ...]] = []
+    receipt_rows: list[tuple[object, ...]] = []
+    executable_raw_id = ""
+    for generation, decision in enumerate(decisions, start=1):
+        payload = f'{{"mapping":{{"receipt-{generation}":{{}}}}}}'.encode()
+        raw_id, blob_size = blob_store.write_from_bytes(payload)
+        raw_rows.append(
+            (
+                raw_id,
+                "chatgpt-export",
+                f"receipt-{generation}",
+                f"receipt-{generation}.json",
+                0,
+                bytes.fromhex(raw_id),
+                blob_size,
+                generation,
+            )
+        )
+        if decision is None:
+            executable_raw_id = raw_id
+            continue
+        detail = "ordinary_replay:incomparable_existing_index_state" if decision == "deferred" else "test:terminal"
+        receipt_rows.append(
+            (
+                f"decision-{generation}",
+                raw_id,
+                f"chatgpt-export:receipt-{generation}",
+                f"logical-{generation}",
+                f"revision-{generation}",
+                generation,
+                decision,
+                detail,
+                generation,
+            )
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            raw_rows,
+        )
+        source_conn.commit()
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.executemany(
+            """
+            INSERT INTO raw_revision_applications (
+                decision_id, raw_id, session_id, logical_source_key,
+                source_revision, acquisition_generation, decision, detail,
+                decided_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            receipt_rows,
+        )
+        index_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(config)
+
+    assert candidates.raw_ids == [executable_raw_id]
+    assert candidates.adoption_deferred == 1
+
+
+def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    payload = b"""{
+      "id": "fixed-point",
+      "title": "fixed point",
+      "create_time": 1,
+      "update_time": 2,
+      "mapping": {
+        "message-1": {
+          "id": "message-1",
+          "parent": null,
+          "children": [],
+          "message": {
+            "id": "message-1",
+            "author": {"role": "user"},
+            "create_time": 2,
+            "content": {"content_type": "text", "parts": ["fixed"]}
+          }
+        }
+      },
+      "current_node": "message-1"
+    }"""
+    raw_id, blob_size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "chatgpt-export",
+                "fixed-point",
+                "fixed-point.json",
+                0,
+                bytes.fromhex(raw_id),
+                blob_size,
+                1,
+            ),
+        )
+        source_conn.commit()
+
+    first = repair_mod.repair_raw_materialization(config)
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        receipts_after_first = index_conn.execute(
+            "SELECT decision_id, raw_id, decision FROM raw_revision_applications ORDER BY decision_id"
+        ).fetchall()
+    second = repair_mod.repair_raw_materialization(config)
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        receipts_after_second = index_conn.execute(
+            "SELECT decision_id, raw_id, decision FROM raw_revision_applications ORDER BY decision_id"
+        ).fetchall()
+
+    assert first.success is True
+    assert first.repaired_count == 1
+    assert first.metrics["raw_materialization_remaining_candidate_count"] == 0.0
+    assert second.success is True
+    assert second.repaired_count == 0
+    assert second.metrics["raw_materialization_candidate_count"] == 0.0
+    assert receipts_after_second == receipts_after_first
+    assert receipts_after_first
+
+
 def test_raw_materialization_uses_authority_replay_not_legacy_batch_parser(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
