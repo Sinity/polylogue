@@ -42,7 +42,7 @@ BASE_TEMPLATE = """<!DOCTYPE html>
         </main>
     </div>
     <footer class="site-footer">
-        <span>Polylogue — the flight recorder for AI work</span>
+        <span>Polylogue — local evidence for AI work</span>
         <a href="https://github.com/Sinity/polylogue">GitHub</a>
     </footer>
     <script>
@@ -66,7 +66,7 @@ HOME_TEMPLATE = """{% extends "base.html" %}
 {% block content %}
 <div class="home-hero">
     <p class="eyebrow">Local-first · cross-provider · evidence-addressable</p>
-    <h1>The flight recorder for AI work</h1>
+    <h1>Keep the receipts for AI work</h1>
     <p class="tagline">Search every provider. Read tool activity as work, not chat. Audit claims against outcomes. Resume from reviewed evidence.</p>
     <div class="hero-command"><code>nix run github:Sinity/polylogue -- demo tour</code></div>
     <div class="hero-stats" aria-label="Local archive snapshot">
