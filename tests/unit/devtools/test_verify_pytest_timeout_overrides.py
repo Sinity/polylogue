@@ -56,6 +56,10 @@ def _run_registered(root: Path, capsys: pytest.CaptureFixture[str]) -> tuple[int
         ("import pytest as pt\n\n@pt.mark.timeout(0)\ndef test_target():\n    pass\n", "must be positive"),
         ("import pytest\n\n@pytest.mark.timeout(None)\nclass TestTarget:\n    pass\n", "unbounded"),
         ("import pytest\n\npytestmark = pytest.mark.timeout(None)\ndef test_target():\n    pass\n", "unbounded"),
+        (
+            "import pytest\n\npytestmark = []\npytestmark += [pytest.mark.timeout(None)]\ndef test_target():\n    pass\n",
+            "unbounded",
+        ),
     ],
 )
 def test_registered_verifier_rejects_invalid_decorator_overrides(

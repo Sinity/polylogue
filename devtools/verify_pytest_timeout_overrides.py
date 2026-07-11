@@ -287,7 +287,7 @@ def _scan_python(
     assignments = _module_assignments(tree)
     if scan_decorators:
         for top_level in tree.body:
-            if not isinstance(top_level, (ast.Assign, ast.AnnAssign)):
+            if not isinstance(top_level, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
                 continue
             targets = top_level.targets if isinstance(top_level, ast.Assign) else [top_level.target]
             value = top_level.value
