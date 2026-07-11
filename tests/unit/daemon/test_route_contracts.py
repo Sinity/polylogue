@@ -69,8 +69,10 @@ def test_stable_routes_have_explicit_auth_and_response_contracts() -> None:
     assert stable_routes
     for route in stable_routes:
         assert route.auth_policy in {
-            "bearer_if_configured",
-            "bearer_and_same_origin",
+            "credential_if_configured",
+            "credential_and_same_origin",
+            "bearer_if_configured_and_same_origin",
+            "first_party_same_origin",
             "unauthenticated_loopback",
             "observability_flag_then_loopback_or_bearer",
         }
@@ -82,8 +84,14 @@ def test_stable_user_overlay_mutations_use_shared_envelope_contract() -> None:
 
     for route in stable_route_contracts():
         if route.kind == "user_overlay" and route.method in {"POST", "DELETE"}:
-            assert route.auth_policy == "bearer_and_same_origin"
+            assert route.auth_policy == "credential_and_same_origin"
             assert route.response_contract == "mutation envelope"
+
+
+def test_archive_control_mutations_are_bearer_only() -> None:
+    for route in stable_route_contracts():
+        if route.kind == "maintenance" and route.method == "POST":
+            assert route.auth_policy == "bearer_if_configured_and_same_origin"
 
 
 def test_evidence_routes_are_published_as_stable_api() -> None:
@@ -94,12 +102,12 @@ def test_evidence_routes_are_published_as_stable_api() -> None:
 
     assert assertion_route is not None
     assert assertion_route.stability == "stable"
-    assert assertion_route.auth_policy == "bearer_if_configured"
+    assert assertion_route.auth_policy == "credential_if_configured"
     assert assertion_route.response_contract == "AssertionClaimListPayload"
 
     assert read_route is not None
     assert read_route.stability == "stable"
-    assert read_route.auth_policy == "bearer_if_configured"
+    assert read_route.auth_policy == "credential_if_configured"
     assert read_route.response_contract == "SessionReadViewEnvelope"
 
 
@@ -120,41 +128,55 @@ def test_read_view_execution_route_is_published_as_stable_api() -> None:
         ("GET", "/", "/", "browser_shell", "unauthenticated_loopback"),
         ("GET", "/healthz/live", "/healthz/live", "operational", "unauthenticated_loopback"),
         ("GET", "/metrics", "/metrics", "operational", "unauthenticated_loopback"),
-        ("GET", "/api/sessions", "/api/sessions", "read_query", "bearer_if_configured"),
-        ("GET", "/api/query-units", "/api/query-units", "read_query", "bearer_if_configured"),
-        ("GET", "/api/archive-debt", "/api/archive-debt", "operational", "bearer_if_configured"),
-        ("GET", "/api/dev-loop", "/api/dev-loop", "operational", "bearer_if_configured"),
-        ("GET", "/api/agents/coordination", "/api/agents/coordination", "operational", "bearer_if_configured"),
-        ("GET", "/api/import/explain", "/api/import/explain", "operational", "bearer_if_configured"),
-        ("GET", "/api/assertions", "/api/assertions", "user_overlay", "bearer_if_configured"),
+        (
+            "POST",
+            "/api/web-auth/session",
+            "/api/web-auth/session",
+            "browser_shell",
+            "first_party_same_origin",
+        ),
+        ("GET", "/api/sessions", "/api/sessions", "read_query", "credential_if_configured"),
+        ("GET", "/api/query-units", "/api/query-units", "read_query", "credential_if_configured"),
+        ("GET", "/api/archive-debt", "/api/archive-debt", "operational", "credential_if_configured"),
+        ("GET", "/api/dev-loop", "/api/dev-loop", "operational", "credential_if_configured"),
+        ("GET", "/api/agents/coordination", "/api/agents/coordination", "operational", "credential_if_configured"),
+        ("GET", "/api/import/explain", "/api/import/explain", "operational", "credential_if_configured"),
+        ("GET", "/api/assertions", "/api/assertions", "user_overlay", "credential_if_configured"),
         (
             "GET",
             "/api/sessions/codex-session:abc/messages",
             "/api/sessions/:id/messages",
             "read_detail",
-            "bearer_if_configured",
+            "credential_if_configured",
         ),
         (
             "GET",
             "/api/sessions/codex-session:abc/read",
             "/api/sessions/:id/read",
             "read_detail",
-            "bearer_if_configured",
+            "credential_if_configured",
         ),
         (
             "GET",
             "/api/sessions/codex-session:abc/provenance",
             "/api/sessions/:id/provenance",
             "read_detail",
-            "bearer_if_configured",
+            "credential_if_configured",
         ),
-        ("POST", "/api/user/marks", "/api/user/marks", "user_overlay", "bearer_and_same_origin"),
+        ("POST", "/api/user/marks", "/api/user/marks", "user_overlay", "credential_and_same_origin"),
+        (
+            "POST",
+            "/api/reset",
+            "/api/reset",
+            "maintenance",
+            "bearer_if_configured_and_same_origin",
+        ),
         (
             "DELETE",
             "/api/user/saved-views/view-1",
             "/api/user/saved-views/:id",
             "user_overlay",
-            "bearer_and_same_origin",
+            "credential_and_same_origin",
         ),
     ],
 )
@@ -178,7 +200,7 @@ def test_authenticated_get_security_matrix_routes_are_classified(path: str) -> N
 
     route = route_contract_for("GET", path)
     assert route is not None
-    assert route.auth_policy == "bearer_if_configured"
+    assert route.auth_policy == "credential_if_configured"
 
 
 @pytest.mark.parametrize("path", ENDPOINTS_POST)
@@ -187,7 +209,10 @@ def test_post_security_matrix_routes_are_mutation_classified(path: str) -> None:
 
     route = route_contract_for("POST", path)
     assert route is not None
-    assert route.auth_policy == "bearer_and_same_origin"
+    assert route.auth_policy in {
+        "credential_and_same_origin",
+        "bearer_if_configured_and_same_origin",
+    }
 
 
 @pytest.mark.parametrize("path", ENDPOINTS_DELETE)
@@ -196,7 +221,7 @@ def test_delete_security_matrix_routes_are_mutation_classified(path: str) -> Non
 
     route = route_contract_for("DELETE", path)
     assert route is not None
-    assert route.auth_policy == "bearer_and_same_origin"
+    assert route.auth_policy == "credential_and_same_origin"
 
 
 def test_unknown_route_has_no_contract() -> None:

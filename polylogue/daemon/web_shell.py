@@ -436,6 +436,7 @@ __WORKSPACE_HTML__
     <span class="hint"><kbd>Esc</kbd> clear</span>
     <span class="hint"><kbd>?</kbd> help</span>
     <span class="spacer" style="flex:1"></span>
+    <span id="auth-state" class="hint" role="status" aria-live="polite"></span>
     <span id="footer-result" style="font-size:10px"></span>
   </div>
 </div>
@@ -521,6 +522,7 @@ var state = {
   // records route, status, duration, request id, and a bounded response summary
   // without storing raw archive payloads.
   apiDebug: {counter: 0, last: null},
+  webAuth: {state: 'uninitialized', expiresAt: '', bootstrapPromise: null, lastFailure: ''},
   // IA redesign (evidence-cockpit): the active primary-nav verb. 'search' is
   // the historical single-workbench behavior (sidebar + landing/session
   // detail + inspector); 'analyze'/'audit'/'remember' swap #main for an
@@ -572,14 +574,81 @@ function rememberApiDebug(entry) {
   renderApiDebugChip();
 }
 
+var WEB_AUTH_FAILURES = [
+  'web_credential_missing',
+  'web_credential_invalid',
+  'web_credential_expired',
+  'web_credential_revoked',
+  'web_credential_wrong_origin',
+  'web_credential_insufficient_scope'
+];
+
+function setWebAuthState(next, detail) {
+  state.webAuth.state = next;
+  if (next.indexOf('web_credential_') === 0) state.webAuth.lastFailure = next;
+  if (detail && detail.expires_at) state.webAuth.expiresAt = detail.expires_at;
+  document.documentElement.dataset.webAuthState = next;
+  var chip = document.getElementById('auth-state');
+  if (chip) chip.textContent = next === 'ready' ? 'auth: ready' : 'auth: ' + next.replace('web_credential_', '');
+  window.dispatchEvent(new CustomEvent('polylogue:web-auth-state', {
+    detail: {state: next, recoverable: WEB_AUTH_FAILURES.indexOf(next) >= 0}
+  }));
+}
+
+async function bootstrapWebCredential() {
+  if (state.webAuth.bootstrapPromise) return state.webAuth.bootstrapPromise;
+  setWebAuthState('bootstrapping');
+  state.webAuth.bootstrapPromise = (async function() {
+    var response = await fetch('/api/web-auth/session', {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      headers: {'X-Polylogue-Web-Client': '1'}
+    });
+    var payload = {};
+    try { payload = await response.json(); } catch(_) {}
+    if (!response.ok) {
+      var code = payload.error || 'web_credential_missing';
+      setWebAuthState(code);
+      var error = new Error(code);
+      error.status = response.status;
+      error.code = code;
+      throw error;
+    }
+    var credential = payload.credential || {};
+    setWebAuthState(credential.state || 'ready', credential);
+    return credential;
+  })();
+  try {
+    return await state.webAuth.bootstrapPromise;
+  } finally {
+    state.webAuth.bootstrapPromise = null;
+  }
+}
+
+async function ensureWebCredential() {
+  var expiresAt = state.webAuth.expiresAt ? Date.parse(state.webAuth.expiresAt) : 0;
+  if (state.webAuth.state === 'ready' && (!expiresAt || expiresAt - Date.now() > 1000)) return;
+  await bootstrapWebCredential();
+}
+
 async function requestJSON(url, opts) {
   opts = opts || {};
+  if (!opts.skipWebAuth) await ensureWebCredential();
   var method = opts.method || 'GET';
   var requestId = nextApiRequestId();
-  var headers = Object.assign({'X-Request-ID': requestId}, opts.headers || {});
-  var requestOpts = Object.assign({}, opts, {method: method, headers: headers});
+  var headers = Object.assign({'X-Request-ID': requestId, 'X-Polylogue-Web-Client': '1'}, opts.headers || {});
+  var requestOpts = Object.assign({}, opts, {
+    method: method,
+    headers: headers,
+    credentials: 'same-origin',
+    referrerPolicy: 'no-referrer'
+  });
   var timeoutMs = Number(opts.timeoutMs || 0);
   delete requestOpts.timeoutMs;
+  delete requestOpts.skipWebAuth;
+  delete requestOpts.webAuthRetried;
   var timeoutId = null;
   var timedOut = false;
   var relayAbort = null;
@@ -622,6 +691,8 @@ async function requestJSON(url, opts) {
   var duration = Math.round(nowMs() - started);
   var responseRequestId = response.headers && response.headers.get ? response.headers.get('X-Request-ID') : '';
   var summary = summarizeApiBody(text);
+  var responsePayload = null;
+  try { responsePayload = text ? JSON.parse(text) : {}; } catch(_) {}
   rememberApiDebug({
     ok: response.ok,
     method: method,
@@ -633,15 +704,24 @@ async function requestJSON(url, opts) {
     response_summary: summary
   });
   if (!response.ok) {
+    var authCode = responsePayload && responsePayload.error;
+    if (WEB_AUTH_FAILURES.indexOf(authCode) >= 0) {
+      setWebAuthState(authCode);
+      if (authCode !== 'web_credential_wrong_origin' && !opts.webAuthRetried) {
+        await bootstrapWebCredential();
+        return requestJSON(url, Object.assign({}, opts, {webAuthRetried: true}));
+      }
+    }
     var error = new Error(String(response.status));
     error.status = response.status;
+    error.code = authCode || '';
     error.request_id = requestId;
     error.response_summary = summary;
     throw error;
   }
   if (!text) return {};
   try {
-    return JSON.parse(text);
+    return responsePayload || JSON.parse(text);
   } catch(e) {
     rememberApiDebug({
       ok: false,

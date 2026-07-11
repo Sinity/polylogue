@@ -34,6 +34,25 @@ devtools verify --all
 nix flake check
 ```
 
+### First-party browser credential journey
+
+The browser security journey launches the production daemon against a fresh,
+deterministic demo archive, then exercises list/read, user-state mutation, SSE
+reconnect, credential lifecycle states, and secret-leak sentinels. Install the
+locked Node dependencies once, install Chromium when the host has no compatible
+system Chrome, and run the dedicated suite:
+
+```bash
+cd webui
+npm ci
+npm run install:e2e-browser  # CI uses install:e2e-browser:ci
+npm run test:e2e
+```
+
+CI runs this journey in the `web-first-party-auth` job. Local NixOS development
+uses the system Chrome path discovered by `webui/playwright.config.ts`, so the
+browser install step is normally unnecessary after `npm ci`.
+
 `devtools verify` uses pytest-testmon for per-test affected selection. The
 seed command records `.cache/testmon/testmondata` plus
 `.cache/testmon/seed.json`; those files are local generated state and are not

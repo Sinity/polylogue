@@ -48,3 +48,80 @@ def test_openapi_read_view_route_uses_shared_http_capability_contract() -> None:
     assert "context-image" in read_route["description"]
     assert "max_tokens" in parameters
     assert "message_role" not in parameters
+
+
+def test_openapi_publishes_typed_first_party_credential_contract() -> None:
+    """A generated browser client can bootstrap without shell-owned globals."""
+
+    document = _build_openapi_document()
+    lifecycle = document["paths"]["/api/web-auth/session"]
+    schemas = document["components"]["schemas"]
+
+    assert lifecycle["post"]["operationId"] == "bootstrapWebCredential"
+    assert lifecycle["post"]["security"] == []
+    assert lifecycle["post"]["responses"]["201"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/WebCredentialBootstrapPayload"
+    }
+    assert lifecycle["post"]["responses"]["400"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/QueryErrorPayload"
+    }
+    assert lifecycle["delete"]["operationId"] == "revokeWebCredential"
+    assert lifecycle["delete"]["security"] == [{"webCredentialCookie": []}]
+    assert lifecycle["delete"]["responses"]["400"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/QueryErrorPayload"
+    }
+    assert lifecycle["delete"]["responses"]["200"]["headers"]["Set-Cookie"]["schema"]["writeOnly"] is True
+    assert document["components"]["securitySchemes"]["machineBearer"] == {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque",
+        "description": "Machine-client token configured by --api-auth-token.",
+    }
+    assert document["components"]["securitySchemes"]["webCredentialCookie"] == {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "polylogue_web_credential",
+        "description": (
+            "Short-lived, origin-bound HttpOnly credential issued by bootstrapWebCredential. "
+            "Browser clients use credentials: same-origin and never read the cookie value."
+        ),
+    }
+    assert {
+        "WebCredentialBootstrapPayload",
+        "WebCredentialRevocationPayload",
+        "WebCredentialFailurePayload",
+        "WebCredentialReadyPayload",
+        "QueryErrorPayload",
+    }.issubset(schemas)
+    failure_states = schemas["WebCredentialFailurePayload"]["properties"]["error"]["enum"]
+    assert "web_credential_expired" in failure_states
+    assert "web_credential_wrong_origin" in failure_states
+
+    expected_read_security: list[dict[str, list[str]]] = [
+        {"machineBearer": []},
+        {"webCredentialCookie": []},
+    ]
+    protected_operations = [
+        document["paths"]["/api/sessions"]["get"],
+        document["paths"]["/api/query-units"]["get"],
+        document["paths"]["/api/sessions/{session_id}/read"]["get"],
+        document["paths"]["/api/assertions"]["get"],
+    ]
+    assert all(operation["security"] == expected_read_security for operation in protected_operations)
+    assert all(
+        operation["responses"]["400"]["content"]["application/json"]["schema"]
+        == {"$ref": "#/components/schemas/QueryErrorPayload"}
+        for operation in protected_operations
+    )
+    expected_auth_errors = [
+        {"$ref": "#/components/schemas/QueryErrorPayload"},
+        {"$ref": "#/components/schemas/WebCredentialFailurePayload"},
+    ]
+    for operation in protected_operations:
+        for status in ("401", "403"):
+            response = operation["responses"][status]
+            assert response["content"]["application/json"]["schema"]["anyOf"] == expected_auth_errors
+            assert (
+                "web_credential_wrong_origin"
+                in response["headers"]["X-Polylogue-Web-Credential-State"]["schema"]["enum"]
+            )

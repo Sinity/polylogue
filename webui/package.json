@@ -1,0 +1,14 @@
+{
+  "name": "polylogue-webui",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "install:e2e-browser": "playwright install chromium",
+    "install:e2e-browser:ci": "playwright install --with-deps chromium",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "typescript": "5.9.3"
+  }
+}

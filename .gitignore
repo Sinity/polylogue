@@ -55,6 +55,9 @@ AGENTS.override.md
 # Browser extension deps (installed per-developer)
 browser-extension/node_modules/
 browser-extension/package-lock.json
+webui/node_modules/
+webui/playwright-report/
+webui/test-results/
 
 # Local tooling/session artifacts
 .cclsp.json

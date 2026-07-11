@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+from polylogue.daemon.web_auth import WebCredentialScope
 
 
 class _RecordingBridge:
@@ -26,11 +27,20 @@ class _RecordingBridge:
 
 
 def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
+    def allow_auth(required_scope: WebCredentialScope = "read", *, allow_web: bool = True) -> bool:
+        del required_scope, allow_web
+        return True
+
+    def allow_host(*, credential_request: bool = False) -> bool:
+        del credential_request
+        return True
+
     handler = object.__new__(DaemonAPIHandler)
     handler.server = SimpleNamespace(write_bridge=_RecordingBridge(timeline))  # type: ignore[assignment]
+    handler.path = "/" + "/".join(path)
     handler._parse_path = lambda: (path, {})  # type: ignore[method-assign]
-    handler._check_host_admission = lambda: True  # type: ignore[method-assign]
-    handler._check_auth = lambda: True  # type: ignore[method-assign]
+    handler._check_host_admission = allow_host  # type: ignore[method-assign]
+    handler._check_auth = allow_auth  # type: ignore[method-assign]
     handler._check_cross_origin = lambda: True  # type: ignore[method-assign]
     handler._send_error = lambda *_args: timeline.append("error")  # type: ignore[method-assign]
     return handler
