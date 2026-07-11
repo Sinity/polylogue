@@ -124,8 +124,14 @@ function makeDom(adapter) {
   return dom;
 }
 
-function installBridge(adapter, source = bridgeSource) {
+function installBridge(adapter, source = bridgeSource, { bootstrapToken = null } = {}) {
   const dom = makeDom(adapter);
+  if (bootstrapToken) {
+    const bootstrap = dom.window.document.createElement("script");
+    bootstrap.id = "client-bootstrap";
+    bootstrap.textContent = JSON.stringify({ session: { accessToken: bootstrapToken } });
+    dom.window.document.body.appendChild(bootstrap);
+  }
   const pending = new Map();
   const posted = [];
   Object.defineProperty(dom.window, "postMessage", {
@@ -287,13 +293,37 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
     const authCalls = adapter.calls.filter((call) => call.url.pathname === "/api/auth/session");
     expect(metadataCalls).toHaveLength(2);
     expect(authorizationHeader(metadataCalls[0].options)).toBe(`Bearer ${bearerToken}`);
+    expect(metadataCalls[0].options.credentials).toBe("include");
+    expect(metadataCalls[0].url.searchParams.get("message_id")).toBe("assistant-message-1");
+    expect(metadataCalls[0].url.searchParams.get("sandbox_path")).toBe("/mnt/data/kit.zip");
     expect(signedCalls).toHaveLength(2);
     expect(authorizationHeader(signedCalls[0].options)).toBe(null);
     expect(signedCalls[0].options.credentials).toBe("omit");
     expect(authCalls).toHaveLength(1);
+    expect(authCalls[0].options.credentials).toBe("include");
+    expect(authorizationHeader(authCalls[0].options)).toBe(null);
     const disclosed = JSON.stringify(harness.posted);
     expect(disclosed).not.toContain(bearerToken);
     expect(disclosed).not.toContain("synthetic-signed-secret");
+  });
+
+  it("prefers the current session token over a stale legacy bootstrap token", async () => {
+    const adapter = syntheticEndpointAdapter();
+    const harness = installBridge(adapter, bridgeSource, { bootstrapToken: "stale-bootstrap-token" });
+
+    await expect(harness.requestAsset()).resolves.toMatchObject({ status: "acquired" });
+    const metadataCall = adapter.calls.find((call) => call.url.pathname.endsWith("/interpreter/download"));
+    expect(authorizationHeader(metadataCall.options)).toBe(`Bearer ${bearerToken}`);
+    expect(adapter.calls.filter((call) => call.url.pathname === "/api/auth/session")).toHaveLength(1);
+  });
+
+  it("falls back to the trusted bootstrap token when the session endpoint has none", async () => {
+    const adapter = syntheticEndpointAdapter({ authStatus: 401, authBody: { detail: "Unauthorized" } });
+    const harness = installBridge(adapter, bridgeSource, { bootstrapToken: bearerToken });
+
+    await expect(harness.requestAsset()).resolves.toMatchObject({ status: "acquired" });
+    const metadataCall = adapter.calls.find((call) => call.url.pathname.endsWith("/interpreter/download"));
+    expect(authorizationHeader(metadataCall.options)).toBe(`Bearer ${bearerToken}`);
   });
 
   it("rejects a declared body over the per-request cap before publishing bytes", async () => {

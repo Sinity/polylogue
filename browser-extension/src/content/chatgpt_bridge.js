@@ -72,13 +72,15 @@
     }
   }
 
+  async function fetchCurrentAccessToken() {
+    const sessionToken = await fetchSessionAccessToken().catch(() => null);
+    return sessionToken || bootstrapAccessToken();
+  }
+
   function resolveAccessToken() {
-    const bootstrapToken = bootstrapAccessToken();
-    if (bootstrapToken) return Promise.resolve(bootstrapToken);
     if (Date.now() < cachedAccessTokenUntil) return Promise.resolve(cachedAccessToken);
     if (accessTokenPromise) return accessTokenPromise;
-    accessTokenPromise = fetchSessionAccessToken()
-      .catch(() => null)
+    accessTokenPromise = fetchCurrentAccessToken()
       .then((token) => {
         cachedAccessToken = token;
         cachedAccessTokenUntil = Date.now() + accessTokenCacheTtlMs;
