@@ -9,6 +9,9 @@
   },
   "claim": {
     "declared_before_execution": true,
+    "receipts": [
+      "artifact:d4-behavioral-archaeology-predeclaration"
+    ],
     "scope": "the committed 11-session seed fixture and recorded commands",
     "statement": "The recorded six-query run exercises the documented query primitives against the deterministic demo archive.",
     "status": "supported"
@@ -93,7 +96,16 @@
       "description": "Committed evidence rows and references for this packet.",
       "kind": "artifact",
       "ref": "artifact:d4-behavioral-archaeology-evidence",
-      "resolved": true
+      "resolved": true,
+      "sha256": "5437f3c0dd75ba2e7f190b6397f3b467bbd2f9879fc8efa694c0745a8d211e49"
+    },
+    {
+      "artifact_path": "PROMPT.md",
+      "description": "The committed prompt that states the packet claim before execution.",
+      "kind": "artifact",
+      "ref": "artifact:d4-behavioral-archaeology-predeclaration",
+      "resolved": true,
+      "sha256": "25ca56325470a4a7ab8b3cc8a99d9c7a4758842cdf17d8de6a52ab4dfedf6fd3"
     }
   ],
   "reproduction": {

@@ -1,10 +1,10 @@
 """Demo Packet v2 validation and registry policy (polylogue-212.12).
 
-The original Demo Finding Packet established a uniform directory shape.  V2
+The original Demo Finding Packet established a uniform directory shape. V2
 adds an epistemic contract: a demo is not conforming unless it predeclares one
-primary construct, an independently checkable oracle, a baseline, negative and
-missing-evidence controls, an explicit falsifier, resolvable receipts, and
-bounded non-claims.
+primary construct and a receipt-backed claim, provides an independently
+checkable oracle, baseline, negative and missing-evidence controls, explicit
+falsifier, content-bound receipts, and bounded non-claims.
 
 The normative schema lives at ``docs/schemas/demo-packet-v2.schema.json``.
 This module intentionally keeps the existing human packet files too: JSON is
@@ -197,7 +197,8 @@ def _validate_receipts(packet_dir: Path, payload: object) -> tuple[str, ...]:
             errors.append(f"receipt[{index}] artifact missing: {artifact.relative_to(packet_dir.resolve())}")
             continue
         try:
-            content = artifact.read_text(encoding="utf-8")
+            artifact_bytes = artifact.read_bytes()
+            content = artifact_bytes.decode("utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             errors.append(f"receipt[{index}] artifact unreadable: {exc}")
             continue
@@ -207,7 +208,7 @@ def _validate_receipts(packet_dir: Path, payload: object) -> tuple[str, ...]:
             )
         expected_sha = raw_receipt.get("sha256")
         if isinstance(expected_sha, str):
-            actual_sha = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            actual_sha = hashlib.sha256(artifact_bytes).hexdigest()
             if actual_sha != expected_sha:
                 errors.append(
                     f"receipt[{index}] sha256 mismatch for {artifact.name}: expected {expected_sha}, got {actual_sha}"
@@ -218,9 +219,96 @@ def _validate_receipts(packet_dir: Path, payload: object) -> tuple[str, ...]:
     return tuple(errors)
 
 
-def _report_has_section(report_text: str, section: str) -> bool:
-    normalized = report_text.casefold()
-    return f"## {section.casefold()}" in normalized or f"# {section.casefold()}" in normalized
+def _canonical_report_heading(section: str) -> str:
+    return f"## {section[0].upper()}{section[1:]}"
+
+
+def _report_headings(report_text: str) -> tuple[str, ...]:
+    """Return Markdown headings outside fenced code, preserving exact bytes."""
+
+    headings: list[str] = []
+    fence: str | None = None
+    for line in report_text.splitlines():
+        stripped = line.lstrip()
+        marker = stripped[:3]
+        if marker in {"```", "~~~"}:
+            if fence is None:
+                fence = marker
+            elif fence == marker:
+                fence = None
+            continue
+        if fence is None and line.startswith("#"):
+            headings.append(line)
+    return tuple(headings)
+
+
+def _validate_report_sections(report_text: str) -> tuple[str, ...]:
+    """Require each canonical level-two heading exactly once and in order."""
+
+    headings = _report_headings(report_text)
+    malformed: list[str] = []
+    positions: list[int] = []
+    for section in REPORT_SECTION_ORDER:
+        canonical = _canonical_report_heading(section)
+        matches = [index for index, heading in enumerate(headings) if heading == canonical]
+        if len(matches) != 1:
+            malformed.append(section)
+        else:
+            positions.append(matches[0])
+    if len(positions) == len(REPORT_SECTION_ORDER) and positions != sorted(positions):
+        malformed.append("section-order")
+    return tuple(malformed)
+
+
+def _duplicate_strings(values: Iterable[object]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        if value in seen:
+            duplicates.add(value)
+        seen.add(value)
+    return tuple(sorted(duplicates))
+
+
+def _validate_semantic_consistency(payload: object) -> tuple[str, ...]:
+    """Check cross-field invariants that JSON Schema cannot state clearly."""
+
+    if not isinstance(payload, Mapping):
+        return ()
+    errors: list[str] = []
+
+    falsifier = payload.get("falsifier")
+    if isinstance(falsifier, Mapping):
+        triggered = falsifier.get("triggered")
+        result = falsifier.get("result")
+        if triggered is True and result != "fail":
+            errors.append("falsifier.triggered=true requires falsifier.result='fail'")
+        if result == "fail" and triggered is not True:
+            errors.append("falsifier.result='fail' requires falsifier.triggered=true")
+        if result == "pass" and triggered is not False:
+            errors.append("falsifier.result='pass' requires falsifier.triggered=false")
+
+    controls = payload.get("controls")
+    if isinstance(controls, Mapping):
+        control_ids: list[object] = []
+        for lane in ("negative", "missing_evidence"):
+            raw_controls = controls.get(lane)
+            if isinstance(raw_controls, list):
+                control_ids.extend(control.get("id") for control in raw_controls if isinstance(control, Mapping))
+        for duplicate in _duplicate_strings(control_ids):
+            errors.append(f"control id is duplicated across packet controls: {duplicate!r}")
+
+    results = payload.get("results")
+    if isinstance(results, Mapping):
+        measurements = results.get("measurements")
+        if isinstance(measurements, list):
+            names = [measurement.get("name") for measurement in measurements if isinstance(measurement, Mapping)]
+            for duplicate in _duplicate_strings(names):
+                errors.append(f"measurement name is duplicated: {duplicate!r}")
+
+    return tuple(errors)
 
 
 def validate_packet(packet_dir: Path, *, schema_path: Path = DEFAULT_SCHEMA_PATH) -> PacketValidationResult:
@@ -248,6 +336,7 @@ def validate_packet(packet_dir: Path, *, schema_path: Path = DEFAULT_SCHEMA_PATH
         else:
             schema_errors = _validate_schema(packet_payload, schema_path=schema_path)
             receipt_errors = _validate_receipts(packet_dir, packet_payload)
+            errors.extend(_validate_semantic_consistency(packet_payload))
 
     finding_path = packet_dir / "finding.yaml"
     if finding_path.exists():
@@ -257,9 +346,7 @@ def validate_packet(packet_dir: Path, *, schema_path: Path = DEFAULT_SCHEMA_PATH
     report_path = packet_dir / "report.md"
     if report_path.exists():
         report_text = report_path.read_text(encoding="utf-8")
-        malformed_sections.extend(
-            section for section in REPORT_SECTION_ORDER if not _report_has_section(report_text, section)
-        )
+        malformed_sections.extend(_validate_report_sections(report_text))
 
     nonclaims_path = packet_dir / "NON-CLAIMS.md"
     if nonclaims_path.exists() and not nonclaims_path.read_text(encoding="utf-8").strip():

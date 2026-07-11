@@ -12,7 +12,8 @@
     "statement": "A complete Demo Packet v2 passes schema validation.",
     "declared_before_execution": true,
     "scope": "this committed validator fixture only",
-    "status": "supported"
+    "status": "supported",
+    "receipts": ["artifact:fixture-receipt"]
   },
   "oracle": {
     "independent": true,
@@ -67,7 +68,8 @@
     "kind": "artifact",
     "description": "The fixture receipt used by validator tests.",
     "artifact_path": "receipt.json",
-    "resolved": true
+    "resolved": true,
+    "sha256": "d25cfbf1587e267e9c82d5667ed43cd6b6d668e899e73976757a8e616164d95c"
   }],
   "non_claims": ["This fixture does not prove any Polylogue archive capability."],
   "reproduction": {

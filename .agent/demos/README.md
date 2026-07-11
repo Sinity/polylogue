@@ -9,7 +9,7 @@ better demo supersedes them.
 ## Current Entries
 
 - `_packet-contract-stub` — _Packet Contract Stub
-  - files: 7 (4 readable)
+  - files: 9 (6 readable)
 - `agent-affordance-usage` — Agent Affordance Usage
   - readme: `agent-affordance-usage/README.md`
   - files: 13 (13 readable)
@@ -17,13 +17,13 @@ better demo supersedes them.
   - readme: `agent-forensics/README.md`
   - files: 9 (9 readable)
 - `anti-demo-multi-source-reconstruction` — Anti Demo Multi Source Reconstruction
-  - files: 7 (4 readable)
+  - files: 9 (6 readable)
 - `attachment-acquisition-census` — Attachment Acquisition Census
   - readme: `attachment-acquisition-census/README.md`
   - analysis: `attachment-acquisition-census/ANALYSIS.md`
   - files: 5 (4 readable)
 - `d4-behavioral-archaeology` — D4 Behavioral Archaeology
-  - files: 7 (4 readable)
+  - files: 9 (6 readable)
 - `uplift-two-arm` — Handoff-Pack Uplift Experiment
   - readme: `uplift-two-arm/README.md`
   - files: 20 (20 readable)
