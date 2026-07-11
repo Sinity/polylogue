@@ -13,6 +13,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, PasteBoundary, Provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
+from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
 
 from ..base import (
     ParsedContentBlock,
@@ -39,6 +40,9 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # a real content hash (boundary_state=hash_only); batch re-ingest can only
 # recover the marker's exact location, so it stamps the span as PROJECTED.
 _PASTE_MARKER_RE = re.compile(r"\[Pasted text #(\d+)[^\]]*\]")
+_BACKGROUND_TASK_ID_METADATA_KEY = "claude_background_task_id"
+_BACKGROUND_COMPLETION_STATUS_METADATA_KEY = "claude_background_completion_status"
+_BACKGROUND_OUTPUT_FILE_METADATA_KEY = "claude_background_output_file"
 
 
 def _detect_paste_spans(text: str | None) -> list[ParsedPasteEvidence]:
@@ -234,6 +238,112 @@ def _string_field(item: dict[str, object], key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _background_task_id(item: dict[str, object]) -> str | None:
+    tool_result = item.get("toolUseResult")
+    if not isinstance(tool_result, dict):
+        return None
+    task_id = tool_result.get("backgroundTaskId")
+    return task_id if isinstance(task_id, str) and task_id else None
+
+
+def _task_notification_from_record(
+    item: dict[str, object], message: object
+) -> ClaudeCodeBackgroundTaskNotification | None:
+    """Read task protocol from message, queue-operation, or queued-command attachment."""
+    candidates: list[object] = []
+    if isinstance(message, dict):
+        candidates.append(message.get("content"))
+    candidates.append(item.get("content"))
+    attachment = item.get("attachment")
+    if isinstance(attachment, dict):
+        candidates.append(attachment.get("prompt"))
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            notification = ClaudeCodeBackgroundTaskNotification.from_protocol_text(candidate)
+            if notification is not None:
+                return notification
+    return None
+
+
+def _mark_background_task_start(
+    content_blocks: list[ParsedContentBlock], task_id: str | None
+) -> list[ParsedContentBlock]:
+    """Mark the immediate background acknowledgement as outcome-unknown.
+
+    Claude's initial Bash result acknowledges only that a task started. Its
+    ``is_error=false`` must not be projected as a completed-command success.
+    """
+    if task_id is None:
+        return content_blocks
+    marked: list[ParsedContentBlock] = []
+    for block in content_blocks:
+        if block.type is not BlockType.TOOL_RESULT:
+            marked.append(block)
+            continue
+        metadata = dict(block.metadata or {})
+        metadata[_BACKGROUND_TASK_ID_METADATA_KEY] = task_id
+        marked.append(block.model_copy(update={"metadata": metadata, "is_error": None, "exit_code": None}))
+    return marked
+
+
+def _project_background_task_completions(
+    messages: list[ParsedMessage], notifications: Sequence[ClaudeCodeBackgroundTaskNotification]
+) -> list[ParsedMessage]:
+    """Apply the final structured completion outcome to its start result.
+
+    The exact ``(task-id, tool-use-id)`` pair is the provider protocol join
+    key. Later notifications deliberately replace earlier ones for the same
+    pair, making duplicate delivery and provider updates deterministic.
+    """
+    starts: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for message_index, message in enumerate(messages):
+        for block_index, block in enumerate(message.blocks):
+            if block.type is not BlockType.TOOL_RESULT or not block.tool_id:
+                continue
+            metadata = block.metadata or {}
+            task_id = metadata.get(_BACKGROUND_TASK_ID_METADATA_KEY)
+            if isinstance(task_id, str) and task_id:
+                starts.setdefault((task_id, block.tool_id), []).append((message_index, block_index))
+
+    starts_by_task: dict[str, list[tuple[int, int]]] = {}
+    for (task_id, _), locations in starts.items():
+        starts_by_task.setdefault(task_id, []).extend(locations)
+
+    terminal_by_start: dict[tuple[int, int], ClaudeCodeBackgroundTaskNotification] = {}
+    for notification in notifications:
+        matched_location: tuple[int, int] | None = (
+            _unique_background_start(starts.get((notification.task_id, notification.tool_use_id), []))
+            if notification.tool_use_id is not None
+            else _unique_background_start(starts_by_task.get(notification.task_id, []))
+        )
+        if matched_location is not None:
+            terminal_by_start[matched_location] = notification
+    projected = list(messages)
+    for location, notification in terminal_by_start.items():
+        message_index, block_index = location
+        message = projected[message_index]
+        block = message.blocks[block_index]
+        metadata = dict(block.metadata or {})
+        metadata[_BACKGROUND_COMPLETION_STATUS_METADATA_KEY] = notification.status
+        metadata[_BACKGROUND_OUTPUT_FILE_METADATA_KEY] = notification.output_file
+        updated_block = block.model_copy(
+            update={
+                "metadata": metadata,
+                "is_error": None if notification.exit_code is None else notification.exit_code != 0,
+                "exit_code": notification.exit_code,
+            }
+        )
+        blocks = list(message.blocks)
+        blocks[block_index] = updated_block
+        projected[message_index] = message.model_copy(update={"blocks": blocks})
+    return projected
+
+
+def _unique_background_start(locations: Sequence[tuple[int, int]]) -> tuple[int, int] | None:
+    """Return a task-only match only when provider evidence identifies one start."""
+    return locations[0] if len(locations) == 1 else None
+
+
 def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSession:
     """Parse Claude Code JSONL payloads into a canonical session model."""
     messages: list[ParsedMessage] = []
@@ -253,6 +363,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
     cwds: set[str] = set()
     models: set[str] = set()
     message_position = 0
+    background_notifications: list[tuple[ClaudeCodeBackgroundTaskNotification, str | None, str | None]] = []
 
     for index, item in enumerate(records, start=1):
         if not isinstance(item, dict):
@@ -303,6 +414,13 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
                 continue
             seen_record_uuids.add(record_uuid)
 
+        if not session_id:
+            session_id = _string_field(item, "sessionId")
+        raw_timestamp = item.get("timestamp")
+        timestamp = normalize_timestamp(raw_timestamp if isinstance(raw_timestamp, str | int | float) else None)
+        message = item.get("message")
+        notification = _task_notification_from_record(item, message)
+
         # ``progress`` records are claude-code hook lifecycle events
         # (`hookEvent`, `hookName`, `command`) carried alongside the
         # tool they fired on — they are NOT message content. Persisting
@@ -313,22 +431,18 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         # parser; the hook payload, if useful for analytics, belongs in
         # a future ``session_event`` capture, not in the messages table.
         if record_type in _SKIPPED_SIDECAR_RECORD_TYPES:
+            if notification is not None:
+                background_notifications.append((notification, record_uuid, timestamp))
             continue
-
-        if not session_id:
-            session_id = _string_field(item, "sessionId")
-
-        raw_timestamp = item.get("timestamp")
-        timestamp = normalize_timestamp(raw_timestamp if isinstance(raw_timestamp, str | int | float) else None)
         if timestamp:
             created_at = timestamp if created_at is None or timestamp < created_at else created_at
             updated_at = timestamp if updated_at is None or timestamp > updated_at else updated_at
 
-        message = item.get("message")
         raw_content = message.get("content") if isinstance(message, dict) else item.get("content")
         text = extract_message_text(raw_content)
         envelope_role = _record_role(item, message)
         content_blocks = _content_blocks_from_record(message, text)
+        content_blocks = _mark_background_task_start(content_blocks, _background_task_id(item))
         message_type = _message_type_from_code_record(item, text)
         if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
             message_type = MessageType.CONTEXT
@@ -391,6 +505,8 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
                 paste_spans=paste_spans,
             )
         )
+        if notification is not None:
+            background_notifications.append((notification, provider_message_id, timestamp))
         if isinstance(message, dict) and isinstance(message.get("usage"), dict):
             session_events.append(
                 ParsedSessionEvent(
@@ -420,6 +536,30 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         model_name = message_payload.get("model")
         if isinstance(model_name, str):
             models.add(model_name)
+
+    messages = _project_background_task_completions(
+        messages, [notification for notification, _, _ in background_notifications]
+    )
+    final_background_notifications = {
+        (notification.task_id, notification.tool_use_id): (notification, source_message_provider_id, timestamp)
+        for notification, source_message_provider_id, timestamp in background_notifications
+    }
+    for notification, source_message_provider_id, timestamp in final_background_notifications.values():
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="background_task_completion",
+                timestamp=timestamp,
+                source_message_provider_id=source_message_provider_id,
+                payload={
+                    "task_id": notification.task_id,
+                    "tool_use_id": notification.tool_use_id,
+                    "output_file": notification.output_file,
+                    "status": notification.status,
+                    "summary": notification.summary,
+                    "exit_code": notification.exit_code,
+                },
+            )
+        )
 
     if duplicate_uuid_count:
         logger.debug(
