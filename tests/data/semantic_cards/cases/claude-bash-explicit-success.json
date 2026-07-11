@@ -1,0 +1,114 @@
+{
+  "case_id": "claude-bash-explicit-success",
+  "claim": "Outcome is succeeded because structural fields say so even though output contains ERROR.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "claude-code",
+  "session_id": "fixture:claude-bash-explicit-success",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "Bash",
+          "tool_id": "t1",
+          "tool_input": {
+            "command": "pytest -q"
+          }
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "t1",
+          "text": "ERROR is a fixture filename; 2 passed",
+          "tool_result_is_error": false,
+          "tool_result_exit_code": 0
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "shell"
+    ],
+    "outcomes": [
+      "succeeded"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "shell",
+      "title": "Shell command",
+      "source": {
+        "session_id": "fixture:claude-bash-explicit-success",
+        "provider_family": "claude-code",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "Bash",
+        "tool_id": "t1",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "Bash"
+        },
+        {
+          "label": "command",
+          "value": "pytest -q"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "output",
+          "text": "ERROR is a fixture filename; 2 passed",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [],
+      "summary": "pytest -q",
+      "outcome": {
+        "state": "succeeded",
+        "is_error": false,
+        "exit_code": 0
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "command": "pytest -q"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "ERROR is a fixture filename; 2 passed",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

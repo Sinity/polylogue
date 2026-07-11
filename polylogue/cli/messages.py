@@ -8,9 +8,15 @@ import click
 
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.message.models import Message
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.rendering.semantic_cards import (
+    build_semantic_transcript,
+    lineage_descriptor_from_topology,
+)
+from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
 from polylogue.surfaces.payloads import (
     SessionMessageRowPayload,
     SessionMessagesResponsePayload,
@@ -54,11 +60,11 @@ def run_messages(
 
             fmt = output_format or "markdown"
 
-            def _message_document(m: object) -> dict[str, object]:
+            def _message_document(m: Message) -> dict[str, object]:
                 return cast(
                     "dict[str, object]",
                     model_json_document(
-                        SessionMessageRowPayload.from_message(m, session_id=session_id),  # type: ignore[arg-type]
+                        SessionMessageRowPayload.from_message(m, session_id=session_id),
                         exclude_none=True,
                     ),
                 )
@@ -96,13 +102,26 @@ def run_messages(
                     line = {"session_id": session_id, **_message_document(m)}
                     click.echo(_json.dumps(line))
             else:
-                for msg in messages:
-                    role = str(msg.role)
-                    message_type_label = str(msg.message_type.value)
-                    text = msg.text or ""
-                    if text:
-                        env.ui.print(f"[{role} {message_type_label}] {text[:500]}{'...' if len(text) > 500 else ''}")
-                        env.ui.print("---")
+                # Keep archive access at the existing CLI orchestration seam.
+                # Card construction below is pure and receives fully hydrated
+                # messages plus an already-read topology descriptor.
+                session = await api.get_session(session_id)
+                topology = await api.get_session_topology(session_id)
+                lineage = (
+                    lineage_descriptor_from_topology(topology, session_id=session_id) if topology is not None else None
+                )
+                transcript = build_semantic_transcript(
+                    messages,
+                    session_id=session_id,
+                    lineage=lineage,
+                    provider_family=session.origin if session is not None else None,
+                )
+                rendered = render_semantic_transcript_markdown(transcript)
+                if rendered:
+                    # ``read --view messages --to file|clipboard`` captures
+                    # click.echo at the existing destination adapter. Rich
+                    # output would bypass that contract and reinterpret markup.
+                    click.echo(rendered, nl=False)
 
     run_coroutine_sync(_run())
 

@@ -1,0 +1,210 @@
+{
+  "case_id": "claude-interleaved-subagents",
+  "claim": "Interleaved subagent results pair by exact tool_id rather than adjacency.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "claude-code",
+  "session_id": "fixture:claude-interleaved-subagents",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use-1",
+          "type": "tool_use",
+          "tool_name": "Task",
+          "tool_id": "t1",
+          "tool_input": {
+            "subagent_type": "Explore",
+            "prompt": "Map parser seams."
+          }
+        },
+        {
+          "id": "b-use-2",
+          "type": "tool_use",
+          "tool_name": "Task",
+          "tool_id": "t2",
+          "tool_input": {
+            "subagent_type": "Test",
+            "prompt": "Design hostile fixtures."
+          }
+        }
+      ]
+    },
+    {
+      "id": "m-result-2",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result-2",
+          "type": "tool_result",
+          "tool_id": "t2",
+          "text": "fixture design complete",
+          "tool_result_is_error": false
+        }
+      ]
+    },
+    {
+      "id": "m-result-1",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result-1",
+          "type": "tool_result",
+          "tool_id": "t1",
+          "text": "parser map complete",
+          "tool_result_is_error": false
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 2,
+    "kinds": [
+      "task",
+      "task"
+    ],
+    "outcomes": [
+      "succeeded",
+      "succeeded"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "task",
+      "title": "Task / subagent",
+      "source": {
+        "session_id": "fixture:claude-interleaved-subagents",
+        "provider_family": "claude-code",
+        "message_id": "m-use",
+        "block_id": "b-use-1",
+        "block_index": 0,
+        "tool_name": "Task",
+        "tool_id": "t1",
+        "result_message_id": "m-result-1",
+        "result_block_id": "b-result-1",
+        "result_block_index": 0
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "Task"
+        },
+        {
+          "label": "agent",
+          "value": "Explore"
+        },
+        {
+          "label": "request",
+          "value": "Map parser seams."
+        }
+      ],
+      "previews": [
+        {
+          "kind": "result",
+          "text": "parser map complete",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [],
+      "summary": "Map parser seams.",
+      "outcome": {
+        "state": "succeeded",
+        "is_error": false
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "subagent_type": "Explore",
+          "prompt": "Map parser seams."
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "parser map complete",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    },
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "task",
+      "title": "Task / subagent",
+      "source": {
+        "session_id": "fixture:claude-interleaved-subagents",
+        "provider_family": "claude-code",
+        "message_id": "m-use",
+        "block_id": "b-use-2",
+        "block_index": 1,
+        "tool_name": "Task",
+        "tool_id": "t2",
+        "result_message_id": "m-result-2",
+        "result_block_id": "b-result-2",
+        "result_block_index": 0
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "Task"
+        },
+        {
+          "label": "agent",
+          "value": "Test"
+        },
+        {
+          "label": "request",
+          "value": "Design hostile fixtures."
+        }
+      ],
+      "previews": [
+        {
+          "kind": "result",
+          "text": "fixture design complete",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [],
+      "summary": "Design hostile fixtures.",
+      "outcome": {
+        "state": "succeeded",
+        "is_error": false
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "subagent_type": "Test",
+          "prompt": "Design hostile fixtures."
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "fixture design complete",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

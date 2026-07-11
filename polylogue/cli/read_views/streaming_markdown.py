@@ -166,9 +166,13 @@ def _row_to_renderable_block(row: sqlite3.Row) -> RenderableBlock:
         type=str(row["block_type"] or "text"),
         text=row["text"],
         language=row["language"],
+        block_id=row["block_id"],
         tool_name=row["tool_name"],
         tool_id=row["tool_id"],
         tool_input=_json_mapping(row["tool_input"]),
+        semantic_type=row["semantic_type"],
+        tool_result_is_error=_optional_bool(row["tool_result_is_error"]),
+        tool_result_exit_code=_optional_int(row["tool_result_exit_code"]),
     )
 
 
@@ -180,6 +184,22 @@ def _json_mapping(value: str | None) -> JSONDocument | None:
     except json.JSONDecodeError:
         return None
     return json_document(parsed) if isinstance(parsed, dict) else None
+
+
+def _optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    return None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
 
 
 def _write_one_message(

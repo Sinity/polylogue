@@ -355,6 +355,7 @@ class TestMessageFromRecord:
 
         assert message.blocks == [
             {
+                "id": record.blocks[0].block_id,
                 "type": "tool_use",
                 "text": None,
                 "tool_name": "Read",

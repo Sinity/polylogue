@@ -1,0 +1,125 @@
+{
+  "case_id": "gemini-write-file",
+  "claim": "A provider-private write tool specializes only because upstream persisted a trusted file_write semantic type.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "gemini-cli",
+  "session_id": "fixture:gemini-write-file",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "write_file",
+          "tool_id": "g1",
+          "tool_input": {
+            "file_path": "notes.txt",
+            "content": "new contents\n"
+          },
+          "semantic_type": "file_write"
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "g1",
+          "text": "written",
+          "tool_result_is_error": false
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "file_edit"
+    ],
+    "outcomes": [
+      "succeeded"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "file_edit",
+      "title": "File edit",
+      "source": {
+        "session_id": "fixture:gemini-write-file",
+        "provider_family": "gemini-cli",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "write_file",
+        "tool_id": "g1",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "write_file"
+        },
+        {
+          "label": "path",
+          "value": "notes.txt"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "diff",
+          "text": "--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1 @@\n+new contents\n",
+          "line_count": 4,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        },
+        {
+          "kind": "result",
+          "text": "written",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [],
+      "summary": "notes.txt",
+      "outcome": {
+        "state": "succeeded",
+        "is_error": false
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "file_path": "notes.txt",
+          "content": "new contents\n"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "written",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

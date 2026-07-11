@@ -1541,6 +1541,54 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
     assert messages[0].text == "Alpha\n\nOmega"
 
 
+async def test_message_hydration_preserves_origin_provider_and_structural_tool_outcome(tmp_path: Path) -> None:
+    """Semantic readers receive the evidence fields required by shared cards."""
+
+    archive = _archive(tmp_path)
+    with ArchiveStore(tmp_path) as archive_db:
+        session_id = archive_db.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="semantic-card-hydration",
+                title="Semantic card hydration",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="assistant-tool",
+                        role=Role.ASSISTANT,
+                        text=None,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="exec_command",
+                                tool_id="call-1",
+                                tool_input={"command": "pytest -q"},
+                            ),
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id="call-1",
+                                text="checks passed",
+                                is_error=False,
+                                exit_code=0,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        )
+    try:
+        messages, total = await archive.get_messages_paginated(session_id, limit=10)
+    finally:
+        await archive.close()
+
+    assert total == 1
+    assert messages[0].provider is Provider.CODEX
+    assert len(messages[0].blocks) == 2
+    result = messages[0].blocks[1]
+    assert result["id"]
+    assert result["tool_result_is_error"] == 0
+    assert result["tool_result_exit_code"] == 0
+
+
 async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) -> None:
     """Message reads can filter authoredness separately from provider role."""
 

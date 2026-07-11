@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polylogue.local/schemas/semantic-card-v1.schema.json",
+  "title": "Polylogue semantic transcript card",
+  "type": "object",
+  "required": ["schema_version", "kind", "title", "source", "fields", "previews", "caveats"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "semantic-card.v1"},
+    "kind": {"enum": ["shell", "file_edit", "task", "lineage", "attachment", "fallback"]},
+    "title": {"type": "string", "minLength": 1},
+    "summary": {"type": "string"},
+    "source": {
+      "type": "object",
+      "required": ["session_id", "provider_family"],
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {"type": "string", "minLength": 1},
+        "provider_family": {"type": "string", "minLength": 1},
+        "message_id": {"type": "string"},
+        "block_id": {"type": "string"},
+        "block_index": {"type": "integer", "minimum": 0},
+        "tool_name": {"type": "string"},
+        "tool_id": {"type": "string"},
+        "result_message_id": {"type": "string"},
+        "result_block_id": {"type": "string"},
+        "result_block_index": {"type": "integer", "minimum": 0}
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["state"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {"enum": ["succeeded", "failed", "unknown"]},
+        "is_error": {"type": "boolean"},
+        "exit_code": {"type": "integer"}
+      }
+    },
+    "fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "value"],
+        "additionalProperties": false,
+        "properties": {
+          "label": {"type": "string"},
+          "value": {"type": "string"}
+        }
+      }
+    },
+    "previews": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/preview"}
+    },
+    "raw_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tool_input": {"type": "object"},
+        "tool_input_raw": {"type": "string"},
+        "result_preview": {"$ref": "#/$defs/preview"}
+      }
+    },
+    "caveats": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "preview": {
+      "type": "object",
+      "required": [
+        "kind", "text", "line_count", "omitted_lines", "omitted_characters",
+        "truncated", "strategy", "encoding_replacements"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"type": "string"},
+        "text": {"type": "string"},
+        "line_count": {"type": "integer", "minimum": 0},
+        "omitted_lines": {"type": "integer", "minimum": 0},
+        "omitted_characters": {"type": "integer", "minimum": 0},
+        "truncated": {"type": "boolean"},
+        "strategy": {"enum": ["full", "head_tail", "character_bounded"]},
+        "encoding_replacements": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

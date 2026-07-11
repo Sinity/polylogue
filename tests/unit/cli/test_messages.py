@@ -14,6 +14,7 @@ from polylogue.cli.read_views.messages import _write_messages_file
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.insights.topology import SessionTopology
 
 SCHEMAS_DIR = Path("docs/schemas/cli-output")
 
@@ -31,10 +32,14 @@ class _FakeApi:
         messages_result: tuple[list[dict[str, object]], int] | None = None,
         raw_result: tuple[list[dict[str, object]], int] = ([], 0),
         paginate_messages: bool = False,
+        session_origin: str = "codex-session",
+        topology: SessionTopology | None = None,
     ) -> None:
         self.messages_result = messages_result
         self.raw_result = raw_result
         self.paginate_messages = paginate_messages
+        self.session_origin = session_origin
+        self.topology = topology
         self.messages_kwargs: dict[str, object] = {}
         self.messages_calls: list[dict[str, object]] = []
         self.raw_kwargs: dict[str, object] = {}
@@ -118,6 +123,14 @@ class _FakeApi:
     ) -> tuple[list[dict[str, object]], int]:
         self.raw_kwargs = {"session_id": session_id, **kwargs}
         return self.raw_result
+
+    async def get_session(self, session_id: str) -> object:
+        del session_id
+        return type("_FakeSession", (), {"origin": self.session_origin})()
+
+    async def get_session_topology(self, session_id: str) -> SessionTopology | None:
+        del session_id
+        return self.topology
 
 
 def _env() -> AppEnv:
@@ -306,15 +319,20 @@ def test_run_messages_ndjson_emits_one_json_document_per_line(
     assert all(d["session_id"] == "conv-1" for d in docs)
 
 
-def test_run_messages_markdown_and_not_found_paths(tmp_path: Path) -> None:
+def test_run_messages_markdown_and_not_found_paths(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     env = _env()
     api = _FakeApi(messages_result=([{"role": "assistant", "message_type": "message", "text": "x" * 501}], 1))
 
     with patch("polylogue.api.Polylogue.open", return_value=api):
         run_messages(env, _request(tmp_path), session_id="conv-1")
 
-    assert _ui_print(env).call_args_list[0].args[0].endswith("...")
-    assert _ui_print(env).call_args_list[1].args[0] == "---"
+    rendered = capsys.readouterr().out
+    assert "**assistant · message**" in rendered
+    assert "x" * 501 in rendered
+    _ui_print(env).assert_not_called()
 
     missing_env = _env()
     with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(messages_result=None)):
@@ -323,7 +341,10 @@ def test_run_messages_markdown_and_not_found_paths(tmp_path: Path) -> None:
     _ui_error(missing_env).assert_called_once_with("Session not found: missing")
 
 
-def test_run_messages_text_alias_emits_human_rows(tmp_path: Path) -> None:
+def test_run_messages_text_alias_emits_human_rows(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     env = _env()
     api = _FakeApi(
         messages_result=(
@@ -335,8 +356,66 @@ def test_run_messages_text_alias_emits_human_rows(tmp_path: Path) -> None:
     with patch("polylogue.api.Polylogue.open", return_value=api):
         run_messages(env, _request(tmp_path), session_id="conv-1", output_format="text")
 
-    printed = [call.args[0] for call in _ui_print(env).call_args_list]
-    assert printed == ["[user message] text alias works", "---"]
+    rendered = capsys.readouterr().out
+    assert "**user · message**" in rendered
+    assert "text alias works" in rendered
+    _ui_print(env).assert_not_called()
+
+
+def test_run_messages_markdown_uses_structural_shell_outcome(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env = _env()
+    api = _FakeApi(
+        messages_result=(
+            [
+                {
+                    "id": "m-use",
+                    "role": "assistant",
+                    "message_type": "tool_use",
+                    "text": None,
+                    "blocks": [
+                        {
+                            "id": "b-use",
+                            "type": "tool_use",
+                            "tool_name": "exec_command",
+                            "tool_id": "call-1",
+                            "tool_input": {"command": "pytest -q"},
+                            "semantic_type": "shell",
+                        }
+                    ],
+                },
+                {
+                    "id": "m-result",
+                    "role": "tool",
+                    "message_type": "tool_result",
+                    "text": None,
+                    "blocks": [
+                        {
+                            "id": "b-result",
+                            "type": "tool_result",
+                            "tool_id": "call-1",
+                            "text": "ERROR appears in output",
+                            "tool_result_is_error": False,
+                            "tool_result_exit_code": 0,
+                        }
+                    ],
+                },
+            ],
+            2,
+        )
+    )
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_messages(env, _request(tmp_path), session_id="conv-1")
+
+    rendered = capsys.readouterr().out
+    assert "### Shell command · succeeded" in rendered
+    assert "`is_error=false`" in rendered
+    assert "`exit_code=0`" in rendered
+    assert "ERROR appears in output" in rendered
+    assert "FAILED" not in rendered
 
 
 def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

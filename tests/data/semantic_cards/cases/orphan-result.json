@@ -1,0 +1,82 @@
+{
+  "case_id": "orphan-result",
+  "claim": "An unpaired tool result remains visible and is never attached to a guessed invocation.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "gemini-cli",
+  "session_id": "fixture:orphan-result",
+  "messages": [
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "missing-call",
+          "text": "orphan failure",
+          "tool_result_is_error": true,
+          "tool_result_exit_code": 9
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "fallback"
+    ],
+    "outcomes": [
+      "failed"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "fallback",
+      "title": "Unpaired tool result",
+      "source": {
+        "session_id": "fixture:orphan-result",
+        "provider_family": "gemini-cli",
+        "tool_id": "missing-call",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0
+      },
+      "fields": [],
+      "previews": [
+        {
+          "kind": "result",
+          "text": "orphan failure",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [
+        "no matching tool-use block is present; result semantics were not guessed"
+      ],
+      "outcome": {
+        "state": "failed",
+        "is_error": true,
+        "exit_code": 9
+      },
+      "raw_evidence": {
+        "result_preview": {
+          "kind": "result",
+          "text": "orphan failure",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

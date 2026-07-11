@@ -1,0 +1,126 @@
+{
+  "case_id": "chatgpt-canmore-edit",
+  "claim": "Recipient-addressed ChatGPT canmore edits use the same file-edit card contract.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "chatgpt",
+  "session_id": "fixture:chatgpt-canmore-edit",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "canmore.update_textdoc",
+          "tool_id": "c1",
+          "tool_input": {
+            "path": "canvas.md",
+            "old_text": "draft\n",
+            "new_text": "final\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "c1",
+          "text": "updated canvas",
+          "tool_result_is_error": false
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "file_edit"
+    ],
+    "outcomes": [
+      "succeeded"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "file_edit",
+      "title": "File edit",
+      "source": {
+        "session_id": "fixture:chatgpt-canmore-edit",
+        "provider_family": "chatgpt",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "canmore.update_textdoc",
+        "tool_id": "c1",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "canmore.update_textdoc"
+        },
+        {
+          "label": "path",
+          "value": "canvas.md"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "diff",
+          "text": "--- a/canvas.md\n+++ b/canvas.md\n@@ -1 +1 @@\n-draft\n\n+final\n",
+          "line_count": 6,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        },
+        {
+          "kind": "result",
+          "text": "updated canvas",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [],
+      "summary": "canvas.md",
+      "outcome": {
+        "state": "succeeded",
+        "is_error": false
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "path": "canvas.md",
+          "old_text": "draft\n",
+          "new_text": "final\n"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "updated canvas",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

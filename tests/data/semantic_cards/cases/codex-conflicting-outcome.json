@@ -1,0 +1,116 @@
+{
+  "case_id": "codex-conflicting-outcome",
+  "claim": "A non-zero exit code dominates a conflicting is_error=false field and emits a caveat.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "codex",
+  "session_id": "fixture:codex-conflicting-outcome",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "exec_command",
+          "tool_id": "call-1",
+          "tool_input": {
+            "command": "python check.py"
+          }
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "call-1",
+          "text": "completed",
+          "tool_result_is_error": false,
+          "tool_result_exit_code": 2
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "shell"
+    ],
+    "outcomes": [
+      "failed"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "shell",
+      "title": "Shell command",
+      "source": {
+        "session_id": "fixture:codex-conflicting-outcome",
+        "provider_family": "codex",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "exec_command",
+        "tool_id": "call-1",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "exec_command"
+        },
+        {
+          "label": "command",
+          "value": "python check.py"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "output",
+          "text": "completed",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [
+        "source outcome fields disagree; non-zero exit code is treated as failure"
+      ],
+      "summary": "python check.py",
+      "outcome": {
+        "state": "failed",
+        "is_error": false,
+        "exit_code": 2
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "command": "python check.py"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "completed",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

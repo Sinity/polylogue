@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.cli.read_views.streaming_markdown import stream_exact_session_markdown
+from polylogue.cli.read_views.streaming_markdown import _row_to_renderable_block, stream_exact_session_markdown
 
 
 def _seed_minimal_index(root: Path) -> None:
@@ -117,3 +117,18 @@ def test_stream_exact_session_markdown_without_session_links_streams(tmp_path: P
     out = tmp_path / "out.md"
 
     assert stream_exact_session_markdown(tmp_path, "abc", out, prose_only=False)
+
+
+def test_streaming_adapter_preserves_structural_outcome_and_exact_block_id(tmp_path: Path) -> None:
+    _seed_minimal_index(tmp_path)
+    conn = sqlite3.connect(tmp_path / "index.db")
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM blocks WHERE block_id = 'b3'").fetchone()
+    assert row is not None
+
+    block = _row_to_renderable_block(row)
+
+    assert block.block_id == "b3"
+    assert block.tool_result_is_error is False
+    assert block.tool_result_exit_code == 0
+    conn.close()
