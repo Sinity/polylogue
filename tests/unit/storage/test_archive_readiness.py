@@ -12,6 +12,82 @@ def _category_counts(snapshot: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], snapshot["category_counts"])
 
 
+def test_raw_materialization_snapshot_classifies_durable_authority_gaps(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, source_path TEXT,
+                blob_hash BLOB, source_index INTEGER, revision_authority TEXT,
+                validation_status TEXT, parse_error TEXT, parsed_at_ms INTEGER
+            );
+            CREATE TABLE raw_membership_census (
+                raw_id TEXT PRIMARY KEY, status TEXT, member_count INTEGER, detail TEXT
+            );
+            CREATE TABLE raw_session_memberships (raw_id TEXT, decision TEXT);
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions VALUES (?, 'codex-session', NULL, '', NULL, ?, ?, 'valid', NULL, NULL)
+            """,
+            [
+                ("append-quarantine", -1, "quarantined"),
+                ("membership-quarantine", 0, "quarantined"),
+                ("terminal-application", 0, "quarantined"),
+                ("terminal-application-error", 0, "quarantined"),
+                ("authority-pending", -1, "quarantined"),
+            ],
+        )
+        conn.execute(
+            "UPDATE raw_sessions SET parse_error = 'database locked' WHERE raw_id = 'terminal-application-error'"
+        )
+        conn.executemany(
+            "INSERT INTO raw_membership_census VALUES (?, ?, ?, ?)",
+            [
+                (
+                    "append-quarantine",
+                    "failed",
+                    0,
+                    "append fragments are governed by byte revision authority",
+                ),
+                ("membership-quarantine", "complete", 1, None),
+            ],
+        )
+        conn.execute("INSERT INTO raw_session_memberships VALUES ('membership-quarantine', 'ambiguous')")
+    with sqlite3.connect(index_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT);
+            CREATE TABLE raw_revision_applications (raw_id TEXT, decision TEXT, detail TEXT);
+            INSERT INTO raw_revision_applications VALUES ('terminal-application', 'superseded', 'test');
+            INSERT INTO raw_revision_applications VALUES ('terminal-application-error', 'superseded', 'test');
+            """
+        )
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+
+    assert snapshot.get("available") is True, snapshot
+    assert snapshot["classified"] == 3
+    assert snapshot["critical"] == 1
+    assert snapshot["actionable"] == 1
+    assert snapshot["affected_actionable"] == 1
+    assert snapshot["unchecked"] == 1
+    assert snapshot["affected_unchecked"] == 1
+    assert _category_counts(snapshot) == {
+        "raw_id_join_gap": 1,
+        "skipped": 0,
+        "parse_failed": 1,
+        "raw_parse_failed": 1,
+        "parsed_without_index_session": 0,
+        "append-authority-quarantined": 1,
+        "membership-authority-classified": 1,
+        "revision-application-terminal": 1,
+    }
+
+
 def test_raw_materialization_snapshot_ignores_skipped_raw_rows(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
