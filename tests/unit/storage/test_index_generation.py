@@ -57,12 +57,10 @@ def test_generation_is_inactive_until_atomic_promotion(tmp_path: Path) -> None:
     original = (tmp_path / "index.db").resolve()
     original_inode = original.stat().st_ino
     store = IndexGenerationStore(tmp_path)
-    generation = store.create(owner_id="operator", source_high_water=("raw-a", "raw-b"))
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
     assert store.load(generation.generation_id).state == "inactive"
     assert (tmp_path / "index.db").resolve() == original
 
-    generation = store.checkpoint(generation, cursor=1)
-    assert generation.cursor == 1
     promoted = store.promote(generation)
     assert promoted.state == "active"
     assert (tmp_path / "index.db").is_symlink()
@@ -75,9 +73,36 @@ def test_generation_is_inactive_until_atomic_promotion(tmp_path: Path) -> None:
 def test_stale_owner_cannot_checkpoint_or_promote(tmp_path: Path) -> None:
     _archive(tmp_path)
     store = IndexGenerationStore(tmp_path)
-    generation = store.create(owner_id="operator")
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
     stale = replace(generation, owner_id="other")
-    with pytest.raises(RuntimeError, match="ownership changed"):
-        store.checkpoint(stale, cursor=1)
     with pytest.raises(RuntimeError, match="owning inactive"):
         store.promote(stale)
+
+
+def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) -> None:
+    configured = tmp_path / "configured"
+    canonical = tmp_path / "canonical"
+    configured.mkdir()
+    canonical.mkdir()
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS):
+        initialize_archive_database(canonical / f"{tier.value}.db", tier)
+        (configured / f"{tier.value}.db").symlink_to(canonical / f"{tier.value}.db")
+    initialize_archive_database(canonical / "index.db", ArchiveTier.INDEX)
+    (configured / "index.db").symlink_to(canonical / "index.db")
+
+    store = IndexGenerationStore(configured)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    store.promote(generation)
+
+    assert configured.joinpath("index.db").is_symlink()
+    assert configured.joinpath("index.db").stat().st_ino == canonical.joinpath("index.db").stat().st_ino
+    assert canonical.joinpath("index.db").resolve() == Path(generation.index_path).resolve()
+    assert store.generations_root.parent == canonical
+
+    second_store = IndexGenerationStore(configured)
+    second = second_store.create(owner_id="operator-2", source_snapshot="snapshot-b")
+    second_store.promote(second)
+    assert second_store.active_pointer == canonical / "index.db"
+    assert configured.joinpath("index.db").stat().st_ino == canonical.joinpath("index.db").stat().st_ino
+    assert canonical.joinpath("index.db").resolve() == Path(second.index_path).resolve()
+    assert len(tuple(store.generations_root.glob("retired-*/index.db"))) == 2

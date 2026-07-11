@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import socket
+import sqlite3
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -24,8 +25,7 @@ class IndexGeneration:
     index_path: str
     state: str
     created_at_ms: int
-    source_high_water: tuple[str, ...] = ()
-    cursor: int = 0
+    source_snapshot: str = ""
 
 
 class RebuildLeaseUnavailableError(RuntimeError):
@@ -95,9 +95,23 @@ class IndexGenerationStore:
 
     def __init__(self, archive_root: Path) -> None:
         self.archive_root = archive_root
-        self.generations_root = archive_root / ".index-generations"
+        configured_index = archive_root / "index.db"
+        anchor = archive_root / ".index-active-pointer"
+        if anchor.exists():
+            self.active_pointer = Path(anchor.read_text(encoding="utf-8").strip())
+        else:
+            if configured_index.is_symlink():
+                target = Path(os.readlink(configured_index))
+                self.active_pointer = target if target.is_absolute() else configured_index.parent / target
+            else:
+                self.active_pointer = configured_index
+            temporary = anchor.with_suffix(".tmp")
+            temporary.write_text(str(self.active_pointer.absolute()), encoding="utf-8")
+            os.replace(temporary, anchor)
+            _fsync_directory(anchor.parent)
+        self.generations_root = self.active_pointer.parent / ".index-generations"
 
-    def create(self, *, owner_id: str | None = None, source_high_water: tuple[str, ...] = ()) -> IndexGeneration:
+    def create(self, *, owner_id: str | None = None, source_snapshot: str) -> IndexGeneration:
         generation_id = f"gen-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
         owner = owner_id or str(uuid.uuid4())
         root = self.generations_root / generation_id
@@ -115,40 +129,50 @@ class IndexGenerationStore:
             index_path=str(index_path),
             state="inactive",
             created_at_ms=int(time.time() * 1000),
-            source_high_water=source_high_water,
+            source_snapshot=source_snapshot,
         )
         self._write(generation)
         return generation
 
     def load(self, generation_id: str) -> IndexGeneration:
         payload = json.loads(self._metadata_path(generation_id).read_text(encoding="utf-8"))
-        payload["source_high_water"] = tuple(payload.get("source_high_water", ()))
         return IndexGeneration(**payload)
-
-    def checkpoint(self, generation: IndexGeneration, *, cursor: int) -> IndexGeneration:
-        current = self.load(generation.generation_id)
-        if current.owner_id != generation.owner_id or current.state != "inactive":
-            raise RuntimeError("generation ownership changed before checkpoint")
-        updated = IndexGeneration(**{**asdict(current), "cursor": cursor})
-        self._write(updated)
-        return updated
 
     def promote(self, generation: IndexGeneration) -> IndexGeneration:
         current = self.load(generation.generation_id)
         if current.owner_id != generation.owner_id or current.state != "inactive":
             raise RuntimeError("only the owning inactive generation can be promoted")
         target = Path(current.index_path).resolve(strict=True)
-        pointer = self.archive_root / "index.db"
+        with sqlite3.connect(target) as conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        pointer = self.active_pointer
         retired = self.generations_root / f"retired-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
         retired.mkdir(parents=True, exist_ok=False)
         if pointer.exists() or pointer.is_symlink():
             os.link(pointer, retired / "index.db", follow_symlinks=False)
-        temporary = self.archive_root / f".index.db.promote-{uuid.uuid4().hex}"
+            _fsync_directory(retired)
+        promoting = IndexGeneration(**{**asdict(current), "state": "promoting"})
+        self._write(promoting)
+        temporary = pointer.parent / f".index.db.promote-{uuid.uuid4().hex}"
         temporary.symlink_to(target)
         os.replace(temporary, pointer)
+        _fsync_directory(pointer.parent)
         promoted = IndexGeneration(**{**asdict(current), "state": "active"})
         self._write(promoted)
         return promoted
+
+    def recover_promotion(self, generation_id: str) -> IndexGeneration:
+        """Reconcile a crash after the pointer swap but before active metadata."""
+        generation = self.load(generation_id)
+        if generation.state != "promoting":
+            return generation
+        pointer = self.active_pointer
+        state = (
+            "active" if pointer.resolve(strict=True) == Path(generation.index_path).resolve(strict=True) else "inactive"
+        )
+        recovered = IndexGeneration(**{**asdict(generation), "state": state})
+        self._write(recovered)
+        return recovered
 
     def _metadata_path(self, generation_id: str) -> Path:
         return self.generations_root / generation_id / "generation.json"
@@ -158,6 +182,31 @@ class IndexGenerationStore:
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(asdict(generation), indent=2, sort_keys=True), encoding="utf-8")
         os.replace(temporary, path)
+        _fsync_directory(path.parent)
+
+
+def source_revision_snapshot(archive_root: Path) -> str:
+    """Stable raw-evidence vector used to reject an unsafe rebuild delta."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        for raw_id, acquired_at_ms in conn.execute(
+            "SELECT raw_id, acquired_at_ms FROM raw_sessions ORDER BY acquired_at_ms, raw_id"
+        ):
+            digest.update(str(raw_id).encode())
+            digest.update(b"\0")
+            digest.update(str(acquired_at_ms).encode())
+            digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 __all__ = [
@@ -166,4 +215,5 @@ __all__ = [
     "IndexGenerationStore",
     "RebuildLease",
     "RebuildLeaseUnavailableError",
+    "source_revision_snapshot",
 ]

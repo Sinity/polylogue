@@ -1329,6 +1329,8 @@ def repair_session_insights(
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
     session_ids: tuple[str, ...] | None = None,
+    archive_root_override: Path | None = None,
+    owned_inactive_generation: tuple[str, str] | None = None,
 ) -> RepairResult:
     """Repair / rebuild session insights.
 
@@ -1342,8 +1344,17 @@ def repair_session_insights(
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     try:
-        archive_root = active_index_db_path().parent
-        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        archive_root = archive_root_override or active_index_db_path().parent
+        archive_context = (
+            ArchiveStore.open_owned_inactive_generation(
+                archive_root,
+                generation_id=owned_inactive_generation[0],
+                owner_id=owned_inactive_generation[1],
+            )
+            if owned_inactive_generation is not None
+            else ArchiveStore.open_existing(archive_root, read_only=False)
+        )
+        with archive_context as archive:
             status = archive.session_insight_status()
             assessment = assess_session_insight_repairs(status)
             aggregate_debt = _session_insight_aggregate_debt_count(status)

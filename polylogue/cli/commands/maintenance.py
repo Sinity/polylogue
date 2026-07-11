@@ -1324,8 +1324,6 @@ def _rebuild_index_selection_plan(
     show_default=True,
     help="Output format.",
 )
-@click.option("--resume-generation", type=str, default=None, help="Resume one owned inactive generation id.")
-@click.option("--owner-id", type=str, default=None, help="Stable rebuild owner id; required with --resume-generation.")
 @click.option("--no-promote", is_flag=True, help="Leave an exact-ready generation inactive after rebuilding it.")
 def rebuild_index_command(
     only_missing: bool,
@@ -1334,8 +1332,6 @@ def rebuild_index_command(
     plan_only: bool,
     plan_limit: int,
     output_format: str,
-    resume_generation: str | None,
-    owner_id: str | None,
     no_promote: bool,
 ) -> None:
     """Inspect or execute an authority-safe source-to-index rebuild.
@@ -1344,8 +1340,6 @@ def rebuild_index_command(
     selection order and batch boundaries never participate in authority.
     """
     configure_logging()
-    if resume_generation and not owner_id:
-        raise click.UsageError("--owner-id is required with --resume-generation")
     if raw_ids and only_missing:
         raise click.UsageError("--raw-id cannot be combined with --only-missing")
     if max_blob_mb is not None and max_blob_mb <= 0:
@@ -1428,17 +1422,33 @@ def rebuild_index_command(
                     )
         return
     from polylogue.cli.commands.status import _archive_readiness_status
-    from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease
+    from polylogue.maintenance.offline_guard import running_daemon_pid
+    from polylogue.storage.index_generation import (
+        IndexGenerationStore,
+        RebuildLease,
+        source_revision_snapshot,
+    )
 
     generation_store = IndexGenerationStore(root)
     with RebuildLease(root):
-        generation = (
-            generation_store.load(resume_generation)
-            if resume_generation is not None
-            else generation_store.create(owner_id=owner_id, source_high_water=tuple(selected_raw_ids))
+        active_config = Config(archive_root=root, render_root=render_root(), sources=[], db_path=root / "index.db")
+        daemon_pid = running_daemon_pid(active_config)
+        if daemon_pid is not None:
+            raise click.ClickException(f"offline rebuild refused while polylogued PID {daemon_pid} is running")
+        raw_count = _count_source_raw_sessions(root)
+        selected_raw_ids = (
+            list(dict.fromkeys(raw_ids))
+            if raw_ids
+            else _missing_index_raw_ids(root)
+            if only_missing
+            else _all_index_rebuild_raw_ids(root)
         )
-        if owner_id is not None and generation.owner_id != owner_id:
-            raise click.ClickException("inactive generation is owned by another rebuild")
+        unfiltered_selected_raw_count = len(selected_raw_ids)
+        selected_raw_ids = _filter_raw_ids_by_max_blob_size(root, selected_raw_ids, max_blob_mb)
+        selected_raw_count = len(selected_raw_ids)
+        skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
+        source_snapshot = source_revision_snapshot(root)
+        generation = generation_store.create(source_snapshot=source_snapshot)
         generation_root = Path(generation.index_path).parent
         config = Config(
             archive_root=generation_root,
@@ -1457,7 +1467,20 @@ def rebuild_index_command(
                 owned_inactive_generation=(generation.generation_id, generation.owner_id),
             )
         )
-        generation = generation_store.checkpoint(generation, cursor=len(selected_raw_ids))
+        from polylogue.storage.repair import repair_session_insights
+
+        insight_result = repair_session_insights(
+            config,
+            dry_run=False,
+            archive_root_override=generation_root,
+            owned_inactive_generation=(generation.generation_id, generation.owner_id),
+        )
+        if not insight_result.success:
+            raise click.ClickException(f"session insight materialization failed: {insight_result.detail}")
+        if source_revision_snapshot(root) != generation.source_snapshot:
+            raise click.ClickException(
+                f"source evidence changed while rebuilding {generation.generation_id}; generation remains inactive"
+            )
         readiness = _archive_readiness_status(generation_root)
         if not readiness.get("checked") or int(readiness.get("blocked_surface_count", 1)) != 0:
             blocked = [
@@ -1478,6 +1501,7 @@ def rebuild_index_command(
         "skipped_by_blob_limit_count": skipped_by_blob_limit_count,
         "status": "replayed",
         "materialized": True,
+        "materialization": insight_result.to_dict(),
         "generation": asdict(generation),
         "readiness": readiness,
         **result,
