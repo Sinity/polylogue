@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -20,7 +21,9 @@ FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "demo-packet-v
 
 
 def _valid_packet_payload() -> dict[str, object]:
-    return json.loads((FIXTURE_ROOT / "valid-minimal.json").read_text(encoding="utf-8"))
+    payload = json.loads((FIXTURE_ROOT / "valid-minimal.json").read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return cast(dict[str, object], payload)
 
 
 def _write_conforming_packet(packet_dir: Path, *, payload: dict[str, object] | None = None) -> None:
