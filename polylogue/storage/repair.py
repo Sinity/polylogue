@@ -69,6 +69,8 @@ class RawMaterializationCandidates:
     missing_blob_source_available: int = 0
     missing_blob_source_missing: int = 0
     adoption_deferred: int = 0
+    expanded_raw_ids: tuple[str, ...] = ()
+    expanded_blob_bytes: dict[str, int] = field(default_factory=dict)
 
     @property
     def total_blob_bytes(self) -> int:
@@ -134,6 +136,8 @@ def _raw_materialization_candidate_ids(
     missing_blob_source_available = 0
     missing_blob_source_missing = 0
     already_parsed = 0
+    expanded_raw_ids: tuple[str, ...] = ()
+    expanded_blob_bytes: dict[str, int] = {}
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
@@ -226,6 +230,18 @@ def _raw_materialization_candidate_ids(
                     missing_blob_source_available += 1
                 else:
                     missing_blob_source_missing += 1
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        expanded_raw_ids, _keys = ArchiveStore.expand_raw_membership_selection_sync(conn, raw_ids)
+        if expanded_raw_ids:
+            placeholders = ",".join("?" for _ in expanded_raw_ids)
+            expanded_blob_bytes = {
+                str(row[0]): int(row[1] or 0)
+                for row in conn.execute(
+                    f"SELECT raw_id, blob_size FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                    expanded_raw_ids,
+                )
+            }
     return RawMaterializationCandidates(
         raw_ids=raw_ids,
         missing_blobs=missing_blobs,
@@ -236,6 +252,8 @@ def _raw_materialization_candidate_ids(
         missing_blob_source_available=missing_blob_source_available,
         missing_blob_source_missing=missing_blob_source_missing,
         adoption_deferred=adoption_deferred,
+        expanded_raw_ids=expanded_raw_ids,
+        expanded_blob_bytes=expanded_blob_bytes,
     )
 
 
@@ -337,17 +355,20 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
         }
         for raw_id in raw_ids_by_size[:limit]
     ]
+    expanded_blob_bytes = candidates.expanded_blob_bytes
+    expanded_total_blob_bytes = sum(expanded_blob_bytes.values())
     oversized_raw_ids = [
-        raw_id
-        for raw_id in candidates.raw_ids
-        if candidates.raw_blob_bytes.get(raw_id, 0) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+        raw_id for raw_id, size in expanded_blob_bytes.items() if size > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
     ]
     oversized_stream_safe = [
         raw_id for raw_id in oversized_raw_ids if _raw_materialization_stream_safe(candidates, raw_id)
     ]
     # Retained-raw authority replay currently loads blob bytes before handing
     # them to the stream parser, so stream-capable format is diagnostic only.
-    resource_blocked_count = len(oversized_raw_ids)
+    aggregate_resource_blocked = expanded_total_blob_bytes > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+    resource_blocked_count = len(oversized_raw_ids) or (
+        len(candidates.expanded_raw_ids) if aggregate_resource_blocked else 0
+    )
     blocked_candidate_count = resource_blocked_count + candidates.adoption_deferred
     return {
         "available": True,
@@ -369,6 +390,9 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
         "total_blob_bytes": candidates.total_blob_bytes,
         "max_blob_bytes": candidates.max_blob_bytes,
         "execute_blob_limit_bytes": RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+        "expanded_candidate_count": len(candidates.expanded_raw_ids),
+        "expanded_total_blob_bytes": expanded_total_blob_bytes,
+        "expanded_aggregate_blocked": aggregate_resource_blocked,
         "oversized_count": len(oversized_raw_ids),
         "oversized_stream_safe_count": len(oversized_stream_safe),
         "top_raw_rows": top_raw_rows,
@@ -1603,8 +1627,9 @@ def repair_raw_materialization(
                 repaired_count=0,
                 success=False,
                 detail=(
-                    f"Raw materialization blocked: {len(exc.raw_ids):,} expanded-cohort raw row(s) exceed "
-                    f"execution limit {_format_bytes(exc.limit_bytes)}"
+                    f"Raw materialization blocked: {len(exc.raw_ids):,} expanded-cohort raw row(s), "
+                    f"aggregate {_format_bytes(exc.total_bytes)}, exceed execution limit "
+                    f"{_format_bytes(exc.limit_bytes)}"
                 ),
                 metrics=metrics,
             )

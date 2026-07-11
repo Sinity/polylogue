@@ -1712,7 +1712,14 @@ class ArchiveStore:
 
     def expand_raw_membership_selection(self, raw_ids: list[str] | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Expand scheduling hints to the complete transitive membership cohort."""
-        conn = self._ensure_source_conn()
+        return self.expand_raw_membership_selection_sync(self._ensure_source_conn(), raw_ids)
+
+    @staticmethod
+    def expand_raw_membership_selection_sync(
+        conn: sqlite3.Connection,
+        raw_ids: list[str] | None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Expand raw scheduling hints using durable path/membership metadata."""
         if raw_ids is None:
             selected = {str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")}
         else:

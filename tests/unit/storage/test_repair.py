@@ -1447,6 +1447,94 @@ def test_raw_materialization_blocks_oversized_expanded_cohort_before_blob_open(
     assert "expanded-cohort" in result.detail
 
 
+def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    small_payload = b'{"type":"session_meta","payload":{"id":"small-gap"}}\n'
+    large_payload = b'{"type":"session_meta","payload":{"id":"large-done"}}\n'
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        small_raw = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=small_payload, source_path="shared.jsonl", acquired_at_ms=1
+        )
+        large_raw = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=large_payload, source_path="shared.jsonl", acquired_at_ms=2
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+            (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, large_raw),
+        )
+        source_conn.commit()
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            "INSERT INTO sessions(native_id, origin, raw_id, title, content_hash) VALUES (?, ?, ?, ?, ?)",
+            ("large-done", "codex-session", large_raw, "done", bytes(32)),
+        )
+        index_conn.commit()
+
+    backlog = repair_mod.raw_materialization_replay_backlog(_config(tmp_path))
+    assert backlog["candidate_count"] == 1
+    assert backlog["expanded_candidate_count"] == 2
+    assert backlog["execution_blocked"] is True
+    assert backlog["blocked_candidate_count"] == 1
+
+    monkeypatch.setattr(
+        "polylogue.sources.revision_backfill._parse_retained_raw",
+        lambda *_args, **_kwargs: pytest.fail("oversized materialized sibling must block before blob open"),
+    )
+    result = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_id=small_raw)
+    assert result.success is False
+    assert "expanded-cohort" in result.detail
+
+
+def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = [
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f'{{"type":"session_meta","payload":{{"id":"aggregate-{index}"}}}}\n'.encode(),
+                source_path="aggregate.jsonl",
+                acquired_at_ms=index,
+            )
+            for index in range(2)
+        ]
+    per_raw_size = 600 * 1024 * 1024
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+            ((per_raw_size, raw_id) for raw_id in raw_ids),
+        )
+        source_conn.commit()
+
+    backlog = repair_mod.raw_materialization_replay_backlog(_config(tmp_path))
+    assert backlog["oversized_count"] == 0
+    assert backlog["expanded_aggregate_blocked"] is True
+    assert backlog["execution_blocked"] is True
+
+    monkeypatch.setattr(
+        "polylogue.sources.revision_backfill._parse_retained_raw",
+        lambda *_args, **_kwargs: pytest.fail("aggregate cohort limit must be checked before blob open"),
+    )
+    result = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    assert result.success is False
+    assert result.metrics["raw_materialization_resource_blocked_count"] == 2.0
+    assert "aggregate 1.2 GiB" in result.detail
+
+
 def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

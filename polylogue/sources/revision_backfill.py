@@ -31,10 +31,11 @@ class RevisionBackfillResult:
 
 
 class RawRevisionReplayResourceBlockedError(RuntimeError):
-    def __init__(self, raw_ids: list[str], limit_bytes: int) -> None:
+    def __init__(self, raw_ids: list[str], limit_bytes: int, total_bytes: int) -> None:
         self.raw_ids = tuple(raw_ids)
         self.limit_bytes = limit_bytes
-        super().__init__(f"{len(raw_ids)} raw revision(s) exceed replay limit {limit_bytes}")
+        self.total_bytes = total_bytes
+        super().__init__(f"{len(raw_ids)} raw revision(s) total {total_bytes} bytes exceed replay limit {limit_bytes}")
 
 
 def backfill_historical_revision_evidence(
@@ -74,13 +75,14 @@ def backfill_historical_revision_evidence(
             rows = archive.raw_membership_census_rows(census_selection)
             pending_rows = [(raw_id, source_index) for raw_id, source_index in rows if raw_id not in censused]
             if max_payload_bytes is not None:
-                oversized = [
-                    raw_id
-                    for raw_id, size in archive.raw_payload_sizes([raw_id for raw_id, _index in rows]).items()
-                    if size > max_payload_bytes
-                ]
-                if oversized:
-                    raise RawRevisionReplayResourceBlockedError(sorted(oversized), max_payload_bytes)
+                payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in rows])
+                total_payload_bytes = sum(payload_sizes.values())
+                oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
+                if oversized or total_payload_bytes > max_payload_bytes:
+                    blocked_ids = oversized or list(payload_sizes)
+                    raise RawRevisionReplayResourceBlockedError(
+                        sorted(blocked_ids), max_payload_bytes, total_payload_bytes
+                    )
             for raw_id, source_index in pending_rows:
                 scanned += 1
                 censused.add(raw_id)
