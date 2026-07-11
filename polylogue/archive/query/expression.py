@@ -133,6 +133,7 @@ from polylogue.archive.query.predicate import (
     QueryNotPredicate,
     QueryPredicate,
     QuerySemanticPredicate,
+    QuerySequenceConstraint,
     QuerySequencePredicate,
     QueryTextPredicate,
 )
@@ -644,7 +645,7 @@ _QUERY_GRAMMAR = rf"""
     ?not_expr: NOT not_expr                -> not_expr
         | atom
     ?atom: EXISTS STRUCT_UNIT "(" expr ")" -> exists_leaf
-        | SEQ "(" sequence_step (ARROW sequence_step)+ ")" -> sequence_leaf
+        | SEQ "(" sequence_step (sequence_link sequence_step)+ ")" -> sequence_leaf
         | SEMANTIC_QUOTED_TEXT             -> semantic_quoted_leaf
         | SEMANTIC_BARE_TEXT               -> semantic_bare_leaf
         | FTS_QUOTED_TEXT                  -> fts_quoted_leaf
@@ -659,6 +660,7 @@ _QUERY_GRAMMAR = rf"""
         | FIELD_CLAUSE                     -> field_leaf
         | "(" expr ")"
     sequence_step: sequence_atom (AND sequence_atom)*
+    sequence_link: ARROW SEQUENCE_CONSTRAINT?
     ?sequence_atom: FIELD_CLAUSE                     -> field_leaf
 
     SESSIONS: /sessions/i
@@ -666,6 +668,7 @@ _QUERY_GRAMMAR = rf"""
     EXISTS: /exists/i
     SEQ: /seq/i
     ARROW: "->"
+    SEQUENCE_CONSTRAINT.8: /\[(?:next|within:\d+(?:ms|s|m|h|d))\]/i
     STRUCT_UNIT: /(observed-event|context-snapshot|message|action|block|assertion|file|run)/i
     OR: /or/i
     AND: /and/i
@@ -1240,7 +1243,8 @@ def _bind_predicate_context(
         )
     if isinstance(predicate, QuerySequencePredicate):
         return QuerySequencePredicate(
-            steps=tuple(_bind_predicate_context(step, unit="action") for step in predicate.steps)
+            steps=tuple(_bind_predicate_context(step, unit="action") for step in predicate.steps),
+            constraints=predicate.constraints,
         )
     return predicate
 
@@ -1351,11 +1355,27 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
             return predicates[0]
         return QueryBoolPredicate(op="and", children=predicates)
 
+    def sequence_link(self, _arrow: Token, constraint: Token | None = None) -> QuerySequenceConstraint:
+        if constraint is None:
+            return QuerySequenceConstraint()
+        value = str(constraint)[1:-1].lower()
+        if value == "next":
+            return QuerySequenceConstraint(kind="next")
+        amount_text, unit = value.removeprefix("within:")[:-1], value[-1]
+        if value.endswith("ms"):
+            amount_text, unit = value.removeprefix("within:")[:-2], "ms"
+        multiplier = {"ms": 1, "s": 1_000, "m": 60_000, "h": 3_600_000, "d": 86_400_000}[unit]
+        within_ms = int(amount_text) * multiplier
+        if within_ms <= 0:
+            raise ExpressionCompileError("seq within duration must be greater than zero", field=None)
+        return QuerySequenceConstraint(kind="within", within_ms=within_ms)
+
     def sequence_leaf(self, _seq: Token, *items: object) -> QueryPredicate:
         steps = _predicate_children(items)
+        constraints = tuple(item for item in items if isinstance(item, QuerySequenceConstraint))
         if len(steps) < 2:
             raise ExpressionCompileError("seq() requires at least two action steps", field=None)
-        return QuerySequencePredicate(steps=steps)
+        return QuerySequencePredicate(steps=steps, constraints=constraints)
 
 
 _BOOLEAN_QUERY_TRANSFORMER = _BooleanQueryTransformer()

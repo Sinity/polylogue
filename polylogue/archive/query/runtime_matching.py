@@ -9,6 +9,7 @@ from polylogue.archive.query.predicate import (
     QueryFieldPredicate,
     QueryNotPredicate,
     QueryPredicate,
+    QuerySequenceConstraint,
 )
 
 if TYPE_CHECKING:
@@ -81,22 +82,44 @@ def matches_action_sequence(plan: SessionQueryPlan, session: Session) -> bool:
     return False
 
 
-def matches_action_predicate_sequence(steps: tuple[QueryPredicate, ...], session: Session) -> bool:
+def matches_action_predicate_sequence(
+    steps: tuple[QueryPredicate, ...],
+    session: Session,
+    constraints: tuple[QuerySequenceConstraint, ...] = (),
+) -> bool:
     if not steps:
         return True
     actions = _actions_for(session)
     if not actions:
         return False
 
-    index = 0
-    target_count = len(steps)
-    for action in actions:
-        if not _matches_action_predicate(steps[index], action):
-            continue
-        index += 1
-        if index >= target_count:
-            return True
-    return False
+    edge_constraints = constraints or tuple(QuerySequenceConstraint() for _ in range(len(steps) - 1))
+    if len(edge_constraints) != len(steps) - 1:
+        raise ValueError("sequence constraints must describe every edge between steps")
+
+    candidates = [index for index, action in enumerate(actions) if _matches_action_predicate(steps[0], action)]
+    for step_index, step in enumerate(steps[1:]):
+        constraint = edge_constraints[step_index]
+        next_candidates: list[int] = []
+        for previous_index in candidates:
+            for current_index in range(previous_index + 1, len(actions)):
+                if constraint.kind == "next" and current_index != previous_index + 1:
+                    break
+                if not _matches_action_predicate(step, actions[current_index]):
+                    continue
+                if constraint.kind == "within":
+                    previous_time = actions[previous_index].timestamp
+                    current_time = actions[current_index].timestamp
+                    if previous_time is None or current_time is None:
+                        continue
+                    elapsed_ms = int((current_time - previous_time).total_seconds() * 1000)
+                    if elapsed_ms < 0 or constraint.within_ms is None or elapsed_ms > constraint.within_ms:
+                        continue
+                next_candidates.append(current_index)
+        candidates = next_candidates
+        if not candidates:
+            return False
+    return bool(candidates)
 
 
 def _matches_action_predicate(predicate: QueryPredicate, action: Action) -> bool:
