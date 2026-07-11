@@ -722,7 +722,7 @@ def test_raw_materialization_retires_only_complete_governed_bundle_membership(tm
     blob_store = BlobStore(tmp_path / "blob")
     raw_ids: list[str] = []
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        for position, decision in enumerate(("applied", "ambiguous", None), start=1):
+        for position, decision in enumerate(("applied", "ambiguous", None, "applied"), start=1):
             raw_id, blob_size = blob_store.write_from_bytes(f'{{"bundle":{position}}}'.encode())
             raw_ids.append(raw_id)
             source_conn.execute(
@@ -737,9 +737,9 @@ def test_raw_materialization_retires_only_complete_governed_bundle_membership(tm
                 """
                 INSERT INTO raw_membership_census (
                     raw_id, parser_fingerprint, status, member_count, censused_at_ms
-                ) VALUES (?, 'test', 'complete', 1, 1)
+                ) VALUES (?, 'test', 'complete', ?, 1)
                 """,
-                (raw_id,),
+                (raw_id, 2 if position in (1, 4) else 1),
             )
             source_conn.execute(
                 """
@@ -758,11 +758,84 @@ def test_raw_materialization_retires_only_complete_governed_bundle_membership(tm
                     1 if decision is not None else None,
                 ),
             )
+            if position == 4:
+                source_conn.execute(
+                    """
+                    INSERT INTO raw_session_memberships (
+                        raw_id, logical_source_key, provider_session_id, source_revision,
+                        normalized_content_hash, message_count, decision, decided_at_ms
+                    ) VALUES (?, 'bundle:4:second', 'session-4-second', 'revision-4-second', ?, 1,
+                              'superseded_equivalent', 1)
+                    """,
+                    (raw_id, bytes.fromhex(raw_id)),
+                )
         source_conn.commit()
 
     candidates = repair_mod._raw_materialization_candidate_ids(config)
 
-    assert set(candidates.raw_ids) == {raw_ids[1], raw_ids[2]}
+    assert set(candidates.raw_ids) == {raw_ids[0], raw_ids[2]}
+    assert candidates.authority_quarantined == 1
+
+
+def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    raw_id, blob_size = blob_store.write_from_bytes(b'{"fragment":true}')
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, 'codex-session', 'session.jsonl', -1, ?, ?, 1)
+            """,
+            (raw_id, bytes.fromhex(raw_id), blob_size),
+        )
+        source_conn.commit()
+
+    candidates = repair_mod._raw_materialization_candidate_ids(config)
+    backlog = repair_mod.raw_materialization_replay_backlog(config)
+    targeted = repair_mod.repair_raw_materialization(config, raw_artifact_id=raw_id)
+
+    assert candidates.raw_ids == []
+    assert candidates.byte_authority_pending == 1
+    assert backlog["candidate_count"] == 0
+    assert backlog["execution_blocked"] is True
+    assert backlog["durable_authority_debt_count"] == 1
+    assert backlog["byte_authority_pending_count"] == 1
+    assert targeted.success is False
+    assert "pending byte-authority adjudication" in targeted.detail
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_membership_census (
+                raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+            ) VALUES (?, 'test', 'failed', 0, 2,
+                      'append fragments are governed by byte revision authority')
+            """,
+            (raw_id,),
+        )
+        source_conn.commit()
+
+    governed = repair_mod._raw_materialization_candidate_ids(config)
+    governed_target = repair_mod.repair_raw_materialization(config, raw_artifact_id=raw_id)
+
+    assert governed.byte_authority_pending == 0
+    assert governed.byte_authority_quarantined == 1
+    assert governed_target.success is False
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET revision_authority = 'byte_proven' WHERE raw_id = ?",
+            (raw_id,),
+        )
+        source_conn.commit()
+
+    proven = repair_mod._raw_materialization_candidate_ids(config)
+    assert proven.byte_authority_quarantined == 0
+    assert proven.byte_authority_fragments == 1
 
 
 def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_path: Path) -> None:
