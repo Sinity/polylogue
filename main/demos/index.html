@@ -452,6 +452,13 @@ before execution, an independent oracle, a comparative baseline, negative and
 missing-evidence controls, an explicit falsifier, bounded non-claims, and local
 SHA-256-bound receipt artifacts. <code>devtools lab policy demo-packet-registry</code>
 validates every registered packet and rejects unregistered v2 packets.</p>
+<p>The production gate resolves every nested receipt citation through the
+top-level receipt table, confines each artifact path to its packet, verifies
+the artifact bytes against the declared SHA-256 digest, and confirms that the
+ref occurs in those same bytes. Reports use <code>## Claim</code> through <code>## Reproduce</code>
+exactly once and in the canonical order. The gate also rejects contradictory
+falsifier state and duplicate control IDs or measurement names. See the
+<a href="https://github.com/Sinity/polylogue/blob/master/docs/examples/demo-packet-v2/README.md">worked contract example</a>.</p>
 <p>A deterministic public packet proves a product contract on the approved seed
 1843 fixture world. It does not establish field prevalence, production scale,
 or model behavior in the wild. Private-archive benchmarks remain a separate
