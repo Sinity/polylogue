@@ -13,8 +13,11 @@ import pytest
 from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import BackupProfile, backup_archive
 from polylogue.storage.backup_attestation import (
+    ATTESTATION_ALGORITHM,
+    ATTESTATION_FORMAT,
     VERIFICATION_RECEIPT_FORMAT,
     attestation_key_path,
+    load_attestation_key,
     sign_verification_receipt,
     tier_attestation_id,
 )
@@ -508,8 +511,7 @@ def test_public_hash_forged_receipt_cannot_authorize_user_migration(
     db_path = archive_root / "user.db"
     _create_user_v3(db_path)
 
-    trusted_manifest = _verified_backup_manifest(tmp_path / "trusted", profile="user_overlays")
-    trusted_receipt = json.loads(trusted_manifest.with_name("verification-receipt.json").read_text(encoding="utf-8"))
+    _verified_backup_manifest(tmp_path / "trusted", profile="user_overlays")
     manifest = _unverified_backup_manifest(tmp_path / "unverified")
     manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
     forged: dict[str, object] = {
@@ -523,14 +525,13 @@ def test_public_hash_forged_receipt_cannot_authorize_user_migration(
         "verification": {"ok": True, "scratch_restore": "claimed"},
     }
     if attestation_mode == "forged-mac":
-        trusted_attestation = next(item for item in trusted_receipt["attestations"] if item["tier"] == "user")
         forged["attestations"] = [
             {
-                "format": trusted_attestation["format"],
-                "algorithm": trusted_attestation["algorithm"],
+                "format": ATTESTATION_FORMAT,
+                "algorithm": ATTESTATION_ALGORITHM,
                 "tier": "user",
                 "resource_id": tier_attestation_id(db_path),
-                "key_id": trusted_attestation["key_id"],
+                "key_id": hashlib.sha256(load_attestation_key(db_path)).hexdigest(),
                 "mac": "0" * 64,
             }
         ]
