@@ -1,0 +1,363 @@
+import { Buffer } from "node:buffer";
+import { createHash, webcrypto } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { TextEncoder } from "node:util";
+import { fileURLToPath } from "node:url";
+import { Script } from "node:vm";
+
+import { JSDOM } from "jsdom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const testDirectory = dirname(fileURLToPath(import.meta.url));
+const bridgeSource = readFileSync(resolve(testDirectory, "../../src/content/chatgpt_bridge.js"), "utf8");
+const commonSource = readFileSync(resolve(testDirectory, "../../src/common.js"), "utf8");
+const contentSource = readFileSync(resolve(testDirectory, "../../src/content/chatgpt.js"), "utf8");
+const bearerToken = "synthetic-bearer-must-not-cross-the-page-bridge";
+const signedUrl = "https://files.example.test/download/kit.zip?signature=synthetic-signed-secret";
+const assetBytes = new TextEncoder().encode("polylogue authenticated interpreter asset\n");
+const expectedSha256 = createHash("sha256").update(assetBytes).digest("hex");
+const openDoms = [];
+
+function jsonResponse(body, status = 200) {
+  return new globalThis.Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function byteResponse(bytes, status = 200, declaredSize = null) {
+  const headers = { "content-type": "application/zip" };
+  if (declaredSize !== null) headers["content-length"] = String(declaredSize);
+  return new globalThis.Response(bytes, { status, headers });
+}
+
+function authorizationHeader(options) {
+  return new globalThis.Headers(options?.headers || {}).get("authorization");
+}
+
+function conversationPayload() {
+  return {
+    id: "conversation-1",
+    conversation_id: "conversation-1",
+    title: "Authenticated capture fixture",
+    create_time: 1781366400,
+    update_time: 1781366460,
+    current_node: "assistant-node",
+    mapping: {
+      "assistant-node": {
+        id: "assistant-node",
+        parent: null,
+        children: [],
+        message: {
+          id: "assistant-message-1",
+          author: { role: "assistant" },
+          create_time: 1781366460,
+          content: {
+            content_type: "text",
+            parts: ["Kit ready: [download](sandbox:/mnt/data/kit.zip)"],
+          },
+          metadata: { model_slug: "gpt-test" },
+        },
+      },
+    },
+  };
+}
+
+function syntheticEndpointAdapter({
+  authStatus = 200,
+  authBody = { accessToken: bearerToken },
+  metadataStatus = 200,
+  metadataBody = { download_url: signedUrl, file_name: "kit.zip" },
+  signedStatus = 200,
+  signedBytes = assetBytes,
+  declaredSize = null,
+} = {}) {
+  const calls = [];
+  const fetch = vi.fn(async (input, options = {}) => {
+    const url = new URL(String(input), "https://chatgpt.com");
+    calls.push({ url, options });
+    if (url.origin === "https://chatgpt.com" && url.pathname === "/api/auth/session") {
+      return jsonResponse(authBody, authStatus);
+    }
+    if (url.origin === "https://chatgpt.com" && url.pathname === "/backend-api/conversation/conversation-1") {
+      if (authorizationHeader(options) !== `Bearer ${bearerToken}`) {
+        return jsonResponse({ detail: "Unauthorized" }, 401);
+      }
+      return jsonResponse(conversationPayload());
+    }
+    if (
+      url.origin === "https://chatgpt.com" &&
+      url.pathname === "/backend-api/conversation/conversation-1/interpreter/download"
+    ) {
+      if (authorizationHeader(options) !== `Bearer ${bearerToken}`) {
+        return jsonResponse({ detail: "Unauthorized" }, 401);
+      }
+      return jsonResponse(metadataBody, metadataStatus);
+    }
+    if (url.href === signedUrl) {
+      return byteResponse(signedBytes, signedStatus, declaredSize);
+    }
+    throw new Error(`unexpected synthetic request: ${url.origin}${url.pathname}`);
+  });
+  return { calls, fetch };
+}
+
+function makeDom(adapter) {
+  const dom = new JSDOM("<!doctype html><title>ChatGPT fixture</title>", {
+    url: "https://chatgpt.com/c/conversation-1",
+    runScripts: "outside-only",
+  });
+  openDoms.push(dom);
+  Object.defineProperty(dom.window, "crypto", { configurable: true, value: webcrypto });
+  Object.defineProperty(dom.window, "fetch", { configurable: true, value: adapter.fetch });
+  return dom;
+}
+
+function installBridge(adapter, source = bridgeSource) {
+  const dom = makeDom(adapter);
+  const pending = new Map();
+  const posted = [];
+  Object.defineProperty(dom.window, "postMessage", {
+    configurable: true,
+    value(data) {
+      posted.push(data);
+      const resolve = pending.get(data?.requestId);
+      if (data?.type === "polylogue.chatgpt.assetFetchResponse" && resolve) {
+        pending.delete(data.requestId);
+        resolve(data.outcome);
+      }
+    },
+  });
+  new Script(source).runInContext(dom.getInternalVMContext());
+
+  function requestAsset(overrides = {}) {
+    const requestId = `asset-request-${pending.size + 1}-${posted.length}`;
+    const response = new Promise((resolve) => pending.set(requestId, resolve));
+    dom.window.dispatchEvent(
+      new dom.window.MessageEvent("message", {
+        source: dom.window,
+        origin: dom.window.location.origin,
+        data: {
+          type: "polylogue.chatgpt.assetFetchRequest",
+          requestId,
+          request: {
+            kind: "sandbox",
+            conversationId: "conversation-1",
+            messageId: "assistant-message-1",
+            sandboxPath: "/mnt/data/kit.zip",
+            maxBytes: 1024,
+            ...overrides,
+          },
+        },
+      }),
+    );
+    return response;
+  }
+
+  return { dom, posted, requestAsset };
+}
+
+function installFullCapture(adapter) {
+  const dom = makeDom(adapter);
+  const posted = [];
+  const runtimeMessages = [];
+  const runtimeListeners = [];
+  const chrome = {
+    runtime: {
+      id: "synthetic-extension-id",
+      getManifest: () => ({ version: "0.1.0" }),
+      onMessage: { addListener: (listener) => runtimeListeners.push(listener) },
+      async sendMessage(message) {
+        runtimeMessages.push(message);
+        if (message.type === "polylogue.capture") {
+          return {
+            ok: true,
+            provider: "chatgpt",
+            provider_session_id: "conversation-1",
+            receiver_request_id: "synthetic-request",
+          };
+        }
+        if (message.type === "polylogue.archiveState") return { captured: true, state: "archived" };
+        return { ok: true };
+      },
+    },
+  };
+  Object.defineProperty(dom.window, "chrome", { configurable: true, value: chrome });
+  Object.defineProperty(dom.window, "postMessage", {
+    configurable: true,
+    value(data) {
+      posted.push(data);
+      dom.window.queueMicrotask(() => {
+        dom.window.dispatchEvent(
+          new dom.window.MessageEvent("message", {
+            source: dom.window,
+            origin: dom.window.location.origin,
+            data,
+          }),
+        );
+      });
+    },
+  });
+  const context = dom.getInternalVMContext();
+  new Script(bridgeSource).runInContext(context);
+  new Script(commonSource).runInContext(context);
+  new Script(contentSource).runInContext(context);
+  return { dom, posted, runtimeListeners, runtimeMessages };
+}
+
+afterEach(() => {
+  for (const dom of openDoms.splice(0)) dom.window.close();
+});
+
+describe("ChatGPT authenticated interpreter bridge response contract", () => {
+  it.each([
+    {
+      name: "missing access token",
+      adapter: { authStatus: 401, authBody: { detail: "Unauthorized" } },
+      expected: { status: "unauthorized", phase: "access_token", detail: "access_token_unavailable" },
+    },
+    {
+      name: "provider-reported expired pod",
+      adapter: { metadataBody: { detail: "ace_pod_expired" } },
+      expected: { status: "pod_expired", phase: "metadata", detail: "ace_pod_expired", http_status: 200 },
+    },
+    {
+      name: "provider-reported expired pod on a generic 403",
+      adapter: { metadataStatus: 403, metadataBody: { detail: "ace_pod_expired" } },
+      expected: { status: "pod_expired", phase: "metadata", detail: "ace_pod_expired", http_status: 403 },
+    },
+    {
+      name: "interpreter file missing",
+      adapter: { metadataStatus: 404, metadataBody: { detail: "Interpreter file not found" } },
+      expected: {
+        status: "missing",
+        phase: "metadata",
+        detail: "interpreter_file_not_found",
+        http_status: 404,
+      },
+    },
+    {
+      name: "expired signed URL",
+      adapter: { signedStatus: 403 },
+      expected: {
+        status: "signed_url_expired",
+        phase: "signed_bytes",
+        detail: "signed_url_http_403",
+        http_status: 403,
+      },
+    },
+  ])("classifies $name without collapsing it into a generic HTTP error", async ({ adapter, expected }) => {
+    const harness = installBridge(syntheticEndpointAdapter(adapter));
+
+    await expect(harness.requestAsset()).resolves.toMatchObject(expected);
+  });
+
+  it("acquires signed bytes with a deterministic SHA-256 and no credential disclosure", async () => {
+    const adapter = syntheticEndpointAdapter();
+    const harness = installBridge(adapter);
+
+    const first = await harness.requestAsset();
+    const second = await harness.requestAsset();
+
+    expect(first).toMatchObject({
+      status: "acquired",
+      phase: "complete",
+      asset: {
+        size_bytes: assetBytes.byteLength,
+        sha256: expectedSha256,
+        mime_type: "application/zip",
+        name: "kit.zip",
+      },
+    });
+    expect(second.asset.sha256).toBe(first.asset.sha256);
+    expect(first.asset.base64).toBe(Buffer.from(assetBytes).toString("base64"));
+    const metadataCalls = adapter.calls.filter((call) => call.url.pathname.endsWith("/interpreter/download"));
+    const signedCalls = adapter.calls.filter((call) => call.url.origin === "https://files.example.test");
+    const authCalls = adapter.calls.filter((call) => call.url.pathname === "/api/auth/session");
+    expect(metadataCalls).toHaveLength(2);
+    expect(authorizationHeader(metadataCalls[0].options)).toBe(`Bearer ${bearerToken}`);
+    expect(signedCalls).toHaveLength(2);
+    expect(authorizationHeader(signedCalls[0].options)).toBe(null);
+    expect(signedCalls[0].options.credentials).toBe("omit");
+    expect(authCalls).toHaveLength(1);
+    const disclosed = JSON.stringify(harness.posted);
+    expect(disclosed).not.toContain(bearerToken);
+    expect(disclosed).not.toContain("synthetic-signed-secret");
+  });
+
+  it("rejects a declared body over the per-request cap before publishing bytes", async () => {
+    const harness = installBridge(syntheticEndpointAdapter({ declaredSize: 2048 }));
+
+    await expect(harness.requestAsset({ maxBytes: 1024 })).resolves.toMatchObject({
+      status: "too_large",
+      phase: "signed_bytes",
+      detail: "content_length_over_limit",
+      size_bytes: 2048,
+    });
+  });
+
+  it("reproduces the old unauthorized behavior when the production bearer dependency is removed", async () => {
+    const bearerRequest = '{ credentials: "include", cache: "no-store", headers: bearerHeaders(accessToken) }';
+    const cookieOnlyRequest = '{ credentials: "include", cache: "no-store", headers: {} }';
+    const unauthenticatedSource = bridgeSource.replace(bearerRequest, cookieOnlyRequest);
+    expect(unauthenticatedSource).not.toBe(bridgeSource);
+    const authenticated = installBridge(syntheticEndpointAdapter());
+    const unauthenticated = installBridge(syntheticEndpointAdapter(), unauthenticatedSource);
+
+    await expect(authenticated.requestAsset()).resolves.toMatchObject({ status: "acquired" });
+    await expect(unauthenticated.requestAsset()).resolves.toMatchObject({
+      status: "unauthorized",
+      phase: "metadata",
+      http_status: 401,
+    });
+  });
+});
+
+describe("ChatGPT authenticated asset capture envelope", () => {
+  it("records stable attachment identity, bytes, size, and SHA receipt across repeat capture", async () => {
+    const adapter = syntheticEndpointAdapter();
+    const harness = installFullCapture(adapter);
+
+    const result = await harness.dom.window.polylogueCapture.capturePage();
+    const repeated = await harness.dom.window.polylogueCapture.capturePage();
+
+    expect(result.ok).toBe(true);
+    expect(repeated.ok).toBe(true);
+    expect(repeated.envelope.session).toEqual(result.envelope.session);
+    const [attachment] = result.envelope.session.attachments;
+    expect(attachment).toMatchObject({
+      provider_attachment_id: "sandbox:assistant-message-1:/mnt/data/kit.zip",
+      message_provider_id: "assistant-message-1",
+      name: "kit.zip",
+      size_bytes: assetBytes.byteLength,
+      inline_base64: Buffer.from(assetBytes).toString("base64"),
+      provider_meta: {
+        capture_source: "chatgpt_page_asset_fetch",
+        asset_kind: "sandbox",
+        sandbox_path: "/mnt/data/kit.zip",
+        content_sha256: expectedSha256,
+      },
+    });
+    expect(result.envelope.session.provider_meta.asset_acquisition).toMatchObject({
+      attempted: 1,
+      acquired: 1,
+      status_counts: { acquired: 1 },
+      acquired_assets: [
+        {
+          provider_attachment_id: "sandbox:assistant-message-1:/mnt/data/kit.zip",
+          sha256: expectedSha256,
+          size_bytes: assetBytes.byteLength,
+        },
+      ],
+      failed: [],
+    });
+    const captureMessages = harness.runtimeMessages.filter((message) => message.type === "polylogue.capture");
+    expect(captureMessages).toHaveLength(2);
+    expect(captureMessages[0].envelope).toEqual(result.envelope);
+    expect(captureMessages[1].envelope).toEqual(repeated.envelope);
+    const durablePayload = JSON.stringify({ envelope: result.envelope, posted: harness.posted });
+    expect(durablePayload).not.toContain(bearerToken);
+    expect(durablePayload).not.toContain("synthetic-signed-secret");
+  });
+});
