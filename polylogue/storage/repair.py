@@ -72,6 +72,7 @@ class RawMaterializationCandidates:
     adoption_deferred: int = 0
     authority_quarantined: int = 0
     byte_authority_fragments: int = 0
+    byte_authority_quarantined: int = 0
     byte_authority_pending: int = 0
     expanded_raw_ids: tuple[str, ...] = ()
     expanded_blob_bytes: dict[str, int] = field(default_factory=dict)
@@ -208,13 +209,17 @@ def _raw_materialization_candidate_ids(
                          AND c.status = 'complete'
                          AND m.decision = 'ambiguous'
                    ) AS membership_authority_quarantined
-                   , EXISTS (
-                       SELECT 1
-                       FROM raw_membership_census AS c
-                       WHERE c.raw_id = r.raw_id
-                         AND c.status = 'failed'
-                         AND c.detail = ?
-                   ) AS byte_authority_fragment
+                   , (r.source_index = -1 AND r.revision_authority = 'byte_proven')
+                     AS byte_authority_fragment
+                   , (r.source_index = -1
+                      AND r.revision_authority != 'byte_proven'
+                      AND EXISTS (
+                        SELECT 1
+                        FROM raw_membership_census AS c
+                        WHERE c.raw_id = r.raw_id
+                          AND c.status = 'failed'
+                          AND c.detail = ?
+                      )) AS byte_authority_quarantined
                    , (r.source_index = -1 AND NOT EXISTS (
                        SELECT 1
                        FROM raw_membership_census AS c
@@ -257,6 +262,7 @@ def _raw_materialization_candidate_ids(
         adoption_deferred = 0
         authority_quarantined = 0
         byte_authority_fragments = 0
+        byte_authority_quarantined = 0
         byte_authority_pending = 0
         for row in rows:
             if bool(row["adoption_deferred"]):
@@ -271,6 +277,9 @@ def _raw_materialization_candidate_ids(
                 continue
             if bool(row["byte_authority_fragment"]):
                 byte_authority_fragments += 1
+                continue
+            if bool(row["byte_authority_quarantined"]):
+                byte_authority_quarantined += 1
                 continue
             if bool(row["byte_authority_pending"]):
                 byte_authority_pending += 1
@@ -323,6 +332,7 @@ def _raw_materialization_candidate_ids(
         adoption_deferred=adoption_deferred,
         authority_quarantined=authority_quarantined,
         byte_authority_fragments=byte_authority_fragments,
+        byte_authority_quarantined=byte_authority_quarantined,
         byte_authority_pending=byte_authority_pending,
         expanded_raw_ids=expanded_raw_ids,
         expanded_blob_bytes=expanded_blob_bytes,
@@ -410,6 +420,7 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
             "durable_authority_debt_count": 0,
             "authority_quarantined_count": 0,
             "byte_authority_fragment_count": 0,
+            "byte_authority_quarantined_count": 0,
             "byte_authority_pending_count": 0,
             "candidate_count": 0,
             "top_raw_rows": [],
@@ -453,7 +464,10 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
     resource_blocked_count = len(blocked_component_raw_ids)
     blocked_candidate_count = resource_blocked_count + candidates.adoption_deferred + candidates.byte_authority_pending
     durable_authority_debt_count = (
-        candidates.authority_quarantined + candidates.byte_authority_fragments + candidates.byte_authority_pending
+        candidates.authority_quarantined
+        + candidates.byte_authority_fragments
+        + candidates.byte_authority_quarantined
+        + candidates.byte_authority_pending
     )
     return {
         "available": True,
@@ -471,6 +485,7 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
         "durable_authority_debt_count": durable_authority_debt_count,
         "authority_quarantined_count": candidates.authority_quarantined,
         "byte_authority_fragment_count": candidates.byte_authority_fragments,
+        "byte_authority_quarantined_count": candidates.byte_authority_quarantined,
         "byte_authority_pending_count": candidates.byte_authority_pending,
         "adoption_deferred_count": candidates.adoption_deferred,
         "candidate_count": len(candidates.raw_ids),
@@ -1642,6 +1657,7 @@ def repair_raw_materialization(
         "raw_materialization_adoption_deferred_count": float(candidates.adoption_deferred),
         "raw_materialization_authority_quarantined_count": float(candidates.authority_quarantined),
         "raw_materialization_byte_authority_fragment_count": float(candidates.byte_authority_fragments),
+        "raw_materialization_byte_authority_quarantined_count": float(candidates.byte_authority_quarantined),
         "raw_materialization_byte_authority_pending_count": float(candidates.byte_authority_pending),
     }
     if raw_artifact_limit is not None:
@@ -1665,10 +1681,16 @@ def repair_raw_materialization(
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
     if not raw_ids:
         detail = "Executable raw replay converged"
-        if candidates.authority_quarantined or candidates.byte_authority_fragments or candidates.byte_authority_pending:
+        if (
+            candidates.authority_quarantined
+            or candidates.byte_authority_fragments
+            or candidates.byte_authority_quarantined
+            or candidates.byte_authority_pending
+        ):
             detail += (
                 f"; {candidates.authority_quarantined:,} explicit authority quarantine(s), "
                 f"{candidates.byte_authority_fragments:,} byte-authority fragment(s) excluded from replay, "
+                f"{candidates.byte_authority_quarantined:,} append authority quarantine(s), "
                 f"{candidates.byte_authority_pending:,} append fragment(s) pending byte-authority adjudication"
             )
         if candidates.adoption_deferred:
@@ -1687,7 +1709,11 @@ def repair_raw_materialization(
                 and candidates.byte_authority_pending == 0
                 and (
                     raw_artifact_id is None
-                    or (candidates.authority_quarantined == 0 and candidates.byte_authority_fragments == 0)
+                    or (
+                        candidates.authority_quarantined == 0
+                        and candidates.byte_authority_fragments == 0
+                        and candidates.byte_authority_quarantined == 0
+                    )
                 )
             ),
             detail=detail,
@@ -1773,6 +1799,9 @@ def repair_raw_materialization(
             "raw_materialization_remaining_candidate_count": float(len(remaining.raw_ids)),
             "raw_materialization_remaining_authority_quarantined_count": float(remaining.authority_quarantined),
             "raw_materialization_remaining_byte_authority_fragment_count": float(remaining.byte_authority_fragments),
+            "raw_materialization_remaining_byte_authority_quarantined_count": float(
+                remaining.byte_authority_quarantined
+            ),
             "raw_materialization_remaining_byte_authority_pending_count": float(remaining.byte_authority_pending),
         }
     )
@@ -1784,7 +1813,11 @@ def repair_raw_materialization(
         and remaining.byte_authority_pending == 0
         and (
             raw_artifact_id is None
-            or (remaining.authority_quarantined == 0 and remaining.byte_authority_fragments == 0)
+            or (
+                remaining.authority_quarantined == 0
+                and remaining.byte_authority_fragments == 0
+                and remaining.byte_authority_quarantined == 0
+            )
         )
     )
     detail = (
@@ -1797,10 +1830,16 @@ def repair_raw_materialization(
         detail += f"; {replay.adoption_deferred:,} revision(s) deferred behind incomparable existing index state"
     if remaining.adoption_deferred:
         detail += f"; {remaining.adoption_deferred:,} deferred adoption decision(s) remain blocked"
-    if remaining.authority_quarantined or remaining.byte_authority_fragments or remaining.byte_authority_pending:
+    if (
+        remaining.authority_quarantined
+        or remaining.byte_authority_fragments
+        or remaining.byte_authority_quarantined
+        or remaining.byte_authority_pending
+    ):
         detail += (
             f"; durable authority debt: {remaining.authority_quarantined:,} quarantine(s), "
             f"{remaining.byte_authority_fragments:,} governed append fragment(s), "
+            f"{remaining.byte_authority_quarantined:,} append authority quarantine(s), "
             f"{remaining.byte_authority_pending:,} append fragment(s) pending adjudication"
         )
     if oversized_raw_ids:

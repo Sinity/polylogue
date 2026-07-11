@@ -739,7 +739,7 @@ def test_raw_materialization_retires_only_complete_governed_bundle_membership(tm
                     raw_id, parser_fingerprint, status, member_count, censused_at_ms
                 ) VALUES (?, 'test', 'complete', ?, 1)
                 """,
-                (raw_id, 2 if position == 1 else 1),
+                (raw_id, 2 if position in (1, 4) else 1),
             )
             source_conn.execute(
                 """
@@ -758,6 +758,17 @@ def test_raw_materialization_retires_only_complete_governed_bundle_membership(tm
                     1 if decision is not None else None,
                 ),
             )
+            if position == 4:
+                source_conn.execute(
+                    """
+                    INSERT INTO raw_session_memberships (
+                        raw_id, logical_source_key, provider_session_id, source_revision,
+                        normalized_content_hash, message_count, decision, decided_at_ms
+                    ) VALUES (?, 'bundle:4:second', 'session-4-second', 'revision-4-second', ?, 1,
+                              'superseded_equivalent', 1)
+                    """,
+                    (raw_id, bytes.fromhex(raw_id)),
+                )
         source_conn.commit()
 
     candidates = repair_mod._raw_materialization_candidate_ids(config)
@@ -812,8 +823,19 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
     governed_target = repair_mod.repair_raw_materialization(config, raw_artifact_id=raw_id)
 
     assert governed.byte_authority_pending == 0
-    assert governed.byte_authority_fragments == 1
+    assert governed.byte_authority_quarantined == 1
     assert governed_target.success is False
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET revision_authority = 'byte_proven' WHERE raw_id = ?",
+            (raw_id,),
+        )
+        source_conn.commit()
+
+    proven = repair_mod._raw_materialization_candidate_ids(config)
+    assert proven.byte_authority_quarantined == 0
+    assert proven.byte_authority_fragments == 1
 
 
 def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_path: Path) -> None:
