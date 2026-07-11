@@ -252,6 +252,26 @@ def _parse_command_overrides(
     return overrides, errors
 
 
+def _scan_timeout_marker(
+    marker: ast.expr,
+    *,
+    path: str,
+    pytest_names: set[str],
+    mark_names: set[str],
+) -> tuple[TimeoutOverride | None, str | None]:
+    if not _is_pytest_timeout_decorator(marker, pytest_names, mark_names):
+        return None, None
+    if not isinstance(marker, ast.Call):
+        return None, f"{path}:{marker.lineno}: malformed pytest timeout decorator is missing a timeout value"
+    return _parse_decorator_override(path, marker)
+
+
+def _pytestmark_values(node: ast.expr) -> list[ast.expr]:
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return list(node.elts)
+    return [node]
+
+
 def _scan_python(
     path: Path, root: Path, *, scan_decorators: bool, scan_commands: bool
 ) -> tuple[list[TimeoutOverride], list[str]]:
@@ -265,17 +285,36 @@ def _scan_python(
     errors: list[str] = []
     pytest_names, mark_names = _pytest_aliases(tree)
     assignments = _module_assignments(tree)
-    for node in ast.walk(tree):
-        if scan_decorators and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for decorator in node.decorator_list:
-                if not _is_pytest_timeout_decorator(decorator, pytest_names, mark_names):
-                    continue
-                if not isinstance(decorator, ast.Call):
-                    errors.append(
-                        f"{relative}:{decorator.lineno}: malformed pytest timeout decorator is missing a timeout value"
-                    )
-                    continue
-                override, error = _parse_decorator_override(relative, decorator)
+    if scan_decorators:
+        for top_level in tree.body:
+            if not isinstance(top_level, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = top_level.targets if isinstance(top_level, ast.Assign) else [top_level.target]
+            value = top_level.value
+            if value is None or not any(
+                isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets
+            ):
+                continue
+            for marker in _pytestmark_values(value):
+                override, error = _scan_timeout_marker(
+                    marker,
+                    path=relative,
+                    pytest_names=pytest_names,
+                    mark_names=mark_names,
+                )
+                if override is not None:
+                    overrides.append(override)
+                if error is not None:
+                    errors.append(error)
+    for candidate in ast.walk(tree):
+        if scan_decorators and isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for decorator in candidate.decorator_list:
+                override, error = _scan_timeout_marker(
+                    decorator,
+                    path=relative,
+                    pytest_names=pytest_names,
+                    mark_names=mark_names,
+                )
                 if override is not None:
                     overrides.append(override)
                 if error is not None:
@@ -284,23 +323,23 @@ def _scan_python(
             continue
         command_nodes: list[ast.expr] | None = None
         is_pytest_command = False
-        line = getattr(node, "lineno", 0)
-        if isinstance(node, (ast.List, ast.Tuple, ast.BinOp)):
-            flattened = _flatten_command_expression(node, assignments)
+        line = getattr(candidate, "lineno", 0)
+        if isinstance(candidate, (ast.List, ast.Tuple, ast.BinOp)):
+            flattened = _flatten_command_expression(candidate, assignments)
             if flattened is not None:
                 command_nodes, dynamic_expression = flattened
                 is_pytest_command = _is_literal_pytest_command(command_nodes)
-                if is_pytest_command and dynamic_expression and _is_dynamic_timeout_option(node, assignments):
+                if is_pytest_command and dynamic_expression and _is_dynamic_timeout_option(candidate, assignments):
                     errors.append(f"{relative}:{line}: dynamic managed pytest command expression is forbidden")
-        elif isinstance(node, ast.Call) and _is_pytest_execution_call(node):
-            flattened = _flatten_command_expression(ast.Tuple(elts=node.args, ctx=ast.Load()), assignments)
+        elif isinstance(candidate, ast.Call) and _is_pytest_execution_call(candidate):
+            flattened = _flatten_command_expression(ast.Tuple(elts=candidate.args, ctx=ast.Load()), assignments)
             if flattened is None:
                 if any(
                     _is_dynamic_timeout_option(
                         argument.value if isinstance(argument, ast.Starred) else argument,
                         assignments,
                     )
-                    for argument in node.args
+                    for argument in candidate.args
                 ):
                     errors.append(f"{relative}:{line}: dynamic managed pytest command expression is forbidden")
             else:
@@ -311,7 +350,7 @@ def _scan_python(
                         argument.value if isinstance(argument, ast.Starred) else argument,
                         assignments,
                     )
-                    for argument in node.args
+                    for argument in candidate.args
                 ):
                     errors.append(f"{relative}:{line}: dynamic managed pytest command expression is forbidden")
         if command_nodes is not None and is_pytest_command:
