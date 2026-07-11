@@ -26,6 +26,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitActio
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
 _ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
@@ -858,11 +859,14 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
     assert payload["ok"] is True
     assert payload["tier"] == "user"
     assert payload["from_version"] == 3
-    assert payload["to_version"] == 4
-    assert payload["applied_versions"] == [4]
+    assert payload["to_version"] == USER_SCHEMA_VERSION
+    assert payload["applied_versions"] == [4, 5]
     assert payload["backup_receipt"] == str(manifest.with_name("verification-receipt.json"))
     with sqlite3.connect(user_db) as conn:
         assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='context_deliveries'"
+        ).fetchone()
 
 
 def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(
@@ -1324,6 +1328,7 @@ def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path)
         "classified_full_count": 0,
         "replayed_logical_source_count": 0,
         "quarantined_raw_count": 0,
+        "adoption_deferred_raw_count": 0,
         "authority_selection_expanded": True,
     }
 

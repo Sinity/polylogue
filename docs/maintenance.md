@@ -370,13 +370,13 @@ escalate.
 
 **Symptoms.** Polylogue refuses to start after a schema bump:
 `SchemaVersionError: database is version N, code expects version M`.
-Polylogue uses fresh-first schema versioning, not in-place upgrade chains
-(see [internals.md § Schema Versioning
-Model](internals.md#schema-versioning-model)) — there is no
-auto-downgrade.
+Polylogue uses durability-keyed schema versioning (see
+[internals.md § Schema Versioning Model](internals.md#schema-versioning-model)):
+derived tiers rebuild, while durable `source.db` and `user.db` may advance only
+through explicit additive numbered migrations. There is no auto-downgrade.
 
-**Root cause.** A new release advanced `SCHEMA_VERSION` and the
-database is on the previous version. There is no reverse in-place upgrade.
+**Root cause.** A new release advanced one tier's schema version and the
+database is on the previous version. There is no reverse in-place migration.
 
 **Recovery.**
 
@@ -388,31 +388,41 @@ sqlite3 ~/.local/share/polylogue/index.db "PRAGMA user_version;"
 # 2. STOP the daemon to release exclusive locks.
 systemctl --user stop polylogued.service
 
-# 3. Decide: roll the code back, or rebuild the changed tier forward.
-#    There is no third option — fresh-first schema versioning is
-#    explicit about rejecting mismatched databases.
+# 3. Classify the tier before acting.
 
 # 3a. Code rollback (preferred when a release just went out and you
 #     have not yet relied on any new feature):
 #     install the previous polylogue version, leave the database
 #     alone, restart the daemon.
 
-# 3b. Forward rebuild: keep the source/user/embedding tiers safe,
+# 3b. Derived-tier forward rebuild: keep the source/user/embedding tiers safe,
 #     move the mismatched index database aside, and re-ingest/rederive
 #     the rebuildable index with the new polylogue binary.
 cp ~/.local/share/polylogue/index.db /tmp/index-before-rebuild.db
 # ...run the documented re-ingest/rederive flow for the release, verify
 # it opens cleanly with the new polylogue binary, then restart production.
 
+# 3c. Durable-tier additive migration: keep the daemon stopped, create and
+#     scratch-verify a minimal backup, then use its authenticated receipt.
+polylogue ops backup --output-dir /path/to/staging \
+  --profile user_overlays --verify
+polylogue ops maintenance migrate-tier user \
+  --backup-manifest /path/to/staging/polylogue-archive-*/manifest.json \
+  --output-format json
+
 # 4. Restart and verify.
 systemctl --user start polylogued.service
 polylogue ops doctor
 ```
 
-Polylogue does not maintain an in-place upgrade chain for ordinary schema
-bumps. If the release notes do not provide an explicit, reviewed
-transition, **do not** hand-edit the schema. Move the mismatched tier
-aside, protect `source.db` and `user.db`, and rebuild from source.
+Never hand-edit a tier or use a plain manifest as migration authority. A
+durable migration requires a successful scratch-restore receipt authenticated
+by the exact live tier's local key; public hashes and an in-memory "Verification: OK" are
+insufficient. Keep the backup as an independent copied file set: linked or
+symlinked tiers are rejected because they do not survive mutation of the live
+database. If release notes provide neither an additive durable migration
+nor a derived-tier rebuild plan, keep the daemon stopped and roll back the
+binary.
 
 ### Investigating a stuck source
 

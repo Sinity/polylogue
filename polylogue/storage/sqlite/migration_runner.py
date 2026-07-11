@@ -6,17 +6,23 @@ import hashlib
 import json
 import re
 import sqlite3
+import stat
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
+from polylogue.storage.backup_attestation import (
+    VERIFICATION_RECEIPT_FORMAT,
+    BackupAttestationError,
+    verify_verification_receipt,
+)
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER})
 _MIGRATION_NAME_RE = re.compile(r"^(?P<version>\d{3,})_[a-z0-9_]+\.sql$")
 _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
-_VERIFICATION_RECEIPT_FORMAT = "polylogue-backup-verification-receipt-v1"
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 
 class MigrationError(RuntimeError):
@@ -82,13 +88,95 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _require_real_backup_directory(path: Path, *, label: str) -> Path:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise MigrationError(f"migration {label} is missing: {path}") from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise MigrationError(f"migration {label} is not a real directory: {path}")
+    return path.resolve(strict=True)
+
+
+def _require_regular_backup_artifact(path: Path, *, backup_root: Path, label: str) -> None:
+    root_resolved = _require_real_backup_directory(backup_root, label="backup root")
+    try:
+        relative = path.relative_to(backup_root)
+    except ValueError as exc:
+        raise MigrationError(f"migration {label} is outside the backup root: {path}") from exc
+    current = backup_root
+    for part in relative.parts[:-1]:
+        current /= part
+        _require_real_backup_directory(current, label=f"{label} parent")
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise MigrationError(f"migration {label} is missing: {path}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise MigrationError(f"migration {label} is not a real regular file: {path}")
+    if metadata.st_nlink != 1:
+        raise MigrationError(f"migration {label} has multiple hard links: {path}")
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(root_resolved):
+        raise MigrationError(f"migration {label} resolves outside the backup root: {path}")
+
+
+def _regular_backup_blob_files(backup_root: Path) -> list[Path]:
+    blob_root = backup_root / "blob"
+    if not blob_root.exists() and not blob_root.is_symlink():
+        return []
+    _require_real_backup_directory(blob_root, label="backup blob root")
+    files: list[Path] = []
+    for candidate in sorted(blob_root.rglob("*")):
+        metadata = candidate.lstat()
+        if stat.S_ISDIR(metadata.st_mode):
+            _require_real_backup_directory(candidate, label="backup blob directory")
+            continue
+        _require_regular_backup_artifact(candidate, backup_root=backup_root, label="backup blob")
+        files.append(candidate)
+    return files
+
+
+def _reject_sqlite_sidecars(path: Path) -> None:
+    for suffix in _SQLITE_SIDECAR_SUFFIXES:
+        sidecar = Path(f"{path}{suffix}")
+        if sidecar.exists() or sidecar.is_symlink():
+            raise MigrationError(f"migration backup tier has an unbound SQLite sidecar: {sidecar}")
+
+
+def _backup_artifact_inventory(backup_root: Path) -> list[dict[str, object]]:
+    _require_real_backup_directory(backup_root, label="backup root")
+    rows: list[dict[str, object]] = []
+    for candidate in sorted(backup_root.rglob("*")):
+        relative = candidate.relative_to(backup_root)
+        if relative == Path(_VERIFICATION_RECEIPT_FILE):
+            continue
+        metadata = candidate.lstat()
+        if stat.S_ISDIR(metadata.st_mode):
+            _require_real_backup_directory(candidate, label="backup artifact directory")
+            rows.append({"path": str(relative), "type": "directory"})
+            continue
+        if candidate.name.endswith(_SQLITE_SIDECAR_SUFFIXES):
+            raise MigrationError(f"migration backup contains an unbound SQLite sidecar: {candidate}")
+        _require_regular_backup_artifact(candidate, backup_root=backup_root, label="backup artifact")
+        rows.append(
+            {
+                "path": str(relative),
+                "type": "file",
+                "size_bytes": metadata.st_size,
+                "sha256": _sha256_file(candidate),
+            }
+        )
+    return rows
+
+
 def _canonical_json_sha256(payload: object) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
 def _sqlite_user_version(path: Path) -> int:
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+    with sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True) as conn:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 
@@ -133,7 +221,13 @@ def _load_json(path: Path, *, label: str) -> dict[str, object]:
     return payload
 
 
-def _validate_tier_artifact(backup_root: Path, artifact: dict[str, object]) -> None:
+def _validate_tier_artifact(
+    backup_root: Path,
+    artifact: dict[str, object],
+    *,
+    file_evidence: dict[str, dict[str, object]],
+    live_tier_path: Path | None = None,
+) -> None:
     tier = artifact.get("tier")
     if not isinstance(tier, str) or tier not in {item.value for item in ArchiveTier}:
         raise MigrationError("migration backup receipt tier artifact has an invalid tier")
@@ -141,18 +235,34 @@ def _validate_tier_artifact(backup_root: Path, artifact: dict[str, object]) -> N
     if not isinstance(filename, str) or filename != f"{tier}.db":
         raise MigrationError("migration backup receipt tier artifact path is not canonical")
     artifact_path = backup_root / filename
-    if not artifact_path.exists():
+    if not artifact_path.exists() and not artifact_path.is_symlink():
         raise MigrationError(f"migration backup receipt references missing tier artifact: {artifact_path}")
-    if _json_int(artifact.get("size_bytes")) != artifact_path.stat().st_size:
+    _require_regular_backup_artifact(artifact_path, backup_root=backup_root, label="backup tier")
+    _reject_sqlite_sidecars(artifact_path)
+    if live_tier_path is not None and artifact_path.samefile(live_tier_path):
+        raise MigrationError(f"migration backup tier artifact aliases the live tier: {filename}")
+    current_evidence = file_evidence.get(filename, {})
+    if _json_int(artifact.get("size_bytes")) != _json_int(current_evidence.get("size_bytes")):
         raise MigrationError(f"migration backup tier artifact size mismatch: {filename}")
-    if str(artifact.get("sha256")) != _sha256_file(artifact_path):
+    if str(artifact.get("sha256")) != str(current_evidence.get("sha256")):
         raise MigrationError(f"migration backup tier artifact hash mismatch: {filename}")
     if _json_int(artifact.get("user_version")) != _sqlite_user_version(artifact_path):
         raise MigrationError(f"migration backup tier artifact user_version mismatch: {filename}")
+    source_fingerprint = artifact.get("source_fingerprint")
+    if not isinstance(source_fingerprint, dict) or any(
+        artifact.get(field) != source_fingerprint.get(field) for field in ("size_bytes", "sha256", "user_version")
+    ):
+        raise MigrationError(f"migration backup tier artifact does not match its live source fingerprint: {filename}")
 
 
 def _validated_receipt_artifacts(
-    backup_root: Path, manifest: dict[str, object], receipt: dict[str, object]
+    backup_root: Path,
+    manifest: dict[str, object],
+    receipt: dict[str, object],
+    *,
+    target_tier: str,
+    live_tier_path: Path,
+    file_evidence: dict[str, dict[str, object]],
 ) -> dict[str, dict[str, object]]:
     included = _json_str_list(manifest.get("included_tiers"))
     if len(included) != len(set(included)) or any(
@@ -172,7 +282,12 @@ def _validated_receipt_artifacts(
         tier = artifact.get("tier")
         if not isinstance(tier, str) or f"{tier}.db" not in included or tier in by_tier:
             raise MigrationError("migration backup receipt tier artifacts do not match included tiers")
-        _validate_tier_artifact(backup_root, artifact)
+        _validate_tier_artifact(
+            backup_root,
+            artifact,
+            file_evidence=file_evidence,
+            live_tier_path=live_tier_path if tier == target_tier else None,
+        )
         by_tier[tier] = artifact
     if set(by_tier) != {name.removesuffix(".db") for name in included}:
         raise MigrationError("migration backup receipt tier artifacts do not match included tiers")
@@ -211,22 +326,43 @@ def _inventory_path(backup_root: Path, manifest: dict[str, object]) -> tuple[str
     return inventory_file, backup_root / relative
 
 
-def _blob_inventory_file_evidence(backup_root: Path, manifest: dict[str, object]) -> dict[str, object]:
+def _blob_inventory_file_evidence(
+    backup_root: Path,
+    manifest: dict[str, object],
+    *,
+    file_evidence: dict[str, dict[str, object]],
+) -> dict[str, object]:
     inventory_file, inventory_path = _inventory_path(backup_root, manifest)
-    if not inventory_path.exists():
+    if not inventory_path.exists() and not inventory_path.is_symlink():
         return {"path": inventory_file, "present": False, "size_bytes": 0, "sha256": None}
+    _require_regular_backup_artifact(
+        inventory_path,
+        backup_root=backup_root,
+        label="backup blob inventory",
+    )
+    evidence = file_evidence.get(inventory_file, {})
     return {
         "path": inventory_file,
         "present": True,
-        "size_bytes": inventory_path.stat().st_size,
-        "sha256": _sha256_file(inventory_path),
+        "size_bytes": evidence.get("size_bytes"),
+        "sha256": evidence.get("sha256"),
     }
 
 
-def _current_blob_inventory(backup_root: Path, manifest: dict[str, object]) -> list[dict[str, object]]:
+def _current_blob_inventory(
+    backup_root: Path,
+    manifest: dict[str, object],
+    *,
+    file_evidence: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
     _inventory_file, inventory_path = _inventory_path(backup_root, manifest)
     declared: dict[str, dict[str, object]] = {}
-    if inventory_path.exists():
+    if inventory_path.exists() or inventory_path.is_symlink():
+        _require_regular_backup_artifact(
+            inventory_path,
+            backup_root=backup_root,
+            label="backup blob inventory",
+        )
         try:
             raw_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
@@ -237,36 +373,44 @@ def _current_blob_inventory(backup_root: Path, manifest: dict[str, object]) -> l
             if isinstance(item, dict) and "blob_hash" in item:
                 declared[str(item["blob_hash"])] = item
     rows: list[dict[str, object]] = []
-    blob_root = backup_root / "blob"
-    if blob_root.exists():
-        for blob_path in sorted(path for path in blob_root.rglob("*") if path.is_file()):
-            if blob_path.is_symlink():
-                raise MigrationError(f"migration backup blob inventory contains a symlink: {blob_path}")
-            blob_hash = blob_path.parent.name + blob_path.name
-            if (
-                len(blob_hash) != 64
-                or any(character not in "0123456789abcdef" for character in blob_hash)
-                or blob_path.relative_to(backup_root) != Path("blob") / blob_hash[:2] / blob_hash[2:]
-            ):
-                raise MigrationError(f"migration backup blob inventory has a non-canonical blob path: {blob_path}")
-            declared_item = declared.get(blob_hash, {})
-            protection = declared_item.get("protection")
-            rows.append(
-                {
-                    "blob_hash": blob_hash,
-                    "path": str(blob_path.relative_to(backup_root)),
-                    "size_bytes": blob_path.stat().st_size,
-                    "sha256": _sha256_file(blob_path),
-                    "protection": _json_str_list(protection),
-                }
-            )
+    for blob_path in _regular_backup_blob_files(backup_root):
+        blob_hash = blob_path.parent.name + blob_path.name
+        if (
+            len(blob_hash) != 64
+            or any(character not in "0123456789abcdef" for character in blob_hash)
+            or blob_path.relative_to(backup_root) != Path("blob") / blob_hash[:2] / blob_hash[2:]
+        ):
+            raise MigrationError(f"migration backup blob inventory has a non-canonical blob path: {blob_path}")
+        declared_item = declared.get(blob_hash, {})
+        protection = declared_item.get("protection")
+        relative_path = str(blob_path.relative_to(backup_root))
+        evidence = file_evidence.get(relative_path, {})
+        rows.append(
+            {
+                "blob_hash": blob_hash,
+                "path": relative_path,
+                "size_bytes": evidence.get("size_bytes"),
+                "sha256": evidence.get("sha256"),
+                "protection": _json_str_list(protection),
+            }
+        )
     rows.sort(key=lambda item: str(item["blob_hash"]))
     return rows
 
 
-def _validate_blob_inventory(backup_root: Path, manifest: dict[str, object], receipt: dict[str, object]) -> None:
-    current = _current_blob_inventory(backup_root, manifest)
-    if receipt.get("blob_inventory_file") != _blob_inventory_file_evidence(backup_root, manifest):
+def _validate_blob_inventory(
+    backup_root: Path,
+    manifest: dict[str, object],
+    receipt: dict[str, object],
+    *,
+    file_evidence: dict[str, dict[str, object]],
+) -> None:
+    current = _current_blob_inventory(backup_root, manifest, file_evidence=file_evidence)
+    if receipt.get("blob_inventory_file") != _blob_inventory_file_evidence(
+        backup_root,
+        manifest,
+        file_evidence=file_evidence,
+    ):
         raise MigrationError("migration backup receipt blob inventory file mismatch")
     expected_root = str(receipt.get("blob_inventory_root_sha256") or "")
     if expected_root != _canonical_json_sha256(current):
@@ -284,8 +428,11 @@ def validate_migration_backup_manifest(
 ) -> Path:
     """Validate that ``path`` has a successful backup verification receipt."""
     manifest_path = _backup_manifest_path(path)
-    if not manifest_path.exists():
+    if not manifest_path.exists() and not manifest_path.is_symlink():
         raise MigrationError(f"migration requires an existing backup manifest; missing {manifest_path}")
+    backup_root = manifest_path.parent
+    _require_real_backup_directory(backup_root, label="backup root")
+    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
     payload = _load_json(manifest_path, label="manifest")
     if payload.get("format") != "polylogue-backup-v1":
         raise MigrationError(f"migration backup manifest has unsupported format: {manifest_path}")
@@ -293,25 +440,43 @@ def validate_migration_backup_manifest(
     if f"{tier.value}.db" not in included:
         raise MigrationError(f"migration backup manifest does not include {tier.value}.db: {manifest_path}")
     receipt_path = _receipt_path(manifest_path)
-    if not receipt_path.exists():
+    if not receipt_path.exists() and not receipt_path.is_symlink():
         raise MigrationError(f"migration requires a successful backup verification receipt; missing {receipt_path}")
+    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
     receipt = _load_json(receipt_path, label="verification receipt")
-    if receipt.get("format") != _VERIFICATION_RECEIPT_FORMAT:
+    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT:
         raise MigrationError(f"migration backup receipt has unsupported format: {receipt_path}")
+    if connection is None:
+        raise MigrationError("migration backup receipt authentication requires the live tier connection")
+    live_tier_path = _connection_main_path(connection).resolve(strict=False)
+    try:
+        verify_verification_receipt(receipt, tier=tier.value, live_tier_path=live_tier_path)
+    except BackupAttestationError as exc:
+        raise MigrationError(f"migration backup receipt authentication failed: {exc}") from exc
     if receipt.get("verdict") != "success":
         raise MigrationError(f"migration backup receipt is not a successful verification: {receipt_path}")
-    if _json_int(receipt.get("manifest_size_bytes")) != manifest_path.stat().st_size:
+    artifact_inventory = _backup_artifact_inventory(backup_root)
+    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
+    manifest_evidence = file_evidence.get("manifest.json", {})
+    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
         raise MigrationError("migration backup receipt does not match manifest size")
-    if receipt.get("manifest_sha256") != _sha256_file(manifest_path):
+    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
         raise MigrationError("migration backup receipt does not match manifest bytes")
-    backup_root = manifest_path.parent
-    artifacts = _validated_receipt_artifacts(backup_root, payload, receipt)
+    artifacts = _validated_receipt_artifacts(
+        backup_root,
+        payload,
+        receipt,
+        target_tier=tier.value,
+        live_tier_path=live_tier_path,
+        file_evidence=file_evidence,
+    )
     artifact = artifacts.get(tier.value)
     if artifact is None:
         raise MigrationError(f"migration backup receipt does not include {tier.value}.db: {receipt_path}")
-    _validate_blob_inventory(backup_root, payload, receipt)
-    if connection is not None:
-        _validate_live_source_fingerprint(connection, artifact)
+    _validate_blob_inventory(backup_root, payload, receipt, file_evidence=file_evidence)
+    if receipt.get("artifact_inventory") != artifact_inventory:
+        raise MigrationError("migration backup receipt does not match the closed artifact inventory")
+    _validate_live_source_fingerprint(connection, artifact)
     return receipt_path
 
 

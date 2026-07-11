@@ -421,11 +421,12 @@ an extracted record inside the member, not the member file itself.
 SQLite `VACUUM` rebuilds the database file, reclaiming free pages. It
 requires the full database size in free disk space. Two approaches:
 
-1. **Online** (preferred): `polylogue ops backup` uses `VACUUM INTO` to
-   produce a clean copy without blocking the daemon. Swap the new file
-   in during a maintenance window.
-2. **Offline**: Stop the daemon, run `sqlite3 <db> "VACUUM"`, then
-   restart. Only needed when `VACUUM INTO` is unavailable (SQLite < 3.27).
+`polylogue ops backup` is not a vacuum operation. It creates a byte-exact,
+checkpointed snapshot and briefly holds the tier's SQLite writer lock; run large
+backups during a quiet window (and stop the daemon for durable-tier migration
+backups). To reclaim pages, stop the daemon, run `sqlite3 <db> "VACUUM"`, verify
+the database, then restart. Use `VACUUM INTO` manually only when a reviewed
+copy-and-swap maintenance plan requires it.
 
 ## Systemd Integration
 

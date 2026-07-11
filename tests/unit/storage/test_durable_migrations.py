@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 from collections.abc import Callable
@@ -9,7 +10,14 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import BackupProfile, backup_archive
+from polylogue.storage.backup_attestation import (
+    VERIFICATION_RECEIPT_FORMAT,
+    attestation_key_path,
+    sign_verification_receipt,
+    tier_attestation_id,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite import migration_runner
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -57,7 +65,7 @@ def _tamper_manifest(manifest: Path) -> None:
 def _tamper_receipt(manifest: Path) -> None:
     receipt = manifest.with_name("verification-receipt.json")
     payload = json.loads(receipt.read_text(encoding="utf-8"))
-    payload["format"] = "tampered"
+    payload["verdict"] = "failure"
     receipt.write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -175,6 +183,29 @@ def test_user_tier_v3_migrates_to_current_with_verified_backup_receipt(
             conn.execute("SELECT value_json FROM user_settings WHERE setting_key = ?", ("reader.theme",)).fetchone()[0]
             == '"system"'
         )
+    finally:
+        conn.close()
+
+
+def test_symlinked_user_tier_uses_resolved_attestation_authority(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    archive_root = workspace_env["archive_root"]
+    physical_db_path = tmp_path / "durable" / "user.db"
+    physical_db_path.parent.mkdir()
+    _create_user_v3(physical_db_path)
+    configured_db_path = archive_root / "user.db"
+    configured_db_path.unlink(missing_ok=True)
+    configured_db_path.symlink_to(physical_db_path)
+    manifest = _verified_backup_manifest(tmp_path / "backup", profile="user_overlays")
+
+    conn = sqlite3.connect(configured_db_path)
+    try:
+        result = migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+        assert result.from_version == 3
+        assert result.to_version == USER_SCHEMA_VERSION
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
     finally:
         conn.close()
 
@@ -465,6 +496,235 @@ def test_unverified_backup_manifest_cannot_authorize_user_migration(
         conn.close()
 
 
+@pytest.mark.parametrize("attestation_mode", ["missing", "forged-mac"])
+def test_public_hash_forged_receipt_cannot_authorize_user_migration(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attestation_mode: str,
+) -> None:
+    """Public backup hashes cannot impersonate the scratch verifier."""
+    archive_root = workspace_env["archive_root"]
+    db_path = archive_root / "user.db"
+    _create_user_v3(db_path)
+
+    trusted_manifest = _verified_backup_manifest(tmp_path / "trusted", profile="user_overlays")
+    trusted_receipt = json.loads(trusted_manifest.with_name("verification-receipt.json").read_text(encoding="utf-8"))
+    manifest = _unverified_backup_manifest(tmp_path / "unverified")
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    forged: dict[str, object] = {
+        "format": VERIFICATION_RECEIPT_FORMAT,
+        "verdict": "success",
+        "verified_at": "2026-07-11T00:00:00+00:00",
+        "mode": "archive_file_set",
+        "profile": manifest_payload["profile"],
+        "manifest_path": "manifest.json",
+        **backup_mod._receipt_evidence(manifest.parent),
+        "verification": {"ok": True, "scratch_restore": "claimed"},
+    }
+    if attestation_mode == "forged-mac":
+        trusted_attestation = next(item for item in trusted_receipt["attestations"] if item["tier"] == "user")
+        forged["attestations"] = [
+            {
+                "format": trusted_attestation["format"],
+                "algorithm": trusted_attestation["algorithm"],
+                "tier": "user",
+                "resource_id": tier_attestation_id(db_path),
+                "key_id": trusted_attestation["key_id"],
+                "mac": "0" * 64,
+            }
+        ]
+    manifest.with_name("verification-receipt.json").write_text(
+        json.dumps(forged, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    _block_migration_sql(monkeypatch)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(MigrationError, match="receipt authentication failed"):
+            migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'user_settings'").fetchone()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("key_state", "match"),
+    [
+        ("missing", "attestation key is missing"),
+        ("rotated", "attestation key does not match"),
+    ],
+)
+def test_verified_receipt_loses_authority_when_local_key_changes(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key_state: str,
+    match: str,
+) -> None:
+    db_path = workspace_env["archive_root"] / "user.db"
+    _create_user_v3(db_path)
+    manifest = _verified_backup_manifest(tmp_path / f"backup-{key_state}", profile="user_overlays")
+    key_path = attestation_key_path(db_path)
+    if key_state == "missing":
+        key_path.unlink()
+    else:
+        key_path.write_bytes(os.urandom(32))
+        key_path.chmod(0o600)
+    _block_migration_sql(monkeypatch)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(MigrationError, match=match):
+            migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'user_settings'").fetchone()
+    finally:
+        conn.close()
+
+
+def test_migration_rejects_signed_artifact_source_fingerprint_mismatch(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = workspace_env["archive_root"] / "user.db"
+    _create_user_v3(db_path)
+    manifest = _verified_backup_manifest(tmp_path / "backup", profile="user_overlays")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE newer_live_state (value TEXT)")
+    newer_fingerprint = backup_mod._sqlite_source_fingerprint(db_path)
+
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_payload["tier_source_fingerprints"]["user.db"] = newer_fingerprint
+    manifest.write_text(json.dumps(manifest_payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    receipt_path = manifest.with_name("verification-receipt.json")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["manifest_size_bytes"] = manifest.stat().st_size
+    receipt["manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    user_artifact = next(item for item in receipt["tier_artifacts"] if item["tier"] == "user")
+    user_artifact["source_fingerprint"] = newer_fingerprint
+    unsigned_receipt = {key: value for key, value in receipt.items() if key != "attestations"}
+    signed_receipt = sign_verification_receipt(unsigned_receipt, authority_paths={"user": db_path})
+    receipt_path.write_text(json.dumps(signed_receipt, indent=2, sort_keys=True), encoding="utf-8")
+    _block_migration_sql(monkeypatch)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(MigrationError, match="artifact does not match its live source fingerprint"):
+            migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'user_settings'").fetchone()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_migration_rejects_tier_artifact_aliases_to_live_database(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    alias_kind: str,
+) -> None:
+    db_path = workspace_env["archive_root"] / "user.db"
+    _create_user_v3(db_path)
+    manifest = _verified_backup_manifest(tmp_path / "backup", profile="user_overlays")
+    copied_user_db = manifest.with_name("user.db")
+    copied_user_db.unlink()
+    if alias_kind == "symlink":
+        copied_user_db.symlink_to(db_path)
+    else:
+        os.link(db_path, copied_user_db)
+    _block_migration_sql(monkeypatch)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(MigrationError, match="real regular file|multiple hard links|aliases the live tier"):
+            migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'user_settings'").fetchone()
+    finally:
+        conn.close()
+
+
+def test_migration_rejects_post_receipt_wal_without_main_file_change(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = workspace_env["archive_root"] / "user.db"
+    _create_user_v3(db_path)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+    manifest = _verified_backup_manifest(tmp_path / "backup", profile="user_overlays")
+    copied_user_db = manifest.with_name("user.db")
+    main_hash = hashlib.sha256(copied_user_db.read_bytes()).hexdigest()
+    tamper_conn = sqlite3.connect(copied_user_db)
+    try:
+        tamper_conn.execute("PRAGMA wal_autocheckpoint = 0")
+        tamper_conn.execute("CREATE TABLE post_receipt_tamper (value TEXT)")
+        tamper_conn.commit()
+        wal_path = Path(f"{copied_user_db}-wal")
+        assert wal_path.stat().st_size > 0
+        assert hashlib.sha256(copied_user_db.read_bytes()).hexdigest() == main_hash
+        _block_migration_sql(monkeypatch)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            with pytest.raises(MigrationError, match="unbound SQLite sidecar"):
+                migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+            assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+            assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'user_settings'").fetchone()
+        finally:
+            conn.close()
+    finally:
+        tamper_conn.close()
+
+
+def test_migration_rejects_linked_sqlite_sidecar(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = workspace_env["archive_root"] / "user.db"
+    _create_user_v3(db_path)
+    manifest = _verified_backup_manifest(tmp_path / "backup", profile="user_overlays")
+    Path(f"{manifest.with_name('user.db')}-wal").symlink_to(db_path)
+    _block_migration_sql(monkeypatch)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(MigrationError, match="unbound SQLite sidecar"):
+            migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'user_settings'").fetchone()
+    finally:
+        conn.close()
+
+
+def test_migration_rejects_unbound_extra_backup_artifact(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = workspace_env["archive_root"] / "user.db"
+    _create_user_v3(db_path)
+    manifest = _verified_backup_manifest(tmp_path / "backup", profile="user_overlays")
+    manifest.with_name("unexpected.txt").write_text("not in the verified file set", encoding="utf-8")
+    _block_migration_sql(monkeypatch)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(MigrationError, match="closed artifact inventory"):
+            migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'user_settings'").fetchone()
+    finally:
+        conn.close()
+
+
 def test_failed_backup_verification_cannot_authorize_user_migration(
     workspace_env: dict[str, Path],
     tmp_path: Path,
@@ -497,7 +757,7 @@ def test_failed_backup_verification_cannot_authorize_user_migration(
     ("label", "mutate", "match"),
     [
         ("manifest", _tamper_manifest, "does not match manifest"),
-        ("receipt", _tamper_receipt, "unsupported format"),
+        ("receipt", _tamper_receipt, "attestation MAC is invalid"),
         ("backup-tier", _tamper_backup_tier, "tier artifact .* mismatch"),
     ],
 )

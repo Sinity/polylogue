@@ -550,11 +550,12 @@ def _reference_source_counts(db_path: Path, conn: sqlite3.Connection) -> dict[st
     return {"raw_sessions.raw_id": fallback_count} if fallback_count else {}
 
 
-def referenced_blob_hashes(db_path: str | Path) -> list[str]:
+def referenced_blob_hashes(db_path: str | Path, *, immutable: bool = False) -> list[str]:
     """Return distinct blob hashes referenced by archive source evidence."""
 
     resolved_db_path = Path(db_path)
-    with sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True) as conn:
+    immutable_query = "&immutable=1" if immutable else ""
+    with sqlite3.connect(f"file:{resolved_db_path}?mode=ro{immutable_query}", uri=True) as conn:
         return _referenced_blob_hashes(resolved_db_path, conn)
 
 
@@ -1871,12 +1872,14 @@ def scan_blob_reference_debt(
     *,
     store: BlobStore | None = None,
     sample_size: int = _MAX_FINDING_SAMPLE,
+    immutable: bool = False,
 ) -> BlobReferenceDebtReport:
     """Count missing referenced blob files exactly without mutating state."""
 
     resolved_db_path = Path(db_path)
     blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
-    with sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True) as conn:
+    immutable_query = "&immutable=1" if immutable else ""
+    with sqlite3.connect(f"file:{resolved_db_path}?mode=ro{immutable_query}", uri=True) as conn:
         referenced = _referenced_blob_hashes(resolved_db_path, conn)
         reference_sources = _reference_source_counts(resolved_db_path, conn)
 
