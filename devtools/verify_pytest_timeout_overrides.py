@@ -278,10 +278,56 @@ def _scan_timeout_marker(
     return _parse_decorator_override(path, marker)
 
 
-def _pytestmark_values(node: ast.expr) -> list[ast.expr]:
+def _flatten_marker_values(
+    node: ast.expr,
+    assignments: dict[str, ast.expr],
+    seen: set[str] | None = None,
+) -> tuple[list[ast.expr], str | None]:
+    """Resolve safe list/tuple marker aliases without evaluating Python."""
+    if isinstance(node, ast.Name):
+        if node.id not in assignments:
+            return [], "dynamic pytest marker alias is forbidden"
+        seen = set() if seen is None else seen
+        if node.id in seen:
+            return [], "cyclic pytest marker alias is forbidden"
+        seen.add(node.id)
+        return _flatten_marker_values(assignments[node.id], assignments, seen)
     if isinstance(node, (ast.List, ast.Tuple)):
-        return list(node.elts)
-    return [node]
+        markers: list[ast.expr] = []
+        for item in node.elts:
+            nested, error = _flatten_marker_values(item, assignments, set(seen or ()))
+            if error is not None:
+                return [], error
+            markers.extend(nested)
+        return markers, None
+    return [node], None
+
+
+def _scan_timeout_markers(
+    marker_expression: ast.expr,
+    *,
+    path: str,
+    assignments: dict[str, ast.expr],
+    pytest_names: set[str],
+    mark_names: set[str],
+) -> tuple[list[TimeoutOverride], list[str]]:
+    markers, flatten_error = _flatten_marker_values(marker_expression, assignments)
+    if flatten_error is not None:
+        return [], [f"{path}:{marker_expression.lineno}: {flatten_error}"]
+    overrides: list[TimeoutOverride] = []
+    errors: list[str] = []
+    for marker in markers:
+        override, error = _scan_timeout_marker(
+            marker,
+            path=path,
+            pytest_names=pytest_names,
+            mark_names=mark_names,
+        )
+        if override is not None:
+            overrides.append(override)
+        if error is not None:
+            errors.append(error)
+    return overrides, errors
 
 
 def _scan_python(
@@ -307,17 +353,15 @@ def _scan_python(
                 isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets
             ):
                 continue
-            for marker in _pytestmark_values(value):
-                override, error = _scan_timeout_marker(
-                    marker,
-                    path=relative,
-                    pytest_names=pytest_names,
-                    mark_names=mark_names,
-                )
-                if override is not None:
-                    overrides.append(override)
-                if error is not None:
-                    errors.append(error)
+            found, found_errors = _scan_timeout_markers(
+                value,
+                path=relative,
+                assignments=assignments,
+                pytest_names=pytest_names,
+                mark_names=mark_names,
+            )
+            overrides.extend(found)
+            errors.extend(found_errors)
     for candidate in ast.walk(tree):
         if scan_decorators and isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             for decorator in candidate.decorator_list:
@@ -339,17 +383,15 @@ def _scan_python(
             for keyword in candidate.keywords:
                 if keyword.arg != "marks":
                     continue
-                for marker in _pytestmark_values(keyword.value):
-                    override, error = _scan_timeout_marker(
-                        marker,
-                        path=relative,
-                        pytest_names=pytest_names,
-                        mark_names=mark_names,
-                    )
-                    if override is not None:
-                        overrides.append(override)
-                    if error is not None:
-                        errors.append(error)
+                found, found_errors = _scan_timeout_markers(
+                    keyword.value,
+                    path=relative,
+                    assignments=assignments,
+                    pytest_names=pytest_names,
+                    mark_names=mark_names,
+                )
+                overrides.extend(found)
+                errors.extend(found_errors)
         if not scan_commands:
             continue
         command_nodes: list[ast.expr] | None = None

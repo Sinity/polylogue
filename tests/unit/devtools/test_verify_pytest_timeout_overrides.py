@@ -105,6 +105,106 @@ def test_registered_verifier_accepts_bounded_pytest_param_marks(
     assert rc == 0, output
 
 
+def test_registered_verifier_rejects_module_timeout_mark_alias(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Anti-vacuity: removing safe marker-alias flattening makes this production-command test fail."""
+    root = _make_tree(
+        tmp_path,
+        test_source=(
+            "import pytest\n\nTIMEOUT_MARKS = [pytest.mark.timeout(None)]\npytestmark = TIMEOUT_MARKS\n"
+            "def test_target():\n    pass\n"
+        ),
+    )
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 1
+    assert "unbounded" in output
+
+
+def test_registered_verifier_rejects_incremental_timeout_mark_alias(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Anti-vacuity: bypassing alias flattening for pytestmark += makes this production-command test fail."""
+    root = _make_tree(
+        tmp_path,
+        test_source=(
+            "import pytest\n\nEXTRA_MARKS = [pytest.mark.timeout(None)]\npytestmark = []\n"
+            "pytestmark += EXTRA_MARKS\ndef test_target():\n    pass\n"
+        ),
+    )
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 1
+    assert "unbounded" in output
+
+
+def test_registered_verifier_rejects_parameter_timeout_mark_alias(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Anti-vacuity: removing alias flattening for pytest.param marks makes this production-command test fail."""
+    root = _make_tree(
+        tmp_path,
+        test_source=(
+            "import pytest\n\nCASE_MARK = pytest.mark.timeout(0)\n"
+            "CASE = pytest.param(1, marks=CASE_MARK)\ndef test_target():\n    pass\n"
+        ),
+    )
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 1
+    assert "must be positive" in output
+
+
+def test_registered_verifier_rejects_cyclic_marker_alias(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Anti-vacuity: removing cycle detection makes this production-command test fail instead of terminating safely."""
+    root = _make_tree(
+        tmp_path,
+        test_source="FIRST = SECOND\nSECOND = FIRST\npytestmark = FIRST\ndef test_target():\n    pass\n",
+    )
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 1
+    assert "cyclic pytest marker alias" in output
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import pytest\n\nMARKS = [pytest.mark.timeout(30)]\npytestmark = MARKS\ndef test_target():\n    pass\n",
+        (
+            "import pytest\n\nEXTRA_MARKS = [pytest.mark.timeout(30)]\npytestmark = []\n"
+            "pytestmark += EXTRA_MARKS\ndef test_target():\n    pass\n"
+        ),
+        (
+            "import pytest\n\nCASE_MARK = pytest.mark.timeout(30)\n"
+            "CASE = pytest.param(1, marks=CASE_MARK)\ndef test_target():\n    pass\n"
+        ),
+    ],
+)
+def test_registered_verifier_accepts_bounded_marker_aliases(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    source: str,
+) -> None:
+    """Anti-vacuity: rejecting safe list/tuple marker aliases makes this production-command test fail."""
+    root = _make_tree(tmp_path, test_source=source)
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 0, output
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
