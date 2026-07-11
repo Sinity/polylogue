@@ -246,6 +246,25 @@ def _background_task_id(item: dict[str, object]) -> str | None:
     return task_id if isinstance(task_id, str) and task_id else None
 
 
+def _task_notification_from_record(
+    item: dict[str, object], message: object
+) -> ClaudeCodeBackgroundTaskNotification | None:
+    """Read task protocol from message, queue-operation, or queued-command attachment."""
+    candidates: list[object] = []
+    if isinstance(message, dict):
+        candidates.append(message.get("content"))
+    candidates.append(item.get("content"))
+    attachment = item.get("attachment")
+    if isinstance(attachment, dict):
+        candidates.append(attachment.get("prompt"))
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            notification = ClaudeCodeBackgroundTaskNotification.from_protocol_text(candidate)
+            if notification is not None:
+                return notification
+    return None
+
+
 def _mark_background_task_start(
     content_blocks: list[ParsedContentBlock], task_id: str | None
 ) -> list[ParsedContentBlock]:
@@ -286,14 +305,21 @@ def _project_background_task_completions(
             if isinstance(task_id, str) and task_id:
                 starts.setdefault((task_id, block.tool_id), (message_index, block_index))
 
-    terminal_by_start = {
-        (notification.task_id, notification.tool_use_id): notification for notification in notifications
-    }
+    starts_by_task: dict[str, list[tuple[int, int]]] = {}
+    for (task_id, _), location in starts.items():
+        starts_by_task.setdefault(task_id, []).append(location)
+
+    terminal_by_start: dict[tuple[int, int], ClaudeCodeBackgroundTaskNotification] = {}
+    for notification in notifications:
+        matched_location: tuple[int, int] | None = (
+            starts.get((notification.task_id, notification.tool_use_id))
+            if notification.tool_use_id is not None
+            else _unique_background_start(starts_by_task.get(notification.task_id, []))
+        )
+        if matched_location is not None:
+            terminal_by_start[matched_location] = notification
     projected = list(messages)
-    for key, notification in terminal_by_start.items():
-        location = starts.get(key)
-        if location is None:
-            continue
+    for location, notification in terminal_by_start.items():
         message_index, block_index = location
         message = projected[message_index]
         block = message.blocks[block_index]
@@ -311,6 +337,11 @@ def _project_background_task_completions(
         blocks[block_index] = updated_block
         projected[message_index] = message.model_copy(update={"blocks": blocks})
     return projected
+
+
+def _unique_background_start(locations: Sequence[tuple[int, int]]) -> tuple[int, int] | None:
+    """Return a task-only match only when provider evidence identifies one start."""
+    return locations[0] if len(locations) == 1 else None
 
 
 def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSession:
@@ -332,7 +363,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
     cwds: set[str] = set()
     models: set[str] = set()
     message_position = 0
-    background_notifications: list[tuple[ClaudeCodeBackgroundTaskNotification, str, str | None]] = []
+    background_notifications: list[tuple[ClaudeCodeBackgroundTaskNotification, str | None, str | None]] = []
 
     for index, item in enumerate(records, start=1):
         if not isinstance(item, dict):
@@ -383,6 +414,13 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
                 continue
             seen_record_uuids.add(record_uuid)
 
+        if not session_id:
+            session_id = _string_field(item, "sessionId")
+        raw_timestamp = item.get("timestamp")
+        timestamp = normalize_timestamp(raw_timestamp if isinstance(raw_timestamp, str | int | float) else None)
+        message = item.get("message")
+        notification = _task_notification_from_record(item, message)
+
         # ``progress`` records are claude-code hook lifecycle events
         # (`hookEvent`, `hookName`, `command`) carried alongside the
         # tool they fired on — they are NOT message content. Persisting
@@ -393,24 +431,18 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         # parser; the hook payload, if useful for analytics, belongs in
         # a future ``session_event`` capture, not in the messages table.
         if record_type in _SKIPPED_SIDECAR_RECORD_TYPES:
+            if notification is not None:
+                background_notifications.append((notification, record_uuid, timestamp))
             continue
-
-        if not session_id:
-            session_id = _string_field(item, "sessionId")
-
-        raw_timestamp = item.get("timestamp")
-        timestamp = normalize_timestamp(raw_timestamp if isinstance(raw_timestamp, str | int | float) else None)
         if timestamp:
             created_at = timestamp if created_at is None or timestamp < created_at else created_at
             updated_at = timestamp if updated_at is None or timestamp > updated_at else updated_at
 
-        message = item.get("message")
         raw_content = message.get("content") if isinstance(message, dict) else item.get("content")
         text = extract_message_text(raw_content)
         envelope_role = _record_role(item, message)
         content_blocks = _content_blocks_from_record(message, text)
         content_blocks = _mark_background_task_start(content_blocks, _background_task_id(item))
-        notification = ClaudeCodeBackgroundTaskNotification.from_protocol_text(text)
         message_type = _message_type_from_code_record(item, text)
         if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
             message_type = MessageType.CONTEXT

@@ -300,8 +300,8 @@ def _background_task_records() -> list[object]:
 <task-id>task-fail</task-id>
 <tool-use-id>tool-fail</tool-use-id>
 <output-file>/tmp/task-fail.output</output-file>
-<status>completed</status>
-<summary>Background command \"false\" completed (exit code 1)</summary>
+<status>failed</status>
+<summary>Background command \"false\" failed with exit code 1</summary>
 </task-notification>""",
             },
         },
@@ -316,12 +316,177 @@ def _background_task_records() -> list[object]:
 <task-id>task-fail</task-id>
 <tool-use-id>tool-fail</tool-use-id>
 <output-file>/tmp/task-fail-final.output</output-file>
-<status>completed</status>
-<summary>Background command \"false\" completed (exit code 1)</summary>
+<status>failed</status>
+<summary>Background command \"false\" failed with exit code 1</summary>
 </task-notification>""",
             },
         },
     ]
+
+
+def _background_start_records(*, task_id: str, tool_id: str, command: str, suffix: str) -> list[object]:
+    return [
+        {
+            "type": "assistant",
+            "uuid": f"assistant-{suffix}",
+            "sessionId": "background-sidecars",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}],
+            },
+        },
+        {
+            "type": "user",
+            "uuid": f"start-{suffix}",
+            "sessionId": "background-sidecars",
+            "toolUseResult": {"backgroundTaskId": task_id},
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": f"Command running in background with ID: {task_id}.",
+                        "is_error": False,
+                    }
+                ],
+            },
+        },
+    ]
+
+
+def _task_notification(*, task_id: str, status: str, summary: str, tool_id: str | None = None, suffix: str = "") -> str:
+    tool_use = f"<tool-use-id>{tool_id}</tool-use-id>\n" if tool_id else ""
+    return (
+        "<task-notification>\n"
+        f"<task-id>{task_id}</task-id>\n"
+        f"{tool_use}"
+        f"<output-file>/tmp/{task_id}{suffix}.output</output-file>\n"
+        f"<status>{status}</status>\n"
+        f"<summary>{summary}</summary>\n"
+        "</task-notification>"
+    )
+
+
+def test_parse_code_projects_queue_attachment_and_user_completion_shapes(tmp_path: Path) -> None:
+    """Production route: Claude parser -> ``ArchiveStore`` -> ``actions``.
+
+    This fails if notification extraction is moved below sidecar suppression,
+    the failed-template matcher is removed, or unique task-id fallback is
+    removed from ``_project_background_task_completions``.
+    """
+    records: list[object] = []
+    records.extend(
+        _background_start_records(task_id="task-queue", tool_id="tool-queue", command="true", suffix="queue")
+    )
+    records.extend(
+        _background_start_records(
+            task_id="task-attachment", tool_id="tool-attachment", command="false", suffix="attachment"
+        )
+    )
+    records.extend(
+        _background_start_records(task_id="task-user", tool_id="tool-user", command="printf user", suffix="user")
+    )
+    records.extend(
+        [
+            {
+                "type": "queue-operation",
+                "operation": "enqueue",
+                "sessionId": "background-sidecars",
+                "content": _task_notification(
+                    task_id="task-queue",
+                    tool_id="tool-queue",
+                    status="completed",
+                    summary='Background command "true" completed (exit code 0)',
+                ),
+            },
+            {
+                "type": "attachment",
+                "uuid": "attachment-failed",
+                "sessionId": "background-sidecars",
+                "attachment": {
+                    "type": "queued_command",
+                    "commandMode": "task-notification",
+                    "prompt": _task_notification(
+                        task_id="task-attachment",
+                        tool_id="tool-attachment",
+                        status="failed",
+                        summary='Background command "false" failed with exit code 1',
+                    ),
+                },
+            },
+            {
+                "type": "user",
+                "uuid": "user-fallback",
+                "sessionId": "background-sidecars",
+                "origin": {"kind": "task-notification"},
+                "message": {
+                    "role": "user",
+                    "content": _task_notification(
+                        task_id="task-user",
+                        status="completed",
+                        summary='Background command "printf user" completed (exit code 0)',
+                    )
+                    + "\nRead the output file before reporting completion.",
+                },
+            },
+        ]
+    )
+
+    parsed = parse_code(records, "background-sidecars")
+    provider_ids = {message.provider_message_id for message in parsed.messages}
+    assert "attachment-failed" not in provider_ids
+    assert "user-fallback" in provider_ids
+    assert [
+        message.provider_message_id for message in parsed.messages if "<task-notification>" in (message.text or "")
+    ] == ["user-fallback"]
+
+    archive_root = tmp_path / "background-sidecars"
+    with ArchiveStore(archive_root) as archive:
+        session_id = archive.write_parsed(parsed)
+        actions = archive.query_session_actions([session_id], limit=10)
+
+    assert {action.tool_command: (action.is_error, action.exit_code) for action in actions} == {
+        "true": (0, 0),
+        "false": (1, 1),
+        "printf user": (0, 0),
+    }
+    completion_events = [event for event in parsed.session_events if event.event_type == "background_task_completion"]
+    assert [event.source_message_provider_id for event in completion_events] == [
+        None,
+        "attachment-failed",
+        "user-fallback",
+    ]
+
+
+def test_parse_code_keeps_task_only_completion_unknown_when_background_start_is_ambiguous() -> None:
+    """Production dependency: the parser's unique task-id fallback.
+
+    This fails if task-only notifications are correlated to the first matching
+    start instead of requiring exactly one ``backgroundTaskId`` match.
+    """
+    records: list[object] = []
+    records.extend(_background_start_records(task_id="shared-task", tool_id="tool-one", command="true", suffix="one"))
+    records.extend(_background_start_records(task_id="shared-task", tool_id="tool-two", command="false", suffix="two"))
+    records.append(
+        {
+            "type": "queue-operation",
+            "operation": "enqueue",
+            "sessionId": "background-sidecars",
+            "content": _task_notification(
+                task_id="shared-task",
+                status="completed",
+                summary='Background command "unknown" completed (exit code 0)',
+            ),
+        }
+    )
+
+    parsed = parse_code(records, "background-ambiguous")
+    by_id = {message.provider_message_id: message for message in parsed.messages}
+    assert by_id["start-one"].blocks[0].exit_code is None
+    assert by_id["start-one"].blocks[0].is_error is None
+    assert by_id["start-two"].blocks[0].exit_code is None
+    assert by_id["start-two"].blocks[0].is_error is None
 
 
 def test_parse_code_projects_background_completion_outcomes_through_actions(tmp_path: Path) -> None:
@@ -340,7 +505,7 @@ def test_parse_code_projects_background_completion_outcomes_through_actions(tmp_
     assert failed_start.is_error is True
     assert failed_start.metadata == {
         "claude_background_task_id": "task-fail",
-        "claude_background_completion_status": "completed",
+        "claude_background_completion_status": "failed",
         "claude_background_output_file": "/tmp/task-fail-final.output",
     }
     assert by_id["notification-fail"].text is not None
@@ -359,8 +524,8 @@ def test_parse_code_projects_background_completion_outcomes_through_actions(tmp_
             "task_id": "task-fail",
             "tool_use_id": "tool-fail",
             "output_file": "/tmp/task-fail-final.output",
-            "status": "completed",
-            "summary": 'Background command "false" completed (exit code 1)',
+            "status": "failed",
+            "summary": 'Background command "false" failed with exit code 1',
             "exit_code": 1,
         },
     ]

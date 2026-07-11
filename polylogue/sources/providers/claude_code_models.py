@@ -15,10 +15,9 @@ from polylogue.core.json import json_document
 ClaudeCodeBlockRecord: TypeAlias = dict[str, object]
 ClaudeCodeContentBlocks: TypeAlias = list[ClaudeCodeBlockRecord]
 
-_BACKGROUND_COMMAND_COMPLETION_RE = re.compile(
-    r'^Background command ".+" completed \(exit code (?P<exit_code>[0-9]+)\)$'
-)
-_TASK_NOTIFICATION_REQUIRED_FIELDS = frozenset({"task-id", "tool-use-id", "output-file", "status", "summary"})
+_BACKGROUND_COMMAND_SUCCESS_RE = re.compile(r'^Background command ".+" completed \(exit code (?P<exit_code>[0-9]+)\)$')
+_BACKGROUND_COMMAND_FAILURE_RE = re.compile(r'^Background command ".+" failed with exit code (?P<exit_code>[0-9]+)$')
+_TASK_NOTIFICATION_REQUIRED_FIELDS = frozenset({"task-id", "output-file", "status", "summary"})
 
 
 class _TaskNotificationEnvelopeParser(HTMLParser):
@@ -52,7 +51,7 @@ class _TaskNotificationEnvelopeParser(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if not self._stack:
-            if data.strip():
+            if data.strip() and not self._closed_root:
                 self.malformed = True
             return
         if len(self._stack) == 2 and self._stack[0] == "task-notification":
@@ -63,13 +62,13 @@ class ClaudeCodeBackgroundTaskNotification(BaseModel):
     """Typed Claude Code background-command completion protocol evidence.
 
     The numeric exit code is populated only for the observed, version-specific
-    ``Background command ... completed (exit code N)`` summary template.
+    success and failed-command summary templates.
     Other structurally valid notifications deliberately retain ``None`` so
     callers cannot mistake arbitrary provider prose for a process outcome.
     """
 
     task_id: str
-    tool_use_id: str
+    tool_use_id: str | None = None
     output_file: str
     status: str
     summary: str
@@ -92,12 +91,24 @@ class ClaudeCodeBackgroundTaskNotification(BaseModel):
         values = {field: "".join(parser.fields[field]).strip() for field in _TASK_NOTIFICATION_REQUIRED_FIELDS}
         if any(not value for value in values.values()):
             return None
+        tool_use_values = parser.fields.get("tool-use-id")
+        if tool_use_values is not None and len(tool_use_values) != 1:
+            return None
+        tool_use_id = "".join(tool_use_values).strip() if tool_use_values is not None else None
+        if tool_use_values is not None and not tool_use_id:
+            return None
         summary = values["summary"]
-        match = _BACKGROUND_COMMAND_COMPLETION_RE.fullmatch(summary)
-        exit_code = int(match.group("exit_code")) if values["status"] == "completed" and match else None
+        match = (
+            _BACKGROUND_COMMAND_SUCCESS_RE.fullmatch(summary)
+            if values["status"] == "completed"
+            else _BACKGROUND_COMMAND_FAILURE_RE.fullmatch(summary)
+            if values["status"] == "failed"
+            else None
+        )
+        exit_code = int(match.group("exit_code")) if match else None
         return cls(
             task_id=values["task-id"],
-            tool_use_id=values["tool-use-id"],
+            tool_use_id=tool_use_id,
             output_file=values["output-file"],
             status=values["status"],
             summary=summary,
