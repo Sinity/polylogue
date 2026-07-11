@@ -310,7 +310,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
         session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
         created_at=envelope.session.created_at,
-        updated_at=envelope.session.updated_at or envelope.provenance.captured_at,
+        updated_at=envelope.session.updated_at,
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,

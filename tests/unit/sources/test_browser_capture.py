@@ -77,12 +77,24 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert session.source_name is Provider.CHATGPT
     assert session.provider_session_id == "conv-123"
     assert session.title == "Work plan"
+    assert session.updated_at == "2026-04-24T00:00:01+00:00"
     assert [message.provider_message_id for message in session.messages] == ["u1", "a1"]
     assert len(session.attachments) == 1
     assert session.attachments[0].message_provider_id == "a1"
     assert session.attachments[0].source_url == "https://chatgpt.com/attachment/1"
     assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
     assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in session.ingest_flags
+
+
+def test_browser_capture_does_not_launder_capture_time_as_provider_update() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    del session_payload["updated_at"]
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    assert parsed[0].updated_at is None
 
 
 def test_browser_capture_embedded_attachment_payloads_become_inline_bytes() -> None:
