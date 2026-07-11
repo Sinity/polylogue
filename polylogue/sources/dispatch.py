@@ -382,7 +382,7 @@ def _claude_code_grouped_record_specs(payloads: PayloadSequence, fallback_id: st
     ]
 
 
-def _merge_duplicate_parsed_sessions(sessions: Iterable[ParsedSession]) -> list[ParsedSession]:
+def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[ParsedSession]:
     """Merge repeated provider-native sessions produced by streaming chunks."""
 
     merged: dict[str, ParsedSession] = {}
@@ -828,7 +828,7 @@ def parse_stream_payload(
     """Parse a grouped record stream."""
     runtime_provider = Provider.from_string(provider)
     if runtime_provider is Provider.CLAUDE_CODE:
-        return _merge_duplicate_parsed_sessions(_claude_code_stream_sessions(payloads, fallback_id))
+        return merge_parsed_session_chunks(_claude_code_stream_sessions(payloads, fallback_id))
     if runtime_provider is Provider.CODEX:
         return [codex.parse_stream(payloads, fallback_id)]
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")

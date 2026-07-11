@@ -3,9 +3,11 @@ from __future__ import annotations
 from itertools import permutations
 from pathlib import Path
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandidate, plan_revision_replay
 from polylogue.core.enums import Provider
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -152,3 +154,97 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
         baseline_raw_id: ApplicationDecision.SELECTED_BASELINE,
         append_raw_id: ApplicationDecision.APPLIED_APPEND,
     }
+
+
+def test_real_append_chain_accepts_equivalent_same_end_full(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+
+    def parsed(*messages: tuple[str, str]) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="session",
+            messages=[
+                ParsedMessage(provider_message_id=message_id, role=Role.USER, text=text)
+                for message_id, text in messages
+            ],
+        )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=b"a" * 10, source_path="session.jsonl", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            baseline,
+            RawRevisionEnvelope("codex:session", RawRevisionKind.FULL, "full-0", 0),
+        )
+        append_one = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"b" * 5,
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            append_one,
+            RawRevisionEnvelope(
+                "codex:session",
+                RawRevisionKind.APPEND,
+                "append-1",
+                0,
+                predecessor_source_revision="full-0",
+                append_start_offset=10,
+                append_end_offset=15,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+        append_two = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"c" * 5,
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=3,
+        )
+        archive.bind_raw_revision(
+            append_two,
+            RawRevisionEnvelope(
+                "codex:session",
+                RawRevisionKind.APPEND,
+                "append-2",
+                0,
+                predecessor_source_revision="append-1",
+                append_start_offset=15,
+                append_end_offset=20,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+        append_plan = archive.classify_raw_revision_cohort("codex:session")
+        archive.apply_raw_revision_replay(
+            append_plan,
+            {
+                baseline: parsed(("m0", "zero")),
+                append_one: parsed(("m1", "one")),
+                append_two: parsed(("m2", "two")),
+            },
+            acquired_at_ms=0,
+        )
+
+        folded = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=b"a" * 20, source_path="session.jsonl", acquired_at_ms=4
+        )
+        archive.bind_raw_revision(
+            folded,
+            RawRevisionEnvelope("codex:session", RawRevisionKind.FULL, "full-folded", 0),
+        )
+        folded_plan = archive.classify_raw_revision_cohort("codex:session")
+        archive.apply_raw_revision_replay(
+            folded_plan,
+            {folded: parsed(("m0", "zero"), ("m1", "one"), ("m2", "two"))},
+            acquired_at_ms=0,
+        )
+
+        head = archive._conn.execute(
+            "SELECT accepted_raw_id, accepted_frontier FROM raw_revision_heads WHERE logical_source_key = ?",
+            ("codex:session",),
+        ).fetchone()
+        assert head is not None
+        assert tuple(head) == (folded, 20)

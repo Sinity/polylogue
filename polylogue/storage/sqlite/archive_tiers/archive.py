@@ -122,6 +122,7 @@ from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, Pr
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.sources.dispatch import merge_parsed_session_chunks
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
@@ -1754,6 +1755,10 @@ class ArchiveStore:
         if not plan.accepted_raw_ids:
             raise ValueError("cannot apply a revision plan without an accepted chain")
         candidates = {item.raw_id: item for item in self._raw_revision_candidates(plan.logical_source_key)}
+        aggregate_sessions = merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids)
+        if len(aggregate_sessions) != 1:
+            raise RuntimeError("one logical revision chain did not compose to exactly one session")
+        aggregate_content_hash = bytes.fromhex(session_content_hash(aggregate_sessions[0]))
         attachments_by_raw_id: dict[str, dict[int, tuple[bytes | None, int, str]]] = {}
         attachment_refs_by_raw_id: dict[str, tuple[ArchiveSourceBlobRef, ...]] = {}
         for raw_id in plan.accepted_raw_ids:
@@ -1787,6 +1792,10 @@ class ArchiveStore:
             if len(session_ids) != 1:
                 raise RuntimeError("one logical revision chain produced multiple session ids")
             session_id = next(iter(session_ids))
+            self._conn.execute(
+                "UPDATE sessions SET content_hash = ? WHERE session_id = ?",
+                (aggregate_content_hash, session_id),
+            )
             repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
             assert_session_fts_exact_sync(self._conn, session_id)
             stored = self._conn.execute(
