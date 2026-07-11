@@ -493,6 +493,96 @@ def test_provider_usage_report_ignores_reasoning_only_cumulative_rows(tmp_path: 
     }
 
 
+def test_provider_usage_report_stale_rollups_use_one_bounded_sql_diagnostic(tmp_path: Path) -> None:
+    """Full reports keep stale diagnostics in SQLite and preserve lane semantics."""
+
+    conn = _connect(tmp_path / "index.db")
+    stale_count = 32
+    stale_native_ids = [f"stale-{index:02d}" for index in range(stale_count)]
+    conn.executemany(
+        """
+        INSERT INTO sessions (
+            origin, native_id, title, session_kind,
+            created_at_ms, updated_at_ms, message_count, word_count, content_hash
+        ) VALUES (?, ?, 'usage', 'standard', 1, 1, 0, 0, zeroblob(32))
+        """,
+        [
+            *(("codex-session", native_id) for native_id in stale_native_ids),
+            ("codex-session", "reasoning-only-tail"),
+            ("codex-session", "multi-model"),
+            ("claude-code-session", "outside-origin-filter"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            *((f"codex-session:{native_id}", "gpt-5-codex", 0, 0, 0, 0) for native_id in stale_native_ids),
+            ("codex-session:reasoning-only-tail", "gpt-5-codex", 20, 20, 80, 0),
+            # A session-global Codex cumulative belongs only to its latest
+            # model. The old model is deliberately nonzero to prove this row
+            # does not create a false stale result.
+            ("codex-session:multi-model", "old-model", 999, 999, 999, 999),
+            ("codex-session:multi-model", "new-model", 50, 40, 150, 0),
+            ("claude-code-session:outside-origin-filter", "claude-model", 0, 0, 0, 0),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_provider_usage_events (
+            session_id, position, provider_event_type, model_name,
+            total_input_tokens, total_output_tokens, total_cached_input_tokens
+        ) VALUES (?, ?, 'token_count', ?, ?, ?, ?)
+        """,
+        [
+            *((f"codex-session:{native_id}", 0, "gpt-5-codex", 100, 20, 80) for native_id in stale_native_ids),
+            ("codex-session:reasoning-only-tail", 0, "gpt-5-codex", 100, 20, 80),
+            ("codex-session:multi-model", 0, "old-model", 100, 20, 80),
+            ("codex-session:multi-model", 1, "new-model", 200, 40, 150),
+            ("claude-code-session:outside-origin-filter", 0, "claude-model", 100, 20, 80),
+        ],
+    )
+    conn.execute(
+        """
+        INSERT INTO session_provider_usage_events (
+            session_id, position, provider_event_type, model_name,
+            total_reasoning_output_tokens
+        ) VALUES ('codex-session:reasoning-only-tail', 1, 'token_count', 'gpt-5-codex', 30)
+        """
+    )
+
+    traced_sql: list[str] = []
+    conn.set_trace_callback(traced_sql.append)
+    try:
+        report = provider_usage_report_from_connection(
+            conn,
+            archive_root=tmp_path,
+            origin="codex-session",
+            detail="full",
+            limit=3,
+        )
+    finally:
+        conn.set_trace_callback(None)
+
+    assert len(report.origins) == 1
+    row = report.origins[0]
+    assert row.origin == "codex-session"
+    assert row.stale_rollup_session_count == stale_count
+    assert row.sample_stale_rollup_sessions == tuple(f"codex-session:{native_id}" for native_id in stale_native_ids[:3])
+
+    stale_diagnostics = [statement for statement in traced_sql if "provider_usage_stale_rollups" in statement]
+    assert len(stale_diagnostics) == 1
+    stale_sql = stale_diagnostics[0]
+    assert "GROUP_CONCAT" in stale_sql
+    assert "ROW_NUMBER() OVER" in stale_sql
+    assert "GROUP BY origin" in stale_sql
+    assert stale_sql.count("session_provider_usage_events AS e") == 1
+
+
 def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Path) -> None:
     index_conn = _connect(tmp_path / "index.db")
     source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)
