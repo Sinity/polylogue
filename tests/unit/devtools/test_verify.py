@@ -67,6 +67,7 @@ def test_quick_verify_omits_pytest() -> None:
         "verify doc-commands",
         "verify test-infra-currency",
         "verify test-clock-hygiene",
+        "verify pytest-timeout-overrides",
     ]
 
 
