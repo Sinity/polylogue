@@ -6,6 +6,7 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -1323,6 +1324,9 @@ def _rebuild_index_selection_plan(
     show_default=True,
     help="Output format.",
 )
+@click.option("--resume-generation", type=str, default=None, help="Resume one owned inactive generation id.")
+@click.option("--owner-id", type=str, default=None, help="Stable rebuild owner id; required with --resume-generation.")
+@click.option("--no-promote", is_flag=True, help="Leave an exact-ready generation inactive after rebuilding it.")
 def rebuild_index_command(
     only_missing: bool,
     raw_ids: tuple[str, ...],
@@ -1330,6 +1334,9 @@ def rebuild_index_command(
     plan_only: bool,
     plan_limit: int,
     output_format: str,
+    resume_generation: str | None,
+    owner_id: str | None,
+    no_promote: bool,
 ) -> None:
     """Inspect or execute an authority-safe source-to-index rebuild.
 
@@ -1337,6 +1344,8 @@ def rebuild_index_command(
     selection order and batch boundaries never participate in authority.
     """
     configure_logging()
+    if resume_generation and not owner_id:
+        raise click.UsageError("--owner-id is required with --resume-generation")
     if raw_ids and only_missing:
         raise click.UsageError("--raw-id cannot be combined with --only-missing")
     if max_blob_mb is not None and max_blob_mb <= 0:
@@ -1418,22 +1427,50 @@ def rebuild_index_command(
                         f"blob={int(group['blob_bytes']):,} source={group['source_path']}"
                     )
         return
-    config = Config(
-        archive_root=root,
-        render_root=render_root(),
-        sources=[],
-        db_path=root / "index.db",
-    )
-    result = asyncio.run(
-        rebuild_index_from_source(
-            config,
-            raw_ids=selected_raw_ids,
-            raw_batch_size=500,
-            ingest_workers=None,
-            materialize=True,
-            progress_callback=None,
+    from polylogue.cli.commands.status import _archive_readiness_status
+    from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease
+
+    generation_store = IndexGenerationStore(root)
+    with RebuildLease(root):
+        generation = (
+            generation_store.load(resume_generation)
+            if resume_generation is not None
+            else generation_store.create(owner_id=owner_id, source_high_water=tuple(selected_raw_ids))
         )
-    )
+        if owner_id is not None and generation.owner_id != owner_id:
+            raise click.ClickException("inactive generation is owned by another rebuild")
+        generation_root = Path(generation.index_path).parent
+        config = Config(
+            archive_root=generation_root,
+            render_root=render_root(),
+            sources=[],
+            db_path=Path(generation.index_path),
+        )
+        result = asyncio.run(
+            rebuild_index_from_source(
+                config,
+                raw_ids=selected_raw_ids,
+                raw_batch_size=500,
+                ingest_workers=None,
+                materialize=True,
+                progress_callback=None,
+                owned_inactive_generation=(generation.generation_id, generation.owner_id),
+            )
+        )
+        generation = generation_store.checkpoint(generation, cursor=len(selected_raw_ids))
+        readiness = _archive_readiness_status(generation_root)
+        if not readiness.get("checked") or int(readiness.get("blocked_surface_count", 1)) != 0:
+            blocked = [
+                name
+                for name, info in cast(dict[str, dict[str, object]], readiness.get("surfaces", {})).items()
+                if info.get("ready") is not True
+            ]
+            raise click.ClickException(
+                f"inactive generation {generation.generation_id} is not exact-ready; blocked surfaces: "
+                + ", ".join(blocked)
+            )
+        if not no_promote:
+            generation = generation_store.promote(generation)
     payload = {
         "archive_root": str(root),
         "raw_session_count": raw_count,
@@ -1441,6 +1478,8 @@ def rebuild_index_command(
         "skipped_by_blob_limit_count": skipped_by_blob_limit_count,
         "status": "replayed",
         "materialized": True,
+        "generation": asdict(generation),
+        "readiness": readiness,
         **result,
     }
     if output_format == "json":

@@ -737,15 +737,34 @@ class ArchiveStore:
         initialize: bool = True,
         read_only: bool = False,
         read_timeout: float = 5.0,
+        owned_inactive_generation: tuple[str, str] | None = None,
     ) -> None:
+        self._active_writer_lease = None
         if not read_only:
             from polylogue.paths import archive_root as configured_archive_root
             from polylogue.storage.archive_identity import assert_writable_archive_identity
 
-            assert_writable_archive_identity(
-                configured_root=configured_archive_root(),
-                active_root=archive_root,
-            )
+            if owned_inactive_generation is None:
+                from polylogue.storage.index_generation import ActiveWriterLease
+
+                self._active_writer_lease = ActiveWriterLease(archive_root)
+                self._active_writer_lease.acquire()
+                assert_writable_archive_identity(
+                    configured_root=configured_archive_root(),
+                    active_root=archive_root,
+                )
+            else:
+                from polylogue.storage.index_generation import IndexGenerationStore
+
+                generation_id, owner_id = owned_inactive_generation
+                configured_root = configured_archive_root()
+                generation = IndexGenerationStore(configured_root).load(generation_id)
+                if (
+                    generation.owner_id != owner_id
+                    or generation.state != "inactive"
+                    or Path(generation.index_path).parent.resolve(strict=True) != archive_root.resolve(strict=True)
+                ):
+                    raise RuntimeError("inactive index generation ownership validation failed")
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
         self.index_db_path = archive_root / "index.db"
@@ -798,6 +817,16 @@ class ArchiveStore:
         """
         initialize = not read_only
         return cls(archive_root, initialize=initialize, read_only=read_only, read_timeout=read_timeout)
+
+    @classmethod
+    def open_owned_inactive_generation(cls, archive_root: Path, *, generation_id: str, owner_id: str) -> ArchiveStore:
+        """Open a typed inactive generation without weakening normal identity checks."""
+        return cls(
+            archive_root,
+            initialize=True,
+            read_only=False,
+            owned_inactive_generation=(generation_id, owner_id),
+        )
 
     @staticmethod
     def _needs_tier_bootstrap(archive_root: Path) -> bool:
@@ -861,6 +890,9 @@ class ArchiveStore:
             self._source_conn.close()
             self._source_conn = None
         self._conn.close()
+        if self._active_writer_lease is not None:
+            self._active_writer_lease.close()
+            self._active_writer_lease = None
 
     def write_parsed(self, session: ParsedSession, *, content_hash: str | None = None) -> str:
         """Write a parsed session to index.db."""

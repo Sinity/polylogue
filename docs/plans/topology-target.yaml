@@ -799,7 +799,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 2351
+    loc: 2390
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/ops.py
@@ -1695,7 +1695,7 @@ files:
     target: polylogue/maintenance/registry.py
     owner: stable
   - path: polylogue/maintenance/replay.py
-    loc: 796
+    loc: 798
     target: polylogue/maintenance/replay.py
     owner: stable
   - path: polylogue/maintenance/scope.py
@@ -2572,7 +2572,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1768
+    loc: 1802
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2761,7 +2761,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 101
+    loc: 147
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
@@ -2945,6 +2945,10 @@ files:
     target: polylogue/storage/index.py
     owner: storage-root
     reason: storage-root cross-cutting helper
+  - path: polylogue/storage/index_generation.py
+    loc: 169
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/insights/__init__.py
     loc: 0
     target: polylogue/storage/insights/__init__.py
@@ -3287,7 +3291,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 9778
+    loc: 10111
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3307,7 +3311,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/common.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/embedding_write.py
-    loc: 203
+    loc: 206
     target: polylogue/storage/sqlite/archive_tiers/embedding_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/embeddings.py
@@ -3319,7 +3323,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
-    loc: 185
+    loc: 188
     target: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops.py
@@ -3327,15 +3331,15 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/ops.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops_write.py
-    loc: 829
+    loc: 832
     target: polylogue/storage/sqlite/archive_tiers/ops_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
-    loc: 108
+    loc: 110
     target: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_application.py
-    loc: 217
+    loc: 220
     target: polylogue/storage/sqlite/archive_tiers/revision_application.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/self_verify.py
@@ -3347,7 +3351,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py
-    loc: 872
+    loc: 875
     target: polylogue/storage/sqlite/archive_tiers/source_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/types.py
@@ -3367,11 +3371,11 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 1729
+    loc: 1731
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 4525
+    loc: 4529
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
@@ -3757,7 +3761,7 @@ files:
     target: polylogue/verification/manifests/__init__.py
     owner: stable
   - path: polylogue/verification/manifests/models.py
-    loc: 696
+    loc: 756
     target: polylogue/verification/manifests/models.py
     owner: stable
   - path: polylogue/version.py

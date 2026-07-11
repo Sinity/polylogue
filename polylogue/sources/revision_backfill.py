@@ -27,6 +27,7 @@ def backfill_historical_revision_evidence(
     archive_root: Path,
     *,
     selected_raw_ids: list[str] | None = None,
+    owned_inactive_generation: tuple[str, str] | None = None,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts."""
     scanned = 0
@@ -34,7 +35,16 @@ def backfill_historical_revision_evidence(
     quarantined = 0
     logical_keys: set[str] = set()
     parsed_by_raw: dict[str, list[ParsedSession]] = {}
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    archive_context = (
+        ArchiveStore.open_owned_inactive_generation(
+            archive_root,
+            generation_id=owned_inactive_generation[0],
+            owner_id=owned_inactive_generation[1],
+        )
+        if owned_inactive_generation is not None
+        else ArchiveStore.open_existing(archive_root, read_only=False)
+    )
+    with archive_context as archive:
         for raw_id, source_index in archive.raw_membership_census_rows():
             scanned += 1
             if source_index < 0:
