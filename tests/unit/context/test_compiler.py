@@ -113,6 +113,17 @@ def test_context_snapshot_record_is_explicit_delivery_boundary() -> None:
     assert record.metadata["unit_queries"] == '["runs where session.id:codex-session:compiler"]'
     assert record.metadata["token_estimate"] == str(image.token_estimate)
     assert record.metadata["include_candidates"] == "false"
+    assert len(record.metadata["context_image_sha256"]) == 64
+
+    changed_image = image.model_copy(
+        update={"segments": (image.segments[0].model_copy(update={"markdown": "changed exact text"}),)}
+    )
+    changed_record = context_snapshot_record_from_image(
+        changed_image,
+        boundary="handoff",
+        run_ref="run:local-review",
+    )
+    assert changed_record.snapshot_ref != record.snapshot_ref
 
 
 def test_context_snapshot_record_requires_delivery_boundary() -> None:

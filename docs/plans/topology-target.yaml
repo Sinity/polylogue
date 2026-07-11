@@ -447,7 +447,7 @@ files:
     owner: archive-raw-payload
     reason: archive-domain semantics
   - path: polylogue/archive/revision_authority.py
-    loc: 155
+    loc: 158
     target: polylogue/archive/revision_authority.py
     owner: stable
   - path: polylogue/archive/revision_replay.py
@@ -815,7 +815,7 @@ files:
     target: polylogue/cli/commands/reset.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 2224
+    loc: 2272
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -1086,7 +1086,7 @@ files:
     target: polylogue/context/assertion_claims.py
     owner: stable
   - path: polylogue/context/compiler.py
-    loc: 517
+    loc: 532
     target: polylogue/context/compiler.py
     owner: stable
   - path: polylogue/context/preamble.py
@@ -1695,7 +1695,7 @@ files:
     target: polylogue/maintenance/registry.py
     owner: stable
   - path: polylogue/maintenance/replay.py
-    loc: 798
+    loc: 799
     target: polylogue/maintenance/replay.py
     owner: stable
   - path: polylogue/maintenance/scope.py
@@ -2572,7 +2572,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1802
+    loc: 1805
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2761,7 +2761,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 229
+    loc: 282
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
@@ -2802,7 +2802,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_readiness.py
-    loc: 566
+    loc: 680
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_views.py
@@ -3075,7 +3075,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 1749
+    loc: 2058
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3291,7 +3291,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 10119
+    loc: 10255
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3309,6 +3309,10 @@ files:
   - path: polylogue/storage/sqlite/archive_tiers/common.py
     loc: 76
     target: polylogue/storage/sqlite/archive_tiers/common.py
+    owner: stable
+  - path: polylogue/storage/sqlite/archive_tiers/context_delivery_write.py
+    loc: 196
+    target: polylogue/storage/sqlite/archive_tiers/context_delivery_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/embedding_write.py
     loc: 206
@@ -3359,7 +3363,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/types.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user.py
-    loc: 52
+    loc: 79
     target: polylogue/storage/sqlite/archive_tiers/user.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_audit.py
