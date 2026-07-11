@@ -42,9 +42,8 @@ logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
-RAW_MATERIALIZATION_REPLAY_BLOCK_REASON = (
-    "raw source-to-index replay is disabled until per-session revision authority is implemented (Ref polylogue-yla8)"
-)
+RAW_MATERIALIZATION_RESOURCE_BLOCK_REASON = "non-stream-safe raw payload exceeds the bounded replay limit"
+_TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
 
 
 def _format_bytes(value: int) -> str:
@@ -69,6 +68,7 @@ class RawMaterializationCandidates:
     raw_source_paths: dict[str, str] = field(default_factory=dict)
     missing_blob_source_available: int = 0
     missing_blob_source_missing: int = 0
+    adoption_deferred: int = 0
 
     @property
     def total_blob_bytes(self) -> int:
@@ -158,7 +158,14 @@ def _raw_materialization_candidate_ids(
         rows = conn.execute(
             f"""
             SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size, r.parsed_at_ms,
-                   r.parse_error
+                   r.parse_error,
+                   EXISTS (
+                       SELECT 1
+                       FROM index_tier.raw_revision_applications AS a
+                       WHERE a.raw_id = r.raw_id
+                         AND a.decision = 'deferred'
+                         AND a.detail = 'ordinary_replay:incomparable_existing_index_state'
+                   ) AS adoption_deferred
             FROM raw_sessions AS r
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
@@ -174,6 +181,7 @@ def _raw_materialization_candidate_ids(
               )
               AND (
                 r.parse_error IS NULL
+                OR r.parse_error = 'OperationalError: database is locked'
                 OR (
                   r.parse_error LIKE 'decode:%No such file or directory:%'
                 )
@@ -190,7 +198,11 @@ def _raw_materialization_candidate_ids(
             """,
             params,
         ).fetchall()
+        adoption_deferred = 0
         for row in rows:
+            if bool(row["adoption_deferred"]):
+                adoption_deferred += 1
+                continue
             if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(row["parse_error"]):
                 continue
             if _raw_materialized_by_source_path_native(conn, row):
@@ -223,6 +235,7 @@ def _raw_materialization_candidate_ids(
         raw_source_paths=raw_source_paths,
         missing_blob_source_available=missing_blob_source_available,
         missing_blob_source_missing=missing_blob_source_missing,
+        adoption_deferred=adoption_deferred,
     )
 
 
@@ -235,7 +248,9 @@ def _raw_materialization_stream_safe(candidates: RawMaterializationCandidates, r
 def _raw_materialization_retryable_missing_blob_error(parse_error: object) -> bool:
     if not isinstance(parse_error, str):
         return False
-    return parse_error.startswith("decode:") and "No such file or directory" in parse_error
+    return parse_error == _TRANSIENT_LOCK_PARSE_ERROR or (
+        parse_error.startswith("decode:") and "No such file or directory" in parse_error
+    )
 
 
 def _raw_materialization_total_bytes(candidates: RawMaterializationCandidates, raw_ids: list[str]) -> int:
@@ -298,8 +313,8 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
         return {
             "available": False,
             "reason": "source_or_index_tier_missing",
-            "execution_blocked": True,
-            "execution_block_reason": RAW_MATERIALIZATION_REPLAY_BLOCK_REASON,
+            "execution_blocked": False,
+            "execution_block_reason": None,
             "blocked_candidate_count": 0,
             "candidate_count": 0,
             "top_raw_rows": [],
@@ -330,11 +345,22 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
     oversized_stream_safe = [
         raw_id for raw_id in oversized_raw_ids if _raw_materialization_stream_safe(candidates, raw_id)
     ]
+    # Retained-raw authority replay currently loads blob bytes before handing
+    # them to the stream parser, so stream-capable format is diagnostic only.
+    resource_blocked_count = len(oversized_raw_ids)
+    blocked_candidate_count = resource_blocked_count + candidates.adoption_deferred
     return {
         "available": True,
-        "execution_blocked": True,
-        "execution_block_reason": RAW_MATERIALIZATION_REPLAY_BLOCK_REASON,
-        "blocked_candidate_count": len(candidates.raw_ids),
+        "execution_blocked": blocked_candidate_count > 0,
+        "execution_block_reason": (
+            RAW_MATERIALIZATION_RESOURCE_BLOCK_REASON
+            if resource_blocked_count
+            else "revision adoption deferred behind incomparable existing index state"
+            if candidates.adoption_deferred
+            else None
+        ),
+        "blocked_candidate_count": blocked_candidate_count,
+        "adoption_deferred_count": candidates.adoption_deferred,
         "candidate_count": len(candidates.raw_ids),
         "missing_blob_count": candidates.missing_blobs,
         "missing_blob_source_available_count": candidates.missing_blob_source_available,
@@ -1468,8 +1494,7 @@ def repair_raw_materialization(
     raw_artifact_limit: int | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
-    """Report raw replay debt without applying authority-ambiguous revisions."""
-    del progress_callback
+    """Converge retained raws through typed per-session revision authority."""
     candidates = _raw_materialization_candidate_ids(
         config,
         raw_artifact_id=raw_artifact_id,
@@ -1496,6 +1521,7 @@ def repair_raw_materialization(
         "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
         "raw_materialization_selected_total_blob_bytes": float(selected_total_bytes),
         "raw_materialization_selected_max_blob_bytes": float(selected_max_bytes),
+        "raw_materialization_adoption_deferred_count": float(candidates.adoption_deferred),
     }
     if raw_artifact_limit is not None:
         metrics["raw_materialization_limit"] = float(raw_artifact_limit)
@@ -1513,44 +1539,108 @@ def repair_raw_materialization(
     ]
     if oversized_raw_ids:
         metrics["raw_materialization_oversized_count"] = float(len(oversized_raw_ids))
+        metrics["raw_materialization_resource_blocked_count"] = float(len(oversized_raw_ids))
         metrics["raw_materialization_execute_blob_limit_bytes"] = float(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)
     if oversized_stream_safe_raw_ids:
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
     if not raw_ids:
         detail = "Raw materialization ready"
+        if candidates.adoption_deferred:
+            detail = (
+                f"Raw materialization blocked: {candidates.adoption_deferred:,} revision adoption decision(s) "
+                "remain deferred behind incomparable existing index state"
+            )
         if missing_blobs:
             detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=True)}"
         return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
-            success=missing_blobs == 0,
+            success=missing_blobs == 0 and candidates.adoption_deferred == 0,
             detail=detail,
             metrics=metrics,
         )
-    metrics["raw_materialization_replay_blocked_count"] = float(len(raw_ids))
-    detail = (
-        f"Raw materialization blocked: {RAW_MATERIALIZATION_REPLAY_BLOCK_REASON}; "
-        f"left {len(raw_ids):,} of {len(candidate_raw_ids):,} selected replay candidate(s) pending; "
-        f"selected raw payload bytes total={_format_bytes(selected_total_bytes)}, "
-        f"largest={_format_bytes(selected_max_bytes)}"
-    )
     if dry_run:
-        detail = f"Preview only. {detail}"
-    if candidates.already_parsed:
-        detail += f"; {candidates.already_parsed:,} already parsed but not materialized"
-    if missing_blobs:
-        detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=True)}"
+        detail = (
+            f"Would: classify and replay {len(raw_ids):,} selected raw row(s) through per-session revision authority; "
+            f"selected raw payload bytes total={_format_bytes(selected_total_bytes)}, "
+            f"largest={_format_bytes(selected_max_bytes)}"
+        )
+        if candidates.already_parsed:
+            detail += f"; {candidates.already_parsed:,} already parsed but not materialized"
+        if missing_blobs:
+            detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=True)}"
+        if oversized_raw_ids:
+            detail += (
+                f"; {len(oversized_raw_ids):,} raw rows exceed replay size advisory "
+                f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+            )
+        if oversized_stream_safe_raw_ids:
+            detail += f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows are stream-capable"
+        return _internal_derived_repair_result(
+            "raw_materialization", repaired_count=0, success=False, detail=detail, metrics=metrics
+        )
+
+    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+
+    archive_root = _raw_materialization_archive_root(config)
+    oversized_raw_id_set = set(oversized_raw_ids)
+    executable_raw_ids = [raw_id for raw_id in raw_ids if raw_id not in oversized_raw_id_set]
+    metrics["raw_materialization_executed_count"] = float(len(executable_raw_ids))
+    if executable_raw_ids:
+        replay = backfill_historical_revision_evidence(
+            archive_root,
+            selected_raw_ids=executable_raw_ids,
+        )
+    else:
+        from polylogue.sources.revision_backfill import RevisionBackfillResult
+
+        replay = RevisionBackfillResult(scanned=0, classified_full=0, replayed_logical_sources=0, quarantined=0)
+    remaining = _raw_materialization_candidate_ids(
+        config,
+        raw_artifact_id=raw_artifact_id,
+        provider=provider,
+        source_family=source_family,
+        source_root=source_root,
+    )
+    metrics.update(
+        {
+            "raw_materialization_scanned_raw_count": float(replay.scanned),
+            "raw_materialization_classified_full_count": float(replay.classified_full),
+            "raw_materialization_replayed_logical_source_count": float(replay.replayed_logical_sources),
+            "raw_materialization_quarantined_count": float(replay.quarantined),
+            "raw_materialization_adoption_deferred_count": float(replay.adoption_deferred),
+            "raw_materialization_remaining_candidate_count": float(len(remaining.raw_ids)),
+        }
+    )
+    success = (
+        not remaining.raw_ids
+        and remaining.missing_blobs == 0
+        and replay.adoption_deferred == 0
+        and remaining.adoption_deferred == 0
+    )
+    detail = (
+        f"Replayed {replay.replayed_logical_sources:,} logical source(s) through typed revision authority; "
+        f"{len(remaining.raw_ids):,} replay candidate(s) remain"
+    )
+    if replay.quarantined:
+        detail += f"; {replay.quarantined:,} ambiguous/legacy revision(s) quarantined"
+    if replay.adoption_deferred:
+        detail += f"; {replay.adoption_deferred:,} revision(s) deferred behind incomparable existing index state"
+    if remaining.adoption_deferred:
+        detail += f"; {remaining.adoption_deferred:,} deferred adoption decision(s) remain blocked"
     if oversized_raw_ids:
         detail += (
-            f"; {len(oversized_raw_ids):,} raw rows also exceed replay size limit "
+            f"; {len(oversized_raw_ids):,} non-stream-safe raw row(s) exceed execution limit "
             f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
         )
-    if oversized_stream_safe_raw_ids:
-        detail += f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows are stream-capable"
+    if remaining.missing_blobs:
+        detail += f"; {_raw_materialization_missing_blob_detail(remaining, final=True)}"
+    if progress_callback is not None:
+        progress_callback(replay.replayed_logical_sources, detail)
     return _internal_derived_repair_result(
         "raw_materialization",
-        repaired_count=0,
-        success=False,
+        repaired_count=replay.replayed_logical_sources,
+        success=success,
         detail=detail,
         metrics=metrics,
     )

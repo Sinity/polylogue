@@ -164,6 +164,7 @@ async def rebuild_index_from_source(
         "classified_full_count": result.classified_full,
         "replayed_logical_source_count": result.replayed_logical_sources,
         "quarantined_raw_count": result.quarantined,
+        "adoption_deferred_raw_count": result.adoption_deferred,
         "authority_selection_expanded": True,
     }
 

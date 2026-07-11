@@ -200,6 +200,23 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 raw_columns=raw_columns,
                 session_columns=session_columns,
             )
+            adoption_deferred_count = 0
+            if _table_columns(conn, "main", "raw_revision_applications"):
+                adoption_deferred_count = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(DISTINCT r.raw_id)
+                        FROM source.raw_sessions AS r
+                        JOIN main.raw_revision_applications AS a ON a.raw_id = r.raw_id
+                        WHERE a.decision = 'deferred'
+                          AND a.detail = 'ordinary_replay:incomparable_existing_index_state'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM main.sessions AS s WHERE s.raw_id = r.raw_id
+                          )
+                        """
+                    ).fetchone()[0]
+                    or 0
+                )
             lost_source_evidence_count = _missing_source_raw_session_count(conn)
             lost_source_evidence_samples = _missing_source_raw_session_samples(conn)
     except Exception as exc:
@@ -232,8 +249,8 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     actionable = len(parse_failed_origins)
     critical = actionable
     affected_actionable = parse_failed
-    unchecked = max(total - classified - affected_actionable, 0)
-    classification = "cheap_projection" if classified else "not_run"
+    unchecked = max(total - classified - affected_actionable - adoption_deferred_count, 0)
+    classification = "cheap_projection" if classified or adoption_deferred_count else "not_run"
     raw_id_join_gap_count = unchecked
     category_counts: dict[str, int] = {
         "raw_id_join_gap": raw_id_join_gap_count,
@@ -242,6 +259,8 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "raw_parse_failed": raw_parse_failed,
         "parsed_without_index_session": parsed_without_index_session,
     }
+    if adoption_deferred_count:
+        category_counts["adoption_deferred"] = adoption_deferred_count
     category_counts.update(
         {category: count for category, count in classified_counts.items() if category != "parse-failed"}
     )
@@ -257,12 +276,12 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "critical": critical,
         "warning": 0,
         "actionable": actionable,
-        "blocked": 0,
+        "blocked": adoption_deferred_count,
         "classified": classified,
         "unchecked": unchecked,
         "affected_total": total,
         "affected_actionable": affected_actionable,
-        "affected_blocked": 0,
+        "affected_blocked": adoption_deferred_count,
         "affected_open": 0,
         "affected_classified": classified,
         "affected_unchecked": unchecked,
