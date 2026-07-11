@@ -140,7 +140,7 @@ Owner: `polylogue-212.11`.
 
 ### 18: Sinex Beads graph surgery
 
-Source session: `6a5113e8-3f48-83eb-b1ee-96ef29477c12`.
+Source session: `6a5113e8-3f48-83eb-931a-da42be13baea`.
 Target repository: Sinex.
 
 - **Recovered:** the complete 546 KB graph-surgery ZIP, including the
