@@ -2121,7 +2121,7 @@ class ArchiveStore:
                     """,
                     (logical_source_key,),
                 ).fetchone()
-                if existing_head is not None and str(existing_head[2]) == "byte":
+                if existing_head is not None:
                     existing_raw_id = str(existing_head[0])
                     existing_projection = projections_by_raw_id.get(existing_raw_id)
                     classified_raw_ids = {
@@ -2133,7 +2133,7 @@ class ArchiveStore:
                         or existing_raw_id not in classified_raw_ids
                         or bytes(existing_head[1]) != existing_projection.session_hash
                     ):
-                        raise RuntimeError("membership replay cannot retire an unrelated byte head")
+                        raise RuntimeError("membership replay cannot retire an unrelated accepted head")
                     self._conn.execute(
                         "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
                         (logical_source_key,),
