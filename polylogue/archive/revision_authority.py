@@ -20,6 +20,9 @@ class RawRevisionAuthority(StrEnum):
     QUARANTINED = "quarantined"
 
 
+BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision authority"
+
+
 @dataclass(frozen=True)
 class RawRevisionEnvelope:
     """Evidence captured with raw bytes, before any derived write occurs."""

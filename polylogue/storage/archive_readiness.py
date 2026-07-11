@@ -13,8 +13,7 @@ from polylogue.archive.raw_materialization import (
     parsed_non_session_artifact_reason,
     source_path_native_id_candidates,
 )
-
-_BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision authority"
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 
 ACTIVE_REBUILD_STALE_AFTER_S = 180.0
 """Maximum heartbeat/start age for a rebuild-index row to count as active."""
@@ -543,7 +542,7 @@ def _raw_gap_authority_category(conn: sqlite3.Connection, row: sqlite3.Row) -> s
                 WHERE raw_id = ? AND status = 'failed' AND detail = ?
                 LIMIT 1
                 """,
-                (raw_id, _BYTE_AUTHORITY_CENSUS_DETAIL),
+                (raw_id, BYTE_AUTHORITY_CENSUS_DETAIL),
             ).fetchone()
             if quarantined is not None:
                 return "append-authority-quarantined"

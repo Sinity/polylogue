@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.archive.raw_materialization import parsed_non_session_artifact_reason
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
@@ -44,7 +45,6 @@ _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
 RAW_MATERIALIZATION_RESOURCE_BLOCK_REASON = "non-stream-safe raw payload exceeds the bounded replay limit"
 _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
-_BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision authority"
 
 
 def _format_bytes(value: int) -> str:
@@ -257,7 +257,7 @@ def _raw_materialization_candidate_ids(
               {source_root_filter}
             ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
             """,
-            [_BYTE_AUTHORITY_CENSUS_DETAIL, _BYTE_AUTHORITY_CENSUS_DETAIL, *params],
+            [BYTE_AUTHORITY_CENSUS_DETAIL, BYTE_AUTHORITY_CENSUS_DETAIL, *params],
         ).fetchall()
         adoption_deferred = 0
         authority_quarantined = 0

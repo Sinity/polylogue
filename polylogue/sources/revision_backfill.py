@@ -12,6 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from types import TracebackType
 
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_revision_projection
@@ -96,7 +97,7 @@ def backfill_historical_revision_evidence(
                             None,
                             parser_fingerprint="revision-membership-v1",
                             censused_at_ms=0,
-                            detail="append fragments are governed by byte revision authority",
+                            detail=BYTE_AUTHORITY_CENSUS_DETAIL,
                         )
                         quarantined += 1
                         continue

@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 
 
@@ -39,6 +40,11 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(tmp_path
                 ("terminal-application", 0, "quarantined"),
                 ("terminal-application-error", 0, "quarantined"),
                 ("authority-pending", -1, "quarantined"),
+                ("append-proven", -1, "byte_proven"),
+                ("membership-settled", 0, "quarantined"),
+                ("membership-incomplete", 0, "quarantined"),
+                ("membership-null", 0, "quarantined"),
+                ("application-deferred", 0, "quarantined"),
             ],
         )
         conn.execute(
@@ -51,12 +57,24 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(tmp_path
                     "append-quarantine",
                     "failed",
                     0,
-                    "append fragments are governed by byte revision authority",
+                    BYTE_AUTHORITY_CENSUS_DETAIL,
                 ),
                 ("membership-quarantine", "complete", 1, None),
+                ("membership-settled", "complete", 2, None),
+                ("membership-incomplete", "complete", 2, None),
+                ("membership-null", "complete", 1, None),
             ],
         )
-        conn.execute("INSERT INTO raw_session_memberships VALUES ('membership-quarantine', 'ambiguous')")
+        conn.executemany(
+            "INSERT INTO raw_session_memberships VALUES (?, ?)",
+            [
+                ("membership-quarantine", "ambiguous"),
+                ("membership-settled", "applied"),
+                ("membership-settled", "superseded_equivalent"),
+                ("membership-incomplete", "applied"),
+                ("membership-null", None),
+            ],
+        )
     with sqlite3.connect(index_db) as conn:
         conn.executescript(
             """
@@ -64,28 +82,63 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(tmp_path
             CREATE TABLE raw_revision_applications (raw_id TEXT, decision TEXT, detail TEXT);
             INSERT INTO raw_revision_applications VALUES ('terminal-application', 'superseded', 'test');
             INSERT INTO raw_revision_applications VALUES ('terminal-application-error', 'superseded', 'test');
+            INSERT INTO raw_revision_applications VALUES (
+                'application-deferred', 'deferred', 'ordinary_replay:incomparable_existing_index_state'
+            );
             """
         )
 
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot.get("available") is True, snapshot
-    assert snapshot["classified"] == 3
+    assert snapshot["classified"] == 5
     assert snapshot["critical"] == 1
     assert snapshot["actionable"] == 1
     assert snapshot["affected_actionable"] == 1
-    assert snapshot["unchecked"] == 1
-    assert snapshot["affected_unchecked"] == 1
+    assert snapshot["blocked"] == 1
+    assert snapshot["unchecked"] == 3
+    assert snapshot["affected_unchecked"] == 3
     assert _category_counts(snapshot) == {
-        "raw_id_join_gap": 1,
+        "raw_id_join_gap": 3,
         "skipped": 0,
         "parse_failed": 1,
         "raw_parse_failed": 1,
         "parsed_without_index_session": 0,
         "append-authority-quarantined": 1,
-        "membership-authority-classified": 1,
+        "append-authority-proven": 1,
+        "membership-authority-classified": 2,
         "revision-application-terminal": 1,
+        "adoption_deferred": 1,
     }
+
+
+def test_raw_materialization_snapshot_reads_append_census_writer_contract(tmp_path: Path) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"append":true}\n',
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=1,
+        )
+        archive.replace_raw_membership_census(
+            raw_id,
+            None,
+            parser_fingerprint="revision-membership-v1",
+            censused_at_ms=0,
+            detail=BYTE_AUTHORITY_CENSUS_DETAIL,
+        )
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+
+    assert snapshot["classified"] == 1
+    assert snapshot["unchecked"] == 0
+    assert _category_counts(snapshot)["append-authority-quarantined"] == 1
 
 
 def test_raw_materialization_snapshot_ignores_skipped_raw_rows(tmp_path: Path) -> None:
