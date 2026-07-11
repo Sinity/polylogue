@@ -39,13 +39,15 @@ def _sha256_hex(value: str) -> bool:
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
-def encode_cursor_hash_authority(prefix_hash: str, tail_hash: str) -> str:
+def encode_cursor_hash_authority(prefix_hash: str, tail_hash: str, *, ctime_ns: int) -> str:
     """Bind a complete accepted-prefix digest to its bounded tail digest."""
     normalized_prefix = prefix_hash.lower()
     normalized_tail = tail_hash.lower()
     if not _sha256_hex(normalized_prefix) or not _sha256_hex(normalized_tail):
         raise ValueError("cursor hash authority requires SHA-256 hex digests")
-    return f"{_CURSOR_HASH_AUTHORITY_PREFIX}:{normalized_prefix}:{normalized_tail}"
+    if ctime_ns < 0:
+        raise ValueError("cursor hash authority requires a non-negative ctime")
+    return f"{_CURSOR_HASH_AUTHORITY_PREFIX}:{normalized_prefix}:{normalized_tail}:{ctime_ns}"
 
 
 def cursor_prefix_hash(authority: str | None) -> str | None:
@@ -53,13 +55,21 @@ def cursor_prefix_hash(authority: str | None) -> str | None:
         return None
     parts = authority.split(":")
     if (
-        len(parts) != 3
+        len(parts) != 4
         or parts[0] != _CURSOR_HASH_AUTHORITY_PREFIX
         or not _sha256_hex(parts[1])
         or not _sha256_hex(parts[2])
+        or not parts[3].isdigit()
     ):
         return None
     return parts[1]
+
+
+def cursor_ctime_ns(authority: str | None) -> int | None:
+    if cursor_prefix_hash(authority) is None:
+        return None
+    assert authority is not None
+    return int(authority.rsplit(":", 1)[1])
 
 
 def _archive_blob_exists(archive_root: Path, blob_hash_hex: str) -> bool:

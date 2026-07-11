@@ -37,7 +37,11 @@ def record_deferred_append_cursor(
         last_record_ts=cursor.last_record_ts,
         parser_fingerprint=parser_fingerprint,
         content_fingerprint=cursor.content_fingerprint,
-        tail_hash=encode_cursor_hash_authority(prefix_hash, tail_hash) if prefix_hash is not None else tail_hash,
+        tail_hash=(
+            encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=stat.st_ctime_ns)
+            if prefix_hash is not None
+            else tail_hash
+        ),
         source_name=source_name,
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,

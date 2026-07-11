@@ -1023,6 +1023,7 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
         tail_hash=encode_cursor_hash_authority(
             sha256(original).hexdigest(),
             sha256(original).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
         ),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,

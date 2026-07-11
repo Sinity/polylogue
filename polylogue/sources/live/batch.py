@@ -820,7 +820,11 @@ class LiveBatchProcessor:
             bytes_read = 0
             if captured_content_hash is not None:
                 bounded_tail_hash, tail_bytes = tail_hash_from_path(path, byte_size)
-                tail_hash = encode_cursor_hash_authority(captured_content_hash, bounded_tail_hash)
+                tail_hash = encode_cursor_hash_authority(
+                    captured_content_hash,
+                    bounded_tail_hash,
+                    ctime_ns=stat.st_ctime_ns,
+                )
                 bytes_read = tail_bytes
         else:
             fp, last_nl, tail_hash, bytes_read = cursor_state_after_full_ingest(
@@ -833,7 +837,7 @@ class LiveBatchProcessor:
                 start_offset=0,
                 end_offset=last_nl,
             )
-            tail_hash = encode_cursor_hash_authority(prefix_hash, tail_hash)
+            tail_hash = encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=stat.st_ctime_ns)
             bytes_read += prefix_bytes
         try:
             final_stat = path.stat()
@@ -2092,7 +2096,11 @@ class LiveBatchProcessor:
             return False
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
         stored_tail_hash = (
-            encode_cursor_hash_authority(plan.accepted_prefix_hash, tail_hash)
+            encode_cursor_hash_authority(
+                plan.accepted_prefix_hash,
+                tail_hash,
+                ctime_ns=plan.ctime_ns or 0,
+            )
             if plan.accepted_prefix_hash is not None
             else tail_hash
         )

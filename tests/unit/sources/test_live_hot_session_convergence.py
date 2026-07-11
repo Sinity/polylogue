@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -52,8 +53,14 @@ def test_same_size_prefix_rewrite_outside_tail_returns_to_full_route(
     asyncio.run(_ingest_one(watcher, f))
     assert parse_sources.await_count == 1
 
+    original_stat = f.stat()
     f.write_text(rewritten)
-    assert f.stat().st_size == len(original)
+    rewritten_stat = f.stat()
+    os.utime(f, ns=(rewritten_stat.st_atime_ns, original_stat.st_mtime_ns))
+    restored_stat = f.stat()
+    assert restored_stat.st_size == len(original)
+    assert restored_stat.st_mtime_ns == original_stat.st_mtime_ns
+    assert restored_stat.st_ctime_ns != original_stat.st_ctime_ns
 
     def fail_fingerprint(path: Path) -> tuple[str, int]:
         raise AssertionError(f"same-size rewrite should not full-fingerprint before ingest: {path}")
@@ -64,9 +71,7 @@ def test_same_size_prefix_rewrite_outside_tail_returns_to_full_route(
     assert parse_sources.await_count == 2
 
 
-def test_legacy_same_size_cursor_without_tail_hash_skips_full_prefingerprint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_legacy_same_size_cursor_without_authority_requires_reauthorization(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
@@ -82,13 +87,9 @@ def test_legacy_same_size_cursor_without_tail_hash_skips_full_prefingerprint(
 
     f.write_text('{"b":2}\n')
 
-    def fail_fingerprint(path: Path) -> tuple[str, int]:
-        raise AssertionError(f"legacy same-size cursor should not full-fingerprint: {path}")
-
-    monkeypatch.setattr(live_watcher, "fingerprint_file", fail_fingerprint)
     asyncio.run(_ingest_one(watcher, f))
 
-    assert parse_sources.await_count == 0
+    assert parse_sources.await_count == 1
 
 
 def test_debounce_drains_live_events_serially_while_ingest_is_active(tmp_path: Path) -> None:

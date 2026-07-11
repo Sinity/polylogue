@@ -29,6 +29,7 @@ from polylogue.logging import get_logger
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
 from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
+    cursor_ctime_ns,
     cursor_prefix_hash,
     encode_cursor_hash_authority,
     sha256_range_from_path,
@@ -611,7 +612,10 @@ class LiveWatcher:
                 return False
             prefix_hash = cursor_prefix_hash(cursor.tail_hash)
             if prefix_hash is None:
-                return cursor.tail_hash is not None
+                if self._reconcile_archived_cursor(path, stat=stat):
+                    reconciled = self._cursor.get_record(path)
+                    return reconciled is None or size > reconciled.byte_offset
+                return True
             try:
                 current_prefix_hash, _bytes_read = sha256_range_from_path(
                     path,
@@ -763,7 +767,8 @@ class LiveWatcher:
             post_read_stat.st_ino,
             post_read_stat.st_size,
             post_read_stat.st_mtime_ns,
-        ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns):
+            post_read_stat.st_ctime_ns,
+        ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
             return False
         self._cursor.set(
             path,
@@ -772,7 +777,11 @@ class LiveWatcher:
             last_complete_newline=last_complete_newline,
             parser_fingerprint=_PARSER_FINGERPRINT,
             content_fingerprint=content_fingerprint,
-            tail_hash=encode_cursor_hash_authority(content_fingerprint, tail_hash),
+            tail_hash=encode_cursor_hash_authority(
+                content_fingerprint,
+                tail_hash,
+                ctime_ns=stat.st_ctime_ns,
+            ),
             source_name=provider_from_origin(Origin.from_string(str(origin))).value
             if origin is not None
             else self._source_name_for(path),
@@ -961,7 +970,12 @@ def _parse_retry_at(next_retry_at: str | None) -> datetime | None:
 def _cursor_stat_matches(cursor: CursorRecord, stat: os.stat_result) -> bool:
     """Return True when the cursor was written for this exact file state."""
 
-    return cursor.st_dev == stat.st_dev and cursor.st_ino == stat.st_ino and cursor.mtime_ns == stat.st_mtime_ns
+    return (
+        cursor.st_dev == stat.st_dev
+        and cursor.st_ino == stat.st_ino
+        and cursor.mtime_ns == stat.st_mtime_ns
+        and cursor_ctime_ns(cursor.tail_hash) == stat.st_ctime_ns
+    )
 
 
 __all__ = ["LiveWatcher", "WatchSource", "default_sources"]

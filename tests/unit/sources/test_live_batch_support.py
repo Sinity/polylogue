@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import pytest
 
+import polylogue.sources.live.watcher as live_watcher
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
@@ -25,6 +26,7 @@ from polylogue.sources.live.batch_support import (
     _detect_provider_from_path_sample,
     _parse_path_as_session_artifact,
     encode_cursor_hash_authority,
+    sha256_range_from_path,
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -48,6 +50,7 @@ def _cursor_hash_authority(payload: bytes) -> str:
     return encode_cursor_hash_authority(
         sha256(payload).hexdigest(),
         sha256(payload[-64 * 1024 :]).hexdigest(),
+        ctime_ns=0,
     )
 
 
@@ -1590,6 +1593,55 @@ def test_full_ingest_does_not_advance_cursor_across_same_size_replacement(
         ]
 
 
+def test_archive_cursor_reconciliation_rejects_restored_mtime_rewrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "archive-reconcile.jsonl"
+    payload_a = b'{"type":"session_meta","payload":{"id":"archive-reconcile-a"}}\n'
+    payload_b = b'{"type":"session_meta","payload":{"id":"archive-reconcile-b"}}\n'
+    assert len(payload_a) == len(payload_b)
+    path.write_bytes(payload_a)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    assert asyncio.run(processor.ingest_files([path])).succeeded_file_count == 1
+    with sqlite3.connect(cursor._ops_db_path) as conn:
+        conn.execute("DELETE FROM ingest_cursor WHERE source_path = ?", (str(path),))
+        conn.commit()
+    watcher = LiveWatcher(polylogue, (WatchSource(name="codex", root=root),), cursor=cursor)
+    initial_stat = path.stat()
+    original_hash = sha256_range_from_path
+
+    def rewrite_after_hash(
+        source_path: Path,
+        *,
+        start_offset: int,
+        end_offset: int,
+    ) -> tuple[str, int]:
+        result = original_hash(source_path, start_offset=start_offset, end_offset=end_offset)
+        path.write_bytes(payload_b)
+        rewritten_stat = path.stat()
+        os.utime(path, ns=(rewritten_stat.st_atime_ns, initial_stat.st_mtime_ns))
+        return result
+
+    monkeypatch.setattr(live_watcher, "sha256_range_from_path", rewrite_after_hash)
+
+    assert not watcher._reconcile_archived_cursor(path, stat=initial_stat)
+    assert cursor.get_record(path) is None
+    final_stat = path.stat()
+    assert final_stat.st_mtime_ns == initial_stat.st_mtime_ns
+    assert final_stat.st_ctime_ns != initial_stat.st_ctime_ns
+
+
 def test_rejected_full_cursor_frontier_requires_reauthorization(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     root.mkdir()
@@ -1718,7 +1770,7 @@ def test_append_plan_rejects_malformed_hash_authority(tmp_path: Path) -> None:
         last_complete_newline=len(original),
         parser_fingerprint="test-parser",
         content_fingerprint="accepted-frontier",
-        tail_hash=f"sha256-prefix-v1:{sha256(original).hexdigest()}:invalid",
+        tail_hash=f"sha256-prefix-v1:{sha256(original).hexdigest()}:invalid:0",
         source_name="codex",
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
