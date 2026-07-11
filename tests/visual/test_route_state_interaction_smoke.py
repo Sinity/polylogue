@@ -168,12 +168,17 @@ function makeElement(id) {
   };
 }
 var document = {
+  documentElement: { dataset: {} },
   getElementById: function(id) { if (!elements[id]) elements[id] = makeElement(id); return elements[id]; },
   querySelector: function() { return null; },
   querySelectorAll: function() { return []; },
   addEventListener: function() {}
 };
-var window = { performance: { now: function() { return Date.now(); } } };
+var window = {
+  performance: { now: function() { return Date.now(); } },
+  dispatchEvent: function() {}
+};
+function CustomEvent(name, init) { this.type = name; this.detail = init && init.detail; }
 """
 
 _SESSION_LIST_FUNCS = [
@@ -185,6 +190,9 @@ _SESSION_LIST_FUNCS = [
     "summarizeApiBody",
     "renderApiDebugChip",
     "rememberApiDebug",
+    "setWebAuthState",
+    "bootstrapWebCredential",
+    "ensureWebCredential",
     "requestJSON",
     "fetchJSON",
     "fallbackCommand",
@@ -230,18 +238,27 @@ def test_session_list_survives_daemon_failure_seeded(reader_workspace: ReaderWor
     assert any(item.get("id") == READER_C1 for item in items)
 
     functions_src = _extract_functions(WEB_SHELL_HTML, _SESSION_LIST_FUNCS)
+    web_auth_failures_src = _extract_var_block(WEB_SHELL_HTML, "var WEB_AUTH_FAILURES", "];")
     harness = f"""
 {_DOM_HARNESS_PRELUDE}
+{web_auth_failures_src}
 var state = {{
   sessions: [], selected: null, origin: '', query: '', offset: 0, limit: 100, total: 0,
   routeStates: {{}}, marks: {{}}, selectionSet: {{}}, lastSelectionResult: null,
-  apiDebug: {{counter: 0, last: null}}, actionAffordances: []
+  apiDebug: {{counter: 0, last: null}}, actionAffordances: [],
+  webAuth: {{state: 'unknown', expiresAt: null, bootstrapPromise: null, lastFailure: null}}
 }};
 {functions_src}
 
 var CAPTURED_PAYLOAD = {json.dumps(captured)};
 var fetchCallCount = 0;
 global.fetch = function(url, opts) {{
+  if (url === '/api/web-auth/session') {{
+    return Promise.resolve({{
+      ok: true, status: 200,
+      json: function() {{ return Promise.resolve({{credential: {{state: 'ready'}}}}); }}
+    }});
+  }}
   fetchCallCount += 1;
   if (fetchCallCount === 1) {{
     return Promise.resolve({{

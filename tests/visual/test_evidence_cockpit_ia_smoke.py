@@ -125,6 +125,12 @@ def _extract_functions(source: str, names: list[str]) -> str:
     return "\n".join(_extract_function(source, name) for name in names)
 
 
+def _extract_var_block(source: str, start_marker: str, end_marker: str) -> str:
+    start = source.index(start_marker)
+    end = source.index(end_marker, start) + len(end_marker)
+    return source[start:end]
+
+
 _DOM_HARNESS_PRELUDE = r"""
 var API = '';
 var elements = {};
@@ -148,12 +154,17 @@ function makeElement(id) {
   };
 }
 var document = {
+  documentElement: { dataset: {} },
   getElementById: function(id) { if (!elements[id]) elements[id] = makeElement(id); return elements[id]; },
   querySelector: function() { return null; },
   querySelectorAll: function() { return []; },
   addEventListener: function() {}
 };
-var window = { performance: { now: function() { return Date.now(); } } };
+var window = {
+  performance: { now: function() { return Date.now(); } },
+  dispatchEvent: function() {}
+};
+function CustomEvent(name, init) { this.type = name; this.detail = init && init.detail; }
 """
 
 _LANDING_FUNCS = [
@@ -424,6 +435,9 @@ _ANALYZE_FUNCS = [
     "summarizeApiBody",
     "renderApiDebugChip",
     "rememberApiDebug",
+    "setWebAuthState",
+    "bootstrapWebCredential",
+    "ensureWebCredential",
     "requestJSON",
     "fetchJSON",
     "fallbackCommand",
@@ -448,11 +462,25 @@ def test_analyze_panel_failure_is_terminal_not_a_retry_loop(tmp_path: Path) -> N
     from polylogue.daemon.web_shell import WEB_SHELL_HTML
 
     functions_src = _extract_functions(WEB_SHELL_HTML, _ANALYZE_FUNCS)
+    web_auth_failures_src = _extract_var_block(WEB_SHELL_HTML, "var WEB_AUTH_FAILURES", "];")
     harness = f"""
 {_DOM_HARNESS_PRELUDE}
-var state = {{activeView: 'analyze', apiDebug: {{counter: 0, last: null}}, analyzePanel: undefined}};
+{web_auth_failures_src}
+var state = {{
+  activeView: 'analyze', apiDebug: {{counter: 0, last: null}}, analyzePanel: undefined,
+  webAuth: {{state: 'unknown', expiresAt: null, bootstrapPromise: null, lastFailure: null}}
+}};
 var fetchCallCount = 0;
-global.fetch = function() {{ fetchCallCount += 1; return Promise.reject(new TypeError('fetch failed')); }};
+global.fetch = function(url) {{
+  if (url === '/api/web-auth/session') {{
+    return Promise.resolve({{
+      ok: true, status: 200,
+      json: function() {{ return Promise.resolve({{credential: {{state: 'ready'}}}}); }}
+    }});
+  }}
+  fetchCallCount += 1;
+  return Promise.reject(new TypeError('fetch failed'));
+}};
 function renderMain() {{}}
 {functions_src}
 
