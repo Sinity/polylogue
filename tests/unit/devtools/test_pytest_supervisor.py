@@ -255,6 +255,54 @@ def test_non_linux_platform_refuses_unsafe_group_fallback(
         )
 
 
+def test_launch_refuses_missing_exact_owner_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pytest_supervisor, "_process_start_ticks", lambda _pid: None)
+
+    with pytest.raises(RuntimeError, match="requires an exact owner process identity"):
+        build_supervisor_launch(
+            [sys.executable, "-c", "pass"],
+            owner_pid=os.getpid(),
+            timeout_s=1,
+            term_grace_s=0.1,
+            receipt_path=tmp_path / "containment.json",
+            run_id="missing-owner-identity",
+        )
+
+
+def test_supervisor_refuses_controller_without_subreaper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller_started = tmp_path / "controller-started"
+    receipt_path = tmp_path / "containment.json"
+    owner_start_ticks = _process_start_ticks(os.getpid())
+    assert owner_start_ticks is not None
+    monkeypatch.setattr(pytest_supervisor, "enable_child_subreaper", lambda: False)
+
+    rc = pytest_supervisor.supervise(
+        [sys.executable, "-c", f"from pathlib import Path; Path({str(controller_started)!r}).touch()"],
+        receipt_path=receipt_path,
+        owner_pid=os.getpid(),
+        owner_start_ticks=owner_start_ticks,
+        timeout_s=1,
+        term_grace_s=0.1,
+        mode="process-group",
+        unit=None,
+        runtime_cap_s=None,
+    )
+
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert rc == 125
+    assert not controller_started.exists()
+    assert receipt["status"] == "terminated"
+    assert receipt["startup_failure"] is True
+    assert receipt["subreaper_enabled"] is False
+    assert receipt["termination_reason"] == "pytest supervisor could not become a Linux child subreaper"
+
+
 def test_supervisor_rejects_owner_identity_captured_before_launch(tmp_path: Path) -> None:
     owner_start_ticks = _process_start_ticks(os.getpid())
     if owner_start_ticks is None:
@@ -338,6 +386,37 @@ def test_supervisor_kills_controller_when_receipt_publication_fails(tmp_path: Pa
     assert process.returncode != 0
     assert "injected receipt failure" in process.stderr
     _wait_for(lambda: not _same_process_alive(controller_identity))
+
+
+def test_surviving_owned_process_forces_nonzero_containment_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_path = tmp_path / "containment.json"
+    owner_start_ticks = _process_start_ticks(os.getpid())
+    assert owner_start_ticks is not None
+    monkeypatch.setattr(pytest_supervisor, "_terminate_controller_group", lambda *_args, **_kwargs: ([], False))
+    monkeypatch.setattr(pytest_supervisor, "_owned_processes_exist", lambda **_kwargs: True)
+
+    rc = pytest_supervisor.supervise(
+        [sys.executable, "-c", "pass"],
+        receipt_path=receipt_path,
+        owner_pid=os.getpid(),
+        owner_start_ticks=owner_start_ticks,
+        timeout_s=1,
+        term_grace_s=0,
+        mode="process-group",
+        unit=None,
+        runtime_cap_s=None,
+    )
+
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert rc == 125
+    assert receipt["status"] == "terminated"
+    assert receipt["exit_code"] == 125
+    assert receipt["controller_returncode"] == 0
+    assert receipt["controller_group_alive"] is True
+    assert receipt["termination_reason"] == "owned pytest processes survived cleanup"
 
 
 def test_managed_runner_retains_responsible_node_for_per_test_timeout(
@@ -470,10 +549,35 @@ def test_whole_run_deadline_bounds_stalled_supervisor_startup(
     assert "pytest runtime exceeded 0.2s" in output
 
 
+def test_runner_refuses_launch_without_subreaper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller_started = tmp_path / "controller-started"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("devtools.verify.enable_child_subreaper", lambda: False)
+    monkeypatch.setenv("POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S", "0")
+
+    rc, _elapsed, metadata = _run(
+        "pytest missing runner subreaper",
+        [sys.executable, "-c", f"from pathlib import Path; Path({str(controller_started)!r}).touch()"],
+    )
+
+    receipt = json.loads((tmp_path / PYTEST_CONTAINMENT_PATH).read_text(encoding="utf-8"))
+    assert rc == 125
+    assert not controller_started.exists()
+    assert metadata["diagnosis"] == "pytest_terminated"
+    assert metadata["termination_reason"] == "pytest runner could not become a Linux child subreaper"
+    assert receipt["status"] == "terminated"
+    assert receipt["startup_failure"] is True
+    assert receipt["runner_subreaper_enabled"] is False
+
+
 @pytest.mark.load_sensitive
 def test_runner_deadline_cleans_group_when_fallback_supervisor_is_sigkilled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
     ready_path = tmp_path / "fallback-worker.json"
     hanging_test = tmp_path / "test_fallback_supervisor_death.py"
@@ -487,6 +591,15 @@ def test_runner_deadline_cleans_group_when_fallback_supervisor_is_sigkilled(
     monkeypatch.setenv("POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S", "0")
     run = VerifyRun(tier="fallback-supervisor-death", argv=[str(hanging_test)], git_head=None, root=tmp_path)
     receipt_path = run.run_dir / "steps" / "01-pytest-fallback-supervisor-death" / "containment.json"
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    unrelated_identity = (unrelated.pid, _process_start_ticks(unrelated.pid))
+
+    def _cleanup_unrelated() -> None:
+        if unrelated.poll() is None:
+            unrelated.kill()
+        unrelated.wait(timeout=2)
+
+    request.addfinalizer(_cleanup_unrelated)
     observed_group: tuple[int, int] | None = None
     owned_identities: set[tuple[int, int | None]] = set()
     errors: list[BaseException] = []
@@ -547,6 +660,7 @@ def test_runner_deadline_cleans_group_when_fallback_supervisor_is_sigkilled(
     )
     assert "test_streams_forever" in events
     assert "pytest runtime exceeded 4s" in output
+    assert _same_process_alive(unrelated_identity)
 
 
 @pytest.mark.load_sensitive

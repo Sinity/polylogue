@@ -220,9 +220,14 @@ def signal_owned_process_group(
     )
 
 
-def _descendant_identities(root_pid: int) -> list[tuple[int, int]]:
+def _descendant_identities(
+    root_pid: int,
+    *,
+    preserved_roots: Sequence[tuple[int, int]] = (),
+) -> list[tuple[int, int]]:
     if not _linux_proc_available():
         return []
+    preserved = set(preserved_roots)
     rows: dict[int, tuple[int, str, int]] = {}
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
@@ -236,9 +241,19 @@ def _descendant_identities(root_pid: int) -> list[tuple[int, int]]:
     frontier = {root_pid}
     while frontier:
         children = {pid for pid, (ppid, _state, _start) in rows.items() if ppid in frontier and pid not in descendants}
-        descendants.update(children)
-        frontier = children
+        frontier = set()
+        for pid in children:
+            identity = (pid, rows[pid][2])
+            if identity in preserved:
+                continue
+            descendants.add(pid)
+            frontier.add(pid)
     return [(pid, rows[pid][2]) for pid in descendants if rows[pid][1] != "Z"]
+
+
+def descendant_process_identities(root_pid: int) -> list[tuple[int, int]]:
+    """Return exact identities below one process for scoped recovery."""
+    return _descendant_identities(root_pid)
 
 
 def _owned_identities(
@@ -281,9 +296,17 @@ def reap_exited_children() -> None:
             return
 
 
-def signal_descendant_identities(root_pid: int, sig: signal.Signals) -> int:
+def signal_descendant_identities(
+    root_pid: int,
+    sig: signal.Signals,
+    *,
+    preserved_roots: Sequence[tuple[int, int]] = (),
+) -> int:
     """Signal the exact live descendants of a Linux subreaper via pidfds."""
-    return sum(signal_process_identity(pid, start_ticks, sig) for pid, start_ticks in _descendant_identities(root_pid))
+    return sum(
+        signal_process_identity(pid, start_ticks, sig)
+        for pid, start_ticks in _descendant_identities(root_pid, preserved_roots=preserved_roots)
+    )
 
 
 def _systemd_mode(env: Mapping[str, str]) -> str:
@@ -370,11 +393,13 @@ def build_supervisor_launch(
 ) -> SupervisorLaunch:
     """Build the Linux supervisor command and optional owned cgroup scope."""
     values = dict(os.environ if env is None else env)
-    if sys.platform != "linux":
+    if sys.platform != "linux" or not _linux_proc_available():
         raise RuntimeError("managed pytest containment requires Linux process identities")
     receipt_path = receipt_path.absolute()
     request_path = termination_request_path(receipt_path)
     owner_start_ticks = _process_start_ticks(owner_pid)
+    if owner_start_ticks is None:
+        raise RuntimeError("managed pytest containment requires an exact owner process identity")
     systemd_available = user_systemd_available(values)
     requested_mode = _systemd_mode(values)
     if requested_mode == "require" and not systemd_available:
@@ -623,6 +648,44 @@ def supervise(
     started_at = utc_now()
     started = time.monotonic()
     subreaper_enabled = enable_child_subreaper()
+    if owner_start_ticks is None or not subreaper_enabled:
+        reason = (
+            "pytest supervisor lacks an exact owner process identity"
+            if owner_start_ticks is None
+            else "pytest supervisor could not become a Linux child subreaper"
+        )
+        _write_json(
+            receipt_path,
+            {
+                "schema_version": 1,
+                "status": "terminated",
+                "started_at": started_at,
+                "finished_at": utc_now(),
+                "duration_s": round(time.monotonic() - started, 4),
+                "supervisor_pid": os.getpid(),
+                "supervisor_start_ticks": _process_start_ticks(os.getpid()),
+                "owner_pid": owner_pid,
+                "owner_start_ticks": owner_start_ticks,
+                "controller_command": list(controller_cmd),
+                "mode": mode,
+                "unit": unit,
+                "cgroup_path": _cgroup_path(os.getpid()),
+                "cgroup_owned": mode == "systemd-scope",
+                "timeout_s": timeout_s,
+                "term_grace_s": term_grace_s,
+                "runtime_cap_s": runtime_cap_s,
+                "subreaper_enabled": subreaper_enabled,
+                "exit_code": 125,
+                "termination_reason": reason,
+                "signals_sent": [],
+                "escalated_to_sigkill": False,
+                "controller_group_alive": False,
+                "startup_failure": True,
+            },
+        )
+        sys.stderr.write(f"pytest supervisor: {reason}\n")
+        sys.stderr.flush()
+        return 125
     owner_watch = _OwnerWatch(owner_pid, owner_start_ticks)
     received_signal: list[int] = []
 
@@ -638,6 +701,51 @@ def supervise(
     controller_pgid = controller_pid
     controller_sid = controller_pid
     controller_start_ticks = _process_start_ticks(controller_pid)
+    if controller_start_ticks is None:
+        process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=1)
+        signal_descendant_identities(os.getpid(), signal.SIGKILL)
+        reap_exited_children()
+        reason = "pytest supervisor could not capture the controller process identity"
+        _write_json(
+            receipt_path,
+            {
+                "schema_version": 1,
+                "status": "terminated",
+                "started_at": started_at,
+                "finished_at": utc_now(),
+                "duration_s": round(time.monotonic() - started, 4),
+                "supervisor_pid": os.getpid(),
+                "supervisor_start_ticks": _process_start_ticks(os.getpid()),
+                "owner_pid": owner_pid,
+                "owner_start_ticks": owner_start_ticks,
+                "controller_pid": controller_pid,
+                "controller_start_ticks": None,
+                "controller_command": list(controller_cmd),
+                "mode": mode,
+                "unit": unit,
+                "cgroup_path": _cgroup_path(os.getpid()),
+                "cgroup_owned": mode == "systemd-scope",
+                "timeout_s": timeout_s,
+                "term_grace_s": term_grace_s,
+                "runtime_cap_s": runtime_cap_s,
+                "subreaper_enabled": subreaper_enabled,
+                "exit_code": 125,
+                "controller_returncode": process.poll(),
+                "termination_reason": reason,
+                "signals_sent": ["SIGKILL"],
+                "escalated_to_sigkill": True,
+                "controller_group_alive": False,
+                "startup_failure": True,
+            },
+        )
+        owner_watch.close()
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+        sys.stderr.write(f"pytest supervisor: {reason}\n")
+        sys.stderr.flush()
+        return 125
     try:
         controller_pgid = os.getpgid(controller_pid)
         controller_sid = os.getsid(controller_pid)
@@ -729,6 +837,16 @@ def supervise(
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
 
+    controller_group_alive = _owned_processes_exist(
+        supervisor_pid=os.getpid(),
+        pgid=controller_pgid,
+        sid=controller_sid,
+        leader_start_ticks=controller_start_ticks,
+    )
+    if controller_group_alive:
+        termination_reason = termination_reason or "owned pytest processes survived cleanup"
+        if requested_exit_code is None and (controller_returncode is None or controller_returncode == 0):
+            requested_exit_code = 125
     if requested_exit_code is not None:
         exit_code = requested_exit_code
     elif controller_returncode is None:
@@ -747,12 +865,7 @@ def supervise(
         "termination_reason": termination_reason,
         "signals_sent": signals_sent,
         "escalated_to_sigkill": escalated,
-        "controller_group_alive": _owned_processes_exist(
-            supervisor_pid=os.getpid(),
-            pgid=controller_pgid,
-            sid=controller_sid,
-            leader_start_ticks=controller_start_ticks,
-        ),
+        "controller_group_alive": controller_group_alive,
     }
     _write_json(receipt_path, final_receipt)
     if termination_reason is not None:

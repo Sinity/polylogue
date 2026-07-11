@@ -42,6 +42,7 @@ from typing import Any
 from devtools.pytest_supervisor import (
     SupervisorLaunch,
     build_supervisor_launch,
+    descendant_process_identities,
     enable_child_subreaper,
     read_receipt,
     reap_exited_children,
@@ -562,7 +563,12 @@ def _request_supervisor_termination(
         process.send_signal(signal.SIGTERM)
 
 
-def _force_kill_owned_run(process: subprocess.Popen[bytes], launch: SupervisorLaunch) -> None:
+def _force_kill_owned_run(
+    process: subprocess.Popen[bytes],
+    launch: SupervisorLaunch,
+    *,
+    preserved_runner_descendants: Sequence[tuple[int, int]] = (),
+) -> None:
     """Escalate only through identities recorded for this pytest run."""
     receipt = read_receipt(launch.receipt_path)
     controller_pgid = receipt.get("controller_pgid") if receipt is not None else None
@@ -590,7 +596,11 @@ def _force_kill_owned_run(process: subprocess.Popen[bytes], launch: SupervisorLa
         )
     if isinstance(supervisor_pid, int) and isinstance(supervisor_start, int):
         signal_process_identity(supervisor_pid, supervisor_start, signal.SIGKILL)
-    signal_descendant_identities(os.getpid(), signal.SIGKILL)
+    signal_descendant_identities(
+        os.getpid(),
+        signal.SIGKILL,
+        preserved_roots=preserved_runner_descendants,
+    )
     if process.poll() is None:
         process.kill()
 
@@ -700,6 +710,7 @@ def _run_pytest_with_heartbeat(
     term_grace_s = _pytest_term_grace_s()
     resource_interval_s = _pytest_resource_interval_s()
     runner_subreaper_enabled = enable_child_subreaper()
+    preserved_runner_descendants = tuple(descendant_process_identities(os.getpid()))
     receipt_path = (
         artifacts.containment_path
         if artifacts is not None
@@ -720,6 +731,50 @@ def _run_pytest_with_heartbeat(
         f"{f', unit={launch.unit}' if launch.unit is not None else ''}, receipt={launch.receipt_path}\n"
     )
     sys.stderr.flush()
+    if not runner_subreaper_enabled:
+        reason = "pytest runner could not become a Linux child subreaper"
+        preflight_receipt = update_receipt(
+            launch.receipt_path,
+            {
+                "schema_version": 1,
+                "status": "terminated",
+                "started_at": utc_now(),
+                "finished_at": utc_now(),
+                "duration_s": round(time.monotonic() - t0, 4),
+                "runner_pid": os.getpid(),
+                "runner_subreaper_enabled": False,
+                "controller_command": list(cmd),
+                "mode": launch.mode,
+                "unit": launch.unit,
+                "cgroup_owned": False,
+                "timeout_s": timeout_s,
+                "term_grace_s": term_grace_s,
+                "runtime_cap_s": launch.runtime_cap_s,
+                "exit_code": 125,
+                "termination_reason": reason,
+                "signals_sent": [],
+                "escalated_to_sigkill": False,
+                "controller_group_alive": False,
+                "startup_failure": True,
+            },
+        )
+        rendered_stderr = f"verify: {reason}; refusing an unowned pytest launch\n"
+        _write_pytest_progress(
+            event="terminated",
+            cmd=cmd,
+            started_at=t0,
+            returncode=125,
+            termination_reason=reason,
+            run_id=run.run_id if run is not None else None,
+            artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+            containment=_containment_summary(launch, preflight_receipt),
+        )
+        _write_pytest_output("", rendered_stderr)
+        if artifacts is not None:
+            artifacts.stdout_path.write_text("", encoding="utf-8")
+            artifacts.stderr_path.write_text(rendered_stderr, encoding="utf-8")
+            artifacts.output_path.write_text(rendered_stderr, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 125, "", rendered_stderr)
 
     def _spawn_supervisor(argv: Sequence[str]) -> subprocess.Popen[bytes]:
         return subprocess.Popen(
@@ -735,7 +790,11 @@ def _run_pytest_with_heartbeat(
         startup_process: subprocess.Popen[bytes],
         startup_launch: SupervisorLaunch,
     ) -> tuple[bytes, bytes]:
-        _force_kill_owned_run(startup_process, startup_launch)
+        _force_kill_owned_run(
+            startup_process,
+            startup_launch,
+            preserved_runner_descendants=preserved_runner_descendants,
+        )
         try:
             result = startup_process.communicate(timeout=1)
         except subprocess.TimeoutExpired:
@@ -921,7 +980,11 @@ def _run_pytest_with_heartbeat(
                         or (str(receipt_reason) if isinstance(receipt_reason, str) else None)
                         or "pytest supervisor exited while owned output pipes remained open"
                     )
-                    _force_kill_owned_run(process, launch)
+                    _force_kill_owned_run(
+                        process,
+                        launch,
+                        preserved_runner_descendants=preserved_runner_descendants,
+                    )
                     forced_cleanup = True
                     forced_returncode = 125
                     post_exit_forced_at = now
@@ -973,7 +1036,11 @@ def _run_pytest_with_heartbeat(
                 and now - termination_requested_at >= term_grace_s + 1.0
                 and not forced_cleanup
             ):
-                _force_kill_owned_run(process, launch)
+                _force_kill_owned_run(
+                    process,
+                    launch,
+                    preserved_runner_descendants=preserved_runner_descendants,
+                )
                 forced_cleanup = True
                 forced_returncode = 124
                 receipt = update_receipt(
