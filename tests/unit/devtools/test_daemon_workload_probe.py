@@ -198,6 +198,53 @@ def test_daemon_workload_probe_defaults_to_mixed_table_counts(tmp_path: Path) ->
     assert exact_payload["boundary_table_count_precision"]["blocks"] == "exact"
 
 
+def test_daemon_workload_probe_counts_raw_artifacts_in_source_tier(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    _seed_minimal_archive(db, tmp_path / "session.jsonl")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "artifact-1",
+                "raw-1",
+                "codex-session",
+                str(tmp_path / "session.jsonl"),
+                0,
+                "session_record_stream",
+                "supported_parseable",
+                "codex session stream",
+                1,
+                1,
+                1_770_000_000_000,
+                1_770_000_000_000,
+            ),
+        )
+
+    payload = probe(db, exact_table_counts=True)
+
+    assert payload["boundary_table_counts"]["raw_artifacts"] == 1
+    assert payload["boundary_table_count_precision"]["raw_artifacts"] == "exact"
+
+
+def test_daemon_workload_probe_reports_missing_raw_artifacts_for_unbootstrapped_source(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "index.db"
+    initialize_archive_database(db, ArchiveTier.INDEX)
+    sqlite3.connect(tmp_path / "source.db").close()
+
+    payload = probe(db, exact_table_counts=True)
+
+    assert payload["boundary_table_counts"]["raw_artifacts"] == -1
+    assert payload["boundary_table_count_precision"]["raw_artifacts"] == "missing"
+
+
 def test_daemon_workload_probe_separates_automatic_backlog_from_retry_debt(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     source = tmp_path / "session.jsonl"
