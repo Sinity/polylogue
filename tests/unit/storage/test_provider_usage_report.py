@@ -493,6 +493,343 @@ def test_provider_usage_report_ignores_reasoning_only_cumulative_rows(tmp_path: 
     }
 
 
+def test_provider_usage_report_stale_rollups_use_one_bounded_sql_diagnostic(tmp_path: Path) -> None:
+    """Full reports keep stale diagnostics in SQLite and preserve lane semantics."""
+
+    conn = _connect(tmp_path / "index.db")
+    stale_count = 32
+    stale_native_ids = [f"stale-{index:02d}" for index in range(stale_count)]
+    conn.executemany(
+        """
+        INSERT INTO sessions (
+            origin, native_id, title, session_kind,
+            created_at_ms, updated_at_ms, message_count, word_count, content_hash
+        ) VALUES (?, ?, 'usage', 'standard', 1, 1, 0, 0, zeroblob(32))
+        """,
+        [
+            *(("codex-session", native_id) for native_id in stale_native_ids),
+            ("codex-session", "reasoning-only-tail"),
+            ("codex-session", "multi-model"),
+            ("claude-code-session", "outside-origin-filter"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            *((f"codex-session:{native_id}", "gpt-5-codex", 0, 0, 0, 0) for native_id in stale_native_ids),
+            ("codex-session:reasoning-only-tail", "gpt-5-codex", 20, 20, 80, 0),
+            # A session-global Codex cumulative belongs only to its latest
+            # model. The old model is deliberately nonzero to prove this row
+            # does not create a false stale result.
+            ("codex-session:multi-model", "old-model", 999, 999, 999, 999),
+            ("codex-session:multi-model", "new-model", 50, 40, 150, 0),
+            ("claude-code-session:outside-origin-filter", "claude-model", 0, 0, 0, 0),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_provider_usage_events (
+            session_id, position, provider_event_type, model_name,
+            total_input_tokens, total_output_tokens, total_cached_input_tokens
+        ) VALUES (?, ?, 'token_count', ?, ?, ?, ?)
+        """,
+        [
+            *((f"codex-session:{native_id}", 0, "gpt-5-codex", 100, 20, 80) for native_id in stale_native_ids),
+            ("codex-session:reasoning-only-tail", 0, "gpt-5-codex", 100, 20, 80),
+            ("codex-session:multi-model", 0, "old-model", 100, 20, 80),
+            ("codex-session:multi-model", 1, "new-model", 200, 40, 150),
+            ("claude-code-session:outside-origin-filter", 0, "claude-model", 100, 20, 80),
+        ],
+    )
+    conn.execute(
+        """
+        INSERT INTO session_provider_usage_events (
+            session_id, position, provider_event_type, model_name,
+            total_reasoning_output_tokens
+        ) VALUES ('codex-session:reasoning-only-tail', 1, 'token_count', 'gpt-5-codex', 30)
+        """
+    )
+
+    traced_sql: list[str] = []
+    conn.set_trace_callback(traced_sql.append)
+    try:
+        report = provider_usage_report_from_connection(
+            conn,
+            archive_root=tmp_path,
+            origin="codex-session",
+            detail="full",
+            limit=3,
+        )
+    finally:
+        conn.set_trace_callback(None)
+
+    assert len(report.origins) == 1
+    row = report.origins[0]
+    assert row.origin == "codex-session"
+    assert row.stale_rollup_session_count == stale_count
+    assert row.sample_stale_rollup_sessions == tuple(f"codex-session:{native_id}" for native_id in stale_native_ids[:3])
+
+    stale_latest = [statement for statement in traced_sql if "provider_usage_stale_latest" in statement]
+    assert len(stale_latest) == 1
+    assert "ORDER BY e.position DESC" in stale_latest[0]
+    assert "LIMIT 1" in stale_latest[0]
+    stale_plan = [str(plan[3]) for plan in conn.execute("EXPLAIN QUERY PLAN " + stale_latest[0])]
+    assert any("CORRELATED SCALAR SUBQUERY" in detail for detail in stale_plan)
+    assert any("SEARCH e USING INDEX idx_session_provider_usage_events_session" in detail for detail in stale_plan)
+    assert not any(detail.startswith("SCAN e") for detail in stale_plan)
+
+    cumulative_latest = [statement for statement in traced_sql if "provider_usage_latest_cumulative" in statement]
+    assert len(cumulative_latest) == 1
+    assert "ORDER BY e.position DESC" in cumulative_latest[0]
+    assert "LIMIT 1" in cumulative_latest[0]
+
+
+def test_provider_usage_report_preserves_control_characters_in_stale_sample_ids(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    native_id = "stale\x1fsession"
+    session_id = f"codex-session:{native_id}"
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            origin, native_id, title, session_kind,
+            created_at_ms, updated_at_ms, message_count, word_count, content_hash
+        ) VALUES ('codex-session', ?, 'usage', 'standard', 1, 1, 0, 0, zeroblob(32))
+        """,
+        (native_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens
+        ) VALUES (?, 'gpt-5-codex', 0, 0, 0, 0)
+        """,
+        (session_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO session_provider_usage_events (
+            session_id, position, provider_event_type, model_name,
+            total_input_tokens, total_output_tokens, total_cached_input_tokens
+        ) VALUES (?, 0, 'token_count', 'gpt-5-codex', 100, 20, 80)
+        """,
+        (session_id,),
+    )
+
+    report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+
+    # Anti-vacuity: delimiter packing or lossy decoding splits this one
+    # production session identity into multiple sample entries.
+    assert report.origins[0].sample_stale_rollup_sessions == (session_id,)
+
+
+def test_provider_usage_report_ignores_whitespace_only_cumulative_tail_for_stale_audit(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="whitespace-model-tail",
+        title="whitespace model tail",
+        models_used=["model-a", "model-b"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "model-a",
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "cached_input_tokens": 80,
+                    },
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "\t\x1f",
+                    "total_token_usage": {
+                        "input_tokens": 200,
+                        "output_tokens": 40,
+                        "cached_input_tokens": 150,
+                    },
+                },
+            ),
+        ],
+    )
+    write_parsed_session_to_archive(conn, session)
+    conn.execute(
+        """
+        UPDATE session_model_usage
+        SET input_tokens = 0, output_tokens = 0, cache_read_tokens = 0
+        WHERE session_id = 'codex-session:whitespace-model-tail'
+          AND model_name = 'model-a'
+        """
+    )
+
+    report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+
+    row = report.origins[0]
+    # Anti-vacuity: SQLite's default space-only TRIM selects the unresolved
+    # tail, which Python then rejects, and this stale session disappears.
+    assert row.stale_rollup_session_count == 1
+    assert row.sample_stale_rollup_sessions == ("codex-session:whitespace-model-tail",)
+
+
+def test_provider_usage_report_overflow_fallback_uses_model_whitespace_contract(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    event = ParsedSessionEvent(
+        event_type="token_count",
+        payload={
+            "type": "token_count",
+            "model": "\t\x1f",
+            "last_token_usage": {"input_tokens": 2**62, "cached_input_tokens": 1},
+        },
+    )
+
+    def write_session(event_count: int) -> None:
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="overflow-whitespace-model",
+                title="overflow whitespace model",
+                models_used=["gpt-large"],
+                messages=[],
+                session_events=[event] * event_count,
+            ),
+        )
+
+    write_session(1)
+    fast_report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+    assert fast_report.origins[0].missing_model_event_count == 1
+
+    write_session(2)
+    overflow_report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+
+    row = overflow_report.origins[0]
+    # Anti-vacuity: two accepted counters overflow SQLite SUM, so the streaming
+    # fallback must retain both the exact total and the same missing-model rule.
+    assert row.provider_request_usage.input_tokens == 2**63
+    assert row.missing_model_event_count == 2
+    assert row.stale_rollup_session_count == 0
+
+
+def test_provider_usage_report_does_not_mark_event_only_origin_stale_without_rollup_basis(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="event-only-origin",
+        title="event only origin",
+        models_used=["gpt-large"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-large",
+                    "total_token_usage": {"input_tokens": 100, "output_tokens": 20},
+                },
+            )
+        ],
+    )
+    write_parsed_session_to_archive(conn, session)
+    conn.execute("DELETE FROM session_model_usage WHERE session_id = 'codex-session:event-only-origin'")
+
+    report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+
+    row = report.origins[0]
+    # Anti-vacuity: without the compatibility early return, the event-derived
+    # expected row has no actual row and changes the public coverage state.
+    assert row.stale_rollup_session_count == 0
+    assert row.sample_stale_rollup_sessions == ()
+    assert row.coverage_state == "exact_provider_telemetry"
+
+
+def test_provider_usage_report_handles_large_accepted_last_usage_totals(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    input_tokens = 2**62
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="large-accepted-usage",
+        title="large accepted usage",
+        models_used=["gpt-large"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-large",
+                    "last_token_usage": {"input_tokens": input_tokens, "cached_input_tokens": 1},
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-large",
+                    "last_token_usage": {"input_tokens": input_tokens, "cached_input_tokens": 1},
+                },
+            ),
+        ],
+    )
+    write_parsed_session_to_archive(conn, session)
+
+    report = provider_usage_report_from_connection(
+        conn,
+        archive_root=tmp_path,
+        origin="codex-session",
+        detail="full",
+        limit=3,
+    )
+
+    row = report.origins[0]
+    # Anti-vacuity: SQLite SUM over the accepted input rows raises integer
+    # overflow; exact streaming must preserve the provider and stale audits.
+    assert row.provider_request_usage.input_tokens == 2**63
+    assert row.provider_request_usage.cached_input_tokens == 2
+    assert row.stale_rollup_session_count == 0
+    assert row.sample_stale_rollup_sessions == ()
+
+
 def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Path) -> None:
     index_conn = _connect(tmp_path / "index.db")
     source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)
@@ -530,6 +867,55 @@ def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Pa
     assert row.acquired_not_materialized_count == 0
     assert row.sample_acquired_not_materialized_raw_ids == ()
     assert row.coverage_state == "no_sessions"
+
+
+def test_provider_usage_report_uses_membership_census_before_raw_blob_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index_conn = _connect(tmp_path / "index.db")
+    source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)
+    census_rows = (
+        ("raw-codex-censused-complete", "complete", 1),
+        ("raw-codex-censused-failed", "failed", 0),
+        ("raw-codex-censused-non-session", "non_session", 0),
+    )
+    source_conn.executemany(
+        """
+        INSERT INTO raw_sessions (
+            raw_id, origin, native_id, source_path, source_index, blob_hash,
+            blob_size, acquired_at_ms, parsed_at_ms, validation_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (raw_id, "codex-session", status, f"missing-{status}.jsonl", 0, bytes(32), 1, 1, 2, "passed")
+            for raw_id, status, _member_count in census_rows
+        ],
+    )
+    source_conn.executemany(
+        """
+        INSERT INTO raw_membership_census (
+            raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+        ) VALUES (?, 'test-parser', ?, ?, 2, 'classified')
+        """,
+        census_rows,
+    )
+    source_conn.commit()
+    source_conn.close()
+
+    def fail_blob_probe(_path: Path, *, limit: int) -> set[str]:
+        raise AssertionError(f"censused raw payload was reopened with limit={limit}")
+
+    monkeypatch.setattr("polylogue.storage.usage._raw_jsonl_type_set", fail_blob_probe)
+    report = provider_usage_report_from_connection(index_conn, archive_root=tmp_path, origin="codex-session")
+
+    row = report.origins[0]
+    # Anti-vacuity: removing any census short-circuit calls fail_blob_probe.
+    assert row.raw_session_count == 3
+    assert row.acquired_not_materialized_count == 2
+    assert row.sample_acquired_not_materialized_raw_ids == (
+        "raw-codex-censused-complete",
+        "raw-codex-censused-failed",
+    )
 
 
 def test_provider_usage_coverage_matrix_marks_estimate_only_exports(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +25,21 @@ from polylogue.archive.semantic.pricing import (
 from polylogue.core.enums import Origin, Provider
 
 UsageReportDetail = Literal["headline", "full"]
+
+# Match the whitespace contract of Python ``str.strip()``, which the provider
+# usage writer uses when resolving model names. SQLite ``TRIM`` removes only
+# U+0020 by default, so SQL predicates must receive this explicit character set.
+_MODEL_NAME_STRIP_CHARS = (
+    "\t\n\v\f\r"
+    "\x1c\x1d\x1e\x1f"
+    " \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+def _normalize_model_name(value: object) -> str:
+    return str(value).strip(_MODEL_NAME_STRIP_CHARS) if value else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -733,9 +748,11 @@ def _acquired_not_materialized_raw_rows(
                r.raw_id AS raw_id,
                r.source_path AS source_path,
                r.blob_hash AS blob_hash,
-               r.parsed_at_ms AS parsed_at_ms
+               r.parsed_at_ms AS parsed_at_ms,
+               c.status AS membership_census_status
         FROM {alias_sql}.raw_sessions AS r
         LEFT JOIN sessions AS s ON s.raw_id = r.raw_id
+        LEFT JOIN {alias_sql}.raw_membership_census AS c ON c.raw_id = r.raw_id
         {_where_origin(origin, table_alias="r")}
           {"AND" if origin is not None else "WHERE"} (r.parse_error IS NULL OR TRIM(r.parse_error) = '')
           AND s.session_id IS NULL
@@ -763,6 +780,11 @@ def _raw_row_is_known_non_session_artifact(archive_root: Path, row: sqlite3.Row)
     if str(row["origin"]) != Origin.CODEX_SESSION.value:
         return False
     if row["parsed_at_ms"] is None:
+        return False
+    census_status = str(row["membership_census_status"] or "")
+    if census_status == "non_session":
+        return True
+    if census_status in {"complete", "failed"}:
         return False
     return _raw_jsonl_type_set(_raw_blob_path(archive_root, row), limit=8) == {"session_meta"}
 
@@ -799,169 +821,173 @@ def _stale_provider_rollup_stats(
     origin: str | None,
     limit: int | None,
 ) -> tuple[dict[str, int], dict[str, tuple[str, ...]]]:
-    expected = _expected_provider_model_rollups(conn, origin)
-    if not expected:
-        return {}, {}
-    actual = _actual_model_rollups(conn, origin)
-    origin_by_session = _origin_by_session(conn, origin)
-    stale_by_origin: dict[str, set[str]] = defaultdict(set)
-    for session_id, expected_by_model in expected.items():
-        for model_name, expected_tokens in expected_by_model.items():
-            if actual.get((session_id, model_name)) != expected_tokens:
-                origin_name = origin_by_session.get(session_id)
-                if origin_name:
-                    stale_by_origin[origin_name].add(session_id)
-    counts = {origin_name: len(session_ids) for origin_name, session_ids in stale_by_origin.items()}
-    samples = {
-        origin_name: tuple(sorted(session_ids)[:limit]) if limit is not None else tuple(sorted(session_ids))
-        for origin_name, session_ids in stale_by_origin.items()
-    }
-    return counts, samples
+    """Return stale counts and bounded samples from indexed session seeks.
 
+    Cumulative Codex totals are session-global, so one reverse index seek per
+    session finds the only candidate the materializer can have applied.  The
+    uncommon sessions without a cumulative row stream their request-scoped
+    events through Python's arbitrary-precision integers.  This keeps memory
+    bounded by session/model cardinality, preserves accepted large counters,
+    and avoids sorting or materializing the provider-event table.
+    """
 
-def _expected_provider_model_rollups(
-    conn: sqlite3.Connection,
-    origin: str | None,
-) -> dict[str, dict[str, tuple[int, int, int, int]]]:
-    models_by_session = _models_by_session(conn, origin)
-    if not models_by_session:
-        return {}
-    rows = conn.execute(
-        f"""
-        SELECT s.origin AS origin, e.session_id AS session_id, e.model_name AS model_name, e.position AS position,
-               e.last_input_tokens AS last_input_tokens,
-               e.last_output_tokens AS last_output_tokens,
-               e.last_cached_input_tokens AS last_cached_input_tokens,
-               e.last_cache_write_tokens AS last_cache_write_tokens,
-               e.last_reasoning_output_tokens AS last_reasoning_output_tokens,
-               e.last_total_tokens AS last_total_tokens,
-               e.total_input_tokens AS total_input_tokens,
-               e.total_output_tokens AS total_output_tokens,
-               e.total_cached_input_tokens AS total_cached_input_tokens,
-               e.total_cache_write_tokens AS total_cache_write_tokens,
-               e.total_reasoning_output_tokens AS total_reasoning_output_tokens,
-               e.total_tokens AS total_tokens
-        FROM session_provider_usage_events AS e
-        JOIN sessions AS s ON s.session_id = e.session_id
-        {_where_origin(origin, table_alias="s")}
-          {"AND" if origin is not None else "WHERE"} e.provider_event_type = 'token_count'
-        ORDER BY e.session_id, e.position
+    from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
+
+    latest_rows = conn.execute(
+        """
+        /* provider_usage_stale_latest */
+        WITH session_models AS MATERIALIZED (
+            SELECT s.origin,
+                   s.session_id,
+                   COUNT(NULLIF(TRIM(u.model_name, :model_strip_chars), '')) AS model_count,
+                   MIN(NULLIF(TRIM(u.model_name, :model_strip_chars), '')) AS sole_model
+            FROM sessions AS s
+            LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
+            WHERE (:origin IS NULL OR s.origin = :origin)
+            GROUP BY s.origin, s.session_id
+        ),
+        latest_positions AS MATERIALIZED (
+            SELECT sm.*,
+                   (
+                       SELECT e.position
+                       FROM session_provider_usage_events AS e
+                       WHERE e.session_id = sm.session_id
+                         AND e.provider_event_type = 'token_count'
+                         AND (
+                             e.total_input_tokens != 0
+                             OR e.total_output_tokens != 0
+                             OR e.total_cached_input_tokens != 0
+                             OR e.total_cache_write_tokens != 0
+                         )
+                         AND COALESCE(
+                             NULLIF(TRIM(e.model_name, :model_strip_chars), ''),
+                             CASE WHEN sm.model_count = 1 THEN sm.sole_model END
+                         ) IS NOT NULL
+                       ORDER BY e.position DESC
+                       LIMIT 1
+                   ) AS latest_position
+            FROM session_models AS sm
+        )
+        SELECT lp.origin,
+               lp.session_id,
+               lp.model_count,
+               lp.sole_model,
+               lp.latest_position,
+               e.model_name,
+               e.total_input_tokens,
+               e.total_output_tokens,
+               e.total_cached_input_tokens,
+               e.total_cache_write_tokens
+        FROM latest_positions AS lp
+        LEFT JOIN session_provider_usage_events AS e
+         ON e.session_id = lp.session_id
+         AND e.position = lp.latest_position
         """,
-        _origin_args(origin),
+        {"model_strip_chars": _MODEL_NAME_STRIP_CHARS, "origin": origin},
     ).fetchall()
-    latest_total_by_session: dict[str, tuple[str, tuple[int, int, int, int, int]]] = {}
-    summed_last_by_model: dict[tuple[str, str], list[int]] = {}
-    for row in rows:
+
+    # Preserve the established payload contract: without any model rollup rows,
+    # the report has no comparison basis and does not classify the origin stale.
+    if not any(_int(row["model_count"]) for row in latest_rows):
+        return {}, {}
+
+    origin_by_session: dict[str, str] = {}
+    sole_model_by_session: dict[str, str | None] = {}
+    expected: dict[str, dict[str, tuple[int, int, int, int]]] = defaultdict(dict)
+    fallback_session_ids: list[str] = []
+    for row in latest_rows:
         session_id = str(row["session_id"])
-        model_name = str(row["model_name"]).strip() if row["model_name"] else ""
-        existing_models = models_by_session.get(session_id, ())
-        if not model_name and len(existing_models) == 1:
-            model_name = existing_models[0]
+        origin_by_session[session_id] = str(row["origin"])
+        sole_model = _normalize_model_name(row["sole_model"]) if _int(row["model_count"]) == 1 else None
+        sole_model_by_session[session_id] = sole_model
+        if row["latest_position"] is None:
+            fallback_session_ids.append(session_id)
+            continue
+        model_name = _normalize_model_name(row["model_name"]) or sole_model or ""
         if not model_name:
             continue
-        last_values = (
-            _int(row["last_input_tokens"]),
-            _int(row["last_output_tokens"]),
-            _int(row["last_cached_input_tokens"]),
-            _int(row["last_cache_write_tokens"]),
-            _int(row["last_reasoning_output_tokens"]),
-            _int(row["last_total_tokens"]),
-        )
-        total_values = (
+        expected[session_id][model_name] = _provider_usage_disjoint_lanes(
             _int(row["total_input_tokens"]),
             _int(row["total_output_tokens"]),
             _int(row["total_cached_input_tokens"]),
             _int(row["total_cache_write_tokens"]),
-            _int(row["total_reasoning_output_tokens"]),
-            _int(row["total_tokens"]),
         )
-        if any(total_values[:4]):
-            latest_total_by_session[session_id] = (model_name, total_values[:5])
-            continue
-        key = (session_id, model_name)
-        if any(last_values):
-            bucket = summed_last_by_model.setdefault(key, [0, 0, 0, 0, 0])
-            bucket[0] += last_values[0]
-            bucket[1] += last_values[1]
-            bucket[2] += last_values[2]
-            bucket[3] += last_values[3]
-            bucket[4] += last_values[4]
-    expected: dict[str, dict[str, tuple[int, int, int, int]]] = defaultdict(dict)
-    # Same disjoint-lane mapping the materializer applies, so this audit's
-    # "expected" rollup matches the corrected session_model_usage rows instead
-    # of flagging false drift (cached is subtracted out of input; reasoning is
-    # already inside output). See _provider_usage_disjoint_lanes for the
-    # corpus-verified Codex token semantics.
-    from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
 
-    for session_id, (model_name, total_tuple) in latest_total_by_session.items():
-        expected[session_id][model_name] = _provider_usage_disjoint_lanes(
-            total_tuple[0], total_tuple[1], total_tuple[2], total_tuple[3]
-        )
-    for (session_id, model_name), last_totals in summed_last_by_model.items():
-        if session_id in latest_total_by_session:
-            continue
-        expected[session_id][model_name] = _provider_usage_disjoint_lanes(
-            last_totals[0], last_totals[1], last_totals[2], last_totals[3]
-        )
-    return {session_id: dict(rows) for session_id, rows in expected.items()}
+    for session_id in fallback_session_ids:
+        summed_by_model: dict[str, list[int]] = {}
+        for row in conn.execute(
+            """
+            /* provider_usage_stale_fallback */
+            SELECT model_name,
+                   last_input_tokens,
+                   last_output_tokens,
+                   last_cached_input_tokens,
+                   last_cache_write_tokens,
+                   last_reasoning_output_tokens,
+                   last_total_tokens
+            FROM session_provider_usage_events
+            WHERE session_id = ?
+              AND provider_event_type = 'token_count'
+            ORDER BY position
+            """,
+            (session_id,),
+        ):
+            model_name = _normalize_model_name(row["model_name"]) or sole_model_by_session[session_id] or ""
+            if not model_name:
+                continue
+            last_values = (
+                _int(row["last_input_tokens"]),
+                _int(row["last_output_tokens"]),
+                _int(row["last_cached_input_tokens"]),
+                _int(row["last_cache_write_tokens"]),
+                _int(row["last_reasoning_output_tokens"]),
+                _int(row["last_total_tokens"]),
+            )
+            if not any(last_values):
+                continue
+            bucket = summed_by_model.setdefault(model_name, [0, 0, 0, 0, 0])
+            for index, value in enumerate(last_values[:5]):
+                bucket[index] += value
+        for model_name, totals in summed_by_model.items():
+            expected[session_id][model_name] = _provider_usage_disjoint_lanes(
+                totals[0], totals[1], totals[2], totals[3]
+            )
 
-
-def _actual_model_rollups(
-    conn: sqlite3.Connection,
-    origin: str | None,
-) -> dict[tuple[str, str], tuple[int, int, int, int]]:
-    rows = conn.execute(
-        f"""
-        SELECT u.session_id AS session_id, u.model_name AS model_name,
-               u.input_tokens AS input_tokens, u.output_tokens AS output_tokens,
-               u.cache_read_tokens AS cache_read_tokens, u.cache_write_tokens AS cache_write_tokens
+    actual_rows = conn.execute(
+        """
+        SELECT u.session_id,
+               u.model_name,
+               u.input_tokens,
+               u.output_tokens,
+               u.cache_read_tokens,
+               u.cache_write_tokens
         FROM session_model_usage AS u
         JOIN sessions AS s ON s.session_id = u.session_id
-        {_where_origin(origin, table_alias="s")}
+        WHERE (? IS NULL OR s.origin = ?)
         """,
-        _origin_args(origin),
+        (origin, origin),
     ).fetchall()
-    return {
+    actual = {
         (str(row["session_id"]), str(row["model_name"])): (
             _int(row["input_tokens"]),
             _int(row["output_tokens"]),
             _int(row["cache_read_tokens"]),
             _int(row["cache_write_tokens"]),
         )
-        for row in rows
+        for row in actual_rows
     }
+    stale_by_origin: dict[str, set[str]] = defaultdict(set)
+    for session_id, expected_by_model in expected.items():
+        for model_name, expected_tokens in expected_by_model.items():
+            if actual.get((session_id, model_name)) != expected_tokens:
+                stale_by_origin[origin_by_session[session_id]].add(session_id)
 
-
-def _models_by_session(conn: sqlite3.Connection, origin: str | None) -> dict[str, tuple[str, ...]]:
-    rows = conn.execute(
-        f"""
-        SELECT u.session_id AS session_id, u.model_name AS model_name
-        FROM session_model_usage AS u
-        JOIN sessions AS s ON s.session_id = u.session_id
-        {_where_origin(origin, table_alias="s")}
-        ORDER BY u.session_id, u.model_name
-        """,
-        _origin_args(origin),
-    ).fetchall()
-    result: dict[str, list[str]] = defaultdict(list)
-    for row in rows:
-        model_name = str(row["model_name"]).strip() if row["model_name"] else ""
-        if model_name:
-            result[str(row["session_id"])].append(model_name)
-    return {session_id: tuple(models) for session_id, models in result.items()}
-
-
-def _origin_by_session(conn: sqlite3.Connection, origin: str | None) -> dict[str, str]:
-    rows = conn.execute(
-        f"""
-        SELECT session_id, origin
-        FROM sessions
-        {_where_origin(origin)}
-        """,
-        _origin_args(origin),
-    ).fetchall()
-    return {str(row["session_id"]): str(row["origin"]) for row in rows}
+    counts = {origin_name: len(session_ids) for origin_name, session_ids in stale_by_origin.items()}
+    samples = {
+        origin_name: tuple(sorted(session_ids)[:limit]) if limit is not None else tuple(sorted(session_ids))
+        for origin_name, session_ids in stale_by_origin.items()
+    }
+    return counts, samples
 
 
 def _source_schema_alias(conn: sqlite3.Connection) -> str | None:
@@ -1325,14 +1351,15 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     origin_select = "? AS origin" if origin is not None else "s.origin AS origin"
     join_sessions = "" if origin is not None else "JOIN sessions s ON s.session_id = e.session_id"
     where_clause = _event_origin_where(origin)
-    args = _event_origin_args(origin)
+    event_args = _event_origin_args(origin)
+    args = (*event_args[:1], _MODEL_NAME_STRIP_CHARS, *event_args[1:])
     select_parts = [
         origin_select,
         "COUNT(*) AS provider_event_count",
         "COUNT(DISTINCT e.session_id) AS provider_event_session_count",
         "COALESCE(SUM(CASE WHEN e.provider_event_type = 'token_count' THEN 1 ELSE 0 END), 0) AS token_count_event_count",
         "COALESCE(SUM(CASE WHEN e.provider_event_type = 'message_usage' THEN 1 ELSE 0 END), 0) AS message_usage_event_count",
-        "COALESCE(SUM(CASE WHEN e.model_name IS NULL OR TRIM(e.model_name) = '' THEN 1 ELSE 0 END), 0) AS missing_model_event_count",
+        "COALESCE(SUM(CASE WHEN e.model_name IS NULL OR TRIM(e.model_name, ?) = '' THEN 1 ELSE 0 END), 0) AS missing_model_event_count",
     ]
     last_cols = _counter_columns(columns, prefix="last")
     total_cols = _counter_columns(columns, prefix="total")
@@ -1340,8 +1367,9 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     select_parts.append(f"COALESCE(SUM(CASE WHEN {zero_predicate} THEN 1 ELSE 0 END), 0) AS zero_token_event_count")
     for public_name, expr in last_cols.items():
         select_parts.append(f"COALESCE(SUM({expr}), 0) AS {public_name}")
-    rows = conn.execute(
-        f"""
+    try:
+        rows = conn.execute(
+            f"""
         SELECT {", ".join(select_parts)}
         FROM session_provider_usage_events e
         {join_sessions}
@@ -1349,8 +1377,12 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
         GROUP BY origin
         ORDER BY origin
         """,
-        args,
-    ).fetchall()
+            args,
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "integer overflow" not in str(exc).lower():
+            raise
+        return _provider_event_stats_streaming(conn, origin)
     result: dict[str, dict[str, object]] = {}
     for row in rows:
         result[str(row["origin"])] = {
@@ -1373,42 +1405,128 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     return result
 
 
-def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> dict[str, UsageCounters]:
-    columns = _table_columns(conn, "session_provider_usage_events")
-    total_cols = _counter_columns(columns, prefix="total")
-    total_predicate = " OR ".join([f"COALESCE({expr}, 0) > 0" for expr in total_cols.values()])
-    origin_select = "? AS origin" if origin is not None else "s.origin AS origin"
-    join_sessions = "" if origin is not None else "JOIN sessions s ON s.session_id = e.session_id"
-    origin_filter = _event_origin_predicate(origin)
-    where_parts = [part for part in (origin_filter, f"({total_predicate})") if part]
-    where_clause = "WHERE " + " AND ".join(where_parts)
+def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, object]]:
+    """Exact fallback for legal counters whose aggregate exceeds SQLite INTEGER."""
+
     rows = conn.execute(
-        f"""
-        SELECT {origin_select},
-               e.session_id AS session_id,
-               COALESCE(NULLIF(TRIM(e.model_name), ''), '__unknown_model__') AS model_key,
-               e.position AS position,
-               {total_cols["input_tokens"]} AS input_tokens,
-               {total_cols["output_tokens"]} AS output_tokens,
-               {total_cols["cached_input_tokens"]} AS cached_input_tokens,
-               {total_cols["cache_write_tokens"]} AS cache_write_tokens,
-               {total_cols["reasoning_output_tokens"]} AS reasoning_output_tokens,
-               {total_cols["total_tokens"]} AS total_tokens
-        FROM session_provider_usage_events e
-        {join_sessions}
-        {where_clause}
-        ORDER BY origin, e.session_id, e.position
+        """
+        SELECT s.origin,
+               e.session_id,
+               e.provider_event_type,
+               e.model_name,
+               e.last_input_tokens,
+               e.last_output_tokens,
+               e.last_cached_input_tokens,
+               e.last_cache_write_tokens,
+               e.last_reasoning_output_tokens,
+               e.last_total_tokens,
+               e.total_input_tokens,
+               e.total_output_tokens,
+               e.total_cached_input_tokens,
+               e.total_cache_write_tokens,
+               e.total_reasoning_output_tokens,
+               e.total_tokens
+        FROM sessions AS s
+        JOIN session_provider_usage_events AS e ON e.session_id = s.session_id
+        WHERE (? IS NULL OR s.origin = ?)
         """,
-        (*_event_origin_args(origin),),
-    ).fetchall()
-    # The cumulative total_* is session-global, so dedupe to one latest
-    # cumulative per (origin, session) — the highest-position event — rather
-    # than per model. Partitioning by model and summing double-counts because
-    # each model's latest cumulative already includes prior models' tokens
-    # (#2472). ORDER BY ... e.position makes the last write per session win.
-    latest: dict[tuple[str, str], UsageCounters] = {}
+        (origin, origin),
+    )
+    counts_by_origin: dict[str, Counter[str]] = defaultdict(Counter)
+    sessions_by_origin: dict[str, set[str]] = defaultdict(set)
+    last_totals_by_origin: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0, 0, 0, 0])
     for row in rows:
-        latest[(str(row["origin"]), str(row["session_id"]))] = UsageCounters.from_row(
+        origin_name = str(row["origin"])
+        counts = counts_by_origin[origin_name]
+        counts["provider_event_count"] += 1
+        sessions_by_origin[origin_name].add(str(row["session_id"]))
+        counts[f"{row['provider_event_type']}_event_count"] += 1
+        if not _normalize_model_name(row["model_name"]):
+            counts["missing_model_event_count"] += 1
+        last_values = (
+            _int(row["last_input_tokens"]),
+            _int(row["last_output_tokens"]),
+            _int(row["last_cached_input_tokens"]),
+            _int(row["last_cache_write_tokens"]),
+            _int(row["last_reasoning_output_tokens"]),
+            _int(row["last_total_tokens"]),
+        )
+        total_values = (
+            _int(row["total_input_tokens"]),
+            _int(row["total_output_tokens"]),
+            _int(row["total_cached_input_tokens"]),
+            _int(row["total_cache_write_tokens"]),
+            _int(row["total_reasoning_output_tokens"]),
+            _int(row["total_tokens"]),
+        )
+        if not any((*last_values, *total_values)):
+            counts["zero_token_event_count"] += 1
+        last_totals = last_totals_by_origin[origin_name]
+        for index, value in enumerate(last_values):
+            last_totals[index] += value
+
+    result: dict[str, dict[str, object]] = {}
+    for origin_name, counts in counts_by_origin.items():
+        result[origin_name] = {
+            "provider_event_count": counts["provider_event_count"],
+            "provider_event_session_count": len(sessions_by_origin[origin_name]),
+            "token_count_event_count": counts["token_count_event_count"],
+            "message_usage_event_count": counts["message_usage_event_count"],
+            "missing_model_event_count": counts["missing_model_event_count"],
+            "zero_token_event_count": counts["zero_token_event_count"],
+            "provider_request_usage": UsageCounters(*last_totals_by_origin[origin_name]),
+        }
+    return result
+
+
+def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> dict[str, UsageCounters]:
+    """Return cumulative usage from at most one indexed event per session."""
+
+    rows = conn.execute(
+        """
+        /* provider_usage_latest_cumulative */
+        WITH latest_positions AS MATERIALIZED (
+            SELECT s.origin,
+                   s.session_id,
+                   (
+                       SELECT e.position
+                       FROM session_provider_usage_events AS e
+                       WHERE e.session_id = s.session_id
+                         AND (
+                             e.total_input_tokens > 0
+                             OR e.total_output_tokens > 0
+                             OR e.total_cached_input_tokens > 0
+                             OR e.total_cache_write_tokens > 0
+                             OR e.total_reasoning_output_tokens > 0
+                             OR e.total_tokens > 0
+                         )
+                       ORDER BY e.position DESC
+                       LIMIT 1
+                   ) AS latest_position
+            FROM sessions AS s
+            WHERE (? IS NULL OR s.origin = ?)
+        )
+        SELECT lp.origin,
+               lp.session_id,
+               e.total_input_tokens AS input_tokens,
+               e.total_output_tokens AS output_tokens,
+               e.total_cached_input_tokens AS cached_input_tokens,
+               e.total_cache_write_tokens AS cache_write_tokens,
+               e.total_reasoning_output_tokens AS reasoning_output_tokens,
+               e.total_tokens AS total_tokens
+        FROM latest_positions AS lp
+        JOIN session_provider_usage_events AS e
+          ON e.session_id = lp.session_id
+         AND e.position = lp.latest_position
+        """,
+        (origin, origin),
+    ).fetchall()
+    # The query emits at most one row per session; Python retains exact integer
+    # addition even when an all-origin total exceeds SQLite's signed 64-bit SUM.
+    by_origin: dict[str, UsageCounters] = defaultdict(UsageCounters)
+    for row in rows:
+        origin_name = str(row["origin"])
+        counters = UsageCounters.from_row(
             row,
             input_key="input_tokens",
             output_key="output_tokens",
@@ -1417,8 +1535,6 @@ def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> 
             reasoning_output_key="reasoning_output_tokens",
             total_key="total_tokens",
         )
-    by_origin: dict[str, UsageCounters] = defaultdict(UsageCounters)
-    for (origin_name, _session_id), counters in latest.items():
         by_origin[origin_name] = by_origin[origin_name].plus(counters)
     return dict(by_origin)
 
