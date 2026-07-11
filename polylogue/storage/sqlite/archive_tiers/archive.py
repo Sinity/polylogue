@@ -6,6 +6,7 @@ Twin-write contract: raw-revision-authority.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -37,6 +38,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
+    append_source_revision,
     classify_historical_full_revisions,
 )
 from polylogue.archive.revision_replay import (
@@ -150,6 +152,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     stored_message_count,
 )
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
+    FullSnapshotFoldAuthorization,
     RevisionApplicationReceipt,
     assert_session_fts_exact_sync,
     record_revision_application_sync,
@@ -1497,7 +1500,7 @@ class ArchiveStore:
                 """
             SELECT raw_id, revision_kind, source_revision, acquisition_generation,
                    revision_authority, blob_size, predecessor_raw_id, baseline_raw_id,
-                   append_start_offset, append_end_offset
+                   append_start_offset, append_end_offset, predecessor_source_revision
             FROM raw_sessions
             WHERE logical_source_key = ? AND source_revision IS NOT NULL
             """,
@@ -1514,6 +1517,7 @@ class ArchiveStore:
                 acquisition_generation=int(row[3]),
                 authority=RawRevisionAuthority(str(row[4])),
                 blob_size=int(row[5]),
+                predecessor_source_revision=str(row[10]) if row[10] is not None else None,
                 predecessor_raw_id=str(row[6]) if row[6] is not None else None,
                 baseline_raw_id=str(row[7]) if row[7] is not None else None,
                 append_start_offset=int(row[8]) if row[8] is not None else None,
@@ -1521,6 +1525,103 @@ class ArchiveStore:
             )
             for row in rows
         ]
+
+    def _authorize_full_snapshot_fold(
+        self,
+        *,
+        existing_head: tuple[object, ...],
+        full_candidate: RevisionCandidate,
+        candidates: Mapping[str, RevisionCandidate],
+    ) -> FullSnapshotFoldAuthorization | None:
+        """Prove one full raw is exactly the accepted byte-append chain.
+
+        The caller invokes this while holding the index replay transaction;
+        failure intentionally yields no authority and leaves ordinary CAS
+        semantics in force.  Every byte, offset, source revision, and raw
+        predecessor edge is checked instead of trusting parser-normalized
+        content hashes, which are segmentation-sensitive for Codex JSONL.
+        """
+        if (
+            full_candidate.kind is not RawRevisionKind.FULL
+            or full_candidate.authority is not RawRevisionAuthority.BYTE_PROVEN
+            or str(existing_head[4]) != "byte"
+            or str(existing_head[1]) not in candidates
+        ):
+            return None
+        accepted_head = candidates[str(existing_head[1])]
+        frontier = int(cast(int | str | bytes, existing_head[5]))
+        if (
+            accepted_head.kind is not RawRevisionKind.APPEND
+            or accepted_head.authority is not RawRevisionAuthority.BYTE_PROVEN
+            or accepted_head.source_revision != str(existing_head[2])
+            or accepted_head.append_end_offset != frontier
+        ):
+            return None
+        _provider, full_payload, _path, _kind = self.raw_revision_material(full_candidate.raw_id)
+        if len(full_payload) != frontier:
+            return None
+
+        tail_payloads: list[bytes] = []
+        current = accepted_head
+        baseline_raw_id = current.baseline_raw_id
+        expected_end = frontier
+        visited: set[str] = set()
+        while current.kind is RawRevisionKind.APPEND:
+            if (
+                current.raw_id in visited
+                or current.authority is not RawRevisionAuthority.BYTE_PROVEN
+                or current.baseline_raw_id != baseline_raw_id
+                or current.predecessor_raw_id is None
+                or current.predecessor_source_revision is None
+                or current.append_start_offset is None
+                or current.append_end_offset != expected_end
+            ):
+                return None
+            visited.add(current.raw_id)
+            _provider, tail_payload, _path, _kind = self.raw_revision_material(current.raw_id)
+            assert current.append_end_offset is not None
+            assert current.append_start_offset is not None
+            if len(tail_payload) != current.append_end_offset - current.append_start_offset:
+                return None
+            predecessor = candidates.get(current.predecessor_raw_id)
+            if (
+                predecessor is None
+                or predecessor.source_revision != current.predecessor_source_revision
+                or current.source_revision
+                != append_source_revision(predecessor.source_revision, hashlib.sha256(tail_payload).hexdigest())
+            ):
+                return None
+            predecessor_end = (
+                predecessor.blob_size if predecessor.kind is RawRevisionKind.FULL else predecessor.append_end_offset
+            )
+            if predecessor_end != current.append_start_offset:
+                return None
+            tail_payloads.append(tail_payload)
+            expected_end = current.append_start_offset
+            current = predecessor
+        if (
+            current.kind is not RawRevisionKind.FULL
+            or current.authority is not RawRevisionAuthority.BYTE_PROVEN
+            or current.raw_id != baseline_raw_id
+            or current.blob_size != expected_end
+        ):
+            return None
+        _provider, baseline_payload, _path, _kind = self.raw_revision_material(current.raw_id)
+        if (
+            len(baseline_payload) != current.blob_size
+            or baseline_payload + b"".join(reversed(tail_payloads)) != full_payload
+        ):
+            return None
+        return FullSnapshotFoldAuthorization(
+            logical_source_key=full_candidate.logical_source_key,
+            session_id=str(existing_head[0]),
+            accepted_append_raw_id=str(existing_head[1]),
+            accepted_append_source_revision=str(existing_head[2]),
+            accepted_append_content_hash=cast(bytes, existing_head[3]),
+            frontier=frontier,
+            full_raw_id=full_candidate.raw_id,
+            full_source_revision=full_candidate.source_revision,
+        )
 
     def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
         """Read one retained revision with its parsing identity."""
@@ -1997,11 +2098,13 @@ class ArchiveStore:
         session_ids: set[str] = set()
         with self._conn:
             existing_head = self._conn.execute(
-                "SELECT accepted_frontier_kind FROM raw_revision_heads WHERE logical_source_key = ?",
+                """SELECT session_id, accepted_raw_id, accepted_source_revision,
+                          accepted_content_hash, accepted_frontier_kind, accepted_frontier
+                   FROM raw_revision_heads WHERE logical_source_key = ?""",
                 (plan.logical_source_key,),
             ).fetchone()
             accepted_frontier_kind = (
-                "semantic" if existing_head is not None and str(existing_head[0]) == "semantic" else "byte"
+                "semantic" if existing_head is not None and str(existing_head[4]) == "semantic" else "byte"
             )
             if accepted_frontier_kind == "semantic":
                 accepted_projection = session_revision_projection(aggregate_sessions[0])
@@ -2041,6 +2144,13 @@ class ArchiveStore:
                 raise RuntimeError("accepted revision did not produce a hashed session")
             accepted_raw_id = plan.accepted_raw_ids[-1]
             accepted = candidates[accepted_raw_id]
+            fold_authorization = (
+                self._authorize_full_snapshot_fold(
+                    existing_head=tuple(existing_head), full_candidate=accepted, candidates=candidates
+                )
+                if existing_head is not None and accepted_frontier_kind == "byte"
+                else None
+            )
             decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
             for application in plan.applications:
                 candidate = candidates[application.raw_id]
@@ -2071,6 +2181,7 @@ class ArchiveStore:
                         predecessor_raw_id=candidate.predecessor_raw_id,
                         append_end_offset=accepted.append_end_offset,
                         detail=application.detail,
+                        fold_authorization=(fold_authorization if candidate.raw_id == accepted_raw_id else None),
                     ),
                     decided_at_ms=decided_at_ms,
                 )
