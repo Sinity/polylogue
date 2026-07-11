@@ -270,7 +270,7 @@ def test_pure_renderer_modules_do_not_import_storage_api_or_daemon() -> None:
                 names.append(node.module)
             for name in names:
                 if name.startswith(forbidden):
-                    violations.append(f"{path}:{node.lineno}: {name}")
+                    violations.append(f"{path}:{getattr(node, 'lineno', '?')}: {name}")
     assert violations == []
 
 
