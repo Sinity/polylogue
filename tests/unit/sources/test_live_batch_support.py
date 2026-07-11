@@ -2666,6 +2666,142 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
     assert "codex:shared" in membership_keys
 
 
+@pytest.mark.parametrize(
+    ("bundle_texts", "succeeds", "census_head"),
+    [
+        (("base",), True, False),
+        (("base", "different"), False, False),
+        (("base", "new", "later"), False, False),
+        (("base", "new", "later"), False, True),
+    ],
+)
+def test_bundle_replay_respects_unconvertible_single_session_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bundle_texts: tuple[str, ...],
+    succeeds: bool,
+    census_head: bool,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    current = root / "current.jsonl"
+    older_bundle = root / "older-bundle.jsonl"
+    current.write_bytes(b'{"current":true}\n')
+    older_bundle.write_bytes(b'{"bundle":true}\n')
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    def session(native_id: str, *texts: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=native_id,
+            messages=[
+                ParsedMessage(provider_message_id=f"{native_id}-{index}", role=Role.USER, text=text)
+                for index, text in enumerate(texts)
+            ],
+        )
+
+    current_session = session("shared", "base", "new")
+    bundle_sessions = [session("shared", *bundle_texts), session("safe", "one")]
+    parsed_batches = iter([[current_session], bundle_sessions])
+    current_raw_id: list[str] = []
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.parse_stream_payload",
+        lambda *_args, **_kwargs: next(parsed_batches),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_parse_retained_raw_sessions",
+        lambda archive, raw_id: (
+            [current_session] if Path(archive.raw_revision_material(raw_id)[2]) == current else bundle_sessions
+        ),
+    )
+
+    assert processor._ingest_full_paths_sync([current], source_name="codex").failed == []
+    with sqlite3.connect(index_db) as conn:
+        row = conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex:shared'"
+        ).fetchone()
+        assert row is not None
+        current_raw_id.append(str(row[0]))
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        source_revision = (
+            archive._ensure_source_conn()
+            .execute(
+                "SELECT source_revision FROM raw_sessions WHERE raw_id = ?",
+                (current_raw_id[0],),
+            )
+            .fetchone()
+        )
+        assert source_revision is not None
+        append_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"append":true}\n',
+            source_path=str(current),
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            append_raw_id,
+            RawRevisionEnvelope(
+                "codex:shared",
+                RawRevisionKind.APPEND,
+                "append-blocker",
+                0,
+                predecessor_source_revision=str(source_revision[0]),
+                append_start_offset=1,
+                append_end_offset=2,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+        assert archive.convertible_full_revision_raw_ids("codex:shared") == ()
+        if census_head:
+            archive.replace_raw_membership_census(
+                current_raw_id[0],
+                [current_session],
+                parser_fingerprint="test-parser",
+                censused_at_ms=2,
+            )
+    with sqlite3.connect(index_db) as conn:
+        head_before = conn.execute(
+            "SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier "
+            "FROM raw_revision_heads WHERE logical_source_key = 'codex:shared'"
+        ).fetchone()
+        assert head_before is not None
+
+    result = processor._ingest_full_paths_sync([older_bundle], source_name="codex")
+
+    assert result.failed == ([] if succeeds else [older_bundle])
+    assert result.succeeded == ([older_bundle] if succeeds else [])
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT message_count FROM sessions WHERE native_id = 'shared'").fetchone() == (2,)
+        head_after = conn.execute(
+            "SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier "
+            "FROM raw_revision_heads WHERE logical_source_key = 'codex:shared'"
+        ).fetchone()
+        assert head_after == ((current_raw_id[0], "semantic", 2) if succeeds else head_before)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_session_memberships WHERE raw_id = ?",
+            (current_raw_id[0],),
+        ).fetchone() == ((1,) if census_head else (0,))
+        decisions = conn.execute(
+            "SELECT decision FROM raw_session_memberships WHERE logical_source_key = 'codex:shared' AND raw_id != ?",
+            (current_raw_id[0],),
+        ).fetchall()
+        if succeeds:
+            assert decisions == [("superseded_prefix",)]
+
+
 def test_single_session_full_cannot_overwrite_divergent_membership_head(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
