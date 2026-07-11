@@ -390,3 +390,42 @@ def test_targeted_rebuild_expands_same_session_across_source_paths_only(tmp_path
         assert conn.execute(
             "SELECT decision FROM raw_session_memberships WHERE raw_id = ?", (unrelated_raw,)
         ).fetchone() == (None,)
+
+
+def test_membership_census_retains_only_one_logical_cohort_at_scale(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    independent_raw_count = 64
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(independent_raw_count):
+            payload = _bundle(_chatgpt_session(f"session-{index}", f"message-{index}"))
+            archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path=f"bundle-{index}.json",
+                acquired_at_ms=index + 1,
+            )
+        shared_payloads = [
+            _bundle(_chatgpt_session("shared", "base")),
+            _bundle(_chatgpt_session("shared", "base", "new")),
+        ]
+        for index, payload in enumerate(shared_payloads, start=1):
+            archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path=f"shared-{index}.json",
+                acquired_at_ms=independent_raw_count + index,
+            )
+    raw_count = independent_raw_count + len(shared_payloads)
+
+    retained: list[tuple[int, int]] = []
+    result = backfill_historical_revision_evidence(
+        tmp_path,
+        retention_observer=lambda count, payload_bytes: retained.append((count, payload_bytes)),
+    )
+
+    assert result.scanned == raw_count
+    assert result.replayed_logical_sources == independent_raw_count + 1
+    assert len(retained) == independent_raw_count + 1
+    assert max(count for count, _payload_bytes in retained) == 2
+    assert max(payload_bytes for _count, payload_bytes in retained) == sum(map(len, shared_payloads))
+    assert sum(count for count, _payload_bytes in retained) == raw_count
