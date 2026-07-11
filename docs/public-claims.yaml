@@ -15,14 +15,24 @@ public_surfaces:
 retired_phrases:
   - your AI memory
 claims:
-  - id: category.flight-recorder
+  - id: category.local-evidence-system
     status: capability
     evidence_class: implementation_contract
-    publication: Polylogue is the local flight recorder and system of record for AI work.
+    publication: Polylogue is a local evidence system for AI work.
     scope: Product category for the current local archive, query, evidence, and context surfaces.
     evidence: [README.md, docs/architecture.md, docs/proof-artifacts.md]
     caveat: Pre-1.0; not every planned memory or coordination feature is complete.
     owner_beads: [polylogue-3tl.12, polylogue-3tl.8]
+    proof_commands: []
+
+  - id: analogy.flight-recorder
+    status: capability
+    evidence_class: implementation_contract
+    publication: Polylogue can be described as a flight recorder for AI work when the analogy is qualified by its supported origins and evidence limits.
+    scope: Explanatory analogy, not the primary product category or a forensic chain-of-custody claim.
+    evidence: [docs/architecture.md, docs/proof-artifacts.md]
+    caveat: The archive is not tamper-proof, universally complete, or a replacement for production agent observability.
+    owner_beads: [polylogue-3tl.12, polylogue-3tl.16]
     proof_commands: []
 
   - id: demo.private-data-free

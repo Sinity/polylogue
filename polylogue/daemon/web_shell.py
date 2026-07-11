@@ -1574,7 +1574,7 @@ function renderLandingView() {
   var readiness = status.component_readiness || {};
   var recent = (state.sessions || []).slice(0, 6);
   var html = '<div class="landing">';
-  html += '<div class="landing-hero"><h1>The local flight recorder for AI work.</h1>'
+  html += '<div class="landing-hero"><h1>Keep the receipts for AI work.</h1>'
     + '<p>Search every archived session, analyze usage and cost, audit claims against structural '
     + 'evidence, and remember reviewed judgment across Claude, Codex, ChatGPT, Gemini, and more.</p></div>';
   html += '<div class="stat-row">'

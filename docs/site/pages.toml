@@ -105,7 +105,7 @@ path = "/design/whole-product/"
 
 [[pages]]
 path = "/index.html"
-title = "Polylogue — The Flight Recorder for AI Work"
+title = "Polylogue — Keep the Receipts for AI Work"
 template = "home.html"
 
 [[pages]]

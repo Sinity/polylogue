@@ -1,5 +1,5 @@
 {
-  description = "Polylogue - local flight recorder and system of record for AI work";
+  description = "Polylogue - local evidence system for AI work";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
