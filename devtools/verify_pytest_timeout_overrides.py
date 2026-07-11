@@ -4,6 +4,9 @@ The repository-wide pytest-timeout default lives in ``pyproject.toml``. This
 gate only inspects explicit exceptions: test decorators and literal pytest
 commands owned by ``devtools``. It deliberately parses Python ASTs rather than
 searching source text, so prose and generated documentation are out of scope.
+
+Marker aliases are deliberately fail-closed: imported, unresolved, cyclic, or
+rebound names cannot prove the absence of a timeout override and are rejected.
 """
 
 from __future__ import annotations
@@ -147,16 +150,30 @@ def _is_pytest_execution_call(node: ast.Call) -> bool:
     return isinstance(node.func, ast.Name) and node.func.id == "pytest_execution"
 
 
-def _module_assignments(tree: ast.Module) -> dict[str, ast.expr]:
+def _module_assignments(tree: ast.Module) -> tuple[dict[str, ast.expr], set[str]]:
+    """Return only module bindings that have one unambiguous source assignment."""
     assignments: dict[str, ast.expr] = {}
+    rebound: set[str] = set()
     for node in tree.body:
+        targets: list[ast.expr]
+        value: ast.expr | None
         if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    assignments[target.id] = node.value
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
-            assignments[node.target.id] = node.value
-    return assignments
+            targets, value = node.targets, node.value
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if value is None:
+            continue
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if target.id in assignments or target.id in rebound:
+                assignments.pop(target.id, None)
+                rebound.add(target.id)
+            else:
+                assignments[target.id] = value
+    return assignments, rebound
 
 
 def _resolve_alias(node: ast.expr, assignments: dict[str, ast.expr], seen: set[str] | None = None) -> ast.expr:
@@ -281,21 +298,24 @@ def _scan_timeout_marker(
 def _flatten_marker_values(
     node: ast.expr,
     assignments: dict[str, ast.expr],
+    rebound: set[str],
     seen: set[str] | None = None,
 ) -> tuple[list[ast.expr], str | None]:
     """Resolve safe list/tuple marker aliases without evaluating Python."""
     if isinstance(node, ast.Name):
+        if node.id in rebound:
+            return [], "rebound pytest marker alias is forbidden"
         if node.id not in assignments:
             return [], "dynamic pytest marker alias is forbidden"
         seen = set() if seen is None else seen
         if node.id in seen:
             return [], "cyclic pytest marker alias is forbidden"
         seen.add(node.id)
-        return _flatten_marker_values(assignments[node.id], assignments, seen)
+        return _flatten_marker_values(assignments[node.id], assignments, rebound, seen)
     if isinstance(node, (ast.List, ast.Tuple)):
         markers: list[ast.expr] = []
         for item in node.elts:
-            nested, error = _flatten_marker_values(item, assignments, set(seen or ()))
+            nested, error = _flatten_marker_values(item, assignments, rebound, set(seen or ()))
             if error is not None:
                 return [], error
             markers.extend(nested)
@@ -308,10 +328,11 @@ def _scan_timeout_markers(
     *,
     path: str,
     assignments: dict[str, ast.expr],
+    rebound: set[str],
     pytest_names: set[str],
     mark_names: set[str],
 ) -> tuple[list[TimeoutOverride], list[str]]:
-    markers, flatten_error = _flatten_marker_values(marker_expression, assignments)
+    markers, flatten_error = _flatten_marker_values(marker_expression, assignments, rebound)
     if flatten_error is not None:
         return [], [f"{path}:{marker_expression.lineno}: {flatten_error}"]
     overrides: list[TimeoutOverride] = []
@@ -342,7 +363,7 @@ def _scan_python(
     overrides: list[TimeoutOverride] = []
     errors: list[str] = []
     pytest_names, mark_names, param_names = _pytest_aliases(tree)
-    assignments = _module_assignments(tree)
+    assignments, rebound = _module_assignments(tree)
     if scan_decorators:
         for top_level in tree.body:
             if not isinstance(top_level, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
@@ -357,6 +378,7 @@ def _scan_python(
                 value,
                 path=relative,
                 assignments=assignments,
+                rebound=rebound,
                 pytest_names=pytest_names,
                 mark_names=mark_names,
             )
@@ -387,6 +409,7 @@ def _scan_python(
                     keyword.value,
                     path=relative,
                     assignments=assignments,
+                    rebound=rebound,
                     pytest_names=pytest_names,
                     mark_names=mark_names,
                 )

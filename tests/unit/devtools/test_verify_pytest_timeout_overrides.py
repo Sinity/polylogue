@@ -178,6 +178,87 @@ def test_registered_verifier_rejects_cyclic_marker_alias(
     assert "cyclic pytest marker alias" in output
 
 
+def test_registered_verifier_rejects_rebound_module_marker_alias(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Anti-vacuity: retaining a final rebinding makes this source-order marker test falsely pass."""
+    root = _make_tree(
+        tmp_path,
+        test_source=(
+            "import pytest\n\nBAD = [pytest.mark.timeout(None)]\npytestmark = BAD\nBAD = []\n"
+            "def test_target():\n    pass\n"
+        ),
+    )
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 1
+    assert "rebound pytest marker alias" in output
+
+
+def test_registered_verifier_rejects_rebound_incremental_marker_alias(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Anti-vacuity: resolving the final BAD binding hides the prior pytestmark += timeout mark."""
+    root = _make_tree(
+        tmp_path,
+        test_source=(
+            "import pytest\n\nBAD = [pytest.mark.timeout(None)]\npytestmark = []\npytestmark += BAD\n"
+            "BAD = []\ndef test_target():\n    pass\n"
+        ),
+    )
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 1
+    assert "rebound pytest marker alias" in output
+
+
+def test_registered_verifier_rejects_rebound_parameter_marker_alias(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Anti-vacuity: resolving the final CASE binding hides the parameter timeout mark at its source site."""
+    root = _make_tree(
+        tmp_path,
+        test_source=(
+            "import pytest\n\nCASE = pytest.mark.timeout(0)\npytest.param(1, marks=CASE)\n"
+            "CASE = pytest.mark.slow\ndef test_target():\n    pass\n"
+        ),
+    )
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 1
+    assert "rebound pytest marker alias" in output
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import pytest\n\nMARKS = [pytest.mark.timeout(30)]\npytestmark = MARKS\ndef test_target():\n    pass\n",
+        (
+            "import pytest\n\nEXTRA = [pytest.mark.timeout(30)]\npytestmark = []\n"
+            "pytestmark += EXTRA\ndef test_target():\n    pass\n"
+        ),
+        "import pytest\n\nCASE = pytest.mark.timeout(30)\npytest.param(1, marks=CASE)\ndef test_target():\n    pass\n",
+    ],
+)
+def test_registered_verifier_accepts_single_assignment_marker_aliases(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    source: str,
+) -> None:
+    """Anti-vacuity: rejecting every alias instead of only rebindings makes this test fail."""
+    root = _make_tree(tmp_path, test_source=source)
+
+    rc, output = _run_registered(root, capsys)
+
+    assert rc == 0, output
+
+
 @pytest.mark.parametrize(
     "source",
     [
