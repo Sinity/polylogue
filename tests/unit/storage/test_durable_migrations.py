@@ -103,7 +103,7 @@ def _create_source_v1(path: Path) -> None:
         conn.close()
 
 
-def test_user_tier_v3_migrates_to_v4_with_backup_manifest(tmp_path: Path) -> None:
+def test_user_tier_v3_migrates_to_current_with_backup_manifest(tmp_path: Path) -> None:
     db_path = tmp_path / "user.db"
     _create_user_v3(db_path)
     manifest = _write_backup_manifest(tmp_path / "backup", included_tiers=["user.db"])
@@ -113,9 +113,12 @@ def test_user_tier_v3_migrates_to_v4_with_backup_manifest(tmp_path: Path) -> Non
         result = migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
         assert result.from_version == 3
         assert result.to_version == USER_SCHEMA_VERSION
-        assert result.applied_versions == (4,)
+        assert result.applied_versions == (4, 5)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
         assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='context_deliveries'"
+        ).fetchone()
         conn.execute(
             "INSERT INTO user_settings (setting_key, value_json, updated_at_ms) VALUES (?, ?, ?)",
             ("reader.theme", '"system"', 123),

@@ -1086,7 +1086,7 @@ files:
     target: polylogue/context/assertion_claims.py
     owner: stable
   - path: polylogue/context/compiler.py
-    loc: 517
+    loc: 532
     target: polylogue/context/compiler.py
     owner: stable
   - path: polylogue/context/preamble.py
@@ -3327,6 +3327,10 @@ files:
     loc: 76
     target: polylogue/storage/sqlite/archive_tiers/common.py
     owner: stable
+  - path: polylogue/storage/sqlite/archive_tiers/context_delivery_write.py
+    loc: 226
+    target: polylogue/storage/sqlite/archive_tiers/context_delivery_write.py
+    owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/embedding_write.py
     loc: 206
     target: polylogue/storage/sqlite/archive_tiers/embedding_write.py
@@ -3376,7 +3380,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/types.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user.py
-    loc: 52
+    loc: 79
     target: polylogue/storage/sqlite/archive_tiers/user.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_audit.py

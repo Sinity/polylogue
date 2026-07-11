@@ -129,6 +129,18 @@ class ContextSnapshotRecord(ArchiveInsightModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
+def canonical_context_image_json(image: ContextImage) -> str:
+    """Serialize one compiled image deterministically for delivery evidence."""
+
+    return json.dumps(image.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def context_image_sha256(image: ContextImage) -> str:
+    """Return the content identity of the complete compiled image."""
+
+    return hashlib.sha256(canonical_context_image_json(image).encode("utf-8")).hexdigest()
+
+
 def compile_messages_context_segment(
     *,
     session_id: str,
@@ -331,6 +343,7 @@ def context_snapshot_record_from_image(
         raise ValueError("ContextSnapshotRecord requires a delivery boundary")
     segment_refs = tuple(segment.segment_id for segment in image.segments)
     metadata: dict[str, str] = {
+        "context_image_sha256": context_image_sha256(image),
         "purpose": _metadata_value_to_text(image.spec.purpose),
         "read_views": _metadata_value_to_text(image.spec.read_views),
         "unit_queries": _metadata_value_to_text(image.spec.unit_queries),
@@ -513,5 +526,7 @@ __all__ = [
     "DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION",
     "compile_messages_context_segment",
     "compile_query_unit_context_segment",
+    "canonical_context_image_json",
+    "context_image_sha256",
     "context_snapshot_record_from_image",
 ]
