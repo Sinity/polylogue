@@ -1,0 +1,300 @@
+"""Verify explicit pytest timeout overrides remain bounded and reviewable.
+
+The repository-wide pytest-timeout default lives in ``pyproject.toml``. This
+gate only inspects explicit exceptions: test decorators and literal pytest
+commands owned by ``devtools``. It deliberately parses Python ASTs rather than
+searching source text, so prose and generated documentation are out of scope.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import math
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import tomllib
+
+from devtools import repo_root as _get_root
+
+ROOT = _get_root()
+MANIFEST_RELATIVE_PATH = Path("devtools/pytest_timeout_overrides.toml")
+
+
+@dataclass(frozen=True, slots=True)
+class TimeoutOverride:
+    path: str
+    line: int
+    value: float
+    source: str
+
+    @property
+    def manifest_key(self) -> tuple[str, float]:
+        return (self.path, self.value)
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestEntry:
+    path: str
+    value: float
+    rationale: str
+
+    @property
+    def key(self) -> tuple[str, float]:
+        return (self.path, self.value)
+
+
+def _number_from_literal(node: ast.expr) -> float | None:
+    if isinstance(node, ast.Constant) and not isinstance(node.value, bool) and isinstance(node.value, (int, float)):
+        value = float(node.value)
+        return value if math.isfinite(value) else None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        operand = _number_from_literal(node.operand)
+        if operand is not None:
+            return -operand if isinstance(node.op, ast.USub) else operand
+    return None
+
+
+def _is_pytest_timeout_decorator(node: ast.Call) -> bool:
+    func = node.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "timeout"
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "mark"
+        and isinstance(func.value.value, ast.Name)
+        and func.value.value.id == "pytest"
+    )
+
+
+def _parse_decorator_override(path: str, node: ast.Call) -> tuple[TimeoutOverride | None, str | None]:
+    location = f"{path}:{node.lineno}"
+    if node.keywords or len(node.args) != 1:
+        return None, f"{location}: malformed pytest timeout decorator; use exactly one numeric literal argument"
+    argument = node.args[0]
+    if isinstance(argument, ast.Constant) and argument.value is None:
+        return None, f"{location}: unbounded pytest timeout decorator is forbidden"
+    value = _number_from_literal(argument)
+    if value is None:
+        return None, f"{location}: dynamic or malformed pytest timeout decorator is forbidden"
+    if value <= 0:
+        return None, f"{location}: pytest timeout must be positive, got {value:g}"
+    return TimeoutOverride(path, node.lineno, value, "decorator"), None
+
+
+def _is_pytest_execution_call(node: ast.Call) -> bool:
+    return isinstance(node.func, ast.Name) and node.func.id == "pytest_execution"
+
+
+def _literal_tokens(nodes: list[ast.expr]) -> list[ast.expr]:
+    return list(nodes)
+
+
+def _is_literal_pytest_command(nodes: list[ast.expr]) -> bool:
+    return any(isinstance(node, ast.Constant) and node.value == "pytest" for node in nodes)
+
+
+def _parse_command_overrides(path: str, line: int, nodes: list[ast.expr]) -> tuple[list[TimeoutOverride], list[str]]:
+    overrides: list[TimeoutOverride] = []
+    errors: list[str] = []
+    for index, node in enumerate(nodes):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        token = node.value
+        if token == "--timeout":
+            location = f"{path}:{getattr(node, 'lineno', line)}"
+            if index + 1 >= len(nodes):
+                errors.append(f"{location}: unbounded pytest --timeout override is forbidden")
+                continue
+            value_node = nodes[index + 1]
+            if not isinstance(value_node, ast.Constant) or not isinstance(value_node.value, str):
+                errors.append(f"{location}: dynamic or malformed pytest --timeout override is forbidden")
+                continue
+            raw_value = value_node.value
+        elif token.startswith("--timeout="):
+            location = f"{path}:{getattr(node, 'lineno', line)}"
+            raw_value = token.removeprefix("--timeout=")
+            if not raw_value:
+                errors.append(f"{location}: unbounded pytest --timeout override is forbidden")
+                continue
+        else:
+            continue
+        try:
+            value = float(raw_value)
+        except ValueError:
+            errors.append(f"{location}: malformed pytest --timeout override {raw_value!r}")
+            continue
+        if not math.isfinite(value):
+            errors.append(f"{location}: malformed pytest --timeout override {raw_value!r}")
+        elif value <= 0:
+            errors.append(f"{location}: pytest timeout must be positive, got {value:g}")
+        else:
+            overrides.append(TimeoutOverride(path, getattr(node, "lineno", line), value, "command"))
+    return overrides, errors
+
+
+def _scan_python(
+    path: Path, root: Path, *, scan_decorators: bool, scan_commands: bool
+) -> tuple[list[TimeoutOverride], list[str]]:
+    relative = path.relative_to(root).as_posix()
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+    except SyntaxError as exc:
+        return [], [f"{relative}:{exc.lineno or 0}: cannot parse Python source: {exc.msg}"]
+
+    overrides: list[TimeoutOverride] = []
+    errors: list[str] = []
+    for node in ast.walk(tree):
+        if scan_decorators and isinstance(node, ast.Call) and _is_pytest_timeout_decorator(node):
+            override, error = _parse_decorator_override(relative, node)
+            if override is not None:
+                overrides.append(override)
+            if error is not None:
+                errors.append(error)
+        if not scan_commands:
+            continue
+        command_nodes: list[ast.expr] | None = None
+        is_pytest_command = False
+        line = getattr(node, "lineno", 0)
+        if isinstance(node, (ast.List, ast.Tuple)):
+            command_nodes = _literal_tokens(node.elts)
+            is_pytest_command = _is_literal_pytest_command(command_nodes)
+        elif isinstance(node, ast.Call) and _is_pytest_execution_call(node):
+            command_nodes = _literal_tokens(node.args)
+            is_pytest_command = True
+        if command_nodes is not None and is_pytest_command:
+            found, found_errors = _parse_command_overrides(relative, line, command_nodes)
+            overrides.extend(found)
+            errors.extend(found_errors)
+    return overrides, errors
+
+
+def _read_default_timeout(pyproject_path: Path) -> float:
+    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    timeout: object = data.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("timeout")
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(float(timeout))
+        or timeout <= 0
+    ):
+        raise ValueError("tool.pytest.ini_options.timeout must be a positive finite number")
+    return float(timeout)
+
+
+def _read_manifest(manifest_path: Path, root: Path) -> tuple[list[ManifestEntry], list[str]]:
+    if not manifest_path.exists():
+        return [], [f"missing timeout override manifest: {manifest_path}"]
+    try:
+        data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        return [], [f"{manifest_path}: invalid TOML: {exc}"]
+    raw_entries = data.get("exception", [])
+    if not isinstance(raw_entries, list):
+        return [], [f"{manifest_path}: exception must be an array of tables"]
+
+    entries: list[ManifestEntry] = []
+    errors: list[str] = []
+    seen: set[tuple[str, float]] = set()
+    for index, raw_entry in enumerate(raw_entries):
+        label = f"{manifest_path}: exception[{index}]"
+        if not isinstance(raw_entry, dict):
+            errors.append(f"{label} must be a table")
+            continue
+        path = raw_entry.get("path")
+        value = raw_entry.get("value")
+        rationale = raw_entry.get("rationale")
+        if not isinstance(path, str) or not path or Path(path).is_absolute() or ".." in Path(path).parts:
+            errors.append(f"{label} path must be a repository-relative path")
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value <= 0
+        ):
+            errors.append(f"{label} value must be a positive finite number")
+            continue
+        if not isinstance(rationale, str) or not rationale.strip():
+            errors.append(f"{label} rationale must be non-empty")
+            continue
+        entry = ManifestEntry(path, float(value), rationale.strip())
+        if entry.key in seen:
+            errors.append(f"{label} duplicates manifest entry for {path} value {entry.value:g}")
+            continue
+        seen.add(entry.key)
+        entries.append(entry)
+    return entries, errors
+
+
+def check_timeout_overrides(
+    root: Path, *, pyproject_path: Path | None = None, manifest_path: Path | None = None
+) -> tuple[list[TimeoutOverride], list[str]]:
+    """Return all valid overrides and every policy violation under ``root``."""
+    root = root.resolve()
+    pyproject_path = (pyproject_path or root / "pyproject.toml").resolve()
+    manifest_path = (manifest_path or root / MANIFEST_RELATIVE_PATH).resolve()
+    try:
+        default_timeout = _read_default_timeout(pyproject_path)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        return [], [f"{pyproject_path}: cannot read pytest timeout default: {exc}"]
+
+    overrides: list[TimeoutOverride] = []
+    errors: list[str] = []
+    tests_dir = root / "tests"
+    if tests_dir.exists():
+        for path in sorted(tests_dir.rglob("*.py")):
+            found, found_errors = _scan_python(path, root, scan_decorators=True, scan_commands=False)
+            overrides.extend(found)
+            errors.extend(found_errors)
+    devtools_dir = root / "devtools"
+    if devtools_dir.exists():
+        for path in sorted(devtools_dir.glob("*.py")):
+            found, found_errors = _scan_python(path, root, scan_decorators=False, scan_commands=True)
+            overrides.extend(found)
+            errors.extend(found_errors)
+
+    entries, manifest_errors = _read_manifest(manifest_path, root)
+    errors.extend(manifest_errors)
+    exceptional = {override.manifest_key for override in overrides if override.value > default_timeout}
+    declared = {entry.key for entry in entries}
+    for entry_path, value in sorted(exceptional - declared):
+        errors.append(f"{entry_path}: timeout {value:g}s exceeds {default_timeout:g}s without a manifest rationale")
+    for entry_path, value in sorted(declared - exceptional):
+        errors.append(f"stale timeout override manifest entry: {entry_path} value {value:g}")
+    return overrides, errors
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=ROOT, help="Repository root to inspect.")
+    parser.add_argument("--pyproject", type=Path, help="pytest configuration path (defaults to ROOT/pyproject.toml).")
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        help="Exception manifest path (defaults to ROOT/devtools/pytest_timeout_overrides.toml).",
+    )
+    parser.add_argument("--json", action="store_true", help="Emit the policy result as JSON.")
+    args = parser.parse_args(argv)
+    overrides, errors = check_timeout_overrides(args.root, pyproject_path=args.pyproject, manifest_path=args.manifest)
+    payload: dict[str, Any] = {
+        "overrides": [
+            {"path": item.path, "line": item.line, "value": item.value, "source": item.source} for item in overrides
+        ],
+        "errors": errors,
+        "ok": not errors,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"pytest timeout overrides: {len(overrides)} explicit override(s), {len(errors)} violation(s)")
+        for error in errors:
+            print(f"  {error}")
+    return 0 if not errors else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -830,6 +830,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify test-clock-hygiene", "devtools verify test-clock-hygiene --json"),
     ),
     CommandSpec(
+        "verify pytest-timeout-overrides",
+        "verification",
+        "Verify explicit pytest timeout overrides are positive, bounded, and justified.",
+        "devtools.verify_pytest_timeout_overrides",
+        use_when=(
+            "Check AST-parsed @pytest.mark.timeout decorators and managed pytest command literals. "
+            "Values above the pyproject default require an exact manifest rationale."
+        ),
+        examples=("devtools verify pytest-timeout-overrides", "devtools verify pytest-timeout-overrides --json"),
+    ),
+    CommandSpec(
         "release verify-distribution",
         "release",
         "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",
