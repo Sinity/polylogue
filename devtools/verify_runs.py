@@ -26,6 +26,7 @@ VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 CURRENT_RESOURCES_PATH = VERIFY_CACHE / "current-pytest-resources.jsonl"
 CURRENT_POSTMORTEM_PATH = VERIFY_CACHE / "current-pytest-postmortem.json"
+CURRENT_CONTAINMENT_PATH = VERIFY_CACHE / "current-pytest-containment.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
 DEFAULT_BASETEMP_SIZE_SAMPLE_INTERVAL_S = 15.0
 BASETEMP_SIZE_SAMPLE_INTERVAL_ENV = "POLYLOGUE_VERIFY_BASETEMP_SIZE_INTERVAL_S"
@@ -122,6 +123,7 @@ class PytestStepArtifacts:
     summary_path: Path
     resources_path: Path
     postmortem_path: Path
+    containment_path: Path
 
 
 class VerifyRun:
@@ -173,6 +175,7 @@ class VerifyRun:
             summary_path=step_dir / "summary.json",
             resources_path=step_dir / "resources.jsonl",
             postmortem_path=step_dir / "postmortem.json",
+            containment_path=step_dir / "containment.json",
         )
         step_dir.mkdir(parents=True, exist_ok=True)
         self._payload["steps"].append(
@@ -216,6 +219,7 @@ def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: Pytes
     updated["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(artifacts.events_merged_path)
     updated["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(artifacts.selection_path)
     updated["POLYLOGUE_PYTEST_SUMMARY_PATH"] = str(artifacts.summary_path)
+    updated["POLYLOGUE_PYTEST_CONTAINMENT_PATH"] = str(artifacts.containment_path)
     return updated
 
 
@@ -235,6 +239,8 @@ def copy_current_pytest_artifacts(root: Path, artifacts: PytestStepArtifacts, *,
         shutil.copyfile(artifacts.resources_path, root / CURRENT_RESOURCES_PATH)
     with contextlib.suppress(FileNotFoundError):
         shutil.copyfile(artifacts.postmortem_path, root / CURRENT_POSTMORTEM_PATH)
+    with contextlib.suppress(FileNotFoundError):
+        shutil.copyfile(artifacts.containment_path, root / CURRENT_CONTAINMENT_PATH)
 
 
 def merge_worker_events(events_dir: Path, merged_path: Path) -> int:

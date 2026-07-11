@@ -39,7 +39,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from devtools.pytest_supervisor import (
+    SupervisorLaunch,
+    build_supervisor_launch,
+    enable_child_subreaper,
+    read_receipt,
+    reap_exited_children,
+    signal_descendant_identities,
+    signal_owned_process_group,
+    signal_process_identity,
+    update_receipt,
+    write_termination_request,
+)
 from devtools.verify_runs import (
+    CURRENT_CONTAINMENT_PATH,
     CURRENT_EVENTS_DIR,
     CURRENT_POSTMORTEM_PATH,
     CURRENT_RESOURCES_PATH,
@@ -184,13 +197,16 @@ PYTEST_EVENTS_DIR = CURRENT_EVENTS_DIR
 PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
+PYTEST_CONTAINMENT_PATH = CURRENT_CONTAINMENT_PATH
 PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
 PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
 PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
+PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
+DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
 DEFAULT_TESTMON_WORKERS = "4"
 
@@ -364,6 +380,7 @@ def _clear_pytest_report(cmd: Sequence[str] = ()) -> None:
         PYTEST_OUTPUT_PATH,
         CURRENT_RESOURCES_PATH,
         CURRENT_POSTMORTEM_PATH,
+        CURRENT_CONTAINMENT_PATH,
     ):
         with contextlib.suppress(FileNotFoundError):
             if path.is_dir():
@@ -394,6 +411,7 @@ def _write_pytest_progress(
     run_id: str | None = None,
     artifact_dir: str | None = None,
     resources: Mapping[str, Any] | None = None,
+    containment: Mapping[str, Any] | None = None,
 ) -> None:
     """Write a live pytest progress artifact for long verify runs."""
     if elapsed_s is None:
@@ -425,6 +443,8 @@ def _write_pytest_progress(
         payload["artifact_dir"] = artifact_dir
     if resources is not None:
         payload["resources"] = dict(resources)
+    if containment is not None:
+        payload["containment"] = dict(containment)
     latest_event = _read_latest_pytest_event()
     if latest_event is not None:
         payload["latest_test_event"] = {
@@ -493,22 +513,176 @@ def _pytest_stall_timeout_s() -> float:
     return _float_env(PYTEST_STALL_TIMEOUT_ENV, DEFAULT_PYTEST_STALL_TIMEOUT_S)
 
 
+def _pytest_term_grace_s() -> float:
+    return _float_env(PYTEST_TERM_GRACE_ENV, DEFAULT_PYTEST_TERM_GRACE_S)
+
+
 def _pytest_resource_interval_s() -> float:
     return _float_env(PYTEST_RESOURCE_INTERVAL_ENV, DEFAULT_PYTEST_RESOURCE_INTERVAL_S)
 
 
-def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGTERM)
-    try:
-        process.wait(timeout=5)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        process.wait(timeout=5)
+def _containment_summary(launch: SupervisorLaunch, receipt: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "mode": launch.mode,
+        "unit": launch.unit,
+        "receipt_path": str(launch.receipt_path),
+        "runtime_cap_s": launch.runtime_cap_s,
+    }
+    if receipt is not None:
+        for key in (
+            "supervisor_pid",
+            "controller_pid",
+            "controller_pgid",
+            "controller_sid",
+            "cgroup_path",
+            "cgroup_owned",
+            "signals_sent",
+            "escalated_to_sigkill",
+            "controller_group_alive",
+        ):
+            if key in receipt:
+                payload[key] = receipt[key]
+    return payload
+
+
+def _request_supervisor_termination(
+    process: subprocess.Popen[bytes],
+    launch: SupervisorLaunch,
+    *,
+    reason: str,
+) -> None:
+    write_termination_request(launch.request_path, reason=reason)
+    receipt = read_receipt(launch.receipt_path)
+    supervisor_pid = receipt.get("supervisor_pid") if receipt is not None else None
+    supervisor_start = receipt.get("supervisor_start_ticks") if receipt is not None else None
+    signalled = False
+    if isinstance(supervisor_pid, int) and isinstance(supervisor_start, int):
+        signalled = signal_process_identity(supervisor_pid, supervisor_start, signal.SIGTERM)
+    if not signalled and process.poll() is None:
+        process.send_signal(signal.SIGTERM)
+
+
+def _force_kill_owned_run(process: subprocess.Popen[bytes], launch: SupervisorLaunch) -> None:
+    """Escalate only through identities recorded for this pytest run."""
+    receipt = read_receipt(launch.receipt_path)
+    controller_pgid = receipt.get("controller_pgid") if receipt is not None else None
+    controller_sid = receipt.get("controller_sid") if receipt is not None else None
+    controller_start = receipt.get("controller_start_ticks") if receipt is not None else None
+    supervisor_pid = receipt.get("supervisor_pid") if receipt is not None else None
+    supervisor_start = receipt.get("supervisor_start_ticks") if receipt is not None else None
+    if launch.unit is not None and shutil.which("systemctl"):
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            result = subprocess.run(
+                ["systemctl", "--user", "kill", "--kill-whom=all", "--signal=SIGKILL", launch.unit],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if result.returncode == 0:
+                return
+    if isinstance(controller_pgid, int) and isinstance(controller_sid, int):
+        signal_owned_process_group(
+            pgid=controller_pgid,
+            sid=controller_sid,
+            leader_start_ticks=controller_start if isinstance(controller_start, int) else None,
+            sig=signal.SIGKILL,
+        )
+    if isinstance(supervisor_pid, int) and isinstance(supervisor_start, int):
+        signal_process_identity(supervisor_pid, supervisor_start, signal.SIGKILL)
+    signal_descendant_identities(os.getpid(), signal.SIGKILL)
+    if process.poll() is None:
+        process.kill()
+
+
+def _wait_for_supervisor_start(
+    process: subprocess.Popen[bytes],
+    launch: SupervisorLaunch,
+    *,
+    timeout_s: float = 5.0,
+) -> dict[str, Any] | None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        receipt = read_receipt(launch.receipt_path)
+        if receipt is not None:
+            return receipt
+        if process.poll() is not None:
+            return None
+        time.sleep(0.01)
+    return read_receipt(launch.receipt_path)
+
+
+def _startup_wait_s(*, t0: float, timeout_s: float) -> float:
+    if timeout_s <= 0:
+        return 5.0
+    return max(0.0, min(5.0, t0 + timeout_s - time.monotonic()))
+
+
+def _finish_supervisor_startup_failure(
+    cmd: list[str],
+    *,
+    launch: SupervisorLaunch,
+    process: subprocess.Popen[bytes],
+    t0: float,
+    timeout_s: float,
+    term_grace_s: float,
+    reason: str,
+    exit_code: int,
+    stdout: bytes,
+    stderr: bytes,
+    runner_subreaper_enabled: bool,
+    run: VerifyRun | None,
+    artifacts: PytestStepArtifacts | None,
+) -> subprocess.CompletedProcess[str]:
+    receipt = update_receipt(
+        launch.receipt_path,
+        {
+            "schema_version": 1,
+            "status": "terminated",
+            "finished_at": utc_now(),
+            "duration_s": round(time.monotonic() - t0, 4),
+            "controller_command": list(cmd),
+            "mode": launch.mode,
+            "unit": launch.unit,
+            "cgroup_owned": launch.mode == "systemd-scope",
+            "timeout_s": timeout_s,
+            "term_grace_s": term_grace_s,
+            "runtime_cap_s": launch.runtime_cap_s,
+            "exit_code": exit_code,
+            "supervisor_exit_code": process.poll(),
+            "termination_reason": reason,
+            "signals_sent": ["SIGKILL"],
+            "escalated_to_sigkill": True,
+            "runner_forced_cleanup": True,
+            "runner_forced_at": utc_now(),
+            "runner_pid": os.getpid(),
+            "runner_subreaper_enabled": runner_subreaper_enabled,
+            "startup_failure": True,
+        },
+    )
+    rendered_stdout = stdout.decode(errors="replace")
+    rendered_stderr = stderr.decode(errors="replace")
+    rendered_stderr = f"{rendered_stderr}\nverify: {reason}; pytest supervisor startup was contained\n"
+    output_bytes = {"stdout": len(stdout), "stderr": len(rendered_stderr.encode())}
+    _write_pytest_progress(
+        event="terminated",
+        cmd=cmd,
+        started_at=t0,
+        pid=process.pid,
+        returncode=exit_code,
+        output_bytes=output_bytes,
+        termination_reason=reason,
+        run_id=run.run_id if run is not None else None,
+        artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+        containment=_containment_summary(launch, receipt),
+    )
+    _write_pytest_output(rendered_stdout, rendered_stderr)
+    if artifacts is not None:
+        artifacts.stdout_path.write_text(rendered_stdout, encoding="utf-8")
+        artifacts.stderr_path.write_text(rendered_stderr, encoding="utf-8")
+        artifacts.output_path.write_text(rendered_stdout + rendered_stderr, encoding="utf-8")
+    reap_exited_children()
+    return subprocess.CompletedProcess(cmd, exit_code, rendered_stdout, rendered_stderr)
 
 
 def _run_pytest_with_heartbeat(
@@ -523,19 +697,148 @@ def _run_pytest_with_heartbeat(
     heartbeat_s = _pytest_heartbeat_interval()
     timeout_s = _pytest_timeout_s()
     stall_timeout_s = _pytest_stall_timeout_s()
+    term_grace_s = _pytest_term_grace_s()
     resource_interval_s = _pytest_resource_interval_s()
-    sys.stderr.write(f"\n    command: {shlex.join(cmd)}\n")
-    sys.stderr.flush()
-    process = subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
+    runner_subreaper_enabled = enable_child_subreaper()
+    receipt_path = (
+        artifacts.containment_path
+        if artifacts is not None
+        else Path(env.get("POLYLOGUE_PYTEST_CONTAINMENT_PATH", str(Path.cwd() / PYTEST_CONTAINMENT_PATH)))
     )
+    launch = build_supervisor_launch(
+        cmd,
+        owner_pid=os.getpid(),
+        timeout_s=timeout_s,
+        term_grace_s=term_grace_s,
+        receipt_path=receipt_path,
+        run_id=run.run_id if run is not None else env.get("POLYLOGUE_PYTEST_RUN_ID"),
+        env=env,
+    )
+    sys.stderr.write(f"\n    command: {shlex.join(cmd)}\n")
+    sys.stderr.write(
+        f"    containment: mode={launch.mode}"
+        f"{f', unit={launch.unit}' if launch.unit is not None else ''}, receipt={launch.receipt_path}\n"
+    )
+    sys.stderr.flush()
+
+    def _spawn_supervisor(argv: Sequence[str]) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            list(argv),
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+    def _stop_startup_attempt(
+        startup_process: subprocess.Popen[bytes],
+        startup_launch: SupervisorLaunch,
+    ) -> tuple[bytes, bytes]:
+        _force_kill_owned_run(startup_process, startup_launch)
+        try:
+            result = startup_process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            startup_process.kill()
+            result = startup_process.communicate(timeout=1)
+        reap_exited_children()
+        return result
+
+    process = _spawn_supervisor(launch.argv)
     assert process.stdout is not None
     assert process.stderr is not None
+    startup_receipt = _wait_for_supervisor_start(process, launch, timeout_s=_startup_wait_s(t0=t0, timeout_s=timeout_s))
+    startup_stdout = b""
+    startup_stderr = b""
+    if startup_receipt is None:
+        startup_stdout, startup_stderr = _stop_startup_attempt(process, launch)
+        if timeout_s > 0 and time.monotonic() - t0 >= timeout_s:
+            return _finish_supervisor_startup_failure(
+                cmd,
+                launch=launch,
+                process=process,
+                t0=t0,
+                timeout_s=timeout_s,
+                term_grace_s=term_grace_s,
+                reason=f"pytest runtime exceeded {timeout_s:g}s",
+                exit_code=124,
+                stdout=startup_stdout,
+                stderr=startup_stderr,
+                runner_subreaper_enabled=runner_subreaper_enabled,
+                run=run,
+                artifacts=artifacts,
+            )
+        if launch.fallback_argv is None:
+            detail = startup_stderr.decode(errors="replace").strip()
+            reason = "pytest supervisor failed before publishing ownership"
+            if detail:
+                reason = f"{reason}: {detail}"
+            return _finish_supervisor_startup_failure(
+                cmd,
+                launch=launch,
+                process=process,
+                t0=t0,
+                timeout_s=timeout_s,
+                term_grace_s=term_grace_s,
+                reason=reason,
+                exit_code=125,
+                stdout=startup_stdout,
+                stderr=startup_stderr,
+                runner_subreaper_enabled=runner_subreaper_enabled,
+                run=run,
+                artifacts=artifacts,
+            )
+        fallback_message = (
+            b"pytest supervisor: systemd scope launch failed; retrying with the Linux process-group boundary\n"
+        )
+        startup_stderr += fallback_message
+        sys.stderr.write((startup_stdout + startup_stderr).decode(errors="replace"))
+        sys.stderr.flush()
+        launch = SupervisorLaunch(
+            launch.fallback_argv,
+            launch.receipt_path,
+            launch.request_path,
+            "process-group",
+            None,
+            None,
+        )
+        process = _spawn_supervisor(launch.argv)
+        assert process.stdout is not None
+        assert process.stderr is not None
+        startup_receipt = _wait_for_supervisor_start(
+            process,
+            launch,
+            timeout_s=_startup_wait_s(t0=t0, timeout_s=timeout_s),
+        )
+        if startup_receipt is None:
+            fallback_stdout, fallback_stderr = _stop_startup_attempt(process, launch)
+            startup_stdout += fallback_stdout
+            startup_stderr += fallback_stderr
+            timed_out = timeout_s > 0 and time.monotonic() - t0 >= timeout_s
+            reason = (
+                f"pytest runtime exceeded {timeout_s:g}s"
+                if timed_out
+                else "pytest process-group supervisor failed before publishing ownership"
+            )
+            return _finish_supervisor_startup_failure(
+                cmd,
+                launch=launch,
+                process=process,
+                t0=t0,
+                timeout_s=timeout_s,
+                term_grace_s=term_grace_s,
+                reason=reason,
+                exit_code=124 if timed_out else 125,
+                stdout=startup_stdout,
+                stderr=startup_stderr,
+                runner_subreaper_enabled=runner_subreaper_enabled,
+                run=run,
+                artifacts=artifacts,
+            )
+    stdout_pipe = process.stdout
+    stderr_pipe = process.stderr
+    assert stdout_pipe is not None
+    assert stderr_pipe is not None
     sampler = (
         ResourceSampler(
             root_pid=process.pid,
@@ -557,17 +860,26 @@ def _run_pytest_with_heartbeat(
         output_bytes={"stdout": 0, "stderr": 0},
         run_id=run.run_id if run is not None else None,
         artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+        containment=_containment_summary(launch, startup_receipt),
     )
     selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-    output: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
-    output_bytes = {"stdout": 0, "stderr": 0}
+    selector.register(stdout_pipe, selectors.EVENT_READ, "stdout")
+    selector.register(stderr_pipe, selectors.EVENT_READ, "stderr")
+    output: dict[str, list[bytes]] = {
+        "stdout": [startup_stdout] if startup_stdout else [],
+        "stderr": [startup_stderr] if startup_stderr else [],
+    }
+    output_bytes = {"stdout": len(startup_stdout), "stderr": len(startup_stderr)}
     last_cpu = _process_cpu_seconds(process.pid)
     last_sample = time.monotonic()
     last_output = last_sample
     last_resource_sample = last_sample
     termination_reason: str | None = None
+    termination_requested_at: float | None = None
+    forced_cleanup = False
+    supervisor_finished_at: float | None = None
+    post_exit_forced_at: float | None = None
+    forced_returncode: int | None = None
     # Test-event progress, not raw output bytes: an xdist master can keep
     # emitting output (its own heartbeat chatter) while every worker is
     # wedged (e.g. a D-state deadlock), so output-silence alone never fires
@@ -592,153 +904,266 @@ def _run_pytest_with_heartbeat(
             last_progress_marker = marker
             last_progress_at = at
 
-    while True:
-        now = time.monotonic()
-        elapsed = now - t0
-        idle = now - last_output
-        progress_idle = now - last_progress_at
-        if timeout_s > 0 and elapsed >= timeout_s:
-            termination_reason = f"pytest runtime exceeded {timeout_s:g}s"
-        elif stall_timeout_s > 0 and idle >= stall_timeout_s:
-            termination_reason = f"pytest produced no output for {stall_timeout_s:g}s"
-        elif stall_timeout_s > 0 and seen_any_progress_event and progress_idle >= stall_timeout_s:
-            termination_reason = (
-                f"pytest reported no test progress for {stall_timeout_s:g}s "
-                f"(output kept flowing; last progress marker: {last_progress_marker})"
-            )
-        if termination_reason is not None:
-            _terminate_process_group(process)
-            break
+    try:
+        while True:
+            now = time.monotonic()
+            elapsed = now - t0
+            idle = now - last_output
+            progress_idle = now - last_progress_at
+            receipt = read_receipt(launch.receipt_path)
+            if receipt is not None and receipt.get("status") in {"finished", "terminated"} and selector.get_map():
+                if supervisor_finished_at is None:
+                    supervisor_finished_at = now
+                elif now - supervisor_finished_at >= max(0.2, term_grace_s) and post_exit_forced_at is None:
+                    receipt_reason = receipt.get("termination_reason")
+                    termination_reason = (
+                        termination_reason
+                        or (str(receipt_reason) if isinstance(receipt_reason, str) else None)
+                        or "pytest supervisor exited while owned output pipes remained open"
+                    )
+                    _force_kill_owned_run(process, launch)
+                    forced_cleanup = True
+                    forced_returncode = 125
+                    post_exit_forced_at = now
+                    receipt = update_receipt(
+                        launch.receipt_path,
+                        {
+                            "status": "terminated",
+                            "supervisor_exit_code": receipt.get("exit_code"),
+                            "exit_code": forced_returncode,
+                            "termination_reason": termination_reason,
+                            "runner_forced_cleanup": True,
+                            "runner_forced_at": datetime.now(timezone.utc).isoformat(),
+                            "runner_pid": os.getpid(),
+                            "runner_subreaper_enabled": runner_subreaper_enabled,
+                        },
+                    )
+                elif post_exit_forced_at is not None and now - post_exit_forced_at >= 1.0:
+                    for selector_key in list(selector.get_map().values()):
+                        with contextlib.suppress(KeyError):
+                            selector.unregister(selector_key.fileobj)
+                        if selector_key.fileobj is stdout_pipe:
+                            stdout_pipe.close()
+                        elif selector_key.fileobj is stderr_pipe:
+                            stderr_pipe.close()
+                        else:
+                            with contextlib.suppress(OSError):
+                                os.close(selector_key.fd)
+                    if process.poll() is None:
+                        process.kill()
+            if termination_reason is None and timeout_s > 0 and elapsed >= timeout_s:
+                termination_reason = f"pytest runtime exceeded {timeout_s:g}s"
+            elif termination_reason is None and stall_timeout_s > 0 and idle >= stall_timeout_s:
+                termination_reason = f"pytest produced no output for {stall_timeout_s:g}s"
+            elif (
+                termination_reason is None
+                and stall_timeout_s > 0
+                and seen_any_progress_event
+                and progress_idle >= stall_timeout_s
+            ):
+                termination_reason = (
+                    f"pytest reported no test progress for {stall_timeout_s:g}s "
+                    f"(output kept flowing; last progress marker: {last_progress_marker})"
+                )
+            if termination_reason is not None and termination_requested_at is None:
+                _request_supervisor_termination(process, launch, reason=termination_reason)
+                termination_requested_at = now
+            if (
+                termination_requested_at is not None
+                and now - termination_requested_at >= term_grace_s + 1.0
+                and not forced_cleanup
+            ):
+                _force_kill_owned_run(process, launch)
+                forced_cleanup = True
+                forced_returncode = 124
+                receipt = update_receipt(
+                    launch.receipt_path,
+                    {
+                        "status": "terminated",
+                        "supervisor_exit_code": process.poll(),
+                        "exit_code": forced_returncode,
+                        "termination_reason": termination_reason,
+                        "runner_forced_cleanup": True,
+                        "runner_forced_at": datetime.now(timezone.utc).isoformat(),
+                        "runner_pid": os.getpid(),
+                        "runner_subreaper_enabled": runner_subreaper_enabled,
+                    },
+                )
 
-        deadlines: list[float] = []
-        if heartbeat_s > 0:
-            deadlines.append(heartbeat_s)
-        if timeout_s > 0:
-            deadlines.append(max(timeout_s - elapsed, 0.0))
-        if stall_timeout_s > 0:
-            deadlines.append(max(stall_timeout_s - idle, 0.0))
-        if stall_timeout_s > 0 and seen_any_progress_event:
-            deadlines.append(max(stall_timeout_s - progress_idle, 0.0))
-        timeout = min(deadlines) if deadlines else None
-        events = selector.select(timeout=timeout)
-        if events:
-            for selector_key, _mask in events:
-                chunk = os.read(selector_key.fd, 65536)
-                if chunk:
-                    stream_name = str(selector_key.data)
-                    output[stream_name].append(chunk)
-                    output_bytes[stream_name] += len(chunk)
-                    sys.stderr.write(chunk.decode(errors="replace"))
-                    sys.stderr.flush()
-                    last_output = time.monotonic()
-                    _refresh_progress_marker(last_output)
-                    _write_pytest_progress(
-                        event="output",
-                        cmd=cmd,
-                        started_at=t0,
-                        pid=process.pid,
-                        idle_s=last_output - last_progress_at,
-                        output_bytes=output_bytes,
-                        status=_process_status(process.pid),
-                        run_id=run.run_id if run is not None else None,
-                        artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+            deadlines: list[float] = []
+            if heartbeat_s > 0:
+                deadlines.append(heartbeat_s)
+            if timeout_s > 0 and termination_reason is None:
+                deadlines.append(max(timeout_s - elapsed, 0.0))
+            if stall_timeout_s > 0 and termination_reason is None:
+                deadlines.append(max(stall_timeout_s - idle, 0.0))
+            if stall_timeout_s > 0 and seen_any_progress_event and termination_reason is None:
+                deadlines.append(max(stall_timeout_s - progress_idle, 0.0))
+            if termination_requested_at is not None and not forced_cleanup:
+                deadlines.append(max(term_grace_s + 1.0 - (now - termination_requested_at), 0.0))
+            if supervisor_finished_at is not None and post_exit_forced_at is None:
+                deadlines.append(max(max(0.2, term_grace_s) - (now - supervisor_finished_at), 0.0))
+            if post_exit_forced_at is not None:
+                deadlines.append(max(1.0 - (now - post_exit_forced_at), 0.0))
+            selector_timeout = min(deadlines) if deadlines else None
+            events = selector.select(timeout=selector_timeout)
+            if events:
+                for selector_key, _mask in events:
+                    chunk = os.read(selector_key.fd, 65536)
+                    if chunk:
+                        stream_name = str(selector_key.data)
+                        output[stream_name].append(chunk)
+                        output_bytes[stream_name] += len(chunk)
+                        sys.stderr.write(chunk.decode(errors="replace"))
+                        sys.stderr.flush()
+                        last_output = time.monotonic()
+                        _refresh_progress_marker(last_output)
+                        receipt = read_receipt(launch.receipt_path)
+                        _write_pytest_progress(
+                            event="output",
+                            cmd=cmd,
+                            started_at=t0,
+                            pid=process.pid,
+                            idle_s=last_output - last_progress_at,
+                            output_bytes=output_bytes,
+                            status=_process_status(process.pid),
+                            run_id=run.run_id if run is not None else None,
+                            artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+                            containment=_containment_summary(launch, receipt),
+                        )
+                    else:
+                        selector.unregister(selector_key.fileobj)
+            else:
+                status = _process_status(process.pid)
+                cpu_now = _process_cpu_seconds(process.pid)
+                cpu_pct = None
+                sample_now = time.monotonic()
+                if cpu_now is not None and last_cpu is not None and sample_now > last_sample:
+                    cpu_pct = ((cpu_now - last_cpu) / (sample_now - last_sample)) * 100.0
+                last_cpu = cpu_now
+                last_sample = sample_now
+                rss = status["rss_kb"]
+                rss_text = f", rss={int(rss) // 1024} MiB" if isinstance(rss, int) else ""
+                cpu_text = f", cpu={cpu_pct:.0f}%" if cpu_pct is not None else ""
+                state_text = f", state={status['state']}" if status["state"] is not None else ""
+                latest_event = _read_latest_pytest_event()
+                _refresh_progress_marker(sample_now, latest_event)
+                if latest_event is not None:
+                    event = latest_event.get("event")
+                    nodeid = latest_event.get("nodeid")
+                    node_text = (
+                        f", latest={event}:{nodeid}" if isinstance(event, str) and isinstance(nodeid, str) else ""
                     )
                 else:
-                    selector.unregister(selector_key.fileobj)
-        else:
-            status = _process_status(process.pid)
-            cpu_now = _process_cpu_seconds(process.pid)
-            cpu_pct = None
+                    node_text = ""
+                progress_idle_text = (
+                    f", progress_idle={sample_now - last_progress_at:.0f}s" if seen_any_progress_event else ""
+                )
+                receipt = read_receipt(launch.receipt_path)
+                controller_pid = receipt.get("controller_pid") if receipt is not None else None
+                controller_text = f", controller={controller_pid}" if isinstance(controller_pid, int) else ""
+                sys.stderr.write(
+                    f"    still running: supervisor={process.pid}{controller_text}, elapsed={sample_now - t0:.0f}s, "
+                    f"idle={sample_now - last_output:.0f}s{progress_idle_text}{state_text}{cpu_text}{rss_text}{node_text}\n"
+                )
+                sys.stderr.flush()
+                _write_pytest_progress(
+                    event="heartbeat",
+                    cmd=cmd,
+                    started_at=t0,
+                    pid=process.pid,
+                    elapsed_s=sample_now - t0,
+                    idle_s=sample_now - last_progress_at,
+                    output_bytes=output_bytes,
+                    status=status,
+                    cpu_pct=cpu_pct,
+                    run_id=run.run_id if run is not None else None,
+                    artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+                    containment=_containment_summary(launch, receipt),
+                )
             sample_now = time.monotonic()
-            if cpu_now is not None and last_cpu is not None and sample_now > last_sample:
-                cpu_pct = ((cpu_now - last_cpu) / (sample_now - last_sample)) * 100.0
-            last_cpu = cpu_now
-            last_sample = sample_now
-            rss = status["rss_kb"]
-            rss_text = f", rss={int(rss) // 1024} MiB" if isinstance(rss, int) else ""
-            cpu_text = f", cpu={cpu_pct:.0f}%" if cpu_pct is not None else ""
-            state_text = f", state={status['state']}" if status["state"] is not None else ""
-            latest_event = _read_latest_pytest_event()
-            _refresh_progress_marker(sample_now, latest_event)
-            if latest_event is not None:
-                event = latest_event.get("event")
-                nodeid = latest_event.get("nodeid")
-                node_text = f", latest={event}:{nodeid}" if isinstance(event, str) and isinstance(nodeid, str) else ""
-            else:
-                node_text = ""
-            progress_idle_text = (
-                f", progress_idle={sample_now - last_progress_at:.0f}s" if seen_any_progress_event else ""
-            )
-            sys.stderr.write(
-                f"    still running: pid={process.pid}, elapsed={sample_now - t0:.0f}s, "
-                f"idle={sample_now - last_output:.0f}s{progress_idle_text}{state_text}{cpu_text}{rss_text}{node_text}\n"
-            )
-            sys.stderr.flush()
-            _write_pytest_progress(
-                event="heartbeat",
-                cmd=cmd,
-                started_at=t0,
-                pid=process.pid,
-                elapsed_s=sample_now - t0,
-                idle_s=sample_now - last_progress_at,
-                output_bytes=output_bytes,
-                status=status,
-                cpu_pct=cpu_pct,
-                run_id=run.run_id if run is not None else None,
-                artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
-            )
-        sample_now = time.monotonic()
-        if sampler is not None and resource_interval_s > 0 and sample_now - last_resource_sample >= resource_interval_s:
-            sampler.sample(event="sample")
-            last_resource_sample = sample_now
-        if process.poll() is not None and not selector.get_map():
-            break
+            if (
+                sampler is not None
+                and resource_interval_s > 0
+                and sample_now - last_resource_sample >= resource_interval_s
+            ):
+                sampler.sample(event="sample")
+                last_resource_sample = sample_now
+            if process.poll() is not None and not selector.get_map():
+                break
+    except BaseException:
+        if process.poll() is None:
+            _request_supervisor_termination(process, launch, reason="pytest runner interrupted")
+        raise
+    finally:
+        selector.close()
+    reap_exited_children()
 
-    for stream in (process.stdout, process.stderr):
+    for stream in (stdout_pipe, stderr_pipe):
+        if stream.closed:
+            continue
         with contextlib.suppress(OSError):
             remaining = stream.read()
         if remaining:
-            stream_name = "stdout" if stream is process.stdout else "stderr"
+            stream_name = "stdout" if stream is stdout_pipe else "stderr"
             output[stream_name].append(remaining)
             output_bytes[stream_name] += len(remaining)
     stdout = b"".join(output["stdout"]).decode(errors="replace")
     stderr = b"".join(output["stderr"]).decode(errors="replace")
-    _write_pytest_output(stdout, stderr)
-    if artifacts is not None:
-        artifacts.stdout_path.write_text(stdout, encoding="utf-8")
-        artifacts.stderr_path.write_text(stderr, encoding="utf-8")
-        artifacts.output_path.write_text(stdout + stderr, encoding="utf-8")
+    receipt = read_receipt(launch.receipt_path)
+    if termination_reason is None and receipt is not None and receipt.get("status") == "terminated":
+        receipt_reason = receipt.get("termination_reason")
+        if isinstance(receipt_reason, str):
+            termination_reason = receipt_reason
+    receipt_exit = receipt.get("exit_code") if receipt is not None else None
+    returncode = (
+        forced_returncode
+        if forced_returncode is not None
+        else (int(receipt_exit) if isinstance(receipt_exit, int) else (process.returncode or 0))
+    )
+    containment = _containment_summary(launch, receipt)
     resource_summary: dict[str, Any] = {}
     if sampler is not None:
         sampler.sample(event="finished" if termination_reason is None else "terminated")
         resource_summary = sampler.summary()
     if termination_reason is not None:
+        controller_pgid = containment.get("controller_pgid", process.pid)
+        stderr = (
+            f"{stderr}\nverify: {termination_reason}; terminated owned pytest process group "
+            f"{controller_pgid} ({launch.mode})\n"
+        )
         _write_pytest_progress(
             event="terminated",
             cmd=cmd,
             started_at=t0,
             pid=process.pid,
-            returncode=124,
+            returncode=returncode,
             output_bytes=output_bytes,
             termination_reason=termination_reason,
             run_id=run.run_id if run is not None else None,
             artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
             resources=resource_summary,
+            containment=containment,
         )
-        stderr = f"{stderr}\nverify: {termination_reason}; terminated pytest process group {process.pid}\n"
-        return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
-    _write_pytest_progress(
-        event="finished",
-        cmd=cmd,
-        started_at=t0,
-        pid=process.pid,
-        returncode=process.returncode or 0,
-        output_bytes=output_bytes,
-        run_id=run.run_id if run is not None else None,
-        artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
-        resources=resource_summary,
-    )
-    return subprocess.CompletedProcess(cmd, process.returncode or 0, stdout, stderr)
+    else:
+        _write_pytest_progress(
+            event="finished",
+            cmd=cmd,
+            started_at=t0,
+            pid=process.pid,
+            returncode=returncode,
+            output_bytes=output_bytes,
+            run_id=run.run_id if run is not None else None,
+            artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+            resources=resource_summary,
+            containment=containment,
+        )
+    _write_pytest_output(stdout, stderr)
+    if artifacts is not None:
+        artifacts.stdout_path.write_text(stdout, encoding="utf-8")
+        artifacts.stderr_path.write_text(stderr, encoding="utf-8")
+        artifacts.output_path.write_text(stdout + stderr, encoding="utf-8")
+    return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
 def _run(
@@ -784,6 +1209,7 @@ def _run(
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
         metadata["timeout_s"] = _pytest_timeout_s()
         metadata["stall_timeout_s"] = _pytest_stall_timeout_s()
+        metadata["term_grace_s"] = _pytest_term_grace_s()
         metadata["resource_interval_s"] = _pytest_resource_interval_s()
         metadata["pytest_tmpfs"] = pytest_tmpfs
         metadata["progress_path"] = str(PYTEST_PROGRESS_PATH)
@@ -794,6 +1220,7 @@ def _run(
         metadata["output_path"] = str(PYTEST_OUTPUT_PATH)
         metadata["resources_path"] = str(CURRENT_RESOURCES_PATH)
         metadata["postmortem_path"] = str(CURRENT_POSTMORTEM_PATH)
+        metadata["containment_path"] = str(PYTEST_CONTAINMENT_PATH)
         metadata["basetemp_cleanup"] = str(basetemp_cleanup) if basetemp_cleanup is not None else None
         junit_paths = [
             str(path) for path in _pytest_artifact_paths(cmd) if path.suffix == ".xml" or path.name.endswith(".xml")
@@ -845,6 +1272,20 @@ def _run(
             slowest_reports = summary.get("slowest_reports")
             if isinstance(slowest_reports, list):
                 metadata["slowest_report_count"] = len(slowest_reports)
+        containment_path = artifacts.containment_path if artifacts is not None else PYTEST_CONTAINMENT_PATH
+        containment = _read_json_artifact(containment_path)
+        if containment is not None:
+            for source_key, metadata_key in (
+                ("mode", "containment_mode"),
+                ("unit", "containment_unit"),
+                ("cgroup_path", "containment_cgroup_path"),
+                ("controller_pid", "pytest_controller_pid"),
+                ("controller_pgid", "pytest_controller_pgid"),
+                ("signals_sent", "containment_signals_sent"),
+                ("escalated_to_sigkill", "containment_escalated_to_sigkill"),
+            ):
+                if source_key in containment:
+                    metadata[metadata_key] = containment[source_key]
         resource_summary: dict[str, Any] = {}
         if artifacts is not None and artifacts.resources_path.exists():
             sample_count = 0
@@ -892,6 +1333,13 @@ def _run(
                 "report_status": metadata.get("report_status"),
                 "progress_event": metadata.get("progress_event"),
                 "summary_exitstatus": summary.get("exitstatus") if isinstance(summary, dict) else None,
+                "containment_mode": metadata.get("containment_mode"),
+                "containment_unit": metadata.get("containment_unit"),
+                "containment_cgroup_path": metadata.get("containment_cgroup_path"),
+                "pytest_controller_pid": metadata.get("pytest_controller_pid"),
+                "pytest_controller_pgid": metadata.get("pytest_controller_pgid"),
+                "containment_signals_sent": metadata.get("containment_signals_sent"),
+                "containment_escalated_to_sigkill": metadata.get("containment_escalated_to_sigkill"),
                 **resource_summary,
             }
             artifacts.postmortem_path.write_text(json.dumps(postmortem, indent=2, ensure_ascii=False) + "\n")

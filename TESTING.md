@@ -52,6 +52,13 @@ run. Full diagnostic and seed runs use the same worker override and also
 default to `-n 4` so database-heavy workers do not multiply memory and I/O
 pressure beyond the explicit broad-run lane.
 
+Every collected test has a 300-second `pytest-timeout` budget. A test that
+genuinely needs longer must declare the exception at the test site with
+`@pytest.mark.timeout(<seconds>)`; a missing marker can never silently turn into
+an unbounded wait. The signal method is the repository default so timeout
+failures retain the responsible node and Python stacks in ordinary pytest
+output.
+
 Pytest temp databases default to `/realm/tmp/polylogue-pytest` so interrupted
 full or xdist runs do not leave multi-GiB `/dev/shm` directories resident in
 RAM. On btrfs scratch volumes, the harness best-effort marks that root with
@@ -91,13 +98,26 @@ and a postmortem diagnosis. The latest run is mirrored to
 - `.cache/verify/current-pytest-events/`
 - `.cache/verify/current-pytest-resources.jsonl`
 - `.cache/verify/current-pytest-postmortem.json`
+- `.cache/verify/current-pytest-containment.json`
 - `.cache/verify/current-pytest-output.log`
 
-The supervisor prints periodic heartbeat lines, drains pytest output
-incrementally so real progress resets the stall clock, samples the pytest
-process tree and host memory/pressure state, and terminates the whole pytest
-process group if the step exceeds `POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default
-45 minutes) or produces no output for
+The devtools process drains pytest output, prints periodic heartbeat lines, and
+samples the pytest process tree and host memory/pressure state. A separate
+supervisor owns the pytest controller's process group, watches the devtools
+owner process, and enforces `POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default 45
+minutes). Termination sends SIGTERM to that exact group, then SIGKILL after
+`POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S` (default 5 seconds). On Sinnix, the
+supervisor runs in a unique transient scope under the configured build slice;
+`KillMode=control-group` and a slightly later `RuntimeMaxSec` are the final
+boundary if ordinary cleanup cannot run. Other Linux hosts retain the external
+supervisor and process-group boundary and record that fallback honestly in the
+containment receipt. If transient scope creation fails in automatic mode, the
+runner records the failure and retries with that process-group boundary. The
+managed runner requires Linux process identities so it never substitutes an
+unsafe numeric-PGID kill on unsupported hosts. The devtools process
+independently enforces the same absolute deadline, including supervisor
+startup, and also requests group termination when
+pytest produces no output for
 `POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S` (default 10 minutes).
 `POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S` controls resource sampling cadence
 (default 2 seconds). Basetemp size is a recursive filesystem walk, so it is
@@ -120,8 +140,9 @@ focused selections. During or after a run, inspect
 `.cache/verify/current-pytest-progress.json`,
 `.cache/verify/current-pytest-selection.json`,
 `.cache/verify/current-pytest-summary.json`,
-`.cache/verify/current-pytest-events.jsonl`, and
-`.cache/verify/current-pytest-output.log` to see the active/latest test node,
+`.cache/verify/current-pytest-events.jsonl`,
+`.cache/verify/current-pytest-containment.json`,
+and `.cache/verify/current-pytest-output.log` to see the active/latest test node,
 selected/deselected node IDs, collection duration, slowest setup/call/teardown
 phases, captured output, and termination reason if a focused run stalls.
 

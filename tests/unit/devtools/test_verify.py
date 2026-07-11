@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from devtools.verify import (
+    PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
     PYTEST_JUNIT_REPORT_PATH,
     PYTEST_OUTPUT_PATH,
@@ -34,6 +35,7 @@ from devtools.verify import (
 )
 from devtools.verify_runs import (
     ResourceSampler,
+    VerifyRun,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
     pytest_basetemp_path,
@@ -558,7 +560,8 @@ def test_pytest_run_emits_heartbeat_for_long_silent_child(
     assert rc == 0
     assert metadata["heartbeat_s"] == 0.1
     assert "command:" in captured.err
-    assert "still running: pid=" in captured.err
+    assert "still running: supervisor=" in captured.err
+    assert ", controller=" in captured.err
     assert "elapsed=" in captured.err
 
 
@@ -672,26 +675,43 @@ def test_pytest_run_preserves_other_lane_reports(
 
 
 def test_pytest_run_terminates_after_runtime_budget(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0.15")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "1")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0")
+    run = VerifyRun(tier="timeout-artifact", argv=[], git_head=None, root=tmp_path)
 
-    rc, _elapsed, metadata = _run("pytest timeout", [sys.executable, "-c", "import time; time.sleep(5)"])
+    rc, _elapsed, metadata = _run(
+        "pytest timeout",
+        [sys.executable, "-c", "import time; time.sleep(5)"],
+        run=run,
+    )
 
     captured = capsys.readouterr()
+    step_containment = json.loads(
+        (run.run_dir / "steps" / "01-pytest-timeout" / "containment.json").read_text(encoding="utf-8")
+    )
+    current_containment = json.loads((tmp_path / PYTEST_CONTAINMENT_PATH).read_text(encoding="utf-8"))
     assert rc == 124
-    assert metadata["timeout_s"] == 0.15
+    assert metadata["timeout_s"] == 1.0
     assert metadata["stall_timeout_s"] == 0.0
     assert metadata["events_path"] == str(PYTEST_EVENTS_PATH)
     assert metadata["output_path"] == str(PYTEST_OUTPUT_PATH)
     assert metadata["report_path"] is None
     assert metadata["report_status"] == "missing"
     assert metadata["progress_event"] == "terminated"
-    assert metadata["termination_reason"] == "pytest runtime exceeded 0.15s"
-    assert "pytest runtime exceeded 0.15s" in captured.err
-    assert "terminated pytest process group" in captured.err
+    assert metadata["termination_reason"] == "pytest runtime exceeded 1s"
+    assert metadata["containment_mode"] in {"process-group", "systemd-scope"}
+    assert metadata["containment_signals_sent"] == ["SIGTERM"]
+    assert step_containment == current_containment
+    assert current_containment["status"] == "terminated"
+    assert current_containment["termination_reason"] == "pytest runtime exceeded 1s"
+    assert "pytest runtime exceeded 1s" in captured.err
+    assert "terminated owned pytest process group" in captured.err
 
 
 def test_pytest_run_terminates_with_heartbeat_disabled(
@@ -727,7 +747,7 @@ def test_pytest_run_terminates_after_output_stall(
     assert metadata["stall_timeout_s"] == 0.15
     assert "progress" in captured.err
     assert "pytest produced no output for 0.15s" in captured.err
-    assert "terminated pytest process group" in captured.err
+    assert "terminated owned pytest process group" in captured.err
 
 
 def test_pytest_run_terminates_on_progress_stall_despite_flowing_output(
@@ -771,7 +791,7 @@ def test_pytest_run_terminates_on_progress_stall_despite_flowing_output(
     assert "pytest produced no output" not in captured.err
     assert "pytest reported no test progress for 0.15s" in captured.err
     assert "wedged::test" in captured.err
-    assert "terminated pytest process group" in captured.err
+    assert "terminated owned pytest process group" in captured.err
 
 
 def test_pytest_timeout_env_defaults_and_invalid_values(monkeypatch: pytest.MonkeyPatch) -> None:

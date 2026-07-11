@@ -128,6 +128,10 @@ python_files = ["test_*.py", "*_test.py", "fuzz_*.py"]
 asyncio_mode = "auto"
 xfail_strict = true
 cache_dir = ".cache/pytest"
+# Every test is bounded by default. Tests that genuinely need longer must carry
+# an explicit @pytest.mark.timeout(...) override at the test site.
+timeout = 300
+timeout_method = "signal"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests (pipeline, CLI end-to-end)",
