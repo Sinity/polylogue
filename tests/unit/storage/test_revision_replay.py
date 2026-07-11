@@ -13,7 +13,11 @@ from polylogue.archive.revision_replay import (
     RevisionReplayPlan,
     plan_revision_replay,
 )
-from polylogue.archive.session_revision_membership import MembershipClassification
+from polylogue.archive.session_revision_membership import (
+    MembershipClassification,
+    MembershipRevision,
+    classify_membership_revisions,
+)
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -75,6 +79,87 @@ def test_replay_selects_newest_full_and_exact_contiguous_suffix_independent_of_o
     }
     for ordering in permutations(candidates):
         assert _decisions(list(ordering)) == expected
+
+
+def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="same")],
+    )
+    projection = session_revision_projection(session)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+
+        def add_member(raw_id: str) -> MembershipRevision:
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=raw_id.encode(),
+                source_path=f"{raw_id}.jsonl",
+                acquired_at_ms=1,
+                raw_id=raw_id,
+            )
+            archive.replace_raw_membership_census(
+                raw_id,
+                [session],
+                parser_fingerprint="test-parser",
+                censused_at_ms=1,
+            )
+            return MembershipRevision(raw_id, projection)
+
+        members = [add_member("representative-b"), add_member("equivalent-z")]
+        first = classify_membership_revisions(members)
+        assert first.accepted_raw_ids == ("equivalent-z",)
+        archive.apply_raw_membership_classification(
+            "codex:session",
+            first,
+            {member.raw_id: session for member in members},
+            {member.raw_id: projection for member in members},
+            acquired_at_ms=1,
+        )
+
+        members.append(add_member("accepted-a"))
+        second = classify_membership_revisions(members)
+        assert second.accepted_raw_ids == ("accepted-a",)
+        archive.apply_raw_membership_classification(
+            "codex:session",
+            second,
+            {member.raw_id: session for member in members},
+            {member.raw_id: projection for member in members},
+            acquired_at_ms=2,
+        )
+
+        head = archive._conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"
+        ).fetchone()
+        assert head is not None and tuple(head) == ("accepted-a",)
+        application_rows = archive._conn.execute(
+            """
+            SELECT raw_id, decision, accepted_raw_id
+            FROM raw_revision_applications
+            WHERE logical_source_key = 'codex:session'
+            ORDER BY raw_id, decision
+            """
+        ).fetchall()
+        assert [tuple(row) for row in application_rows] == [
+            ("accepted-a", "selected_baseline", "accepted-a"),
+            ("equivalent-z", "selected_baseline", "equivalent-z"),
+            ("equivalent-z", "superseded", "accepted-a"),
+            ("representative-b", "superseded", "equivalent-z"),
+        ]
+        matching_receipts = archive._conn.execute(
+            """
+            SELECT COUNT(*) FROM raw_revision_heads AS h
+            JOIN raw_revision_applications AS a
+              ON a.logical_source_key = h.logical_source_key
+             AND a.accepted_raw_id = h.accepted_raw_id
+             AND a.accepted_content_hash = h.accepted_content_hash
+            WHERE h.logical_source_key = 'codex:session'
+              AND a.decision IN ('selected_baseline', 'applied_append')
+            """
+        ).fetchone()
+        assert matching_receipts is not None and tuple(matching_receipts) == (1,)
 
 
 def test_replay_defers_gap_and_quarantines_unproven_evidence() -> None:

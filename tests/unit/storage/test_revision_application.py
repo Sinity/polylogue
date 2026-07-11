@@ -49,6 +49,26 @@ def test_application_receipt_is_idempotent_and_rejects_older_head() -> None:
         record_revision_application_sync(conn, _receipt(generation=1, revision="revision-old"), decided_at_ms=40)
 
 
+def test_equivalent_accepted_raw_reuses_semantic_receipt_identity() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(INDEX_DDL)
+    receipt = replace(
+        _receipt(),
+        decision=ApplicationDecision.SUPERSEDED,
+        accepted_raw_id="representative-b",
+        accepted_source_revision="semantic-revision",
+    )
+    record_revision_application_sync(conn, receipt, decided_at_ms=10)
+
+    equivalent_representative = replace(receipt, accepted_raw_id="representative-a")
+    assert equivalent_representative.decision_id != receipt.decision_id
+    record_revision_application_sync(conn, equivalent_representative, decided_at_ms=20)
+
+    assert conn.execute(
+        "SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash FROM raw_revision_applications"
+    ).fetchall() == [("representative-b", "semantic-revision", receipt.accepted_content_hash)]
+
+
 def test_session_fts_proof_detects_missing_row_and_trigger_mutation() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(INDEX_DDL)
