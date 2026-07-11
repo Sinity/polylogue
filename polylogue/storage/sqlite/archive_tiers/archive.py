@@ -1836,17 +1836,9 @@ class ArchiveStore:
         for raw_id in classification.accepted_raw_ids[:-1]:
             decisions[raw_id] = "superseded_prefix"
         session_id: str | None = None
-        if not classification.accepted_raw_ids and classification.ambiguous_raw_ids:
-            ambiguous_session = parsed_by_raw_id[classification.ambiguous_raw_ids[0]]
-            ambiguous_session_id = str(
-                make_session_id(ambiguous_session.source_name, ambiguous_session.provider_session_id)
-            )
-            with self._conn:
-                self._conn.execute("DELETE FROM sessions WHERE session_id = ?", (ambiguous_session_id,))
-                self._conn.execute(
-                    "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
-                    (logical_source_key,),
-                )
+        # Ambiguous evidence is debt, not deletion authority. A later branch
+        # must not erase the last accepted session/head; a cold rebuild simply
+        # has no accepted state to preserve.
         if classification.accepted_raw_ids:
             accepted_raw_id = classification.accepted_raw_ids[-1]
             accepted_session = parsed_by_raw_id[accepted_raw_id]

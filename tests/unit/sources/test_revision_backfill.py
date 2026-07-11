@@ -319,6 +319,47 @@ def test_divergent_bundle_member_does_not_block_safe_members(tmp_path: Path) -> 
         )
 
 
+def test_divergent_bundle_member_preserves_last_accepted_session(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("s1", "base", "accepted")),
+            source_path="first.json",
+            acquired_at_ms=1,
+        )
+    backfill_historical_revision_evidence(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        accepted = conn.execute("SELECT message_count, content_hash FROM sessions WHERE native_id = 's1'").fetchone()
+        accepted_head = conn.execute(
+            "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:s1'"
+        ).fetchone()
+    assert accepted is not None
+    assert accepted_head is not None
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("s1", "base", "divergent")),
+            source_path="second.json",
+            acquired_at_ms=2,
+        )
+    result = backfill_historical_revision_evidence(tmp_path)
+
+    assert result.quarantined == 2
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert (
+            conn.execute("SELECT message_count, content_hash FROM sessions WHERE native_id = 's1'").fetchone()
+            == accepted
+        )
+        assert (
+            conn.execute(
+                "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:s1'"
+            ).fetchone()
+            == accepted_head
+        )
+
+
 def test_targeted_rebuild_expands_same_session_across_source_paths_only(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
