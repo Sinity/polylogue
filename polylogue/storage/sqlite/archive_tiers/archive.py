@@ -1670,10 +1670,48 @@ class ArchiveStore:
         parser_fingerprint: str,
         censused_at_ms: int,
         detail: str = "",
+        retire_full_revision_governance: bool = False,
     ) -> None:
         """Atomically replace one raw's complete parser census and memberships."""
         conn = self._ensure_source_conn()
         with conn:
+            if retire_full_revision_governance:
+                revision = conn.execute(
+                    "SELECT logical_source_key, revision_kind FROM raw_sessions WHERE raw_id = ?",
+                    (raw_id,),
+                ).fetchone()
+                if revision is None:
+                    raise RuntimeError(f"membership census raw is missing: {raw_id}")
+                if revision[0] is not None and str(revision[1]) != RawRevisionKind.FULL.value:
+                    raise RuntimeError("only self-contained full raws can move to membership governance")
+                dependent = conn.execute(
+                    """
+                    SELECT 1 FROM raw_sessions
+                    WHERE raw_id != ?
+                      AND (predecessor_raw_id = ? OR baseline_raw_id = ?)
+                    LIMIT 1
+                    """,
+                    (raw_id, raw_id, raw_id),
+                ).fetchone()
+                if dependent is not None:
+                    raise RuntimeError("an active byte-revision chain cannot move to membership governance")
+                conn.execute(
+                    """
+                    UPDATE raw_sessions
+                    SET logical_source_key = NULL,
+                        revision_kind = 'unknown',
+                        source_revision = NULL,
+                        predecessor_raw_id = NULL,
+                        baseline_raw_id = NULL,
+                        append_start_offset = NULL,
+                        append_end_offset = NULL,
+                        acquisition_generation = NULL,
+                        revision_authority = 'quarantined',
+                        predecessor_source_revision = NULL
+                    WHERE raw_id = ?
+                    """,
+                    (raw_id,),
+                )
             conn.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (raw_id,))
             if sessions is not None:
                 for session in sessions:
@@ -1710,6 +1748,25 @@ class ArchiveStore:
                 """,
                 (raw_id, parser_fingerprint, status, len(sessions or []), censused_at_ms, detail),
             )
+
+    def convertible_full_revision_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
+        """Return a full-only byte cohort that can join semantic membership."""
+        rows = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT raw_id, revision_kind
+            FROM raw_sessions
+            WHERE logical_source_key = ?
+            ORDER BY raw_id
+            """,
+                (logical_source_key,),
+            )
+            .fetchall()
+        )
+        if not rows or any(str(row[1]) != RawRevisionKind.FULL.value for row in rows):
+            return ()
+        return tuple(str(row[0]) for row in rows)
 
     def expand_raw_membership_selection(self, raw_ids: list[str] | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Expand scheduling hints to the complete transitive membership cohort."""
@@ -2057,6 +2114,30 @@ class ArchiveStore:
                 self._blob_publisher.flush()
             write_source_blob_refs(conn, accepted_raw_id, refs)
             with self._conn:
+                existing_head = self._conn.execute(
+                    """
+                    SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind
+                    FROM raw_revision_heads WHERE logical_source_key = ?
+                    """,
+                    (logical_source_key,),
+                ).fetchone()
+                if existing_head is not None and str(existing_head[2]) == "byte":
+                    existing_raw_id = str(existing_head[0])
+                    existing_projection = projections_by_raw_id.get(existing_raw_id)
+                    classified_raw_ids = {
+                        *classification.accepted_raw_ids,
+                        *classification.equivalent_raw_ids,
+                    }
+                    if (
+                        existing_projection is None
+                        or existing_raw_id not in classified_raw_ids
+                        or bytes(existing_head[1]) != existing_projection.session_hash
+                    ):
+                        raise RuntimeError("membership replay cannot retire an unrelated byte head")
+                    self._conn.execute(
+                        "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
+                        (logical_source_key,),
+                    )
                 result = self._index_parsed_for_retained_raw(
                     accepted_session,
                     raw_id=accepted_raw_id,

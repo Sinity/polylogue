@@ -1591,28 +1591,49 @@ class LiveBatchProcessor:
                     if len(sessions) == 1:
                         session = sessions[0]
                         logical_source_key = f"{provider.value}:{session.provider_session_id}"
-                        archive.bind_raw_revision(
-                            source_raw_id,
-                            RawRevisionEnvelope(
-                                logical_source_key=logical_source_key,
-                                kind=RawRevisionKind.FULL,
-                                source_revision=record.captured_source_revision or source_raw_id,
-                                acquisition_generation=0,
-                                authority=RawRevisionAuthority.QUARANTINED,
-                            ),
-                        )
-                        plan = archive.classify_raw_revision_cohort(logical_source_key)
-                        if not plan.accepted_raw_ids:
-                            continue
-                        parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
-                        session_id, applied_raw_ids = archive.apply_raw_revision_replay(
-                            plan,
-                            parsed_by_raw_id,
-                            acquired_at_ms=acquired_at_ms,
-                        )
-                        record_session_ids.append(session_id)
-                        record_session_count = 1
-                        record_message_count = sum(len(parsed_by_raw_id[raw_id].messages) for raw_id in applied_raw_ids)
+                        if archive.raw_membership_raw_ids(logical_source_key):
+                            archive.replace_raw_membership_census(
+                                source_raw_id,
+                                sessions,
+                                parser_fingerprint=self._current_parser_fingerprint(),
+                                censused_at_ms=acquired_at_ms,
+                            )
+                            (
+                                record_session_ids,
+                                record_session_count,
+                                record_message_count,
+                                raw_authority_complete,
+                            ) = self._apply_membership_sessions(
+                                archive,
+                                source_raw_id,
+                                sessions,
+                                acquired_at_ms=acquired_at_ms,
+                            )
+                        else:
+                            archive.bind_raw_revision(
+                                source_raw_id,
+                                RawRevisionEnvelope(
+                                    logical_source_key=logical_source_key,
+                                    kind=RawRevisionKind.FULL,
+                                    source_revision=record.captured_source_revision or source_raw_id,
+                                    acquisition_generation=0,
+                                    authority=RawRevisionAuthority.QUARANTINED,
+                                ),
+                            )
+                            plan = archive.classify_raw_revision_cohort(logical_source_key)
+                            if not plan.accepted_raw_ids:
+                                continue
+                            parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
+                            session_id, applied_raw_ids = archive.apply_raw_revision_replay(
+                                plan,
+                                parsed_by_raw_id,
+                                acquired_at_ms=acquired_at_ms,
+                            )
+                            record_session_ids.append(session_id)
+                            record_session_count = 1
+                            record_message_count = sum(
+                                len(parsed_by_raw_id[raw_id].messages) for raw_id in applied_raw_ids
+                            )
                     else:
                         archive.replace_raw_membership_census(
                             source_raw_id,
@@ -1620,43 +1641,17 @@ class LiveBatchProcessor:
                             parser_fingerprint=self._current_parser_fingerprint(),
                             censused_at_ms=acquired_at_ms,
                         )
-                        for session in sessions:
-                            logical_source_key = f"{session.source_name.value}:{session.provider_session_id}"
-                            member_sessions: dict[str, Any] = {}
-                            projections: dict[str, Any] = {}
-                            revisions: list[MembershipRevision] = []
-                            for member_raw_id in archive.raw_membership_raw_ids(logical_source_key):
-                                retained_sessions = (
-                                    sessions
-                                    if member_raw_id == source_raw_id
-                                    else self._parse_retained_raw_sessions(archive, member_raw_id)
-                                )
-                                matches = [
-                                    item
-                                    for item in retained_sessions
-                                    if f"{item.source_name.value}:{item.provider_session_id}" == logical_source_key
-                                ]
-                                if len(matches) != 1:
-                                    raise RuntimeError(
-                                        f"membership {member_raw_id}:{logical_source_key} no longer parses uniquely"
-                                    )
-                                projection = session_revision_projection(matches[0])
-                                member_sessions[member_raw_id] = matches[0]
-                                projections[member_raw_id] = projection
-                                revisions.append(MembershipRevision(member_raw_id, projection))
-                            classification = classify_membership_revisions(revisions)
-                            membership_session_id = archive.apply_raw_membership_classification(
-                                logical_source_key,
-                                classification,
-                                member_sessions,
-                                projections,
-                                acquired_at_ms=acquired_at_ms,
-                            )
-                            if membership_session_id is not None:
-                                record_session_ids.append(membership_session_id)
-                                record_session_count += 1
-                                record_message_count += len(session.messages)
-                        raw_authority_complete = archive.raw_membership_authority_complete(source_raw_id)
+                        (
+                            record_session_ids,
+                            record_session_count,
+                            record_message_count,
+                            raw_authority_complete,
+                        ) = self._apply_membership_sessions(
+                            archive,
+                            source_raw_id,
+                            sessions,
+                            acquired_at_ms=acquired_at_ms,
+                        )
                     if raw_authority_complete:
                         result.raw_ids[record.raw_id] = record_raw_id
                     result.session_ids.extend(record_session_ids)
@@ -1691,6 +1686,81 @@ class LiveBatchProcessor:
                 raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
             parsed_by_raw_id[raw_id] = sessions[0]
         return parsed_by_raw_id
+
+    def _apply_membership_sessions(
+        self,
+        archive: Any,
+        source_raw_id: str,
+        sessions: list[Any],
+        *,
+        acquired_at_ms: int,
+    ) -> tuple[list[str], int, int, bool]:
+        session_ids: list[str] = []
+        session_count = 0
+        message_count = 0
+        for session in sessions:
+            logical_source_key = f"{session.source_name.value}:{session.provider_session_id}"
+            for revision_raw_id in archive.convertible_full_revision_raw_ids(logical_source_key):
+                retained_sessions = (
+                    sessions
+                    if revision_raw_id == source_raw_id
+                    else self._parse_retained_raw_sessions(archive, revision_raw_id)
+                )
+                matches = [
+                    item
+                    for item in retained_sessions
+                    if f"{item.source_name.value}:{item.provider_session_id}" == logical_source_key
+                ]
+                if len(retained_sessions) != 1 or len(matches) != 1:
+                    raise RuntimeError(
+                        f"full revision {revision_raw_id}:{logical_source_key} no longer parses uniquely"
+                    )
+                archive.replace_raw_membership_census(
+                    revision_raw_id,
+                    retained_sessions,
+                    parser_fingerprint=self._current_parser_fingerprint(),
+                    censused_at_ms=acquired_at_ms,
+                    detail="cross-route full revision governance",
+                    retire_full_revision_governance=True,
+                )
+            member_sessions: dict[str, Any] = {}
+            projections: dict[str, Any] = {}
+            revisions: list[MembershipRevision] = []
+            for member_raw_id in archive.raw_membership_raw_ids(logical_source_key):
+                retained_sessions = (
+                    sessions
+                    if member_raw_id == source_raw_id
+                    else self._parse_retained_raw_sessions(archive, member_raw_id)
+                )
+                matches = [
+                    item
+                    for item in retained_sessions
+                    if f"{item.source_name.value}:{item.provider_session_id}" == logical_source_key
+                ]
+                if len(matches) != 1:
+                    raise RuntimeError(f"membership {member_raw_id}:{logical_source_key} no longer parses uniquely")
+                projection = session_revision_projection(matches[0])
+                member_sessions[member_raw_id] = matches[0]
+                projections[member_raw_id] = projection
+                revisions.append(MembershipRevision(member_raw_id, projection, matches[0].updated_at))
+            classification = classify_membership_revisions(revisions)
+            membership_session_id = archive.apply_raw_membership_classification(
+                logical_source_key,
+                classification,
+                member_sessions,
+                projections,
+                acquired_at_ms=acquired_at_ms,
+            )
+            if membership_session_id is not None:
+                session_ids.append(membership_session_id)
+                session_count += 1
+                message_count += len(member_sessions[classification.accepted_raw_ids[-1]].messages)
+        return (
+            session_ids,
+            session_count,
+            message_count,
+            archive.raw_membership_authority_complete(source_raw_id),
+        )
 
     @staticmethod
     def _parse_retained_raw_sessions(archive: Any, raw_id: str) -> list[Any]:

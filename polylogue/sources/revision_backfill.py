@@ -166,7 +166,7 @@ def backfill_historical_revision_evidence(
                 projection = session_revision_projection(session)
                 member_sessions[raw_id] = session
                 projections[raw_id] = projection
-                revisions.append(MembershipRevision(raw_id, projection))
+                revisions.append(MembershipRevision(raw_id, projection, session.updated_at))
                 retained_bytes += payload_bytes
             if retention_observer is not None:
                 retention_observer(len(member_sessions), retained_bytes)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.ids import SessionRevisionProjection
 
 
@@ -11,6 +12,7 @@ from polylogue.pipeline.ids import SessionRevisionProjection
 class MembershipRevision:
     raw_id: str
     projection: SessionRevisionProjection
+    provider_updated_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,15 +26,37 @@ def classify_membership_revisions(revisions: list[MembershipRevision]) -> Member
     """Accept one total strict-growth chain; never choose between branches."""
     if not revisions:
         return MembershipClassification((), (), ())
-    by_session_hash: dict[bytes, list[MembershipRevision]] = {}
+    by_content: dict[tuple[tuple[bytes, ...], tuple[bytes, ...], frozenset[bytes]], list[MembershipRevision]] = {}
     for revision in revisions:
-        by_session_hash.setdefault(revision.projection.session_hash, []).append(revision)
+        projection = revision.projection
+        key = (projection.message_hashes, projection.event_hashes, projection.attachment_hashes)
+        by_content.setdefault(key, []).append(revision)
     representatives: list[MembershipRevision] = []
     equivalents: list[str] = []
-    for group in by_session_hash.values():
-        ordered_group = sorted(group, key=lambda item: item.raw_id)
-        representatives.append(ordered_group[0])
-        equivalents.extend(item.raw_id for item in ordered_group[1:])
+    for group in by_content.values():
+        by_session_hash: dict[bytes, list[MembershipRevision]] = {}
+        for item in group:
+            by_session_hash.setdefault(item.projection.session_hash, []).append(item)
+        metadata_variants: list[MembershipRevision] = []
+        for hash_group in by_session_hash.values():
+            representative = min(hash_group, key=lambda item: item.raw_id)
+            metadata_variants.append(representative)
+            equivalents.extend(item.raw_id for item in hash_group if item.raw_id != representative.raw_id)
+        if len(metadata_variants) == 1:
+            representatives.extend(metadata_variants)
+            continue
+        timestamped = [
+            (parsed.timestamp(), item)
+            for item in metadata_variants
+            if (parsed := parse_timestamp(item.provider_updated_at)) is not None
+        ]
+        timestamps = [timestamp for timestamp, _item in timestamped]
+        if len(timestamped) == len(metadata_variants) and len(set(timestamps)) == len(timestamps):
+            representative = max(timestamped, key=lambda pair: pair[0])[1]
+            representatives.append(representative)
+            equivalents.extend(item.raw_id for item in metadata_variants if item.raw_id != representative.raw_id)
+        else:
+            representatives.extend(metadata_variants)
     representatives.sort(key=lambda item: (_frontier(item.projection), item.raw_id))
     if any(
         not _strictly_dominates(older.projection, newer.projection)
