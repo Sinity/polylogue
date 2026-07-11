@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import pickle
+import sqlite3
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from types import TracebackType
 
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Provider
@@ -28,13 +34,18 @@ def backfill_historical_revision_evidence(
     *,
     selected_raw_ids: list[str] | None = None,
     owned_inactive_generation: tuple[str, str] | None = None,
+    retention_observer: Callable[[int, int], None] | None = None,
 ) -> RevisionBackfillResult:
-    """Census every retained raw, then replay byte and bundle authority cohorts."""
+    """Census every retained raw, then replay byte and bundle authority cohorts.
+
+    Parser output is spilled beside the target archive during the census and
+    loaded one logical authority cohort at a time. Peak retained session trees
+    therefore follow the largest raw/cohort, not the archive-wide raw count.
+    """
     scanned = 0
     classified = 0
     quarantined = 0
     logical_keys: set[str] = set()
-    parsed_by_raw: dict[str, list[ParsedSession]] = {}
     archive_context = (
         ArchiveStore.open_owned_inactive_generation(
             archive_root,
@@ -44,7 +55,7 @@ def backfill_historical_revision_evidence(
         if owned_inactive_generation is not None
         else ArchiveStore.open_existing(archive_root, read_only=False)
     )
-    with archive_context as archive:
+    with archive_context as archive, _ParsedSessionSpill(archive_root) as spill:
         for raw_id, source_index in archive.raw_membership_census_rows():
             scanned += 1
             if source_index < 0:
@@ -58,8 +69,7 @@ def backfill_historical_revision_evidence(
                 quarantined += 1
                 continue
             try:
-                provider, payload, source_path, _kind = archive.raw_revision_material(raw_id)
-                sessions = _parse_one(provider, payload, source_path)
+                sessions, _payload_bytes = _parse_retained_raw(archive, raw_id)
             except Exception as exc:
                 archive.replace_raw_membership_census(
                     raw_id,
@@ -70,7 +80,8 @@ def backfill_historical_revision_evidence(
                 )
                 quarantined += 1
                 continue
-            parsed_by_raw[raw_id] = sessions
+            classified += int(len(sessions) == 1)
+            spill.add(raw_id, sessions, payload_bytes=_payload_bytes)
             archive.replace_raw_membership_census(
                 raw_id,
                 sessions,
@@ -80,8 +91,6 @@ def backfill_historical_revision_evidence(
 
         _unclassified, selected_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
         logical_keys.update(selected_keys)
-        classified = sum(1 for sessions in parsed_by_raw.values() if len(sessions) == 1)
-
         _selected_membership_raws, membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
 
         replayed = 0
@@ -90,11 +99,15 @@ def backfill_historical_revision_evidence(
             if not plan.accepted_raw_ids:
                 continue
             parsed_by_raw_id: dict[str, ParsedSession] = {}
+            retained_bytes = 0
             for raw_id in plan.accepted_raw_ids:
-                sessions = parsed_by_raw.get(raw_id, [])
+                sessions, payload_bytes = spill.for_raw(raw_id)
                 if len(sessions) != 1:
                     raise RuntimeError(f"classified raw revision {raw_id} no longer parses to one session")
                 parsed_by_raw_id[raw_id] = sessions[0]
+                retained_bytes += payload_bytes
+            if retention_observer is not None:
+                retention_observer(len(parsed_by_raw_id), retained_bytes)
             archive.apply_raw_revision_replay(plan, parsed_by_raw_id, acquired_at_ms=0)
             replayed += 1
 
@@ -104,14 +117,15 @@ def backfill_historical_revision_evidence(
             member_sessions: dict[str, ParsedSession] = {}
             revisions: list[MembershipRevision] = []
             projections = {}
-            for raw_id, sessions in parsed_by_raw.items():
-                for session in sessions:
-                    if f"{session.source_name.value}:{session.provider_session_id}" != logical_key:
-                        continue
-                    projection = session_revision_projection(session)
-                    member_sessions[raw_id] = session
-                    projections[raw_id] = projection
-                    revisions.append(MembershipRevision(raw_id, projection))
+            retained_bytes = 0
+            for raw_id, session, payload_bytes in spill.for_logical_key(logical_key):
+                projection = session_revision_projection(session)
+                member_sessions[raw_id] = session
+                projections[raw_id] = projection
+                revisions.append(MembershipRevision(raw_id, projection))
+                retained_bytes += payload_bytes
+            if retention_observer is not None:
+                retention_observer(len(member_sessions), retained_bytes)
             classification = classify_membership_revisions(revisions)
             if classification.ambiguous_raw_ids:
                 quarantined += len(classification.ambiguous_raw_ids)
@@ -125,6 +139,74 @@ def backfill_historical_revision_evidence(
             if classification.accepted_raw_ids:
                 replayed += 1
     return RevisionBackfillResult(scanned, classified, replayed, quarantined)
+
+
+def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
+    provider, payload, source_path, _kind = archive.raw_revision_material(raw_id)
+    return _parse_one(provider, payload, source_path), len(payload)
+
+
+class _ParsedSessionSpill:
+    """Disk-backed parser output cache bounded by one logical replay cohort."""
+
+    def __init__(self, archive_root: Path) -> None:
+        fd, name = tempfile.mkstemp(prefix=".revision-census-", suffix=".sqlite", dir=archive_root)
+        os.close(fd)
+        self.path = Path(name)
+        self.conn = sqlite3.connect(self.path)
+        self.conn.execute(
+            """
+            CREATE TABLE parsed_sessions (
+                raw_id TEXT NOT NULL,
+                logical_key TEXT NOT NULL,
+                payload_bytes INTEGER NOT NULL,
+                parsed BLOB NOT NULL,
+                PRIMARY KEY(raw_id, logical_key)
+            ) STRICT
+            """
+        )
+        self.conn.execute("CREATE INDEX parsed_sessions_logical ON parsed_sessions(logical_key, raw_id)")
+
+    def __enter__(self) -> _ParsedSessionSpill:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc, traceback
+        self.conn.close()
+        self.path.unlink(missing_ok=True)
+
+    def add(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
+        with self.conn:
+            self.conn.executemany(
+                "INSERT INTO parsed_sessions(raw_id, logical_key, payload_bytes, parsed) VALUES (?, ?, ?, ?)",
+                (
+                    (
+                        raw_id,
+                        f"{session.source_name.value}:{session.provider_session_id}",
+                        payload_bytes,
+                        pickle.dumps(session, protocol=pickle.HIGHEST_PROTOCOL),
+                    )
+                    for session in sessions
+                ),
+            )
+
+    def for_raw(self, raw_id: str) -> tuple[list[ParsedSession], int]:
+        rows = self.conn.execute(
+            "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
+        ).fetchall()
+        return [pickle.loads(bytes(row[0])) for row in rows], int(rows[0][1]) if rows else 0
+
+    def for_logical_key(self, logical_key: str) -> list[tuple[str, ParsedSession, int]]:
+        rows = self.conn.execute(
+            "SELECT raw_id, parsed, payload_bytes FROM parsed_sessions WHERE logical_key = ? ORDER BY raw_id",
+            (logical_key,),
+        ).fetchall()
+        return [(str(row[0]), pickle.loads(bytes(row[1])), int(row[2])) for row in rows]
 
 
 def _parse_one(provider: Provider, payload: bytes, source_path: str) -> list[ParsedSession]:
