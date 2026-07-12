@@ -935,7 +935,7 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
-    info = embedding_readiness_info(index_db, detail=False)
+    info = embedding_readiness_info(index_db, detail=True)
     rows: list[ArchiveDebtRowPayload] = []
     config_enabled = _bool_value(info.get("embedding_config_enabled"))
     has_key = _bool_value(info.get("embedding_has_voyage_key"))

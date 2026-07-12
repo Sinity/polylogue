@@ -109,6 +109,8 @@ class EmbeddingFailureDetailPayload(TypedDict):
     created_at: str | None
     updated_at: str | None
     resolution_action: str | None
+    supported_actions: list[str]
+    resolution_command: str
 
 
 class EmbeddingStatusPayload(TypedDict):
@@ -313,6 +315,10 @@ def _active_failure_details(
                 "created_at": _iso_from_epoch_ms(row[10]),
                 "updated_at": _iso_from_epoch_ms(row[11]),
                 "resolution_action": None if row[12] is None else str(row[12]),
+                "supported_actions": ["acknowledge", "requeue", "supersede"],
+                "resolution_command": (
+                    f"polylogue ops embed resolve-failure {str(row[0])} --action acknowledge|requeue|supersede --yes"
+                ),
             }
         )
     return details

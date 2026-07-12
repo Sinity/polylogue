@@ -214,6 +214,72 @@ def test_status_json_reports_archive_embedding_metadata_without_detail(tmp_path:
     assert payload["newest_embedded_at"] is None
 
 
+def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Path) -> None:
+    """Status must name an actionable terminal row rather than only its aggregate."""
+    db_anchor = tmp_path / "custom.sqlite"
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    with sqlite3.connect(index_db.with_name("embeddings.db")) as conn:
+        conn.execute(
+            """
+            CREATE TABLE embedding_failures (
+                failure_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                message_refs_json TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                error_class TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                retryable INTEGER NOT NULL,
+                lifecycle_state TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                resolved_at_ms INTEGER,
+                resolution_action TEXT,
+                resolution_note TEXT,
+                superseded_by TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO embedding_failures VALUES (
+                'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
+                '[\"codex-session:pending:m1\"]', 'voyage', 'voyage-4', 'provider_http_400',
+                'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
+                NULL, NULL, NULL, NULL
+            )
+            """
+        )
+
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["failure_count"] == 1
+    assert payload["failure_details"] == [
+        {
+            "failure_id": "embedding-failure:terminal",
+            "session_id": "codex-session:pending",
+            "origin": "codex-session",
+            "message_refs": ["codex-session:pending:m1"],
+            "provider": "voyage",
+            "model": "voyage-4",
+            "error_class": "provider_http_400",
+            "error_message": "Embedding generation failed: HTTP 400",
+            "retryable": False,
+            "lifecycle_state": "terminal",
+            "created_at": "2027-01-15T08:00:00+00:00",
+            "updated_at": "2027-01-15T08:00:00+00:00",
+            "resolution_action": None,
+            "supported_actions": ["acknowledge", "requeue", "supersede"],
+            "resolution_command": (
+                "polylogue ops embed resolve-failure embedding-failure:terminal "
+                "--action acknowledge|requeue|supersede --yes"
+            ),
+        }
+    ]
+
+
 def test_status_json_detail_does_not_derive_coverage_from_analyzed_prose_estimate(tmp_path: Path) -> None:
     db_anchor = tmp_path / "custom.sqlite"
     index_db = tmp_path / "index.db"
