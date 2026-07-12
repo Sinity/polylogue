@@ -289,6 +289,12 @@ who decided. Currently invisible in session JSONL.
 Working directory, model configuration, and permission mode at session start.
 Final state at session end.
 
+When a SessionStart hook calls the MCP `compose_context_preamble` tool, it
+should forward the provider-supplied session identity as
+`successor_session_id`. The session need not be ingested yet: the value names
+the new recipient of the context and makes the durable MCP call record
+queryable against that successor without guessing a predecessor from time.
+
 ### File Change Tracking (FileChanged)
 
 Per-file diff statistics (lines added/removed) for each tool call.

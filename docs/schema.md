@@ -94,9 +94,16 @@ Ingest cursors (`ingest_cursor`), ingest attempts (`ingest_attempts`),
 convergence debt (`convergence_debt`), cursor-lag samples, daemon stage/event
 logs, embedding catch-up runs, OTLP spans/telemetry, and the MCP call log
 (`mcp_call_log`, #7s57 — tool name, session id when known, timing, and
-success/failure per MCP tool invocation, best-effort written from
-`mcp/server_support.py`). Safe to discard; the daemon/MCP server repopulate
-it.
+success/failure per MCP tool invocation). `mcp_call_session_refs` normalizes
+plural invocations so one call remains queryable through every member session.
+Completed calls first enter an atomic,
+archive-namespaced outbox under the Polylogue XDG state directory; MCP startup
+retries pending files through the daemon's authenticated, idempotent writer
+route. The outbox is deleted only after a matching acknowledgement; conflicting
+IDs are quarantined rather than blocking later calls. MCP `readiness_check`
+reports pending/quarantined counts and bytes, oldest debt, queue pressure, and
+delivery failures. `ops.db` remains safe to discard and rebuild from later
+telemetry.
 
 ## Schema/data-model ownership matrix (#2246)
 

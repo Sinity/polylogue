@@ -182,7 +182,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json(str(exc))
             return hooks.json_payload(blackboard_note_payload(note))
 
-        return await hooks.async_safe_call("blackboard_post", run)
+        return await hooks.async_safe_call("blackboard_post", run, session_id=scope_session)
 
     @mcp.tool()
     async def add_tag(
@@ -211,7 +211,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("add_tag", run)
+        return await hooks.async_safe_call("add_tag", run, session_id=session_id)
 
     @mcp.tool()
     async def remove_tag(session_id: str, tag: str) -> str:
@@ -254,7 +254,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("bulk_tag_sessions", run)
+        return await hooks.async_safe_call("bulk_tag_sessions", run, session_ids=tuple(session_ids))
 
     @mcp.tool()
     async def list_tags(origin: str | None = None) -> str:
@@ -295,7 +295,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
             return hooks.json_payload(MCPUserMarkListPayload(items=items, total=len(items)))
 
-        return await hooks.async_safe_call("list_marks", run)
+        return await hooks.async_safe_call("list_marks", run, session_id=session_id)
 
     @mcp.tool()
     async def add_mark(
@@ -332,7 +332,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("add_mark", run)
+        return await hooks.async_safe_call("add_mark", run, session_id=session_id)
 
     @mcp.tool()
     async def remove_mark(
@@ -369,7 +369,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("remove_mark", run)
+        return await hooks.async_safe_call("remove_mark", run, session_id=session_id)
 
     @mcp.tool()
     async def list_annotations(
@@ -389,7 +389,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             items = tuple(_annotation_payload(row) for row in rows)
             return hooks.json_payload(MCPUserAnnotationListPayload(items=items, total=len(items)))
 
-        return await hooks.async_safe_call("list_annotations", run)
+        return await hooks.async_safe_call("list_annotations", run, session_id=session_id)
 
     @mcp.tool()
     async def save_annotation(
@@ -428,7 +428,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("save_annotation", run)
+        return await hooks.async_safe_call("save_annotation", run, session_id=session_id)
 
     @mcp.tool()
     async def delete_annotation(annotation_id: str) -> str:
@@ -817,7 +817,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("record_correction", run)
+        return await hooks.async_safe_call("record_correction", run, session_id=session_id)
 
     @mcp.tool()
     async def list_corrections(
@@ -846,7 +846,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             ]
             return json.dumps({"corrections": items, "total": len(items)}, sort_keys=True)
 
-        return await hooks.async_safe_call("list_corrections", run)
+        return await hooks.async_safe_call("list_corrections", run, session_id=session_id)
 
     @mcp.tool()
     async def clear_corrections(session_id: str, kind: str | None = None) -> str:

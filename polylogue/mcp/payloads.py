@@ -871,6 +871,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
     source: str | None = None
     archive_convergence: dict[str, Any] | None = None
     component_readiness: dict[str, Any] | None = None
+    mcp_call_delivery: dict[str, Any] | None = None
 
     @classmethod
     def from_report(
@@ -881,6 +882,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
         include_detail: bool,
         include_cached: bool,
         include_component_readiness: bool = True,
+        mcp_call_delivery: dict[str, Any] | None = None,
     ) -> MCPReadinessReportPayload:
         archive_convergence = _extract_archive_convergence(report)
         return cls(
@@ -898,6 +900,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
             component_readiness=_readiness_components(report, archive_convergence)
             if include_component_readiness
             else None,
+            mcp_call_delivery=mcp_call_delivery,
         )
 
 

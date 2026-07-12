@@ -455,7 +455,8 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             result = await poly.compare_sessions(ids)
             return hooks.json_payload(MCPRootPayload(root=result), exclude_none=True)
 
-        return await hooks.async_safe_call("compare_sessions", run)
+        correlated_ids = tuple(s.strip() for s in (session_ids or "").split(",") if s.strip())
+        return await hooks.async_safe_call("compare_sessions", run, session_ids=correlated_ids)
 
     @mcp.tool()
     async def find_similar_sessions(
@@ -548,7 +549,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 )
             return hooks.json_payload(MCPRootPayload(root=result), exclude_none=True)
 
-        return await hooks.async_safe_call("find_similar_sessions", run)
+        return await hooks.async_safe_call("find_similar_sessions", run, session_id=session_id)
 
     @mcp.tool()
     async def correlate_sessions(
@@ -675,7 +676,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("correlate_session", run)
+        return await hooks.async_safe_call("correlate_session", run, session_id=session_id)
 
     @mcp.tool()
     async def session_tool_timing(session_id: str) -> str:
