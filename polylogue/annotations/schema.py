@@ -37,12 +37,25 @@ AnnotationEvidencePolicy = Literal["none", "optional", "required"]
 AnnotationSchemaStatus = Literal["draft", "active", "deprecated"]
 
 _OBJECT_REF_KINDS: frozenset[str] = frozenset(get_args(ObjectRefKind))
+_ANNOTATION_FIELD_TYPES: frozenset[str] = frozenset(get_args(AnnotationFieldType))
+_ANNOTATION_EVIDENCE_POLICIES: frozenset[str] = frozenset(get_args(AnnotationEvidencePolicy))
+_ANNOTATION_SCHEMA_STATUSES: frozenset[str] = frozenset(get_args(AnnotationSchemaStatus))
 _SCHEMA_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
 _FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 class AnnotationSchemaError(ValueError):
     """Raised for a malformed schema declaration (registration-time, not row-time)."""
+
+
+def _is_finite_json_number(value: object) -> bool:
+    """Return whether *value* is a finite JSON number without coercing huge ints."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, int):
+        return True
+    return isfinite(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +71,10 @@ class AnnotationField:
     maximum: float | None = None
 
     def __post_init__(self) -> None:
+        if self.value_type not in _ANNOTATION_FIELD_TYPES:
+            raise AnnotationSchemaError(
+                f"annotation field {self.name!r} declares unknown value_type {self.value_type!r}"
+            )
         if not _FIELD_NAME_RE.match(self.name):
             raise AnnotationSchemaError(f"annotation field name {self.name!r} must match {_FIELD_NAME_RE.pattern!r}")
         if self.value_type == "enum" and not self.enum_values:
@@ -68,6 +85,13 @@ class AnnotationField:
             raise AnnotationSchemaError(
                 f"annotation field {self.name!r} declares minimum/maximum but is not a numeric type"
             )
+        for bound_name, bound in (("minimum", self.minimum), ("maximum", self.maximum)):
+            if bound is None:
+                continue
+            if not _is_finite_json_number(bound):
+                raise AnnotationSchemaError(
+                    f"annotation field {self.name!r} {bound_name} must be a finite number, got {bound!r}"
+                )
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise AnnotationSchemaError(f"annotation field {self.name!r} has minimum > maximum")
 
@@ -92,7 +116,7 @@ class AnnotationField:
             return f"field {self.name!r} must be a {self.value_type}, got {type(value).__name__}"
         if self.value_type == "integer" and not isinstance(value, int):
             return f"field {self.name!r} must be an integer, got {type(value).__name__}"
-        if not isfinite(value):
+        if not _is_finite_json_number(value):
             return f"field {self.name!r} must be a finite JSON number, got {value!r}"
         if self.minimum is not None and value < self.minimum:
             return f"field {self.name!r} value {value} is below minimum {self.minimum}"
@@ -127,6 +151,12 @@ class AnnotationSchema:
             raise AnnotationSchemaError(f"schema_id {self.schema_id!r} must match {_SCHEMA_ID_RE.pattern!r}")
         if self.version < 1:
             raise AnnotationSchemaError(f"schema {self.schema_id!r} version must be >= 1, got {self.version}")
+        if self.evidence_policy not in _ANNOTATION_EVIDENCE_POLICIES:
+            raise AnnotationSchemaError(
+                f"schema {self.schema_id!r} declares unknown evidence_policy {self.evidence_policy!r}"
+            )
+        if self.status not in _ANNOTATION_SCHEMA_STATUSES:
+            raise AnnotationSchemaError(f"schema {self.schema_id!r} declares unknown status {self.status!r}")
         if not self.fields:
             raise AnnotationSchemaError(f"schema {self.schema_id!r} declares no fields")
         field_names = [entry.name for entry in self.fields]

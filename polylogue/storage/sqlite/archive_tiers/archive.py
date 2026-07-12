@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
@@ -9200,13 +9201,12 @@ def _assertion_value_path_predicate_clause(
         clauses: list[str] = []
         params: list[object] = []
         for raw_value in predicate.values:
-            decoded = _decode_assertion_value_path_literal(raw_value)
-            if decoded is None:
-                clauses.append(f"json_type({assertion_alias}.value_json, ?) = 'null'")
-                params.append(json_path)
-            else:
-                clauses.append(f"{extract_expr} = ?")
-                params.extend((json_path, decoded))
+            json_types, decoded = _decode_assertion_value_path_literal(raw_value)
+            type_placeholders = ", ".join("?" for _ in json_types)
+            clauses.append(
+                f"(json_type({assertion_alias}.value_json, ?) IN ({type_placeholders}) AND {extract_expr} IS ?)"
+            )
+            params.extend((json_path, *json_types, json_path, decoded))
         return "(" + " OR ".join(clauses) + ")", params
     op_sql = {">": ">", ">=": ">=", "<": "<", "<=": "<="}[predicate.op]
     raw_value = predicate.values[0]
@@ -9217,21 +9217,34 @@ def _assertion_value_path_predicate_clause(
     )
 
 
-def _decode_assertion_value_path_literal(text: str) -> object:
-    """Decode one DSL literal while preserving explicit JSON string quoting."""
+def _decode_assertion_value_path_literal(text: str) -> tuple[tuple[str, ...], object]:
+    """Decode one scalar DSL literal into accepted SQLite JSON types and value."""
 
     stripped = text.strip()
     try:
         decoded = json.loads(stripped)
     except json.JSONDecodeError:
-        return stripped
+        return ("text",), stripped
     if decoded is True:
-        return 1
+        return ("true",), 1
     if decoded is False:
-        return 0
-    if decoded is None or isinstance(decoded, str | int | float):
-        return decoded
-    return stripped
+        return ("false",), 0
+    if decoded is None:
+        return ("null",), None
+    if isinstance(decoded, str):
+        return ("text",), decoded
+    if isinstance(decoded, int):
+        if -(2**63) <= decoded <= 2**63 - 1:
+            return ("integer", "real"), decoded
+        numeric_value = float(decoded)
+        if not math.isfinite(numeric_value):
+            raise ValueError("assertion value-path equality requires a finite JSON number")
+        return ("integer", "real"), numeric_value
+    if isinstance(decoded, float):
+        if not math.isfinite(decoded):
+            raise ValueError("assertion value-path equality requires a finite JSON number")
+        return ("integer", "real"), decoded
+    raise ValueError("assertion value-path equality requires a JSON scalar")
 
 
 def _run_field_predicate_clause(run_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:

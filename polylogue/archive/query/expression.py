@@ -1029,6 +1029,8 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
                         f"field {field_name!r} comparison operator {op_text!r} requires a finite numeric value",
                         field=field_name,
                     )
+            else:
+                _validate_assertion_value_path_equality_literal(value_text, field_name=field_name)
             parsed_ops.add(op_text)
             parsed_values.append(value_text)
         if len(parsed_ops) != 1:
@@ -1263,6 +1265,9 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                         f"field {predicate.field!r} comparison operator {predicate.op!r} requires a finite numeric value",
                         field=predicate.field,
                     )
+            else:
+                for value in predicate.values:
+                    _validate_assertion_value_path_equality_literal(value, field_name=predicate.field)
         return
     if isinstance(predicate, QueryNotPredicate):
         _validate_predicate_context(predicate.child, unit=unit)
@@ -2635,6 +2640,39 @@ def _split_assertion_value_path_alternation(raw: str) -> tuple[str, ...]:
     if candidate:
         values.append(candidate)
     return tuple(values)
+
+
+def _validate_assertion_value_path_equality_literal(text: str, *, field_name: str) -> None:
+    """Reject non-scalar or non-finite explicit JSON equality literals."""
+
+    stripped = text.strip()
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        return
+    if isinstance(decoded, float) and not math.isfinite(decoded):
+        raise ExpressionCompileError(
+            f"field {field_name!r} equality requires a finite JSON scalar value",
+            field=field_name,
+        )
+    if isinstance(decoded, int) and not isinstance(decoded, bool):
+        try:
+            numeric_value = float(decoded)
+        except OverflowError as exc:
+            raise ExpressionCompileError(
+                f"field {field_name!r} equality requires a finite JSON scalar value",
+                field=field_name,
+            ) from exc
+        if not math.isfinite(numeric_value):
+            raise ExpressionCompileError(
+                f"field {field_name!r} equality requires a finite JSON scalar value",
+                field=field_name,
+            )
+    if isinstance(decoded, dict | list):
+        raise ExpressionCompileError(
+            f"field {field_name!r} equality requires a JSON scalar value",
+            field=field_name,
+        )
 
 
 _RELATIVE_DATE_RE = re.compile(r"^\d+[hdwm]$", re.IGNORECASE)

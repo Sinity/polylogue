@@ -10,6 +10,7 @@ would loop over.
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -128,6 +129,24 @@ class TestUpsertAnnotationAssertion:
             row_key="row-bad",
         )
         assert read_assertion_envelope(user_conn, assertion_id) is None
+
+    @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+    def test_non_finite_value_rejected_by_public_writer(self, user_conn: sqlite3.Connection, value: float) -> None:
+        schema = _delegation_tone_schema(
+            fields=(AnnotationField(name="score", value_type="number"),),
+            abstain_field=None,
+        )
+        with pytest.raises(AnnotationValidationError, match="finite JSON number"):
+            upsert_annotation_assertion(
+                user_conn,
+                schema=schema,
+                registry=_registry_for(schema),
+                target_ref="session:codex-session:demo",
+                value={"score": value},
+                row_key="row-non-finite",
+                evidence_refs=["session:codex-session:demo"],
+                author_ref="agent:labeler",
+            )
 
     def test_missing_required_evidence_rejected(self, user_conn: sqlite3.Connection) -> None:
         schema = _delegation_tone_schema()
@@ -359,6 +378,9 @@ class TestAnnotationRoundtripWithQueryAndJudge:
             "number": {"probe": 4, "score": 5},
             "string-boolean": {"probe": "true", "score": False},
             "boolean": {"probe": True, "score": True},
+            "numeric-one": {"probe": 1},
+            "numeric-zero": {"probe": 0},
+            "boolean-false": {"probe": False},
             "string-null": {"probe": "null"},
             "null": {"probe": None},
             "missing": {"other": None},
@@ -386,11 +408,19 @@ class TestAnnotationRoundtripWithQueryAndJudge:
         assert matching_ids("assertions where value.probe:4") == {"number"}
         assert matching_ids('assertions where value.probe:"true"') == {"string-boolean"}
         assert matching_ids("assertions where value.probe:true") == {"boolean"}
+        assert matching_ids("assertions where value.probe:1") == {"numeric-one"}
+        assert matching_ids("assertions where value.probe:false") == {"boolean-false"}
+        assert matching_ids("assertions where value.probe:0") == {"numeric-zero"}
         assert matching_ids('assertions where value.probe:"null"') == {"string-null"}
         assert matching_ids("assertions where value.probe:null") == {"null"}
         assert matching_ids('assertions where value.probe:("4"|"true")') == {
             "string-number",
             "string-boolean",
+        }
+        assert matching_ids("assertions where value.probe:(true|1|null)") == {
+            "boolean",
+            "numeric-one",
+            "null",
         }
         assert matching_ids("assertions where value.score:>=4") == {"number"}
 
