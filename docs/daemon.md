@@ -317,6 +317,64 @@ through the existing periodic-loop catch boundary in
 `polylogue/daemon/cli.py`; it does not crash the daemon. Dedup and
 rate-limiting are out of scope for this backend.
 
+## Build Identity & Deployment Attestation
+
+Every runtime (Nix package, `pip`/`uv` install from a git checkout, or an
+sdist) embeds the exact git commit it was built from and reports it through
+two channels, distinct on purpose:
+
+- **Concise human version** — `polylogue --version` / `polylogued --version`
+  and `polylogue.version.POLYLOGUE_VERSION`: `<pyproject-version>+<8-char
+  commit prefix>[-dirty]`, e.g. `0.1.0+d8194234`. Meant for logs and
+  `--version` banners, not for exact identity comparison — an 8-character
+  prefix is not collision-proof.
+- **Full machine-readable revision** — the same build's *complete* 40-character
+  commit hash, for attestation:
+  - `polylogue.version.VERSION_INFO.commit` (Python) — always the full hash,
+    never truncated.
+  - `polylogued status --json` → `archive_storage.identity.build_commit`
+    (also `.build_dirty`), from `ArchiveIdentity.as_dict()`
+    (`polylogue/storage/archive_identity.py`).
+  - `GET /metrics` → `polylogue_daemon_build_info{version="...",
+    revision="...", dirty="true|false"} 1` — `revision` is the full hash,
+    `version` is the concise human string above.
+
+For Nix-packaged deployments, the embedded commit comes from the flake's
+`self.rev` (or `self.dirtyRev` with the `-dirty` suffix stripped and tracked
+separately as `BUILD_DIRTY`, when the source tree was dirty at build time —
+see `flake.nix`'s `buildRevision`/`buildDirty` and the `checks.build-info`
+package-level proof that the embedded value matches `self`).
+
+**Joining runtime identity to deployment evidence.** A consuming flake (e.g.
+`sinnix`) pins Polylogue as a flake input and records its exact provenance in
+that flake's own `flake.lock`, under `nodes.polylogue.locked`:
+
+```json
+{
+  "rev": "d81942345…",       // full 40-char commit — compare directly to
+                              // polylogue_daemon_build_info{revision=…}
+  "narHash": "sha256-…"      // content hash of the fetched source tree
+}
+```
+
+To confirm a running daemon matches what was actually deployed:
+
+1. Read the running build's revision: `curl -s
+   http://127.0.0.1:8766/metrics | grep polylogue_daemon_build_info` (or
+   `polylogued status --json | jq .archive_storage.identity.build_commit`).
+2. Read the deploying flake's locked revision: `jq
+   .nodes.polylogue.locked.rev flake.lock` in the consuming repo (`sinnix`).
+3. The two full hashes must match exactly. A mismatch means the running
+   binary was built from a different commit than the one the deployment
+   flake currently locks — e.g. a `nixos-rebuild switch` that hasn't picked
+   up a `nix flake update` yet, or a manually-built/side-loaded package.
+   `narHash` corroborates that the fetched source tree content itself was
+   not tampered with in transit, independent of the `rev` string.
+4. `build_dirty` / `dirty="true"` means the build was taken from an
+   uncommitted working tree — there is no `rev` to join against a lockfile
+   at all for that build; treat it as unattested and rebuild from a clean
+   commit before trusting the comparison.
+
 ## Maintenance
 
 Maintenance tasks are split between daemon-owned (fast, inline) and

@@ -21,6 +21,25 @@
       # directly (see tests/unit/devtools/test_cli_wrapper.py).
       devtoolsCli = pkgs.writeShellScriptBin "devtools" (builtins.readFile ./nix/devtools-wrapper.sh);
 
+      # Full immutable git revision embedded at build time (polylogue-6rvt).
+      #
+      # `self.rev`/`self.dirtyRev` (not `self.shortRev`/`self.dirtyShortRev`)
+      # so the packaged runtime can independently attest its exact source
+      # identity against a consuming flake's `flake.lock` `rev`/`narHash`
+      # entry for this input, not just a truncated, collision-prone prefix.
+      # `self.dirtyRev` carries a literal "-dirty" suffix baked into the
+      # string; strip it so `buildRevision` is always either a clean
+      # 40-character hex commit or the explicit sentinel "unknown", with
+      # dirtiness tracked separately in `buildDirty`.
+      buildDirty = self ? dirtyRev;
+      buildRevision =
+        if self ? rev then
+          self.rev
+        else if self ? dirtyRev then
+          pkgs.lib.removeSuffix "-dirty" self.dirtyRev
+        else
+          "unknown";
+
       polylogue = pkgs.python313Packages.buildPythonPackage {
         pname = "polylogue";
         version = "0.1.0";
@@ -29,8 +48,8 @@
 
         postPatch = ''
           cat > polylogue/_build_info.py << BUILDEOF
-          BUILD_COMMIT = "${self.shortRev or self.dirtyShortRev or "unknown"}"
-          BUILD_DIRTY = ${if self ? dirtyShortRev then "True" else "False"}
+          BUILD_COMMIT = "${buildRevision}"
+          BUILD_DIRTY = ${if buildDirty then "True" else "False"}
           BUILDEOF
         '';
 
@@ -251,6 +270,46 @@
             polylogue --help >/dev/null
             polylogued --help >/dev/null
             polylogue-mcp --help >/dev/null
+            touch $out
+          '';
+
+        # Package-level proof (polylogue-6rvt) that the full revision the
+        # running artifact reports actually matches this flake's `self`
+        # input, not just a plausible-looking string. Fails loudly if a
+        # future edit reintroduces truncation (e.g. reverting to
+        # `self.shortRev`) or drops the embedded metadata module.
+        build-info = pkgs.runCommand "polylogue-build-info"
+          {
+            nativeBuildInputs = [
+              polylogue
+            ];
+          }
+          ''
+            build_info="${polylogue}/${python.sitePackages}/polylogue/_build_info.py"
+            echo "checking $build_info" >&2
+            grep -qxF 'BUILD_COMMIT = "${buildRevision}"' "$build_info" || {
+              echo "embedded BUILD_COMMIT does not match flake self.rev/self.dirtyRev (${buildRevision})" >&2
+              cat "$build_info" >&2
+              exit 1
+            }
+            grep -qxF 'BUILD_DIRTY = ${if buildDirty then "True" else "False"}' "$build_info" || {
+              echo "embedded BUILD_DIRTY does not match flake dirty state (${if buildDirty then "True" else "False"})" >&2
+              cat "$build_info" >&2
+              exit 1
+            }
+            ${if buildRevision != "unknown" then ''
+              revision_len=$(printf '%s' "${buildRevision}" | wc -c)
+              [ "$revision_len" -eq 40 ] || {
+                echo "flake revision is not a full 40-character commit hash: ${buildRevision}" >&2
+                exit 1
+              }
+            '' else ""}
+            export HOME=$TMPDIR
+            polylogue --version | grep -qF "${builtins.substring 0 8 buildRevision}" || {
+              echo "polylogue --version does not surface the short prefix of the embedded revision" >&2
+              polylogue --version >&2
+              exit 1
+            }
             touch $out
           '';
 
