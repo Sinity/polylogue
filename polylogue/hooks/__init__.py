@@ -848,8 +848,20 @@ def hook_main(argv: list[str] | None = None) -> int:
         "provider": provider,
         "payload": payload,
     }
+    from polylogue.sources.hooks import enqueue_hook_event
+
     sidecar_dir = _default_sidecar_dir()
     sidecar_dir.mkdir(parents=True, exist_ok=True)
+    enqueue_hook_event(
+        event_type=event_type,
+        session_id=session_id,
+        provider=provider,
+        timestamp=str(record["timestamp"]),
+        payload=payload,
+        root=sidecar_dir,
+    )
+    # Keep the established session journal available to older local tooling.
+    # The daemon's durable path consumes only immutable pending envelopes.
     outfile = sidecar_dir / f"{provider}-{session_id}.jsonl"
     with outfile.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
