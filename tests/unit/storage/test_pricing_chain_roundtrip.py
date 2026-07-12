@@ -29,7 +29,6 @@ from polylogue.storage.sqlite.archive_tiers.pricing_seed import (
     _catalog_hash,
     _catalog_id,
     active_price_catalog_id,
-    seed_price_catalog,
 )
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
@@ -152,7 +151,6 @@ class TestPriceCatalogSeed:
         )
 
         with conn:
-            revised_catalog_id = seed_price_catalog(conn)
             write_parsed_session_to_archive(
                 conn,
                 _session(
@@ -161,8 +159,9 @@ class TestPriceCatalogSeed:
                 ),
             )
 
+        revised_catalog_id = active_price_catalog_id(conn)
+        assert revised_catalog_id is not None
         assert revised_catalog_id != original_catalog_id
-        assert active_price_catalog_id(conn) == revised_catalog_id
         assert conn.execute("SELECT COUNT(*) FROM price_catalogs").fetchone()[0] == 2
         assert (
             conn.execute(

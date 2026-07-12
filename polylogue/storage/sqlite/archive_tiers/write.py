@@ -3381,11 +3381,11 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     if not token_rows:
         return
 
-    # Resolve the catalog by its current content hash, rather than choosing an
-    # arbitrary historical row after a pricing correction creates a revision.
-    from polylogue.storage.sqlite.archive_tiers.pricing_seed import active_price_catalog_id
+    # Seed or reuse the revision matching the current content hash before
+    # pricing, so an existing archive receives catalog corrections too.
+    from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
 
-    active_catalog_id = active_price_catalog_id(conn)
+    active_catalog_id = seed_price_catalog(conn)
     priced_at_ms = int(time.time() * 1000)
 
     for row in token_rows:
