@@ -1801,9 +1801,16 @@ def _direct_claim_guard(
     search_ready = isinstance(search_component, dict) and search_component.get("state") == "ready"
     search_summary = str(search_component.get("summary", "")) if isinstance(search_component, dict) else "unknown"
 
-    running_count = int(ingest_workload.get("running_count") or 0) if ingest_workload.get("available") else 0
-    active_writer = bool(ingest_workload.get("actively_ingesting")) or running_count > 0
-    active_writer_summary = f"{running_count} live ingest attempt(s) running" if running_count else ""
+    if not ingest_workload.get("available"):
+        # An unreadable/missing ops-workload tier cannot establish the
+        # *absence* of a concurrent writer — treat it as blocking the
+        # perf-measurable claim, not as a clean "no writer" signal.
+        active_writer = True
+        active_writer_summary = "ingest workload inspection unavailable; cannot rule out a concurrent archive writer"
+    else:
+        running_count = int(ingest_workload.get("running_count") or 0)
+        active_writer = bool(ingest_workload.get("actively_ingesting")) or running_count > 0
+        active_writer_summary = f"{running_count} live ingest attempt(s) running" if running_count else ""
 
     return derive_claim_guard(
         archive_schema_ready=archive_schema_ready,

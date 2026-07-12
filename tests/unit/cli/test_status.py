@@ -18,6 +18,7 @@ from polylogue.cli.commands.status import (
     _FULL_TIMEOUT_S,
     _archive_cli_route_status,
     _archive_facade_route_status,
+    _direct_claim_guard,
     _render_raw_replay_backlog,
     _show_daemon_status,
     _show_direct_json,
@@ -1025,6 +1026,49 @@ class TestNoArchiveStatus:
         assert "user" in missing_reason
         assert claim_guard["converged"]["value"] is False
         assert "not openable" in claim_guard["converged"]["reason"]
+
+    def test_direct_claim_guard_treats_unavailable_workload_as_not_perf_measurable(self) -> None:
+        """Regression: an unreadable/missing ops-workload tier cannot establish
+        the *absence* of a concurrent writer. Before the fix, `available:
+        False` fell through to `running_count = 0` / `active_writer = False`,
+        silently reporting `perf_measurable=True` ("no concurrent archive
+        write/rebuild detected") for an archive whose workload state is
+        actually unknown — exactly the silent-unknown-treated-as-success
+        pattern the claim-guard vocabulary exists to prevent."""
+        archive_tiers = {
+            tier: {"exists": True, "version_status": "ok"} for tier in ("source", "index", "embeddings", "user", "ops")
+        }
+        component_readiness = {
+            "raw_materialization": {"summary": "ready"},
+            "search": {"state": "ready", "summary": "ready"},
+        }
+        raw_materialization_readiness = {"available": True, "total": 0, "affected_total": 0}
+
+        for unavailable_workload in (
+            {"available": False, "reason": "missing_ops_tier"},
+            {"available": False, "reason": "missing_ingest_attempts"},
+            {},
+        ):
+            guard = _direct_claim_guard(
+                archive_tiers=archive_tiers,
+                raw_materialization_readiness=raw_materialization_readiness,
+                component_readiness=component_readiness,
+                ingest_workload=unavailable_workload,
+            )
+            assert guard["perf_measurable"]["value"] is False, unavailable_workload
+            assert "unavailable" in guard["perf_measurable"]["reason"]
+            # The rest of the block is unaffected by the unreadable workload tier.
+            assert guard["openable"]["value"] is True
+            assert guard["converged"]["value"] is True
+
+        # A genuinely idle, readable workload still reports perf_measurable=True.
+        idle_guard = _direct_claim_guard(
+            archive_tiers=archive_tiers,
+            raw_materialization_readiness=raw_materialization_readiness,
+            component_readiness=component_readiness,
+            ingest_workload={"available": True, "actively_ingesting": False, "running_count": 0},
+        )
+        assert idle_guard["perf_measurable"]["value"] is True
 
     def test_direct_status_json_blocks_transforms_when_archive_readiness_fails(
         self,
