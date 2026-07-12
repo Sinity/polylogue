@@ -1018,6 +1018,11 @@ async function loadSession(id, updateURL) {
     var data = payloads[0];
     data.messages = payloads[1].messages || [];
     data.total = payloads[1].total;
+    // Prefix-sharing sessions persist only their divergent tail in the
+    // summary row, while the message route recomposes the logical transcript.
+    // Reader-facing counts must describe the same composed session rendered
+    // below the header, never the stored tail alone.
+    data.message_count = payloads[1].total;
     data.message_page = {limit: payloads[1].limit, offset: payloads[1].offset};
     state.selected = data;
     setRouteState('sessionDetail', {state: 'ready', route: route, status: '200', error: ''});

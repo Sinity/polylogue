@@ -211,6 +211,42 @@ var state = {{routeStates: {{sessionDetail: {{route: '/api/sessions/codex-sessio
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_session_load_uses_composed_message_total_for_header_count(tmp_path: Path) -> None:
+    """A prefix-sharing summary can retain only its divergent-tail count,
+    while the bounded message route recomposes the logical transcript. The
+    production loader must make the reader header use that composed total."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, ["loadSession"])
+    harness = f"""
+{_DOM_HARNESS_PRELUDE}
+function pushSingleURL() {{}}
+function setRouteState() {{}}
+function renderMain() {{}}
+function renderInspector() {{}}
+function renderSessions() {{}}
+function routeErrorDetails() {{ return {{route: 'error'}}; }}
+function fetchJSON(route) {{
+  if (route.indexOf('/messages?') !== -1) return Promise.resolve({{messages: [{{id: 'm1'}}], total: 3, limit: 100, offset: 0}});
+  return Promise.resolve({{id: 'child', message_count: 1, title: 'prefix-sharing child'}});
+}}
+var state = {{routeStates: {{}}}};
+{functions_src}
+(async function() {{
+  await loadSession('child', false);
+  console.log(JSON.stringify({{messageCount: state.selected.message_count, total: state.selected.total}}));
+}})();
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    result = json.loads(proc.stdout)
+
+    assert result == {"messageCount": 3, "total": 3}
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
 def test_landing_view_renders_snapshot_and_verb_cards(tmp_path: Path) -> None:
     """renderLandingView() reads only already-loaded state (status snapshot +
     session list) -- no fetch of its own -- and must render real numbers
