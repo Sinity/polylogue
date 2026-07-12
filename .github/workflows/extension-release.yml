@@ -58,6 +58,7 @@ jobs:
         id: source
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="${RELEASE_TAG}"
@@ -73,6 +74,17 @@ jobs:
             if [[ "$(git rev-parse HEAD)" != "${tag_revision}" ]]; then
               echo "::error::checked-out source does not match ${tag} target"
               exit 1
+            fi
+            if [[ -n "${RELEASE_TAG}" ]]; then
+              release_revision="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.target_commitish')"
+              if [[ ! "${release_revision}" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::GitHub Release ${tag} does not record an immutable commit SHA"
+                exit 1
+              fi
+              if [[ "${tag_revision}" != "${release_revision}" ]]; then
+                echo "::error::${tag} no longer matches its GitHub Release target"
+                exit 1
+              fi
             fi
           fi
           echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"

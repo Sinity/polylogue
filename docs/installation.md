@@ -126,25 +126,10 @@ brew test polylogue
 
 ### Recovering an already-created tag
 
-If a GitHub Release exists without its artifacts, do not re-cut its tag. After
-the recovery workflow changes are on `master`, dispatch the artifact lanes from
-the immutable release source instead:
-
-```bash
-gh workflow run release.yml --ref master \
-  -f release_tag=vX.Y.Z -f publish=true
-gh workflow run container.yml --ref master \
-  -f release_tag=vX.Y.Z -f push=true
-gh workflow run extension-release.yml --ref master \
-  -f release_tag=vX.Y.Z
-# Run after the PyPI sdist is visible and HOMEBREW_TAP_TOKEN is configured.
-gh workflow run homebrew-bump.yml --ref master -f version=X.Y.Z
-```
-
-The recovery workflows check out the named tag and reject version mismatches.
-The container lane additionally pulls each published image, checks the concise
-`polylogue --version` prefix, and compares `VERSION_INFO.commit` to the tag's
-complete source revision.
+If a GitHub Release exists without its artifacts, do not re-cut its tag. Follow
+the [release checklist recovery sequence](release.md#backfill-an-existing-tag-without-re-cutting-it),
+which requires the tag, checked-out source, and GitHub Release target commit to
+agree before publication.
 
 For local container or formula experiments before their artifacts exist, build
 from the checkout:
