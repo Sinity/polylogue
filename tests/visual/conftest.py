@@ -158,6 +158,17 @@ ATT_TOOLARGE = _attachment_native_id(READER_C1_M1, "att-toolarge")
 ATT_QUARANTINED = _attachment_native_id(READER_C1_M1, "att-quarantined")
 ATT_RAWHTML = _attachment_native_id(READER_C1_M1, "att-rawhtml")
 
+# Semantic transcript card fixtures (#ap7 web wiring). One Claude Code
+# session carrying a paired Bash call (succeeded), a paired Edit call
+# (failed), and an unpaired Task dispatch — the three AC-critical card
+# kinds plus the suppression contract for a paired tool-result message.
+READER_SEM1 = native_session_id_for("claude-code", "reader-sem1")
+READER_SEM1_SHELL_USE = f"{READER_SEM1}:reader-sem1-shell-use"
+READER_SEM1_SHELL_RESULT = f"{READER_SEM1}:reader-sem1-shell-result"
+READER_SEM1_EDIT_USE = f"{READER_SEM1}:reader-sem1-edit-use"
+READER_SEM1_EDIT_RESULT = f"{READER_SEM1}:reader-sem1-edit-result"
+READER_SEM1_TASK_USE = f"{READER_SEM1}:reader-sem1-task-use"
+
 
 def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -> None:
     """(Re)ingest the ``reader-c1`` session, optionally with the six
@@ -256,6 +267,106 @@ def seed_reader_diff_paste(workspace: ReaderWorkspace) -> None:
         .save()
     )
     _force_has_paste(workspace, (READER_C3_M1, READER_C3_DIFF))
+
+
+def seed_reader_semantic_cards(workspace: ReaderWorkspace) -> None:
+    """Ingest ``reader-sem1``: a Bash call (succeeded), an Edit call (failed),
+    and an unpaired Task dispatch, exercising the #ap7 semantic-card web
+    wiring's three AC-critical kinds plus tool-result suppression."""
+    from polylogue.core.enums import BlockType
+    from tests.infra.storage_records import SessionBuilder
+
+    (
+        SessionBuilder(index_db_path(workspace), "reader-sem1")
+        .provider("claude-code")
+        .title("Semantic card fixture")
+        .created_at("2026-05-15T00:06:00+00:00")
+        .updated_at("2026-05-15T00:06:05+00:00")
+        .add_message(
+            "reader-sem1-shell-use",
+            role="assistant",
+            text="",
+            timestamp="2026-05-15T00:06:00+00:00",
+            message_type="tool_use",
+            blocks=[
+                {
+                    "type": BlockType.TOOL_USE.value,
+                    "tool_name": "Bash",
+                    "tool_id": "call-shell-1",
+                    "tool_input": {"command": "pytest -q tests/unit/rendering"},
+                }
+            ],
+        )
+        .add_message(
+            "reader-sem1-shell-result",
+            role="tool",
+            text="5 passed in 0.42s",
+            timestamp="2026-05-15T00:06:01+00:00",
+            message_type="tool_result",
+            blocks=[
+                {
+                    "type": BlockType.TOOL_RESULT.value,
+                    "tool_id": "call-shell-1",
+                    "text": "5 passed in 0.42s",
+                    "tool_result_is_error": 0,
+                    "tool_result_exit_code": 0,
+                }
+            ],
+        )
+        .add_message(
+            "reader-sem1-edit-use",
+            role="assistant",
+            text="",
+            timestamp="2026-05-15T00:06:02+00:00",
+            message_type="tool_use",
+            blocks=[
+                {
+                    "type": BlockType.TOOL_USE.value,
+                    "tool_name": "Edit",
+                    "tool_id": "call-edit-1",
+                    "tool_input": {
+                        "file_path": "src/app.py",
+                        "old_string": "return 1",
+                        "new_string": "return 2",
+                    },
+                }
+            ],
+        )
+        .add_message(
+            "reader-sem1-edit-result",
+            role="tool",
+            text="Error: file not found",
+            timestamp="2026-05-15T00:06:03+00:00",
+            message_type="tool_result",
+            blocks=[
+                {
+                    "type": BlockType.TOOL_RESULT.value,
+                    "tool_id": "call-edit-1",
+                    "text": "Error: file not found",
+                    "tool_result_is_error": 1,
+                }
+            ],
+        )
+        .add_message(
+            "reader-sem1-task-use",
+            role="assistant",
+            text="",
+            timestamp="2026-05-15T00:06:04+00:00",
+            message_type="tool_use",
+            blocks=[
+                {
+                    "type": BlockType.TOOL_USE.value,
+                    "tool_name": "Task",
+                    "tool_id": "call-task-1",
+                    "tool_input": {
+                        "prompt": "Investigate the flaky concurrency test",
+                        "subagent_type": "general-purpose",
+                    },
+                }
+            ],
+        )
+        .save()
+    )
 
 
 def _build_reader_sessions(workspace: ReaderWorkspace) -> None:

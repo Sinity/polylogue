@@ -399,12 +399,31 @@ function _polyIsThinking(m) {
     || m.has_thinking === true;
 }
 
+function _polySemanticCardsForMessage(m) {
+  // Semantic transcript cards (#ap7): the daemon session-detail routes
+  // attach ``semantic_cards``/``semantic_card_suppressed`` to every message
+  // from the same registry the CLI renders to Markdown
+  // (``rendering/semantic_cards.py``). ``_polySemanticCardsHtml`` is the
+  // optional HTML backend for that registry (``web_shell_semantic_cards.py``)
+  // — absent it, tool/thinking blocks fall back to the pre-#ap7 generic fold
+  // so unknown/older payload shapes never render worse than before.
+  if (!m || !Array.isArray(m.semantic_cards) || !m.semantic_cards.length) return '';
+  if (typeof _polySemanticCardsHtml !== 'function') return '';
+  return _polySemanticCardsHtml(m);
+}
+
 function renderMessageBlocks(messages) {
   var convId = (state.selected && state.selected.id) || '';
   return (messages || []).map(function(m, idx) {
+    // A message fully absorbed into another message's semantic card (most
+    // often: a tool-result message paired by tool_id into the card built on
+    // its tool-use message) renders nothing of its own — its evidence is
+    // already inside that card's preview.
+    if (m && m.semantic_card_suppressed) return '';
     var role = (m.role || '').toLowerCase();
     var isTool = _polyIsTool(m);
     var isThinking = _polyIsThinking(m);
+    var semanticCardsHtml = _polySemanticCardsForMessage(m);
     var tsHtml = m.timestamp
       ? '<span class="msg-ts" title="' + esc(m.timestamp) + '">'
         + new Date(m.timestamp).toLocaleTimeString() + '</span>'
@@ -416,7 +435,8 @@ function renderMessageBlocks(messages) {
     if (isTool) blockClass += ' tool-block';
     var anchor = m.anchor || ('message-' + (m.id || ''));
     var body;
-    if (isTool) body = _polyToolFoldHtml(m);
+    if (semanticCardsHtml) body = semanticCardsHtml;
+    else if (isTool) body = _polyToolFoldHtml(m);
     else if (isThinking) body = _polyThinkingFoldHtml(m);
     else if (typeof _polyHasPaste === 'function' && _polyHasPaste(m)) {
       var bannerHtml = typeof _polyPasteBannerHtml === 'function' ? _polyPasteBannerHtml(m) : '';

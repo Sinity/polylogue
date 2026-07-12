@@ -69,6 +69,10 @@ from polylogue.daemon.write_coordinator import (
 )
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.logging import get_logger
+from polylogue.rendering.semantic_card_placement import (
+    SemanticCardPlacement,
+    semantic_card_placement_for_messages,
+)
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.surfaces.payloads import (
@@ -97,7 +101,7 @@ if TYPE_CHECKING:
         ArchiveSessionSummary,
         ArchiveStore,
     )
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
 
 logger = get_logger(__name__)
 
@@ -2626,6 +2630,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         for msg in conv.messages:
             for att in msg.attachments or []:
                 session_attachments.append(attachment_to_envelope(att, session_id=session_id, message_id=msg.id))
+        # Semantic transcript cards (#ap7): the same provider-neutral shell /
+        # file-edit / task / attachment registry the CLI renders to Markdown
+        # (``cli/messages.py``), projected per-message for the web reader.
+        card_placement = semantic_card_placement_for_messages(
+            conv.messages.to_list(), session_id=session_id, provider_family=conv.origin
+        )
         return {
             "id": session_id,
             "title": conv.title,
@@ -2657,6 +2667,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         msg.text,
                         has_paste=bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
                     ),
+                    "semantic_cards": card_placement.cards_for(str(msg.id)),
+                    "semantic_card_suppressed": card_placement.is_suppressed(str(msg.id)),
                     "attachments": [
                         attachment_to_envelope(att, session_id=session_id, message_id=msg.id)
                         for att in (msg.attachments or [])
@@ -2693,7 +2705,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         updated_at = summary.updated_at
         word_count = summary.word_count
         target_ref = TargetRefPayload.session(session_id)
-        messages = [self._archive_message_payload(session_id, message) for message in envelope.messages]
+        card_placement = self._archive_semantic_card_placement(envelope)
+        messages = [
+            self._archive_message_payload(
+                session_id,
+                message,
+                semantic_cards=card_placement.cards_for(str(message.message_id)),
+                semantic_card_suppressed=card_placement.is_suppressed(str(message.message_id)),
+            )
+            for message in envelope.messages
+        ]
         # Flatten per-message attachments plus session-level orphan attachments
         # into one session-level list, mirroring the archive detail handler
         # so the inspector tab and the session envelope share one source of
@@ -2737,6 +2758,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "total": len(messages),
         }
 
+    def _archive_semantic_card_placement(self, envelope: ArchiveSessionEnvelope) -> SemanticCardPlacement:
+        """Build the same semantic-card index as the DB-backed path (#ap7).
+
+        Reuses the archive→domain message conversion (``api.archive``) so the
+        card registry sees the exact ``Message``/block shape the CLI and the
+        DB-backed reader already build cards from — one registry, one
+        classification path, two output backends.
+        """
+
+        from polylogue.api.archive import _archive_message_to_domain, _provider_for_archive_origin
+
+        provider = _provider_for_archive_origin(envelope.origin)
+        messages = [_archive_message_to_domain(message, provider=provider) for message in envelope.messages]
+        return semantic_card_placement_for_messages(
+            messages, session_id=envelope.session_id, provider_family=envelope.origin
+        )
+
     def _archive_message_attachments(self, session_id: str, message: ArchiveMessageRow) -> list[dict[str, object]]:
         from polylogue.api.archive import _archive_attachment_to_domain
 
@@ -2749,7 +2787,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             for att in message.attachments
         ]
 
-    def _archive_message_payload(self, session_id: str, message: ArchiveMessageRow) -> dict[str, object]:
+    def _archive_message_payload(
+        self,
+        session_id: str,
+        message: ArchiveMessageRow,
+        *,
+        semantic_cards: Sequence[JSONDocument] = (),
+        semantic_card_suppressed: bool = False,
+    ) -> dict[str, object]:
         message_id = str(message.message_id)
         text = "\n\n".join(str(block.text) for block in message.blocks if block.text)
         has_paste = bool(message.has_paste)
@@ -2768,6 +2813,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "has_thinking": bool(message.has_thinking),
             "has_paste_evidence": has_paste,
             "paste_spans": envelope_paste_spans(text, has_paste=has_paste),
+            "semantic_cards": list(semantic_cards),
+            "semantic_card_suppressed": semantic_card_suppressed,
             "attachments": self._archive_message_attachments(session_id, message),
         }
 

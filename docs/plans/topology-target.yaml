@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 5386
+    loc: 5414
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -1189,7 +1189,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/refs.py
-    loc: 225
+    loc: 244
     target: polylogue/core/refs.py
     owner: core-primitive
     reason: core primitive
@@ -1331,7 +1331,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 4142
+    loc: 4189
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/lineage_startup.py
@@ -1428,7 +1428,7 @@ files:
     target: polylogue/daemon/web_auth.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 3141
+    loc: 3146
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_attachments.py
@@ -1452,7 +1452,7 @@ files:
     target: polylogue/daemon/web_shell_provenance.py
     owner: stable
   - path: polylogue/daemon/web_shell_reader.py
-    loc: 765
+    loc: 785
     target: polylogue/daemon/web_shell_reader.py
     owner: stable
   - path: polylogue/daemon/web_shell_realtime.py
@@ -1462,6 +1462,10 @@ files:
   - path: polylogue/daemon/web_shell_selection.py
     loc: 275
     target: polylogue/daemon/web_shell_selection.py
+    owner: stable
+  - path: polylogue/daemon/web_shell_semantic_cards.py
+    loc: 191
+    target: polylogue/daemon/web_shell_semantic_cards.py
     owner: stable
   - path: polylogue/daemon/web_shell_similar.py
     loc: 160
@@ -2099,6 +2103,10 @@ files:
     target: polylogue/rendering/semantic_card_models.py
     owner: stable
     cross_cut: { lifecycle: model }
+  - path: polylogue/rendering/semantic_card_placement.py
+    loc: 94
+    target: polylogue/rendering/semantic_card_placement.py
+    owner: stable
   - path: polylogue/rendering/semantic_card_registry.py
     loc: 421
     target: polylogue/rendering/semantic_card_registry.py
@@ -3758,7 +3766,7 @@ files:
     target: polylogue/surfaces/chronicle.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 2945
+    loc: 2962
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/surfaces/projection_spec.py
