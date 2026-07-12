@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import Any, cast
 
 from polylogue.logging import get_logger
 from polylogue.paths import active_index_db_path
@@ -43,7 +43,7 @@ _last_heartbeat_monotonic: float | None = None
 _active_lifecycle: DaemonLifecycle | None = None
 _atexit_registered = False
 
-SignalHandler = signal.Handlers | Callable[[int, FrameType | None], Any] | None
+SignalHandler = int | Callable[[int, FrameType | None], Any] | None
 
 
 def _now_ms() -> int:
@@ -211,7 +211,7 @@ def restore_signal_handlers(previous: dict[int, SignalHandler]) -> None:
     """Restore signal handlers installed for the daemon run."""
     for signum, handler in previous.items():
         with contextlib.suppress(ValueError):
-            signal.signal(signum, handler)
+            signal.signal(signum, cast(signal.Handlers | Callable[[int, FrameType | None], Any] | None, handler))
 
 
 def _register_atexit_sentinel() -> None:
