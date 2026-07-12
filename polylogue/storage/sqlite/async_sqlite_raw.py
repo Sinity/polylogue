@@ -116,8 +116,11 @@ class SQLiteRawMixin:
         async with aiosqlite.connect(self._source_db_path) as conn:
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA foreign_keys = ON")
-            cursor = await conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (record.raw_id,))
-            existed = await cursor.fetchone() is not None
+            cursor = await conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (record.raw_id,))
+            existing = await cursor.fetchone()
+            existed = existing is not None
+            if existing is not None and existing["capture_mode"] is not None:
+                capture_mode = Provider.from_string(str(existing["capture_mode"]))
             await conn.execute(
                 """
                 INSERT OR REPLACE INTO raw_sessions (

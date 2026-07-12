@@ -170,6 +170,25 @@ class TestRawSessionStorage:
         assert recovered_gemini.payload_provider is Provider.GEMINI
         assert recovered_drive.payload_provider is Provider.DRIVE
 
+    async def test_reacquisition_keeps_first_known_capture_mode(self, backend: SQLiteBackend) -> None:
+        """Later canonical fallback cannot erase durable live-Drive provenance."""
+        drive = make_raw_session(
+            raw_id="reacquired-aistudio",
+            source_name="gemini",
+            source_path="/tmp/live-drive.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        ).model_copy(update={"capture_mode": Provider.DRIVE})
+        canonical_retry = drive.model_copy(update={"capture_mode": Provider.GEMINI})
+
+        assert await backend.save_raw_session(drive) is True
+        assert await backend.save_raw_session(canonical_retry) is False
+
+        recovered = await backend.get_raw_session(drive.raw_id)
+        assert recovered is not None
+        assert recovered.capture_mode is Provider.DRIVE
+        assert recovered.payload_provider is Provider.DRIVE
+
     async def test_get_raw_session_not_found(self, backend: SQLiteBackend) -> None:
         """Retrieving non-existent raw session returns None."""
         result = await backend.get_raw_session("nonexistent")
