@@ -603,10 +603,23 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
 #### `dialogue` (FTS5 lexical)
 
 - Backed by SQLite FTS5's BM25 implementation against `messages_fts`.
-- Tokenizer is `unicode61` — case-insensitive for ASCII, Unicode-aware
-  tokenization. **Porter stemming is not available** in this SQLite build,
-  so `refactor` and `refactoring` are distinct tokens. Use prefix queries
-  (`refactor*`) when you want morphological breadth.
+- Tokenizer is `unicode61 remove_diacritics 2` — case-insensitive for ASCII,
+  Unicode-aware tokenization, and folds ordinary combining-mark diacritics
+  (`ó`->`o`, `ż`->`z`, `ą`->`a`, ...) so a plain-ASCII query finds accented
+  content and vice versa. **Porter stemming is not available** in this
+  SQLite build, so `refactor` and `refactoring` are distinct tokens. Use
+  prefix queries (`refactor*`) when you want morphological breadth.
+- `ł`/`Ł` (Latin L with stroke) has no Unicode decomposition, so
+  `remove_diacritics` cannot reach it. `pl_fold`
+  (`polylogue/storage/fts/pl_fold.py`) closes that specific gap: it folds
+  `ł`/`Ł` into indexed text before FTS insertion and into `MATCH` query text
+  in `escape_fts5_query`, so `latwo`/`zrobilem` finds seeded
+  `łatwo`/`zrobiłem` (polylogue-9jsi). The same tokenizer and fold apply to
+  the `threads_fts` and `session_work_events_fts` insight-search surfaces.
+  A trigram fallback lane for further recall (beyond word-boundary tokens)
+  is deliberately not part of this fold — see polylogue-xul7 (tracked
+  follow-up) for a measured, benchmarked trigram lane before any such lane
+  ships or is defaulted on.
 - Raw score is **BM25**: lower is better in SQLite FTS5, values are
   typically negative, and they are **not comparable across queries**.
 - Match evidence: `matched_terms`, `snippet`, `match_surface="message"`,

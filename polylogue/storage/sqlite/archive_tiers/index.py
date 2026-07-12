@@ -24,6 +24,7 @@ from polylogue.insights.run_projection import (
     RunHarness,
     RunStatus,
 )
+from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -33,7 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 34
+INDEX_SCHEMA_VERSION = 35
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -390,13 +391,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     text,
     content='',
     contentless_delete=1,
-    tokenize='unicode61'
+    tokenize='unicode61 remove_diacritics 2'
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_ai
 AFTER INSERT ON blocks WHEN new.search_text != '' BEGIN
     INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-    VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text);
+    VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")});
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_ad
@@ -408,7 +409,7 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_au
 AFTER UPDATE ON blocks BEGIN
     DELETE FROM messages_fts WHERE rowid = old.rowid;
     INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-    SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text
+    SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")}
     WHERE new.search_text != '';
 END;
 
@@ -661,13 +662,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS threads_fts USING fts5(
     thread_id UNINDEXED,
     root_id UNINDEXED,
     text,
-    tokenize='unicode61'
+    tokenize='unicode61 remove_diacritics 2'
 );
 
 CREATE TRIGGER IF NOT EXISTS threads_fts_ai
 AFTER INSERT ON threads BEGIN
     INSERT INTO threads_fts (thread_id, root_id, text)
-    VALUES (new.thread_id, new.thread_id, new.search_text);
+    VALUES (new.thread_id, new.thread_id, {pl_fold_sql_expr("new.search_text")});
 END;
 
 CREATE TRIGGER IF NOT EXISTS threads_fts_ad
@@ -679,7 +680,7 @@ CREATE TRIGGER IF NOT EXISTS threads_fts_au
 AFTER UPDATE ON threads BEGIN
     DELETE FROM threads_fts WHERE thread_id = old.thread_id;
     INSERT INTO threads_fts (thread_id, root_id, text)
-    VALUES (new.thread_id, new.thread_id, new.search_text);
+    VALUES (new.thread_id, new.thread_id, {pl_fold_sql_expr("new.search_text")});
 END;
 
 CREATE TABLE IF NOT EXISTS thread_sessions (
@@ -941,13 +942,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
     session_id UNINDEXED,
     work_event_type UNINDEXED,
     text,
-    tokenize='unicode61'
+    tokenize='unicode61 remove_diacritics 2'
 );
 
 CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
 AFTER INSERT ON session_work_events BEGIN
     INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-    VALUES (new.event_id, new.session_id, new.work_event_type, new.search_text);
+    VALUES (new.event_id, new.session_id, new.work_event_type, {pl_fold_sql_expr("new.search_text")});
 END;
 
 CREATE TABLE IF NOT EXISTS session_phases (
@@ -981,7 +982,7 @@ CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
 AFTER UPDATE ON session_work_events BEGIN
     DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
     INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-    VALUES (new.event_id, new.session_id, new.work_event_type, new.search_text);
+    VALUES (new.event_id, new.session_id, new.work_event_type, {pl_fold_sql_expr("new.search_text")});
 END;
 
 CREATE TABLE IF NOT EXISTS session_latency_profiles (
