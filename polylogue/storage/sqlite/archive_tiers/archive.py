@@ -1304,6 +1304,42 @@ class ArchiveStore:
         revision_authoritative: bool = False,
     ) -> tuple[str, str]:
         """Index one session for raw evidence that is already durable."""
+        result = self.write_parsed_for_retained_raw_result(
+            session,
+            raw_id=raw_id,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            source_index=source_index,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=manage_transaction,
+            finalize_raw_parse=finalize_raw_parse,
+            revision_authoritative=revision_authoritative,
+        )
+        return result.raw_id, result.session_id
+
+    def write_parsed_for_retained_raw_result(
+        self,
+        session: ParsedSession,
+        *,
+        raw_id: str,
+        source_path: str,
+        acquired_at_ms: int,
+        source_index: int = 0,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "append",
+        manage_transaction: bool = True,
+        finalize_raw_parse: bool = True,
+        revision_authoritative: bool = False,
+    ) -> ArchiveRawParsedWriteResult:
+        """Index one session for raw evidence that is already durable, with counts.
+
+        Used both by append-chain replay and by any caller that must index
+        several sessions parsed from ONE physical raw acquisition (e.g. a
+        Claude Code/Codex grouped JSONL file whose content splits into
+        multiple sessions) against the SAME raw_id, instead of writing a
+        duplicate raw row per session.
+        """
         preacquired_attachments, attachment_blob_refs = self._preacquire_attachment_blobs(
             session,
             source_path=source_path,
@@ -1327,7 +1363,7 @@ class ArchiveStore:
         if stage_timings_s is not None:
             key = f"{stage_timing_prefix}.index_parsed_write"
             stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
-        return result.raw_id, result.session_id
+        return result
 
     def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope) -> None:
         bind_source_raw_revision(self._ensure_source_conn(), raw_id, revision)
