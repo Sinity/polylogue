@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import signal
 import sqlite3
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -112,6 +113,29 @@ def test_sigterm_dumps_threads_and_persists_signal_before_exit(
     finally:
         restore_signal_handlers(previous)
         lifecycle.stop(exit_kind="signal")
+
+
+def test_signal_write_does_not_wait_for_the_normal_writer_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A held OPS write lock cannot make SIGTERM wait for the normal 30s timeout."""
+    ops_db = _bind_ops_db(monkeypatch, tmp_path)
+    lifecycle = DaemonLifecycle.start()
+    lock = sqlite3.connect(ops_db)
+    try:
+        lock.execute("BEGIN EXCLUSIVE")
+        started = time.monotonic()
+        lifecycle.record_signal_best_effort(signal.SIGTERM)
+        elapsed_s = time.monotonic() - started
+    finally:
+        lock.rollback()
+        lock.close()
+
+    assert elapsed_s < 2.0
+    # The bounded best-effort write loses the lock race rather than delaying
+    # process termination; its in-memory signal marker still drives cleanup.
+    assert lifecycle.received_signal_name == "SIGTERM"
 
 
 def test_sigint_is_recorded_as_signal_not_clean_stop(

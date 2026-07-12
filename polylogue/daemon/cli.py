@@ -1114,12 +1114,22 @@ async def run_daemon_services(
     from polylogue.daemon.lifecycle import DaemonLifecycle, install_signal_handlers, restore_signal_handlers
 
     write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
-    _daemon_lifecycle = await write_coordinator.run_sync(
-        "daemon.lifecycle.start",
-        DaemonLifecycle.start,
-        details={"archive_root": str(archive_root_path)},
-    )
-    previous_signal_handlers = install_signal_handlers(_daemon_lifecycle)
+    try:
+        _daemon_lifecycle = await write_coordinator.run_sync(
+            "daemon.lifecycle.start",
+            DaemonLifecycle.start,
+            details={"archive_root": str(archive_root_path)},
+        )
+        previous_signal_handlers = install_signal_handlers(_daemon_lifecycle)
+    except BaseException:
+        lifecycle = _daemon_lifecycle
+        if lifecycle is not None:
+            with contextlib.suppress(Exception):
+                await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
+        writer_drained = await write_coordinator.shutdown(timeout=5.0)
+        _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
+        _daemon_lifecycle = None
+        raise
 
     # Ensure all configured source roots exist so health checks don't flag
     # never-yet-used sources (e.g. hooks sidecar dir) as missing.

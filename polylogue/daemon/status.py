@@ -1681,11 +1681,13 @@ def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:
     return retry_at <= now
 
 
-def _check_daemon_liveness() -> bool:
-    """Return whether the latest durable daemon heartbeat is fresh."""
-    from polylogue.daemon.lifecycle import lifecycle_status
+def _check_daemon_liveness(lifecycle: dict[str, object] | None = None) -> bool:
+    """Return whether one durable daemon lifecycle snapshot is fresh."""
+    if lifecycle is None:
+        from polylogue.daemon.lifecycle import lifecycle_status
 
-    return bool(lifecycle_status().get("running", False))
+        lifecycle = lifecycle_status()
+    return bool(lifecycle.get("running", False))
 
 
 def _daemon_component_readiness(
@@ -2169,7 +2171,7 @@ def build_daemon_status(
         raw_maintenance_failures=_safe_int(raw_failures.get("maintenance_failures", 0)),
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
-        daemon_liveness=_check_daemon_liveness(),
+        daemon_liveness=_check_daemon_liveness(daemon_lifecycle),
         daemon_lifecycle=daemon_lifecycle,
         component_state=component_state,
         source_lag=[SourceLagItem(name=s.name, root=str(s.root), exists=s.exists()) for s in watch_sources],

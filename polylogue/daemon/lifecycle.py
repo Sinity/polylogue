@@ -38,6 +38,7 @@ logger = get_logger(__name__)
 
 DAEMON_HEARTBEAT_INTERVAL_SECONDS = 15 * 60
 DAEMON_HEARTBEAT_STALE_AFTER_SECONDS = DAEMON_HEARTBEAT_INTERVAL_SECONDS * 2
+_SIGNAL_WRITE_TIMEOUT_SECONDS = 0.5
 
 _last_heartbeat_monotonic: float | None = None
 _active_lifecycle: DaemonLifecycle | None = None
@@ -96,7 +97,7 @@ class DaemonLifecycle:
         signal_name = signal.Signals(signum).name
         self.received_signal_name = signal_name
         try:
-            _write_lifecycle(
+            _write_existing_lifecycle(
                 self.ops_db_path,
                 record_daemon_lifecycle_signal,
                 run_id=self.run_id,
@@ -131,6 +132,30 @@ def _write_lifecycle(
     """Run one short ops-tier lifecycle write with fresh-process recovery."""
     initialize_archive_database(ops_db_path, ArchiveTier.OPS)
     conn = open_daemon_connection(ops_db_path)
+    try:
+        writer(conn, **kwargs)
+    finally:
+        conn.close()
+
+
+def _write_existing_lifecycle(
+    ops_db_path: Path,
+    writer: Callable[..., None],
+    /,
+    **kwargs: object,
+) -> None:
+    """Best-effort bounded write for a signal handler after lifecycle startup.
+
+    The normal start path has already initialized the disposable OPS tier.
+    A terminating signal must not spend the ordinary daemon writer timeout
+    waiting for an external SQLite lock, so this deliberately skips bootstrap
+    DDL and uses a short connection timeout.
+    """
+    conn = open_daemon_connection(
+        ops_db_path,
+        timeout=_SIGNAL_WRITE_TIMEOUT_SECONDS,
+        busy_timeout_ms=int(_SIGNAL_WRITE_TIMEOUT_SECONDS * 1000),
+    )
     try:
         writer(conn, **kwargs)
     finally:
@@ -207,8 +232,12 @@ def install_signal_handlers(lifecycle: DaemonLifecycle) -> dict[int, SignalHandl
             raise KeyboardInterrupt
         raise SystemExit(128 + signum)
 
-    for signum in (signal.SIGTERM, signal.SIGINT):
-        previous[signum] = signal.signal(signum, handle_signal)
+    try:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous[signum] = signal.signal(signum, handle_signal)
+    except BaseException:
+        restore_signal_handlers(previous)
+        raise
     return previous
 
 
