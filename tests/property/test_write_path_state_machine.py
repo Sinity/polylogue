@@ -7,8 +7,11 @@ not duplicate prefix extraction, FTS maintenance, or session-link resolution.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 from hypothesis import HealthCheck, settings
 from hypothesis.stateful import RuleBasedStateMachine, initialize, rule
@@ -18,6 +21,8 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import Provider, TopologyEdgeStatus
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.repository import SessionRepository
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     read_archive_session_envelope,
@@ -53,6 +58,7 @@ class WritePathStateMachine(RuleBasedStateMachine):
         self._conn.row_factory = sqlite3.Row
         _ensure_schema(self._conn)
         self._models: dict[str, _SessionModel] = {}
+        self._pending_children: dict[str, tuple[str, list[str], int, list[str]]] = {}
         self._next_session = 0
         self._next_text = 0
         self._deletion_done = False
@@ -90,13 +96,68 @@ class WritePathStateMachine(RuleBasedStateMachine):
         self._check_invariants()
 
     @rule()
+    def ingest_child_with_no_shared_prefix(self) -> None:
+        """A known parent may be topology-linked without sharing content."""
+        if not any(model.can_be_parent for model in self._models.values()):
+            self._ingest_parent()
+        parent_id = self._choose_parent_id()
+        native_id = self._new_native_id("fresh-child")
+        own_texts = [self._new_text("fresh")]
+        child_id = self._write(
+            native_id,
+            own_texts,
+            parent_native_id=self._models[parent_id].native_id,
+        )
+        self._models[child_id] = _SessionModel(
+            native_id=native_id,
+            own_texts=own_texts,
+            parent_id=parent_id,
+        )
+        self._check_invariants()
+
+    @rule()
+    def ingest_child_before_parent(self) -> None:
+        """Store a replaying child whole until its asserted parent arrives."""
+        parent_native_id = self._new_native_id("late-parent")
+        parent_texts = [self._new_text("late-parent"), self._new_text("late-variant")]
+        prefix_length = 1 + (self._next_text % len(parent_texts))
+        tail = [self._new_text("late-tail")]
+        child_native_id = self._new_native_id("late-child")
+        child_id = self._write(
+            child_native_id,
+            [*parent_texts[:prefix_length], *tail],
+            parent_native_id=parent_native_id,
+        )
+        self._models[child_id] = _SessionModel(
+            native_id=child_native_id,
+            own_texts=[*parent_texts[:prefix_length], *tail],
+            can_be_parent=False,
+        )
+        self._pending_children[child_id] = (parent_native_id, parent_texts, prefix_length, tail)
+        self._check_invariants()
+
+    @rule()
+    def ingest_pending_parent(self) -> None:
+        if not self._pending_children:
+            return
+        child_id = sorted(self._pending_children)[self._next_text % len(self._pending_children)]
+        parent_native_id, parent_texts, prefix_length, tail = self._pending_children.pop(child_id)
+        parent_id = self._write(parent_native_id, parent_texts)
+        self._models[parent_id] = _SessionModel(native_id=parent_native_id, own_texts=parent_texts)
+        self._models[child_id].own_texts = tail
+        self._models[child_id].parent_id = parent_id
+        self._models[child_id].prefix_length = prefix_length
+        self._check_invariants()
+
+    @rule()
     def reingest_with_edit(self) -> None:
         if self._deletion_done:
             return
         eligible = sorted(
             session_id
             for session_id, model in self._models.items()
-            if model.parent_id is None or self._models[model.parent_id].can_be_parent
+            if session_id not in self._pending_children
+            and (model.parent_id is None or self._models[model.parent_id].can_be_parent)
         )
         session_id = eligible[self._next_text % len(eligible)]
         model = self._models[session_id]
@@ -235,7 +296,7 @@ class WritePathStateMachine(RuleBasedStateMachine):
         return [*self._logical_texts(model.parent_id)[: model.prefix_length], *model.own_texts]
 
     def _choose_session_id(self) -> str:
-        session_ids = sorted(self._models)
+        session_ids = sorted(session_id for session_id in self._models if session_id not in self._pending_children)
         return session_ids[self._next_text % len(session_ids)]
 
     def _choose_parent_id(self) -> str:
@@ -272,23 +333,20 @@ class WritePathStateMachine(RuleBasedStateMachine):
         return [str(block.text) for message in messages for block in message.blocks if block.text is not None]
 
     def _check_invariants(self) -> None:
-        legal_statuses = {status.value for status in TopologyEdgeStatus}
-        status_rows = self._conn.execute(
-            """
-            SELECT COALESCE(
-                status,
-                CASE WHEN resolved_dst_session_id IS NULL THEN 'unresolved' ELSE 'resolved' END
-            )
-            FROM session_links
-            """
-        ).fetchall()
-        assert {str(row[0]) for row in status_rows}.issubset(legal_statuses)
+        status_rows = self._conn.execute("SELECT status FROM session_links").fetchall()
+        assert {row[0] for row in status_rows}.issubset(
+            {None, TopologyEdgeStatus.REPAIRED.value, TopologyEdgeStatus.QUARANTINED.value}
+        )
 
         indexed = self._conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
         indexable = self._conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0]
         assert indexed == indexable
 
         for session_id, model in self._models.items():
+            pending = self._pending_children.get(session_id)
+            if pending is not None:
+                self._assert_pending_link(session_id, pending[0])
+                continue
             envelope = read_archive_session_envelope(self._conn, session_id)
             actual = self._texts_from_envelope(envelope)
             if envelope.lineage_complete:
@@ -301,6 +359,7 @@ class WritePathStateMachine(RuleBasedStateMachine):
                 assert actual == logical[len(logical) - len(actual) :]
 
             if model.parent_id is not None and envelope.lineage_complete:
+                self._assert_resolved_link(session_id, model)
                 physical = self._conn.execute(
                     "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
                 ).fetchone()[0]
@@ -311,8 +370,79 @@ class WritePathStateMachine(RuleBasedStateMachine):
             ).fetchall()
             assert len({(int(row[0]), int(row[1])) for row in variant_rows}) == len(variant_rows)
 
+    def _assert_pending_link(self, child_id: str, parent_native_id: str) -> None:
+        row = self._conn.execute(
+            """
+            SELECT resolved_dst_session_id, branch_point_message_id, inheritance, status
+            FROM session_links
+            WHERE src_session_id = ? AND dst_native_id = ?
+            """,
+            (child_id, parent_native_id),
+        ).fetchone()
+        assert tuple(row) == (None, None, None, None)
+
+    def _assert_resolved_link(self, child_id: str, model: _SessionModel) -> None:
+        assert model.parent_id is not None
+        row = self._conn.execute(
+            """
+            SELECT resolved_dst_session_id, branch_point_message_id, inheritance, status
+            FROM session_links
+            WHERE src_session_id = ?
+            """,
+            (child_id,),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == model.parent_id
+        assert row[2] == ("prefix-sharing" if model.prefix_length else "spawned-fresh")
+        assert row[3] is None
+        if model.prefix_length:
+            parent_messages = read_archive_session_envelope(self._conn, model.parent_id).messages
+            assert row[1] == parent_messages[model.prefix_length - 1].message_id
+        else:
+            assert row[1] is None
+
     def teardown(self) -> None:
         self._conn.close()
+
+
+def test_repository_get_messages_composes_prefix_sharing_child() -> None:
+    """The public repository route composes a prefix-sharing child transcript."""
+    with tempfile.TemporaryDirectory(prefix="polylogue-write-model-", dir="/realm/tmp") as root_text:
+        archive_root = Path(root_text)
+        initialize_active_archive_root(archive_root)
+        db_path = archive_root / "index.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            parent = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="repository-parent",
+                messages=[
+                    ParsedMessage(provider_message_id="parent-0", role=Role.USER, text="parent prompt", position=0),
+                    ParsedMessage(provider_message_id="parent-1", role=Role.ASSISTANT, text="parent reply", position=1),
+                ],
+            )
+            child = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="repository-child",
+                parent_session_provider_id="repository-parent",
+                branch_type=BranchType.FORK,
+                messages=[
+                    ParsedMessage(provider_message_id="child-0", role=Role.USER, text="parent prompt", position=0),
+                    ParsedMessage(provider_message_id="child-1", role=Role.ASSISTANT, text="parent reply", position=1),
+                    ParsedMessage(provider_message_id="child-2", role=Role.USER, text="child tail", position=2),
+                ],
+            )
+            write_parsed_session_to_archive(conn, parent, content_hash=session_content_hash(parent))
+            child_id = write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
+        finally:
+            conn.close()
+
+        async def read_texts() -> list[str]:
+            async with SessionRepository(db_path=db_path) as repository:
+                messages = await repository.get_messages(child_id)
+            return [str(block.text) for message in messages for block in message.blocks if block.text is not None]
+
+        assert asyncio.run(read_texts()) == ["parent prompt", "parent reply", "child tail"]
 
 
 TestWritePathStateMachine = WritePathStateMachine.TestCase
