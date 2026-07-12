@@ -145,7 +145,9 @@ class CompletionClaimExperimentResult:
     manifest: CohortManifest
     evidence: tuple[CompletionClaimEvidence, ...]
     unsupported_count: int
+    neutral_prior_count: int
     contradicted_then_repaired_count: int
+    contradicted_without_repair_count: int
     evidence_fingerprint: str
 
     @property
@@ -172,9 +174,15 @@ class CompletionClaimExperimentResult:
                 "denominator": denominator,
                 "unsupported_count": self.unsupported_count,
                 "unsupported_rate": self.unsupported_count / denominator if denominator else None,
+                "neutral_prior_count": self.neutral_prior_count,
+                "neutral_prior_rate": self.neutral_prior_count / denominator if denominator else None,
                 "contradicted_then_repaired_count": self.contradicted_then_repaired_count,
                 "contradicted_then_repaired_rate": (
                     self.contradicted_then_repaired_count / denominator if denominator else None
+                ),
+                "contradicted_without_repair_count": self.contradicted_without_repair_count,
+                "contradicted_without_repair_rate": (
+                    self.contradicted_without_repair_count / denominator if denominator else None
                 ),
             },
             "evidence": [item.to_payload() for item in self.evidence],
@@ -236,13 +244,14 @@ def _archive_cursor(conn: sqlite3.Connection) -> str:
 def _action_rows(conn: sqlite3.Connection, session_id: str, position_clause: str, position: int) -> list[sqlite3.Row]:
     return conn.execute(
         f"""
-        SELECT a.*, m.position AS message_position
+        SELECT a.*, result_message.position AS result_message_position, result_block.position AS result_block_position
         FROM actions AS a
-        JOIN messages AS m ON m.message_id = a.message_id
+        JOIN blocks AS result_block ON result_block.block_id = a.tool_result_block_id
+        JOIN messages AS result_message ON result_message.message_id = result_block.message_id
         WHERE a.session_id = ?
           AND (a.exit_code IS NOT NULL OR a.is_error IS NOT NULL)
-          AND m.position {position_clause} ?
-        ORDER BY m.position, a.tool_result_block_id
+          AND result_message.position {position_clause} ?
+        ORDER BY result_message.position, result_message.variant_index, result_block.position, a.tool_result_block_id
         """,
         (session_id, position),
     ).fetchall()
@@ -355,14 +364,18 @@ def inspect_completion_claims(
                 )
             )
     unsupported_count = sum(item.classification == "unsupported_by_structural_tool_evidence" for item in evidence)
+    neutral_prior_count = sum(item.classification == "prior_outcome_recorded" for item in evidence)
     repaired_count = sum(item.classification == "contradicted_then_repaired" for item in evidence)
+    unrepaired_count = sum(item.classification == "contradicted_without_recorded_repair" for item in evidence)
     fingerprint_payload = json.dumps([item.to_payload() for item in evidence], sort_keys=True, separators=(",", ":"))
     return CompletionClaimExperimentResult(
         archive_root=archive_root,
         manifest=manifest,
         evidence=tuple(evidence),
         unsupported_count=unsupported_count,
+        neutral_prior_count=neutral_prior_count,
         contradicted_then_repaired_count=repaired_count,
+        contradicted_without_repair_count=unrepaired_count,
         evidence_fingerprint=f"sha256:{sha256(fingerprint_payload.encode()).hexdigest()}",
     )
 
@@ -568,7 +581,9 @@ def render_demo_receipts(result: DemoReceiptsResult) -> str:
                 f"  sample manifest: {experiment.manifest.manifest_id}",
                 f"  denominator: {headline['denominator']}",
                 f"  unsupported by structural evidence: {headline['unsupported_count']}",
+                f"  neutral prior outcome: {headline['neutral_prior_count']}",
                 f"  contradicted then repaired: {headline['contradicted_then_repaired_count']}",
+                f"  contradicted without recorded repair: {headline['contradicted_without_repair_count']}",
             ]
         )
     if result.problems:
@@ -589,7 +604,9 @@ def render_completion_claims(result: CompletionClaimExperimentResult) -> str:
             f"evidence fingerprint: {result.evidence_fingerprint}",
             f"denominator: {headline['denominator']}",
             f"unsupported by structural evidence: {headline['unsupported_count']}",
+            f"neutral prior outcome: {headline['neutral_prior_count']}",
             f"contradicted then repaired: {headline['contradicted_then_repaired_count']}",
+            f"contradicted without recorded repair: {headline['contradicted_without_repair_count']}",
             "",
         ]
     )

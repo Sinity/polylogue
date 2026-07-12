@@ -36,6 +36,20 @@ async def test_completion_claim_experiment_has_a_stable_manifest_and_structural_
     assert evidence.repair_is_error is False
     assert evidence.repair_exit_code == 0
     assert result.evidence_fingerprint.startswith("sha256:")
+    headline = result.to_payload()["headline"]
+    assert isinstance(headline, dict)
+    assert (
+        sum(
+            int(headline[key])
+            for key in (
+                "unsupported_count",
+                "neutral_prior_count",
+                "contradicted_then_repaired_count",
+                "contradicted_without_repair_count",
+            )
+        )
+        == result.sample_size
+    )
 
 
 @pytest.mark.asyncio
@@ -110,6 +124,89 @@ async def test_completion_claim_experiment_excludes_runtime_protocol_material(tm
 
     result = inspect_completion_claims(archive_root, sample_size=10)
     assert all(item.session_ref != f"session:{DEMO_CODEX_RECEIPTS_SESSION_ID}" for item in result.evidence)
+
+
+@pytest.mark.asyncio
+async def test_completion_claim_experiment_uses_tool_result_time_not_tool_use_time(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        failed = conn.execute(
+            """
+            SELECT tool_id, text, tool_result_is_error, tool_result_exit_code
+            FROM blocks
+            WHERE session_id = ?
+              AND block_type = 'tool_result'
+              AND tool_result_is_error = 1
+            LIMIT 1
+            """,
+            (DEMO_CODEX_RECEIPTS_SESSION_ID,),
+        ).fetchone()
+        assert failed is not None
+        late_position = conn.execute(
+            "SELECT MAX(position) + 1 FROM messages WHERE session_id = ?",
+            (DEMO_CODEX_RECEIPTS_SESSION_ID,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO messages(session_id, native_id, position, role, message_type, material_origin, content_hash)
+            VALUES (?, 'late-tool-result', ?, 'tool', 'tool_result', 'tool_result', randomblob(32))
+            """,
+            (DEMO_CODEX_RECEIPTS_SESSION_ID, late_position),
+        )
+        late_message_id = conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? AND native_id = 'late-tool-result'",
+            (DEMO_CODEX_RECEIPTS_SESSION_ID,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            DELETE FROM blocks
+            WHERE session_id = ?
+              AND block_type = 'tool_result'
+              AND tool_id = ?
+              AND tool_result_is_error = 1
+            """,
+            (DEMO_CODEX_RECEIPTS_SESSION_ID, failed[0]),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks(message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code)
+            VALUES (?, ?, 0, 'tool_result', ?, ?, ?, ?)
+            """,
+            (late_message_id, DEMO_CODEX_RECEIPTS_SESSION_ID, failed[1], failed[0], failed[2], failed[3]),
+        )
+        conn.commit()
+
+    result = inspect_completion_claims(archive_root, sample_size=10)
+    (evidence,) = [item for item in result.evidence if item.session_ref == f"session:{DEMO_CODEX_RECEIPTS_SESSION_ID}"]
+    assert evidence.classification == "unsupported_by_structural_tool_evidence"
+    assert evidence.prior_action_ref is None
+
+
+@pytest.mark.asyncio
+async def test_completion_claim_manifest_and_evidence_fingerprint_drift_independently(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+    baseline = inspect_completion_claims(archive_root, sample_size=10)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        updated = conn.execute(
+            """
+            UPDATE blocks
+            SET tool_result_exit_code = 2
+            WHERE session_id = ?
+              AND block_type = 'tool_result'
+              AND tool_result_is_error = 1
+            """,
+            (DEMO_CODEX_RECEIPTS_SESSION_ID,),
+        ).rowcount
+        conn.commit()
+    assert updated >= 1
+
+    changed = inspect_completion_claims(archive_root, sample_size=10)
+    assert changed.manifest.manifest_id == baseline.manifest.manifest_id
+    assert changed.evidence_fingerprint != baseline.evidence_fingerprint
 
 
 @pytest.mark.asyncio
