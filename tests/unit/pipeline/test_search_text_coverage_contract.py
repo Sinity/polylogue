@@ -54,6 +54,8 @@ def _documented_sql_probe(section: str) -> str:
 def test_documented_coverage_matrix_matches_live_search_text_ddl() -> None:
     """The matrix is derived from the DDL, not separately asserted prose fragments."""
     section = _coverage_section()
+    assert "tests/unit/pipeline/test_search_text_coverage_contract.py" in section
+    assert "Only the three `json_extract` paths above" in section
     ddl_source = _INDEX_DDL.read_text(encoding="utf-8")
     match = re.search(
         r"search_text\s+TEXT GENERATED ALWAYS AS \((?P<expr>.*?)\)\s*VIRTUAL,",

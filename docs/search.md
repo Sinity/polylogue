@@ -936,7 +936,7 @@ block/action reads). The live definition lives in
 `polylogue/storage/sqlite/archive_tiers/index.py` (`blocks.search_text
 GENERATED ALWAYS AS (...)`); this table is drift-checked against that
 expression by
-`tests/unit/storage/test_search_text_write_tool_coverage.py`.
+`tests/unit/pipeline/test_search_text_coverage_contract.py`.
 
 | Source | In `search_text` (FTS-searchable) | Notes |
 |---|---|---|
@@ -946,8 +946,8 @@ expression by
 | `tool_input.$.file_path` | Yes | Primary path argument for file-oriented tools. |
 | `tool_input.$.path` | Yes | Alternate path key used by some tools (`Grep`, `Glob`). |
 | `tool_input.$.content` — file bodies a **`Write`** tool call authored | **No** | The full text an agent wrote into a new/overwritten file is excluded from `search_text`. A distinctive string that only appears inside a Write body returns zero FTS hits. |
-| `tool_input.$.old_string` / `tool_input.$.new_string` — **`Edit`** tool bodies | **No** | Same gap as Write: edited code is excluded unless it also happens to appear in prose, a `tool_result` echo, or one of the four indexed keys above. |
-| Any other `tool_input` key (`pattern`, `description`, `url`, ...) | **No** | Only the four `json_extract` paths above are concatenated into `search_text`; every other key is excluded regardless of tool. |
+| `tool_input.$.old_string` / `tool_input.$.new_string` — **`Edit`** tool bodies | **No** | Same gap as Write: edited code is excluded unless it also happens to appear in prose, a `tool_result` echo, or one of the indexed fields above. |
+| Any other `tool_input` key (`pattern`, `description`, `url`, ...) | **No** | Only the three `json_extract` paths above are concatenated into `search_text`; every other key is excluded regardless of tool. |
 
 **Dedicated action-evidence lane:** when you know an agent wrote or edited a
 specific string into a file body, use the query DSL's action `text` predicate.
