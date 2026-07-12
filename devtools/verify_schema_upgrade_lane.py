@@ -8,8 +8,8 @@ Polylogue has two schema-evolution regimes:
 * Durable tiers (``source.db`` and ``user.db``) may use explicit additive SQL
   migrations with a backup gate.
 * Derived/rebuildable tiers (``index.db`` and ``embeddings.db``) do not use
-  in-place migration machinery; they are rebuilt or blue-green replaced from
-  durable source evidence.
+  migration chains. They are rebuilt or blue-green replaced from durable source
+  evidence, except for explicitly declared, clone-validated SQL plans.
 
 What this lint checks
 ---------------------
@@ -20,8 +20,9 @@ What this lint checks
    out in ``docs/internals.md`` and in the witness archive
    (``.local/witnesses/new/*schema_upgrades*``).
 
-2. Fail if any helper exists for a derived tier. Durable-tier migrations must
-   live under ``polylogue/storage/sqlite/migrations/{source,user}/`` as
+2. Fail if any legacy helper exists for a derived tier, or when the current
+   index schema version lacks a delta-class declaration. Durable-tier migrations
+   must live under ``polylogue/storage/sqlite/migrations/{source,user}/`` as
    numbered SQL resources.
 
 The lint is intentionally narrow. It detects helper names associated
@@ -43,6 +44,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root as _get_root
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.lifecycle import index_delta_declaration_report
 
 ROOT = _get_root()
 STORAGE_SQLITE_DIR = ROOT / "polylogue" / "storage" / "sqlite"
@@ -113,10 +116,11 @@ def _invalid_migration_paths() -> list[Path]:
     return invalid
 
 
-def _format_report(*, helpers: list[HelperHit], invalid_migrations: list[Path]) -> str:
+def _format_report(*, helpers: list[HelperHit], invalid_migrations: list[Path], delta_report: dict[str, object]) -> str:
     lines = [
         f"derived-tier upgrade helpers found: {len(helpers)}",
         f"invalid durable migration resources found: {len(invalid_migrations)}",
+        f"undeclared index schema deltas found: {len(delta_report['missing_versions'])}",
     ]
     if helpers:
         lines.append("")
@@ -131,7 +135,16 @@ def _format_report(*, helpers: list[HelperHit], invalid_migrations: list[Path]) 
         lines.append("Invalid migration resources:")
         for path in invalid_migrations:
             lines.append(f"  {path.relative_to(ROOT)}")
-    if not helpers and not invalid_migrations:
+    if not bool(delta_report["ok"]):
+        lines.append("")
+        lines.append("Index fast-forward declaration drift:")
+        lines.append(f"  compatibility floor: v{delta_report['compatibility_floor']}")
+        lines.append(f"  missing: {list(delta_report['missing_versions'])}")
+        lines.append(f"  duplicate: {list(delta_report['duplicate_versions'])}")
+        lines.append(f"  invalid: {list(delta_report['invalid_versions'])}")
+        lines.append("")
+        lines.append("Policy violation: each index schema bump needs a declared delta class.")
+    if not helpers and not invalid_migrations and bool(delta_report["ok"]):
         lines.append("")
         lines.append("Schema evolution policy intact.")
     return "\n".join(lines)
@@ -147,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
 
     helpers = _collect_upgrade_helpers()
     invalid_migrations = _invalid_migration_paths()
+    delta_report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)
 
     if args.json:
         payload = {
@@ -154,13 +168,14 @@ def main(argv: list[str] | None = None) -> int:
                 {"name": hit.name, "path": str(hit.path.relative_to(ROOT)), "line": hit.lineno} for hit in helpers
             ],
             "invalid_migration_resources": [str(path.relative_to(ROOT)) for path in invalid_migrations],
-            "ok": not helpers and not invalid_migrations,
+            "index_delta_declarations": delta_report,
+            "ok": not helpers and not invalid_migrations and bool(delta_report["ok"]),
         }
         print(json.dumps(payload, indent=2))
     else:
-        print(_format_report(helpers=helpers, invalid_migrations=invalid_migrations))
+        print(_format_report(helpers=helpers, invalid_migrations=invalid_migrations, delta_report=delta_report))
 
-    return 0 if not helpers and not invalid_migrations else 1
+    return 0 if not helpers and not invalid_migrations and bool(delta_report["ok"]) else 1
 
 
 if __name__ == "__main__":

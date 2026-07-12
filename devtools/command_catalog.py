@@ -408,11 +408,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace index-fast-forward",
         "workspace",
-        "Clone-first index.db v32-to-v35 fast-forward with receipts and atomic rollback.",
+        "Apply a declared clone-first index.db fast-forward with receipts and rollback.",
         "devtools.index_fast_forward",
         use_when=(
-            "Upgrade a quiesced v32 derived index without raw replay: reflink an inactive generation, "
-            "apply exact canonical schema/FTS deltas, validate the clone, then separately activate or roll back."
+            "Upgrade a quiesced supported derived index without raw replay: reflink an inactive generation, "
+            "apply declared canonical schema/FTS deltas, validate structural equivalence on the clone, "
+            "then separately activate or roll back. Semantic-reparse deltas deliberately require rebuild/reprocess."
         ),
         examples=(
             "devtools workspace index-fast-forward plan --source /path/to/index.db",

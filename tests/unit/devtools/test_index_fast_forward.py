@@ -233,6 +233,8 @@ def test_fast_forward_v32_fixture_applies_exact_deltas_without_raw_reparse(tmp_p
 
     assert receipt["status"] == "clone_ready"
     assert receipt["raw_reparse"] is False
+    assert receipt["equivalence_sample_before"] == receipt["equivalence_sample_after"]
+    assert "parser-content drift" in str(receipt["equivalence_caveat"])
     validation = validate_clone(
         clone,
         expected_counts=expected_counts,
