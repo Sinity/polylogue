@@ -148,6 +148,7 @@ def compile_private_fable_packet(
     specimen_refs: set[str] = set()
     counterexample_refs: set[str] = set()
     for field, field_labels in sorted(labels_by_field.items()):
+        counterexample_refs.update(label.delegation_ref for label in field_labels if label.applicable is False)
         applicable = [label for label in field_labels if label.applicable is not False]
         denominator = len(applicable)
         missing = sum(label.value is None for label in applicable)
@@ -169,8 +170,6 @@ def compile_private_fable_packet(
             if label.value is not None:
                 labels_by_ref[label.delegation_ref].add(label.value)
                 specimen_refs.add(label.delegation_ref)
-            if label.applicable is False:
-                counterexample_refs.add(label.delegation_ref)
         disagreement_count += sum(len(values) > 1 for values in labels_by_ref.values())
 
     return FableDelegationPacket(

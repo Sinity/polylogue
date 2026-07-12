@@ -39,6 +39,7 @@ def test_private_packet_reports_coverage_labels_distributions_and_limits() -> No
                 "delegation:two", "directive_mode", "collaborative", "batch-c", True, True, 0.7, ("block:b",)
             ),
             DelegationPacketLabel("delegation:one", "rationale", None, "batch-a", True, True, 0.9, ("block:a",)),
+            DelegationPacketLabel("delegation:two", "checkpoint", "none", "batch-b", True, False, 0.8, ("block:b",)),
         ],
     )
 
@@ -48,6 +49,7 @@ def test_private_packet_reports_coverage_labels_distributions_and_limits() -> No
     assert packet.unresolved_count == 1
     assert packet.annotation_batches == ("batch-a", "batch-b", "batch-c")
     assert packet.disagreement_count == 1
+    assert packet.counterexample_refs == ("delegation:two",)
     assert {
         (item.field, item.value, item.count, item.denominator_n, item.missing_n) for item in packet.distributions
     } == {
