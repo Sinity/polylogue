@@ -336,14 +336,15 @@ def archive_session_list_payload(
         # ``list_summaries`` already applied offset and limit above.
         page = summaries
     else:
+        total = archive.count_search_sessions(text_query, **filters)
         summaries, match_counts = _coalesced_search_summaries(
             archive,
             query=text_query,
             filters=filters,
             sort=_sort_value(spec.sort),
             reverse=spec.reverse,
+            unique_limit=min(total, offset + limit),
         )
-        total = len(summaries)
         page = summaries[offset : offset + limit]
     next_offset = offset + len(page) if offset + len(page) < total else None
     return MCPPaginatedQueryResultPayload(
@@ -364,13 +365,14 @@ def _coalesced_search_summaries(
     filters: ArchiveQueryFilters,
     sort: str | None,
     reverse: bool,
+    unique_limit: int,
 ) -> tuple[tuple[ArchiveSessionSummary, ...], dict[str, int]]:
-    """Coalesce block-level FTS rows into stable, unique session list rows."""
+    """Coalesce only the raw hits required to construct one session page."""
     chunk_size = 250
     raw_offset = 0
     summaries_by_id: dict[str, ArchiveSessionSummary] = {}
     match_counts: dict[str, int] = {}
-    while True:
+    while len(summaries_by_id) < unique_limit:
         hits = archive.search_summaries(
             query,
             limit=chunk_size,
@@ -384,6 +386,10 @@ def _coalesced_search_summaries(
         for hit in hits:
             summaries_by_id.setdefault(hit.session_id, archive.read_summary(hit.session_id))
             match_counts[hit.session_id] = match_counts.get(hit.session_id, 0) + 1
+            if len(summaries_by_id) >= unique_limit:
+                break
+        if len(summaries_by_id) >= unique_limit:
+            break
         raw_offset += len(hits)
         if len(hits) < chunk_size:
             break
@@ -439,7 +445,7 @@ def archive_search_payload(
         **filters,
     )
     total = archive.count_search_sessions(query, **filters)
-    diagnostics = _search_term_diagnostics(archive, query=query, filters=filters, spec=spec) if not hits else None
+    diagnostics = _search_term_diagnostics(archive, query=query, filters=filters, spec=spec) if total == 0 else None
     return build_search_envelope(
         tuple(archive_search_hit_payload(hit, archive=archive) for hit in hits),
         total=total,

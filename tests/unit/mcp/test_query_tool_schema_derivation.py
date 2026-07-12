@@ -62,12 +62,12 @@ def test_search_schema_matches_dataclass_fields(schemas: SchemaMap) -> None:
     )
 
 
-def test_list_sessions_schema_matches_dataclass_fields_excluding_query(
+def test_list_sessions_schema_matches_supported_request_fields(
     schemas: SchemaMap,
 ) -> None:
     schema = schemas["list_sessions"]
     properties = set(schema.get("properties", {}).keys())
-    expected = _dataclass_field_names() - {"query"}
+    expected = _dataclass_field_names() - {"query", "include_affordances"}
     assert properties == expected, (
         "list_sessions inputSchema drifted from MCPSessionQueryRequest. "
         f"missing={sorted(expected - properties)}, extra={sorted(properties - expected)}"
@@ -145,6 +145,60 @@ def test_archive_list_sessions_routes_near_session_to_query_executor(monkeypatch
     assert observed == {"similar_session_id": "seed-session", "archive_root": Path("/archive")}
     assert payload.items == ()
     assert payload.total == 0
+
+
+def test_archive_list_sessions_stops_after_requested_distinct_page() -> None:
+    summaries = {
+        "codex-session:first": ArchiveSessionSummary(
+            session_id="codex-session:first",
+            native_id="first",
+            origin="codex-session",
+            provider=Provider.CODEX,
+            title="First",
+            created_at=None,
+            updated_at=None,
+            message_count=1,
+            word_count=10,
+            tags=(),
+        ),
+        "codex-session:second": ArchiveSessionSummary(
+            session_id="codex-session:second",
+            native_id="second",
+            origin="codex-session",
+            provider=Provider.CODEX,
+            title="Second",
+            created_at=None,
+            updated_at=None,
+            message_count=1,
+            word_count=10,
+            tags=(),
+        ),
+    }
+
+    def hit(session_id: str) -> ArchiveSessionSearchHit:
+        return ArchiveSessionSearchHit(
+            rank=1,
+            session_id=session_id,
+            block_id=f"{session_id}:block",
+            message_id=f"{session_id}:message",
+            origin="codex-session",
+            provider=Provider.CODEX,
+            title=summaries[session_id].title,
+            snippet="needle",
+        )
+
+    archive = MagicMock()
+    archive.count_search_sessions.return_value = 3
+    archive.search_summaries.side_effect = [[hit("codex-session:first"), *[hit("codex-session:second")] * 249]]
+    archive.read_summary.side_effect = summaries.__getitem__
+    spec = MCPSessionQueryRequest(contains="needle", limit=2).build_spec(_clamp_limit)
+
+    payload = archive_session_list_payload(archive, spec)
+
+    assert [item.id for item in payload.items] == ["codex-session:first", "codex-session:second"]
+    assert payload.total == 3
+    assert payload.next_offset == 2
+    assert archive.search_summaries.call_count == 1
 
 
 def test_archive_search_routes_near_session_to_query_executor(monkeypatch: pytest.MonkeyPatch) -> None:

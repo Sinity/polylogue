@@ -497,6 +497,25 @@ class TestQueryTools:
             ("term=beta", 1),
         }
 
+    @pytest.mark.asyncio
+    async def test_search_exhausted_page_does_not_report_miss_diagnostics(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root, provider=Provider.CODEX, native_id="both", text="alpha beta evidence")
+
+        with _archive_config(archive_root):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="alpha beta",
+                offset=1,
+            )
+
+        payload = json.loads(result)
+        assert payload["total"] == 1
+        assert payload["hits"] == []
+        assert payload["diagnostics"] is None
+
     def test_list_sessions_coalesces_block_hits_and_carries_match_count(
         self, tmp_path: Path, mcp_server: MCPServerUnderTest
     ) -> None:

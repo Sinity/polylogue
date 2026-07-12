@@ -175,7 +175,8 @@ def session_query_request_signature(
 
     ``include_query`` controls whether the ``query`` parameter is surfaced —
     ``search`` exposes it as required, ``facets`` exposes it as optional, and
-    ``list_sessions`` omits it. The resulting signature drives MCP
+    ``list_sessions`` omits it. ``include_affordances`` is likewise search-only
+    because only the search envelope can carry the capability catalog. The resulting signature drives MCP
     ``inputSchema`` derivation so the JSON schema and the typed request model
     cannot drift.
     """
@@ -189,6 +190,8 @@ def session_query_request_signature(
         if field.name == "query" and not include_query:
             continue
         if field.name == "include_affordances" and not include_query:
+            # ``list_sessions`` returns a paginated session envelope, not a
+            # search envelope, so accepting this would advertise a no-op.
             continue
         annotation = type_hints.get(field.name, Any)
         # ``search`` exposes ``query`` as a required parameter to preserve the
