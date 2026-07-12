@@ -22,6 +22,9 @@ Quick links:
 - [SearchEnvelope Contract](#searchenvelope-contract) — the typed
   response shape shared across surfaces ([#1266](https://github.com/Sinity/polylogue/issues/1266)).
 - [FTS5 Syntax](#fts5-syntax) — boolean, phrase, and prefix queries.
+- [Searchable Content Coverage](#searchable-content-coverage) — exactly
+  which block fields FTS indexes, and which (e.g. `Write`/`Edit` tool
+  file bodies) it does not.
 - [Facets (Scoped vs Global)](#facets-scoped-vs-global) — aggregate
   counts with both views ([#1269](https://github.com/Sinity/polylogue/issues/1269)).
 
@@ -897,6 +900,54 @@ Column filters restrict matches:
 polylogue 'text:css {session_id claude-code}: refactor'
 ```
 
+## Searchable Content Coverage
+
+`blocks.search_text` — the generated column FTS5 indexes — concatenates a
+**fixed subset** of block fields, not the whole block. Anything outside that
+subset is invisible to the `dialogue`/`actions`/`hybrid` lanes, `--contains`,
+`contains:`, and bare-text queries, even though the underlying data is stored
+and readable through other surfaces (`read`, `select`, direct block/action
+reads). The live definition lives in
+`polylogue/storage/sqlite/archive_tiers/index.py` (`blocks.search_text
+GENERATED ALWAYS AS (...)`); this table is drift-checked against that
+expression by
+`tests/unit/storage/test_search_text_write_tool_coverage.py`.
+
+| Source | In `search_text` (FTS-searchable) | Notes |
+|---|---|---|
+| `blocks.text` — message prose, `thinking`/`reasoning` block content, `tool_result` output | Yes | Every text-bearing block type stores its content in this column, so thinking/reasoning text and tool-result stdout/stderr/output are all searchable today. |
+| `blocks.tool_name` | Yes | Tool identifier string (`Write`, `Bash`, `Edit`, ...). |
+| `tool_input.$.command` | Yes | Shell/exec command lines (`Bash`, `exec_command`-style tools). |
+| `tool_input.$.file_path` | Yes | Primary path argument for file-oriented tools. |
+| `tool_input.$.path` | Yes | Alternate path key used by some tools (`Grep`, `Glob`). |
+| `tool_input.$.content` — file bodies a **`Write`** tool call authored | **No** | The full text an agent wrote into a new/overwritten file is excluded from `search_text`. A distinctive string that only appears inside a Write body returns zero FTS hits, with no diagnostic pointing at this boundary. |
+| `tool_input.$.old_string` / `$.new_string` — **`Edit`** tool bodies | **No** | Same gap as Write: edited code is excluded unless it also happens to appear in prose, a `tool_result` echo, or one of the four indexed keys above. |
+| Any other `tool_input` key (`pattern`, `description`, `url`, ...) | **No** | Only the four `json_extract` paths above are concatenated into `search_text`; every other key is excluded regardless of tool. |
+
+**Workaround:** when you know an agent wrote or edited a specific string into
+a file body, query `tool_input` directly with a JSON-aware SQL probe against
+`index.db` instead of FTS:
+
+```sql
+SELECT block_id, session_id, tool_name,
+       json_extract(tool_input, '$.file_path') AS file_path
+FROM blocks
+WHERE tool_name IN ('Write', 'Edit')
+  AND (
+    json_extract(tool_input, '$.content') LIKE '%needle%'
+    OR json_extract(tool_input, '$.old_string') LIKE '%needle%'
+    OR json_extract(tool_input, '$.new_string') LIKE '%needle%'
+  );
+```
+
+This is a full unindexed scan (`LIKE`, no FTS acceleration) — bound it with a
+`session_id =` filter or a `messages` time join on large archives. There is no
+query-DSL field for this today; extending `search_text` itself to cover
+`$.content` was considered and deliberately deferred (see polylogue-013x)
+because Write bodies can be large enough to meaningfully bloat the FTS index,
+and that tradeoff needs a size probe against a live archive plus a derived-tier
+index rebuild before it is decided, not a silent schema bump.
+
 ## Output Formats
 
 | Format | Description |
@@ -976,3 +1027,8 @@ When a query returns no results:
 4. Check FTS index health: `polylogued status` shows `fts_readiness`
 5. Run `polylogue ops doctor` for schema and index integrity
 6. If using `--similar`, ensure embeddings are built (check `polylogue ops embed status --detail` for embedding readiness/coverage)
+7. If you know an agent wrote or edited a specific string into a file (a
+   `Write`/`Edit` tool body), FTS will not find it — this is a documented
+   coverage boundary, not a bug. See
+   [Searchable Content Coverage](#searchable-content-coverage) for the exact
+   boundary and a raw-SQL workaround.
