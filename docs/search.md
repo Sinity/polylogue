@@ -615,7 +615,8 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
   `ł`/`Ł` into indexed text before FTS insertion and into `MATCH` query text
   in `escape_fts5_query`, so `latwo`/`zrobilem` finds seeded
   `łatwo`/`zrobiłem` (polylogue-9jsi). The same tokenizer and fold apply to
-  the `threads_fts` and `session_work_events_fts` insight-search surfaces.
+  the `threads_fts` and `session_work_events_fts` insight-search surfaces,
+  including full rebuild, missing-row repair, and dangling-row repair paths.
   A trigram fallback lane for further recall (beyond word-boundary tokens)
   is deliberately not part of this fold — see polylogue-xul7 (tracked
   follow-up) for a measured, benchmarked trigram lane before any such lane

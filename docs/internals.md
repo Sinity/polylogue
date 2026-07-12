@@ -168,14 +168,16 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   diacritics (`ó`->`o`, `ż`->`z`, `ą`->`a`, ...) symmetrically for indexed
   and `MATCH` query text. Separately, `ł`/`Ł` (Latin L with stroke) has no
   Unicode decomposition, so neither NFD normalization nor
-  `remove_diacritics` can fold it; the write-side triggers and bulk-insert
-  SQL for all three FTS surfaces now apply an inline `REPLACE`-chain fold
+  `remove_diacritics` can fold it; every write path for the three FTS
+  surfaces—fresh-write triggers, full rebuilds, missing-row repair, and
+  dangling derived-surface repair—applies an inline `REPLACE`-chain fold
   (`polylogue/storage/fts/pl_fold.py:pl_fold_sql_expr`) to the indexed
   `text` column, and `escape_fts5_query` applies the byte-identical Python
   fold (`pl_fold`) to query text, so `latwo`/`zrobilem` queries find seeded
   `łatwo`/`zrobiłem` content. The fold is deliberately narrow (`ł`/`Ł`
-  only) and expressed once from `PL_FOLD_TABLE` so write-side and
-  query-side folding cannot drift apart. Existing index tiers must be
+  only) and expressed once from `PL_FOLD_TABLE`; real-route rebuild and
+  repair tests lock the write-side calls to query-side normalization.
+  Existing index tiers must be
   rebuilt from source evidence (`polylogue ops reset --index && polylogued
   run`) to pick up the new tokenizer and re-fold already-indexed rows.
 - Index schema version 34 rebuilds the `delegations` view (polylogue-y964,

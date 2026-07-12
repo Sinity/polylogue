@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from pathlib import Path
 
 from polylogue.storage.fts.pl_fold import PL_FOLD_TABLE, pl_fold, pl_fold_sql_expr, register_pl_fold
 from polylogue.storage.fts.sql import FTS_MESSAGES_TABLE_SQL
 from polylogue.storage.search.query_support import escape_fts5_query, normalize_fts5_query
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 
 # ---------------------------------------------------------------------------
@@ -197,6 +199,25 @@ def test_literal_l_stroke_query_also_finds_the_same_content(test_conn: sqlite3.C
     )
 
     assert _fts_hits(test_conn, "łatwo") == [message_id]
+
+
+def test_archive_store_rebuild_index_preserves_l_stroke_recall(tmp_path: Path) -> None:
+    """The public rebuild route must fold canonical text, not only fresh-write triggers."""
+    with ArchiveStore(tmp_path) as archive:
+        message_id = _seed_text_block(
+            archive._conn,
+            native_session_id="conv-pl-fold-public-rebuild",
+            native_message_id="msg-public-rebuild",
+            text="Bardzo łatwo zrobiłem to zadanie",
+        )
+        block_id = archive._conn.execute(
+            "SELECT block_id FROM blocks WHERE message_id = ?",
+            (message_id,),
+        ).fetchone()[0]
+
+        assert archive.rebuild_index() == 1
+        assert archive.search_blocks("latwo") == [block_id]
+        assert archive.search_blocks("łatwo") == [block_id]
 
 
 def test_remove_diacritics_tokenizer_handles_ordinary_diacritics_without_pl_fold(
