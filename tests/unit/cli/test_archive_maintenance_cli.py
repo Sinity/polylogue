@@ -774,6 +774,137 @@ def test_blob_reference_prune_orphans_cli_apply_quarantines_deleted_refs(
     assert refs == [(str(source),)]
 
 
+def _seed_orphan_embedding_row(archive_root: Path) -> tuple[str, str]:
+    """Seed embeddings.db with one vector row for a message that no longer
+    exists under an otherwise-live session — standing in for a message
+    dropped by an index rebuild (polylogue-1dk1) while the session survives.
+    """
+
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+        ArchiveEmbeddingWrite,
+        upsert_message_embeddings,
+    )
+    from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    long_text = "This live message keeps the session present in the rebuilt index."
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        session_id = archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="orphan-cli-fixture",
+                title="orphan reconcile fixture",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="live",
+                        role=Role.USER,
+                        text=long_text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=long_text)],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    )
+                ],
+            )
+        )
+
+    orphan_message_id = f"{session_id}:orphaned-message-no-longer-in-index"
+    with sqlite3.connect(archive_root / "embeddings.db") as conn:
+        loaded, error = try_load_sqlite_vec(conn)
+        if not loaded:
+            pytest.skip(f"sqlite-vec extension is unavailable: {error}")
+        upsert_message_embeddings(
+            conn,
+            [
+                ArchiveEmbeddingWrite(
+                    message_id=orphan_message_id,
+                    session_id=session_id,
+                    origin=Origin.CODEX_SESSION,
+                    embedding=[0.01] * EMBEDDING_DIMENSION,
+                    model="voyage-4",
+                    embedded_at_ms=1_700_000_000_000,
+                    content_hash=b"o" * 32,
+                )
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
+            ) VALUES (?, 'codex-session', 1, 1700000000000, 0, NULL)
+            """,
+            (session_id,),
+        )
+        conn.commit()
+    return session_id, orphan_message_id
+
+
+def test_embedding_orphan_reconcile_cli_dry_run_keeps_rows(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    _seed_orphan_embedding_row(cli_workspace["archive_root"])
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "embedding-orphan-reconcile", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "embedding_orphan_reconcile"
+    assert payload["mutates"] is False
+    assert payload["dry_run"] is True
+    assert payload["orphan_message_rows"] == 1
+    assert payload["removed_message_rows"] == 0
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+
+
+def test_embedding_orphan_reconcile_cli_apply_removes_rows(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    session_id, message_id = _seed_orphan_embedding_row(cli_workspace["archive_root"])
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "embedding-orphan-reconcile",
+            "--yes",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mutates"] is True
+    assert payload["dry_run"] is False
+    assert payload["removed_message_rows"] == 1
+    assert payload["removed_vector_rows"] == 1
+    assert payload["sessions_recounted"] == 1
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (message_id,)).fetchone()[
+                0
+            ]
+            == 0
+        )
+        status = conn.execute(
+            "SELECT message_count_embedded FROM embedding_status WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        assert status is not None
+        assert status[0] == 0
+
+
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
     _stage_uninitialized_archive(cli_workspace)
     result = cli_runner.invoke(
