@@ -48,6 +48,7 @@ function installDom() {
       <span id="mode"></span>
       <span id="fidelity"></span>
       <span id="turns"></span>
+      <span id="cost-tokens"></span>
       <span id="assets"></span>
       <div id="asset-failures"></div>
       <span id="receiver-health"></span>
@@ -299,6 +300,19 @@ describe("popup capture", () => {
     });
 
     expect(document.getElementById("turns").textContent).toBe("12 captured / 5 visible");
+  });
+
+  it("renders known cost and token data or an explicit unavailable state", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        usage: { total_tokens: 17 },
+        cost_usd: 0.012,
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(document.getElementById("cost-tokens").textContent).toBe("$0.012 · 17 tokens");
   });
 
   it("renders supported pages without a conversation id without implying capture happened", async () => {

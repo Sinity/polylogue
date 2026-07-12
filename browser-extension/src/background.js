@@ -327,13 +327,13 @@ async function drainCaptureQueue(trigger = "alarm") {
         queued_id: entry.id,
         attempts: entry.attempts,
       });
-      const archiveState = result.state ? { state: result.state } : null;
+      const archiveState = { state: result.state || "spooled_only" };
       await appendConversationTimeline({
         provider: summary.provider || result.provider,
         providerSessionId: summary.providerSessionId || result.provider_session_id,
         event: "captured",
         reason: "capture_retry_drained",
-        detail: result.state || "capture_accepted",
+        detail: archiveState.state,
       });
       await setState({
         online: true,
@@ -528,6 +528,13 @@ async function setState(state) {
   const badge = badgeForState(nextState);
   await chrome.action.setBadgeText({ text: badge.text });
   await chrome.action.setBadgeBackgroundColor({ color: badge.color });
+}
+
+async function setStateForTab(tabId, state) {
+  if (!tabId || !chrome.tabs?.query) return setState(state);
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTab || activeTab.id === tabId) return setState(state);
+  return null;
 }
 
 function buildReceiverRequestId() {
@@ -854,7 +861,7 @@ async function captureTab(tab, reason = "background") {
         archive_state: resultWithTimeout.archiveState?.state || null,
         receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
       });
-      await setState({
+      await setStateForTab(tab?.id || null, {
         online: true,
         captured: true,
         active_page_state: "conversation",
@@ -1021,7 +1028,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
         tabId: tab?.id || null,
         onlyIfEmpty: true,
       });
-      await setState({
+      await setStateForTab(tab?.id || null, {
         online: true,
         captured: Boolean(state.captured),
         archive_state: state,
@@ -1067,7 +1074,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
     }
 
     const status = await getJson("/v1/status");
-    await setState({
+    await setStateForTab(tab?.id || null, {
       online: true,
       captured: false,
       status,
@@ -1079,7 +1086,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
       last_receiver_request_id: status.receiver_request_id || null,
     });
   } catch (error) {
-    await setState({
+    await setStateForTab(tab?.id || null, {
       online: false,
       captured: false,
       provider,
@@ -1307,7 +1314,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             detail: "capture_queued_for_retry",
             tabId: sender.tab?.id || null,
           });
-          await setState({
+          await setStateForTab(sender.tab?.id || null, {
             online: false,
             captured: false,
             provider: summary.provider,
@@ -1349,16 +1356,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         receiver_request_id: result.receiver_request_id || null,
         artifact_ref: result.artifact_ref || null,
       });
-      const archiveState = result.state ? { state: result.state } : null;
+      const archiveState = { state: result.state || "spooled_only" };
       await appendConversationTimeline({
         provider: summary.provider || result.provider,
         providerSessionId: summary.providerSessionId || result.provider_session_id,
         event: "captured",
         reason: message.reason || "content_script_capture",
-        detail: result.state || "capture_accepted",
+        detail: archiveState.state,
         tabId: sender.tab?.id || null,
       });
-      await setState({
+      await setStateForTab(sender.tab?.id || null, {
         online: true,
         captured: true,
         last_capture: result,
@@ -1413,7 +1420,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         provider_session_id: message.provider_session_id
       });
       const state = await getJson(`/v1/archive-state?${query.toString()}`);
-      await setState({
+      const stored = await chrome.storage.local.get({ polylogueState: null });
+      const previous = stored.polylogueState;
+      const sameSession = previous?.provider === message.provider
+        && previous?.provider_session_id === message.provider_session_id;
+      const preservedCaptureMetadata = sameSession ? {
+        last_capture: previous.last_capture,
+        capture_mode: previous.capture_mode,
+        asset_acquisition: previous.asset_acquisition,
+        turn_count: previous.turn_count,
+        attachment_count: previous.attachment_count,
+      } : {};
+      await setStateForTab(sender.tab?.id || null, {
+        ...preservedCaptureMetadata,
         online: true,
         captured: Boolean(state.captured),
         archive_state: state,

@@ -279,6 +279,63 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.action.setBadgeText.mock.calls.at(-1)[0]).toEqual({ text: "…" });
   });
 
+  it("preserves capture metadata when content refreshes its archive state", async () => {
+    let request = 0;
+    globalThis.fetch = vi.fn(async () => {
+      request += 1;
+      return responseJson(request === 1
+        ? { provider: "chatgpt", provider_session_id: "conv-metadata" }
+        : { provider: "chatgpt", provider_session_id: "conv-metadata", state: "spooled_only", captured: false });
+    });
+
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: {
+        session: {
+          provider: "chatgpt",
+          provider_session_id: "conv-metadata",
+          provider_meta: { capture_fidelity: "dom_degraded" },
+          turns: [{ role: "user" }, { role: "assistant" }],
+        },
+      },
+    });
+    await sendRuntimeMessage({
+      type: "polylogue.archiveState",
+      provider: "chatgpt",
+      provider_session_id: "conv-metadata",
+    });
+
+    expect(stored.polylogueState).toMatchObject({
+      capture_mode: "dom_degraded",
+      turn_count: 2,
+      archive_state: { state: "spooled_only" },
+    });
+  });
+
+  it("does not let an inactive tab update replace the active conversation card state", async () => {
+    tabs = [
+      { id: 1, url: "https://chatgpt.com/c/conv-active", title: "Active", active: true },
+      { id: 2, url: "https://chatgpt.com/c/conv-inactive", title: "Inactive", active: false },
+    ];
+    stored.polylogueState = {
+      online: true,
+      provider: "chatgpt",
+      provider_session_id: "conv-active",
+      archive_state: { state: "archived" },
+    };
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "chatgpt",
+      provider_session_id: "conv-inactive",
+      state: "archived",
+      captured: true,
+    }));
+
+    updatedListener(2, { status: "complete" }, tabs[1]);
+
+    await vi.waitFor(() => expect(stored.polylogueSessionLedger["chatgpt:conv-inactive"]?.archive_state?.state).toBe("archived"));
+    expect(stored.polylogueState.provider_session_id).toBe("conv-active");
+  });
+
   it("does not capture existing provider tabs on extension update", async () => {
     expect(installedListener).toBeTypeOf("function");
     globalThis.fetch = vi.fn(async () => responseJson({ ok: true, active: true }));

@@ -332,6 +332,15 @@ function fidelityLabel(captureMode) {
   return captureMode || "--";
 }
 
+function costTokensLabel(state) {
+  const totalTokens = state?.usage?.total_tokens ?? state?.total_tokens ?? null;
+  const costUsd = state?.cost_usd ?? state?.cost?.usd ?? null;
+  const parts = [];
+  if (Number.isFinite(costUsd)) parts.push(`$${Number(costUsd).toFixed(3)}`);
+  if (Number.isFinite(totalTokens)) parts.push(`${totalTokens} tokens`);
+  return parts.length ? parts.join(" · ") : "Unavailable";
+}
+
 function truncateForDisplay(value, limit = 200) {
   const text = String(value ?? "");
   return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
@@ -527,6 +536,7 @@ async function render() {
   requestNode.textContent = state?.last_receiver_request_id || "--";
   modeNode.textContent = state?.capture_mode || state?.archive_state?.state || "--";
   document.getElementById("fidelity").textContent = fidelityLabel(state?.capture_mode);
+  document.getElementById("cost-tokens").textContent = costTokensLabel(state);
   renderAssetAcquisition(state?.asset_acquisition);
   const lastSession = state?.last_capture || {};
   const capturedCount = state?.turn_count ?? lastSession.turn_count ?? null;
