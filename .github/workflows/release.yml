@@ -10,8 +10,9 @@ name: Release
 # The OCI image is built and published by `.github/workflows/container.yml`,
 # which fans out across slim + distroless variants and linux/amd64 + linux/arm64.
 #
-# A manual `workflow_dispatch` path exists to dry-run the build/smoke
-# pipeline against any ref without publishing.
+# A manual `workflow_dispatch` path can replay an already-created tag. This is
+# intentionally a release-artifact recovery path, not a way to publish the
+# current default branch under an older version number.
 #
 # PyPI Trusted Publishing must be configured once in the project on
 # pypi.org under "Publishing" → "Add a new pending publisher" with:
@@ -25,8 +26,12 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "Existing vX.Y.Z tag whose exact source should be built (required to publish)"
+        required: false
+        default: ""
       publish:
-        description: "Publish to PyPI and GHCR (false = dry-run build/smoke only)"
+        description: "Publish to PyPI (false = dry-run build/smoke only)"
         required: false
         default: "false"
 
@@ -46,6 +51,50 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Manual recovery must package the immutable tag, not the workflow
+          # branch that happens to contain this recovery machinery.
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          fetch-depth: 0
+      - name: Verify release source identity
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          if [[ -z "${tag}" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if [[ -n "${tag}" ]]; then
+            if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release_tag must be vX.Y.Z, got '${tag}'"
+              exit 1
+            fi
+            version="$(python -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
+            if [[ "${version}" != "${tag#v}" ]]; then
+              echo "::error::${tag} does not match pyproject.toml version ${version}"
+              exit 1
+            fi
+            tag_revision="$(git rev-parse "refs/tags/${tag}^{commit}")"
+            if [[ "$(git rev-parse HEAD)" != "${tag_revision}" ]]; then
+              echo "::error::checked-out source does not match ${tag} target"
+              exit 1
+            fi
+            if [[ -n "${RELEASE_TAG}" ]]; then
+              release_revision="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.target_commitish')"
+              if [[ ! "${release_revision}" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::GitHub Release ${tag} does not record an immutable commit SHA"
+                exit 1
+              fi
+              if [[ "${tag_revision}" != "${release_revision}" ]]; then
+                echo "::error::${tag} no longer matches its GitHub Release target"
+                exit 1
+              fi
+            fi
+          fi
+          echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
       - uses: astral-sh/setup-uv@v8.3.0
         with:
           python-version: "3.13"
@@ -55,6 +104,29 @@ jobs:
         run: uv run devtools release verify-distribution --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
+      - name: Verify installed wheel exposes the exact build revision
+        env:
+          EXPECTED_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          uv venv "${RUNNER_TEMP}/build-info-venv"
+          uv pip install --python "${RUNNER_TEMP}/build-info-venv/bin/python" "${RUNNER_TEMP}/dist/dist"/*.whl
+          "${RUNNER_TEMP}/build-info-venv/bin/python" -I - <<'PY'
+          import json
+          import os
+
+          from polylogue.version import VERSION_INFO
+
+          payload = {
+              "version": VERSION_INFO.version,
+              "revision": VERSION_INFO.commit,
+              "dirty": VERSION_INFO.dirty,
+          }
+          print(json.dumps(payload, sort_keys=True))
+          assert payload["revision"] == os.environ["EXPECTED_REVISION"], payload
+          assert len(payload["revision"] or "") == 40, payload
+          assert payload["dirty"] is False, payload
+          PY
       - name: twine check (PyPI metadata long-description renderability)
         run: |
           uv run --with twine python -m twine check "${RUNNER_TEMP}/dist/dist"/*.whl "${RUNNER_TEMP}/dist/dist"/*.tar.gz
@@ -205,6 +277,41 @@ jobs:
             exit 1
           fi
 
+  pipx-smoke:
+    # pipx is the documented user-facing install route. Install the built
+    # wheel with pipx itself so console-script discovery is not accidentally
+    # relying on the repository's dev environment or a plain venv path.
+    name: pipx-smoke
+    needs: build
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: distribution-artifacts
+          path: dist/
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install built wheel through pipx and smoke every console script
+        shell: bash
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+          PIPX_HOME: ${{ runner.temp }}/pipx-home
+          PIPX_BIN_DIR: ${{ runner.temp }}/pipx-bin
+        run: |
+          set -euo pipefail
+          python -m pip install --user pipx
+          wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
+          python -m pipx install --suffix=-smoke "${wheel}"
+          archive_root="${RUNNER_TEMP}/polylogue-pipx-archive"
+          mkdir -p "${archive_root}"
+          export POLYLOGUE_ARCHIVE_ROOT="${archive_root}"
+          "${PIPX_BIN_DIR}/polylogue-smoke" --version
+          "${PIPX_BIN_DIR}/polylogue-smoke" --plain analyze --count
+          "${PIPX_BIN_DIR}/polylogued-smoke" --help > /dev/null
+          "${PIPX_BIN_DIR}/polylogue-mcp-smoke" --help > /dev/null
+
   installed-smoke-mcp:
     # polylogue-mcp is a thin wrapper that pins the matching polylogue release.
     # Install both wheels together and confirm the console script resolves
@@ -288,8 +395,8 @@ jobs:
 
   publish-pypi:
     name: publish-pypi
-    needs: [build, installed-smoke, installed-smoke-mcp, installed-smoke-hooks, sbom]
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    needs: [build, installed-smoke, installed-smoke-mcp, installed-smoke-hooks, pipx-smoke, sbom]
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && inputs.release_tag != '')
     timeout-minutes: 15
     runs-on: ubuntu-latest
     environment:
@@ -333,7 +440,7 @@ jobs:
     # environment=pypi-mcp before the first tagged release reaches this job.
     name: publish-pypi-mcp
     needs: [build, installed-smoke-mcp, sbom]
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && inputs.release_tag != '')
     timeout-minutes: 15
     runs-on: ubuntu-latest
     environment:
@@ -372,7 +479,7 @@ jobs:
     # environment=pypi-hooks before the first tagged release reaches this job.
     name: publish-pypi-hooks
     needs: [build, installed-smoke-hooks, sbom]
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && inputs.release_tag != '')
     timeout-minutes: 15
     runs-on: ubuntu-latest
     environment:

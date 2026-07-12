@@ -7,7 +7,7 @@ name: Extension Release
 #
 # Trigger surface:
 #   - tag push v*.*.*    → builds, lints, screenshots, attaches to release
-#   - workflow_dispatch  → dry-run build, uploads only as workflow artifacts
+#   - workflow_dispatch  → dry-run build, or backfills an existing release tag
 #   - pull_request paths → build + validate only (no upload), smoke gate
 #
 # Versioning: the build script reads `version` from the [project] table of
@@ -26,8 +26,8 @@ on:
       - .github/workflows/extension-release.yml
   workflow_dispatch:
     inputs:
-      upload-release:
-        description: "Upload artifacts to an existing release tag (e.g. v0.2.0)"
+      release_tag:
+        description: "Existing vX.Y.Z tag to build from and attach to (empty = dry-run)"
         required: false
         default: ""
 
@@ -50,6 +50,44 @@ jobs:
       version: ${{ steps.summary.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Recovery builds the extension sources that belong to the release,
+          # not whatever code later reached the default branch.
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+      - name: Record packaged source revision
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          if [[ -z "${tag}" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if [[ -n "${tag}" ]]; then
+            if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release_tag must be vX.Y.Z, got '${tag}'"
+              exit 1
+            fi
+            tag_revision="$(git rev-parse "refs/tags/${tag}^{commit}")"
+            if [[ "$(git rev-parse HEAD)" != "${tag_revision}" ]]; then
+              echo "::error::checked-out source does not match ${tag} target"
+              exit 1
+            fi
+            if [[ -n "${RELEASE_TAG}" ]]; then
+              release_revision="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.target_commitish')"
+              if [[ ! "${release_revision}" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::GitHub Release ${tag} does not record an immutable commit SHA"
+                exit 1
+              fi
+              if [[ "${tag_revision}" != "${release_revision}" ]]; then
+                echo "::error::${tag} no longer matches its GitHub Release target"
+                exit 1
+              fi
+            fi
+          fi
+          echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -92,6 +130,52 @@ jobs:
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "Built artifacts for version ${version}:"
           ls -la dist/
+      - name: Write store-submission manifest
+        env:
+          VERSION: ${{ steps.summary.outputs.version }}
+          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          dist = Path("dist")
+          version = os.environ["VERSION"]
+          revision = os.environ["SOURCE_REVISION"]
+          chrome = sorted(dist.glob("polylogue-browser-capture-*-chrome.zip"))
+          firefox = sorted(dist.glob("polylogue-browser-capture-*-firefox.xpi"))
+          if len(chrome) != 1 or len(firefox) != 1:
+              raise SystemExit(f"expected one Chrome zip and one Firefox xpi, found chrome={chrome}, firefox={firefox}")
+          artifacts = [chrome[0], firefox[0]]
+          expected_names = {
+              f"polylogue-browser-capture-{version}-chrome.zip",
+              f"polylogue-browser-capture-{version}-firefox.xpi",
+          }
+          if {path.name for path in artifacts} != expected_names:
+              raise SystemExit(f"artifact names do not match version {version}: {artifacts}")
+          if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+              raise SystemExit(f"source revision is not a full immutable SHA: {revision!r}")
+          payload = {
+              "schema_version": 1,
+              "version": version,
+              "source_revision": revision,
+              "firefox_gecko_id": json.loads((dist / "build-manifest.json").read_text())["firefox_gecko_id"],
+              "artifacts": [
+                  {
+                      "name": path.name,
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                      "size_bytes": path.stat().st_size,
+                  }
+                  for path in artifacts
+              ],
+          }
+          target = dist / f"polylogue-browser-capture-{version}-store-submission.json"
+          target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          print(target.read_text(), end="")
+          PY
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -99,6 +183,7 @@ jobs:
           path: |
             browser-extension/dist/polylogue-browser-capture-*-chrome.zip
             browser-extension/dist/polylogue-browser-capture-*-firefox.xpi
+            browser-extension/dist/polylogue-browser-capture-*-store-submission.json
             browser-extension/dist/build-manifest.json
             browser-extension/dist/screenshots/**
           if-no-files-found: error
@@ -106,7 +191,7 @@ jobs:
   attach-to-release:
     name: attach-to-release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.upload-release != ''
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -125,11 +210,19 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             tag="${GITHUB_REF_NAME}"
           else
-            tag="${{ github.event.inputs.upload-release }}"
+            tag="${{ inputs.release_tag }}"
           fi
           if [ -z "${tag}" ]; then
             echo "no target tag — skipping upload" >&2
             exit 0
+          fi
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release tag must be vX.Y.Z, got '${tag}'"
+            exit 1
+          fi
+          if [[ "${{ needs.build.outputs.version }}" != "${tag#v}" ]]; then
+            echo "::error::artifact version ${{ needs.build.outputs.version }} does not match ${tag}"
+            exit 1
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts to release
@@ -144,6 +237,7 @@ jobs:
           gh release upload "${TAG}" \
             artifacts/polylogue-browser-capture-*-chrome.zip \
             artifacts/polylogue-browser-capture-*-firefox.xpi \
+            artifacts/polylogue-browser-capture-*-store-submission.json \
             artifacts/build-manifest.json \
             --clobber --repo "${GITHUB_REPOSITORY}"
           # Screenshots are uploaded as a tar.gz so the release page does

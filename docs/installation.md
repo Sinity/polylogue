@@ -1,15 +1,23 @@
 # Installation
 
-Polylogue is currently installed from the source checkout or the Nix flake.
-PyPI, Homebrew, container images, and browser-store extension packages are
-release-channel targets; do not treat them as available user install paths
-until the release workflow has published and smoke-tested those artifacts.
+Polylogue has source/Nix routes now and release-artifact routes once the
+corresponding tag artifacts have been published and smoke-tested. A GitHub tag
+or release page alone is not proof that PyPI, GHCR, Homebrew, or extension
+artifacts are available: use the linked verification for the channel you plan
+to install from.
 
-| Channel | Audience | Reference |
-| --- | --- | --- |
-| `nix develop` | Local development, source checkout, verification | [Contributing](../CONTRIBUTING.md) |
-| `nix run github:Sinity/polylogue` | NixOS / nix-darwin users | [`flake.nix`](../flake.nix) |
-| NixOS / Home Manager module | Managed local daemon deployment | see below |
+| Channel | Audience | Install after its artifact smoke passes | Verification |
+| --- | --- | --- | --- |
+| `nix develop` | Local development, source checkout, verification | `nix develop` | [Contributing](../CONTRIBUTING.md) |
+| Nix flake | NixOS / nix-darwin users | `nix run github:Sinity/polylogue -- --help` | [`flake.nix`](../flake.nix) |
+| PyPI / pipx | Python CLI users | `pipx install "polylogue==X.Y.Z"` | `polylogue --version`, `polylogued --help`, `polylogue-mcp --help` |
+| GHCR | Container deployments | `podman pull ghcr.io/sinity/polylogue:X.Y.Z` | `podman run --rm --entrypoint polylogue ghcr.io/sinity/polylogue:X.Y.Z --version` |
+| Homebrew | macOS/Linuxbrew users | `brew install sinity/tap/polylogue` | `brew test polylogue` |
+| Browser extension | Browser-capture users | Download the matching release `.zip` / `.xpi` | verify `build-manifest.json` version equals `X.Y.Z` |
+| NixOS / Home Manager module | Managed local daemon deployment | see below | `systemctl status polylogued.service` |
+
+For the release-channel recovery sequence and exact smoke matrix, see the
+[release checklist](release.md#backfill-an-existing-tag-without-re-cutting-it).
 
 The source and Nix paths expose the same three console scripts: `polylogue`,
 `polylogued`, and `polylogue-mcp`.
@@ -81,12 +89,50 @@ systemctl status polylogued.service
 polylogue ops status
 ```
 
-## Container image and Homebrew status
+## PyPI, containers, and Homebrew
 
-Container and Homebrew packaging files live in the repository, but those
-channels are not documented as current install routes until release artifacts
-exist and the release checklist verifies them. For local container experiments,
-build from the checkout:
+After the release workflow has published the matching version, `pipx` is the
+recommended isolated CLI install:
+
+```bash
+pipx install "polylogue==X.Y.Z"
+polylogue --version
+polylogued --help
+polylogue-mcp --help
+```
+
+For containers, use `--version` for the concise human build identity and query
+the packaged runtime's `VERSION_INFO.commit` for the full revision before
+deploying:
+
+```bash
+podman pull ghcr.io/sinity/polylogue:X.Y.Z
+podman run --rm --entrypoint polylogue ghcr.io/sinity/polylogue:X.Y.Z --version
+podman run --rm --entrypoint python ghcr.io/sinity/polylogue:X.Y.Z \
+  -I -c 'from polylogue.version import VERSION_INFO; print(VERSION_INFO.commit)'
+git ls-remote https://github.com/Sinity/polylogue refs/tags/vX.Y.Z
+```
+
+The published workflow performs this smoke for both slim and distroless images;
+it requires the concise version to match the source prefix and the machine-
+readable runtime field to equal the complete source revision.
+
+For Homebrew, install only after the release-triggered tap PR has merged:
+
+```bash
+brew install sinity/tap/polylogue
+brew test polylogue
+```
+
+### Recovering an already-created tag
+
+If a GitHub Release exists without its artifacts, do not re-cut its tag. Follow
+the [release checklist recovery sequence](release.md#backfill-an-existing-tag-without-re-cutting-it),
+which requires the tag, checked-out source, and GitHub Release target commit to
+agree before publication.
+
+For local container or formula experiments before their artifacts exist, build
+from the checkout:
 
 ```bash
 docker buildx build -f packaging/Containerfile --target runtime    -t polylogue:slim       .
@@ -210,6 +256,7 @@ attached to every GitHub release by
 | --- | --- | --- |
 | `polylogue-browser-capture-<version>-chrome.zip` | Chrome, Chromium, Edge, Brave, Vivaldi | Developer-mode unpacked install |
 | `polylogue-browser-capture-<version>-firefox.xpi` | Firefox | Temporary install via `about:debugging` |
+| `polylogue-browser-capture-<version>-store-submission.json` | Store operators | Version, source revision, Gecko ID, SHA-256, and size for both archives |
 | `store-screenshots-<tag>.tar.gz` | — | Submission media for store listings |
 
 Download the artifacts from the
@@ -217,7 +264,9 @@ Download the artifacts from the
 The version is locked to the polylogue Python project version on the same
 tag — the workflow rewrites `manifest.json` from `pyproject.toml` before
 packaging so the extension version always matches the daemon protocol it
-was built against.
+was built against. Before uploading to a store, verify each downloaded archive
+against the matching `store-submission.json`; it binds the pair to the release
+version and complete source revision.
 
 ### Install paths
 
@@ -240,8 +289,8 @@ a glance:
 
 | Channel | Status | Tracking |
 | --- | --- | --- |
-| Packed `.zip` on GitHub Releases | shipped | this doc |
-| Packed `.xpi` on GitHub Releases | shipped | this doc |
+| Packed `.zip` on GitHub Releases | release-backed; verify the matching asset exists | this doc |
+| Packed `.xpi` on GitHub Releases | release-backed; verify the matching asset exists | this doc |
 | Chrome Web Store | not submitted (store sign-up + review have non-engineering blockers) | follow-up |
 | Mozilla AMO | not submitted (same blockers) | follow-up |
 

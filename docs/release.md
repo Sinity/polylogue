@@ -137,8 +137,9 @@ recompute and open a new one on the next push to `master`.
 PyPI Trusted Publishing requires a one-time registration on pypi.org under
 "Publishing" → "Add a new pending publisher" with `owner = Sinity`,
 `repo = polylogue`, `workflow = release.yml`, `environment = pypi`. If this
-is missing the publish step fails with an OIDC error and the tag must be
-re-cut after re-running the workflow.
+is missing the publish step fails with an OIDC error. Configure the publisher,
+then use the [backfill procedure](#backfill-an-existing-tag-without-re-cutting-it)
+for the existing tag; do not move or re-cut it.
 
 The same release tag also publishes the wrapper distributions
 [`polylogue-mcp`](https://pypi.org/project/polylogue-mcp/) and
@@ -163,6 +164,36 @@ the public Sigstore transparency log. Consumers can verify the bundle with
 https://github.com/Sinity/polylogue/.github/workflows/release.yml@refs/tags/vX.Y.Z
 --cert-oidc-issuer https://token.actions.githubusercontent.com
 polylogue-X.Y.Z-py3-none-any.whl polylogue-X.Y.Z-py3-none-any.whl.sigstore`.
+
+## Backfill an existing tag without re-cutting it
+
+If a GitHub Release exists but its artifact workflows did not run, replay the
+artifacts from that release's recorded commit. Do not move, delete, or re-cut
+the tag. The recovery workflows require the explicit `vX.Y.Z` tag, check out
+`refs/tags/vX.Y.Z`, and reject it if either the checked-out commit or tag target
+differs from the immutable full SHA recorded on the GitHub Release.
+
+After the recovery workflow changes are on `master`, dispatch the lanes in this
+order:
+
+```bash
+gh workflow run release.yml --ref master \
+  -f release_tag=vX.Y.Z -f publish=true
+gh workflow run container.yml --ref master \
+  -f release_tag=vX.Y.Z -f push=true
+gh workflow run extension-release.yml --ref master \
+  -f release_tag=vX.Y.Z
+# Run after the PyPI sdist is visible and HOMEBREW_TAP_TOKEN is configured.
+gh workflow run homebrew-bump.yml --ref master -f release_tag=vX.Y.Z
+```
+
+Recovery publishes only the immutable versioned GHCR tags; it deliberately does
+not retarget `latest`. The container lane pulls slim and distroless images,
+checks the concise CLI version prefix, and compares the machine-readable full
+`VERSION_INFO.commit` to the recorded release commit. Finish with the post-cut
+checks below before treating any channel as available. The Homebrew lane also
+checks its manually selected tag against the GitHub Release target and refuses
+to downgrade the formula already in the tap.
 
 ## Post
 

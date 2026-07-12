@@ -9,7 +9,7 @@ name: Homebrew Bump
 #
 # Trigger surface:
 # - `push` on a `vX.Y.Z` tag                       — normal release path
-# - `workflow_dispatch` with a manual `version`    — recovery / backfill
+# - `workflow_dispatch` with an existing `release_tag` — recovery / backfill
 #
 # Required secrets:
 # - `HOMEBREW_TAP_TOKEN`: a GitHub fine-grained PAT with `contents: write`
@@ -23,8 +23,8 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version to bump to (e.g. 0.2.3). Omit when triggered by a tag push."
+      release_tag:
+        description: "Existing vX.Y.Z release tag to backfill (empty = selected tag push)"
         required: false
         default: ""
 
@@ -41,30 +41,54 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Resolve target version
-        id: version
+      - name: Resolve target release tag
+        id: release
         env:
-          MANUAL_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          if [[ -n "${MANUAL_VERSION}" ]]; then
-            version="${MANUAL_VERSION}"
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            tag="${RELEASE_TAG}"
           else
-            # Tag refs look like `refs/tags/v0.2.3`; strip the leading `v`.
             tag="${GITHUB_REF_NAME}"
-            version="${tag#v}"
           fi
-          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid version '${version}'. Expected X.Y.Z."
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid release tag '${tag}'. Expected vX.Y.Z."
             exit 1
           fi
+          version="${tag#v}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "Bumping homebrew formula to polylogue ${version}"
+          echo "Bumping homebrew formula from ${tag}"
 
-      - name: Check out upstream repo (for the template + README links)
+      - name: Check out release source (for the formula template)
         uses: actions/checkout@v7
         with:
+          ref: refs/tags/${{ steps.release.outputs.tag }}
+          fetch-depth: 0
           path: upstream
+
+      - name: Verify manual recovery release identity
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag_revision="$(git -C upstream rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          if [[ "$(git -C upstream rev-parse HEAD)" != "${tag_revision}" ]]; then
+            echo "::error::checked-out source does not match ${RELEASE_TAG} target"
+            exit 1
+          fi
+          release_revision="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.target_commitish')"
+          if [[ ! "${release_revision}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::GitHub Release ${RELEASE_TAG} does not record an immutable commit SHA"
+            exit 1
+          fi
+          if [[ "${tag_revision}" != "${release_revision}" ]]; then
+            echo "::error::${RELEASE_TAG} no longer matches its GitHub Release target"
+            exit 1
+          fi
 
       - name: Check out homebrew tap repo
         uses: actions/checkout@v7
@@ -73,10 +97,34 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
+      - name: Reject formula downgrades
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          formula = Path("tap/Formula/polylogue.rb").read_text()
+          match = re.search(r"polylogue-(\d+\.\d+\.\d+)\.tar\.gz", formula)
+          if match is None:
+              raise SystemExit("could not determine current tap formula version")
+          current = tuple(map(int, match.group(1).split(".")))
+          requested = tuple(map(int, os.environ["VERSION"].split(".")))
+          if requested < current:
+              raise SystemExit(
+                  f"refusing to downgrade tap formula from {match.group(1)} to "
+                  f"{os.environ['VERSION']}"
+              )
+          print(f"tap formula {match.group(1)} -> {os.environ['VERSION']}")
+          PY
+
       - name: Wait for PyPI sdist availability and resolve sha256
         id: pypi
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
           sdist="polylogue-${VERSION}.tar.gz"
@@ -105,7 +153,7 @@ jobs:
 
       - name: Rewrite formula placeholders
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
           URL: ${{ steps.pypi.outputs.url }}
           SHA256: ${{ steps.pypi.outputs.sha256 }}
         run: |
@@ -165,10 +213,22 @@ jobs:
             brew audit --strict --online ./Formula/polylogue.rb
           )
 
+      - name: Install and smoke the generated formula
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_FROM_API: "1"
+        run: |
+          set -euo pipefail
+          # Audit only proves formula shape. Build the same resource-expanded
+          # formula that the tap PR will contain, then exercise its production
+          # `test do` block against the installed console scripts.
+          brew install --build-from-source tap/Formula/polylogue.rb
+          brew test --verbose polylogue
+
       - name: Open / refresh tap PR
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
           cd tap
