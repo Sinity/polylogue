@@ -11,6 +11,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.operator.inference import (
+    _privacy_config,
     audit_schemas,
     compare_schema_versions,
     infer_schema,
@@ -101,9 +102,10 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
     assert promoted.package_version == "v2"
     assert promoted.schema is not None
     specs = list_inferred_corpus_specs(provider="chatgpt")
-    scenarios = list_inferred_corpus_scenarios(provider="chatgpt")
     registry = SchemaRegistry()
     registry.register_schema("chatgpt", {"type": "object", "properties": {"mapping": {"type": "object"}}})
+    registry.register_schema("codex", {"type": "object", "properties": {"session_id": {"type": "string"}}})
+    scenarios = list_inferred_corpus_scenarios()
     comparison = compare_schema_versions(SchemaCompareRequest(provider="chatgpt", from_version="v2", to_version="v3"))
     selected = list_schemas(SchemaListRequest(provider="chatgpt"))
 
@@ -111,30 +113,45 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
     assert comparison.diff.version_b == "v3"
     assert selected.selected is not None
     assert selected.selected.versions == ["v1", "v2", "v3"]
+    assert {spec.provider for spec in specs} == {"chatgpt"}
     assert specs[0].package_version == "v2"
-    assert scenarios[0].provider == "chatgpt"
+    assert {scenario.provider for scenario in scenarios} >= {"chatgpt", "codex"}
 
 
 def test_infer_schema_normalizes_operator_privacy_configuration(workspace_env: dict[str, Path]) -> None:
     index_db = _seed_chatgpt_raw(workspace_env)
+    privacy_payload = {
+        "level": "strict",
+        "field_overrides": {"$.id": "drop", "invalid": 1},
+        "allow_value_patterns": ["safe", 1],
+        "deny_value_patterns": ["secret"],
+        "safe_enum_max_length": "invalid",
+        "high_entropy_min_length": 14,
+        "cross_conv_min_count": 5,
+        "cross_conv_proportional": True,
+    }
 
     result = infer_schema(
         SchemaInferRequest(
             provider="chatgpt",
             db_path=index_db,
-            privacy_config={
-                "level": "strict",
-                "field_overrides": {"$.id": "drop", "invalid": 1},
-                "allow_value_patterns": ["safe", 1],
-                "deny_value_patterns": ["secret"],
-                "high_entropy_min_length": 14,
-            },
+            privacy_config=privacy_payload,
         )
     )
+    privacy = _privacy_config(privacy_payload)
 
     assert result.generation.success
     assert result.generation.schema is not None
     assert result.generation.schema["type"] == "object"
+    assert privacy is not None
+    assert privacy.level == "strict"
+    assert privacy.safe_enum_max_length == 30
+    assert privacy.high_entropy_min_length == 14
+    assert privacy.cross_conv_min_count == 5
+    assert privacy.cross_conv_proportional is True
+    assert privacy.field_overrides == {"$.id": "drop"}
+    assert privacy.allow_value_patterns == ["safe"]
+    assert privacy.deny_value_patterns == ["secret"]
 
 
 def test_operator_inference_reports_real_unknown_provider_and_audits_bundled_schema(
