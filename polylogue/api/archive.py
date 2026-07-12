@@ -300,6 +300,32 @@ def _oversized_annotation_batch_ref_payload(ref: str) -> Any | None:
     )
 
 
+def _invalid_unicode_ref_payload(ref: str) -> Any | None:
+    """Fail closed before an invalid Python string reaches parsing or SQLite."""
+
+    from polylogue.surfaces.payloads import (
+        InvalidUnicodeRefDigestPayload,
+        PublicRefResolutionPayload,
+        model_json_document,
+    )
+
+    try:
+        descriptor = InvalidUnicodeRefDigestPayload.from_invalid_ref(ref)
+    except ValueError:
+        return None
+    batch_like = ref.startswith("annotation-batch")
+    stable_prefix = "annotation-batch:invalid-unicode" if batch_like else "invalid-unicode-ref"
+    return PublicRefResolutionPayload(
+        ref=f"{stable_prefix}:sha256-{descriptor.original_ref_surrogatepass_sha256}",
+        normalized_ref=None,
+        kind="annotation-batch" if batch_like else None,
+        resolved=False,
+        payload_kind="invalid-unicode-ref-digest",
+        payload=model_json_document(descriptor),
+        caveats=("invalid Unicode public reference omitted from the response",),
+    )
+
+
 #: ObjectRefKind values registered ahead of their backing storage tier
 #: (polylogue-rxdo analysis-provenance epic). ``resolve_ref`` returns a typed
 #: ``PendingObjectRefPayload`` (reason=substrate-pending) for these instead of
@@ -2759,6 +2785,9 @@ class PolylogueArchiveMixin:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
+        invalid_unicode_ref = _invalid_unicode_ref_payload(ref)
+        if invalid_unicode_ref is not None:
+            return cast(PublicRefResolutionPayload, invalid_unicode_ref)
         bounded_batch_ref = _oversized_annotation_batch_ref_payload(ref)
         if bounded_batch_ref is not None:
             # ``parse_public_ref`` deliberately falls back to EvidenceRef, whose

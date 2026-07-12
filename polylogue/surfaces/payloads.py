@@ -1914,6 +1914,34 @@ class AnnotationBatchRefDigestPayload(SurfacePayloadModel):
         )
 
 
+class InvalidUnicodeRefDigestPayload(SurfacePayloadModel):
+    """Identity-only descriptor for a public ref that is not valid UTF-8.
+
+    ``surrogatepass`` gives Python's otherwise-unencodable code-point sequence
+    a deterministic digest input without claiming that those bytes are UTF-8.
+    The original text is never exposed on a public surface.
+    """
+
+    unit: Literal["invalid-unicode-ref-digest"] = "invalid-unicode-ref-digest"
+    reason: Literal["invalid-unicode"] = "invalid-unicode"
+    original_ref_surrogatepass_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_ref_codepoints_total: int = Field(ge=1)
+    truncated: Literal[True] = True
+
+    @classmethod
+    def from_invalid_ref(cls, value: str) -> InvalidUnicodeRefDigestPayload:
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            digest_input = value.encode("utf-8", errors="surrogatepass")
+        else:
+            raise ValueError("public ref is valid UTF-8")
+        return cls(
+            original_ref_surrogatepass_sha256=hashlib.sha256(digest_input).hexdigest(),
+            original_ref_codepoints_total=len(value),
+        )
+
+
 class AnnotationBatchTextPreviewPayload(SurfacePayloadModel):
     """Serialization-bounded text prefix with exact UTF-8 identity metadata."""
 

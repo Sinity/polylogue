@@ -2393,6 +2393,41 @@ async def test_resolve_ref_byte_bounds_missing_and_malformed_giant_annotation_ba
         await archive.close()
 
 
+async def test_resolve_ref_fail_closes_giant_annotation_batch_ref_with_lone_surrogate(tmp_path: Path) -> None:
+    """Invalid Unicode is bounded before ObjectRef parsing or SQLite binding.
+
+    Anti-vacuity: this invokes the production facade with a value that
+    ``str.encode('utf-8')`` rejects. Without the pre-parse guard, the valid
+    annotation-batch kind reaches the durable lookup and raises instead of
+    returning a serializable response.
+    """
+
+    ref = f"annotation-batch:{'x' * 300}\ud800"
+    digest = hashlib.sha256(ref.encode("utf-8", errors="surrogatepass")).hexdigest()
+    archive = _archive(tmp_path)
+    try:
+        resolution = await archive.resolve_ref(ref)
+
+        assert resolution.resolved is False
+        assert resolution.kind == "annotation-batch"
+        assert resolution.ref == f"annotation-batch:invalid-unicode:sha256-{digest}"
+        assert resolution.normalized_ref is None
+        assert resolution.payload_kind == "invalid-unicode-ref-digest"
+        assert resolution.payload == {
+            "unit": "invalid-unicode-ref-digest",
+            "reason": "invalid-unicode",
+            "original_ref_surrogatepass_sha256": digest,
+            "original_ref_codepoints_total": len(ref),
+            "truncated": True,
+        }
+        assert resolution.caveats == ("invalid Unicode public reference omitted from the response",)
+        rendered = resolution.model_dump_json()
+        assert ref not in rendered
+        assert len(rendered.encode("utf-8")) < 1_024
+    finally:
+        await archive.close()
+
+
 async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: Path) -> None:
     """The real durable-read -> facade route stays finite for oversized batches.
 
