@@ -45,6 +45,16 @@ def _make_config(tmp_path: Path) -> Config:
     )
 
 
+def _caller_archive_workspace(workspace_env: dict[str, Path]) -> dict[str, Path]:
+    """Initialize a caller archive distinct from the ambient fixture root."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    caller_archive_root = workspace_env["data_root"] / "caller-archive"
+    with ArchiveStore(caller_archive_root):
+        pass
+    return {**workspace_env, "archive_root": caller_archive_root}
+
+
 class TestBackfillKindCoverage:
     """Every typed-taxonomy kind from #1144 must be representable."""
 
@@ -335,10 +345,11 @@ class TestConfigThreading:
 
     def test_preview_reads_the_callers_seeded_archive(self, workspace_env: dict[str, Path]) -> None:
         """Planner debt comes from the supplied archive, not ambient paths."""
-        index_db = db_setup(workspace_env)
+        caller_workspace = _caller_archive_workspace(workspace_env)
+        index_db = db_setup(caller_workspace)
         DbFactory(index_db).create_session(id="planner-config")
         config = Config(
-            archive_root=workspace_env["archive_root"],
+            archive_root=caller_workspace["archive_root"],
             render_root=workspace_env["data_root"] / "render",
             sources=[],
             db_path=index_db,
@@ -351,10 +362,11 @@ class TestConfigThreading:
         assert preview.results
 
     def test_execute_dry_run_reads_the_callers_seeded_archive(self, workspace_env: dict[str, Path]) -> None:
-        index_db = db_setup(workspace_env)
+        caller_workspace = _caller_archive_workspace(workspace_env)
+        index_db = db_setup(caller_workspace)
         DbFactory(index_db).create_session(id="planner-execute")
         config = Config(
-            archive_root=workspace_env["archive_root"],
+            archive_root=caller_workspace["archive_root"],
             render_root=workspace_env["data_root"] / "render",
             sources=[],
             db_path=index_db,
