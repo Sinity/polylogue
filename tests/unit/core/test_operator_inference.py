@@ -21,6 +21,7 @@ from polylogue.schemas.operator.inference import (
     promote_schema_cluster,
 )
 from polylogue.schemas.operator.models import (
+    JSONDocument,
     SchemaAuditRequest,
     SchemaCompareRequest,
     SchemaInferRequest,
@@ -120,7 +121,7 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
 
 def test_infer_schema_normalizes_operator_privacy_configuration(workspace_env: dict[str, Path]) -> None:
     index_db = _seed_chatgpt_raw(workspace_env)
-    privacy_payload = {
+    privacy_payload: JSONDocument = {
         "level": "strict",
         "field_overrides": {"$.id": "drop", "invalid": 1},
         "allow_value_patterns": ["safe", 1],
