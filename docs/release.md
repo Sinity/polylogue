@@ -184,14 +184,16 @@ gh workflow run container.yml --ref master \
 gh workflow run extension-release.yml --ref master \
   -f release_tag=vX.Y.Z
 # Run after the PyPI sdist is visible and HOMEBREW_TAP_TOKEN is configured.
-gh workflow run homebrew-bump.yml --ref master -f version=X.Y.Z
+gh workflow run homebrew-bump.yml --ref master -f release_tag=vX.Y.Z
 ```
 
 Recovery publishes only the immutable versioned GHCR tags; it deliberately does
 not retarget `latest`. The container lane pulls slim and distroless images,
 checks the concise CLI version prefix, and compares the machine-readable full
 `VERSION_INFO.commit` to the recorded release commit. Finish with the post-cut
-checks below before treating any channel as available.
+checks below before treating any channel as available. The Homebrew lane also
+checks its manually selected tag against the GitHub Release target and refuses
+to downgrade the formula already in the tap.
 
 ## Post
 
