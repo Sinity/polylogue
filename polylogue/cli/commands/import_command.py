@@ -36,12 +36,7 @@ import click
 
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
-from polylogue.operations.import_contracts import ImportOperation
 from polylogue.paths import archive_root
-from polylogue.sources.import_explain import explain_import_path
-from polylogue.sources.parsers import hermes_state
-from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
-from polylogue.surfaces.payloads import model_json_document
 
 _DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
 
@@ -57,6 +52,9 @@ def _default_daemon_url() -> str:
 
 def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
     """Copy a local import target into the archive inbox for daemon pickup."""
+    from polylogue.sources.parsers import hermes_state
+    from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
+
     resolved = path.expanduser().resolve()
     if not resolved.exists():
         fail("import", f"Path does not exist: {resolved}")
@@ -236,6 +234,9 @@ def import_command(
     processing.
     """
     if explain:
+        from polylogue.sources.import_explain import explain_import_path
+        from polylogue.surfaces.payloads import model_json_document
+
         if demo:
             fail("import", "--explain requires a source PATH; --demo materializes and schedules generated fixtures.")
         if path is None:
@@ -291,6 +292,8 @@ def import_command(
         fail("import", _daemon_unreachable_message(daemon_url, str(exc.reason)))
     except OSError as exc:
         fail("import", _daemon_unreachable_message(daemon_url, str(exc)))
+
+    from polylogue.operations.import_contracts import ImportOperation
 
     operation = ImportOperation.from_dict(raw)
 

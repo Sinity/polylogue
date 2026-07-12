@@ -107,6 +107,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _ARCHIVE_READER_BUSY_TIMEOUT_S = 0.25
+_COORDINATION_CACHE_TTL_S = 2.0
 
 RouteMethod = Literal["GET", "POST", "DELETE"]
 _ArchiveQueryResult = TypeVar("_ArchiveQueryResult")
@@ -143,6 +144,14 @@ class _StaticPostRoute:
     segments: tuple[str, ...]
     handler_name: str
     passes_path: bool = False
+
+
+@dataclass(frozen=True)
+class _CoordinationCacheEntry:
+    """One short-lived coordination response held only by the daemon."""
+
+    payload: JSONDocument
+    expires_at: float
 
 
 _FACET_EXPENSIVE_FAMILIES = ("repos", "action_types")
@@ -1803,8 +1812,58 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         raw_view = self._get_param(params, "view", "status") or "status"
         view = raw_view if raw_view in {"status", "self", "work-item", "conflicts", "handoff"} else "status"
         limit = self._get_int(params, "limit", 10)
-        payload = build_coordination_envelope(view=cast(Any, view), limit=max(1, min(limit, 50)))
-        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
+        bounded_limit = max(1, min(limit, 50))
+        fresh = self._get_bool(params, "fresh")
+        cache_key = (view, bounded_limit)
+        server = cast(Any, self.server)
+        started_at = monotonic()
+        entry: _CoordinationCacheEntry | None = None
+        cache_owner = False
+        if not fresh:
+            with server.coordination_cache_lock:
+                while True:
+                    candidate = server.coordination_cache.get(cache_key)
+                    if candidate is not None and candidate.expires_at > monotonic():
+                        entry = candidate
+                        break
+                    if candidate is not None:
+                        del server.coordination_cache[cache_key]
+                    if cache_key not in server.coordination_cache_building:
+                        server.coordination_cache_building.add(cache_key)
+                        cache_owner = True
+                        break
+                    server.coordination_cache_condition.wait()
+        if entry is None:
+            try:
+                payload = model_json_document(
+                    build_coordination_envelope(view=cast(Any, view), limit=bounded_limit), exclude_none=True
+                )
+                if cache_owner:
+                    with server.coordination_cache_lock:
+                        server.coordination_cache[cache_key] = _CoordinationCacheEntry(
+                            payload=payload,
+                            expires_at=monotonic() + _COORDINATION_CACHE_TTL_S,
+                        )
+            finally:
+                if cache_owner:
+                    with server.coordination_cache_lock:
+                        server.coordination_cache_building.discard(cache_key)
+                        server.coordination_cache_condition.notify_all()
+            cache_state = "bypass" if fresh else "miss"
+        else:
+            payload = entry.payload
+            cache_state = "hit"
+        elapsed_ms = (monotonic() - started_at) * 1000
+        self._send_json(
+            HTTPStatus.OK,
+            payload,
+            extra_headers={
+                "Cache-Control": "no-store",
+                "Server-Timing": f"coordination;dur={elapsed_ms:.1f}",
+                "X-Polylogue-Coordination-Cache": cache_state,
+                "X-Polylogue-Coordination-Freshness": f"ttl={_COORDINATION_CACHE_TTL_S:g}s; fresh=1 bypasses",
+            },
+        )
 
     @daemon_safe_handler
     def _handle_paste_browser(self, params: dict[str, list[str]]) -> None:
@@ -4229,6 +4288,10 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         self.archive_query_admission: threading.BoundedSemaphore = threading.BoundedSemaphore(
             _ARCHIVE_QUERY_MAX_WORKERS + _ARCHIVE_QUERY_MAX_QUEUED
         )
+        self.coordination_cache: dict[tuple[str, int], _CoordinationCacheEntry] = {}
+        self.coordination_cache_lock = threading.Lock()
+        self.coordination_cache_condition = threading.Condition(self.coordination_cache_lock)
+        self.coordination_cache_building: set[tuple[str, int]] = set()
 
     def server_close(self) -> None:
         # cancel_futures=True drops any still-queued (not yet started) work

@@ -10,8 +10,10 @@ import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
+from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
+from time import perf_counter
 from typing import Any, NoReturn, TypeVar, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -78,6 +80,7 @@ _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
 _DAEMON_FAST_PATH_TIMEOUT_S = 0.75
 _NATIVE_REF_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]{11,}")
+_TIMING_ENV: ContextVar[AppEnv | None] = ContextVar("archive_query_timing_env", default=None)
 
 
 def _object_int(value: object) -> int:
@@ -144,21 +147,27 @@ def execute_delete_by_session_ids(
 
 def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
     """Execute the root query path."""
-    output = QueryOutputSpec.from_params(request.params)
-    if output.destination_labels() == ("stdout",) or request.params.get("stream"):
-        _execute_archive_query_stdout(env, request)
-        return
-    rendered = io.StringIO()
-    with redirect_stdout(rendered):
-        _execute_archive_query_stdout(env, request)
-    deliver_query_output(
-        env,
-        QueryOutputDocument(
-            content=rendered.getvalue().rstrip("\n"),
-            output_format=output.output_format,
-            destinations=output.destinations,
-        ),
-    )
+    timing_token = _TIMING_ENV.set(env)
+    env.begin_timing("execute")
+    try:
+        output = QueryOutputSpec.from_params(request.params)
+        if output.destination_labels() == ("stdout",) or request.params.get("stream"):
+            _execute_archive_query_stdout(env, request)
+            return
+        rendered = io.StringIO()
+        with redirect_stdout(rendered):
+            _execute_archive_query_stdout(env, request)
+        deliver_query_output(
+            env,
+            QueryOutputDocument(
+                content=rendered.getvalue().rstrip("\n"),
+                output_format=output.output_format,
+                destinations=output.destinations,
+            ),
+        )
+    finally:
+        env.finish_timing("execute")
+        _TIMING_ENV.reset(timing_token)
 
 
 def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None:
@@ -166,9 +175,12 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     params = dict(request.params)
     _reject_unsupported_params(params)
     _validate_retrieval_params(params)
+    config_started_at = perf_counter()
     config = load_effective_config(env)
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     index_db_path = archive_root / "index.db"
+    env.record_timing("config", config_started_at)
+    compile_started_at = perf_counter()
     typo_hint = maybe_subcommand_typo_hint(request.query_terms)
     raw_query = _query_text(request.query_terms, params)
     output_format = str(params.get("output_format") or "markdown")
@@ -196,6 +208,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     if compiled_spec.with_units:
         with_units = compiled_spec.with_units
         with_unit_fields = compiled_spec.with_unit_fields
+    env.record_timing("compile", compile_started_at)
 
     tags_to_add = _tuple_tokens(params.get("add_tag"))
     metadata_to_set = _metadata_pairs(params.get("set_meta"))
@@ -335,7 +348,9 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     if delete_matched and metadata_to_set:
         raise click.UsageError("Root query cannot combine delete with --set.")
 
+    db_open_started_at = perf_counter()
     with ArchiveStore.open_existing(archive_root) as archive:
+        env.record_timing("db-open", db_open_started_at)
         if unit_source is not None:
             if any(
                 (
@@ -1952,27 +1967,35 @@ def _emit_rows(
     text_line: Callable[[dict[str, object]], str],
     fields: str | None,
 ) -> None:
-    projected_items = [_project_payload(item, fields) for item in items]
-    if output_format == "json":
-        projected_envelope = {**envelope, "items": projected_items}
-        click.echo(json.dumps(projected_envelope, indent=2, sort_keys=True))
-        return
-    if output_format == "ndjson":
-        for item in projected_items:
-            click.echo(json.dumps(item, sort_keys=True))
-        return
-    if output_format == "csv":
-        click.echo(_csv(projected_items), nl=False)
-        return
-    if output_format == "yaml":
-        import yaml
+    env = _TIMING_ENV.get()
+    if env is not None:
+        env.finish_timing("execute")
+        env.begin_timing("render")
+    try:
+        projected_items = [_project_payload(item, fields) for item in items]
+        if output_format == "json":
+            projected_envelope = {**envelope, "items": projected_items}
+            click.echo(json.dumps(projected_envelope, indent=2, sort_keys=True))
+            return
+        if output_format == "ndjson":
+            for item in projected_items:
+                click.echo(json.dumps(item, sort_keys=True))
+            return
+        if output_format == "csv":
+            click.echo(_csv(projected_items), nl=False)
+            return
+        if output_format == "yaml":
+            import yaml
 
-        projected_envelope = {**envelope, "items": projected_items}
-        click.echo(yaml.safe_dump(projected_envelope, sort_keys=False, allow_unicode=True), nl=False)
-        return
-    if output_format not in {"markdown", "plaintext"}:
-        raise click.UsageError(f"Root query does not support --format {output_format}.")
-    click.echo("\n".join(text_line(item) for item in items))
+            projected_envelope = {**envelope, "items": projected_items}
+            click.echo(yaml.safe_dump(projected_envelope, sort_keys=False, allow_unicode=True), nl=False)
+            return
+        if output_format not in {"markdown", "plaintext"}:
+            raise click.UsageError(f"Root query does not support --format {output_format}.")
+        click.echo("\n".join(text_line(item) for item in items))
+    finally:
+        if env is not None:
+            env.finish_timing("render")
 
 
 def _emit_unit_source_rows(

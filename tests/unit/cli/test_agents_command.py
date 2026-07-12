@@ -73,7 +73,7 @@ def test_agents_status_json_uses_shared_envelope(monkeypatch: pytest.MonkeyPatch
         calls.append((view, cwd, limit, detail))
         return _payload(view)
 
-    monkeypatch.setattr("polylogue.cli.commands.agents.build_coordination_envelope", fake_build)
+    monkeypatch.setattr("polylogue.cli.commands.agents._build_coordination_envelope", fake_build)
 
     result = CliRunner().invoke(
         agents_command,
@@ -111,7 +111,7 @@ def test_agents_status_detail_is_explicitly_opt_in(monkeypatch: pytest.MonkeyPat
         calls.append(bool(kwargs["detail"]))
         return _payload(str(kwargs["view"]))
 
-    monkeypatch.setattr("polylogue.cli.commands.agents.build_coordination_envelope", fake_build)
+    monkeypatch.setattr("polylogue.cli.commands.agents._build_coordination_envelope", fake_build)
 
     result = CliRunner().invoke(agents_command, ["status", "--detail", "--json"], catch_exceptions=False)
 
@@ -121,7 +121,7 @@ def test_agents_status_detail_is_explicitly_opt_in(monkeypatch: pytest.MonkeyPat
 
 def test_agents_work_item_text_is_compact(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "polylogue.cli.commands.agents.build_coordination_envelope", lambda **kwargs: _payload(kwargs["view"])
+        "polylogue.cli.commands.agents._build_coordination_envelope", lambda **kwargs: _payload(kwargs["view"])
     )
 
     result = CliRunner().invoke(
@@ -137,7 +137,7 @@ def test_agents_work_item_text_is_compact(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_agents_status_markdown_and_tree_use_shared_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "polylogue.cli.commands.agents.build_coordination_envelope", lambda **kwargs: _payload(kwargs["view"])
+        "polylogue.cli.commands.agents._build_coordination_envelope", lambda **kwargs: _payload(kwargs["view"])
     )
 
     markdown = CliRunner().invoke(agents_command, ["status", "--format", "markdown"], catch_exceptions=False)

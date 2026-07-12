@@ -2953,6 +2953,56 @@ SEARCH_FORMAT_CASES = [
 class TestSearchQueryContracts:
     """Matrix coverage for search filters and output formats."""
 
+    def test_debug_timing_keeps_query_output_on_stdout(
+        self, search_workspace: SearchWorkspace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opt-in timing reports real CLI phases without corrupting JSON output.
+
+        This invokes the production Click root, query compiler, archive open,
+        list execution, and renderer.  Removing any checkpoint around those
+        production dependencies makes the corresponding stderr phase assertion
+        fail while the JSON assertion protects the stdout/stderr contract.
+        """
+        from polylogue.cli import cli
+
+        del search_workspace
+        monkeypatch.setenv("POLYLOGUE_DEBUG_TIMING", "1")
+
+        result = CliRunner().invoke(cli, ["--plain", "find", "origin:chatgpt-export", "-f", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["mode"] == "list"
+        assert "polylogue timing" in result.stderr
+        for phase in ("cli-callback", "archive-query-import", "config", "compile", "db-open", "execute", "render"):
+            assert phase in result.stderr
+
+    def test_structured_only_cli_query_skips_absent_message_fts(self, search_workspace: SearchWorkspace) -> None:
+        """A field-only CLI query must keep working when lexical search is unavailable.
+
+        This exercises the production ``ArchiveStore.list_summaries`` route
+        against the same derived index the CLI opens.  Replacing the
+        structured-only discriminator in ``_execute_archive_query_stdout``
+        with an unconditional ``_query_hits`` call would instead invoke
+        ``ArchiveStore.search_summaries`` and fail its FTS-readiness check.
+        """
+        from polylogue.cli import cli
+
+        index_db = search_workspace["archive_root"] / "index.db"
+        with sqlite3.connect(index_db) as conn:
+            for trigger in ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"):
+                conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            conn.execute("DROP TABLE messages_fts")
+
+        result = CliRunner().invoke(
+            cli,
+            ["--plain", "find", "origin:chatgpt-export", "-f", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["mode"] == "list"
+        assert [item["id"] for item in payload["items"]] == ["chatgpt-export:ext-conv1"]
+
     @pytest.mark.parametrize(
         "case_id,args,expected_exit,error_hint",
         SEARCH_FILTER_CASES,

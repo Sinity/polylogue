@@ -917,7 +917,7 @@ class TestCliSetup:
             cli_runner.invoke(cli, ["--verbose", "--plain"], catch_exceptions=False)
         mock_log.assert_called_once_with(verbose=True)
 
-    def test_no_verbose_configures_info_logging(self, cli_runner: CliRunner) -> None:
+    def test_no_verbose_keeps_structlog_setup_lazy(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
         with (
@@ -925,7 +925,7 @@ class TestCliSetup:
             patch("polylogue.cli.click_app._show_stats"),
         ):
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
-        mock_log.assert_called_once_with(verbose=False)
+        mock_log.assert_not_called()
 
     def test_plain_flag_configures_lazy_app_env(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
