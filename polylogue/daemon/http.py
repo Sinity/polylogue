@@ -2062,8 +2062,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 snapshot_captured_at,
                 status.get("ok"),
                 status.get("daemon_liveness"),
+                status.get("daemon_write_coordinator"),
             ],
             separators=(",", ":"),
+            sort_keys=True,
         ).encode("utf-8")
         etag_digest = hashlib.sha256(etag_material).hexdigest()[:24]
         etag = f'W/"status-{etag_digest}"'

@@ -437,6 +437,72 @@ def test_raw_frontier_status_normalizer_derives_violation_over_unknown_aggregate
     assert normalized["component_readiness"]["raw_frontier_integrity"]["state"] == "poisoned"
 
 
+def test_raw_frontier_status_normalizer_never_promotes_declared_aggregate() -> None:
+    expected_components = {"unknown": "unknown", "violated": "poisoned"}
+    for declared, expected_component in expected_components.items():
+        frontier = _complete_healthy_frontier()
+        frontier["overall_status"] = declared
+
+        normalized = normalize_raw_frontier_status_payload(
+            {"ok": True, "raw_frontier_integrity": frontier},
+            snapshot_state="fresh",
+        )
+
+        assert normalized["ok"] is False
+        assert normalized["raw_frontier_integrity"]["overall_status"] == declared
+        assert normalized["component_readiness"]["raw_frontier_integrity"]["state"] == expected_component
+
+
+def test_raw_frontier_status_normalizer_rejects_impossible_cursor_cardinalities() -> None:
+    malformed_updates = (
+        {"cursor_ahead_comparison_count": 1},
+        {"cursor_ahead_checked_count": 0, "cursor_head_comparison_count": 1},
+    )
+    for updates in malformed_updates:
+        frontier = _complete_healthy_frontier()
+        frontier.update(updates)
+
+        normalized = normalize_raw_frontier_status_payload(
+            {"ok": True, "raw_frontier_integrity": frontier},
+            snapshot_state="fresh",
+        )
+
+        assert normalized["ok"] is False
+        assert normalized["raw_frontier_integrity"]["overall_status"] == "unknown"
+
+
+def test_daemon_normalizer_rejects_malformed_or_stale_freshness_provenance() -> None:
+    valid_snapshot = {
+        "state": "fresh",
+        "captured_at": "2026-07-12T14:00:00+00:00",
+        "age_s": 0.1,
+        "refresh_error": None,
+    }
+    payload = {
+        "ok": True,
+        "raw_frontier_integrity": _complete_healthy_frontier(),
+        "status_snapshot": valid_snapshot,
+    }
+    assert normalize_raw_frontier_status_payload(payload, require_fresh_snapshot=True)["ok"] is True
+
+    invalid_updates = (
+        {"captured_at": "not-a-timestamp"},
+        {"captured_at": "2026-07-12T14:00:00"},
+        {"age_s": 30.001},
+        {"age_s": float("inf")},
+        {"refresh_error": "refresh failed"},
+    )
+    for updates in invalid_updates:
+        snapshot = dict(valid_snapshot)
+        snapshot.update(updates)
+        normalized = normalize_raw_frontier_status_payload(
+            {**payload, "status_snapshot": snapshot},
+            require_fresh_snapshot=True,
+        )
+        assert normalized["ok"] is False
+        assert normalized["raw_frontier_integrity"]["overall_status"] == "unknown"
+
+
 def test_raw_frontier_status_normalizer_never_raises_on_malformed_counts() -> None:
     malformed = _complete_healthy_frontier()
     malformed.update(

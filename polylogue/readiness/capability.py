@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
+from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -366,6 +368,7 @@ _RAW_FRONTIER_REASON_KEYS = (
     "cursor_ahead_reason",
 )
 _RAW_FRONTIER_MAX_SAMPLE_COUNT = 10
+STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S = 30.0
 
 
 def _validate_raw_frontier_projection(
@@ -431,6 +434,10 @@ def _validate_raw_frontier_projection(
         return None, "cursor row counts exceed comparable authority"
     if cursor_count > ahead_comparisons or ahead_comparisons > cursor_comparisons:
         return None, "cursor/head comparison counts are inconsistent"
+    if ahead_comparisons > 0 and cursor_count == 0:
+        return None, "ahead cursor comparisons require at least one ahead cursor row"
+    if cursor_comparisons > 0 and cursor_checked == 0:
+        return None, "cursor/head comparisons require at least one checked cursor row"
 
     if "violated" in detail_statuses:
         derived_overall = "violated"
@@ -442,8 +449,10 @@ def _validate_raw_frontier_projection(
     if payload.get("available") is not expected_available:
         return None, "available contradicts detail authority states"
 
+    severity = {"healthy": 0, "unknown": 1, "violated": 2}
+    declared_overall = str(payload["overall_status"])
     normalized = dict(payload)
-    normalized["overall_status"] = derived_overall
+    normalized["overall_status"] = max((declared_overall, derived_overall), key=severity.__getitem__)
     return normalized, None
 
 
@@ -465,12 +474,21 @@ def status_snapshot_has_fresh_provenance(payload: Mapping[str, Any]) -> bool:
         return False
     captured_at = snapshot.get("captured_at")
     age_s = snapshot.get("age_s")
-    return (
-        isinstance(captured_at, str)
-        and bool(captured_at)
-        and isinstance(age_s, int | float)
+    refresh_error = snapshot.get("refresh_error")
+    if not isinstance(captured_at, str) or not captured_at:
+        return False
+    try:
+        captured = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if captured.tzinfo is None or captured.utcoffset() is None:
+        return False
+    return bool(
+        isinstance(age_s, int | float)
         and not isinstance(age_s, bool)
-        and age_s >= 0
+        and isfinite(age_s)
+        and 0 <= age_s <= STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S
+        and refresh_error in {None, ""}
     )
 
 
@@ -832,6 +850,7 @@ __all__ = [
     "CapabilityReadinessState",
     "ComponentReadiness",
     "LEGACY_READINESS_SOURCE_TYPES",
+    "STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S",
     "component_from_archive_debt",
     "component_from_archive_surface",
     "component_from_assertion_substrate",

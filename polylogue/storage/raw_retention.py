@@ -1066,6 +1066,9 @@ def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, int]:
             ).fetchone()
             if has_table is None:
                 raise RawRetentionSafetyError(f"ops tier has no ingest_cursor table: {ops_db_path}")
+            # Excluded cursors are quarantined inputs, not active committed
+            # ingest authority. Their exclusion/failure state is surfaced by
+            # the ordinary cursor workload status instead of frontier parity.
             rows = conn.execute(
                 "SELECT source_path, byte_offset FROM ingest_cursor WHERE excluded = 0 AND byte_offset IS NOT NULL",
             ).fetchall()

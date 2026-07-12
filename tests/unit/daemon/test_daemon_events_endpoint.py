@@ -444,6 +444,42 @@ class TestStatusEventEtag:
         frontier = cast(dict[str, object], payload["raw_frontier_integrity"])
         assert frontier["overall_status"] == "violated"
 
+    def test_status_etag_changes_with_live_write_coordinator_state(
+        self,
+        empty_events_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon.events import emit_daemon_event
+        from polylogue.daemon.status_snapshot import refresh_status_snapshot
+
+        emit_daemon_event("ingestion_batch", payload={})
+        refresh_status_snapshot(
+            payload={
+                "ok": True,
+                "daemon_liveness": True,
+                "raw_frontier_integrity": _complete_healthy_frontier(),
+            }
+        )
+        monkeypatch.setattr(
+            "polylogue.daemon.status_snapshot._daemon_write_coordinator_payload",
+            lambda: {"state": "idle"},
+        )
+        first = _make_handler("GET", "/api/status")
+        first.do_GET()
+        etag = _response_etag(cast("BytesIO", first.wfile).getvalue())
+
+        monkeypatch.setattr(
+            "polylogue.daemon.status_snapshot._daemon_write_coordinator_payload",
+            lambda: {"state": "writing"},
+        )
+        second = _make_handler("GET", "/api/status", extra_headers={"If-None-Match": etag})
+        second.do_GET()
+        response = cast("BytesIO", second.wfile).getvalue()
+        payload = _response_json(response)
+
+        assert b" 200 " in response
+        assert payload["daemon_write_coordinator"] == {"state": "writing"}
+
 
 class TestGranularEventKinds:
     """#1204 — granular SSE topics for selective subscription and live tail."""
