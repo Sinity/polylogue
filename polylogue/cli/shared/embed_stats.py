@@ -129,6 +129,7 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     _render_field("Status", payload["status"])
     _render_field("Total sessions", payload["total_sessions"])
     _render_field("Embedded sessions", payload["embedded_sessions"])
+    _render_field("Blocked sessions", payload["blocked_sessions"])
     _render_field("Embedded messages", payload["embedded_messages"])
     _render_field("Session coverage", f"{payload['embedding_coverage_percent']:.1f}%")
     candidate_prose_messages = payload.get("candidate_prose_messages")

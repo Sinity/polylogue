@@ -124,6 +124,7 @@ class EmbeddingStatusPayload(TypedDict):
     status: str
     total_sessions: int
     embedded_sessions: int
+    blocked_sessions: int
     embedded_messages: int
     pending_sessions: int
     pending_messages: int | None
@@ -518,12 +519,13 @@ def _embedding_status(
     total_sessions: int,
     embedded_sessions: int,
     pending_sessions: int,
+    blocked_sessions: int,
 ) -> str:
     if total_sessions <= 0:
         return "empty"
-    if pending_sessions <= 0:
+    if pending_sessions <= 0 and blocked_sessions <= 0:
         return "complete"
-    if embedded_sessions <= 0:
+    if embedded_sessions <= 0 and blocked_sessions <= 0:
         return "none"
     return "partial"
 
@@ -553,6 +555,7 @@ def _next_action(
     retrieval_ready: bool,
     stale_messages: int,
     failure_count: int,
+    blocked_sessions: int,
 ) -> EmbeddingNextActionPayload:
     if total_sessions <= 0:
         return {
@@ -571,6 +574,15 @@ def _next_action(
             "code": "inspect_failures",
             "command": "polylogue ops embed status --detail",
             "reason": "Embedding failures exist and need inspection before treating coverage as clean.",
+        }
+    if blocked_sessions > 0:
+        return {
+            "code": "acknowledged_terminal_exclusions",
+            "command": None,
+            "reason": (
+                "Some sessions have acknowledged or superseded terminal embedding failures; "
+                "they are retained as audit evidence but excluded from automatic retry."
+            ),
         }
     if not config_enabled:
         if pending_sessions <= 0 and retrieval_ready:
@@ -633,14 +645,16 @@ def _payload_from_stats(
     failure_details: list[EmbeddingFailureDetailPayload] | None = None,
     terminal_failure_count: int = 0,
     retryable_failure_count: int = 0,
+    blocked_sessions: int = 0,
 ) -> EmbeddingStatusPayload:
     embedded_sessions = stats.embedded_sessions
     pending_sessions = stats.pending_sessions
-    eligible_sessions = embedded_sessions + pending_sessions
+    eligible_sessions = embedded_sessions + pending_sessions + blocked_sessions
     status = _embedding_status(
         total_sessions=total_sessions,
         embedded_sessions=embedded_sessions,
         pending_sessions=pending_sessions,
+        blocked_sessions=blocked_sessions,
     )
     if stats.failure_count > 0 and status == "complete":
         status = "partial"
@@ -660,6 +674,7 @@ def _payload_from_stats(
         "status": status,
         "total_sessions": total_sessions,
         "embedded_sessions": embedded_sessions,
+        "blocked_sessions": blocked_sessions,
         "embedded_messages": stats.embedded_messages,
         "pending_sessions": pending_sessions,
         "pending_messages": stats.pending_messages if pending_messages_exact else None,
@@ -701,6 +716,7 @@ def _payload_from_stats(
             retrieval_ready=retrieval_ready,
             stale_messages=stats.stale_messages,
             failure_count=stats.failure_count,
+            blocked_sessions=blocked_sessions,
         ),
     }
 
@@ -735,6 +751,20 @@ def _archive_embedding_status_payload(
         has_status = bool(status_table)
         has_meta = bool(meta_table)
         total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
+        blocked_sessions = (
+            _scalar_int(
+                conn,
+                f"""
+                SELECT COUNT(*)
+                FROM {status_table} AS e
+                JOIN sessions AS s ON s.session_id = e.session_id
+                WHERE COALESCE(e.needs_reindex, 0) = 0
+                  AND e.error_message IS NOT NULL
+                """,
+            )
+            if has_status
+            else 0
+        )
         embedded_sessions, pending_sessions = _archive_embedding_session_state_summary(
             conn,
             status_table=status_table,
@@ -751,6 +781,7 @@ def _archive_embedding_status_payload(
                 pending_messages_exact = False
             else:
                 embedded_sessions, pending_sessions = exact_session_state
+        pending_sessions = max(pending_sessions - blocked_sessions, 0)
         if has_status:
             embedded_messages = _scalar_int(
                 conn,
@@ -882,13 +913,19 @@ def _archive_embedding_status_payload(
             if total_messages is None:
                 total_messages = 0
                 pending_messages_exact = False
-            if has_meta and embedded_messages == 0:
+            if has_meta and embedded_messages == 0 and blocked_sessions == 0:
                 pending_messages = total_messages
             elif has_meta:
                 meta_join = "ON em.message_id = m.message_id"
                 meta_missing_column = "em.message_id"
                 status_join = f"LEFT JOIN {status_table} e ON e.session_id = m.session_id" if has_status else ""
                 status_reindex_clause = "OR COALESCE(e.needs_reindex, 0) = 1" if has_status else ""
+                blocked_session_clause = (
+                    "AND NOT (e.session_id IS NOT NULL AND COALESCE(e.needs_reindex, 0) = 0 "
+                    "AND e.error_message IS NOT NULL)"
+                    if has_status
+                    else ""
+                )
                 exact_pending_messages = _scalar_int_with_timeout(
                     conn,
                     f"""
@@ -901,6 +938,7 @@ def _archive_embedding_status_payload(
                         OR COALESCE(em.needs_reindex, 0) = 1
                         {status_reindex_clause}
                       )
+                      {blocked_session_clause}
                     """,
                     timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
                 )
@@ -941,10 +979,12 @@ def _archive_embedding_status_payload(
                         SELECT COUNT(*)
                         FROM {messages_ref}
                         JOIN {meta_table} em {meta_join}
+                        {status_join}
                         WHERE (
                             COALESCE(em.needs_reindex, 0) = 1
                             OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
                           )
+                          {blocked_session_clause}
                         """,
                         timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
                     )
@@ -991,6 +1031,7 @@ def _archive_embedding_status_payload(
         failure_details=failure_details,
         terminal_failure_count=terminal_failure_count,
         retryable_failure_count=retryable_failure_count,
+        blocked_sessions=blocked_sessions,
     )
 
 

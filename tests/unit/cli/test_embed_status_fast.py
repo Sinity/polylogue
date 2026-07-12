@@ -18,6 +18,7 @@ from polylogue.storage.embeddings.progress import (
     finish_embedding_catchup_run,
     start_embedding_catchup_run,
 )
+from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
 
 
 class _Cfg:
@@ -370,6 +371,82 @@ def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path) -> None:
         assert conn.execute(
             "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = 'codex-session:pending'"
         ).fetchone() == (1, None)
+
+
+def test_status_excludes_acknowledged_terminal_failure_from_retry_backlog(tmp_path: Path) -> None:
+    """An acknowledgement clears critical debt without falsifying coverage.
+
+    Anti-vacuity: removing the blocked-session lifecycle query makes detail
+    status report this unembedded session as complete, while summary status
+    presents it as a retryable backlog even though the writer excludes it.
+    """
+    db_anchor = tmp_path / "custom.sqlite"
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    embeddings_db = index_db.with_name("embeddings.db")
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("DELETE FROM messages WHERE session_id = 'codex-session:complete'")
+        conn.execute("DELETE FROM sessions WHERE session_id = 'codex-session:complete'")
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.execute("DELETE FROM message_embeddings WHERE message_id = 'codex-session:complete:m1'")
+        conn.execute("DELETE FROM message_embeddings_meta WHERE message_id = 'codex-session:complete:m1'")
+        conn.execute("DELETE FROM embedding_status WHERE session_id = 'codex-session:complete'")
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE embedding_failures (
+                failure_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                message_refs_json TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                error_class TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                retryable INTEGER NOT NULL,
+                lifecycle_state TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                resolved_at_ms INTEGER,
+                resolution_action TEXT,
+                resolution_note TEXT,
+                superseded_by TEXT
+            );
+            INSERT INTO embedding_status VALUES (
+                'codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400'
+            );
+            INSERT INTO embedding_failures VALUES (
+                'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
+                '["codex-session:pending:m1"]', 'voyage', 'voyage-4', 'provider_http_400',
+                'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
+                NULL, NULL, NULL, NULL
+            );
+            """
+        )
+        resolve_embedding_failure(
+            conn,
+            failure_id="embedding-failure:terminal",
+            action="acknowledge",
+            resolved_at_ms=1_800_000_001_000,
+        )
+
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["failure_count"] == 0
+    assert payload["terminal_failure_count"] == 0
+    assert payload["blocked_sessions"] == 1
+    assert payload["pending_sessions"] == 0
+    assert payload["pending_messages"] == 0
+    assert payload["embedding_coverage_percent"] == 0.0
+    assert payload["status"] == "partial"
+    assert payload["next_action"] == {
+        "code": "acknowledged_terminal_exclusions",
+        "command": None,
+        "reason": (
+            "Some sessions have acknowledged or superseded terminal embedding failures; "
+            "they are retained as audit evidence but excluded from automatic retry."
+        ),
+    }
 
 
 def test_status_json_detail_does_not_derive_coverage_from_analyzed_prose_estimate(tmp_path: Path) -> None:
