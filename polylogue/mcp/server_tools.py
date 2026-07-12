@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -136,7 +137,7 @@ def _summary_excerpt(text: str, *, limit: int = 240) -> str:
 def _session_summary_payload(
     summary: object,
     session: object,
-    phases: list[object],
+    phases: Sequence[object],
 ) -> MCPRootPayload[dict[str, object]]:
     """Add bounded content orientation to the historical metadata summary."""
     base = archive_summary_payload(cast(Any, summary)).model_dump(mode="json")

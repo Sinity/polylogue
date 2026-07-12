@@ -159,7 +159,9 @@ def _narrow_continuation(context: _ResponseContext | None) -> dict[str, object] 
     if isinstance(limit, int) and not isinstance(limit, bool):
         arguments["limit"] = max(1, min(limit, 3))
     if context.tool == "get_messages":
-        arguments["max_chars_per_message"] = min(int(arguments.get("max_chars_per_message") or 4096), 4096)
+        requested_max_chars = arguments.get("max_chars_per_message")
+        max_chars = requested_max_chars if isinstance(requested_max_chars, int) else 4096
+        arguments["max_chars_per_message"] = min(max_chars, 4096)
         arguments["excerpt"] = True
     return {
         "tool": context.tool,

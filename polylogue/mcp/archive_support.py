@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, TypedDict
 from polylogue.archive.query.spec import parse_query_date
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
+from polylogue.surfaces.action_affordances import ActionAffordancePayload
 from polylogue.surfaces.payloads import TargetRefPayload, reader_anchor
 
 if TYPE_CHECKING:
@@ -382,7 +383,7 @@ def archive_search_payload(
     )
 
 
-def _search_affordances(include_affordances: bool) -> tuple[object, ...]:
+def _search_affordances(include_affordances: bool) -> tuple[ActionAffordancePayload, ...]:
     """Keep the capability catalog out of normal search responses."""
     if not include_affordances:
         return ()
