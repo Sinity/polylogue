@@ -727,6 +727,24 @@ def _reflink_copy(source: Path, destination: Path) -> None:
     _fsync_directory(destination.parent)
 
 
+def _link_generation_siblings(archive_root: Path, generation_dir: Path) -> None:
+    """Expose durable sibling tiers from a derived index generation.
+
+    SQLite reports the resolved ``index.db`` target in ``PRAGMA database_list``.
+    Cross-tier connection setup therefore searches beside the generation file,
+    not beside the stable archive-root symlink.  Match ``IndexGenerationStore``
+    by linking every canonical sibling into the new generation.
+    """
+    for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
+        source = archive_root / filename
+        if source.exists() or source.is_symlink():
+            (generation_dir / filename).symlink_to(
+                source.resolve(strict=False),
+                target_is_directory=source.is_dir(),
+            )
+    _fsync_directory(generation_dir)
+
+
 def create_and_fast_forward_generation(
     source_link: Path,
     receipt_path: Path,
@@ -746,6 +764,7 @@ def create_and_fast_forward_generation(
     clone = generation_dir / "index.db"
     before = file_identity(source_link)
     _reflink_copy(source, clone)
+    _link_generation_siblings(archive_root, generation_dir)
     with sqlite3.connect(clone, timeout=120.0) as conn:
         checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         conn.commit()
