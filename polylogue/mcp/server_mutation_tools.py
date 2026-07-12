@@ -146,6 +146,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def capture_assertion_candidate(
         body_text: str,
+        author_ref: str,
         kind: str = "note",
         refs: list[str] | None = None,
         scope_refs: list[str] | None = None,
@@ -159,12 +160,16 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             from polylogue.api.archive import candidate_capture_kind
 
             try:
+                if not author_ref.startswith("agent:") or author_ref == "agent:":
+                    raise ValueError("author_ref must be an agent:<session> ref")
                 result = await hooks.get_polylogue().capture_assertion_candidate(
                     body_text=body_text,
                     kind=candidate_capture_kind(kind),
                     refs=tuple(refs or ()),
                     scope_refs=tuple(scope_refs or ()),
                     cwd=Path(cwd) if cwd is not None else None,
+                    author_ref=author_ref,
+                    author_kind="agent",
                 )
             except ValueError as exc:
                 return hooks.error_json(str(exc), code="invalid_candidate_capture")

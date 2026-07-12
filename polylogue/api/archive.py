@@ -1177,6 +1177,8 @@ def _archive_capture_assertion_candidate(
     refs: Sequence[str] = (),
     scope_refs: Sequence[str] = (),
     cwd: Path | None = None,
+    author_ref: str = "user:local",
+    author_kind: str = "user",
 ) -> Any:
     """Write one terminal-captured assertion through the user-tier gate."""
 
@@ -1233,8 +1235,8 @@ def _archive_capture_assertion_candidate(
                     "unanchored": not bool(resolved_refs),
                 },
                 body_text=normalized_body,
-                author_ref="user:local",
-                author_kind="user",
+                author_ref=author_ref,
+                author_kind=author_kind,
                 evidence_refs=tuple(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
                 status=AssertionStatus.CANDIDATE,
                 context_policy={"inject": False, "promotion_required": True},
@@ -2455,6 +2457,8 @@ class PolylogueArchiveMixin:
         refs: Sequence[str] = (),
         scope_refs: Sequence[str] = (),
         cwd: Path | None = None,
+        author_ref: str = "user:local",
+        author_kind: str = "user",
     ) -> AssertionClaimPayload:
         """Capture a terminal assertion as a non-injected candidate for review."""
 
@@ -2467,6 +2471,8 @@ class PolylogueArchiveMixin:
             refs=refs,
             scope_refs=scope_refs,
             cwd=cwd,
+            author_ref=author_ref,
+            author_kind=author_kind,
         )
         return AssertionClaimPayload.from_envelope(envelope)
 

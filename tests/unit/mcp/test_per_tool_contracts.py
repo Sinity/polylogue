@@ -147,9 +147,17 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
         },
     },
     "capture_assertion_candidate": {
-        "required": {"body_text"},
-        "happy": {"body_text": "capture this", "kind": "lesson"},
-        "invalid_value": {"body_text": "capture this", "kind": "bogus"},
+        "required": {"body_text", "author_ref"},
+        "happy": {
+            "body_text": "capture this",
+            "kind": "lesson",
+            "author_ref": "agent:codex-session:tool-contract",
+        },
+        "invalid_value": {
+            "body_text": "capture this",
+            "kind": "bogus",
+            "author_ref": "agent:codex-session:tool-contract",
+        },
     },
     "add_tag": {
         "required": {"session_id", "tag"},
