@@ -400,4 +400,90 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(durablePayload).not.toContain(bearerToken);
     expect(durablePayload).not.toContain("synthetic-signed-secret");
   });
+
+  it("attempts the selected branch's newest asset before stale off-branch assets trip the breaker", async () => {
+    const targetPath = "/mnt/data/Polylogue-Demo-Packet-v2-Flagships-kit.zip";
+    const stalePaths = ["/mnt/data/stale-1.zip", "/mnt/data/stale-2.zip", "/mnt/data/stale-3.zip"];
+    const mapping = {};
+    for (const [index, sandboxPath] of stalePaths.entries()) {
+      const nodeId = `stale-node-${index + 1}`;
+      mapping[nodeId] = {
+        id: nodeId,
+        parent: null,
+        children: [],
+        message: {
+          id: `stale-message-${index + 1}`,
+          author: { role: "assistant" },
+          create_time: 1781366400 + index,
+          content: { content_type: "text", parts: [`Old: sandbox:${sandboxPath}`] },
+          metadata: { model_slug: "gpt-test" },
+        },
+      };
+    }
+    mapping["current-node"] = {
+      id: "current-node",
+      parent: null,
+      children: [],
+      message: {
+        id: "current-message",
+        author: { role: "assistant" },
+        create_time: 1781366460,
+        content: { content_type: "text", parts: [`Current: sandbox:${targetPath}`] },
+        metadata: { model_slug: "gpt-test" },
+      },
+    };
+    const payload = {
+      ...conversationPayload(),
+      current_node: "current-node",
+      mapping,
+    };
+    const calls = [];
+    const adapter = {
+      calls,
+      fetch: vi.fn(async (input, options = {}) => {
+        const url = new URL(String(input), "https://chatgpt.com");
+        calls.push({ url, options });
+        if (url.pathname === "/api/auth/session") return jsonResponse({ accessToken: bearerToken });
+        if (url.pathname === "/backend-api/conversation/conversation-1") return jsonResponse(payload);
+        if (url.pathname === "/backend-api/conversation/conversation-1/interpreter/download") {
+          const sandboxPath = url.searchParams.get("sandbox_path");
+          const downloadUrl =
+            sandboxPath === targetPath
+              ? signedUrl
+              : `https://files.example.test/expired/${encodeURIComponent(sandboxPath)}`;
+          return jsonResponse({ download_url: downloadUrl, file_name: sandboxPath.split("/").at(-1) });
+        }
+        if (url.href === signedUrl) return byteResponse(assetBytes);
+        if (url.origin === "https://files.example.test" && url.pathname.startsWith("/expired/")) {
+          return byteResponse(new Uint8Array(), 403);
+        }
+        throw new Error(`unexpected synthetic request: ${url.href}`);
+      }),
+    };
+    const harness = installFullCapture(adapter);
+
+    const result = await harness.dom.window.polylogueCapture.capturePage();
+
+    expect(result.envelope.session.provider_meta.asset_acquisition).toMatchObject({
+      attempted: 4,
+      acquired: 1,
+      skipped_circuit_breaker: 0,
+      status_counts: { acquired: 1, signed_url_expired: 3 },
+      acquired_assets: [
+        {
+          provider_attachment_id: `sandbox:current-message:${targetPath}`,
+          sha256: expectedSha256,
+          size_bytes: assetBytes.byteLength,
+        },
+      ],
+    });
+    expect(result.envelope.session.attachments[0]).toMatchObject({
+      provider_attachment_id: `sandbox:current-message:${targetPath}`,
+      provider_meta: { content_sha256: expectedSha256 },
+    });
+    const metadataPaths = calls
+      .filter((call) => call.url.pathname.endsWith("/interpreter/download"))
+      .map((call) => call.url.searchParams.get("sandbox_path"));
+    expect(metadataPaths).toEqual([targetPath, ...stalePaths.slice().reverse()]);
+  });
 });

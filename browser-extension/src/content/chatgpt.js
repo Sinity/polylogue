@@ -426,7 +426,33 @@
         descriptors.push(descriptor);
       }
     };
-    for (const [nodeId, node] of Object.entries(mapping)) {
+    // ChatGPT's mapping insertion order is not conversation order. In a
+    // branched conversation it can put old, expired interpreter assets before
+    // the selected branch's newest deliverable. Because acquisition is
+    // deliberately bounded by a failure breaker and a wall-clock budget, that
+    // incidental order can prevent the current node's live asset from ever
+    // being attempted. Walk the selected lineage newest-first, then cover the
+    // remaining branches newest-first as best-effort backfill.
+    const orderedNodeIds = [];
+    const orderedNodeIdSet = new Set();
+    let lineageNodeId = typeof payload.current_node === "string" ? payload.current_node : null;
+    while (lineageNodeId && !orderedNodeIdSet.has(lineageNodeId)) {
+      const node = mapping[lineageNodeId];
+      if (!node) break;
+      orderedNodeIds.push(lineageNodeId);
+      orderedNodeIdSet.add(lineageNodeId);
+      lineageNodeId = typeof node.parent === "string" ? node.parent : null;
+    }
+    const remainingNodeIds = Object.keys(mapping)
+      .filter((nodeId) => !orderedNodeIdSet.has(nodeId))
+      .sort((left, right) => {
+        const leftTime = Number(mapping[left]?.message?.create_time) || 0;
+        const rightTime = Number(mapping[right]?.message?.create_time) || 0;
+        return rightTime - leftTime;
+      });
+
+    for (const nodeId of [...orderedNodeIds, ...remainingNodeIds]) {
+      const node = mapping[nodeId];
       const message = node && node.message;
       if (!message) continue;
       const messageId = String(message.id || node.id || nodeId);
