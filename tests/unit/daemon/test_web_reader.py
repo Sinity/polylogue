@@ -2487,8 +2487,6 @@ class TestCockpitAggregateRoutes:
                 type=BlockType.TOOL_RESULT,
                 text="ok",
                 tool_id="tool-parent",
-                tool_result_is_error=0,
-                tool_result_exit_code=0,
             ),
         ]
         with ArchiveStore(workspace_env["archive_root"]) as archive:
