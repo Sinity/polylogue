@@ -1595,41 +1595,50 @@ def judge_assertion_candidates(
             conflicting_duplicates.add(candidate_id)
 
     results_by_candidate_id: dict[str, ArchiveAssertionBulkJudgmentResultEnvelope] = {}
-    for index, candidate_id in enumerate(ordered_candidate_ids):
-        item = unique_items[candidate_id]
-        if candidate_id in conflicting_duplicates:
-            results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
-                candidate_ref=f"assertion:{candidate_id}",
-                outcome="failed",
-                error="conflicting duplicate judgment inputs for candidate",
-            )
-            continue
-        savepoint = f"assertion_judgment_{index}"
-        conn.execute(f"SAVEPOINT {savepoint}")
-        try:
-            result = judge_assertion_candidate(
-                conn,
-                candidate_ref=f"assertion:{candidate_id}",
-                decision=item.decision,
-                reason=item.reason,
-                actor_ref=item.actor_ref,
-                inject=item.inject,
-                replacement_kind=item.replacement_kind,
-                replacement_body_text=item.replacement_body_text,
-                replacement_value=item.replacement_value,
-                now_ms=now_ms,
-            )
-        except (TypeError, ValueError) as exc:
-            conn.execute(f"ROLLBACK TO {savepoint}")
-            results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
-                candidate_ref=f"assertion:{candidate_id}", outcome="failed", error=str(exc)
-            )
-        else:
-            results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
-                candidate_ref=f"assertion:{candidate_id}", outcome=result.outcome, result=result
-            )
-        finally:
-            conn.execute(f"RELEASE {savepoint}")
+    batch_savepoint = "assertion_judgment_batch"
+    conn.execute(f"SAVEPOINT {batch_savepoint}")
+    try:
+        for index, candidate_id in enumerate(ordered_candidate_ids):
+            item = unique_items[candidate_id]
+            if candidate_id in conflicting_duplicates:
+                results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=f"assertion:{candidate_id}",
+                    outcome="failed",
+                    error="conflicting duplicate judgment inputs for candidate",
+                )
+                continue
+            savepoint = f"assertion_judgment_{index}"
+            conn.execute(f"SAVEPOINT {savepoint}")
+            try:
+                result = judge_assertion_candidate(
+                    conn,
+                    candidate_ref=f"assertion:{candidate_id}",
+                    decision=item.decision,
+                    reason=item.reason,
+                    actor_ref=item.actor_ref,
+                    inject=item.inject,
+                    replacement_kind=item.replacement_kind,
+                    replacement_body_text=item.replacement_body_text,
+                    replacement_value=item.replacement_value,
+                    now_ms=now_ms,
+                )
+            except (TypeError, ValueError) as exc:
+                conn.execute(f"ROLLBACK TO {savepoint}")
+                results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=f"assertion:{candidate_id}", outcome="failed", error=str(exc)
+                )
+            else:
+                results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=f"assertion:{candidate_id}", outcome=result.outcome, result=result
+                )
+            finally:
+                conn.execute(f"RELEASE {savepoint}")
+    except BaseException:
+        conn.execute(f"ROLLBACK TO {batch_savepoint}")
+        conn.execute(f"RELEASE {batch_savepoint}")
+        raise
+    else:
+        conn.execute(f"RELEASE {batch_savepoint}")
     return ArchiveAssertionBulkJudgmentEnvelope(
         items=tuple(
             entry if isinstance(entry, ArchiveAssertionBulkJudgmentResultEnvelope) else results_by_candidate_id[entry]

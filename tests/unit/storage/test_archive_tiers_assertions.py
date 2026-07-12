@@ -12,6 +12,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.insights.transforms import compile_session_digest
+from polylogue.storage.sqlite.archive_tiers import user_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -22,6 +23,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_AUTHOR_REF,
     ASSERTION_DEFAULT_VISIBILITY,
     ArchiveAssertionBulkJudgmentItemEnvelope,
+    ArchiveAssertionJudgmentEnvelope,
     AssertionKind,
     AssertionStatus,
     AssertionVisibility,
@@ -1206,6 +1208,82 @@ def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlle
         )
         assert conflicting.items[0].outcome == "failed"
         assert "conflicting prior judgment" in (conflicting.items[0].error or "")
+    finally:
+        conn.close()
+
+
+def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-item failure must not commit judgments from earlier batch items."""
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_session_digest(_recovery_candidate_session())
+        candidates = upsert_transform_candidate_assertions(
+            conn,
+            digest.model_copy(update={"decision_candidates": (digest.decision_candidates[0],) * 2}),
+            now_ms=1_700_000_000_000,
+        )
+        conn.commit()
+        original = user_write.judge_assertion_candidate
+        calls = 0
+
+        def raise_on_second_judgment(
+            connection: sqlite3.Connection,
+            *,
+            candidate_ref: str,
+            decision: str,
+            reason: str | None = None,
+            actor_ref: str = ASSERTION_DEFAULT_AUTHOR_REF,
+            inject: bool = False,
+            replacement_kind: str | AssertionKind | None = None,
+            replacement_body_text: str | None = None,
+            replacement_value: object | None = None,
+            now_ms: int | None = None,
+        ) -> ArchiveAssertionJudgmentEnvelope:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("simulated unexpected batch failure")
+            return original(
+                connection,
+                candidate_ref=candidate_ref,
+                decision=decision,
+                reason=reason,
+                actor_ref=actor_ref,
+                inject=inject,
+                replacement_kind=replacement_kind,
+                replacement_body_text=replacement_body_text,
+                replacement_value=replacement_value,
+                now_ms=now_ms,
+            )
+
+        monkeypatch.setattr(user_write, "judge_assertion_candidate", raise_on_second_judgment)
+        with pytest.raises(RuntimeError, match="unexpected batch failure"):
+            judge_assertion_candidates(
+                conn,
+                tuple(
+                    ArchiveAssertionBulkJudgmentItemEnvelope(
+                        candidate_ref=f"assertion:{candidate.assertion_id}", decision="accept"
+                    )
+                    for candidate in candidates
+                ),
+                now_ms=1_700_000_001_000,
+            )
+
+        assert not conn.in_transaction
+        candidate_statuses: list[AssertionStatus] = []
+        for candidate in candidates:
+            refreshed = read_assertion_envelope(conn, candidate.assertion_id)
+            assert refreshed is not None
+            candidate_statuses.append(refreshed.status)
+        assert candidate_statuses == [
+            AssertionStatus.CANDIDATE,
+            AssertionStatus.CANDIDATE,
+        ]
+        assert (
+            read_assertion_envelope(conn, assertion_id_for_candidate_judgment(candidates[0].assertion_id, "accept"))
+            is None
+        )
     finally:
         conn.close()
 
