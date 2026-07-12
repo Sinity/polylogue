@@ -185,8 +185,7 @@ export class ClaudeBackfillAdapter {
       updated_at: isoTimestamp(item.updated_at),
     }));
     const items = projected.filter((item) => !cutoff || !item.updated_at || item.updated_at >= cutoff);
-    const crossedCutoff = Boolean(cutoff && projected.some((item) => item.updated_at && item.updated_at < cutoff));
-    return { response, classification: "success", items, next_cursor: String(offset + records.length), done: records.length < 100 || crossedCutoff, request_count: requestCount, provider_options: { claudeOrganizationId: organization.id } };
+    return { response, classification: "success", items, next_cursor: String(offset + records.length), done: records.length < 100, request_count: requestCount, provider_options: { claudeOrganizationId: organization.id } };
   }
   async fetchNative(nativeId) {
     const organization = await this.organization();

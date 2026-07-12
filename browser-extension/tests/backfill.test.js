@@ -375,6 +375,20 @@ describe("provider adapter contracts", () => {
     expect(inventory.done).toBe(true);
   });
 
+  it("does not assume Claude inventory order when filtering a full page", async () => {
+    const records = Array.from({ length: 100 }, (_, index) => ({
+      uuid: `claude-${index}`,
+      updated_at: index === 1 ? "2020-01-01T00:00:00Z" : "2026-02-01T00:00:00Z",
+    }));
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response([{ uuid: "org-1" }]))
+      .mockResolvedValueOnce(response(records));
+    const adapter = new ClaudeBackfillAdapter(fetchImpl);
+    const inventory = await adapter.enumerate("0", "2026-01-01T00:00:00Z");
+    expect(inventory.done).toBe(false);
+    expect(inventory.items.at(-1).native_id).toBe("claude-99");
+  });
+
   it("normalizes Claude inventory/native fixtures and rejects message drift", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response([{ uuid: "org-1" }]))
