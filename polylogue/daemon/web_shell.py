@@ -15,6 +15,7 @@ from polylogue.daemon.web_shell_selection import (
     SELECTION_PREVIEW_HTML,
     SELECTION_TOOLBAR_HTML,
 )
+from polylogue.daemon.web_shell_semantic_cards import SEMANTIC_CARD_CSS, SEMANTIC_CARD_JS
 from polylogue.daemon.web_shell_similar import SIMILAR_JS
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
@@ -237,6 +238,7 @@ __WORKSPACE_CSS__
 __READER_CSS__
 __PASTE_CSS__
 __ATTACHMENT_CSS__
+__SEMANTIC_CARD_CSS__
 __COORDINATION_CSS__
 .tool-block { border-left: 2px solid var(--role-tool); padding-left: 12px; margin: 2px 0; }
 .tool-block .tool-summary { font-size: var(--small); color: var(--text-muted); cursor: pointer; padding: 3px 0; }
@@ -3116,6 +3118,7 @@ __REALTIME_JS__
 __READER_JS__
 __PASTE_JS__
 __ATTACHMENT_JS__
+__SEMANTIC_CARD_JS__
 </script>
 </body>
 </html>""".replace("__WORKSPACE_CSS__", WORKSPACE_CSS)
@@ -3136,6 +3139,8 @@ __ATTACHMENT_JS__
     .replace("__PASTE_JS__", PASTE_JS)
     .replace("__ATTACHMENT_CSS__", ATTACHMENT_CSS)
     .replace("__ATTACHMENT_JS__", ATTACHMENT_JS)
+    .replace("__SEMANTIC_CARD_CSS__", SEMANTIC_CARD_CSS)
+    .replace("__SEMANTIC_CARD_JS__", SEMANTIC_CARD_JS)
     .replace("__COORDINATION_CSS__", COORDINATION_CSS)
     .replace("__COORDINATION_JS__", COORDINATION_JS)
 )
