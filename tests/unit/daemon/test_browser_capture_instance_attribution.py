@@ -15,7 +15,7 @@ from polylogue.browser_capture.receiver import (
 )
 
 
-def _envelope(instance_id: str) -> BrowserCaptureEnvelope:
+def _envelope(instance_id: str, *, backfill_job_id: str) -> BrowserCaptureEnvelope:
     return BrowserCaptureEnvelope.model_validate(
         {
             "polylogue_capture_kind": "browser_llm_session",
@@ -29,16 +29,31 @@ def _envelope(instance_id: str) -> BrowserCaptureEnvelope:
             "session": {
                 "provider": "chatgpt",
                 "provider_session_id": "concurrent-1",
+                "provider_meta": {
+                    "capture_fidelity": "native_full",
+                    "backfill": {
+                        "job_id": backfill_job_id,
+                        "queue_id": f"queue-{backfill_job_id}",
+                        "instance_id": instance_id,
+                    },
+                },
                 "turns": [{"provider_turn_id": "m1", "role": "assistant", "text": "same snapshot"}],
+            },
+            "provider_meta": {
+                "backfill": {
+                    "job_id": backfill_job_id,
+                    "queue_id": f"queue-{backfill_job_id}",
+                    "instance_id": instance_id,
+                }
             },
         }
     )
 
 
 def test_concurrent_extension_instances_deduplicate_without_corrupting_spool(tmp_path: Path) -> None:
-    """The real receiver writer serializes competing posters and keeps one artifact."""
-    first = _envelope("extension-instance-a")
-    second = _envelope("extension-instance-b")
+    """The real receiver writer ignores observer-only backfill attribution."""
+    first = _envelope("extension-instance-a", backfill_job_id="job-a")
+    second = _envelope("extension-instance-b", backfill_job_id="job-b")
     assert capture_dedup_content_hash(first) == capture_dedup_content_hash(second)
 
     barrier = Barrier(2)

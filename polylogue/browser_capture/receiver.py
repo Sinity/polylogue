@@ -49,6 +49,12 @@ BROWSER_POST_ENABLED_ENV = "POLYLOGUE_BROWSER_POST_ENABLED"
 #: Subdirectory of the capture spool that holds queued post commands.
 POST_COMMAND_QUEUE_DIRNAME = "post-commands"
 
+# Backfill scheduling identifies the observer that acquired a snapshot rather
+# than a semantic property of the provider session.  Keep it out of the spool
+# deduplication fingerprint, while retaining any future semantic backfill
+# metadata a provider might add.
+_BACKFILL_OBSERVER_ATTRIBUTION_KEYS = frozenset({"job_id", "queue_id", "instance_id"})
+
 
 @dataclass(frozen=True, slots=True)
 class BrowserCaptureReceiverConfig:
@@ -212,6 +218,23 @@ def capture_response_id(provider: str, provider_session_id: str, capture_id: str
     return value if value.startswith(prefix) else f"{prefix}{value}"
 
 
+def _semantic_provider_meta(provider_meta: dict[str, object]) -> dict[str, object]:
+    """Return provider metadata without backfill-observer attribution."""
+    semantic_meta = dict(provider_meta)
+    backfill = semantic_meta.get("backfill")
+    if not isinstance(backfill, dict):
+        return semantic_meta
+
+    semantic_backfill = {
+        key: value for key, value in backfill.items() if key not in _BACKFILL_OBSERVER_ATTRIBUTION_KEYS
+    }
+    if semantic_backfill:
+        semantic_meta["backfill"] = semantic_backfill
+    else:
+        semantic_meta.pop("backfill", None)
+    return semantic_meta
+
+
 def capture_dedup_content_hash(envelope: BrowserCaptureEnvelope) -> str:
     """Hash capture content independently from observation-specific provenance.
 
@@ -220,11 +243,13 @@ def capture_dedup_content_hash(envelope: BrowserCaptureEnvelope) -> str:
     this hash lets two concurrently running instances converge on one spool
     artifact while the receiver can still echo each poster's attribution.
     """
+    session = envelope.session.model_dump(mode="json", exclude_none=True)
+    session["provider_meta"] = _semantic_provider_meta(envelope.session.provider_meta)
     payload = {
         "polylogue_capture_kind": envelope.polylogue_capture_kind,
         "schema_version": envelope.schema_version,
-        "session": envelope.session.model_dump(mode="json", exclude_none=True),
-        "provider_meta": envelope.provider_meta,
+        "session": session,
+        "provider_meta": _semantic_provider_meta(envelope.provider_meta),
         "raw_provider_payload": envelope.raw_provider_payload,
     }
     return hashlib.sha256(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
