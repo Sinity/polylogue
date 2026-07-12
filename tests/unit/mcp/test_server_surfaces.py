@@ -1085,7 +1085,7 @@ class TestArchiveGenericToolSurfaces:
     async def test_get_context_delivery_reads_recipient_scoped_facade_receipt(
         self: object, mcp_server: MCPServerUnderTest
     ) -> None:
-        from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
+        from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_image_sha256
         from polylogue.core.refs import EvidenceRef
         from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 
@@ -1110,14 +1110,14 @@ class TestArchiveGenericToolSurfaces:
             run_ref=None,
             boundary="explicit-recall",
             inheritance_mode="explicit",
-            context_image_sha256="a" * 64,
+            context_image_sha256=context_image_sha256(image),
             context_image=image,
             segment_refs=("read-view:session-1:messages",),
             evidence_refs=("session-1",),
             assertion_refs=(),
             omissions=(),
             caveats=("quoted evidence",),
-            metadata={"context_image_sha256": "a" * 64},
+            metadata={"context_image_sha256": context_image_sha256(image)},
             delivered_by_ref="user:local",
             delivered_at_ms=123,
         )
@@ -1138,6 +1138,29 @@ class TestArchiveGenericToolSurfaces:
         mock_poly.get_context_delivery.assert_awaited_once_with(
             receipt.snapshot_ref,
             recipient_ref=receipt.recipient_ref,
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_context_delivery_hides_missing_receipt_or_recipient_mismatch(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        mock_poly = make_polylogue_mock()
+        mock_poly.get_context_delivery = AsyncMock(return_value=None)
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_context_delivery"].fn,
+                snapshot_ref="context-snapshot:session-1:explicit-recall",
+                recipient_ref="agent:other-recipient",
+            )
+
+        payload = json.loads(result)
+        assert payload["is_error"] is True
+        assert payload["code"] == "not_found"
+        assert payload["tool"] == "get_context_delivery"
+        mock_poly.get_context_delivery.assert_awaited_once_with(
+            "context-snapshot:session-1:explicit-recall",
+            recipient_ref="agent:other-recipient",
         )
 
     @pytest.mark.asyncio

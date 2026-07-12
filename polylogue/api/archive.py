@@ -99,6 +99,7 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.search.models import SearchResult
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ArchiveAssertionCandidateReviewEnvelope,
         ArchiveAssertionEnvelope,
@@ -1055,7 +1056,7 @@ def _archive_get_context_delivery(
     *,
     snapshot_ref: str,
     recipient_ref: str,
-) -> Any | None:
+) -> ArchiveContextDeliveryEnvelope | None:
     """Read one delivery receipt only when it belongs to its recorded recipient."""
 
     from polylogue.storage.sqlite.archive_tiers.context_delivery_write import read_context_delivery
@@ -2197,7 +2198,9 @@ class PolylogueArchiveMixin:
             ),
         )
 
-    async def get_context_delivery(self, snapshot_ref: str, *, recipient_ref: str) -> Any | None:
+    async def get_context_delivery(
+        self, snapshot_ref: str, *, recipient_ref: str
+    ) -> ArchiveContextDeliveryEnvelope | None:
         """Return an exact delivery receipt only for its recorded recipient.
 
         This is a read-only audit seam over the durable user-tier receipt. It
