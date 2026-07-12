@@ -14,10 +14,13 @@ Key capabilities:
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
+import struct
 import subprocess
 import sys
+import termios
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -130,7 +133,15 @@ def run_in_pty(
 
     # Open PTY
     master_fd, slave_fd = os.openpty()
+    # ``openpty`` does not inherit the requested dimensions.  Set them before
+    # spawning so Rich, fzf, and any future full-screen route see the same
+    # terminal shape that pyte renders for assertions.
+    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     os.set_blocking(master_fd, False)
+
+    def _attach_controlling_terminal() -> None:
+        os.setsid()
+        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
 
     start_time = time.time()
     output_chunks: list[bytes] = []
@@ -144,7 +155,7 @@ def run_in_pty(
             stderr=slave_fd,
             env=clean_env,
             cwd=project_root,
-            preexec_fn=os.setsid,  # Create new session so PTY works correctly
+            preexec_fn=_attach_controlling_terminal,
             start_new_session=False,
         )
 
