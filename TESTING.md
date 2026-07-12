@@ -170,6 +170,72 @@ For optional lane, mutation-campaign, and benchmark inventories, see
 secondary navigation over executable checks; the source of truth for behavior is
 pytest plus the concrete `polylogue`/`devtools` commands they invoke.
 
+### Known limitation: collection-time-only imports are invisible to testmon
+
+`pytest-testmon` only builds a file-to-test dependency edge while a specific
+test is *running* (its `pytest_runtest_protocol` hookwrapper opens the tracing
+window). Anything a test module or `conftest.py` executes at **collection
+time** — a bare `from polylogue.x import Y` at the top of a test file, before
+any test in that file has started — falls outside every test's tracing
+window and is never recorded, even though the coverage.py summary for a
+normal `--cov` run legitimately counts those lines as executed. The result:
+declarative-only modules (`TypedDict`/dataclass/`Protocol`/enum/Pydantic
+model definitions, no behavior beyond class/field statements) that are only
+ever referenced via a top-level import in test files show **zero** rows in
+`.cache/testmon/testmondata`'s `file_fp` table, no matter how much of the
+file's statements a full-suite coverage run reports as covered. This is
+inherent to how testmon (and coverage-context-based selective testing in
+general) works — it is **not** dependency-graph staleness, and running
+`devtools verify --seed-testmon` does not fix it.
+
+Confirmed reproducible (2026-07-12, polylogue-csg7) with an isolated,
+freshly-seeded testmon run scoped to exactly one test file: after
+`TESTMON_DATAFILE=<scratch> pytest --testmon --testmon-noselect
+tests/unit/devtools/test_verify_manifests.py`, `polylogue/verification/manifests/models.py`
+still has 0 `file_fp` rows even though a `--cov` run over the same test file
+reports 80% statement coverage on that module — all of it from Pydantic
+model/field declarations executed when `devtools.verify_manifests` is
+imported at module-collection time; every uncovered line is inside a
+`@field_validator`/`@model_validator` method body, which only runs when
+`validate_manifest()` is actually called (no test in that file calls it).
+
+Cross-referencing a full-suite `coverage.json` (`--cov=polylogue`) against
+`file_fp` filenames finds **95 files** under `polylogue/` with nonzero
+covered statements but zero testmon dependency rows — largely `*_models.py`,
+`types.py`, `protocols.py`, `enums.py`, and `api/contracts/*.py`, i.e. modules
+whose test-suite touch points are import-only. Query:
+
+```python
+import json, sqlite3
+cov = json.load(open(".cache/coverage/coverage.json"))["files"]
+tm = {r[0] for r in sqlite3.connect(".cache/testmon/testmondata")
+      .execute("SELECT DISTINCT filename FROM file_fp")}
+gaps = [(f, d["summary"]["covered_lines"]) for f, d in cov.items()
+        if d["summary"]["covered_lines"] > 0 and f not in tm]
+```
+
+**Blast radius:** the default `devtools verify` gate (`--testmon
+--testmon-forceselect`) is the only local pre-merge signal for a change
+scoped to one of these files — `devtools test <file>` forwards a literal
+pytest selection and is not testmon-aware, so it does not share this gap
+(point it at the file's *owning test module*, not the changed source file).
+A change confined to one of these 95 files can select zero tests locally and
+still report a clean `devtools verify`. The heavy full-suite `devtools verify
+coverage` CI job (`.github/workflows/ci.yml`) does not use testmon selection
+and still catches such a regression, but only **post-merge** (it is
+intentionally off the per-PR gate) — so the exposure window is "merged before
+caught," not "never caught."
+
+**Mitigation:** there is no testmon configuration knob for this — it is
+upstream tool behavior. When changing a file that is purely declarative
+(only type/model/protocol definitions, no function bodies with real logic),
+do not trust "0 tests selected" from the default `devtools verify` gate as
+proof of safety; run the file's owning test module directly with `devtools
+test <test-file>`, and rely on `mypy --strict` (already in the default gate)
+to catch structural regressions in `TypedDict`/protocol shapes. See
+polylogue-csg7 for the investigation and a follow-up tracking item for making
+this gap machine-checkable.
+
 ## Test Suite Layout
 
 ```text
