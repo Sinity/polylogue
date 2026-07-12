@@ -487,20 +487,13 @@ def _assert_index_identity(index_path: Path, expected: _IndexIdentity) -> None:
 
 
 def _assert_active_index_generation(index_path: Path) -> None:
-    """Require the active source-snapshotted generation when generations exist.
-
-    Legacy archives have a direct ``index.db`` and no generation metadata, so
-    the schema and inode guards remain their authority proof.  Once a rebuild
-    creates generation metadata, however, a same-schema inactive candidate is
-    not safe deletion truth: only the generation named by the active pointer
-    and marked ``active`` after a source snapshot may drive reconciliation.
-    """
+    """Require the active source-snapshotted generation for deletion truth."""
 
     root = index_path.parent
     generations = root / ".index-generations"
     metadata_paths = tuple(generations.glob("*/generation.json")) if generations.is_dir() else ()
     if not metadata_paths:
-        return
+        raise RuntimeError("embedding orphan reconciliation requires active index generation readiness evidence")
 
     pointer = root / ".index-active-pointer"
     if not pointer.is_file():

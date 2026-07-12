@@ -55,7 +55,13 @@ CREATE TABLE messages (
 """
 
 
-def _connect_index(path: Path, *, sessions: list[str], messages: dict[str, list[str]]) -> None:
+def _connect_index(
+    path: Path,
+    *,
+    sessions: list[str],
+    messages: dict[str, list[str]],
+    authoritative_generation: bool = True,
+) -> None:
     """Build a minimal synthetic ``index.db`` with only the sessions/messages
     listed — standing in for a rebuilt index that dropped some identities."""
 
@@ -77,6 +83,24 @@ def _connect_index(path: Path, *, sessions: list[str], messages: dict[str, list[
         conn.commit()
     finally:
         conn.close()
+    if authoritative_generation:
+        generations = path.parent / ".index-generations" / "gen-current"
+        generations.mkdir(parents=True)
+        (path.parent / ".index-active-pointer").write_text(str(path.resolve()), encoding="utf-8")
+        (generations / "generation.json").write_text(
+            json.dumps(
+                {
+                    "generation_id": "gen-current",
+                    "owner_id": "test",
+                    "archive_root": str(path.parent),
+                    "index_path": str(path),
+                    "state": "active",
+                    "created_at_ms": _NOW_MS,
+                    "source_snapshot": "source-at-rebuild-start",
+                }
+            ),
+            encoding="utf-8",
+        )
 
 
 def _connect_embeddings(path: Path) -> sqlite3.Connection:
@@ -662,7 +686,12 @@ def test_apply_refuses_inactive_generation_even_when_schema_matches(tmp_path: Pa
     session_id = "codex-session:inactive-generation"
     message_id = f"{session_id}:orphan"
     index_db = tmp_path / "index.db"
-    _connect_index(index_db, sessions=[session_id], messages={session_id: []})
+    _connect_index(
+        index_db,
+        sessions=[session_id],
+        messages={session_id: []},
+        authoritative_generation=False,
+    )
     generations = tmp_path / ".index-generations" / "gen-inactive"
     generations.mkdir(parents=True)
     (tmp_path / ".index-active-pointer").write_text(str(index_db.resolve()), encoding="utf-8")
@@ -686,6 +715,40 @@ def test_apply_refuses_inactive_generation_even_when_schema_matches(tmp_path: Pa
     conn.close()
 
     with pytest.raises(RuntimeError, match="active source-snapshotted index generation"):
+        reconcile_embedding_orphans(
+            index_db,
+            embeddings_db,
+            dry_run=False,
+            now_ms=_NOW_MS,
+            mutation_authority="offline-exclusive",
+        )
+
+    with _connect_embeddings(embeddings_db) as verify:
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
+
+
+def test_apply_refuses_generationless_index_even_when_schema_matches(tmp_path: Path) -> None:
+    """Deletion requires rebuild-readiness evidence, not schema version alone.
+
+    Anti-vacuity: restoring the generation-less compatibility path lets a
+    current-schema index with no active source snapshot delete this orphan.
+    """
+    session_id = "codex-session:generationless"
+    message_id = f"{session_id}:orphan"
+    index_db = tmp_path / "index.db"
+    _connect_index(
+        index_db,
+        sessions=[session_id],
+        messages={session_id: []},
+        authoritative_generation=False,
+    )
+    embeddings_db = tmp_path / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    _write_embedding(conn, message_id=message_id, session_id=session_id, embedded_at_ms=_OLD_MS)
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="requires active index generation readiness evidence"):
         reconcile_embedding_orphans(
             index_db,
             embeddings_db,
