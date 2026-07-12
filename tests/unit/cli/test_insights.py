@@ -267,6 +267,7 @@ def test_insights_profiles_json(cli_workspace: CliWorkspace) -> None:
     assert "evidence" in first
     assert "inference" in first
     assert "provenance" in first
+    assert json_object(first["provenance"])["time_confidence"] == "unknown"
 
 
 def test_insights_costs_json(cli_workspace: CliWorkspace) -> None:

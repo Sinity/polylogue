@@ -10,8 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.fallback import FallbackReason
+from polylogue.insights.temporal_source import TimeConfidence
 
-ARCHIVE_INSIGHT_CONTRACT_VERSION = 9
+ARCHIVE_INSIGHT_CONTRACT_VERSION = 10
 
 
 class ArchiveInsightModel(BaseModel):
@@ -30,6 +31,9 @@ class ArchiveInsightProvenance(ArchiveInsightModel):
     materialized_at: str
     source_updated_at: str | None = None
     source_sort_key: float | None = None
+    input_high_water_mark: str | None = None
+    input_high_water_mark_source: str | None = None
+    time_confidence: TimeConfidence = "unknown"
 
 
 class ArchiveInferenceProvenance(ArchiveInsightProvenance):

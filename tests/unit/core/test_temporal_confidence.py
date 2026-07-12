@@ -9,6 +9,8 @@ from typing import get_args
 
 import pytest
 
+from polylogue.insights.archive import SessionProfileInsight
+from polylogue.insights.archive_models import SessionEnrichmentPayload, SessionEvidencePayload, SessionInferencePayload
 from polylogue.insights.temporal_source import (
     TIME_CONFIDENCE_VALUES,
     TemporalSource,
@@ -81,3 +83,37 @@ def test_timeless_profile_record_round_trips_as_unknown_time(
     assert record.input_high_water_mark_source in {None, "fallback_date"}
     assert time_confidence_for_record(record) == "unknown"
     assert time_confidence_for_record(record) in TIME_CONFIDENCE_VALUES
+
+
+def test_profile_insight_projects_recorded_temporal_source_to_public_provenance() -> None:
+    """The public insight builder projects the record provenance, not a display fallback."""
+
+    record = SessionProfileRecord.model_construct(
+        session_id="profile-1",
+        logical_session_id="profile-1",
+        materializer_version=1,
+        materialized_at="2026-07-12T10:00:00+00:00",
+        source_updated_at="2026-07-12T09:00:00+00:00",
+        source_sort_key=1_784_265_600.0,
+        input_high_water_mark="2026-07-12T09:00:00+00:00",
+        input_high_water_mark_source="provider_ts",
+        input_row_count=1,
+        source_name="claude-code",
+        title="profile",
+        evidence_payload=SessionEvidencePayload(),
+        inference_payload=SessionInferencePayload(),
+        enrichment_payload=SessionEnrichmentPayload(),
+        terminal_state="unknown",
+        terminal_state_confidence=0.0,
+        workflow_shape="unknown",
+        workflow_shape_confidence=0.0,
+        inference_version=1,
+        inference_family="test",
+        enrichment_version=1,
+        enrichment_family="test",
+    )
+
+    insight = SessionProfileInsight.from_record(record)
+
+    assert insight.provenance.input_high_water_mark_source == "provider_ts"
+    assert insight.provenance.time_confidence == "recorded"

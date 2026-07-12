@@ -405,6 +405,7 @@ register(
             InsightField("tool_s", _nested_ms_as_seconds("evidence", "tool_duration_ms", "0"), group=1),
             InsightField("tpm", _nested("evidence", "tool_calls_per_minute", "-"), group=1),
             InsightField("prov", _nested("evidence", "timing_provenance", "-"), group=1),
+            InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
         ),
     )
 )
@@ -445,6 +446,7 @@ register(
             InsightField("start", _nested("evidence", "start_time"), group=1),
             InsightField("end", _nested("evidence", "end_time"), group=1),
             InsightField("duration_ms", _nested("evidence", "duration_ms", "0"), group=1),
+            InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
         ),
     )
 )
@@ -466,6 +468,7 @@ register(
             InsightField("conv", _attr("session_id"), group=0),
             InsightField("start", _nested("evidence", "start_time"), group=1),
             InsightField("words", _nested("evidence", "word_count", "0"), group=1),
+            InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
         ),
     )
 )
@@ -487,6 +490,7 @@ register(
             InsightField("sessions", _nested("thread", "session_count", "0"), group=0),
             InsightField("messages", _nested("thread", "total_messages", "0"), group=1),
             InsightField("depth", _nested("thread", "depth", "0"), group=1),
+            InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
         ),
     )
 )
