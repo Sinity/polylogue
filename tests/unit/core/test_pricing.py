@@ -348,7 +348,8 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
     )
     monkeypatch.setitem(pricing_mod.PRICING, "test-codex-like", codex_like)
 
-    raw_usage = {"input_tokens": 2500, "cached_input_tokens": 2400, "output_tokens": 50}
+    message_usage = {"uncached_input_tokens": 100, "cached_input_tokens": 2400, "output_tokens": 50}
+    provider_total_usage = {"input_tokens": 2500, "cached_input_tokens": 2400, "output_tokens": 50}
     raw = [
         {
             "type": "message",
@@ -356,7 +357,7 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
             "role": "assistant",
             "model": "test-codex-like",
             "content": [{"type": "output_text", "text": "done"}],
-            "usage": raw_usage,
+            "usage": message_usage,
         },
         {
             "type": "event_msg",
@@ -364,7 +365,7 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
                 "type": "token_count",
                 "info": {
                     "total_token_usage": {
-                        **raw_usage,
+                        **provider_total_usage,
                         "reasoning_output_tokens": 30,
                         "total_tokens": 2550,
                     },
@@ -419,7 +420,7 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
         "total_reasoning_output_tokens": 30,
     }
     completion_output = event_usage["total_output_tokens"] - event_usage["total_reasoning_output_tokens"]
-    assert completion_output + event_usage["total_reasoning_output_tokens"] == raw_usage["output_tokens"]
+    assert completion_output + event_usage["total_reasoning_output_tokens"] == provider_total_usage["output_tokens"]
     # The model-cost tier keeps priced lanes additive: output is the provider's
     # inclusive total and reasoning stays event-tier evidence, never re-added.
     assert dict(model_usage) == dict(message_usage)
@@ -440,7 +441,29 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
         provenance=("message_token_usage",),
     )
 
-    assert disjoint.usage.input_tokens + disjoint.usage.cache_read_tokens == raw_usage["input_tokens"]
+    assert disjoint.usage.input_tokens + disjoint.usage.cache_read_tokens == provider_total_usage["input_tokens"]
+    parsed_message = parsed.messages[0]
+    fallback_session = make_conv(
+        id="codex-message-fallback",
+        provider="codex",
+        messages=MessageCollection(
+            messages=[
+                make_msg(
+                    id="assistant-1",
+                    role="assistant",
+                    provider="codex",
+                    model_name=parsed_message.model_name,
+                    input_tokens=parsed_message.input_tokens,
+                    output_tokens=parsed_message.output_tokens,
+                    cache_read_tokens=parsed_message.cache_read_tokens,
+                    cache_write_tokens=parsed_message.cache_write_tokens,
+                )
+            ]
+        ),
+    )
+    fallback_estimate = estimate_session_cost(fallback_session)
+    assert fallback_estimate.usage == disjoint.usage
+    assert fallback_estimate.total_usd == pytest.approx(disjoint.total_usd)
     # Naive double-bills the entire cached lane at the full input rate on top
     # of the cache-read rate -- on this ~96%-cached ratio the guard requires
     # at least a 5x inflation (real corpus measured 7.69x; the exact multiple
