@@ -22,7 +22,7 @@ def validate_check_options(options: CheckCommandOptions) -> None:
     if options.blob_integrity_full and not options.check_blob:
         fail("doctor", "--full requires --blob")
     if options.schema_providers and not options.check_schemas:
-        fail("doctor", "--schema-provider requires --schemas")
+        fail("doctor", "--schema-origin requires --schemas")
     if options.schema_samples != "all" and not options.check_schemas:
         fail("doctor", "--schema-samples requires --schemas")
     if options.schema_record_limit is not None and not options.check_schemas:
@@ -34,7 +34,7 @@ def validate_check_options(options: CheckCommandOptions) -> None:
     if options.artifact_providers and not (
         options.check_artifact_coverage or options.check_artifacts or options.check_cohorts
     ):
-        fail("doctor", "--artifact-provider requires --artifact-coverage, --artifacts, or --cohorts")
+        fail("doctor", "--artifact-origin requires --artifact-coverage, --artifacts, or --cohorts")
     if options.artifact_statuses and not (options.check_artifacts or options.check_cohorts):
         fail("doctor", "--artifact-status requires --artifacts or --cohorts")
     if options.artifact_kinds and not (options.check_artifacts or options.check_cohorts):

@@ -549,7 +549,7 @@ Usage: polylogue ops doctor [OPTIONS]
 
 Options:
   -f, --format [json]             Output format
-  -v, --verbose                   Show breakdown by provider
+  -v, --verbose                   Show breakdown by origin
   --repair                        Run safe derived-data maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
@@ -577,10 +577,12 @@ Options:
   --artifact-coverage             Inspect durable artifact coverage
   --artifacts                     List durable artifact observations
   --cohorts                       Summarize durable artifact cohorts
-  --schema-provider TEXT          Limit schema verification to DB provider
-                                  name (repeatable)
-  --artifact-provider TEXT        Limit artifact coverage/listing/cohorting to
-                                  effective provider (repeatable)
+  --schema-origin TEXT            Limit schema verification to archive origin
+                                  (repeatable)
+  --schema-provider TEXT          (DEPRECATED: Use --schema-origin instead.)
+  --artifact-origin TEXT          Limit artifact coverage/listing/cohorting to
+                                  effective origin (repeatable)
+  --artifact-provider TEXT        (DEPRECATED: Use --artifact-origin instead.)
   --artifact-status TEXT          Limit artifact listing/cohorting to support
                                   status (repeatable)
   --artifact-kind TEXT            Limit artifact listing/cohorting to artifact

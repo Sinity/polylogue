@@ -727,12 +727,26 @@ class TestCheckCommand:
 class TestCheckCommandSupplementary:
     """Tests for check command edge cases."""
 
+    def test_check_origin_options_advertise_deprecated_provider_aliases(self, cli_workspace: WorkspacePaths) -> None:
+        """Doctor help exposes origin filters and the one-release aliases."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        result = CliRunner().invoke(cli, ["ops", "doctor", "--help"])
+
+        assert result.exit_code == 0
+        assert "--schema-origin TEXT" in result.output
+        assert "--artifact-origin TEXT" in result.output
+        assert "--schema-provider TEXT  (DEPRECATED: Use --schema-origin instead.)" in result.output
+        assert "--artifact-provider TEXT  (DEPRECATED: Use --artifact-origin instead.)" in result.output
+
     # --- Flag validation: invalid combos rejected with correct error ---
 
     INVALID_FLAG_COMBOS = [
         (["ops", "doctor", "--vacuum"], "--vacuum requires --repair or --cleanup"),
         (["ops", "doctor", "--preview"], "--preview requires --repair or --cleanup"),
-        (["ops", "doctor", "--schema-provider", "chatgpt"], "--schema-provider requires --schemas"),
+        (["ops", "doctor", "--schema-origin", "chatgpt"], "--schema-origin requires --schemas"),
         (["ops", "doctor", "--schema-record-limit", "100"], "--schema-record-limit requires --schemas"),
         (["ops", "doctor", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
         (["ops", "doctor", "--schema-quarantine-malformed"], "--schema-quarantine-malformed requires --schemas"),
@@ -892,7 +906,7 @@ class TestCheckCommandSupplementary:
                     "--format",
                     "json",
                     "--schemas",
-                    "--schema-provider",
+                    "--schema-origin",
                     "claude-code",
                     "--schema-samples",
                     "16",
@@ -912,6 +926,26 @@ class TestCheckCommandSupplementary:
         assert request.quarantine_malformed is False
         assert request.progress_callback is not None
         assert mock_verify.call_args.kwargs["db_path"] == ANY
+
+    def test_check_schemas_accepts_deprecated_provider_alias(self, cli_workspace: WorkspacePaths) -> None:
+        """The old schema filter spelling warns but reaches the real workflow."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = SchemaVerificationReport(providers={}, max_samples=None, total_records=0)
+        with patch(
+            "polylogue.cli.shared.check_workflow.run_schema_verification",
+            return_value=fake_report,
+        ) as mock_verify:
+            result = CliRunner().invoke(
+                cli,
+                ["ops", "doctor", "--schemas", "--schema-provider", "claude-code"],
+            )
+
+        assert result.exit_code == 0
+        assert "The option '--schema-provider' is deprecated." in result.output
+        assert mock_verify.call_args.args[0].providers == ["claude-code"]
 
     def test_check_schemas_forwards_quarantine_flag(self, cli_workspace: WorkspacePaths) -> None:
         """Quarantine option is forwarded to verify_raw_corpus."""
@@ -974,7 +1008,7 @@ class TestCheckCommandSupplementary:
                 "ops",
                 "doctor",
                 "--schemas",
-                "--schema-provider",
+                "--schema-origin",
                 "codex",
                 "--schema-quarantine-malformed",
             ],
@@ -1106,7 +1140,7 @@ class TestCheckCommandSupplementary:
                     "--format",
                     "json",
                     "--artifact-coverage",
-                    "--artifact-provider",
+                    "--artifact-origin",
                     "claude-code",
                     "--artifact-limit",
                     "25",
@@ -1120,6 +1154,26 @@ class TestCheckCommandSupplementary:
         assert request.providers == ["claude-code"]
         assert request.record_limit == 25
         assert request.record_offset == 50
+
+    def test_check_artifact_coverage_accepts_deprecated_provider_alias(self, cli_workspace: WorkspacePaths) -> None:
+        """The old artifact filter spelling warns but reaches the real workflow."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = ArtifactCoverageReport(providers={}, total_records=0)
+        with patch(
+            "polylogue.cli.shared.check_workflow.run_artifact_coverage",
+            return_value=ArtifactCoverageResult(report=fake_report),
+        ) as mock_prove:
+            result = CliRunner().invoke(
+                cli,
+                ["ops", "doctor", "--artifact-coverage", "--artifact-provider", "claude-code"],
+            )
+
+        assert result.exit_code == 0
+        assert "The option '--artifact-provider' is deprecated." in result.output
+        assert mock_prove.call_args.args[0].providers == ["claude-code"]
 
     def test_check_artifacts_json_output(self, cli_workspace: WorkspacePaths) -> None:
         """--artifacts adds artifact_observations rows to JSON output."""
@@ -1170,7 +1224,7 @@ class TestCheckCommandSupplementary:
                     "--format",
                     "json",
                     "--artifacts",
-                    "--artifact-provider",
+                    "--artifact-origin",
                     "chatgpt",
                     "--artifact-status",
                     "supported_parseable",
