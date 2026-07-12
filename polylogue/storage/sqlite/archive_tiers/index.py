@@ -1110,61 +1110,249 @@ ON session_profiles(first_message_at DESC);
 CREATE INDEX IF NOT EXISTS idx_session_profiles_canonical_date
 ON session_profiles(canonical_session_date DESC);
 
--- 1vpm.1: a delegation is a parent-dispatched subagent edge -- a
--- session_links row with link_type='subagent' that ALSO has a parent-side
--- Task dispatch action (an `actions` row at the branch point, semantic_type
--- 'subagent'). Not every subagent link is a delegation: Codex async
--- subagents/sidechains with no parent Task action have no dispatch action to
--- join, so they surface with result_status='unknown' and stay OUT of any
--- ROI/yield denominator built on top of this view (never guessed). 100%
--- derivable from existing tables -- VIEW, not a table, matching the `actions`
--- precedent (derived tier, no convergence stage needed).
+-- polylogue-y964: delegations is a versioned, recomputable read model spined
+-- on the PARENT's own dispatch actions, not on `session_links` plumbing. Two
+-- upstream facts drove a full rebuild rather than a column-alias fix:
+--
+--   1. `session_links` stores the CHILD in `src_session_id` and the PARENT in
+--      `resolved_dst_session_id` (see resolve_session_links_for_session,
+--      storage/sqlite/queries/session_links.py: `child_id =
+--      row["src_session_id"]`, and the resolved session is written into
+--      `sessions.parent_session_id`) -- never the reverse. The prior shipped
+--      view aliased these backwards, so every `orchestrator_*` column
+--      actually described the CHILD session and vice versa.
+--   2. `branch_point_message_id` is the last message the CHILD inherited from
+--      the PARENT's prefix for lineage composition (see the `session_links`
+--      DDL comment above) -- it is not the message that issued the Task
+--      dispatch, and for a spawned-fresh child it is NULL entirely. The
+--      prior view joined it against the (mislabeled) parent session as a
+--      dispatch pointer, which does not hold in general.
+--
+-- The spine is therefore every parent-side dispatch action (an `actions` row
+-- with semantic_type='subagent' -- a Task tool_use, optionally paired with
+-- its tool_result). Stable action-observed identity is
+-- (parent_session_id, instruction_tool_use_block_id): two Task calls in one
+-- assistant message keep two distinct rows, never a fanout. Every dispatch
+-- action gets exactly one row even when no child ever resolves
+-- (mapping_state='unresolved' -- a dispatch error, or a resolution still
+-- pending). A resolved session_links(subagent) edge with no discoverable
+-- parent-side dispatch action (e.g. a Codex async subagent) surfaces as
+-- mapping_state='edge_only', counted but never given a fabricated
+-- instruction. Dispatch actions are corroborated against resolved children
+-- by rank-pairing IN TRANSCRIPT ORDER within one parent session (the same
+-- "Nth query gets Nth result" idiom `actions` itself uses for tool_use/
+-- tool_result) -- but ONLY when a parent's dispatch count and resolved-child
+-- count agree; a mismatched count would mean guessing a winner, so those
+-- rows surface as mapping_state='ambiguous' with a real instruction but no
+-- fabricated child. Quarantined edges (cycle-break, #866/#1260) surface
+-- explicitly as mapping_state='quarantined' rather than silently vanishing.
+--
+-- Model identity is deliberately NOT collapsed into one "orchestrator model"
+-- column (polylogue-4c27): `dispatch_turn_model` is the model that authored
+-- the specific message containing the dispatch action (messages.model_name);
+-- `requested_model` is an explicit routing override read from the dispatch
+-- tool_input, honestly NULL when the provider recorded no such field;
+-- `parent_session_dominant_model`/`child_session_dominant_model` are the
+-- session-level dominant-model fallback (by assistant output-token share,
+-- see archive/session/runtime.py:_primary_model) -- explicitly named as a
+-- session-wide aggregate, excluded from turn-level dispatch claims. Use
+-- `archive.semantic.pricing.resolve_model_identity()` to derive
+-- vendor/model-line/pricing-source/confidence from any of these raw columns.
+--
+-- 100% derivable from existing tables -- VIEW, not a table, matching the
+-- `actions` precedent (derived tier, no convergence stage needed).
 CREATE VIEW IF NOT EXISTS delegations AS
+WITH dispatch_actions AS (
+    SELECT
+        a.session_id                           AS parent_session_id,
+        a.message_id                           AS instruction_message_id,
+        a.tool_use_block_id                    AS instruction_tool_use_block_id,
+        a.tool_input                           AS instruction_payload,
+        a.tool_result_block_id                 AS artifact_block_id,
+        a.output_text                          AS artifact_text,
+        a.is_error                             AS result_is_error,
+        a.exit_code                            AS result_exit_code,
+        m.model_name                           AS dispatch_turn_model,
+        json_extract(a.tool_input, '$.model')  AS requested_model,
+        ROW_NUMBER() OVER (
+            PARTITION BY a.session_id
+            ORDER BY a.message_id, a.tool_use_block_id
+        )                                       AS dispatch_rank
+    FROM actions a
+    JOIN messages m ON m.message_id = a.message_id
+    WHERE a.semantic_type = 'subagent'
+),
+resolved_children AS (
+    SELECT
+        l.resolved_dst_session_id              AS parent_session_id,
+        l.src_session_id                       AS child_session_id,
+        l.branch_point_message_id              AS branch_point_message_id,
+        l.confidence                           AS link_confidence,
+        l.method                               AS link_method,
+        l.inheritance                          AS inheritance,
+        ROW_NUMBER() OVER (
+            PARTITION BY l.resolved_dst_session_id
+            ORDER BY l.observed_at_ms, l.src_session_id
+        )                                       AS child_rank
+    FROM session_links l
+    WHERE l.link_type = 'subagent'
+      AND l.resolved_dst_session_id IS NOT NULL
+      AND (l.status IS NULL OR l.status != 'quarantined')
+),
+dispatch_counts AS (
+    SELECT parent_session_id, COUNT(*) AS n FROM dispatch_actions GROUP BY parent_session_id
+),
+child_counts AS (
+    SELECT parent_session_id, COUNT(*) AS n FROM resolved_children GROUP BY parent_session_id
+),
+pairable AS (
+    SELECT dc.parent_session_id
+    FROM dispatch_counts dc
+    JOIN child_counts cc ON cc.parent_session_id = dc.parent_session_id
+    WHERE dc.n = cc.n
+),
+resolved_rows AS (
+    SELECT
+        d.parent_session_id                    AS parent_session_id,
+        c.child_session_id                     AS child_session_id,
+        'resolved'                              AS mapping_state,
+        c.link_confidence                      AS link_confidence,
+        c.link_method                          AS link_method,
+        c.inheritance                          AS inheritance,
+        c.branch_point_message_id              AS branch_point_message_id,
+        d.instruction_message_id               AS instruction_message_id,
+        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        d.instruction_payload                  AS instruction_payload,
+        d.dispatch_turn_model                  AS dispatch_turn_model,
+        d.requested_model                      AS requested_model,
+        d.artifact_block_id                    AS artifact_block_id,
+        d.artifact_text                        AS artifact_text,
+        d.result_is_error                      AS result_is_error,
+        d.result_exit_code                     AS result_exit_code
+    FROM dispatch_actions d
+    JOIN pairable p ON p.parent_session_id = d.parent_session_id
+    JOIN resolved_children c
+      ON c.parent_session_id = d.parent_session_id
+     AND c.child_rank = d.dispatch_rank
+),
+unresolved_rows AS (
+    SELECT
+        d.parent_session_id                    AS parent_session_id,
+        NULL                                    AS child_session_id,
+        'unresolved'                             AS mapping_state,
+        NULL AS link_confidence, NULL AS link_method, NULL AS inheritance, NULL AS branch_point_message_id,
+        d.instruction_message_id               AS instruction_message_id,
+        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        d.instruction_payload                  AS instruction_payload,
+        d.dispatch_turn_model                  AS dispatch_turn_model,
+        d.requested_model                      AS requested_model,
+        d.artifact_block_id                    AS artifact_block_id,
+        d.artifact_text                        AS artifact_text,
+        d.result_is_error                      AS result_is_error,
+        d.result_exit_code                     AS result_exit_code
+    FROM dispatch_actions d
+    LEFT JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id
+    WHERE cc.n IS NULL
+),
+ambiguous_rows AS (
+    SELECT
+        d.parent_session_id                    AS parent_session_id,
+        NULL                                    AS child_session_id,
+        'ambiguous'                              AS mapping_state,
+        NULL AS link_confidence, NULL AS link_method, NULL AS inheritance, NULL AS branch_point_message_id,
+        d.instruction_message_id               AS instruction_message_id,
+        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        d.instruction_payload                  AS instruction_payload,
+        d.dispatch_turn_model                  AS dispatch_turn_model,
+        d.requested_model                      AS requested_model,
+        d.artifact_block_id                    AS artifact_block_id,
+        d.artifact_text                        AS artifact_text,
+        d.result_is_error                      AS result_is_error,
+        d.result_exit_code                     AS result_exit_code
+    FROM dispatch_actions d
+    JOIN dispatch_counts dc ON dc.parent_session_id = d.parent_session_id
+    JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id
+    WHERE dc.n != cc.n
+),
+edge_only_rows AS (
+    SELECT
+        c.parent_session_id                    AS parent_session_id,
+        c.child_session_id                     AS child_session_id,
+        'edge_only'                              AS mapping_state,
+        c.link_confidence                      AS link_confidence,
+        c.link_method                          AS link_method,
+        c.inheritance                          AS inheritance,
+        c.branch_point_message_id              AS branch_point_message_id,
+        NULL AS instruction_message_id, NULL AS instruction_tool_use_block_id, NULL AS instruction_payload,
+        NULL AS dispatch_turn_model, NULL AS requested_model,
+        NULL AS artifact_block_id, NULL AS artifact_text, NULL AS result_is_error, NULL AS result_exit_code
+    FROM resolved_children c
+    LEFT JOIN dispatch_counts dc ON dc.parent_session_id = c.parent_session_id
+    WHERE dc.n IS NULL
+),
+quarantined_rows AS (
+    SELECT
+        l.resolved_dst_session_id              AS parent_session_id,
+        l.src_session_id                       AS child_session_id,
+        'quarantined'                            AS mapping_state,
+        l.confidence                           AS link_confidence,
+        l.method                               AS link_method,
+        l.inheritance                          AS inheritance,
+        l.branch_point_message_id              AS branch_point_message_id,
+        NULL AS instruction_message_id, NULL AS instruction_tool_use_block_id, NULL AS instruction_payload,
+        NULL AS dispatch_turn_model, NULL AS requested_model,
+        NULL AS artifact_block_id, NULL AS artifact_text, NULL AS result_is_error, NULL AS result_exit_code
+    FROM session_links l
+    WHERE l.link_type = 'subagent'
+      AND l.status = 'quarantined'
+      AND l.resolved_dst_session_id IS NOT NULL
+),
+attempts AS (
+    SELECT * FROM resolved_rows
+    UNION ALL SELECT * FROM unresolved_rows
+    UNION ALL SELECT * FROM ambiguous_rows
+    UNION ALL SELECT * FROM edge_only_rows
+    UNION ALL SELECT * FROM quarantined_rows
+)
 SELECT
-    l.src_session_id                       AS parent_session_id,
-    l.resolved_dst_session_id              AS child_session_id,
-    l.branch_point_message_id              AS dispatch_message_id,
-    l.confidence                           AS link_confidence,
-    l.method                               AS link_method,
-    l.inheritance                          AS inheritance,
-    pp.primary_model_name                  AS orchestrator_model,
-    pp.primary_model_family                AS orchestrator_model_family,
-    p.origin                               AS orchestrator_origin,
-    -- repo_id intentionally omitted: session_profiles has no single-repo
-    -- column (a session can touch multiple repos via session_repos); repo
-    -- pushdown for `delegations where session.repo:X` composes through the
-    -- generic query-unit session join, not a raw column here.
-    pp.terminal_state                      AS parent_terminal_state,
-    cp.primary_model_name                  AS subagent_model,
-    cp.primary_model_family                AS subagent_model_family,
-    cp.total_cost_usd                      AS child_cost_usd,
-    cp.cost_is_estimated                   AS child_cost_is_estimated,
+    att.parent_session_id                      AS parent_session_id,
+    att.child_session_id                       AS child_session_id,
+    att.mapping_state                          AS mapping_state,
+    att.link_confidence                        AS link_confidence,
+    att.link_method                            AS link_method,
+    att.inheritance                            AS inheritance,
+    att.branch_point_message_id                AS branch_point_message_id,
+    att.instruction_message_id                 AS instruction_message_id,
+    att.instruction_tool_use_block_id          AS instruction_tool_use_block_id,
+    att.instruction_payload                    AS instruction_payload,
+    att.dispatch_turn_model                    AS dispatch_turn_model,
+    att.requested_model                        AS requested_model,
+    att.artifact_block_id                      AS artifact_block_id,
+    att.artifact_text                          AS artifact_text,
+    att.result_is_error                        AS result_is_error,
+    att.result_exit_code                       AS result_exit_code,
+    CASE
+        WHEN att.instruction_tool_use_block_id IS NULL THEN 'unknown'
+        WHEN att.result_is_error IS NULL               THEN 'unknown'
+        WHEN att.result_is_error = 1                   THEN 'error'
+        ELSE 'ok'
+    END                                          AS result_status,
+    p.origin                                    AS parent_origin,
+    pp.primary_model_name                       AS parent_session_dominant_model,
+    pp.primary_model_family                     AS parent_session_dominant_model_family,
+    pp.terminal_state                           AS parent_terminal_state,
+    cp.primary_model_name                       AS child_session_dominant_model,
+    cp.primary_model_family                     AS child_session_dominant_model_family,
+    cp.total_cost_usd                           AS child_cost_usd,
+    cp.cost_is_estimated                        AS child_cost_is_estimated,
     (COALESCE(cp.total_input_tokens, 0) + COALESCE(cp.total_output_tokens, 0)
        + COALESCE(cp.total_cache_read_tokens, 0) + COALESCE(cp.total_cache_write_tokens, 0)) AS child_tokens,
-    cp.wall_duration_ms                    AS child_wall_ms,
-    cp.terminal_state                      AS child_terminal_state,
-    a.tool_use_block_id                    AS instruction_block_id,
-    a.tool_input                           AS instruction_payload,
-    a.tool_result_block_id                 AS artifact_block_id,
-    a.output_text                          AS artifact_text,
-    a.is_error                             AS result_is_error,
-    a.exit_code                            AS result_exit_code,
-    CASE
-        WHEN a.tool_use_block_id IS NULL THEN 'unknown'
-        WHEN a.is_error IS NULL          THEN 'unknown'
-        WHEN a.is_error = 1              THEN 'error'
-        ELSE 'ok'
-    END                                    AS result_status
-FROM session_links l
-JOIN sessions p ON p.session_id = l.src_session_id
-LEFT JOIN session_profiles pp ON pp.session_id = l.src_session_id
-LEFT JOIN session_profiles cp ON cp.session_id = l.resolved_dst_session_id
-LEFT JOIN actions a
-       ON a.session_id = l.src_session_id
-      AND a.message_id = l.branch_point_message_id
-      AND a.semantic_type = 'subagent'
-WHERE l.link_type = 'subagent'
-  AND (l.status IS NULL OR l.status != 'quarantined');
+    cp.wall_duration_ms                         AS child_wall_ms,
+    cp.terminal_state                           AS child_terminal_state
+FROM attempts att
+JOIN sessions p ON p.session_id = att.parent_session_id
+LEFT JOIN session_profiles pp ON pp.session_id = att.parent_session_id
+LEFT JOIN session_profiles cp ON cp.session_id = att.child_session_id;
 
 CREATE TABLE IF NOT EXISTS session_tag_rollups (
     tag                          TEXT NOT NULL,
