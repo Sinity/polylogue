@@ -6,6 +6,11 @@ const CHATGPT_TAB = {
   title: "ChatGPT conversation",
   url: "https://chatgpt.com/c/test-conversation",
 };
+const GROK_QUERY_TAB = {
+  id: 77,
+  title: "Grok query conversation",
+  url: "https://grok.com/?conversation=query-77",
+};
 
 function installDom() {
   const dom = new JSDOM(`<!doctype html>
@@ -70,7 +75,7 @@ function installDom() {
   dom.window.HTMLAnchorElement.prototype.click = vi.fn();
 }
 
-function installChromeMock(storagePatch = {}) {
+function installChromeMock(storagePatch = {}, tabs = [CHATGPT_TAB]) {
   let captureAttempts = 0;
   const defaults = {
     polylogueCaptureLog: [],
@@ -94,7 +99,7 @@ function installChromeMock(storagePatch = {}) {
       },
     },
     tabs: {
-      query: vi.fn(async () => [CHATGPT_TAB]),
+      query: vi.fn(async () => tabs),
       sendMessage: vi.fn(async () => {
         captureAttempts += 1;
         if (captureAttempts === 1) {
@@ -110,13 +115,13 @@ function installChromeMock(storagePatch = {}) {
   };
 }
 
-async function loadPopup(storagePatch = {}) {
+async function loadPopup(storagePatch = {}, tabs = [CHATGPT_TAB]) {
   vi.resetModules();
   installDom();
-  installChromeMock(storagePatch);
+  installChromeMock(storagePatch, tabs);
   await import("../src/operator_status.js");
   await import("../src/popup.js");
-  await vi.waitFor(() => expect(globalThis.document.getElementById("page").textContent).toContain("ChatGPT"));
+  await vi.waitFor(() => expect(globalThis.document.getElementById("page").textContent).not.toContain("Unknown"));
 }
 
 describe("popup capture", () => {
@@ -273,6 +278,27 @@ describe("popup capture", () => {
     expect(document.getElementById("archive").textContent).toBe("Spooled");
     expect(document.getElementById("timeline").textContent).toContain("active pending");
     expect(document.getElementById("timeline").textContent).not.toContain("old capture");
+    expect(document.getElementById("open-tabs").textContent).toContain("Catching up");
+  });
+
+  it("renders the ledger and timeline for a Grok query conversation", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        provider: "grok",
+        provider_session_id: "query-77",
+        archive_state: { state: "spooled_only" },
+      },
+      polylogueSessionLedger: {
+        "grok:query-77": { archive_state: { state: "spooled_only" } },
+      },
+      polylogueConversationTimeline: {
+        "grok:query-77": [{ at: new Date().toISOString(), event: "first_seen", detail: "query route" }],
+      },
+    }, [GROK_QUERY_TAB]);
+
+    expect(document.getElementById("operator-state").textContent).toBe("Catching up");
+    expect(document.getElementById("timeline").textContent).toContain("query route");
     expect(document.getElementById("open-tabs").textContent).toContain("Catching up");
   });
 

@@ -411,6 +411,36 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState?.provider_session_id).not.toBe("conv-a");
   });
 
+  it("holds a missing conversation when the tab navigates before auto-capture", async () => {
+    tabs = [{ id: 1, url: "https://chatgpt.com/c/conv-a", title: "A", active: true }];
+    let resolveArchiveState;
+    globalThis.fetch = vi.fn(async () => new Promise((resolve) => { resolveArchiveState = resolve; }));
+
+    updatedListener(1, { status: "complete" }, tabs[0]);
+    await vi.waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(1));
+    tabs[0] = { id: 1, url: "https://chatgpt.com/c/conv-b", title: "B", active: true };
+    resolveArchiveState(responseJson({ provider: "chatgpt", provider_session_id: "conv-a", state: "missing", captured: false }));
+
+    await vi.waitFor(() => expect(stored.polylogueConversationTimeline["chatgpt:conv-a"]?.[0]).toMatchObject({
+      event: "held_with_reason",
+      detail: "tab_navigation_changed",
+    }));
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses Grok query conversation identity for archive polling and the ledger", async () => {
+    tabs = [{ id: 77, url: "https://grok.com/?conversation=query-77", title: "Grok", active: true }];
+    globalThis.fetch = vi.fn(async (url) => {
+      fetchCalls.push({ url });
+      return responseJson({ provider: "grok", provider_session_id: "query-77", state: "archived", captured: true });
+    });
+
+    activatedListener({ tabId: 77 });
+
+    await vi.waitFor(() => expect(stored.polylogueSessionLedger["grok:query-77"]?.archive_state?.state).toBe("archived"));
+    expect(fetchCalls[0].url).toContain("provider=grok&provider_session_id=query-77");
+  });
+
   it("does not capture existing provider tabs on extension update", async () => {
     expect(installedListener).toBeTypeOf("function");
     globalThis.fetch = vi.fn(async () => responseJson({ ok: true, active: true }));

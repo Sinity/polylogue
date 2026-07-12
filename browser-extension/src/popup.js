@@ -169,7 +169,18 @@ function tabState(tab, ledger) {
       const parts = url.pathname.split("/").filter(Boolean);
       if (provider === "chatgpt") return parts[parts.indexOf("c") + 1] || null;
       if (provider === "claude-ai") return parts[0] === "chat" ? parts[1] || null : null;
-      if (provider === "grok") return parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok") || null;
+      if (provider === "grok") {
+        const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
+        if (pathId) return pathId;
+        const queryId = url.searchParams.get("conversation") || url.searchParams.get("conversationId");
+        if (queryId) return queryId;
+        let hash = 0x811c9dc5;
+        for (const char of `${url.origin}${url.pathname}${url.search}`) {
+          hash ^= char.charCodeAt(0);
+          hash = Math.imul(hash, 0x01000193);
+        }
+        return `dom:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+      }
     } catch {
       return null;
     }

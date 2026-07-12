@@ -831,7 +831,18 @@ async function cleanupBackfillTransportTab(alarmName) {
   }
 }
 
-async function captureTab(tab, reason = "background") {
+async function captureTab(tab, reason = "background", expectedConversation = null) {
+  if (expectedConversation && tab?.id && chrome.tabs?.get) {
+    const currentTab = await chrome.tabs.get(tab.id);
+    const currentUrl = currentTab?.url || currentTab?.pendingUrl || "";
+    if (
+      !currentTab
+      || currentUrl !== expectedConversation.url
+      || archiveProviderForUrl(currentUrl) !== expectedConversation.provider
+      || conversationIdForUrl(currentUrl) !== expectedConversation.providerSessionId
+    ) return { ok: false, skipped: true, reason: "tab_navigation_changed" };
+    tab = currentTab;
+  }
   if (!tab?.id || !injectionPlanForUrl(tab.url || tab.pendingUrl || "").length) return null;
   const now = Date.now();
   const lastCaptureAt = recentBackgroundCaptures.get(tab.id) || 0;
@@ -1017,7 +1028,16 @@ function conversationIdForUrl(url) {
       return parts[0] === "chat" && parts[1] ? parts[1] : null;
     }
     if (provider === "grok") {
-      return parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok") || null;
+      const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
+      if (pathId) return pathId;
+      const queryId = parsed.searchParams.get("conversation") || parsed.searchParams.get("conversationId");
+      if (queryId) return queryId;
+      let hash = 0x811c9dc5;
+      for (const char of `${parsed.origin}${parsed.pathname}${parsed.search}`) {
+        hash ^= char.charCodeAt(0);
+        hash = Math.imul(hash, 0x01000193);
+      }
+      return `dom:${(hash >>> 0).toString(16).padStart(8, "0")}`;
     }
   } catch {
     return null;
@@ -1078,7 +1098,11 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
           detail: "archive_state_missing",
           tabId: tab?.id || null,
         });
-        const captureResult = await captureTab(tab, "auto_capture_missing");
+        const captureResult = await captureTab(tab, "auto_capture_missing", {
+          provider,
+          providerSessionId,
+          url,
+        });
         if (!captureResult || captureResult.skipped) {
           await appendConversationTimeline({
             provider,
