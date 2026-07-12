@@ -2482,13 +2482,19 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
         ):
             return
         if existing_session_ids == desired_session_ids[: len(existing_session_ids)]:
-            for position, row in enumerate(session_rows[len(existing_session_ids) :], start=len(existing_session_ids)):
-                conn.execute(
+            new_rows = [
+                (root_session_id, row[0], position)
+                for position, row in enumerate(
+                    session_rows[len(existing_session_ids) :], start=len(existing_session_ids)
+                )
+            ]
+            if new_rows:
+                conn.executemany(
                     """
                     INSERT INTO thread_sessions (thread_id, session_id, position)
                     VALUES (?, ?, ?)
                     """,
-                    (root_session_id, row[0], position),
+                    new_rows,
                 )
             conn.execute(
                 """
@@ -2500,14 +2506,70 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
                 (len(session_rows), max(len(session_rows) - 1, 0), root_session_id),
             )
             return
+        if len(existing_session_ids) == len(desired_session_ids):
+            # Same membership, different order (a thread member's sort key
+            # moved past siblings without joining/leaving the thread). Since
+            # both lists have equal length, index i names the same numeric
+            # ``position`` in both orderings, so the common leading/trailing
+            # run that already agrees can be left untouched -- only the
+            # differing middle span needs a delete+reinsert. Without this, a
+            # giant long-lived thread (thousands of resumed/forked Codex
+            # sessions) pays a full O(thread_size) rebuild on every reorder,
+            # even when only a handful of rows actually moved
+            # (polylogue-6wnh).
+            n = len(existing_session_ids)
+            common_prefix_len = 0
+            while (
+                common_prefix_len < n
+                and existing_session_ids[common_prefix_len] == desired_session_ids[common_prefix_len]
+            ):
+                common_prefix_len += 1
+            common_suffix_len = 0
+            max_suffix = n - common_prefix_len
+            while (
+                common_suffix_len < max_suffix
+                and existing_session_ids[n - 1 - common_suffix_len] == desired_session_ids[n - 1 - common_suffix_len]
+            ):
+                common_suffix_len += 1
+            span_end = n - common_suffix_len
+            if span_end > common_prefix_len:
+                conn.execute(
+                    """
+                    DELETE FROM thread_sessions
+                    WHERE thread_id = ? AND position >= ? AND position < ?
+                    """,
+                    (root_session_id, common_prefix_len, span_end),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO thread_sessions (thread_id, session_id, position)
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        (root_session_id, session_id, position)
+                        for position, session_id in enumerate(
+                            desired_session_ids[common_prefix_len:span_end], start=common_prefix_len
+                        )
+                    ],
+                )
+            conn.execute(
+                """
+                UPDATE threads
+                SET session_count = ?,
+                    depth = ?
+                WHERE thread_id = ?
+                """,
+                (n, max(n - 1, 0), root_session_id),
+            )
+            return
     conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root_session_id,))
-    for position, row in enumerate(session_rows):
-        conn.execute(
+    if session_rows:
+        conn.executemany(
             """
             INSERT INTO thread_sessions (thread_id, session_id, position)
             VALUES (?, ?, ?)
             """,
-            (root_session_id, row[0], position),
+            [(root_session_id, row[0], position) for position, row in enumerate(session_rows)],
         )
     conn.execute(
         """
