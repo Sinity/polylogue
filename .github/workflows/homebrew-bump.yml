@@ -165,6 +165,18 @@ jobs:
             brew audit --strict --online ./Formula/polylogue.rb
           )
 
+      - name: Install and smoke the generated formula
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_FROM_API: "1"
+        run: |
+          set -euo pipefail
+          # Audit only proves formula shape. Build the same resource-expanded
+          # formula that the tap PR will contain, then exercise its production
+          # `test do` block against the installed console scripts.
+          brew install --build-from-source tap/Formula/polylogue.rb
+          brew test --verbose polylogue
+
       - name: Open / refresh tap PR
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
