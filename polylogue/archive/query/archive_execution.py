@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
 
 
-def _provider_for_origin(origin: str) -> Provider:
+def _provider_for_origin(origin: str, *, family_hint: Provider | str | None = None) -> Provider:
     """Return the canonical provider-wire ``Provider`` for an origin token.
 
     Delegates to :func:`polylogue.core.sources.provider_from_origin`, the
@@ -54,13 +54,23 @@ def _provider_for_origin(origin: str) -> Provider:
     (all three were missing a ``grok-export`` entry, falling back to
     ``Provider.UNKNOWN`` instead of ``Provider.GROK``). Delegating fixes that
     drift and makes future drift structurally impossible (polylogue-9e5.8).
+
     ``Origin.AISTUDIO_DRIVE`` still canonically resolves to ``Provider.GEMINI``
-    here -- that collapse is a deliberate, documented, non-injective design
-    choice (see ``core/sources.py``'s ``_ORIGIN_TO_PROVIDER`` comment), not a
-    bug this delegation fixes; un-collapsing it needs a Source-family
-    disambiguator (polylogue-9e5.8 Step 5), not a narrow fix here.
+    by default -- that collapse is a deliberate, documented, non-injective
+    design choice (see ``core/sources.py``'s ``_ORIGIN_TO_PROVIDER`` comment),
+    not a bug this delegation fixes on its own. ``family_hint`` threads
+    through to :func:`provider_from_origin`'s Source-family disambiguator
+    (polylogue-9e5.8 Step 5 / polylogue-4rrv) for callers that already know,
+    independently of the stored ``origin``, which fiber member (e.g.
+    ``Provider.DRIVE`` vs ``Provider.GEMINI``) applies. This module's own
+    call site (``_session_to_session``) currently has no such independent
+    knowledge -- ``ArchiveSessionEnvelope`` only carries the already-collapsed
+    ``origin`` column, so it omits the hint and gets the canonical default,
+    same as before. Recovering it there for good needs a durable
+    acquisition-time field on ``sessions``/``raw_sessions`` (tracked as a
+    follow-up bead), not something this reverse lookup can invent.
     """
-    return provider_from_origin(Origin.from_string(origin))
+    return provider_from_origin(Origin.from_string(origin), family_hint=family_hint)
 
 
 def _session_seed_scored(
