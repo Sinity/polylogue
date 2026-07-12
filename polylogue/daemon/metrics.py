@@ -33,7 +33,12 @@ Exposed series (label policy: use labels only when a series naturally
 varies on a known-bounded dimension):
 
 - ``polylogue_daemon_uptime_seconds`` (gauge) — process uptime
-- ``polylogue_daemon_build_info`` (gauge, value 1) — labels: version
+- ``polylogue_daemon_build_info`` (gauge, value 1) — labels: version,
+  revision, dirty. ``revision`` is the full (not truncated) git commit
+  the running build was compiled from — join it against a consuming
+  flake's ``flake.lock`` ``rev``/``narHash`` entry for the ``polylogue``
+  input to attest that the deployed runtime matches the locked source
+  (polylogue-6rvt).
 - ``polylogue_status_snapshot_age_seconds`` (gauge) — cached status age
 - ``polylogue_status_snapshot_state`` (gauge) — labels: state
 - ``polylogue_live_ingest_attempts_total`` (counter) — labels: status
@@ -943,17 +948,34 @@ def format_metrics(
         samples=[(None, uptime_s)],
     )
 
-    # Build info — version label so dashboards can break out per-release.
+    # Build info — version/revision/dirty labels so dashboards can break out
+    # per-release and operators can attest a running daemon against a
+    # consuming flake's locked `rev`/`narHash` for this input (polylogue-6rvt).
     try:
-        from polylogue import __version__ as polylogue_version
+        from polylogue.version import VERSION_INFO
+
+        build_version = VERSION_INFO.version
+        build_revision = VERSION_INFO.commit or "unknown"
+        build_dirty = VERSION_INFO.dirty
     except Exception:
-        polylogue_version = "unknown"
+        build_version = "unknown"
+        build_revision = "unknown"
+        build_dirty = False
     _emit_metric(
         lines,
         name="polylogue_daemon_build_info",
         help_text="Constant 1 gauge labelled with daemon build identity.",
         metric_type="gauge",
-        samples=[({"version": str(polylogue_version)}, 1)],
+        samples=[
+            (
+                {
+                    "version": str(build_version),
+                    "revision": str(build_revision),
+                    "dirty": "true" if build_dirty else "false",
+                },
+                1,
+            )
+        ],
     )
     _emit_archive_storage_metrics(lines, db)
     _emit_hook_flow_metrics(lines, db)
