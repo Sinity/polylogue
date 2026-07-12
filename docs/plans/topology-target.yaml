@@ -11,6 +11,18 @@ files:
     target: polylogue/__main__.py
     owner: kernel
     reason: kernel root rule
+  - path: polylogue/annotations/__init__.py
+    loc: 59
+    target: polylogue/annotations/__init__.py
+    owner: stable
+  - path: polylogue/annotations/schema.py
+    loc: 362
+    target: polylogue/annotations/schema.py
+    owner: stable
+  - path: polylogue/annotations/write.py
+    loc: 147
+    target: polylogue/annotations/write.py
+    owner: stable
   - path: polylogue/api/__init__.py
     loc: 115
     target: polylogue/api/__init__.py
@@ -308,7 +320,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 3080
+    loc: 3258
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -3393,7 +3405,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 10663
+    loc: 10737
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
