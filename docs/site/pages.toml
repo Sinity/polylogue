@@ -2,7 +2,7 @@ site_name = "Polylogue"
 site_url = "/polylogue/"
 
 [[nav]]
-title = "Start Here"
+title = "Demos, Evidence, and Product"
 [[nav.items]]
 label = "Demos"
 path = "/demos/"
@@ -17,7 +17,10 @@ label = "Polylogue on Sinex"
 path = "/architecture/sinex/"
 
 [[nav]]
-title = "Documentation"
+title = "Guides"
+[[nav.items]]
+label = "Documentation Map"
+path = "/docs/"
 [[nav.items]]
 label = "Getting Started"
 path = "/docs/getting-started/"
@@ -37,6 +40,14 @@ path = "/docs/export/"
 label = "Daemon"
 path = "/docs/daemon/"
 
+[[nav.items]]
+label = "Browser Capture"
+path = "/docs/browser-capture/"
+
+[[nav.items]]
+label = "Maintenance"
+path = "/docs/maintenance/"
+
 [[nav]]
 title = "Reference"
 [[nav.items]]
@@ -53,7 +64,7 @@ label = "Config"
 path = "/reference/config/"
 
 [[nav]]
-title = "Architecture"
+title = "Architecture and Internals"
 [[nav.items]]
 label = "Rings"
 path = "/architecture/rings/"
@@ -68,7 +79,7 @@ label = "Contributing"
 path = "/architecture/contributing/"
 
 [[nav]]
-title = "Verifiability"
+title = "Operations and Verification"
 [[nav.items]]
 label = "Coverage"
 path = "/verifiability/coverage/"
@@ -81,6 +92,15 @@ path = "/verifiability/freshness/"
 [[nav.items]]
 label = "Drift"
 path = "/verifiability/drift/"
+
+[[nav]]
+title = "Historical Records"
+[[nav.items]]
+label = "Audit Records"
+path = "/docs/audits/"
+[[nav.items]]
+label = "Retrospectives"
+path = "/docs/retrospectives/"
 
 [[nav]]
 title = "Design"
@@ -134,6 +154,11 @@ title = "Getting Started"
 source = "docs/getting-started.md"
 
 [[pages]]
+path = "/docs/"
+title = "Documentation Map"
+source = "docs/README.md"
+
+[[pages]]
 path = "/docs/search/"
 title = "Search"
 source = "docs/search.md"
@@ -162,6 +187,26 @@ source = "docs/export.md"
 path = "/docs/daemon/"
 title = "Daemon"
 source = "docs/daemon.md"
+
+[[pages]]
+path = "/docs/browser-capture/"
+title = "Browser Capture"
+source = "docs/browser-capture.md"
+
+[[pages]]
+path = "/docs/maintenance/"
+title = "Maintenance"
+source = "docs/maintenance.md"
+
+[[pages]]
+path = "/docs/audits/"
+title = "Audit Records"
+source = "docs/audits/README.md"
+
+[[pages]]
+path = "/docs/retrospectives/"
+title = "Retrospectives"
+source = "docs/retro/README.md"
 
 [[pages]]
 path = "/reference/cli/"

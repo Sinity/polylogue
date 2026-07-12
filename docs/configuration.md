@@ -403,10 +403,10 @@ when copying a live WAL-mode SQLite database.
 To export all sessions as JSON:
 
 ```bash
-polylogue --format json > sessions.json
+polylogue find 'since:1970-01-01' then read --all --format json > sessions.json
 
 # Or with filters
-polylogue -p claude-ai --format json > claude-sessions.json
+polylogue --origin claude-ai-export find 'origin:claude-ai-export' then read --all --format json > claude-sessions.json
 ```
 
 Polylogue does not copy one-shot input exports into a managed import directory.

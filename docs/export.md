@@ -28,9 +28,9 @@ polylogue --id claude-ai:abc123 read --format obsidian
 Read every session matching a filter chain with `read --all`:
 
 ```bash
-polylogue --origin claude-code-session --since 2026-01 read --all
-polylogue --tag important read --all --format markdown
-polylogue "refactor" --has-tool-use read --all --format ndjson
+polylogue --origin claude-code-session --since 2026-01 find 'origin:claude-code-session' then read --all
+polylogue --tag important find 'tag:important' then read --all --format markdown
+polylogue --has-tool-use find "refactor" then read --all --format ndjson
 ```
 
 ### Piping
@@ -39,8 +39,8 @@ polylogue "refactor" --has-tool-use read --all --format ndjson
 piping:
 
 ```bash
-polylogue -p claude-code read --all --format ndjson | jq '.title'
-polylogue --since "last month" read --all --format ndjson | wc -l
+polylogue --origin claude-code-session find 'origin:claude-code-session' then read --all --format ndjson | jq '.title'
+polylogue --since "last month" find 'since:last month' then read --all --format ndjson | wc -l
 ```
 
 ## Export Formats
@@ -61,7 +61,7 @@ Set format with `--format` / `-f`:
 
 ```bash
 polylogue --id <id> read --format json
-polylogue --since yesterday read --all --format html
+polylogue --since yesterday find 'since:yesterday' then read --all --format html
 ```
 
 ## Content Blocks
