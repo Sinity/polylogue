@@ -752,7 +752,7 @@ class TestReaderSearchState:
                 )
 
         with patch("polylogue.coordination.build_coordination_envelope", side_effect=fake_build):
-            with _running_server(workspace_env) as (_, base_url):
+            with _running_server(workspace_env) as (server, base_url):
                 first, first_state, first_freshness = get_response(
                     f"{base_url}/api/agents/coordination?view=status&limit=3"
                 )
@@ -762,11 +762,20 @@ class TestReaderSearchState:
                 bypassed, bypassed_state, _ = get_response(
                     f"{base_url}/api/agents/coordination?view=status&limit=3&fresh=1"
                 )
+                daemon_server = cast(Any, server)
+                with daemon_server.coordination_cache_lock:
+                    cached = daemon_server.coordination_cache[("status", 3)]
+                    daemon_server.coordination_cache[("status", 3)] = type(cached)(
+                        payload=cached.payload,
+                        expires_at=0.0,
+                    )
+                expired, expired_state, _ = get_response(f"{base_url}/api/agents/coordination?view=status&limit=3")
 
         assert first == second == {"view": "status", "build": 1}
         assert bypassed == {"view": "status", "build": 2}
-        assert calls == [("status", 3), ("status", 3)]
-        assert (first_state, second_state, bypassed_state) == ("miss", "hit", "bypass")
+        assert expired == {"view": "status", "build": 3}
+        assert calls == [("status", 3), ("status", 3), ("status", 3)]
+        assert (first_state, second_state, bypassed_state, expired_state) == ("miss", "hit", "bypass", "miss")
         assert first_freshness == second_freshness == "ttl=2s; fresh=1 bypasses"
 
     def test_agent_coordination_cache_coalesces_concurrent_builds(self, workspace_env: dict[str, Path]) -> None:
