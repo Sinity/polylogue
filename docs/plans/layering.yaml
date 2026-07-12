@@ -95,7 +95,7 @@ writer_modules:
           interruption: restartable
       entrypoints:
         [add_convergence_debt, record_cursor_lag_sample, record_daemon_stage_event, record_ingest_attempt,
-        upsert_embedding_catchup_run, upsert_ingest_cursor, upsert_otlp_span]
+        record_mcp_call, upsert_embedding_catchup_run, upsert_ingest_cursor, upsert_otlp_span]
     - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
       surfaces:
         - tier: index
