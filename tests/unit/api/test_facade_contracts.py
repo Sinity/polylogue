@@ -4870,6 +4870,70 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_
         await archive.close()
 
 
+async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Path) -> None:
+    """Omitting ``registry`` uses the registered production schema path.
+
+    Anti-vacuity: forwarding ``None`` to the importer instead of taking its
+    default registry causes this production-schema import to fail.
+    """
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="annotation-default-parent", with_dispatch=True)
+            )
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="annotation-default-child",
+                    title="Default annotation registry child",
+                    messages=[ParsedMessage(provider_message_id="child-1", role=Role.ASSISTANT, text="on it")],
+                    parent_session_provider_id="annotation-default-parent",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+        delegation_ref = f"delegation:{parent_session_id}:dispatch:0"
+        request = AnnotationBatchImportRequest(
+            jsonl=json.dumps(
+                {
+                    "row_key": "production-schema-row",
+                    "value": {
+                        "directive_mode": "imperative",
+                        "prohibitions": "none",
+                        "autonomy": "bounded",
+                        "output_contract": "structured",
+                        "scope_control": "bounded",
+                        "verification_demand": "focused_tests",
+                        "checkpoint_escalation": "checkpoint",
+                        "relational_frame": "directive",
+                        "rationale_visibility": "explicit",
+                        "applicable": True,
+                        "confidence": 0.9,
+                    },
+                    "evidence_refs": [delegation_ref],
+                }
+            ),
+            batch_id="facade-default-registry",
+            schema_id="delegation.discourse",
+            schema_version=1,
+            target_ref=delegation_ref,
+            source_result_ref="result-set:facade-default-registry",
+            actor_ref="agent:facade-test",
+            model_ref="agent:model",
+            prompt_ref="block:prompt:0",
+            created_at_ms=2_000,
+        )
+
+        result = await archive.import_annotation_batch(request)
+
+        assert result.status == "ok"
+        assert result.qualified_schema_id == "delegation.discourse@v1"
+        assert result.valid_count == 1
+        assert result.rows[0].status == "imported"
+    finally:
+        await archive.close()
+
+
 async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> None:
     """Learning corrections use ``user.db``."""
     import sqlite3
