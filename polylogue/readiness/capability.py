@@ -252,6 +252,47 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     )
 
 
+def component_from_raw_frontier_integrity(payload: Mapping[str, Any] | None) -> ComponentReadiness:
+    """Map the polylogue-yla8.7 raw-frontier-integrity projection into the shared DTO.
+
+    ``payload`` is the ``RawFrontierIntegrity`` status model dumped to a dict
+    (or the direct-fallback CLI path's equivalent plain dict) — both surfaces
+    share this one mapping so component semantics cannot drift between the
+    daemon-serving and no-daemon direct paths.
+    """
+    data = payload or {}
+    overall = str(data.get("overall_status") or "unknown")
+    if overall == "unknown":
+        state = CapabilityReadinessState.UNKNOWN
+        summary = "raw frontier authority unavailable"
+    elif overall == "violated":
+        state = CapabilityReadinessState.POISONED
+        summary = "raw frontier integrity violated"
+    else:
+        state = CapabilityReadinessState.READY
+        summary = "ready"
+    caveats: list[str] = []
+    for key in ("broken_head_status", "missing_source_raw_status", "cursor_ahead_status"):
+        value = str(data.get(key) or "unknown")
+        if value != "healthy":
+            caveats.append(f"{key}:{value}")
+    return ComponentReadiness(
+        component="raw_frontier_integrity",
+        scope="archive",
+        state=state,
+        summary=summary,
+        counts={
+            "broken_head_count": int(data.get("broken_head_count") or 0),
+            "broken_head_checked_count": int(data.get("broken_head_checked_count") or 0),
+            "missing_source_raw_count": int(data.get("missing_source_raw_count") or 0),
+            "cursor_ahead_count": int(data.get("cursor_ahead_count") or 0),
+            "cursor_ahead_checked_count": int(data.get("cursor_ahead_checked_count") or 0),
+        },
+        caveats=tuple(caveats),
+        repair_hint=None if state == CapabilityReadinessState.READY else "polylogue ops status --full",
+    )
+
+
 def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentReadiness:
     if not bool(payload.get("config_enabled")):
         state = CapabilityReadinessState.MISSING
@@ -523,6 +564,7 @@ __all__ = [
     "component_from_insight_entry",
     "component_from_operation_status",
     "component_from_outcome_check",
+    "component_from_raw_frontier_integrity",
     "component_from_raw_materialization_readiness",
     "component_from_transform_registry",
 ]

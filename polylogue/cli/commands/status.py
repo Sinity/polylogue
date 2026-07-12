@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import sqlite3
@@ -17,6 +18,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
 from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.storage.raw_retention import raw_frontier_integrity_snapshot
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -1473,6 +1475,13 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     if raw_materialization:
         payload["raw_materialization_readiness"] = raw_materialization
 
+    raw_frontier_integrity = _compact_mapping_without(
+        status.get("raw_frontier_integrity"),
+        {"broken_head_samples", "missing_source_raw_samples", "cursor_ahead_samples"},
+    )
+    if raw_frontier_integrity:
+        payload["raw_frontier_integrity"] = raw_frontier_integrity
+
     raw_replay_backlog = _compact_mapping_without(
         status.get("raw_replay_backlog"),
         {"source_path_summary"},
@@ -1649,11 +1658,13 @@ def _show_direct_json(
         include_archive_readiness=include_archive_readiness,
     )
     raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
+    raw_frontier_integrity = _direct_raw_frontier_integrity(active_root, raw_materialization_readiness)
     component_readiness = _direct_component_readiness(
         env,
         active_root=active_root,
         archive_readiness=archive_readiness,
         raw_materialization_readiness=raw_materialization_readiness,
+        raw_frontier_integrity=raw_frontier_integrity,
     )
     archive_tiers = _archive_tier_status(active_root)
     ingest_workload = _ops_workload_status(active_root, now_ms=int(time.time() * 1000))
@@ -1676,10 +1687,12 @@ def _show_direct_json(
         "archive_cli_routes": _archive_cli_route_status(),
         "archive_runtime_paths": _archive_runtime_path_status(),
         "raw_materialization_readiness": raw_materialization_readiness,
+        "raw_frontier_integrity": raw_frontier_integrity,
         "component_readiness": component_readiness,
         "claim_guard": _direct_claim_guard(
             archive_tiers=archive_tiers,
             raw_materialization_readiness=raw_materialization_readiness,
+            raw_frontier_integrity=raw_frontier_integrity,
             component_readiness=component_readiness,
             ingest_workload=ingest_workload,
         ),
@@ -1731,6 +1744,7 @@ def _direct_component_readiness(
     active_root: Path,
     archive_readiness: dict[str, Any] | None = None,
     raw_materialization_readiness: dict[str, Any] | None = None,
+    raw_frontier_integrity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return additive component readiness for direct status JSON."""
     components: dict[str, Any] = {}
@@ -1758,6 +1772,12 @@ def _direct_component_readiness(
         components[raw_component["component"]] = raw_component
     except Exception:
         pass
+    if raw_frontier_integrity is not None:
+        try:
+            frontier_component = _direct_raw_frontier_integrity_component(raw_frontier_integrity)
+            components[frontier_component["component"]] = frontier_component
+        except Exception:
+            pass
     try:
         from polylogue.readiness.capability import component_from_embedding_payload
         from polylogue.storage.embeddings.status_payload import embedding_status_payload
@@ -1784,6 +1804,7 @@ def _direct_claim_guard(
     *,
     archive_tiers: dict[str, dict[str, Any]],
     raw_materialization_readiness: dict[str, Any],
+    raw_frontier_integrity: dict[str, Any],
     component_readiness: dict[str, Any],
     ingest_workload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1796,6 +1817,10 @@ def _direct_claim_guard(
 
     raw_component = component_readiness.get("raw_materialization")
     raw_summary = str(raw_component.get("summary", "")) if isinstance(raw_component, dict) else ""
+
+    frontier_component = component_readiness.get("raw_frontier_integrity")
+    frontier_ready = isinstance(frontier_component, dict) and frontier_component.get("state") == "ready"
+    frontier_summary = _direct_raw_frontier_integrity_summary(raw_frontier_integrity)
 
     search_component = component_readiness.get("search")
     search_ready = isinstance(search_component, dict) and search_component.get("state") == "ready"
@@ -1818,6 +1843,8 @@ def _direct_claim_guard(
         missing_tiers=missing_tiers,
         raw_materialization_ready=_raw_materialization_ready_bool(raw_materialization_readiness),
         raw_materialization_summary=raw_summary,
+        raw_frontier_integrity_ready=bool(frontier_ready),
+        raw_frontier_integrity_summary=frontier_summary,
         search_ready=bool(search_ready),
         search_summary=search_summary,
         active_writer=active_writer,
@@ -1835,6 +1862,123 @@ def _direct_raw_materialization_component(readiness: dict[str, Any] | None) -> d
     from polylogue.readiness.capability import component_from_raw_materialization_readiness
 
     return component_from_raw_materialization_readiness(readiness).to_dict()
+
+
+def _direct_missing_source_raw_status(readiness: dict[str, Any]) -> tuple[str, str]:
+    """Reproject lost-source-evidence into the raw-frontier-integrity vocabulary.
+
+    Mirrors ``polylogue.daemon.status._missing_source_raw_status`` — see that
+    function's docstring for why this re-reads an already-computed signal
+    instead of requerying source/index.
+    """
+    if not bool(readiness.get("available", False)):
+        return "unknown", "raw materialization readiness unavailable"
+    lost_count = _safe_int(readiness.get("lost_source_evidence_count", 0))
+    if lost_count:
+        return (
+            "violated",
+            f"{lost_count} indexed session(s) reference raw evidence missing from source tier",
+        )
+    return "healthy", ""
+
+
+def _direct_raw_frontier_integrity(
+    active_root: Path,
+    raw_materialization_readiness: dict[str, Any],
+) -> dict[str, Any]:
+    """Direct-fallback projection of polylogue-yla8.7 raw-frontier integrity.
+
+    Mirrors ``polylogue.daemon.status._raw_frontier_integrity_info`` but reads
+    plain status dicts instead of typed pydantic models, since the no-daemon
+    fallback path does not build the daemon's typed ``DaemonStatus``. Both
+    paths share the same underlying
+    :func:`polylogue.storage.raw_retention.raw_frontier_integrity_snapshot`
+    and the same ``lost_source_evidence_count`` reprojection so health and
+    readiness cannot drift between the daemon-serving and direct paths.
+    """
+    missing_status, missing_reason = _direct_missing_source_raw_status(raw_materialization_readiness)
+    lost_count = _safe_int(raw_materialization_readiness.get("lost_source_evidence_count", 0))
+    lost_samples = _safe_list(raw_materialization_readiness.get("lost_source_evidence_samples"))
+
+    index_db = active_root / "index.db"
+    source_db = active_root / "source.db"
+    ops_db = active_root / "ops.db"
+
+    broken_status = "unknown"
+    broken_count = 0
+    broken_checked = 0
+    broken_samples: list[dict[str, Any]] = []
+    broken_reason = f"source tier is unavailable: {source_db}"
+    cursor_status = "unknown"
+    cursor_count = 0
+    cursor_checked = 0
+    cursor_samples: list[dict[str, Any]] = []
+    cursor_reason = broken_reason
+
+    if source_db.exists():
+        try:
+            from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+            conn = open_readonly_connection(source_db)
+        except sqlite3.Error as exc:
+            broken_reason = cursor_reason = f"source tier is unreadable: {exc}"
+        else:
+            try:
+                snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+            except Exception as exc:
+                broken_reason = cursor_reason = f"raw frontier integrity check failed: {exc}"
+            else:
+                broken_status = snapshot.broken_head_status
+                broken_count = snapshot.broken_head_count
+                broken_checked = snapshot.broken_head_checked_count
+                broken_samples = [dataclasses.asdict(sample) for sample in snapshot.broken_head_samples]
+                broken_reason = snapshot.broken_head_reason
+                cursor_status = snapshot.cursor_ahead_status
+                cursor_count = snapshot.cursor_ahead_count
+                cursor_checked = snapshot.cursor_ahead_checked_count
+                cursor_samples = [dataclasses.asdict(sample) for sample in snapshot.cursor_ahead_samples]
+                cursor_reason = snapshot.cursor_ahead_reason
+            finally:
+                conn.close()
+
+    statuses = {broken_status, missing_status, cursor_status}
+    overall = "unknown" if "unknown" in statuses else "violated" if "violated" in statuses else "healthy"
+
+    return {
+        "available": overall != "unknown",
+        "overall_status": overall,
+        "broken_head_status": broken_status,
+        "broken_head_count": broken_count,
+        "broken_head_checked_count": broken_checked,
+        "broken_head_samples": broken_samples,
+        "broken_head_reason": broken_reason,
+        "missing_source_raw_status": missing_status,
+        "missing_source_raw_count": lost_count,
+        "missing_source_raw_samples": lost_samples,
+        "missing_source_raw_reason": missing_reason,
+        "cursor_ahead_status": cursor_status,
+        "cursor_ahead_count": cursor_count,
+        "cursor_ahead_checked_count": cursor_checked,
+        "cursor_ahead_samples": cursor_samples,
+        "cursor_ahead_reason": cursor_reason,
+    }
+
+
+def _direct_raw_frontier_integrity_component(integrity: dict[str, Any] | None) -> dict[str, Any]:
+    from polylogue.readiness.capability import component_from_raw_frontier_integrity
+
+    return component_from_raw_frontier_integrity(integrity).to_dict()
+
+
+def _direct_raw_frontier_integrity_summary(integrity: dict[str, Any]) -> str:
+    if str(integrity.get("overall_status")) == "healthy":
+        return "ready"
+    reasons = [
+        str(integrity.get(key) or "")
+        for key in ("broken_head_reason", "missing_source_raw_reason", "cursor_ahead_reason")
+    ]
+    reasons = [reason for reason in reasons if reason]
+    return "; ".join(reasons) if reasons else "raw frontier integrity unavailable"
 
 
 def _direct_assertion_component(active_root: Path) -> dict[str, Any]:

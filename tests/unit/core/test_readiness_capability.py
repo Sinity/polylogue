@@ -19,6 +19,7 @@ from polylogue.readiness import (
     component_from_insight_entry,
     component_from_operation_status,
     component_from_outcome_check,
+    component_from_raw_frontier_integrity,
     component_from_raw_materialization_readiness,
     component_from_transform_registry,
 )
@@ -252,6 +253,76 @@ def test_raw_materialization_readiness_maps_lost_source_evidence_to_blocked() ->
     assert component.caveats == ("lost_source_evidence",)
     assert component.repair_hint == "restore exact raw artifact"
     assert component.metadata["lost_source_evidence_samples"] == [sample]
+
+
+def test_raw_frontier_integrity_maps_healthy_to_ready() -> None:
+    component = component_from_raw_frontier_integrity(
+        {
+            "overall_status": "healthy",
+            "broken_head_status": "healthy",
+            "broken_head_count": 0,
+            "broken_head_checked_count": 3,
+            "missing_source_raw_status": "healthy",
+            "missing_source_raw_count": 0,
+            "cursor_ahead_status": "healthy",
+            "cursor_ahead_count": 0,
+            "cursor_ahead_checked_count": 3,
+        }
+    )
+
+    assert component.component == "raw_frontier_integrity"
+    assert component.state is CapabilityReadinessState.READY
+    assert component.summary == "ready"
+    assert component.caveats == ()
+    assert component.repair_hint is None
+    assert component.counts["broken_head_checked_count"] == 3
+
+
+def test_raw_frontier_integrity_maps_violated_broken_head_to_poisoned_with_caveat() -> None:
+    component = component_from_raw_frontier_integrity(
+        {
+            "overall_status": "violated",
+            "broken_head_status": "violated",
+            "broken_head_count": 1,
+            "broken_head_checked_count": 2,
+            "missing_source_raw_status": "healthy",
+            "missing_source_raw_count": 0,
+            "cursor_ahead_status": "healthy",
+            "cursor_ahead_count": 0,
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.POISONED
+    assert component.summary == "raw frontier integrity violated"
+    assert component.caveats == ("broken_head_status:violated",)
+    assert component.counts["broken_head_count"] == 1
+    assert component.repair_hint == "polylogue ops status --full"
+
+
+def test_raw_frontier_integrity_maps_unavailable_authority_to_unknown_never_ready() -> None:
+    """Bead AC: unavailable authority must never render as ready/healthy."""
+    component = component_from_raw_frontier_integrity(
+        {
+            "overall_status": "unknown",
+            "broken_head_status": "unknown",
+            "broken_head_reason": "index tier is unavailable",
+            "cursor_ahead_status": "unknown",
+            "missing_source_raw_status": "healthy",
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.UNKNOWN
+    assert component.summary == "raw frontier authority unavailable"
+    assert "broken_head_status:unknown" in component.caveats
+    assert "cursor_ahead_status:unknown" in component.caveats
+    assert "missing_source_raw_status" not in "".join(component.caveats)
+
+
+def test_raw_frontier_integrity_maps_none_payload_to_unknown() -> None:
+    component = component_from_raw_frontier_integrity(None)
+
+    assert component.state is CapabilityReadinessState.UNKNOWN
+    assert component.counts["broken_head_count"] == 0
 
 
 def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:

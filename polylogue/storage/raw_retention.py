@@ -8,6 +8,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 
@@ -384,6 +385,283 @@ def protected_active_raw_revision_ids(
     return active_raw_retention_authority(conn, index_db_path=index_db_path).protected_raw_ids
 
 
+# ---------------------------------------------------------------------------
+# Raw-frontier integrity readiness (polylogue-yla8.7)
+# ---------------------------------------------------------------------------
+#
+# ``active_raw_retention_authority`` above answers "what may retention delete
+# right now?" and fails *closed* (raises) the moment it finds one broken
+# chain, because that is the correct behaviour for a cleanup gate. Ordinary
+# process health and raw-materialization candidate counts never call it, so a
+# broken accepted append head or a cursor that has committed past the
+# material actually accepted into the index can sit invisible until an
+# operator runs manual SQL (as happened before yla8.6). This section reuses
+# the exact same chain validator (``_validate_active_revision_chain``) to
+# build a *reporting* projection instead: it never raises on a per-head
+# violation, it counts and samples it, so readiness and retention safety
+# cannot drift apart.
+
+RawFrontierIntegrityStatus = Literal["healthy", "unknown", "violated"]
+"""Typed check outcome. ``"unknown"`` means the check's authority tier could
+not be read — it is never collapsed into a false ``"healthy"`` zero."""
+
+
+@dataclass(frozen=True)
+class BrokenAppendHeadSample:
+    """One accepted append head whose predecessor chain failed validation."""
+
+    logical_source_key: str
+    accepted_raw_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class CursorAheadSample:
+    """One ingest cursor committed past the byte frontier accepted into the index."""
+
+    source_path: str
+    logical_source_key: str
+    cursor_byte_offset: int
+    accepted_frontier: int
+
+
+@dataclass(frozen=True)
+class RawFrontierIntegritySnapshot:
+    """Two of the three yla8.7 raw-frontier integrity facts.
+
+    The third fact — an index ``sessions.raw_id`` absent from
+    ``source.raw_sessions`` — is intentionally **not** recomputed here: it is
+    already exact-projected by
+    :func:`polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot`
+    as ``lost_source_evidence_count`` / ``lost_source_evidence_samples`` and
+    already gates ``raw_materialization_ready()`` / claim-guard ``converged``.
+    Callers compose that existing signal alongside this snapshot instead of
+    re-querying it (no duplicated SQL/semantics).
+    """
+
+    broken_head_status: RawFrontierIntegrityStatus
+    broken_head_count: int
+    broken_head_checked_count: int
+    broken_head_samples: tuple[BrokenAppendHeadSample, ...]
+    broken_head_reason: str
+
+    cursor_ahead_status: RawFrontierIntegrityStatus
+    cursor_ahead_count: int
+    cursor_ahead_checked_count: int
+    cursor_ahead_samples: tuple[CursorAheadSample, ...]
+    cursor_ahead_reason: str
+
+    @property
+    def overall_status(self) -> RawFrontierIntegrityStatus:
+        statuses = (self.broken_head_status, self.cursor_ahead_status)
+        if "unknown" in statuses:
+            return "unknown"
+        if "violated" in statuses:
+            return "violated"
+        return "healthy"
+
+
+def raw_frontier_integrity_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    index_db_path: Path,
+    ops_db_path: Path,
+    sample_limit: int = 10,
+) -> RawFrontierIntegritySnapshot:
+    """Read-only substrate integrity projection over source/index/ops.
+
+    Reports two authority gaps that ordinary process health and
+    raw-materialization candidate counts cannot see on their own
+    (polylogue-yla8.7):
+
+    * ``broken_head`` — a current accepted append head
+      (``index.raw_revision_heads``) whose transitive predecessor chain is
+      missing or invalid. Uses the exact same
+      :func:`_validate_active_revision_chain` that
+      :func:`active_raw_retention_authority` uses to protect retention, so
+      cleanup safety and readiness visibility cannot drift.
+    * ``cursor_ahead`` — an ``ops.ingest_cursor`` committed byte frontier past
+      the byte frontier actually accepted into the index for that logical
+      source — the exact symptom yla8.6 found only via manual SQL.
+
+    Each check independently degrades to ``"unknown"`` (never a false
+    ``"healthy"`` zero) when its authority tier cannot be read.
+    """
+    original_row_factory = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            _session_raw_ids, heads, _eligible = _active_index_raw_authority(index_db_path)
+        except RawRetentionSafetyError as exc:
+            return _unavailable_frontier_integrity_snapshot(str(exc))
+
+        source_reason = _source_tier_unavailable_reason(conn)
+        if source_reason is not None:
+            return _unavailable_frontier_integrity_snapshot(source_reason)
+
+        broken_status, broken_count, broken_checked, broken_samples, broken_reason = _check_broken_append_heads(
+            conn, heads, sample_limit=sample_limit
+        )
+        cursor_status, cursor_count, cursor_checked, cursor_samples, cursor_reason = _check_cursor_ahead_of_accepted(
+            conn, ops_db_path, heads, sample_limit=sample_limit
+        )
+        return RawFrontierIntegritySnapshot(
+            broken_head_status=broken_status,
+            broken_head_count=broken_count,
+            broken_head_checked_count=broken_checked,
+            broken_head_samples=broken_samples,
+            broken_head_reason=broken_reason,
+            cursor_ahead_status=cursor_status,
+            cursor_ahead_count=cursor_count,
+            cursor_ahead_checked_count=cursor_checked,
+            cursor_ahead_samples=cursor_samples,
+            cursor_ahead_reason=cursor_reason,
+        )
+    finally:
+        conn.row_factory = original_row_factory
+
+
+def _unavailable_frontier_integrity_snapshot(reason: str) -> RawFrontierIntegritySnapshot:
+    return RawFrontierIntegritySnapshot(
+        broken_head_status="unknown",
+        broken_head_count=0,
+        broken_head_checked_count=0,
+        broken_head_samples=(),
+        broken_head_reason=reason,
+        cursor_ahead_status="unknown",
+        cursor_ahead_count=0,
+        cursor_ahead_checked_count=0,
+        cursor_ahead_samples=(),
+        cursor_ahead_reason=reason,
+    )
+
+
+def _source_tier_unavailable_reason(conn: sqlite3.Connection) -> str | None:
+    try:
+        conn.execute("SELECT 1 FROM raw_sessions LIMIT 1")
+    except sqlite3.Error as exc:
+        return f"source raw revision authority is unreadable: {exc}"
+    return None
+
+
+def _check_broken_append_heads(
+    conn: sqlite3.Connection,
+    heads: tuple[_IndexRawRevisionHead, ...],
+    *,
+    sample_limit: int,
+) -> tuple[RawFrontierIntegrityStatus, int, int, tuple[BrokenAppendHeadSample, ...], str]:
+    samples: list[BrokenAppendHeadSample] = []
+    broken_count = 0
+    for head in heads:
+        try:
+            rows_by_id = _raw_revision_rows(conn, {head.accepted_raw_id})
+            _validate_active_revision_chain(rows_by_id, head.accepted_raw_id)
+        except RawRetentionSafetyError as exc:
+            broken_count += 1
+            if len(samples) < sample_limit:
+                samples.append(
+                    BrokenAppendHeadSample(
+                        logical_source_key=head.logical_source_key,
+                        accepted_raw_id=head.accepted_raw_id,
+                        reason=str(exc),
+                    )
+                )
+    status: RawFrontierIntegrityStatus = "violated" if broken_count else "healthy"
+    reason = "" if broken_count == 0 else f"{broken_count} accepted append head(s) have a broken predecessor chain"
+    return status, broken_count, len(heads), tuple(samples), reason
+
+
+def _check_cursor_ahead_of_accepted(
+    conn: sqlite3.Connection,
+    ops_db_path: Path,
+    heads: tuple[_IndexRawRevisionHead, ...],
+    *,
+    sample_limit: int,
+) -> tuple[RawFrontierIntegrityStatus, int, int, tuple[CursorAheadSample, ...], str]:
+    byte_heads = [head for head in heads if head.accepted_frontier_kind == "byte"]
+    if not byte_heads:
+        return "healthy", 0, 0, (), ""
+    try:
+        source_path_by_raw_id = _source_paths_for_raw_ids(conn, {head.accepted_raw_id for head in byte_heads})
+    except sqlite3.Error as exc:
+        return "unknown", 0, 0, (), f"source raw path lookup failed: {exc}"
+
+    source_path_by_key = {
+        head.logical_source_key: source_path_by_raw_id[head.accepted_raw_id]
+        for head in byte_heads
+        if head.accepted_raw_id in source_path_by_raw_id
+    }
+    try:
+        cursor_map = _ops_cursor_byte_offsets(ops_db_path, set(source_path_by_key.values()))
+    except RawRetentionSafetyError as exc:
+        return "unknown", 0, 0, (), str(exc)
+
+    samples: list[CursorAheadSample] = []
+    ahead_count = 0
+    checked = 0
+    for head in byte_heads:
+        path = source_path_by_key.get(head.logical_source_key)
+        if path is None:
+            continue
+        cursor_offset = cursor_map.get(path)
+        if cursor_offset is None:
+            continue
+        checked += 1
+        if cursor_offset > head.accepted_frontier:
+            ahead_count += 1
+            if len(samples) < sample_limit:
+                samples.append(
+                    CursorAheadSample(
+                        source_path=path,
+                        logical_source_key=head.logical_source_key,
+                        cursor_byte_offset=cursor_offset,
+                        accepted_frontier=head.accepted_frontier,
+                    )
+                )
+    status: RawFrontierIntegrityStatus = "violated" if ahead_count else "healthy"
+    reason = "" if ahead_count == 0 else f"{ahead_count} ingest cursor(s) committed past accepted raw material"
+    return status, ahead_count, checked, tuple(samples), reason
+
+
+def _source_paths_for_raw_ids(conn: sqlite3.Connection, raw_ids: set[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    pending = set(raw_ids)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"SELECT raw_id, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})", batch
+        ).fetchall()
+        for row in rows:
+            result[str(row[0])] = str(row[1])
+    return result
+
+
+def _ops_cursor_byte_offsets(ops_db_path: Path, source_paths: set[str]) -> dict[str, int]:
+    if not source_paths:
+        return {}
+    if not ops_db_path.is_file():
+        raise RawRetentionSafetyError(f"ops tier is unavailable: {ops_db_path}")
+    try:
+        uri = f"{ops_db_path.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as conn:
+            conn.execute("PRAGMA query_only = ON")
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'ingest_cursor'"
+            ).fetchone()
+            if has_table is None:
+                raise RawRetentionSafetyError(f"ops tier has no ingest_cursor table: {ops_db_path}")
+            placeholders = ", ".join("?" for _ in source_paths)
+            rows = conn.execute(
+                f"SELECT source_path, byte_offset FROM ingest_cursor WHERE source_path IN ({placeholders})",
+                tuple(source_paths),
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        raise RawRetentionSafetyError(f"ops tier raw cursor authority is unreadable: {exc}") from exc
+    return {str(row[0]): int(row[1]) for row in rows if row[1] is not None}
+
+
 def _superseded_archive_raw_session_candidates(
     conn: sqlite3.Connection,
     *,
@@ -607,6 +885,10 @@ def compact_paths_superseded_raw_snapshots(
 
 
 __all__ = [
+    "BrokenAppendHeadSample",
+    "CursorAheadSample",
+    "RawFrontierIntegritySnapshot",
+    "RawFrontierIntegrityStatus",
     "RawSnapshotCleanupCandidate",
     "RawSnapshotCleanupResult",
     "RawRetentionAuthority",
@@ -615,5 +897,6 @@ __all__ = [
     "cleanup_superseded_raw_snapshots",
     "compact_paths_superseded_raw_snapshots",
     "protected_active_raw_revision_ids",
+    "raw_frontier_integrity_snapshot",
     "superseded_raw_snapshot_candidates",
 ]

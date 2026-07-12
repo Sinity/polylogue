@@ -996,6 +996,102 @@ class TestNoArchiveStatus:
         for entry in claim_guard.values():
             assert entry["signal"]
 
+    def test_direct_status_json_detects_broken_append_head_blocks_converged(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """polylogue-yla8.7 AC: a current accepted append head whose
+        predecessor chain is broken must surface through
+        ``raw_frontier_integrity``, render ``component_readiness`` as
+        ``poisoned``, and block claim-guard ``converged`` in the no-daemon
+        direct SQLite fallback path — not just through the daemon path."""
+        env = _make_app_env()
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+
+        source_path = tmp_path / "session.jsonl"
+        source_path.write_text("{}\n", encoding="utf-8")
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                    source_revision, predecessor_source_revision, predecessor_raw_id,
+                    baseline_raw_id, append_start_offset, append_end_offset,
+                    acquisition_generation, revision_authority
+                ) VALUES (
+                    'raw-append', 'codex-session', 'raw-append', ?, -1, ?,
+                    5, 1, 'codex:session-1', 'append',
+                    'revision-1', 'revision-0', 'raw-missing',
+                    'raw-missing', 10, 15,
+                    1, 'byte_proven'
+                )
+                """,
+                (str(source_path), (1).to_bytes(32, "big")),
+            )
+            conn.commit()
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+                VALUES ('session-1', 'codex-session', 'raw-append', 'session', ?)
+                """,
+                (bytes(32),),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_revision_heads (
+                    logical_source_key, session_id, accepted_raw_id,
+                    accepted_source_revision, accepted_content_hash,
+                    accepted_frontier_kind, accepted_frontier,
+                    acquisition_generation, append_end_offset, decided_at_ms
+                ) VALUES ('codex:session-1', 'codex-session:session-1', 'raw-append',
+                          'revision-1', ?, 'byte', 15, 1, 15, 2)
+                """,
+                (bytes(32),),
+            )
+            conn.commit()
+
+        archive_readiness = {
+            "checked": True,
+            "counts": {"session_count": 1},
+            "surfaces": {"search": {"ready": True, "blockers": [], "evidence": {}}},
+        }
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
+            patch(
+                "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+                return_value={"available": True, "total": 0, "affected_total": 0},
+            ),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env, include_archive_readiness=True)
+
+        payload = json.loads(_combined_calls(env))
+        integrity = payload["raw_frontier_integrity"]
+        assert integrity["overall_status"] == "violated"
+        assert integrity["broken_head_status"] == "violated"
+        assert integrity["broken_head_count"] == 1
+        assert "missing from source tier" in integrity["broken_head_samples"][0]["reason"]
+
+        component = payload["component_readiness"]["raw_frontier_integrity"]
+        assert component["state"] == "poisoned"
+        assert component["counts"]["broken_head_count"] == 1
+
+        claim_guard = payload["claim_guard"]
+        assert claim_guard["openable"]["value"] is True
+        assert claim_guard["converged"]["value"] is False
+        assert "broken predecessor chain" in claim_guard["converged"]["reason"]
+
     def test_direct_status_json_claim_guard_reports_missing_tiers_when_not_openable(
         self,
         tmp_path: Path,
@@ -1040,9 +1136,11 @@ class TestNoArchiveStatus:
         }
         component_readiness = {
             "raw_materialization": {"summary": "ready"},
+            "raw_frontier_integrity": {"state": "ready", "summary": "ready"},
             "search": {"state": "ready", "summary": "ready"},
         }
         raw_materialization_readiness = {"available": True, "total": 0, "affected_total": 0}
+        raw_frontier_integrity = {"overall_status": "healthy"}
 
         for unavailable_workload in (
             {"available": False, "reason": "missing_ops_tier"},
@@ -1052,6 +1150,7 @@ class TestNoArchiveStatus:
             guard = _direct_claim_guard(
                 archive_tiers=archive_tiers,
                 raw_materialization_readiness=raw_materialization_readiness,
+                raw_frontier_integrity=raw_frontier_integrity,
                 component_readiness=component_readiness,
                 ingest_workload=unavailable_workload,
             )
@@ -1065,6 +1164,7 @@ class TestNoArchiveStatus:
         idle_guard = _direct_claim_guard(
             archive_tiers=archive_tiers,
             raw_materialization_readiness=raw_materialization_readiness,
+            raw_frontier_integrity=raw_frontier_integrity,
             component_readiness=component_readiness,
             ingest_workload={"available": True, "actively_ingesting": False, "running_count": 0},
         )

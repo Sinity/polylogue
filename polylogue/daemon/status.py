@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import os
 import re
@@ -62,6 +63,7 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
+from polylogue.storage.raw_retention import raw_frontier_integrity_snapshot
 from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -155,6 +157,53 @@ class RawMaterializationReadiness(BaseModel):
     category_counts: dict[str, int] = Field(default_factory=dict)
     source_family_counts: dict[str, int] = Field(default_factory=dict)
     sampled_rows: list[dict[str, object]] = Field(default_factory=list)
+
+
+class RawFrontierIntegrity(BaseModel):
+    """Standing readiness projection of authoritative raw-frontier gaps (polylogue-yla8.7).
+
+    Process health and raw-materialization candidate counts can both be
+    green while an accepted append head references a deleted predecessor or
+    an ingest cursor sits ahead of accepted material — yla8.6 found this only
+    through manual SQL after ordinary use broke. This model composes three
+    independently-degrading facts so that gap can never render silently green:
+
+    * ``broken_head_*`` — a current accepted append head
+      (``raw_revision_heads``) whose transitive predecessor chain (the same
+      chain validator ``active_raw_retention_authority`` uses to protect
+      retention) is missing or invalid.
+    * ``missing_source_raw_*`` — re-projects
+      ``RawMaterializationReadiness.lost_source_evidence_count`` /
+      ``lost_source_evidence_samples`` (an index ``sessions.raw_id`` absent
+      from ``source.raw_sessions``); computed once there, not requeried here.
+    * ``cursor_ahead_*`` — an ``ops.ingest_cursor`` committed byte frontier
+      past the byte frontier actually accepted into the index for that
+      logical source — the exact symptom yla8.6 found only via manual SQL.
+
+    ``overall_status`` is ``"unknown"`` if any sub-check's authority tier is
+    unreadable, ``"violated"`` if any sub-check found a real gap, else
+    ``"healthy"``. Never a false-green zero when authority is unavailable.
+    """
+
+    available: bool = False
+    overall_status: Literal["healthy", "unknown", "violated"] = "unknown"
+
+    broken_head_status: Literal["healthy", "unknown", "violated"] = "unknown"
+    broken_head_count: int = 0
+    broken_head_checked_count: int = 0
+    broken_head_samples: list[dict[str, object]] = Field(default_factory=list)
+    broken_head_reason: str = ""
+
+    missing_source_raw_status: Literal["healthy", "unknown", "violated"] = "unknown"
+    missing_source_raw_count: int = 0
+    missing_source_raw_samples: list[dict[str, object]] = Field(default_factory=list)
+    missing_source_raw_reason: str = ""
+
+    cursor_ahead_status: Literal["healthy", "unknown", "violated"] = "unknown"
+    cursor_ahead_count: int = 0
+    cursor_ahead_checked_count: int = 0
+    cursor_ahead_samples: list[dict[str, object]] = Field(default_factory=list)
+    cursor_ahead_reason: str = ""
 
 
 class ArchiveTierStatus(BaseModel):
@@ -304,6 +353,7 @@ class DaemonStatus(BaseModel):
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
     embedding_readiness: EmbeddingReadiness = Field(default_factory=EmbeddingReadiness)
     raw_materialization_readiness: RawMaterializationReadiness = Field(default_factory=RawMaterializationReadiness)
+    raw_frontier_integrity: RawFrontierIntegrity = Field(default_factory=RawFrontierIntegrity)
     raw_replay_backlog: dict[str, object] = Field(default_factory=dict)
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
     component_readiness: dict[str, object] = Field(default_factory=dict)
@@ -1648,6 +1698,7 @@ def _daemon_component_readiness(
     insight_freshness: InsightFreshness,
     embedding_readiness: EmbeddingReadiness,
     raw_materialization_readiness: RawMaterializationReadiness,
+    raw_frontier_integrity: RawFrontierIntegrity,
     archive_storage: ArchiveStorageStatus,
     live_ingest_attempts: LiveIngestAttemptSummary,
 ) -> dict[str, object]:
@@ -1665,6 +1716,7 @@ def _daemon_component_readiness(
         ).to_dict(),
         "search": _component_from_fts_readiness(fts_readiness).to_dict(),
         "raw_materialization": _component_from_raw_materialization_readiness(raw_materialization_readiness).to_dict(),
+        "raw_frontier_integrity": _component_from_raw_frontier_integrity(raw_frontier_integrity).to_dict(),
         "session_profiles": _component_from_insight_freshness(insight_freshness).to_dict(),
         "embeddings": _component_from_daemon_embedding_readiness(embedding_readiness).to_dict(),
         "archive_storage": _component_from_archive_storage(archive_storage).to_dict(),
@@ -1673,10 +1725,26 @@ def _daemon_component_readiness(
     return components
 
 
+def _raw_frontier_integrity_summary(integrity: RawFrontierIntegrity) -> str:
+    if integrity.overall_status == "healthy":
+        return "ready"
+    reasons = [
+        reason
+        for reason in (
+            integrity.broken_head_reason,
+            integrity.missing_source_raw_reason,
+            integrity.cursor_ahead_reason,
+        )
+        if reason
+    ]
+    return "; ".join(reasons) if reasons else "raw frontier integrity unavailable"
+
+
 def _daemon_claim_guard(
     *,
     archive_storage: ArchiveStorageStatus,
     raw_materialization_readiness: RawMaterializationReadiness,
+    raw_frontier_integrity: RawFrontierIntegrity,
     fts_readiness: FTSReadiness,
     live_ingest_attempts: LiveIngestAttemptSummary,
 ) -> dict[str, object]:
@@ -1696,6 +1764,8 @@ def _daemon_claim_guard(
         missing_tiers=archive_storage.missing_tiers,
         raw_materialization_ready=raw_materialization_ready(raw_materialization_readiness),
         raw_materialization_summary=raw_component.summary,
+        raw_frontier_integrity_ready=raw_frontier_integrity.overall_status == "healthy",
+        raw_frontier_integrity_summary=_raw_frontier_integrity_summary(raw_frontier_integrity),
         search_ready=fts_readiness.messages_ready,
         search_summary=fts_component.summary,
         active_writer=active_writer,
@@ -1747,6 +1817,12 @@ def _component_from_raw_materialization_readiness(
     from polylogue.readiness.capability import component_from_raw_materialization_readiness
 
     return component_from_raw_materialization_readiness(readiness.model_dump())
+
+
+def _component_from_raw_frontier_integrity(integrity: RawFrontierIntegrity) -> ComponentReadiness:
+    from polylogue.readiness.capability import component_from_raw_frontier_integrity
+
+    return component_from_raw_frontier_integrity(integrity.model_dump())
 
 
 def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentReadiness:
@@ -1917,6 +1993,106 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
     return RawMaterializationReadiness.model_validate(payload)
 
 
+def _missing_source_raw_status(
+    readiness: RawMaterializationReadiness,
+) -> tuple[Literal["healthy", "unknown", "violated"], str]:
+    """Reproject lost-source-evidence into the raw-frontier-integrity vocabulary.
+
+    This intentionally re-reads an already-computed signal instead of
+    requerying source/index — see ``RawFrontierIntegritySnapshot``'s
+    docstring in ``polylogue.storage.raw_retention``.
+    """
+    if not readiness.available:
+        return "unknown", "raw materialization readiness unavailable"
+    if readiness.lost_source_evidence_count:
+        return (
+            "violated",
+            f"{readiness.lost_source_evidence_count} indexed session(s) reference raw evidence "
+            "missing from source tier",
+        )
+    return "healthy", ""
+
+
+def _raw_frontier_integrity_info(
+    raw_materialization_readiness: RawMaterializationReadiness,
+) -> RawFrontierIntegrity:
+    """Compose the polylogue-yla8.7 raw-frontier-integrity projection for status.
+
+    Bounded by construction: the broken-head/cursor-ahead checks are scoped
+    to ``raw_revision_heads`` rows (one per actively-appended logical
+    source), not a full-archive scan.
+    """
+    missing_status, missing_reason = _missing_source_raw_status(raw_materialization_readiness)
+
+    dbf = _active_status_db_path()
+    source_db = dbf.with_name("source.db")
+    ops_db = dbf.with_name("ops.db")
+
+    broken_status: Literal["healthy", "unknown", "violated"] = "unknown"
+    broken_count = 0
+    broken_checked = 0
+    broken_samples: list[dict[str, object]] = []
+    broken_reason = f"source tier is unavailable: {source_db}"
+    cursor_status: Literal["healthy", "unknown", "violated"] = "unknown"
+    cursor_count = 0
+    cursor_checked = 0
+    cursor_samples: list[dict[str, object]] = []
+    cursor_reason = broken_reason
+
+    if source_db.exists():
+        try:
+            conn = open_readonly_connection(source_db)
+        except sqlite3.Error as exc:
+            broken_reason = cursor_reason = f"source tier is unreadable: {exc}"
+        else:
+            try:
+                snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=dbf, ops_db_path=ops_db)
+            except Exception as exc:
+                logger.warning("status: raw-frontier-integrity snapshot failed: %s", exc, exc_info=True)
+                broken_reason = cursor_reason = f"raw frontier integrity check failed: {exc}"
+            else:
+                broken_status = snapshot.broken_head_status
+                broken_count = snapshot.broken_head_count
+                broken_checked = snapshot.broken_head_checked_count
+                broken_samples = [dataclasses.asdict(sample) for sample in snapshot.broken_head_samples]
+                broken_reason = snapshot.broken_head_reason
+                cursor_status = snapshot.cursor_ahead_status
+                cursor_count = snapshot.cursor_ahead_count
+                cursor_checked = snapshot.cursor_ahead_checked_count
+                cursor_samples = [dataclasses.asdict(sample) for sample in snapshot.cursor_ahead_samples]
+                cursor_reason = snapshot.cursor_ahead_reason
+            finally:
+                conn.close()
+
+    statuses = {broken_status, missing_status, cursor_status}
+    overall: Literal["healthy", "unknown", "violated"]
+    if "unknown" in statuses:
+        overall = "unknown"
+    elif "violated" in statuses:
+        overall = "violated"
+    else:
+        overall = "healthy"
+
+    return RawFrontierIntegrity(
+        available=overall != "unknown",
+        overall_status=overall,
+        broken_head_status=broken_status,
+        broken_head_count=broken_count,
+        broken_head_checked_count=broken_checked,
+        broken_head_samples=broken_samples,
+        broken_head_reason=broken_reason,
+        missing_source_raw_status=missing_status,
+        missing_source_raw_count=raw_materialization_readiness.lost_source_evidence_count,
+        missing_source_raw_samples=list(raw_materialization_readiness.lost_source_evidence_samples),
+        missing_source_raw_reason=missing_reason,
+        cursor_ahead_status=cursor_status,
+        cursor_ahead_count=cursor_count,
+        cursor_ahead_checked_count=cursor_checked,
+        cursor_ahead_samples=cursor_samples,
+        cursor_ahead_reason=cursor_reason,
+    )
+
+
 def _raw_replay_backlog_info() -> dict[str, object]:
     """Return weighted raw source-to-index replay backlog for daemon status."""
     try:
@@ -1963,6 +2139,7 @@ def build_daemon_status(
     fts = _fts_readiness_info()
     freshness = _insight_freshness_info()
     raw_materialization_readiness = _raw_materialization_readiness_info()
+    raw_frontier_integrity = _raw_frontier_integrity_info(raw_materialization_readiness)
     raw_replay_backlog = _raw_replay_backlog_info()
     materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
         raw_materialization_readiness
@@ -2111,6 +2288,7 @@ def build_daemon_status(
         insight_freshness=insight_freshness,
         embedding_readiness=embedding_readiness,
         raw_materialization_readiness=raw_materialization_readiness,
+        raw_frontier_integrity=raw_frontier_integrity,
         raw_replay_backlog=raw_replay_backlog,
         archive_storage=storage_info,
         component_readiness=_daemon_component_readiness(
@@ -2119,12 +2297,14 @@ def build_daemon_status(
             insight_freshness=insight_freshness,
             embedding_readiness=embedding_readiness,
             raw_materialization_readiness=raw_materialization_readiness,
+            raw_frontier_integrity=raw_frontier_integrity,
             archive_storage=storage_info,
             live_ingest_attempts=live_ingest_attempts,
         ),
         claim_guard=_daemon_claim_guard(
             archive_storage=storage_info,
             raw_materialization_readiness=raw_materialization_readiness,
+            raw_frontier_integrity=raw_frontier_integrity,
             fts_readiness=fts_readiness,
             live_ingest_attempts=live_ingest_attempts,
         ),
@@ -2204,6 +2384,7 @@ def daemon_status_payload(
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": status.fts_readiness.model_dump(),
             "raw_materialization_readiness": status.raw_materialization_readiness.model_dump(),
+            "raw_frontier_integrity": status.raw_frontier_integrity.model_dump(),
             "raw_replay_backlog": status.raw_replay_backlog,
             "embedding_readiness": status.embedding_readiness.model_dump(),
             "memory": {

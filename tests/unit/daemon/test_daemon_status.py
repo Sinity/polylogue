@@ -1162,6 +1162,90 @@ def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_
     assert claim_guard["perf_measurable"]["value"] is True
 
 
+def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_path: Path) -> None:
+    """polylogue-yla8.7 AC: a current accepted append head whose predecessor
+    chain is broken must surface through ``raw_frontier_integrity``, render
+    ``component_readiness`` as ``poisoned``, and block claim-guard
+    ``converged`` end-to-end through ``build_daemon_status()`` — the same
+    authority gap yla8.6 found only through manual SQL."""
+    for tier in (
+        ArchiveTier.SOURCE,
+        ArchiveTier.INDEX,
+        ArchiveTier.EMBEDDINGS,
+        ArchiveTier.USER,
+        ArchiveTier.OPS,
+    ):
+        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+
+    source_path = tmp_path / "session.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                source_revision, predecessor_source_revision, predecessor_raw_id,
+                baseline_raw_id, append_start_offset, append_end_offset,
+                acquisition_generation, revision_authority
+            ) VALUES (
+                'raw-append', 'codex-session', 'raw-append', ?, -1, ?,
+                5, 1, 'codex:session-1', 'append',
+                'revision-1', 'revision-0', 'raw-missing',
+                'raw-missing', 10, 15,
+                1, 'byte_proven'
+            )
+            """,
+            (str(source_path), (1).to_bytes(32, "big")),
+        )
+        conn.commit()
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('session-1', 'codex-session', 'raw-append', 'session', ?)
+            """,
+            (bytes(32),),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_revision_heads (
+                logical_source_key, session_id, accepted_raw_id,
+                accepted_source_revision, accepted_content_hash,
+                accepted_frontier_kind, accepted_frontier,
+                acquisition_generation, append_end_offset, decided_at_ms
+            ) VALUES ('codex:session-1', 'codex-session:session-1', 'raw-append',
+                      'revision-1', ?, 'byte', 15, 1, 15, 2)
+            """,
+            (bytes(32),),
+        )
+        conn.commit()
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+    ):
+        status = build_daemon_status(sources=())
+
+    integrity = cast(dict[str, object], status.raw_frontier_integrity.model_dump())
+    assert integrity["overall_status"] == "violated"
+    assert integrity["broken_head_status"] == "violated"
+    assert integrity["broken_head_count"] == 1
+    samples = cast(list[dict[str, object]], integrity["broken_head_samples"])
+    assert "missing from source tier" in str(samples[0]["reason"])
+
+    component = cast(dict[str, object], status.component_readiness["raw_frontier_integrity"])
+    assert component["state"] == "poisoned"
+    counts = cast(dict[str, object], component["counts"])
+    assert counts["broken_head_count"] == 1
+
+    claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
+    assert claim_guard["openable"]["value"] is True
+    assert claim_guard["converged"]["value"] is False
+    assert "broken predecessor chain" in str(claim_guard["converged"]["reason"])
+
+
 def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     db.touch()
