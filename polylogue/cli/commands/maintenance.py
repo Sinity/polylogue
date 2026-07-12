@@ -1599,6 +1599,74 @@ def missing_raw_blob_cursors_command(
         click.echo("Next: restart or run polylogued catch-up.")
 
 
+@maintenance_group.command("untyped-accepted-raws")
+@click.option("--raw-id", "raw_ids", multiple=True, required=True, help="Exact retained raw SHA-256 id (repeatable).")
+@click.option("--apply", "apply_changes", is_flag=True, help="Apply only after every target passes exact proof.")
+@click.option("--proof-digest", help="Exact aggregate digest emitted by the matching dry-run.")
+@click.option(
+    "--receipt",
+    "receipt_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Required append-only operator recovery receipt path for --apply.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+@click.pass_obj
+def untyped_accepted_raws_command(
+    env: AppEnv,
+    raw_ids: tuple[str, ...],
+    apply_changes: bool,
+    proof_digest: str | None,
+    receipt_path: Path | None,
+    output_format: str,
+) -> None:
+    """Repair an accepted full raw whose durable source envelope stayed untyped.
+
+    The actuator revalidates the existing immutable selected-baseline receipt,
+    retained blob bytes, parser-normalized session identity/content, and the
+    current accepted head. It never changes the index head or its receipt.
+    Apply additionally writes an exclusive, fsynced planned→applied operator
+    receipt so the source-only refinement is crash-resumable and auditable.
+    """
+    del env
+    if apply_changes and receipt_path is None:
+        raise click.UsageError("--apply requires --receipt PATH")
+    if apply_changes and proof_digest is None:
+        raise click.UsageError("--apply requires --proof-digest from the exact dry-run")
+    root = archive_root()
+    config = Config(archive_root=root, render_root=render_root(), sources=[], db_path=root / "index.db")
+    from polylogue.storage.repair import repair_untyped_accepted_raws
+
+    try:
+        report = repair_untyped_accepted_raws(
+            config,
+            list(raw_ids),
+            apply=apply_changes,
+            receipt_path=receipt_path,
+            proof_digest=proof_digest,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    payload = asdict(report)
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    click.echo(
+        f"{report.mode}: requested={report.requested_count} eligible={report.eligible_count} "
+        f"already_repaired={report.already_repaired_count} repaired={report.repaired_count} "
+        f"ineligible={report.ineligible_count}"
+    )
+    for item in report.items:
+        click.echo(f"  {item.raw_id} {item.status}: {item.reason}")
+    if report.receipt_path is not None:
+        click.echo(f"Receipt: {report.receipt_path}")
+
+
 @maintenance_group.command("preview")
 @click.option(
     "--scope",
