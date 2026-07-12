@@ -139,6 +139,10 @@ jobs:
           # The distroless build gets a `-distroless` suffix on every tag
           # so both variants share the same repository.
           flavor: |
+            # `docker/metadata-action` otherwise auto-emits latest for active
+            # semver tags. The explicit raw rule below is the only authority
+            # and stays disabled for manual recovery of an older release.
+            latest=false
             suffix=${{ matrix.target == 'distroless' && '-distroless' || '' }},onlatest=true
           tags: |
             type=ref,event=pr
@@ -150,6 +154,17 @@ jobs:
             type=raw,value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=sha,prefix=master-,format=short,enable=${{ github.ref == 'refs/heads/master' }}
+
+      - name: Assert recovery metadata preserves latest
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          if grep -Eq '(^|/)polylogue:latest(-distroless)?$' <<<"${TAGS}"; then
+            echo "::error::manual recovery must not retarget latest"
+            exit 1
+          fi
 
       - name: Build${{ steps.decide.outputs.push == 'true' && ' and push' || '' }}
         uses: docker/build-push-action@v7
