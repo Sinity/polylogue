@@ -208,6 +208,15 @@ def record_embedding_failure(
         )
         conn.execute(
             """
+            UPDATE embedding_failures
+            SET lifecycle_state = 'superseded', updated_at_ms = ?, resolved_at_ms = ?,
+                resolution_action = 'superseded', superseded_by = ?
+            WHERE session_id = ? AND lifecycle_state IN ('retryable', 'terminal')
+            """,
+            (now_ms, now_ms, failure_id, session_id),
+        )
+        conn.execute(
+            """
             INSERT INTO embedding_failures (
                 failure_id, session_id, origin, message_refs_json, provider, model,
                 error_class, error_message, retryable, lifecycle_state, created_at_ms, updated_at_ms

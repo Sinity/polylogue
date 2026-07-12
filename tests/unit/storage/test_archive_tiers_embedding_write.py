@@ -15,6 +15,7 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     ArchiveEmbeddingWrite,
     list_active_embedding_failures,
     mark_session_embedding_error,
+    read_embedding_failure,
     read_embedding_status,
     record_embedding_failure,
     resolve_embedding_failure,
@@ -227,3 +228,46 @@ def test_embedding_failure_lifecycle_preserves_audit_and_requeues(tmp_path: Path
     status = read_embedding_status(conn, "codex-session:retry-me")
     assert status.needs_reindex is True
     assert status.error_message is None
+
+
+def test_new_failure_supersedes_prior_active_failure_for_same_session(tmp_path: Path) -> None:
+    """A later attempt is current debt; earlier attempts remain durable evidence.
+
+    Anti-vacuity: deleting the lifecycle transition leaves both rows active, so
+    status and archive debt overcount a single repeatedly failing session.
+    """
+    conn = _connect(tmp_path / "embeddings.db")
+    prior = record_embedding_failure(
+        conn,
+        session_id="codex-session:retry-loop",
+        origin=Origin.CODEX_SESSION,
+        message_refs=("codex-session:retry-loop:m1",),
+        provider="voyage",
+        model="voyage-4",
+        error_class="provider_timeout",
+        error_message="Embedding generation timed out",
+        retryable=True,
+        occurred_at_ms=1_800_000_000_000,
+    )
+    current = record_embedding_failure(
+        conn,
+        session_id="codex-session:retry-loop",
+        origin=Origin.CODEX_SESSION,
+        message_refs=("codex-session:retry-loop:m2",),
+        provider="voyage",
+        model="voyage-4",
+        error_class="provider_http_400",
+        error_message="Embedding generation failed: HTTP 400",
+        retryable=False,
+        occurred_at_ms=1_800_000_100_000,
+    )
+
+    superseded = read_embedding_failure(conn, prior.failure_id)
+    assert superseded.lifecycle_state == "superseded"
+    assert superseded.resolution_action == "superseded"
+    assert superseded.superseded_by == current.failure_id
+    assert superseded.resolved_at_ms == current.created_at_ms
+    assert list_active_embedding_failures(conn) == (current,)
+    status = read_embedding_status(conn, "codex-session:retry-loop")
+    assert status.needs_reindex is False
+    assert status.error_message == "Embedding generation failed: HTTP 400"
