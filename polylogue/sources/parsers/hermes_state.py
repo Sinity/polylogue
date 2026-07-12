@@ -12,9 +12,10 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, TypeAlias, cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
@@ -110,6 +111,32 @@ _SESSION_METADATA_FIELDS = (
     "archived",
 )
 
+HermesFidelityStatus: TypeAlias = Literal["exact", "absent", "redacted", "degraded", "inferred"]
+
+
+@dataclass(frozen=True, slots=True)
+class HermesFidelityCapability:
+    """One source capability and the evidence that supports its status."""
+
+    status: HermesFidelityStatus
+    observed: int
+    expected: int
+    counts: dict[str, int]
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class HermesImportFidelity:
+    """Machine-readable fidelity declaration for one Hermes source artifact."""
+
+    producer: str
+    schema_version: int | None
+    profile_namespace: str | None
+    acquisition_method: str
+    retained_blob_reproducibility: HermesFidelityCapability
+    capabilities: dict[str, HermesFidelityCapability]
+    caveats: tuple[str, ...]
+
 
 def marker_payload(path: Path, *, profile_root: Path | None = None) -> JSONDocument:
     """Return the JSON marker that routes a raw SQLite blob to this parser."""
@@ -185,6 +212,239 @@ def parse_state_db(
         ]
     hydrated = _hydrate_compression_continuations(sessions)
     return [session for session in hydrated if session.messages or session.instructions_text]
+
+
+def import_fidelity_declaration(
+    sessions: list[ParsedSession],
+    *,
+    acquisition_method: Literal["sqlite_backup", "json_fallback"],
+) -> HermesImportFidelity:
+    """Declare the source fidelity that the Hermes parser can substantiate.
+
+    The declaration is deliberately conservative: values derived by the
+    normalizer are marked inferred, and evidence that no source artifact
+    carries is absent rather than represented as an empty successful value.
+    """
+
+    if acquisition_method == "json_fallback":
+        return _json_fallback_fidelity(sessions)
+    return _sqlite_backup_fidelity(sessions)
+
+
+def _sqlite_backup_fidelity(sessions: list[ParsedSession]) -> HermesImportFidelity:
+    total_sessions = len(sessions)
+    messages = [message for session in sessions for message in session.messages]
+    identity_payloads = [
+        event.payload
+        for session in sessions
+        for event in session.session_events
+        if event.event_type == "hermes_identity"
+    ]
+    schema_versions = {
+        value for payload in identity_payloads if isinstance((value := payload.get("schema_version")), int)
+    }
+    profile_keys = {
+        value for payload in identity_payloads if isinstance((value := payload.get("profile_key")), str) and value
+    }
+
+    def source_capability(name: str) -> HermesFidelityCapability:
+        observed = sum(name in payload.get("session_capabilities", ()) for payload in identity_payloads)
+        return _fidelity_capability(
+            observed=observed,
+            expected=total_sessions,
+            detail=f"{name.replace('_', ' ')} columns are present in the inspected Hermes schema.",
+        )
+
+    state_events = [
+        event for session in sessions for event in session.session_events if event.event_type == "hermes_message_state"
+    ]
+    state_counts = {
+        state: sum(event.payload.get("state") == state for event in state_events)
+        for state in ("active", "observed", "rewound", "compacted")
+    }
+    state_capable = sum(bool(event.payload.get("capability_present")) for event in state_events)
+    material_counts = {
+        origin.value: sum(message.material_origin is origin for message in messages)
+        for origin in MaterialOrigin
+        if any(message.material_origin is origin for message in messages)
+    }
+    cost_events = [
+        event
+        for session in sessions
+        for event in session.session_events
+        if event.event_type == "token_count" and any(event.payload.get(field) is not None for field in _COST_FIELDS)
+    ]
+    cost_status = _fidelity_capability(
+        observed=len(cost_events),
+        expected=total_sessions,
+        detail="Cost rows retain actual/estimated values with source, status, pricing, and billing provenance when present.",
+    )
+    capabilities = {
+        "profile_namespace": _fidelity_capability(
+            observed=len(profile_keys),
+            expected=1,
+            detail="Profile roots are hashed into stable namespace qualifiers; raw profile paths are not exposed.",
+        ),
+        "message_state": _fidelity_capability(
+            observed=state_capable,
+            expected=len(messages),
+            counts=state_counts,
+            detail="Active, observed, rewound, and compacted states are retained per source message.",
+        ),
+        "material_origin": HermesFidelityCapability(
+            status="inferred",
+            observed=len(messages),
+            expected=len(messages),
+            counts=material_counts,
+            detail="Material origin is normalized from role plus the source observed flag; Hermes has no explicit addressing field.",
+        ),
+        "cost_provenance": cost_status,
+        "lifecycle": source_capability("lifecycle"),
+        "relationship": source_capability("lineage"),
+        "repository": source_capability("repository"),
+        "runtime_spans": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=total_sessions,
+            counts={},
+            detail="The SQLite snapshot contains no runtime-span stream.",
+        ),
+        "span_snapshot_merge": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=total_sessions,
+            counts={},
+            detail="No runtime spans were supplied to enrich this snapshot revision.",
+        ),
+    }
+    caveats = tuple(
+        f"{name}: {capability.detail}" for name, capability in capabilities.items() if capability.status != "exact"
+    )
+    return HermesImportFidelity(
+        producer="Hermes state.db",
+        schema_version=next(iter(schema_versions)) if len(schema_versions) == 1 else None,
+        profile_namespace=next(iter(profile_keys)) if len(profile_keys) == 1 else None,
+        acquisition_method="sqlite_backup",
+        retained_blob_reproducibility=HermesFidelityCapability(
+            status="exact",
+            observed=total_sessions,
+            expected=total_sessions,
+            counts={},
+            detail="The import path snapshots SQLite bytes before parsing; retained bytes reproduce normalized Hermes revisions.",
+        ),
+        capabilities=capabilities,
+        caveats=caveats,
+    )
+
+
+def _json_fallback_fidelity(sessions: list[ParsedSession]) -> HermesImportFidelity:
+    messages = [message for session in sessions for message in session.messages]
+    total_sessions = len(sessions)
+    capabilities = {
+        "profile_namespace": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=1,
+            counts={},
+            detail="JSON fallback has no installation/profile namespace.",
+        ),
+        "message_state": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=len(messages),
+            counts={},
+            detail="JSON fallback does not retain Hermes message-state columns.",
+        ),
+        "material_origin": HermesFidelityCapability(
+            status="inferred",
+            observed=len(messages),
+            expected=len(messages),
+            counts={},
+            detail="Material origin is inferred from normalized message roles in the fallback export.",
+        ),
+        "cost_provenance": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=total_sessions,
+            counts={},
+            detail="JSON fallback has no structured cost provenance.",
+        ),
+        "lifecycle": HermesFidelityCapability(
+            status="inferred",
+            observed=0,
+            expected=total_sessions,
+            counts={},
+            detail="Fallback lifecycle interpretation is limited to document fields.",
+        ),
+        "relationship": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=total_sessions,
+            counts={},
+            detail="JSON fallback has no state-db lineage evidence.",
+        ),
+        "repository": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=total_sessions,
+            counts={},
+            detail="JSON fallback has no repository capability declaration.",
+        ),
+        "runtime_spans": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=total_sessions,
+            counts={},
+            detail="JSON fallback has no runtime-span stream.",
+        ),
+        "span_snapshot_merge": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=total_sessions,
+            counts={},
+            detail="Fallback data cannot prove a span-plus-snapshot merge.",
+        ),
+    }
+    return HermesImportFidelity(
+        producer="Hermes JSON fallback",
+        schema_version=None,
+        profile_namespace=None,
+        acquisition_method="json_fallback",
+        retained_blob_reproducibility=HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=total_sessions,
+            counts={},
+            detail="Fallback JSON does not prove retained SQLite snapshot reproducibility.",
+        ),
+        capabilities=capabilities,
+        caveats=tuple(
+            f"{name}: {capability.detail}" for name, capability in capabilities.items() if capability.status != "exact"
+        ),
+    )
+
+
+def _fidelity_capability(
+    *,
+    observed: int,
+    expected: int,
+    detail: str,
+    counts: dict[str, int] | None = None,
+) -> HermesFidelityCapability:
+    status: HermesFidelityStatus
+    if observed == 0:
+        status = "absent"
+    elif observed < expected:
+        status = "degraded"
+    else:
+        status = "exact"
+    return HermesFidelityCapability(
+        status=status,
+        observed=observed,
+        expected=expected,
+        counts={} if counts is None else counts,
+        detail=detail,
+    )
 
 
 def _connect_readonly(path: Path) -> sqlite3.Connection:
@@ -670,6 +930,10 @@ def _optional_float(value: object) -> float | None:
 
 __all__ = [
     "HERMES_STATE_DB_MARKER",
+    "HermesFidelityCapability",
+    "HermesFidelityStatus",
+    "HermesImportFidelity",
+    "import_fidelity_declaration",
     "looks_like_state_db_path",
     "looks_like_state_db_payload",
     "marker_payload",
