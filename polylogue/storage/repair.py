@@ -539,7 +539,8 @@ class _LockedUntypedRawRepairReceipt:
     target_hash: str
     terminal: bool
     repair_intent_raw_ids: tuple[str, ...]
-    torn_terminal: bytes | None = None
+    torn_terminals: tuple[bytes, ...] = ()
+    receipt_terminated: bool = True
 
     def close(self) -> None:
         fcntl.flock(self.descriptor, fcntl.LOCK_UN)
@@ -596,7 +597,7 @@ def _validate_repair_receipt_records(
     *,
     targets: list[dict[str, object]],
     target_hash: str,
-) -> tuple[bool, tuple[str, ...], bytes | None]:
+) -> tuple[bool, tuple[str, ...], tuple[bytes, ...], bool]:
     records, terminated = parsed_receipt
     if not records:
         raise RuntimeError("existing repair receipt is empty")
@@ -623,22 +624,22 @@ def _validate_repair_receipt_records(
     if len(records) == 1:
         if not terminated:
             raise RuntimeError("existing repair receipt has a torn planned record")
-        return False, intent_ids, None
-    torn_terminal: bytes | None = None
-    if len(records) == 2 and isinstance(records[1], bytes) and not terminated:
-        torn_terminal = records[1]
-        if not torn_terminal:
-            raise RuntimeError("existing repair receipt has an empty torn terminal")
-        return False, intent_ids, torn_terminal
-    if len(records) == 2 and isinstance(records[1], dict):
-        applied = records[1]
-        recovered = False
-    elif len(records) == 3 and isinstance(records[1], bytes) and isinstance(records[2], dict) and terminated:
-        torn_terminal = records[1]
-        applied = records[2]
-        recovered = True
-    else:
+        return False, intent_ids, (), terminated
+    tail = records[1:]
+    applied = tail[-1] if isinstance(tail[-1], dict) else None
+    torn_terminals = (
+        tuple(record for record in tail[:-1] if isinstance(record, bytes))
+        if applied
+        else tuple(record for record in tail if isinstance(record, bytes))
+    )
+    expected_tail_length = len(torn_terminals) + (1 if applied is not None else 0)
+    if len(tail) != expected_tail_length or any(not fragment for fragment in torn_terminals):
         raise RuntimeError("existing repair receipt has an invalid state transition")
+    if applied is None:
+        return False, intent_ids, torn_terminals, terminated
+    if not terminated:
+        raise RuntimeError("existing repair receipt has an unterminated applied record")
+    recovered = bool(torn_terminals)
     applied_keys = {
         "schema",
         "state",
@@ -648,7 +649,7 @@ def _validate_repair_receipt_records(
         "proven_raw_ids",
     }
     if recovered:
-        applied_keys |= {"torn_terminal_bytes", "torn_terminal_sha256"}
+        applied_keys |= {"torn_terminals"}
     if set(applied) != applied_keys or applied.get("schema") != _UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
         raise RuntimeError("existing repair receipt has an invalid applied record schema")
     if applied.get("state") != "applied" or applied.get("target_hash") != target_hash:
@@ -658,12 +659,12 @@ def _validate_repair_receipt_records(
         raise RuntimeError("existing repair receipt applied timestamp is invalid")
     if applied.get("proven_raw_ids") != list(raw_ids) or applied.get("repaired_raw_ids") != list(intent_ids):
         raise RuntimeError("existing repair receipt applied ids do not match the planned targets")
-    if recovered and (
-        applied.get("torn_terminal_bytes") != len(torn_terminal or b"")
-        or applied.get("torn_terminal_sha256") != hashlib.sha256(torn_terminal or b"").hexdigest()
-    ):
+    expected_torn_witnesses = [
+        {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()} for fragment in torn_terminals
+    ]
+    if recovered and applied.get("torn_terminals") != expected_torn_witnesses:
         raise RuntimeError("existing repair receipt recovery does not match its preserved torn terminal")
-    return True, intent_ids, torn_terminal
+    return True, intent_ids, torn_terminals, terminated
 
 
 def _lock_untyped_raw_repair_receipt(
@@ -689,11 +690,17 @@ def _lock_untyped_raw_repair_receipt(
         if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
             raise RuntimeError("operator repair receipt path changed while it was being locked")
         if opened.st_size:
-            terminal, existing_intent, torn_terminal = _validate_repair_receipt_records(
+            terminal, existing_intent, torn_terminals, terminated = _validate_repair_receipt_records(
                 _receipt_records(descriptor), targets=targets, target_hash=target_hash
             )
             return _LockedUntypedRawRepairReceipt(
-                path, descriptor, target_hash, terminal, existing_intent, torn_terminal
+                path,
+                descriptor,
+                target_hash,
+                terminal,
+                existing_intent,
+                torn_terminals,
+                terminated,
             )
         planned = {
             "schema": _UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
@@ -727,15 +734,17 @@ def _finish_untyped_raw_repair_receipt(
         "repaired_raw_ids": list(receipt.repair_intent_raw_ids),
         "proven_raw_ids": [item.raw_id for item in items],
     }
-    if receipt.torn_terminal is not None:
-        terminal["torn_terminal_bytes"] = len(receipt.torn_terminal)
-        terminal["torn_terminal_sha256"] = hashlib.sha256(receipt.torn_terminal).hexdigest()
+    if receipt.torn_terminals:
+        terminal["torn_terminals"] = [
+            {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()}
+            for fragment in receipt.torn_terminals
+        ]
     opened = os.fstat(receipt.descriptor)
     named = receipt.path.stat(follow_symlinks=False)
     if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
         raise RuntimeError("operator repair receipt path changed before terminal append")
     os.lseek(receipt.descriptor, 0, os.SEEK_END)
-    if receipt.torn_terminal is not None:
+    if receipt.torn_terminals and not receipt.receipt_terminated:
         _write_receipt_all(receipt.descriptor, b"\n")
     _write_receipt_all(
         receipt.descriptor, (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -833,9 +842,7 @@ def repair_untyped_accepted_raws(
                             raise RuntimeError("a repair target became ineligible after acquiring the transaction")
                         if receipt.terminal and any(item.status != "already_repaired" for item in locked_items):
                             raise RuntimeError("terminal operator receipt disagrees with durable source authority")
-                        if receipt.torn_terminal is not None and any(
-                            item.status != "already_repaired" for item in locked_items
-                        ):
+                        if receipt.torn_terminals and any(item.status != "already_repaired" for item in locked_items):
                             raise RuntimeError("torn terminal receipt has no matching committed source refinement")
                         for item in locked_items:
                             if item.status == "eligible":

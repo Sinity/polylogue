@@ -495,6 +495,24 @@ def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
     assert _raw_session_row(tmp_path, raw_id)["revision_authority"] == "byte_proven"
     assert not receipt.read_bytes().endswith(b"\n")
 
+    def tear_recovery(locked: Any, *, items: list[Any]) -> None:
+        del items
+        if locked.torn_terminals and not locked.receipt_terminated:
+            repair_module._write_receipt_all(locked.descriptor, b"\n")
+        repair_module._write_receipt_all(locked.descriptor, b'{"state":')
+        repair_module.os.fsync(locked.descriptor)
+        raise RuntimeError("injected torn recovery terminal")
+
+    monkeypatch.setattr(repair_module, "_finish_untyped_raw_repair_receipt", tear_recovery)
+    with pytest.raises(RuntimeError, match="torn recovery terminal"):
+        repair_untyped_accepted_raws(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=receipt,
+            proof_digest=dry_run.proof_digest,
+        )
+
     monkeypatch.setattr(repair_module, "_finish_untyped_raw_repair_receipt", original_finish)
     repair_untyped_accepted_raws(
         _config(tmp_path),
@@ -504,12 +522,14 @@ def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
         proof_digest=dry_run.proof_digest,
     )
     lines = receipt.read_bytes().splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 4
     assert lines[1] == b'{"schema":'
-    recovered = json.loads(lines[2])
+    assert lines[2] == b'{"state":'
+    recovered = json.loads(lines[3])
     assert recovered["state"] == "applied"
-    assert recovered["torn_terminal_bytes"] == len(lines[1])
-    assert recovered["torn_terminal_sha256"] == hashlib.sha256(lines[1]).hexdigest()
+    assert recovered["torn_terminals"] == [
+        {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()} for fragment in lines[1:3]
+    ]
 
     reapplied = repair_untyped_accepted_raws(
         _config(tmp_path),
