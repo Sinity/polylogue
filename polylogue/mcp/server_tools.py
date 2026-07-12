@@ -770,7 +770,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             except (KeyError, ValueError, sqlite3.OperationalError):
                 return hooks.error_json(f"Session not found: {id}", code="not_found")
 
-        return await hooks.async_safe_call("get_session_summary", run)
+        return await hooks.async_safe_call("get_session_summary", run, session_id=id)
 
     @mcp.tool()
     async def get_session_tree(session_id: str) -> str:

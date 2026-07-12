@@ -172,6 +172,9 @@ ON mcp_call_log(session_id, started_at_ms DESC);
 
 CREATE INDEX IF NOT EXISTS idx_ops_mcp_call_log_tool
 ON mcp_call_log(tool_name, started_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ops_mcp_call_log_started
+ON mcp_call_log(started_at_ms);
 """
 
 __all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION"]

@@ -9,6 +9,7 @@ with that blast radius in mind; see docs/test-economics.md.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -191,40 +192,49 @@ def _record_mcp_call_log(
     success: bool,
     error_detail: str | None,
 ) -> None:
-    """Best-effort durable MCP call-log write (polylogue-7s57).
+    """Best-effort MCP call-log enqueue (polylogue-7s57).
 
     Persists tool name, session id (when the caller knows one), timing, and
-    success/failure to the disposable ``ops.db`` tier so resume/context tool
-    efficacy (``get_resume_brief``, ``compose_context_preamble``, ...) can
-    later be reconstructed per session. This must never raise into a tool
-    response: any failure (locked db, unreadable config, ...) is logged and
-    swallowed, exactly like the daemon's own opportunistic ops-tier writers
-    (``daemon/events.py:emit_daemon_event``, ``daemon/cursor_lag_baseline.py``).
+    success/failure to the daemon without touching SQLite or waiting on I/O in
+    the MCP response path. The daemon's write coordinator owns persistence to
+    the disposable ``ops.db`` tier. Queue/config failures never alter the tool
+    response.
     """
     try:
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-        from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+        from polylogue.config import load_polylogue_config
+        from polylogue.mcp.call_log import enqueue_mcp_call_log
 
-        ops_db_path = _get_config().db_path.with_name("ops.db")
-        ops_db_path.parent.mkdir(parents=True, exist_ok=True)
-        initialize_archive_database(ops_db_path, ArchiveTier.OPS)
-        conn = open_daemon_connection(ops_db_path)
-        try:
-            record_mcp_call(
-                conn,
-                tool_name=fn_name,
-                session_id=session_id,
-                started_at_ms=started_at_ms,
-                finished_at_ms=finished_at_ms,
-                success=success,
-                error_detail=error_detail,
-            )
-        finally:
-            conn.close()
+        enqueue_mcp_call_log(
+            load_polylogue_config(),
+            tool_name=fn_name,
+            session_id=session_id,
+            started_at_ms=started_at_ms,
+            finished_at_ms=finished_at_ms,
+            success=success,
+            error_detail=error_detail,
+        )
     except Exception:
-        logger.debug("MCP call-log write failed for %s", fn_name, exc_info=True)
+        logger.debug("MCP call-log enqueue failed for %s", fn_name, exc_info=True)
+
+
+def _mcp_error_detail(result: object) -> str | None:
+    """Return the canonical error code when a tool returned MCPErrorPayload."""
+    if not isinstance(result, str):
+        return None
+    try:
+        payload = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("ok") is not False or payload.get("status") != "error":
+        return None
+    error = payload.get("error")
+    message = payload.get("message")
+    if not isinstance(error, str) or not isinstance(message, str):
+        return None
+    code = payload.get("code")
+    return str(code) if isinstance(code, (int, str)) else error
 
 
 @overload
@@ -262,7 +272,15 @@ def _safe_call(fn_name: str, fn: Callable[[], TResult], *, session_id: str | Non
             fn_name, session_id, started_at_ms, _now_ms(), success=False, error_detail=type(exc).__name__
         )
         return _exception_to_error_json(fn_name, exc)
-    _record_mcp_call_log(fn_name, session_id, started_at_ms, _now_ms(), success=True, error_detail=None)
+    error_detail = _mcp_error_detail(result)
+    _record_mcp_call_log(
+        fn_name,
+        session_id,
+        started_at_ms,
+        _now_ms(),
+        success=error_detail is None,
+        error_detail=error_detail,
+    )
     return result
 
 
@@ -295,7 +313,15 @@ async def _async_safe_call(
             fn_name, session_id, started_at_ms, _now_ms(), success=False, error_detail=type(exc).__name__
         )
         return _exception_to_error_json(fn_name, exc)
-    _record_mcp_call_log(fn_name, session_id, started_at_ms, _now_ms(), success=True, error_detail=None)
+    error_detail = _mcp_error_detail(result)
+    _record_mcp_call_log(
+        fn_name,
+        session_id,
+        started_at_ms,
+        _now_ms(),
+        success=error_detail is None,
+        error_detail=error_detail,
+    )
     return result
 
 

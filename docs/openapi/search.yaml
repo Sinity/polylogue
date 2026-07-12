@@ -3125,6 +3125,13 @@ x-polylogue-route-contracts:
   auth_policy: credential_if_configured
   response_contract: maintenance operation status JSON
 - method: POST
+  pattern: /api/telemetry/mcp-calls
+  kind: operational
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: MCP call-log receipt
+  notes: Machine-client telemetry; persisted by the daemon writer with bounded retention.
+- method: POST
   pattern: /api/reset
   kind: maintenance
   stability: stable

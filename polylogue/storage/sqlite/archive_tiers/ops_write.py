@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 from polylogue.core.enums import Origin
 
+MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
+
 
 @dataclass(frozen=True, slots=True)
 class OpsCompactState:
@@ -755,31 +757,35 @@ def record_mcp_call(
     if call_id is None:
         call_id = str(uuid.uuid4())
     duration_ms = max(0, finished_at_ms - started_at_ms)
-    conn.execute(
-        """
-        INSERT INTO mcp_call_log (
-            call_id,
-            tool_name,
-            session_id,
-            started_at_ms,
-            finished_at_ms,
-            duration_ms,
-            success,
-            error_detail
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            call_id,
-            tool_name,
-            session_id,
-            started_at_ms,
-            finished_at_ms,
-            duration_ms,
-            1 if success else 0,
-            error_detail,
-        ),
-    )
-    conn.commit()
+    with conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO mcp_call_log (
+                call_id,
+                tool_name,
+                session_id,
+                started_at_ms,
+                finished_at_ms,
+                duration_ms,
+                success,
+                error_detail
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                call_id,
+                tool_name,
+                session_id,
+                started_at_ms,
+                finished_at_ms,
+                duration_ms,
+                1 if success else 0,
+                error_detail,
+            ),
+        )
+        conn.execute(
+            "DELETE FROM mcp_call_log WHERE started_at_ms < ?",
+            (finished_at_ms - MCP_CALL_LOG_RETENTION_MS,),
+        )
     return call_id
 
 

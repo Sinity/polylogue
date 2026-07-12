@@ -429,6 +429,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "POST",
+        "/api/telemetry/mcp-calls",
+        "operational",
+        "private",
+        "bearer_if_configured_and_same_origin",
+        "MCP call-log receipt",
+        "Machine-client telemetry; persisted by the daemon writer with bounded retention.",
+    ),
+    RouteContract(
+        "POST",
         "/api/reset",
         "maintenance",
         "stable",
