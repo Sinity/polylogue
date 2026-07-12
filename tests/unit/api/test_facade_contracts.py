@@ -4821,12 +4821,23 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_
             )
         )
         request = AnnotationBatchImportRequest(
-            jsonl=json.dumps(
-                {
-                    "row_key": "row-1",
-                    "value": {"label": "yes"},
-                    "evidence_refs": [str(session_id)],
-                }
+            jsonl="\n".join(
+                (
+                    json.dumps(
+                        {
+                            "row_key": "row-1",
+                            "value": {"label": "yes"},
+                            "evidence_refs": [str(session_id)],
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "row_key": "invalid-row",
+                            "value": {"label": "maybe"},
+                            "evidence_refs": ["missing-evidence"],
+                        }
+                    ),
+                )
             ),
             batch_id="facade-import",
             schema_id="test.facade-import",
@@ -4841,10 +4852,16 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_
 
         result = await archive.import_annotation_batch(request, registry=registry)
 
-        assert result.status == "ok"
+        assert result.status == "partial"
         assert result.qualified_schema_id == "test.facade-import@v1"
         assert result.valid_count == 1
+        assert result.invalid_count == 1
         assert result.rows[0].assertion_ref is not None
+        assert result.rows[1].status == "invalid"
+        assert result.rows[1].errors == (
+            "field 'label' must be one of ['no', 'yes'], got 'maybe'",
+            "evidence_ref 'missing-evidence' does not resolve in the live archive",
+        )
         assert not (configured_root / "user.db").exists()
         with sqlite3.connect(active_root / "user.db") as conn:
             persisted = conn.execute("SELECT status, scope_ref FROM assertions WHERE key = 'row-1'").fetchone()
