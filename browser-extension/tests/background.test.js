@@ -365,6 +365,30 @@ describe("background receiver diagnostics", () => {
     expect(timeline[0].reason).toBe("auto_capture_missing");
   });
 
+  it("records a held decision when automatic capture is throttled", async () => {
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-123", title: "ChatGPT" }];
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(100000);
+    await sendRuntimeMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
+    now.mockReturnValue(105000);
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "chatgpt",
+      provider_session_id: "conv-123",
+      state: "missing",
+      captured: false,
+    }));
+
+    activatedListener({ tabId: 42 });
+
+    await vi.waitFor(() => expect(stored.polylogueState?.active_page_state).toBe("conversation"));
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(stored.polylogueConversationTimeline["chatgpt:conv-123"]?.[0]).toMatchObject({
+      event: "held_with_reason",
+      reason: "auto_capture_missing",
+      detail: "background_capture_throttled",
+    }));
+  });
+
   it("refreshes receiver status for supported pages without a conversation id", async () => {
     expect(updatedListener).toBeTypeOf("function");
     tabs = [{ id: 42, url: "https://chatgpt.com/", title: "ChatGPT" }];
