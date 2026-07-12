@@ -187,14 +187,21 @@ def _socket_peer_disconnected(connection: object | None) -> bool:
     return bool(data == b"")
 
 
-def _web_privacy_safe_projection(payload: object, archive_root: Path | None) -> object:
+def _web_privacy_safe_projection(payload: object, *archive_roots: Path | None) -> object:
     """Drop archive identity and redact configured-root text from web payloads.
 
     CLI/operator DTOs intentionally retain diagnostic paths. The browser
     projection is a separate public boundary, including free-form caveats and
     serialized error details where a path could otherwise reappear.
     """
-    roots = () if archive_root is None else tuple({str(archive_root), str(archive_root.resolve())})
+    roots = tuple(
+        {
+            root_text
+            for archive_root in archive_roots
+            if archive_root is not None
+            for root_text in (str(archive_root), str(archive_root.resolve()))
+        }
+    )
 
     def project(value: object) -> object:
         if isinstance(value, Mapping):
@@ -2148,7 +2155,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "recent": [self._archive_summary_payload(summary) for summary in recent],
             "recent_limit": 6,
         }
-        self._send_json(HTTPStatus.OK, overview)
+        from polylogue.paths import archive_root as configured_archive_root
+
+        self._send_json(
+            HTTPStatus.OK,
+            _web_privacy_safe_projection(overview, archive_root, configured_archive_root()),
+        )
 
     @daemon_safe_handler
     def _handle_dev_loop(self) -> None:

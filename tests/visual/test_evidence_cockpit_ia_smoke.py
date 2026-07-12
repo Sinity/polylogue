@@ -376,6 +376,36 @@ console.log(JSON.stringify({{html: renderEvidenceStrip({{id: 's1'}})}}));
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_evidence_strip_uses_bounded_lineage_refs(tmp_path: Path) -> None:
+    """The summary route's capped lineage refs are rendered directly in the
+    header; deleting that consumption must fail without relying on a broad
+    topology fetch."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, _EVIDENCE_STRIP_FUNCS)
+    harness = f"""
+{_DOM_HARNESS_PRELUDE}
+var state = {{
+  evidenceSummaries: {{'s1': {{tool_calls: 0, outcomes: {{}}, cost: {{}}, lineage_refs: [
+    {{session_id: 'parent', kind: 'continuation', status: 'resolved'}},
+    {{session_id: 'sibling', kind: 'fork', status: 'resolved'}}
+  ]}}}},
+  insightsPanels: {{}}, costPanels: {{}}, lineage: {{}}
+}};
+{functions_src}
+console.log(JSON.stringify({{html: renderEvidenceStrip({{id: 's1'}})}}));
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    html = json.loads(proc.stdout)["html"]
+
+    assert "2 lineage refs" in html
+    assert "Bounded structural lineage references" in html
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
 @pytest.mark.parametrize("status", ["401", "409", "503"])
 def test_evidence_strip_surfaces_failed_aggregate_and_retries(tmp_path: Path, status: str) -> None:
     """A failed evidence aggregate must retain its HTTP problem details and

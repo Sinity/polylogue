@@ -2263,15 +2263,29 @@ class TestReaderAssertionEndpoint:
         symlink_root = archive_root.parent / "web-visible-archive"
         symlink_root.symlink_to(archive_root, target_is_directory=True)
         monkeypatch.setattr("polylogue.paths.archive_root", lambda: symlink_root)
+        monkeypatch.setattr(
+            "polylogue.daemon.http.get_status_snapshot_payload",
+            lambda: {
+                "component_readiness": {},
+                "status_snapshot": {
+                    "state": "stale",
+                    "captured_at": None,
+                    "age_s": 91,
+                    "refresh_error": f"could not refresh {symlink_root} (resolved {archive_root})",
+                },
+            },
+        )
         with _running_server(workspace_env, seeded=True) as (_, base_url):
+            overview = _get_json(base_url, "/api/overview")
             (archive_root / "index.db").unlink()
             provider = _get_json(base_url, "/api/provider-usage")
             debt = _get_json(base_url, "/api/archive-debt?kind=archive-tier")
 
-        text = json.dumps({"provider": provider, "debt": debt})
+        text = json.dumps({"provider": provider, "debt": debt, "overview": overview})
         assert "archive_root" not in text
         assert str(symlink_root) not in text
         assert str(archive_root) not in text
+        assert "[archive]" in text
 
     def test_assertions_endpoint_reads_shared_assertion_claims(self, workspace_env: dict[str, Path]) -> None:
         _seed_assertion_claims(workspace_env)

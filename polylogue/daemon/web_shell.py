@@ -2247,12 +2247,10 @@ function evidenceStripToolCounts(insightsBody) {
 }
 
 // Session evidence strip (session-as-work-not-chat redesign): a compact
-// summary of tool activity and structural outcomes rendered above the
-// transcript, sourced from the same /api/insights/sessions/{id} envelope
-// already used by the Insights inspector tab (kind=timeline carries the
-// keystone tool_result_is_error/exit_code-derived event.inference.kind --
-// command_succeeded/command_failed/test_passed/test_failed -- computed in
-// insights/transforms.py). No new API surface; this is presentation order.
+// summary of tool activity, structural outcomes, cost, and capped lineage
+// refs rendered above the transcript. The live reader consumes the bounded
+// /api/sessions/{id}/evidence-summary projection; the Insights timeline
+// adapter below exists only for isolated legacy renderer harnesses.
 function renderEvidenceStrip(c) {
   if (!c || !c.id) return '';
   var data = state.evidenceSummaries && state.evidenceSummaries[c.id];
@@ -2292,6 +2290,11 @@ function renderEvidenceStrip(c) {
   var cost = data.cost || {};
   if (cost.total_usd !== undefined && cost.total_usd !== null) {
     chips.push('<span class="chip ' + esc(cost.confidence_tag || 'q-unavailable') + '" title="Session cost">' + esc(formatUsd(cost.total_usd)) + '</span>');
+  }
+  var lineageRefs = Array.isArray(data.lineage_refs) ? data.lineage_refs : [];
+  if (lineageRefs.length) {
+    chips.push('<span class="chip q-inferred" title="Bounded structural lineage references">'
+      + esc(String(lineageRefs.length)) + ' lineage ref' + (lineageRefs.length === 1 ? '' : 's') + '</span>');
   }
   var branchChip = renderTopologyBranchChip(c);
   if (branchChip) chips.push(branchChip);
