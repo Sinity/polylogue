@@ -938,6 +938,57 @@ class TestBooleanQueryExpression:
         with pytest.raises(ExpressionCompileError, match="unsupported pipeline stage"):
             parse_unit_source_expression("sessions where repo:polylogue | messages where role:assistant | sample 3")
 
+    def test_pipeline_sessions_count_names_the_unsupported_shape(self) -> None:
+        """`sessions where ... | count` (polylogue-9srm): sessions has no terminal
+        row/aggregate lowerer of its own, so this must fail with an error that
+        names `count` specifically and points at the working alternative
+        (`find ... then analyze --count`), not the generic
+        "must be an executable `<unit>s where ...` query" message.
+        """
+
+        with pytest.raises(ExpressionCompileError) as exc_info:
+            parse_unit_source_expression("sessions where repo:polylogue | count")
+
+        message = str(exc_info.value)
+        assert "`count` cannot follow `sessions where ...` directly" in message
+        assert "analyze --count" in message
+        assert "actions/blocks" in message  # supported terminal units are named
+
+    def test_pipeline_sessions_group_by_names_the_unsupported_shape(self) -> None:
+        """Same as above for `group by` directly on `sessions where ...`
+        (polylogue-9srm): previously raised the identical generic message even
+        though `group by` (not the missing terminal stage) is the actual
+        problem.
+        """
+
+        with pytest.raises(ExpressionCompileError) as exc_info:
+            parse_unit_source_expression("sessions where origin:codex-session | group by origin | count")
+
+        message = str(exc_info.value)
+        assert "`group by` cannot follow `sessions where ...` directly" in message
+        assert "analyze --count" in message
+
+    @pytest.mark.parametrize("stage", ["sort by time", "limit 10", "offset 5"])
+    def test_pipeline_sessions_other_terminal_keywords_name_the_unsupported_shape(self, stage: str) -> None:
+        with pytest.raises(ExpressionCompileError) as exc_info:
+            parse_unit_source_expression(f"sessions where repo:polylogue | {stage}")
+
+        message = str(exc_info.value)
+        assert "cannot follow `sessions where ...` directly" in message
+
+    def test_pipeline_sessions_unrecognized_second_stage_keeps_generic_message(self) -> None:
+        """A second stage that isn't a `<unit>s where ...` query AND doesn't
+        look like a known terminal pipeline keyword still falls back to the
+        original generic message (now naming supported terminal units too).
+        """
+
+        with pytest.raises(ExpressionCompileError) as exc_info:
+            parse_unit_source_expression("sessions where repo:polylogue | not a real stage")
+
+        message = str(exc_info.value)
+        assert "must be an executable `<unit>s where ...` query" in message
+        assert "cannot follow `sessions where ...` directly" not in message
+
     def test_pipeline_accepts_sort_by_time_on_sql_run_rows(self) -> None:
         source = parse_unit_source_expression(
             "sessions where repo:polylogue | runs where status:completed | sort by time desc"

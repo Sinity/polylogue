@@ -119,6 +119,7 @@ from polylogue.archive.query.metadata import (
     query_unit_field_names,
     structural_query_fields,
     structural_query_units,
+    terminal_query_source_list,
     terminal_query_source_pairs,
     terminal_query_unit,
 )
@@ -1966,6 +1967,32 @@ def _parse_plain_unit_source_expression(expression: str) -> QueryUnitSource | No
     return QueryUnitSource(unit=unit, predicate=bound)
 
 
+#: Shape-only prefixes for terminal pipeline stage keywords (``sort by``,
+#: ``group by``, ``limit``, ``offset``). ``count`` has no trailing argument so
+#: it is matched by exact equality instead. Used only to *recognize* that a
+#: stage has the shape of a terminal pipeline action -- never to validate its
+#: contents, so this never raises.
+_PIPELINE_STAGE_KEYWORD_PREFIXES: tuple[str, ...] = ("sort by ", "group by ", "limit ", "offset ")
+
+
+def _pipeline_stage_keyword(stage: str) -> str | None:
+    """Return the terminal pipeline stage keyword ``stage`` looks like, if any.
+
+    Distinguishes "this stage has the shape of `count`/`group by`/`sort by`/
+    `limit`/`offset` but was misapplied" from "this stage is unrecognized
+    entirely", so callers can raise a specific, actionable error instead of a
+    generic one for the former.
+    """
+
+    normalized = " ".join(stage.split()).lower()
+    if normalized == "count":
+        return "count"
+    for prefix in _PIPELINE_STAGE_KEYWORD_PREFIXES:
+        if normalized.startswith(prefix):
+            return prefix.strip()
+    return None
+
+
 def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
     stages = _split_pipeline_stages(expression)
     if not stages:
@@ -1979,8 +2006,21 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
         session_predicate = _session_source_predicate(first_stage)
         terminal_source = _parse_plain_unit_source_expression(second_stage)
         if terminal_source is None:
+            keyword = _pipeline_stage_keyword(second_stage)
+            if keyword is not None:
+                raise ExpressionCompileError(
+                    f"pipeline `{keyword}` cannot follow `sessions where ...` directly; "
+                    "`sessions` has no terminal row/aggregate lowerer of its own, only a session-scoping "
+                    "stage. To count matching sessions, use `find <predicate> then analyze --count` instead "
+                    "of a pipeline `| count`. To count/group/sort/limit rows of a specific terminal unit "
+                    "scoped to these sessions, pipe into an executable `<unit>s where ...` terminal stage "
+                    "first, e.g. `sessions where ... | actions where ... | group by FIELD | count`. "
+                    f"Supported terminal units: {terminal_query_source_list()}.",
+                    field=None,
+                )
             raise ExpressionCompileError(
-                "pipeline terminal stage must be an executable `<unit>s where ...` query",
+                "pipeline terminal stage must be an executable `<unit>s where ...` query "
+                f"(got {second_stage!r}); supported terminal units: {terminal_query_source_list()}.",
                 field=None,
             )
         scoped_session_predicate = _bind_scoped_session_predicate(session_predicate, terminal_unit=terminal_source.unit)
