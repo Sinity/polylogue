@@ -5,7 +5,7 @@
 # command validation, SSRF prevention, HTML sanitization, schema
 # privacy, and token-store security.
 #
-# Updated 2026-04-29 from realized codebase state.
+# Updated 2026-07-12 from realized codebase state.
 
 description: >
   Security and privacy verification surface for polylogue.
@@ -13,7 +13,7 @@ description: >
 
 areas:
   xss_prevention:
-    description: Cross-site scripting defense in HTML rendering
+    description: Cross-site scripting defense in rendered HTML and the daemon web shell
     implemented: true
     controls:
       - jinja2_autoescape: Jinja2 template autoescaping is active
@@ -24,12 +24,22 @@ areas:
       - regex_defense_in_depth: >
           _SCRIPT_RE tolerates whitespace and junk-attributes in
           closing tags (browser-compatible bypass defense)
+      - web_shell_context_escaping: >
+          The web shell distinguishes HTML text, HTML attributes, and
+          JavaScript strings nested in event-handler attributes. escJsAttr()
+          escapes the JavaScript string before HTML-attribute escaping, while
+          attachment and paste-library innerHTML renderers escape every
+          captured-content field at its sink.
     test_coverage:
-      location: tests/unit/security/ (indirect, via snapshot rendering)
+      location: >
+        tests/unit/rendering/test_html_sanitizer_security.py and
+        tests/unit/daemon/test_web_shell_xss_escaping.py
       hypothesis: false
     notes: >
-      Regex sanitization is defense-in-depth atop Jinja2 autoescape.
-      No dedicated XSS test file. No bleach/HTML-parser dependency.
+      The HTML sanitizer is defense-in-depth atop Jinja2 autoescape. The
+      web-shell suite executes the shipped escaping helpers through Node when
+      available and checks every known JS-string and innerHTML sink, so this is
+      dedicated regression coverage rather than snapshot-only coverage.
 
   file_permissions:
     description: File permission controls on token store and data files
@@ -44,8 +54,29 @@ areas:
       hypothesis: false
     notes: >
       Token store permissions were hardened in commit 3796914
-      (0644 -> 0600). Crawl-source file permissions not under
-      automated verification.
+      (0644 -> 0600). Polylogue has no crawl-source implementation or
+      crawl-owned file artifacts in the current source tree; a crawler must
+      add its own permission contract and coverage when introduced.
+
+  secrets_detection:
+    description: Secret-candidate detection and safe handling of captured content
+    implemented: true
+    controls:
+      - log_secret_guard: >
+          The repository-wide AST guard rejects logger/print calls that
+          interpolate known secret-bearing variable names or credential-shaped
+          literal prefixes.
+      - candidate_only_intake: >
+          Content secret scanning is not implemented yet. polylogue-27m owns
+          a candidate-only scanner that must retain span/evidence references
+          without persisting or logging the matched secret value.
+    test_coverage:
+      location: tests/unit/security/test_no_secret_leak_in_logs.py
+      hypothesis: false
+    notes: >
+      The existing test protects logging boundaries only; it is not evidence
+      that captured-content secret scanning exists. The remaining scanner gap
+      is explicitly tracked by the owning Beads task.
 
   redaction:
     description: PII/private-content redaction in schema inference
@@ -138,30 +169,12 @@ areas:
       on the repo; see the comment block in dep-audit.yml.
 
 coverage_gaps:
-   - id: security.xss-prevention
-     area: xss_prevention
-     gap: No dedicated XSS test file; relies on snapshot rendering
-     owner: security-privacy
-     severity: major
-     declared_at: "2026-05-02"
-     review_after: "2026-08-01"
-     issue: 590
-     next_evidence: pytest -q tests/unit/security
-   - id: security.file-permissions
-     area: file_permissions
-     gap: Crawl-source file permissions not verified
-     owner: security-privacy
-     severity: major
-     declared_at: "2026-05-02"
-     review_after: "2026-08-01"
-     issue: 590
-     next_evidence: pytest -q tests/unit/security
    - id: security.secrets-detection
      area: secrets_detection
-     gap: No automated secrets scanning in CI
+     gap: Captured-content secrets have no candidate-only scanner or excision handoff
      owner: security-privacy
      severity: major
-     declared_at: "2026-05-02"
-     review_after: "2026-08-01"
-     issue: 590
-     next_evidence: devtools verify --quick
+     declared_at: "2026-07-12"
+     review_after: "2026-08-12"
+     bead: polylogue-27m
+     next_evidence: devtools test tests/unit/security/test_no_secret_leak_in_logs.py
