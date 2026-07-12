@@ -62,7 +62,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Literal, Protocol, get_args
+from typing import Literal, Protocol, TypeGuard, get_args
 
 TemporalSource = Literal[
     "provider_ts",
@@ -134,7 +134,9 @@ def time_confidence_for_source(source: str | None) -> TimeConfidence:
     fabricating a timestamp.
     """
 
-    return _TIME_CONFIDENCE_BY_SOURCE.get(source, "unknown")
+    if source is None or not is_valid_temporal_source(source):
+        return "unknown"
+    return _TIME_CONFIDENCE_BY_SOURCE[source]
 
 
 def time_confidence_for_sources(sources: Sequence[TemporalSource]) -> TimeConfidence:
@@ -265,7 +267,7 @@ def audit_temporal_source_leaf_callers(package_root: str) -> list[str]:
     return violations
 
 
-def is_valid_temporal_source(value: str) -> bool:
+def is_valid_temporal_source(value: str) -> TypeGuard[TemporalSource]:
     """Return True when *value* is a recognized temporal source token."""
 
     return value in TEMPORAL_SOURCE_VALUES
