@@ -332,7 +332,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 3264
+    loc: 3270
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -437,7 +437,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/unit_results.py
-    loc: 381
+    loc: 543
     target: polylogue/archive/query/unit_results.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -1599,6 +1599,10 @@ files:
   - path: polylogue/insights/export_bundles.py
     loc: 333
     target: polylogue/insights/export_bundles.py
+    owner: stable
+  - path: polylogue/insights/fable_packet.py
+    loc: 204
+    target: polylogue/insights/fable_packet.py
     owner: stable
   - path: polylogue/insights/fallback.py
     loc: 72
