@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -40,7 +41,7 @@ def test_multi_field_group_count_reports_proportions_and_denominator(workspace_e
         {"kind": "terminal", "action": "count"},
     )
     assert envelope.pipeline is not None
-    result = envelope.pipeline["result"]
+    result = cast(dict[str, object], envelope.pipeline["result"])
     assert {key: result[key] for key in result if key != "groups"} == {
         "group_by": ["role", "session.origin"],
         "aggregate": ["count", "proportion"],
@@ -49,9 +50,15 @@ def test_multi_field_group_count_reports_proportions_and_denominator(workspace_e
         "missing_counts": {"role": 0, "session.origin": 0},
         "unknown_counts": {"role": 0, "session.origin": 0},
     }
+    groups = cast(list[dict[str, object]], result["groups"])
     assert {
-        (item["group"]["role"], item["group"]["session.origin"], item["count"], item["proportion"])
-        for item in result["groups"]
+        (
+            cast(dict[str, str], item["group"])["role"],
+            cast(dict[str, str], item["group"])["session.origin"],
+            item["count"],
+            item["proportion"],
+        )
+        for item in groups
     } == {
         ("assistant", "claude-code-session", 1, 1 / 3),
         ("assistant", "codex-session", 1, 1 / 3),
