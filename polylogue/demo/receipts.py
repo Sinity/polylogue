@@ -18,10 +18,22 @@ _EXPECTED_CLAIM = "All tests pass. The clock fix is complete."
 _COMPLETION_CLAIM_SAMPLE_SIZE = 250
 _COMPLETION_CLAIM_SEED = "polylogue-demo-receipts-v1"
 _COMPLETION_CLAIM_QUERY = (
-    "assistant text blocks matching the declared completion lexicon: "
-    "all tests pass | tests pass | complete | completed | finished"
+    "assistant text blocks matching the declared high-specificity completion phrases: "
+    "all tests pass | tests are passing | implementation is complete | task is complete | "
+    "fix is complete | completed successfully"
 )
-_COMPLETION_MARKERS = ("all tests pass", "tests pass", "complete", "completed", "finished")
+_COMPLETION_FTS_QUERY = (
+    '"all tests pass" OR "tests are passing" OR "implementation is complete" OR '
+    '"task is complete" OR "fix is complete" OR "completed successfully"'
+)
+_COMPLETION_MARKERS = (
+    "all tests pass",
+    "tests are passing",
+    "implementation is complete",
+    "task is complete",
+    "fix is complete",
+    "completed successfully",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,14 +270,14 @@ def inspect_completion_claims(
             JOIN sessions AS s ON s.session_id = m.session_id
             WHERE b.block_type = 'text'
               AND m.role = 'assistant'
-              AND (
-                  LOWER(b.text) LIKE '%all tests pass%'
-                  OR LOWER(b.text) LIKE '%tests pass%'
-                  OR LOWER(b.text) LIKE '%complete%'
-                  OR LOWER(b.text) LIKE '%finished%'
+              AND b.rowid IN (
+                  SELECT rowid
+                  FROM messages_fts
+                  WHERE messages_fts MATCH ?
               )
             ORDER BY b.block_id
-            """
+            """,
+            (_COMPLETION_FTS_QUERY,),
         ).fetchall()
         candidates = [
             CohortCandidate(
