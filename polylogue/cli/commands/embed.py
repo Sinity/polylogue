@@ -22,7 +22,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 import click
 
@@ -265,6 +265,62 @@ def _write_embedding_section(*, enabled: bool, voyage_api_key: str | None) -> Pa
 @click.group("embed")
 def embed_command() -> None:
     """Manage the embedding pipeline (activation, preflight, backfill)."""
+
+
+@embed_command.command("resolve-failure")
+@click.argument("failure_id")
+@click.option("--action", "resolution", type=click.Choice(["acknowledge", "requeue", "supersede"]), required=True)
+@click.option("--note", default=None, help="Durable operator rationale for the resolution.")
+@click.option("--superseded-by", default=None, help="Replacement failure or remediation reference for supersession.")
+@click.option("--yes", is_flag=True, help="Confirm this lifecycle mutation.")
+@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text")
+@click.pass_obj
+def resolve_failure_subcommand(
+    env: AppEnv,
+    failure_id: str,
+    resolution: str,
+    note: str | None,
+    superseded_by: str | None,
+    yes: bool,
+    output_format: str,
+) -> None:
+    """Acknowledge, supersede, or requeue one active embedding failure."""
+
+    if not yes and not click.confirm(f"Apply {resolution} to embedding failure {failure_id}?", default=False):
+        raise click.Abort()
+    index_db = _active_archive_index_path(env.config.db_path)
+    if index_db is None:
+        raise click.ClickException("index.db not found")
+    embeddings_db = index_db.with_name("embeddings.db")
+    if not embeddings_db.exists():
+        raise click.ClickException("embeddings.db not found")
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
+
+    try:
+        with sqlite3.connect(embeddings_db, timeout=30.0) as conn:
+            failure = resolve_embedding_failure(
+                conn,
+                failure_id=failure_id,
+                action=cast(Literal["acknowledge", "requeue", "supersede"], resolution),
+                note=note,
+                superseded_by=superseded_by,
+            )
+    except KeyError as exc:
+        raise click.ClickException(f"active embedding failure not found: {failure_id}") from exc
+    payload = {
+        "failure_id": failure.failure_id,
+        "session_id": failure.session_id,
+        "lifecycle_state": failure.lifecycle_state,
+        "resolution_action": failure.resolution_action,
+        "resolution_note": failure.resolution_note,
+        "superseded_by": failure.superseded_by,
+    }
+    if output_format == "json":
+        click.echo(json.dumps(payload, sort_keys=True))
+    else:
+        click.echo(
+            f"Resolved embedding failure {failure.failure_id}: {failure.lifecycle_state} ({failure.resolution_action})"
+        )
 
 
 def _check_sqlite_vec_available() -> tuple[bool, str | None]:

@@ -7,6 +7,7 @@ and render in their own dialect.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -36,6 +37,7 @@ DETAIL_QUERY_TIMEOUT_MS = 2_000
 DETAIL_CANDIDATE_PROSE_TIMEOUT_MS = 10_000
 METADATA_SUMMARY_TIMEOUT_MS = 5_000
 STATUS_READ_BUSY_TIMEOUT_MS = 1_000
+EMBEDDING_FAILURE_DETAIL_LIMIT = 25
 
 
 class _HasConfig(Protocol):
@@ -93,6 +95,22 @@ class EmbeddingNextActionPayload(TypedDict):
     reason: str
 
 
+class EmbeddingFailureDetailPayload(TypedDict):
+    failure_id: str
+    session_id: str
+    origin: str
+    message_refs: list[str]
+    provider: str
+    model: str
+    error_class: str
+    error_message: str
+    retryable: bool
+    lifecycle_state: str
+    created_at: str | None
+    updated_at: str | None
+    resolution_action: str | None
+
+
 class EmbeddingStatusPayload(TypedDict):
     config_enabled: bool
     has_voyage_api_key: bool
@@ -122,6 +140,7 @@ class EmbeddingStatusPayload(TypedDict):
     embedding_dimensions: dict[int, int]
     retrieval_bands: dict[str, dict[str, object]]
     failure_count: int
+    failure_details: list[EmbeddingFailureDetailPayload]
     total_estimated_cost_usd: float | None
     latest_catchup_run: EmbeddingCatchupRunPayload | None
     latest_material_catchup_run: EmbeddingCatchupRunPayload | None
@@ -246,6 +265,57 @@ def _rows_with_timeout(
     finally:
         conn.set_progress_handler(None, 0)
     return list(rows)
+
+
+def _active_failure_details(
+    conn: sqlite3.Connection,
+    failure_table: str,
+    *,
+    include_detail: bool,
+) -> list[EmbeddingFailureDetailPayload]:
+    """Return bounded active lifecycle rows, never historical acknowledgements."""
+
+    if not include_detail or not failure_table:
+        return []
+    rows = _rows_with_timeout(
+        conn,
+        f"""
+        SELECT failure_id, session_id, origin, message_refs_json, provider, model, error_class, error_message,
+               retryable, lifecycle_state, created_at_ms, updated_at_ms, resolution_action
+        FROM {failure_table}
+        WHERE lifecycle_state IN ('retryable', 'terminal')
+        ORDER BY updated_at_ms DESC, failure_id ASC
+        LIMIT ?
+        """,
+        timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+        params=(EMBEDDING_FAILURE_DETAIL_LIMIT,),
+    )
+    if rows is None:
+        return []
+    details: list[EmbeddingFailureDetailPayload] = []
+    for row in rows:
+        try:
+            message_refs = [str(item) for item in json.loads(str(row[3]))]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            message_refs = []
+        details.append(
+            {
+                "failure_id": str(row[0]),
+                "session_id": str(row[1]),
+                "origin": str(row[2]),
+                "message_refs": message_refs,
+                "provider": str(row[4]),
+                "model": str(row[5]),
+                "error_class": str(row[6]),
+                "error_message": str(row[7]),
+                "retryable": bool(row[8]),
+                "lifecycle_state": str(row[9]),
+                "created_at": _iso_from_epoch_ms(row[10]),
+                "updated_at": _iso_from_epoch_ms(row[11]),
+                "resolution_action": None if row[12] is None else str(row[12]),
+            }
+        )
+    return details
 
 
 def _uniform_embedding_metadata_counts(
@@ -551,6 +621,7 @@ def _payload_from_stats(
     latest_catchup_run: EmbeddingCatchupRunPayload | None,
     latest_material_catchup_run: EmbeddingCatchupRunPayload | None,
     pending_messages_exact: bool,
+    failure_details: list[EmbeddingFailureDetailPayload] | None = None,
 ) -> EmbeddingStatusPayload:
     embedded_sessions = stats.embedded_sessions
     pending_sessions = stats.pending_sessions
@@ -604,6 +675,7 @@ def _payload_from_stats(
         "embedding_dimensions": stats.dimension_counts,
         "retrieval_bands": stats.retrieval_bands,
         "failure_count": stats.failure_count,
+        "failure_details": failure_details or [],
         "total_estimated_cost_usd": stats.total_estimated_cost_usd,
         "latest_catchup_run": latest_catchup_run,
         "latest_material_catchup_run": latest_material_catchup_run,
@@ -640,10 +712,12 @@ def _archive_embedding_status_payload(
             status_table = _attached_table_name(conn, "embeddings", "embedding_status")
             vector_table = _attached_table_name(conn, "embeddings", "message_embeddings")
             meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
+            failure_table = _attached_table_name(conn, "embeddings", "embedding_failures")
         else:
             status_table = ""
             vector_table = ""
             meta_table = ""
+            failure_table = ""
         has_messages = _table_exists(conn, "messages")
         has_status = bool(status_table)
         has_meta = bool(meta_table)
@@ -688,16 +762,24 @@ def _archive_embedding_status_payload(
         failure_count = (
             _scalar_int(
                 conn,
-                f"""
+                f"SELECT COUNT(*) FROM {failure_table} WHERE lifecycle_state IN ('retryable', 'terminal')",
+            )
+            if failure_table
+            else (
+                _scalar_int(
+                    conn,
+                    f"""
                 SELECT COUNT(*)
                 FROM {status_table} AS e
                 JOIN sessions AS s ON s.session_id = e.session_id
                 WHERE e.error_message IS NOT NULL
                 """,
+                )
+                if has_status
+                else 0
             )
-            if has_status
-            else 0
         )
+        failure_details = _active_failure_details(conn, failure_table, include_detail=include_detail)
         pending_messages = 0
         candidate_prose_messages: int | None = None
         candidate_prose_messages_exact = False
@@ -869,6 +951,7 @@ def _archive_embedding_status_payload(
         latest_catchup_run=latest_catchup_run,
         latest_material_catchup_run=latest_material_catchup_run,
         pending_messages_exact=pending_messages_exact,
+        failure_details=failure_details,
     )
 
 

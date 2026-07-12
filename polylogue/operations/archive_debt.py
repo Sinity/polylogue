@@ -945,6 +945,7 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
     pending_messages_exact = _bool_value(info.get("embedding_pending_message_count_exact"))
     stale = _int_value(info.get("embedding_stale_count")) or 0
     failures = _int_value(info.get("embedding_failure_count")) or 0
+    failure_details = info.get("embedding_failure_details")
 
     if config_enabled and not has_key:
         rows.append(
@@ -966,6 +967,13 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
             )
         )
     if failures:
+        terminal_failures = 0
+        if isinstance(failure_details, list):
+            terminal_failures = sum(
+                1
+                for detail in failure_details
+                if isinstance(detail, dict) and detail.get("lifecycle_state") == "terminal"
+            )
         rows.append(
             ArchiveDebtRowPayload(
                 debt_ref="debt:embedding:catchup:failures",
@@ -975,13 +983,18 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
                 severity="critical",
                 status="actionable" if enabled else "blocked",
                 owner="daemon",
-                summary=f"{failures} embedding catch-up failure(s) recorded",
+                summary=f"{failures} active embedding failure(s) recorded",
                 evidence_refs=(f"archive-tier:{index_db.with_name('embeddings.db')}",),
                 actions=(
                     ArchiveDebtActionPayload(
-                        label="Inspect embedding status",
+                        label="Inspect active embedding failures",
                         command=("polylogue", "ops", "embed", "status", "--detail"),
                     ),
+                ),
+                caveats=(
+                    (f"{terminal_failures} terminal failure(s) require explicit acknowledge, supersede, or requeue.",)
+                    if terminal_failures
+                    else ("Retryable failures remain eligible for automatic catch-up.",)
                 ),
             )
         )
