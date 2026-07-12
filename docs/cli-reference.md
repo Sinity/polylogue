@@ -184,6 +184,9 @@ Commands:
     ops     Run operational archive and daemon commands.
     `polylogue status` is the root shortcut for `polylogue ops status`; deeper
     maintenance stays under `ops`.
+
+  Other commands:
+    annotations  Import typed annotation batches.
 ```
 
 ## Analyze Verb

@@ -22,6 +22,7 @@ EXPECTED_TOOL_NAMES = {
     "build_context_image",
     "blackboard_list",
     "blackboard_post",
+    "import_annotation_batch",
     "list_assertion_claims",
     "neighbor_candidates",
     "stats",

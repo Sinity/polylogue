@@ -114,6 +114,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "tool_call_latency_distribution": "single_object",
     "workflow_shape_distribution": "single_object",
     # ------- mutation tools -------
+    "import_annotation_batch": "single_object",
     "add_tag": "operation_result",
     "add_mark": "operation_result",
     "remove_tag": "operation_result",

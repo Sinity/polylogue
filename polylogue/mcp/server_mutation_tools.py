@@ -7,6 +7,13 @@ from contextlib import suppress
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
+from polylogue.annotations.importer import (
+    AnnotationBatchImportError,
+    AnnotationBatchImportRequest,
+)
+from polylogue.annotations.importer import (
+    import_annotation_batch as run_annotation_batch_import,
+)
 from polylogue.core.user_state_targets import MARK_TYPE_NAMES, TARGET_SESSION, is_mark_type_supported
 from polylogue.mcp.archive_support import blackboard_note_payload
 from polylogue.mcp.payloads import (
@@ -136,6 +143,42 @@ def _annotation_payload(row: dict[str, str]) -> MCPUserAnnotationPayload:
 
 
 def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+    @mcp.tool()
+    async def import_annotation_batch(
+        jsonl: str,
+        batch_id: str,
+        schema_id: str,
+        schema_version: int,
+        target_ref: str,
+        source_result_ref: str,
+        actor_ref: str,
+        model_ref: str,
+        prompt_ref: str,
+        metadata: dict[str, object] | None = None,
+    ) -> str:
+        """Import bounded JSONL labels as provenance-stamped candidates."""
+
+        async def run() -> str:
+            try:
+                request = AnnotationBatchImportRequest(
+                    jsonl=jsonl,
+                    batch_id=batch_id,
+                    schema_id=schema_id,
+                    schema_version=schema_version,
+                    target_ref=target_ref,
+                    source_result_ref=source_result_ref,
+                    actor_ref=actor_ref,
+                    model_ref=model_ref,
+                    prompt_ref=prompt_ref,
+                    metadata={} if metadata is None else metadata,
+                )
+                result = await run_annotation_batch_import(hooks.get_polylogue(), request)
+            except (AnnotationBatchImportError, ValueError) as exc:
+                return hooks.error_json(str(exc), code="invalid_annotation_batch")
+            return hooks.json_payload(result)
+
+        return await hooks.async_safe_call("import_annotation_batch", run)
+
     @mcp.tool()
     async def blackboard_post(
         kind: str,
