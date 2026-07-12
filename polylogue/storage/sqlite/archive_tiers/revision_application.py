@@ -32,6 +32,7 @@ class RevisionApplicationReceipt:
     predecessor_raw_id: str | None = None
     append_end_offset: int | None = None
     detail: str = ""
+    fold_authorization: FullSnapshotFoldAuthorization | None = None
 
     @property
     def decision_id(self) -> str:
@@ -46,6 +47,48 @@ class RevisionApplicationReceipt:
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class FullSnapshotFoldAuthorization:
+    """One-shot authority for a cryptographically proven byte-chain fold.
+
+    This is deliberately an in-memory transaction capability, not a new
+    precedence rule.  It binds one incoming full receipt to the exact accepted
+    append head it proved, so it cannot authorize a later or different CAS.
+    """
+
+    logical_source_key: str
+    session_id: str
+    accepted_append_raw_id: str
+    accepted_append_source_revision: str
+    accepted_append_content_hash: bytes
+    frontier: int
+    full_raw_id: str
+    full_source_revision: str
+
+    def permits(self, existing_head: tuple[object, ...], receipt: RevisionApplicationReceipt) -> bool:
+        return (
+            tuple(existing_head[:6])
+            == (
+                self.session_id,
+                self.accepted_append_raw_id,
+                self.accepted_append_source_revision,
+                self.accepted_append_content_hash,
+                "byte",
+                self.frontier,
+            )
+            and receipt.logical_source_key == self.logical_source_key
+            and receipt.decision is ApplicationDecision.SELECTED_BASELINE
+            and receipt.session_id == self.session_id
+            and receipt.raw_id == self.full_raw_id
+            and receipt.accepted_raw_id == self.full_raw_id
+            and receipt.source_revision == self.full_source_revision
+            and receipt.accepted_source_revision == self.full_source_revision
+            and receipt.accepted_frontier_kind == "byte"
+            and receipt.accepted_frontier == self.frontier
+            and receipt.append_end_offset is None
+        )
 
 
 def assert_session_fts_exact_sync(conn: sqlite3.Connection, session_id: str) -> None:
@@ -197,7 +240,10 @@ def record_revision_application_sync(
                 receipt.accepted_frontier_kind,
                 receipt.accepted_frontier,
             )
-            if existing_semantics != accepted_semantics:
+            authorized_fold = receipt.fold_authorization is not None and receipt.fold_authorization.permits(
+                existing_head, receipt
+            )
+            if existing_semantics != accepted_semantics and not authorized_fold:
                 raise RuntimeError("raw revision CAS rejected a conflicting accepted head")
             if tuple(existing_head) == (
                 receipt.session_id,
@@ -246,6 +292,7 @@ def record_revision_application_sync(
 
 __all__ = [
     "RevisionApplicationReceipt",
+    "FullSnapshotFoldAuthorization",
     "assert_session_fts_exact_sync",
     "record_revision_application_sync",
 ]
