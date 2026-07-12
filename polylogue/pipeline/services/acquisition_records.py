@@ -66,10 +66,14 @@ def make_raw_record(
         raise ValueError("RawSessionData has neither blob_hash nor raw_bytes")
 
     acquired_at = datetime.now(timezone.utc).isoformat()
+    source_capture_mode = Provider.from_string(canonical_acquisition_provider(None, source_name=source_name))
     source_name = canonical_acquisition_provider(
         str(raw_data.provider_hint) if raw_data.provider_hint is not None else None,
         source_name=source_name,
     )
+    capture_mode = source_capture_mode
+    if capture_mode is Provider.UNKNOWN:
+        capture_mode = Provider.from_string(source_name)
     if source_name == "hermes":
         if blob_hash is None:
             blob_hash = raw_id
@@ -83,7 +87,7 @@ def make_raw_record(
         raw_id=raw_id,
         blob_hash=(blob_hash if source_name == "hermes" else None),
         blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
-        capture_mode=Provider.from_string(source_name),
+        capture_mode=capture_mode,
         source_name=source_name,
         source_path=raw_data.source_path,
         source_index=raw_data.source_index,

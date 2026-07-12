@@ -1458,6 +1458,7 @@ class ArchiveStore:
         self,
         *,
         provider: Provider,
+        capture_mode: Provider | None = None,
         payload: bytes,
         source_path: str,
         acquired_at_ms: int,
@@ -1476,7 +1477,7 @@ class ArchiveStore:
         return write_source_raw_session(
             self._ensure_source_conn(),
             origin=origin_from_provider(provider),
-            capture_mode=provider,
+            capture_mode=capture_mode or provider,
             source_path=source_path,
             source_index=source_index,
             payload=payload,
@@ -1491,6 +1492,7 @@ class ArchiveStore:
         self,
         *,
         provider: Provider,
+        capture_mode: Provider | None = None,
         blob_hash_hex: str,
         blob_size: int,
         source_path: str,
@@ -1506,7 +1508,7 @@ class ArchiveStore:
         return write_source_raw_session_blob_ref(
             self._ensure_source_conn(),
             origin=origin_from_provider(provider),
-            capture_mode=provider,
+            capture_mode=capture_mode or provider,
             source_path=source_path,
             source_index=source_index,
             blob_hash=bytes.fromhex(blob_hash_hex),

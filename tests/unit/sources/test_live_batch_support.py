@@ -861,6 +861,48 @@ def test_append_plan_defers_when_tail_has_no_complete_line(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_full_drive_capture_retains_acquisition_mode_after_gemini_detection(tmp_path: Path) -> None:
+    """A configured Drive source survives shape detection's GEMINI fallback."""
+    from polylogue.api import Polylogue
+
+    root = tmp_path / "drive"
+    root.mkdir()
+    path = root / "live-capture.json"
+    path.write_text(
+        json.dumps(
+            {
+                "id": "live-drive-capture",
+                "title": "Live Drive capture",
+                "chunkedPrompt": {
+                    "chunks": [
+                        {"id": "chunk-1", "role": "user", "text": "hello"},
+                        {"id": "chunk-2", "role": "model", "text": "hi"},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    archive = Polylogue(archive_root=tmp_path / "archive")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="drive", root=root, suffixes=(".json",)),),
+        cursor=CursorStore(archive.backend.db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    try:
+        metrics = await processor.ingest_files([path], emit_event=False)
+        with sqlite3.connect(archive.archive_root / "source.db") as conn:
+            capture_mode = conn.execute("SELECT capture_mode FROM raw_sessions").fetchone()
+
+        assert metrics.full_file_count == 1
+        assert capture_mode == (Provider.DRIVE.value,)
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_inbox_browser_capture_json_replacement_uses_full_ingest(tmp_path: Path) -> None:
     from polylogue.api import Polylogue
 
