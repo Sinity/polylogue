@@ -248,7 +248,11 @@ def _sqlite_backup_fidelity(sessions: list[ParsedSession]) -> HermesImportFideli
     }
 
     def source_capability(name: str) -> HermesFidelityCapability:
-        observed = sum(name in payload.get("session_capabilities", ()) for payload in identity_payloads)
+        observed = sum(
+            name in capabilities
+            for payload in identity_payloads
+            if isinstance((capabilities := payload.get("session_capabilities")), list)
+        )
         return _fidelity_capability(
             observed=observed,
             expected=total_sessions,
