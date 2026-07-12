@@ -1237,7 +1237,7 @@ def list_assertion_candidates(
 
     return list_assertion_claims(
         conn,
-        kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
+        kinds=ASSERTION_CANDIDATE_JUDGMENT_KINDS if kinds is None else kinds,
         target_ref=target_ref,
         statuses=(AssertionStatus.CANDIDATE,),
         limit=limit,
@@ -1250,6 +1250,21 @@ ASSERTION_CANDIDATE_REVIEW_STATUSES: tuple[AssertionStatus, ...] = (
     AssertionStatus.REJECTED,
     AssertionStatus.DEFERRED,
     AssertionStatus.SUPERSEDED,
+)
+
+# Candidate capture is broader than successor-context claims. Terminal notes
+# and corrections must be reviewable even though neither belongs in the normal
+# active-claim reader (which deliberately excludes ordinary overlays).
+ASSERTION_CANDIDATE_JUDGMENT_KINDS: tuple[AssertionKind, ...] = (
+    AssertionKind.DECISION,
+    AssertionKind.CAVEAT,
+    AssertionKind.BLOCKER,
+    AssertionKind.LESSON,
+    AssertionKind.RUN_STATE,
+    AssertionKind.TRANSFORM_CANDIDATE,
+    AssertionKind.PATHOLOGY,
+    AssertionKind.NOTE,
+    AssertionKind.CORRECTION,
 )
 
 
@@ -1271,7 +1286,7 @@ def list_assertion_candidate_reviews(
 
     candidates = list_assertion_claims(
         conn,
-        kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
+        kinds=ASSERTION_CANDIDATE_JUDGMENT_KINDS if kinds is None else kinds,
         target_ref=target_ref,
         statuses=statuses,
         limit=limit,
@@ -1734,6 +1749,7 @@ def count_assertion_claims(
 
 __all__ = [
     "ASSERTION_CLAIM_KINDS",
+    "ASSERTION_CANDIDATE_JUDGMENT_KINDS",
     "ASSERTION_CANDIDATE_REVIEW_STATUSES",
     "ASSERTION_DEFAULT_AUTHOR_KIND",
     "ASSERTION_DEFAULT_AUTHOR_REF",

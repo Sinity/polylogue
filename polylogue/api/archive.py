@@ -1151,6 +1151,75 @@ def _archive_judge_assertion_candidate(
         raise RuntimeError(f"failed to judge assertion candidate: {exc}") from exc
 
 
+def _archive_capture_assertion_candidate(
+    config: Config,
+    *,
+    body_text: str,
+    kind: AssertionKind,
+    refs: Sequence[str] = (),
+    scope_refs: Sequence[str] = (),
+    cwd: Path | None = None,
+) -> Any:
+    """Write one terminal-captured assertion through the user-tier gate."""
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+    normalized_body = body_text.strip()
+    if not normalized_body:
+        raise ValueError("note text cannot be empty")
+
+    assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
+    resolved_refs: list[str] = []
+    with ArchiveStore.open_existing(_active_archive_root(config), read_only=False) as archive:
+        for ref in refs:
+            if ref == "last":
+                summaries = archive.list_summaries(cwd_prefix=str(cwd or Path.cwd()), limit=1)
+                if not summaries:
+                    raise ValueError("--ref last found no archived session for the current working directory")
+                resolved_refs.append(f"session:{summaries[0].session_id}")
+                continue
+            parsed = parse_public_ref(ref)
+            if isinstance(parsed, ObjectRef) and parsed.kind == "session":
+                resolved_refs.append(f"session:{archive.resolve_session_id(parsed.object_id)}")
+            else:
+                resolved_refs.append(parsed.format())
+
+        normalized_scope_refs = [parse_public_ref(ref).format() for ref in scope_refs]
+        target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
+        user_db = archive.user_db_path
+
+    try:
+        conn = sqlite3.connect(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            envelope = upsert_assertion(
+                conn,
+                assertion_id=assertion_id,
+                target_ref=target_ref,
+                scope_ref=normalized_scope_refs[0] if normalized_scope_refs else None,
+                kind=kind,
+                key="terminal-note",
+                value={
+                    "capture_surface": "terminal",
+                    "scope_refs": normalized_scope_refs,
+                    "unanchored": not bool(resolved_refs),
+                },
+                body_text=normalized_body,
+                author_ref="user:local",
+                author_kind="user",
+                evidence_refs=tuple(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+                status=AssertionStatus.CANDIDATE,
+                context_policy={"inject": False, "promotion_required": True},
+            )
+            conn.commit()
+            return envelope
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to capture assertion candidate: {exc}") from exc
+
+
 def _archive_emit_pathology_assertions(
     config: Config,
     findings_by_session: Mapping[str, Sequence[Any]],
@@ -2350,6 +2419,29 @@ class PolylogueArchiveMixin:
             replacement_value=replacement_value,
         )
         return AssertionJudgmentResultPayload.from_envelope(result)
+
+    async def capture_assertion_candidate(
+        self,
+        *,
+        body_text: str,
+        kind: AssertionKind,
+        refs: Sequence[str] = (),
+        scope_refs: Sequence[str] = (),
+        cwd: Path | None = None,
+    ) -> AssertionClaimPayload:
+        """Capture a terminal assertion as a non-injected candidate for review."""
+
+        from polylogue.surfaces.payloads import AssertionClaimPayload
+
+        envelope = _archive_capture_assertion_candidate(
+            self.config,
+            body_text=body_text,
+            kind=kind,
+            refs=refs,
+            scope_refs=scope_refs,
+            cwd=cwd,
+        )
+        return AssertionClaimPayload.from_envelope(envelope)
 
     async def join_typed_annotations(
         self,
