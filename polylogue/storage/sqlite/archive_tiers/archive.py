@@ -1896,7 +1896,7 @@ class ArchiveStore:
             self._ensure_source_conn()
             .execute(
                 """
-            SELECT origin, lower(hex(blob_hash)), source_path, revision_kind
+            SELECT origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind
             FROM raw_sessions WHERE raw_id = ?
             """,
                 (raw_id,),
@@ -1906,10 +1906,10 @@ class ArchiveStore:
         if row is None:
             raise KeyError(raw_id)
         return (
-            provider_from_origin(Origin.from_string(str(row[0]))),
-            self._blob_publisher.read_all(str(row[1])),
-            str(row[2]),
-            RawRevisionKind(str(row[3])),
+            provider_from_origin(Origin.from_string(str(row[0])), family_hint=row[1]),
+            self._blob_publisher.read_all(str(row[2])),
+            str(row[3]),
+            RawRevisionKind(str(row[4])),
         )
 
     def unclassified_raw_revision_rows(self) -> tuple[tuple[str, int], ...]:
@@ -2966,7 +2966,7 @@ class ArchiveStore:
             )
             rows = source_conn.execute(
                 """
-                SELECT raw_id, origin, source_path, blob_size, acquired_at_ms,
+                SELECT raw_id, origin, capture_mode, source_path, blob_size, acquired_at_ms,
                        parsed_at_ms, validation_status
                 FROM raw_sessions
                 WHERE raw_id = ?
@@ -2980,7 +2980,9 @@ class ArchiveStore:
         return [
             {
                 "raw_id": str(row["raw_id"]),
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": provider_from_origin(
+                    Origin.from_string(str(row["origin"])), family_hint=row["capture_mode"]
+                ).value,
                 "source_path": str(row["source_path"]),
                 "blob_size": int(row["blob_size"] or 0),
                 "acquired_at": _iso_from_ms(row["acquired_at_ms"]),

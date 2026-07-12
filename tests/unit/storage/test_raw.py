@@ -189,6 +189,22 @@ class TestRawSessionStorage:
         assert recovered.capture_mode is Provider.DRIVE
         assert recovered.payload_provider is Provider.DRIVE
 
+    async def test_raw_session_state_preserves_capture_mode(self, backend: SQLiteBackend) -> None:
+        """Planning-state reads preserve the live-Drive fiber member."""
+        record = make_raw_session(
+            raw_id="drive-planning-state",
+            source_name="gemini",
+            source_path="/tmp/live-drive.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        ).model_copy(update={"capture_mode": Provider.DRIVE})
+        assert await backend.save_raw_session(record) is True
+
+        state = (await backend.get_raw_session_states([record.raw_id]))[record.raw_id]
+        assert state.source_name == Provider.DRIVE.value
+        assert state.payload_provider is Provider.DRIVE
+        assert state.validation_provider is Provider.DRIVE
+
     async def test_get_raw_session_not_found(self, backend: SQLiteBackend) -> None:
         """Retrieving non-existent raw session returns None."""
         result = await backend.get_raw_session("nonexistent")

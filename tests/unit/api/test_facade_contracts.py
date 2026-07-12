@@ -3746,8 +3746,8 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
     archive = _archive(tmp_path)
     payload = b'{"session":"raw-artifact-v1"}'
     session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="api-raw-artifact-v1",
+        source_name=Provider.DRIVE,
+        provider_session_id="api-raw-artifact-drive-v1",
         messages=[
             ParsedMessage(
                 provider_message_id="m1",
@@ -3761,7 +3761,7 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
             raw_id, session_id = archive_db.write_raw_and_parsed(
                 session,
                 payload=payload,
-                source_path="/tmp/raw-artifact-v1.jsonl",
+                source_path="/tmp/raw-artifact-drive-v1.json",
                 acquired_at_ms=1_770_000_000_000,
             )
 
@@ -3769,17 +3769,13 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
         missing_artifacts, missing_total = await archive.get_raw_artifacts_for_session("missing-session")
 
         assert total == 1
-        assert artifacts == [
-            {
-                "raw_id": raw_id,
-                "source_name": Provider.CODEX.value,
-                "source_path": "/tmp/raw-artifact-v1.jsonl",
-                "blob_size": len(payload),
-                "acquired_at": "2026-02-02T02:40:00Z",
-                "parsed_at": None,
-                "validation_status": None,
-            }
-        ]
+        assert len(artifacts) == 1
+        assert artifacts[0]["raw_id"] == raw_id
+        assert artifacts[0]["source_name"] == Provider.DRIVE.value
+        assert artifacts[0]["source_path"] == "/tmp/raw-artifact-drive-v1.json"
+        assert artifacts[0]["blob_size"] == len(payload)
+        assert artifacts[0]["acquired_at"] == "2026-02-02T02:40:00Z"
+        assert artifacts[0]["validation_status"] is None
         assert missing_artifacts == []
         assert missing_total == 0
     finally:

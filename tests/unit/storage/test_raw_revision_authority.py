@@ -154,6 +154,22 @@ def test_unenveloped_raw_write_is_quarantined() -> None:
     ).fetchone() == ("unknown", "quarantined")
 
 
+def test_raw_revision_material_preserves_capture_mode(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    payload = b'{"chunkedPrompt":{"chunks":[]}}'
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.DRIVE,
+            payload=payload,
+            source_path="/captures/live-drive.json",
+            acquired_at_ms=1,
+        )
+        provider, observed_payload, _source_path, _kind = archive.raw_revision_material(raw_id)
+
+    assert provider is Provider.DRIVE
+    assert observed_payload == payload
+
+
 def test_revision_binding_is_idempotent_only_for_the_exact_envelope() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(SOURCE_DDL)
