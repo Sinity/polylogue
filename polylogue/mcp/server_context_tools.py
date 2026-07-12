@@ -32,6 +32,33 @@ def _detail_includes_messages(detail_level: str) -> bool:
 
 def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
+    async def get_context_delivery(snapshot_ref: str, recipient_ref: str) -> str:
+        """Read the exact persisted context image for its recorded recipient.
+
+        The caller must supply the recipient object ref recorded at delivery.
+        A mismatch is intentionally indistinguishable from a missing receipt.
+        This tool audits an existing delivery; it never creates a context pack
+        or schedules automatic recall.
+        """
+
+        async def run() -> str:
+            from polylogue.mcp.payloads import MCPContextDeliveryPayload
+
+            receipt = await hooks.get_polylogue().get_context_delivery(
+                snapshot_ref,
+                recipient_ref=recipient_ref,
+            )
+            if receipt is None:
+                return hooks.error_json(
+                    "context delivery not found for recipient",
+                    code="not_found",
+                    tool="get_context_delivery",
+                )
+            return hooks.json_payload(MCPContextDeliveryPayload.from_envelope(receipt), exclude_none=True)
+
+        return await hooks.async_safe_call("get_context_delivery", run)
+
+    @mcp.tool()
     async def build_context_image(
         project_path: str | None = None,
         project_repo: str | None = None,

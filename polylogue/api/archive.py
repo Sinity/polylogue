@@ -49,6 +49,7 @@ from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, IndexStatus
+from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveAttachmentRow,
@@ -1048,6 +1049,31 @@ def _archive_list_assertion_claims(
             conn.close()
     except sqlite3.Error:
         return []
+
+
+def _archive_get_context_delivery(
+    config: Config,
+    *,
+    snapshot_ref: str,
+    recipient_ref: str,
+) -> ArchiveContextDeliveryEnvelope | None:
+    """Read one delivery receipt only when it belongs to its recorded recipient."""
+
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import read_context_delivery
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            receipt = read_context_delivery(conn, snapshot_ref)
+            return receipt if receipt is not None and receipt.recipient_ref == recipient_ref else None
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError):
+        return None
 
 
 def _archive_list_assertion_candidate_reviews(
@@ -2170,6 +2196,21 @@ class PolylogueArchiveMixin:
                 context_inject=context_inject,
                 limit=limit,
             ),
+        )
+
+    async def get_context_delivery(
+        self, snapshot_ref: str, *, recipient_ref: str
+    ) -> ArchiveContextDeliveryEnvelope | None:
+        """Return an exact delivery receipt only for its recorded recipient.
+
+        This is a read-only audit seam over the durable user-tier receipt. It
+        does not schedule recall or grant a caller broader archive access.
+        """
+
+        return _archive_get_context_delivery(
+            self.config,
+            snapshot_ref=snapshot_ref,
+            recipient_ref=recipient_ref,
         )
 
     async def list_assertion_claim_payloads(

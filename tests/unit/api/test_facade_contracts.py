@@ -31,7 +31,7 @@ import shutil
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_type_hints
 
 import pytest
 
@@ -240,6 +240,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "explain_import",
         "archive_debt",
         "list_assertion_claim_payloads",
+        "get_context_delivery",
         "list_assertion_candidate_reviews",
         "judge_assertion_candidate",
         "neighbor_candidate_payloads",
@@ -1002,6 +1003,61 @@ async def test_explain_import_exposes_shared_import_payload(tmp_path: Path) -> N
         assert payload.entries[0].detected_origin == "codex-session"
         assert payload.entries[0].parser_mode == "grouped_records"
         assert payload.entries[0].produced.session_refs
+    finally:
+        await archive.close()
+
+
+def test_get_context_delivery_return_annotation_resolves_at_runtime() -> None:
+    """Receipt readers can inspect the public facade's concrete return type."""
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+
+    hints = get_type_hints(Polylogue.get_context_delivery)
+
+    assert hints["return"] == ArchiveContextDeliveryEnvelope | None
+
+
+async def test_get_context_delivery_scopes_exact_receipt_to_recipient(tmp_path: Path) -> None:
+    from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_snapshot_record_from_image
+    from polylogue.core.refs import EvidenceRef
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
+
+    image = ContextImage(
+        spec=ContextSpec(seed_refs=("session:codex-session:source",), read_views=()),
+        segments=(
+            ContextSegment(
+                segment_id="read-view:codex-session:source:messages",
+                kind="read_view",
+                title="Exact delivery",
+                markdown="quoted archival evidence",
+                evidence_refs=(EvidenceRef(session_id="codex-session:source", message_id="m1"),),
+                token_estimate=3,
+            ),
+        ),
+        evidence_refs=(EvidenceRef(session_id="codex-session:source", message_id="m1"),),
+        token_estimate=3,
+    )
+    record = context_snapshot_record_from_image(image, boundary="explicit-recall")
+    archive = _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        write_context_delivery(
+            conn,
+            image=image,
+            record=record,
+            recipient_ref="agent:hermes-main",
+            delivered_by_ref="user:local",
+            delivered_at_ms=123,
+        )
+        conn.commit()
+
+    try:
+        receipt = await archive.get_context_delivery(record.snapshot_ref, recipient_ref="agent:hermes-main")
+        wrong_recipient = await archive.get_context_delivery(record.snapshot_ref, recipient_ref="agent:other")
+
+        assert receipt is not None
+        assert receipt.context_image == image
+        assert receipt.context_image_sha256 == record.metadata["context_image_sha256"]
+        assert receipt.evidence_refs == ("codex-session:source::m1",)
+        assert wrong_recipient is None
     finally:
         await archive.close()
 

@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_type_hints
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1080,6 +1080,97 @@ class TestArchiveGenericToolSurfaces:
         assert called_spec.seed_refs == ("session:session-1",)
         assert called_spec.read_views == ("messages",)
         assert called_spec.max_tokens == 1000
+
+    def test_context_delivery_payload_mapper_annotations_resolve_at_runtime(self: object) -> None:
+        from polylogue.mcp.payloads import MCPContextDeliveryPayload
+        from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+
+        hints = get_type_hints(MCPContextDeliveryPayload.from_envelope)
+
+        assert hints["envelope"] is ArchiveContextDeliveryEnvelope
+        assert hints["return"] is MCPContextDeliveryPayload
+
+    @pytest.mark.asyncio
+    async def test_get_context_delivery_reads_recipient_scoped_facade_receipt(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_image_sha256
+        from polylogue.core.refs import EvidenceRef
+        from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+
+        image = ContextImage(
+            spec=ContextSpec(seed_refs=("session:session-1",), read_views=()),
+            segments=(
+                ContextSegment(
+                    segment_id="read-view:session-1:messages",
+                    kind="read_view",
+                    title="Delivered context",
+                    markdown="exact bytes",
+                    evidence_refs=(EvidenceRef(session_id="session-1"),),
+                    token_estimate=2,
+                ),
+            ),
+            evidence_refs=(EvidenceRef(session_id="session-1"),),
+            token_estimate=2,
+        )
+        receipt = ArchiveContextDeliveryEnvelope(
+            snapshot_ref="context-snapshot:session-1:explicit-recall",
+            recipient_ref="agent:hermes-main",
+            run_ref=None,
+            boundary="explicit-recall",
+            inheritance_mode="explicit",
+            context_image_sha256=context_image_sha256(image),
+            context_image=image,
+            segment_refs=("read-view:session-1:messages",),
+            evidence_refs=("session-1",),
+            assertion_refs=(),
+            omissions=(),
+            caveats=("quoted evidence",),
+            metadata={"context_image_sha256": context_image_sha256(image)},
+            delivered_by_ref="user:local",
+            delivered_at_ms=123,
+        )
+        mock_poly = make_polylogue_mock()
+        mock_poly.get_context_delivery = AsyncMock(return_value=receipt)
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_context_delivery"].fn,
+                snapshot_ref=receipt.snapshot_ref,
+                recipient_ref=receipt.recipient_ref,
+            )
+
+        payload = json.loads(result)
+        assert payload["snapshot_ref"] == receipt.snapshot_ref
+        assert payload["context_image_sha256"] == receipt.context_image_sha256
+        assert payload["context_image"]["segments"][0]["markdown"] == "exact bytes"
+        mock_poly.get_context_delivery.assert_awaited_once_with(
+            receipt.snapshot_ref,
+            recipient_ref=receipt.recipient_ref,
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_context_delivery_hides_missing_receipt_or_recipient_mismatch(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        mock_poly = make_polylogue_mock()
+        mock_poly.get_context_delivery = AsyncMock(return_value=None)
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_context_delivery"].fn,
+                snapshot_ref="context-snapshot:session-1:explicit-recall",
+                recipient_ref="agent:other-recipient",
+            )
+
+        payload = json.loads(result)
+        assert payload["is_error"] is True
+        assert payload["code"] == "not_found"
+        assert payload["tool"] == "get_context_delivery"
+        mock_poly.get_context_delivery.assert_awaited_once_with(
+            "context-snapshot:session-1:explicit-recall",
+            recipient_ref="agent:other-recipient",
+        )
 
     @pytest.mark.asyncio
     async def test_list_assertion_claims_reads_shared_facade_claims(
