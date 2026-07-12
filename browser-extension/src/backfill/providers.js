@@ -111,14 +111,17 @@ export class ChatGptBackfillAdapter {
     const response = await providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversations?offset=${offset}&limit=100&order=updated`);
     if (!response.ok) return { response, classification: responseClass(response), items: [], next_cursor: cursor, done: false, request_count: 1 };
     const body = await jsonResponse(response, "chatgpt_inventory");
-    const items = requireArray(body.items, "chatgpt_inventory.items").map((item, index) => ({
+    const records = requireArray(body.items, "chatgpt_inventory.items");
+    const projected = records.map((item, index) => ({
       native_id: requireString(item.id, `chatgpt_inventory.items[${index}].id`),
       title: typeof item.title === "string" ? item.title : null,
       updated_at: isoTimestamp(item.update_time),
-    })).filter((item) => !cutoff || !item.updated_at || item.updated_at >= cutoff);
-    const total = Number.isFinite(body.total) ? body.total : offset + items.length;
-    const nextOffset = offset + requireArray(body.items, "chatgpt_inventory.items").length;
-    return { response, classification: "success", items, next_cursor: String(nextOffset), done: nextOffset >= total, request_count: 1 };
+    }));
+    const items = projected.filter((item) => !cutoff || !item.updated_at || item.updated_at >= cutoff);
+    const crossedCutoff = Boolean(cutoff && projected.some((item) => item.updated_at && item.updated_at < cutoff));
+    const total = Number.isFinite(body.total) ? body.total : offset + records.length;
+    const nextOffset = offset + records.length;
+    return { response, classification: "success", items, next_cursor: String(nextOffset), done: nextOffset >= total || crossedCutoff, request_count: 1 };
   }
   async fetchNative(nativeId) { return providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversation/${encodeURIComponent(nativeId)}`); }
   classifyResponse(response) { return responseClass(response); }
@@ -176,12 +179,14 @@ export class ClaudeBackfillAdapter {
     if (!response.ok) return { response, classification: responseClass(response), items: [], next_cursor: cursor, done: false, request_count: requestCount, provider_options: { claudeOrganizationId: organization.id } };
     const body = await response.json();
     const records = requireArray(body, "claude_inventory");
-    const items = records.map((item, index) => ({
+    const projected = records.map((item, index) => ({
       native_id: requireString(item.uuid, `claude_inventory[${index}].uuid`),
       title: typeof item.name === "string" ? item.name : null,
       updated_at: isoTimestamp(item.updated_at),
-    })).filter((item) => !cutoff || !item.updated_at || item.updated_at >= cutoff);
-    return { response, classification: "success", items, next_cursor: String(offset + records.length), done: records.length < 100, request_count: requestCount, provider_options: { claudeOrganizationId: organization.id } };
+    }));
+    const items = projected.filter((item) => !cutoff || !item.updated_at || item.updated_at >= cutoff);
+    const crossedCutoff = Boolean(cutoff && projected.some((item) => item.updated_at && item.updated_at < cutoff));
+    return { response, classification: "success", items, next_cursor: String(offset + records.length), done: records.length < 100 || crossedCutoff, request_count: requestCount, provider_options: { claudeOrganizationId: organization.id } };
   }
   async fetchNative(nativeId) {
     const organization = await this.organization();

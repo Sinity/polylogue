@@ -1,5 +1,6 @@
 import {
   DEFAULT_BACKFILL_POLICY,
+  PROVIDER_REQUEST_TIMEOUT_MS,
   backfillAlarmName,
   dayKey,
   fullJitterDelay,
@@ -15,7 +16,7 @@ function queueId(jobId, provider, nativeId) { return `${jobId}:${provider}:${nat
 
 function mergePolicy(patch = {}) {
   const policy = { ...DEFAULT_BACKFILL_POLICY, ...patch };
-  if (policy.leaseMs <= policy.providerRequestTimeoutMs * 2) throw new Error("backfill_lease_must_exceed_request_timeout");
+  if (policy.leaseMs <= PROVIDER_REQUEST_TIMEOUT_MS * 2) throw new Error("backfill_lease_must_exceed_request_timeout");
   return policy;
 }
 
@@ -279,7 +280,7 @@ export class BackfillCoordinator {
         return this.pauseJob(job, "storage_budget_exhausted", now);
       }
       try {
-        await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: "native_full", lease_owner: null, lease_expires_at_ms: null, last_response_class: "captured" });
+        await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: "native_full", lease_owner: this.instanceId, lease_expires_at_ms: now + job.policy.leaseMs, last_response_class: "captured" });
       } catch (error) {
         if (error?.name !== "QuotaExceededError") throw error;
         return this.pauseJob({ ...job, last_error: "indexeddb_quota_exceeded" }, "indexeddb_quota_exceeded", now);

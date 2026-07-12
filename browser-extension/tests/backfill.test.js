@@ -192,6 +192,15 @@ describe("background backfill coordinator", () => {
     expect(await store.acquireNextLease("j2", "instance-right", 100, 1000)).toBeNull();
   });
 
+  it("invalidates an expired execution even when the stable instance id reacquires it", async () => {
+    const store = new MemoryBackfillStore();
+    await store.createJob({ id: "j1", provider: "chatgpt", status: "running", policy: { maxDailyRequests: 10 }, execution_generation: 0 });
+    const first = await store.acquireJobExecution("j1", "stable-instance", 0, 10);
+    const second = await store.acquireJobExecution("j1", "stable-instance", 11, 10);
+    expect(second.execution_generation).toBe(first.execution_generation + 1);
+    await expect(store.putQueueCas("j1", "stable-instance", first.execution_generation, { id: "q", job_id: "j1" })).rejects.toThrow("stale_backfill_execution:j1");
+  });
+
   it("accounts inventory cadence and budget before any native fetch", async () => {
     const h = harness({ adapter: new FixtureAdapter(["one"]), policy: { maxDailyRequests: 1 } });
     const job = await startJob(h);
@@ -351,6 +360,19 @@ describe("provider adapter contracts", () => {
 
     const drifted = new ChatGptBackfillAdapter(vi.fn(async () => response({ conversations: [] })));
     await expect(drifted.enumerate()).rejects.toThrow("provider_contract_drift:chatgpt_inventory.items_must_be_array");
+  });
+
+  it("stops descending inventory pagination when a page crosses the cutoff", async () => {
+    const adapter = new ChatGptBackfillAdapter(vi.fn(async () => response({
+      items: [
+        { id: "new", update_time: 1780000000 },
+        { id: "old", update_time: 1600000000 },
+      ],
+      total: 5000,
+    })));
+    const inventory = await adapter.enumerate("0", "2026-01-01T00:00:00Z");
+    expect(inventory.items.map((item) => item.native_id)).toEqual(["new"]);
+    expect(inventory.done).toBe(true);
   });
 
   it("normalizes Claude inventory/native fixtures and rejects message drift", async () => {

@@ -1,5 +1,5 @@
 import { BackfillCoordinator } from "./backfill/coordinator.js";
-import { BACKFILL_ALARM } from "./backfill/models.js";
+import { BACKFILL_ALARM, PROVIDER_REQUEST_TIMEOUT_MS } from "./backfill/models.js";
 import { providerAdapters } from "./backfill/providers.js";
 import { IndexedDbBackfillStore } from "./backfill/storage.js";
 
@@ -33,7 +33,12 @@ async function backfillCoordinator() {
     backfillCoordinatorPromise = extensionInstanceId().then((instanceId) => new BackfillCoordinator({
       store: new IndexedDbBackfillStore(),
       adapters: providerAdapters(globalThis.fetch.bind(globalThis)),
-      receiver: (envelope, serialized) => postJson("/v1/browser-captures", envelope, serialized),
+      receiver: (envelope, serialized) => postJson(
+        "/v1/browser-captures",
+        envelope,
+        serialized,
+        PROVIDER_REQUEST_TIMEOUT_MS,
+      ),
       alarms: chrome.alarms,
       instanceId,
     }));
@@ -453,15 +458,18 @@ async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
   return headers;
 }
 
-async function postJson(path, payload, serializedBody = null) {
+async function postJson(path, payload, serializedBody = null, timeoutMs = null) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort("receiver_request_timeout"), timeoutMs) : 0;
   try {
     const response = await fetch(`${settings.baseUrl}${path}`, {
       method: "POST",
       headers: await requestHeaders({ hasBody: true, requestId }),
-      body: serializedBody || JSON.stringify(payload)
+      body: serializedBody || JSON.stringify(payload),
+      signal: controller?.signal,
     });
     const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
     const body = await response.json().catch(() => ({}));
@@ -495,6 +503,8 @@ async function postJson(path, payload, serializedBody = null) {
       error: String(error.message || error),
     });
     throw error;
+  } finally {
+    if (timeout) globalThis.clearTimeout(timeout);
   }
 }
 

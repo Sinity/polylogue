@@ -88,7 +88,7 @@ export class IndexedDbBackfillStore {
       ...job,
       execution_owner: owner,
       execution_expires_at_ms: nowMs + leaseMs,
-      execution_generation: job.execution_generation || 0,
+      execution_generation: (job.execution_generation || 0) + 1,
     };
     store.put(leased);
     await transactionDone(tx);
@@ -310,6 +310,7 @@ export class IndexedDbBackfillStore {
       .filter((item) => item.job_id === jobId && (
         receiverOnly ? item.state === "captured_waiting_receiver" : ["eligible", "retry_wait"].includes(item.state)
       ))
+      .filter((item) => !item.lease_owner || item.lease_expires_at_ms <= nowMs)
       .filter((item) => (item.next_eligible_at_ms || 0) <= nowMs)
       .sort((left, right) => (left.next_eligible_at_ms || 0) - (right.next_eligible_at_ms || 0))[0];
     if (candidate) {
@@ -349,7 +350,7 @@ export class MemoryBackfillStore {
   async acquireJobExecution(jobId, owner, nowMs, leaseMs) {
     const job = this.jobs.get(jobId);
     if (!job || job.status !== "running" || (job.execution_owner && job.execution_expires_at_ms > nowMs)) return null;
-    const leased = { ...job, execution_owner: owner, execution_expires_at_ms: nowMs + leaseMs, execution_generation: job.execution_generation || 0 };
+    const leased = { ...job, execution_owner: owner, execution_expires_at_ms: nowMs + leaseMs, execution_generation: (job.execution_generation || 0) + 1 };
     this.jobs.set(jobId, structuredClone(leased));
     return structuredClone(leased);
   }
@@ -441,6 +442,7 @@ export class MemoryBackfillStore {
       .filter((item) => item.job_id === jobId && (
         receiverOnly ? item.state === "captured_waiting_receiver" : ["eligible", "retry_wait"].includes(item.state)
       ))
+      .filter((item) => !item.lease_owner || item.lease_expires_at_ms <= nowMs)
       .filter((item) => (item.next_eligible_at_ms || 0) <= nowMs)
       .sort((left, right) => (left.next_eligible_at_ms || 0) - (right.next_eligible_at_ms || 0))[0];
     if (!candidate) return null;

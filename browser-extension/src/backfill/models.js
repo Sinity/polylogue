@@ -8,7 +8,6 @@ export const DEFAULT_BACKFILL_POLICY = Object.freeze({
   maxCapturesPerWake: 5,
   maxDailyRequests: 250,
   leaseMs: 180000,
-  providerRequestTimeoutMs: PROVIDER_REQUEST_TIMEOUT_MS,
   baseCadenceMs: 15000,
   maxCadenceMs: 15 * 60 * 1000,
   maxTransportAttempts: 5,
