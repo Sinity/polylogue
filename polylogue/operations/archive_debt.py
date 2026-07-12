@@ -945,7 +945,7 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
     pending_messages_exact = _bool_value(info.get("embedding_pending_message_count_exact"))
     stale = _int_value(info.get("embedding_stale_count")) or 0
     failures = _int_value(info.get("embedding_failure_count")) or 0
-    failure_details = info.get("embedding_failure_details")
+    terminal_failures = _int_value(info.get("embedding_terminal_failure_count")) or 0
 
     if config_enabled and not has_key:
         rows.append(
@@ -967,13 +967,6 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
             )
         )
     if failures:
-        terminal_failures = 0
-        if isinstance(failure_details, list):
-            terminal_failures = sum(
-                1
-                for detail in failure_details
-                if isinstance(detail, dict) and detail.get("lifecycle_state") == "terminal"
-            )
         rows.append(
             ArchiveDebtRowPayload(
                 debt_ref="debt:embedding:catchup:failures",

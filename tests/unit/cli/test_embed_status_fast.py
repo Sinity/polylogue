@@ -256,6 +256,8 @@ def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Pat
     payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["failure_count"] == 1
+    assert payload["terminal_failure_count"] == 1
+    assert payload["retryable_failure_count"] == 0
     assert payload["failure_details"] == [
         {
             "failure_id": "embedding-failure:terminal",

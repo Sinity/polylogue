@@ -142,6 +142,8 @@ class EmbeddingStatusPayload(TypedDict):
     embedding_dimensions: dict[int, int]
     retrieval_bands: dict[str, dict[str, object]]
     failure_count: int
+    terminal_failure_count: int
+    retryable_failure_count: int
     failure_details: list[EmbeddingFailureDetailPayload]
     total_estimated_cost_usd: float | None
     latest_catchup_run: EmbeddingCatchupRunPayload | None
@@ -628,6 +630,8 @@ def _payload_from_stats(
     latest_material_catchup_run: EmbeddingCatchupRunPayload | None,
     pending_messages_exact: bool,
     failure_details: list[EmbeddingFailureDetailPayload] | None = None,
+    terminal_failure_count: int = 0,
+    retryable_failure_count: int = 0,
 ) -> EmbeddingStatusPayload:
     embedded_sessions = stats.embedded_sessions
     pending_sessions = stats.pending_sessions
@@ -681,6 +685,8 @@ def _payload_from_stats(
         "embedding_dimensions": stats.dimension_counts,
         "retrieval_bands": stats.retrieval_bands,
         "failure_count": stats.failure_count,
+        "terminal_failure_count": terminal_failure_count,
+        "retryable_failure_count": retryable_failure_count,
         "failure_details": failure_details or [],
         "total_estimated_cost_usd": stats.total_estimated_cost_usd,
         "latest_catchup_run": latest_catchup_run,
@@ -780,6 +786,30 @@ def _archive_embedding_status_payload(
                 JOIN sessions AS s ON s.session_id = e.session_id
                 WHERE e.error_message IS NOT NULL
                 """,
+                )
+                if has_status
+                else 0
+            )
+        )
+        terminal_failure_count = (
+            _scalar_int(conn, f"SELECT COUNT(*) FROM {failure_table} WHERE lifecycle_state = 'terminal'")
+            if failure_table
+            else (
+                _scalar_int(
+                    conn,
+                    f"SELECT COUNT(*) FROM {status_table} WHERE error_message IS NOT NULL AND needs_reindex = 0",
+                )
+                if has_status
+                else 0
+            )
+        )
+        retryable_failure_count = (
+            _scalar_int(conn, f"SELECT COUNT(*) FROM {failure_table} WHERE lifecycle_state = 'retryable'")
+            if failure_table
+            else (
+                _scalar_int(
+                    conn,
+                    f"SELECT COUNT(*) FROM {status_table} WHERE error_message IS NOT NULL AND needs_reindex = 1",
                 )
                 if has_status
                 else 0
@@ -958,6 +988,8 @@ def _archive_embedding_status_payload(
         latest_material_catchup_run=latest_material_catchup_run,
         pending_messages_exact=pending_messages_exact,
         failure_details=failure_details,
+        terminal_failure_count=terminal_failure_count,
+        retryable_failure_count=retryable_failure_count,
     )
 
 
