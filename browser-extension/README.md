@@ -251,6 +251,9 @@ provider's authentication, inventory visibility, rate limits, challenges, and
 deletion semantics and cannot prove completeness beyond what that authenticated
 inventory exposes. It does not bypass anti-bot controls or scrape records the
 provider does not enumerate.
+ChatGPT inventory traverses active, starred, archived, and archived-starred
+partitions under one durable cursor; repeated ids converge through the queue's
+native-id uniqueness constraint.
 
 ## Development
 

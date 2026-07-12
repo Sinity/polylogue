@@ -67,8 +67,17 @@ export async function executeProviderPageRequest(request) {
     if (request.operation === "inventory") {
       const offset = boundedInteger(request.params?.offset, "offset", 0, 10_000_000);
       const limit = boundedInteger(request.params?.limit, "limit", 1, 100);
+      if (typeof request.params?.archived !== "boolean" || typeof request.params?.starred !== "boolean") {
+        throw new Error("backfill_bridge_invalid_inventory_flags");
+      }
       url = new URL("/backend-api/conversations", currentOrigin);
-      url.search = new URLSearchParams({ offset: String(offset), limit: String(limit), order: "updated", is_archived: "false", is_starred: "false" });
+      url.search = new URLSearchParams({
+        offset: String(offset),
+        limit: String(limit),
+        order: "updated",
+        is_archived: String(request.params.archived),
+        is_starred: String(request.params.starred),
+      });
     } else if (request.operation === "conversation") {
       url = new URL(`/backend-api/conversation/${encodeURIComponent(nativeId(request.params?.nativeId))}`, currentOrigin);
     } else {
@@ -128,9 +137,9 @@ export async function executeProviderPageRequest(request) {
 
   try {
     const hostname = window.location.hostname;
-    const expectedProvider = hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")
+    const expectedProvider = hostname === "chatgpt.com"
       ? "chatgpt"
-      : hostname === "claude.ai" || hostname.endsWith(".claude.ai") ? "claude-ai" : null;
+      : hostname === "claude.ai" ? "claude-ai" : null;
     if (!expectedProvider || request.provider !== expectedProvider) throw new Error("backfill_bridge_provider_mismatch");
     const response = expectedProvider === "chatgpt" ? await chatGptRequest() : await claudeRequest();
     return { ok: true, response };

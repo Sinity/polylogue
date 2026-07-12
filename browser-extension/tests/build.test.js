@@ -188,12 +188,16 @@ describe("build.mjs full archive emission", () => {
     const send = (message) => new Promise((resolve) => messageListener(message, {}, resolve));
     const started = await send({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", policy: { baseCadenceMs: 0 } });
     await vi.waitFor(() => expect(pageRequests.some((message) => message.operation === "inventory")).toBe(true));
+    for (let inventoryCount = 2; inventoryCount <= 4; inventoryCount += 1) {
+      alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
+      await vi.waitFor(() => expect(pageRequests.filter((message) => message.operation === "inventory")).toHaveLength(inventoryCount));
+    }
     alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
     await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).includes("/v1/browser-captures"))).toBe(true));
     expect(tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false });
     expect(tabs.update).not.toHaveBeenCalled();
-    expect(pageRequests.map((message) => message.operation)).toEqual(["inventory", "conversation"]);
-    expect(pageFetchCalls.filter((call) => call.url.pathname === "/api/auth/session")).toHaveLength(2);
+    expect(pageRequests.map((message) => message.operation)).toEqual(["inventory", "inventory", "inventory", "inventory", "conversation"]);
+    expect(pageFetchCalls.filter((call) => call.url.pathname === "/api/auth/session")).toHaveLength(5);
     expect(JSON.stringify(pageRequests)).not.toContain(pageToken);
     expect(JSON.stringify(pageRequests)).not.toContain(pageAccount);
     expect(tabs.sendMessage).not.toHaveBeenCalled();

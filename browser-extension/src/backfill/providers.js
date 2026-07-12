@@ -102,6 +102,24 @@ function envelope({ provider, nativeId, title, createdAt, updatedAt, turns, rawP
   };
 }
 
+const CHATGPT_INVENTORY_PARTITIONS = Object.freeze([
+  { archived: false, starred: false },
+  { archived: false, starred: true },
+  { archived: true, starred: false },
+  { archived: true, starred: true },
+]);
+
+function chatGptInventoryCursor(cursor) {
+  const match = String(cursor || "0").match(/^(?:(\d+):)?(\d+)$/);
+  if (!match) throw new Error("provider_contract_drift:chatgpt_inventory.cursor_invalid");
+  const partition = Number.parseInt(match[1] || "0", 10);
+  const offset = Number.parseInt(match[2], 10);
+  if (partition < 0 || partition >= CHATGPT_INVENTORY_PARTITIONS.length) {
+    throw new Error("provider_contract_drift:chatgpt_inventory.cursor_invalid");
+  }
+  return { partition, offset };
+}
+
 export class ChatGptBackfillAdapter {
   constructor(fetchImpl = globalThis.fetch, options = {}) {
     this.fetchImpl = fetchImpl;
@@ -111,8 +129,9 @@ export class ChatGptBackfillAdapter {
   configure() {}
   requestCost() { return 2; }
   async enumerate(cursor = "0", cutoff = null) {
-    const offset = Number.parseInt(cursor || "0", 10) || 0;
-    const response = await providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversations?offset=${offset}&limit=28&order=updated&is_archived=false&is_starred=false`);
+    const { partition, offset } = chatGptInventoryCursor(cursor);
+    const flags = CHATGPT_INVENTORY_PARTITIONS[partition];
+    const response = await providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversations?offset=${offset}&limit=28&order=updated&is_archived=${flags.archived}&is_starred=${flags.starred}`);
     if (this.requirePageContext && response.polyloguePageContext !== true) {
       return { response, classification: "auth_or_challenge", items: [], next_cursor: cursor, done: false, request_count: 1 };
     }
@@ -128,7 +147,10 @@ export class ChatGptBackfillAdapter {
     const crossedCutoff = Boolean(cutoff && projected.some((item) => item.updated_at && item.updated_at < cutoff));
     const total = Number.isFinite(body.total) ? body.total : offset + records.length;
     const nextOffset = offset + records.length;
-    return { response, classification: "success", items, next_cursor: String(nextOffset), done: nextOffset >= total || crossedCutoff, request_count: 1 };
+    const partitionDone = nextOffset >= total || crossedCutoff;
+    const finalPartition = partition === CHATGPT_INVENTORY_PARTITIONS.length - 1;
+    const nextCursor = partitionDone && !finalPartition ? `${partition + 1}:0` : `${partition}:${nextOffset}`;
+    return { response, classification: "success", items, next_cursor: nextCursor, done: partitionDone && finalPartition, request_count: 1 };
   }
   async fetchNative(nativeId) { return providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversation/${encodeURIComponent(nativeId)}`); }
   classifyResponse(response) {

@@ -220,6 +220,20 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("does not reuse unsupported provider subdomains as authenticated transport roots", async () => {
+    tabs = [{ id: 43, url: "https://help.chatgpt.com/article", title: "Help" }];
+
+    const started = await sendRuntimeMessage({
+      type: "polylogue.backfill.start",
+      provider: "chatgpt",
+      cutoff: "2026-01-01T00:00:00Z",
+    });
+
+    expect(started.ok).toBe(true);
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false }));
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({ target: { tabId: 99 } }));
+  });
+
   it("preserves page-bridge Retry-After through the adapter and coordinator", async () => {
     globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
       if (details.func) {

@@ -152,6 +152,8 @@ user-selected cutoff. It honors provider authentication and controls and cannot
 prove completeness beyond the authenticated inventory returned by the provider.
 It never bypasses anti-bot checks, discovers deleted/ephemeral records absent
 from inventory, or activates an operator foreground tab.
+ChatGPT enumeration traverses all active/starred/archived flag partitions and
+deduplicates repeated native ids in the durable queue.
 
 ## Dataflow and boundary
 

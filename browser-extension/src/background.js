@@ -585,8 +585,8 @@ async function ensureCaptureScripts(tab) {
 function providerForUrl(url) {
   try {
     const hostname = new URL(url || "").hostname;
-    if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) return "chatgpt";
-    if (hostname === "claude.ai" || hostname.endsWith(".claude.ai")) return "claude-ai";
+    if (hostname === "chatgpt.com") return "chatgpt";
+    if (hostname === "claude.ai") return "claude-ai";
   } catch {
     return null;
   }
@@ -597,9 +597,16 @@ function providerRequestFromUrl(urlValue) {
   const url = new URL(urlValue);
   if (url.hostname === "chatgpt.com") {
     if (url.pathname === "/backend-api/conversations") {
+      const archived = url.searchParams.get("is_archived");
+      const starred = url.searchParams.get("is_starred");
+      if (!["true", "false"].includes(archived) || !["true", "false"].includes(starred)) {
+        throw new Error("backfill_provider_inventory_flags_not_allowed");
+      }
       return { provider: "chatgpt", operation: "inventory", params: {
         offset: Number.parseInt(url.searchParams.get("offset") || "0", 10),
         limit: Number.parseInt(url.searchParams.get("limit") || "28", 10),
+        archived: archived === "true",
+        starred: starred === "true",
       } };
     }
     const conversation = url.pathname.match(/^\/backend-api\/conversation\/([A-Za-z0-9_-]+)$/);

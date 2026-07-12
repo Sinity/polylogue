@@ -417,6 +417,9 @@ describe("provider adapter contracts", () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response({ items: [], total: 0 }))
       .mockResolvedValueOnce(Object.assign(response({ items: [{ id: "one", update_time: 1780000000 }], total: 1 }), { polyloguePageContext: true }))
+      .mockResolvedValueOnce(Object.assign(response({ items: [], total: 0 }), { polyloguePageContext: true }))
+      .mockResolvedValueOnce(Object.assign(response({ items: [], total: 0 }), { polyloguePageContext: true }))
+      .mockResolvedValueOnce(Object.assign(response({ items: [], total: 0 }), { polyloguePageContext: true }))
       .mockResolvedValueOnce(Object.assign(response(chatGptNative("one")), { polyloguePageContext: true }));
     const adapter = new ChatGptBackfillAdapter(fetchImpl, { requirePageContext: true });
     const h = harness({ adapter, store: makeStore() });
@@ -427,13 +430,13 @@ describe("provider adapter contracts", () => {
     expect(status).toMatchObject({ status: "paused", inventory_complete: false, cooldown_reason: "provider_auth_or_challenge" });
 
     await h.coordinator.control(job.id, "resume");
-    h.advance(h.policy.baseCadenceMs);
-    await h.coordinator.wake(job.id);
-    h.advance(h.policy.baseCadenceMs);
-    await h.coordinator.wake(job.id);
+    for (let wake = 0; wake < 5; wake += 1) {
+      h.advance(h.policy.baseCadenceMs);
+      await h.coordinator.wake(job.id);
+    }
     status = await h.coordinator.status(job.id);
     expect(status).toMatchObject({ status: "complete", inventory_complete: true, progress: { complete: 1 } });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
     expect(h.receiver).toHaveBeenCalledTimes(1);
   });
 
@@ -445,7 +448,7 @@ describe("provider adapter contracts", () => {
       ],
       total: 5000,
     })));
-    const inventory = await adapter.enumerate("0", "2026-01-01T00:00:00Z");
+    const inventory = await adapter.enumerate("3:0", "2026-01-01T00:00:00Z");
     expect(inventory.items.map((item) => item.native_id)).toEqual(["new"]);
     expect(inventory.done).toBe(true);
   });
@@ -463,10 +466,32 @@ describe("provider adapter contracts", () => {
     const first = await adapter.enumerate("0", null);
     const second = await adapter.enumerate(first.next_cursor, null);
 
-    expect(first).toMatchObject({ next_cursor: "28", done: false });
-    expect(second).toMatchObject({ next_cursor: "29", done: true });
+    expect(first).toMatchObject({ next_cursor: "0:28", done: false });
+    expect(second).toMatchObject({ next_cursor: "1:0", done: false });
     expect(fetchImpl.mock.calls[0][0]).toContain("limit=28");
     expect(fetchImpl.mock.calls[1][0]).toContain("offset=28");
+  });
+
+  it("enumerates every active, starred, and archived ChatGPT partition", async () => {
+    const fetchImpl = vi.fn(async () => response({ items: [], total: 0 }));
+    const adapter = new ChatGptBackfillAdapter(fetchImpl);
+    let cursor = "0";
+    let result;
+    for (let partition = 0; partition < 4; partition += 1) {
+      result = await adapter.enumerate(cursor, null);
+      cursor = result.next_cursor;
+    }
+
+    expect(result.done).toBe(true);
+    expect(fetchImpl.mock.calls.map(([url]) => {
+      const parsed = new URL(url);
+      return [parsed.searchParams.get("is_archived"), parsed.searchParams.get("is_starred")];
+    })).toEqual([
+      ["false", "false"],
+      ["false", "true"],
+      ["true", "false"],
+      ["true", "true"],
+    ]);
   });
 
   it("does not assume Claude inventory order when filtering a full page", async () => {
