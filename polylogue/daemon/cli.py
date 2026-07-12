@@ -1190,7 +1190,10 @@ async def run_daemon_services(
         if not watcher_blocked:
             from polylogue.daemon.convergence import DaemonConverger
             from polylogue.daemon.convergence_stages import make_default_convergence_stages
-            from polylogue.daemon.embedding_backlog import periodic_embedding_backlog_check
+            from polylogue.daemon.embedding_backlog import (
+                periodic_embedding_backlog_check,
+                periodic_embedding_orphan_reconcile_check,
+            )
 
             await _run_startup_fts_readiness(write_coordinator)
             if lifecycle_events_enabled:
@@ -1229,6 +1232,7 @@ async def run_daemon_services(
                 _periodic_fts_merge(),
                 _periodic_heartbeat(),
                 periodic_embedding_backlog_check(catch_up_complete=catch_up_complete_gate),
+                periodic_embedding_orphan_reconcile_check(catch_up_complete=catch_up_complete_gate),
                 _periodic_health_check(),
                 _periodic_db_optimize(),
                 _periodic_status_snapshot_refresh(),
