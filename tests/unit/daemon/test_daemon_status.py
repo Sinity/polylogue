@@ -12,6 +12,7 @@ from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
 from polylogue.daemon.fts_status import FTSReadiness
+from polylogue.daemon.health import DaemonHealth
 from polylogue.daemon.status import (
     _insight_freshness_info,
     browser_capture_status_payload,
@@ -358,7 +359,7 @@ def test_build_daemon_status_uses_one_lifecycle_snapshot(tmp_path: Path) -> None
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
         patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
-        patch("polylogue.daemon.status.check_health", return_value=status_module.DaemonHealth()),
+        patch("polylogue.daemon.status.check_health", return_value=DaemonHealth()),
         patch("polylogue.daemon.lifecycle.lifecycle_status", side_effect=[fresh, stopped]) as lifecycle,
     ):
         status = build_daemon_status(sources=())
