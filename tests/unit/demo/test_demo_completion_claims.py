@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from polylogue.cli.click_app import cli
 from polylogue.demo import inspect_completion_claims, inspect_demo_receipts, seed_demo_archive
 from polylogue.scenarios import DEMO_CODEX_RECEIPTS_SESSION_ID
 
@@ -134,3 +137,28 @@ def test_demo_receipts_returns_a_failed_result_for_an_unreadable_archive(tmp_pat
     assert result.completion_claims is None
     assert any(problem.startswith("archive evidence unreadable:") for problem in result.problems)
     assert any(problem.startswith("completion-claim evidence unreadable:") for problem in result.problems)
+
+
+@pytest.mark.asyncio
+async def test_completion_claims_only_cli_runs_without_fixture_receipts(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "demo",
+            "receipts",
+            "--root",
+            str(archive_root),
+            "--no-seed",
+            "--completion-claims-only",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["headline"]["denominator"] >= 1
+    assert payload["manifest"]["selected_refs"]

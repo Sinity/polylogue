@@ -576,6 +576,25 @@ def render_demo_receipts(result: DemoReceiptsResult) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_completion_claims(result: CompletionClaimExperimentResult) -> str:
+    """Render an aggregate-only local completion-claim receipt."""
+
+    headline = result.to_payload()["headline"]
+    assert isinstance(headline, dict)
+    return "\n".join(
+        [
+            "Polylogue completion-claim receipt",
+            f"archive: {result.archive_root}",
+            f"sample manifest: {result.manifest.manifest_id}",
+            f"evidence fingerprint: {result.evidence_fingerprint}",
+            f"denominator: {headline['denominator']}",
+            f"unsupported by structural evidence: {headline['unsupported_count']}",
+            f"contradicted then repaired: {headline['contradicted_then_repaired_count']}",
+            "",
+        ]
+    )
+
+
 __all__ = [
     "DemoActionReceipt",
     "CompletionClaimEvidence",
@@ -583,5 +602,6 @@ __all__ = [
     "DemoReceiptsResult",
     "inspect_completion_claims",
     "inspect_demo_receipts",
+    "render_completion_claims",
     "render_demo_receipts",
 ]

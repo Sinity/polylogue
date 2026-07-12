@@ -44,7 +44,7 @@ For an operator-owned archive, pass its path explicitly (the command never needs
 to export a live archive root):
 
 ```bash
-polylogue demo receipts --root /path/to/archive --no-seed --format json
+polylogue demo receipts --root /path/to/archive --no-seed --completion-claims-only --format json
 ```
 
 The JSON adds a deterministic, origin-stratified completion-claim manifest and

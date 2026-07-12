@@ -9,6 +9,7 @@ from .receipts import (
     DemoReceiptsResult,
     inspect_completion_claims,
     inspect_demo_receipts,
+    render_completion_claims,
     render_demo_receipts,
 )
 from .script import render_demo_script
@@ -35,6 +36,7 @@ __all__ = [
     "inspect_completion_claims",
     "materialize_demo_source",
     "render_demo_receipts",
+    "render_completion_claims",
     "render_demo_script",
     "run_demo_tour",
     "seed_demo_archive",
