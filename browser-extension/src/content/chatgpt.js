@@ -668,6 +668,13 @@
     const finalEnvelope = envelope || fallbackEnvelope();
     if (!finalEnvelope) return { ok: false, error: "no_turns" };
     const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
+    if (!captureResult?.ok) return {
+      ok: false,
+      envelope: finalEnvelope,
+      captureResult,
+      error: captureResult?.error || "capture_rejected",
+      timelineRecorded: true,
+    };
     const archiveState = await window.polylogueCapture.refreshArchiveState(
       "chatgpt",
       finalEnvelope.session.provider_session_id

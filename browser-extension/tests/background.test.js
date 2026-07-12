@@ -246,6 +246,24 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState).toBeUndefined();
   });
 
+  it("records a non-retryable capture rejection as a held decision", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "invalid capture" }, { ok: false, status: 400 }));
+
+    const response = await sendRuntimeMessage({
+      type: "polylogue.capture",
+      reason: "auto_capture_missing",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-rejected", turns: [] } },
+    });
+
+    expect(response).toMatchObject({ ok: false, error: "invalid capture" });
+    expect(stored.polylogueConversationTimeline["chatgpt:conv-rejected"][0]).toMatchObject({
+      event: "held_with_reason",
+      reason: "auto_capture_missing",
+      detail: "capture_rejected",
+    });
+    expect(stored.polylogueSessionLedger["chatgpt:conv-rejected"].last_error).toBe("invalid capture");
+  });
+
   it("keeps receiver request id on error state", async () => {
     globalThis.fetch = vi.fn(async () =>
       responseJson({ error: "unauthorized" }, { ok: false, status: 401, requestId: "reject-42" }),

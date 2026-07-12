@@ -918,7 +918,7 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
         archive_state: resultWithTimeout.archiveState?.state || null,
         receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
       });
-    } else {
+    } else if (!resultWithTimeout?.timelineRecorded) {
       const provider = archiveProviderForUrl(tab.url || tab.pendingUrl || "");
       const providerSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "");
       await appendConversationTimeline({
@@ -1382,6 +1382,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           return;
         }
+        await updateSessionLedger({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          patch: { last_error: String(error.message || error) },
+        });
+        await appendConversationTimeline({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          event: "held_with_reason",
+          reason: message.reason || "content_script_capture",
+          detail: "capture_rejected",
+          tabId: sender.tab?.id || null,
+        });
         throw error;
       }
       const archiveState = { state: result.state || "spooled_only" };
@@ -1436,7 +1449,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // Receiver just proved reachable — flush anything queued from earlier
       // outages before returning this capture's result.
       void drainCaptureQueue("post_success");
-      sendResponse(result);
+      sendResponse({ ok: true, ...result });
       return;
     }
     if (message.type === "polylogue.getCaptureQueue") {

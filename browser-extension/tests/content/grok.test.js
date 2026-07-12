@@ -13,7 +13,7 @@ it("forwards an automatic capture reason through the Grok content handler", asyn
   });
   const runtimeListener = vi.fn();
   const sendMessage = vi.fn(async (message) => {
-    if (message.type === "polylogue.capture") return { state: "spooled_only" };
+    if (message.type === "polylogue.capture") return { ok: true, state: "spooled_only" };
     if (message.type === "polylogue.archiveState") return { state: "spooled_only" };
     return null;
   });
@@ -37,4 +37,30 @@ it("forwards an automatic capture reason through the Grok content handler", asyn
     type: "polylogue.capture",
     reason: "auto_capture_missing",
   }));
+});
+
+it("reports a rejected runtime capture without refreshing archive state", async () => {
+  const dom = new JSDOM('<article data-message-author-role="user">Capture this</article>', {
+    runScripts: "outside-only",
+    url: "https://grok.com/chat/conversation-1",
+  });
+  const runtimeListener = vi.fn();
+  const sendMessage = vi.fn(async () => ({ ok: false, error: "capture_rejected" }));
+  dom.window.chrome = {
+    runtime: {
+      getManifest: () => ({ version: "0.1.0" }),
+      onMessage: { addListener: runtimeListener },
+      sendMessage,
+    },
+  };
+
+  dom.window.eval(commonSource);
+  dom.window.eval(grokSource);
+  const listener = runtimeListener.mock.calls[0][0];
+  const response = await new Promise((resolve) => {
+    listener({ type: "polylogue.capturePage", reason: "auto_capture_missing" }, {}, resolve);
+  });
+
+  expect(response).toMatchObject({ ok: false, timelineRecorded: true, error: "capture_rejected" });
+  expect(sendMessage).toHaveBeenCalledTimes(1);
 });

@@ -109,6 +109,13 @@
       },
     });
     const captureResult = await window.polylogueCapture.sendCapture(envelope, reason);
+    if (!captureResult?.ok) return {
+      ok: false,
+      envelope,
+      captureResult,
+      error: captureResult?.error || "capture_rejected",
+      timelineRecorded: true,
+    };
     const archiveState = await window.polylogueCapture.refreshArchiveState(
       "grok",
       envelope.session.provider_session_id,
