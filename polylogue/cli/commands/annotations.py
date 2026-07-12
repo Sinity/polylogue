@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import cast
 
 import click
 
@@ -15,8 +16,16 @@ from polylogue.annotations.importer import (
     AnnotationBatchImportResult,
     import_annotation_batch,
 )
+from polylogue.annotations.join import (
+    AnnotationGroupDimension,
+    AnnotationStructuralJoinError,
+    AnnotationStructuralJoinRequest,
+    AnnotationStructuralJoinResult,
+    join_typed_annotations,
+)
 from polylogue.api import Polylogue
 from polylogue.cli.shared.helpers import fail
+from polylogue.core.enums import AssertionStatus
 from polylogue.paths import archive_root
 
 
@@ -81,4 +90,50 @@ def import_annotations_command(
     click.echo(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, sort_keys=True))
 
 
-__all__ = ["annotations_command", "import_annotations_command"]
+@annotations_command.command("join")
+@click.option("--schema-id", required=True)
+@click.option("--schema-version", required=True, type=click.IntRange(min=1))
+@click.option(
+    "--status",
+    "statuses",
+    required=True,
+    multiple=True,
+    type=click.Choice(("active", "candidate", "accepted", "rejected", "deferred", "superseded")),
+)
+@click.option("--target-kind", default=None)
+@click.option("--group-by", multiple=True, type=click.Choice(("repo", "model", "time", "origin")))
+@click.option("--limit", default=500, show_default=True, type=click.IntRange(min=1, max=1_000))
+@click.option("--offset", default=0, show_default=True, type=click.IntRange(min=0))
+def join_annotations_command(
+    schema_id: str,
+    schema_version: int,
+    statuses: tuple[str, ...],
+    target_kind: str | None,
+    group_by: tuple[str, ...],
+    limit: int,
+    offset: int,
+) -> None:
+    """Join typed labels to exact structural targets without fanout."""
+
+    try:
+        request = AnnotationStructuralJoinRequest(
+            schema_id=schema_id,
+            schema_version=schema_version,
+            statuses=tuple(AssertionStatus.from_string(status) for status in statuses),
+            target_kind=target_kind,
+            group_by=cast(tuple[AnnotationGroupDimension, ...], group_by),
+            limit=limit,
+            offset=offset,
+        )
+
+        async def run() -> AnnotationStructuralJoinResult:
+            async with Polylogue(archive_root=archive_root()) as poly:
+                return await join_typed_annotations(poly, request)
+
+        result = asyncio.run(run())
+    except (AnnotationStructuralJoinError, ValueError) as exc:
+        fail("annotations join", str(exc))
+    click.echo(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, sort_keys=True))
+
+
+__all__ = ["annotations_command", "import_annotations_command", "join_annotations_command"]

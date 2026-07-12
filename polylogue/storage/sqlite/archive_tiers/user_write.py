@@ -1313,6 +1313,15 @@ def _latest_candidate_judgment(
     return _assertion_row_to_envelope(row)
 
 
+def read_latest_candidate_judgment(
+    conn: sqlite3.Connection,
+    candidate_assertion_id: str,
+) -> ArchiveAssertionEnvelope | None:
+    """Return the durable latest judgment attached to one candidate."""
+
+    return _latest_candidate_judgment(conn, _assertion_id_from_ref(candidate_assertion_id))
+
+
 def judge_assertion_candidate(
     conn: sqlite3.Connection,
     *,
@@ -1607,7 +1616,12 @@ def list_assertion_claims(
     scope_ref: str | None = None,
     statuses: Sequence[str | AssertionStatus] | None = (AssertionStatus.ACTIVE, AssertionStatus.CANDIDATE),
     context_inject: bool | None = None,
+    annotation_schema_prefix: str | None = None,
+    annotation_schema_qualified_id: str | None = None,
+    annotation_schema_excluded_qualified_id: str | None = None,
+    annotation_target_kind: str | None = None,
     limit: int | None = None,
+    offset: int = 0,
 ) -> list[ArchiveAssertionEnvelope]:
     """List lifecycle claims for successor-context/profile consumers.
 
@@ -1644,19 +1658,78 @@ def list_assertion_claims(
         where.append(f"COALESCE(status, ?) IN ({placeholders})")
         params.append(ASSERTION_DEFAULT_STATUS.value)
         params.extend(normalized_statuses)
+    if annotation_schema_prefix is not None:
+        where.append("substr(json_extract(value_json, '$._schema'), 1, length(?)) = ?")
+        params.extend((annotation_schema_prefix, annotation_schema_prefix))
+    if annotation_schema_qualified_id is not None:
+        where.append("json_extract(value_json, '$._schema') = ?")
+        params.append(annotation_schema_qualified_id)
+    if annotation_schema_excluded_qualified_id is not None:
+        where.append("json_extract(value_json, '$._schema') != ?")
+        params.append(annotation_schema_excluded_qualified_id)
+    if annotation_target_kind is not None:
+        target_prefix = f"{annotation_target_kind}:"
+        where.append("substr(target_ref, 1, length(?)) = ?")
+        params.extend((target_prefix, target_prefix))
 
     sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY updated_at_ms DESC, assertion_id"
+    if limit is not None and limit >= 0 and context_inject is None:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend((limit, max(offset, 0)))
 
     rows = conn.execute(sql, tuple(params)).fetchall()
     claims = [_assertion_row_to_envelope(row) for row in rows]
     if context_inject is not None:
         claims = [claim for claim in claims if bool(claim.context_policy.get("inject")) is context_inject]
-    if limit is not None and limit >= 0:
-        return claims[:limit]
+    if context_inject is not None:
+        start = max(offset, 0)
+        if limit is not None and limit >= 0:
+            return claims[start : start + limit]
+        return claims[start:]
     return claims
+
+
+def count_assertion_claims(
+    conn: sqlite3.Connection,
+    *,
+    kinds: Sequence[str | AssertionKind],
+    statuses: Sequence[str | AssertionStatus],
+    annotation_schema_prefix: str | None = None,
+    annotation_schema_qualified_id: str | None = None,
+    annotation_schema_excluded_qualified_id: str | None = None,
+    annotation_target_kind: str | None = None,
+) -> int:
+    """Count a typed assertion selection without materializing claim rows."""
+
+    if not _table_exists(conn, "assertions") or not kinds or not statuses:
+        return 0
+    normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
+    normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
+    kind_placeholders = ", ".join("?" for _ in normalized_kinds)
+    status_placeholders = ", ".join("?" for _ in normalized_statuses)
+    where = [
+        f"kind IN ({kind_placeholders})",
+        f"COALESCE(status, ?) IN ({status_placeholders})",
+    ]
+    params: list[object] = [*normalized_kinds, ASSERTION_DEFAULT_STATUS.value, *normalized_statuses]
+    if annotation_schema_prefix is not None:
+        where.append("substr(json_extract(value_json, '$._schema'), 1, length(?)) = ?")
+        params.extend((annotation_schema_prefix, annotation_schema_prefix))
+    if annotation_schema_qualified_id is not None:
+        where.append("json_extract(value_json, '$._schema') = ?")
+        params.append(annotation_schema_qualified_id)
+    if annotation_schema_excluded_qualified_id is not None:
+        where.append("json_extract(value_json, '$._schema') != ?")
+        params.append(annotation_schema_excluded_qualified_id)
+    if annotation_target_kind is not None:
+        target_prefix = f"{annotation_target_kind}:"
+        where.append("substr(target_ref, 1, length(?)) = ?")
+        params.extend((target_prefix, target_prefix))
+    row = conn.execute(f"SELECT count(*) FROM assertions WHERE {' AND '.join(where)}", tuple(params)).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 __all__ = [
@@ -1697,6 +1770,7 @@ __all__ = [
     "assertion_id_for_transform_candidate",
     "assertion_id_for_workspace",
     "correction_id_for",
+    "count_assertion_claims",
     "judge_assertion_candidate",
     "list_archive_blackboard_note_envelopes",
     "list_assertion_candidates",
@@ -1715,6 +1789,7 @@ __all__ = [
     "read_archive_suppression_envelope",
     "read_archive_workspace_envelope",
     "read_assertion_envelope",
+    "read_latest_candidate_judgment",
     "upsert_annotation",
     "upsert_assertion",
     "upsert_blackboard_note",

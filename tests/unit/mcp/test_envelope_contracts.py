@@ -63,6 +63,10 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "get_messages": ("envelope", frozenset({"messages", "total"})),
     "list_read_view_profiles": ("envelope", frozenset({"read_views", "total"})),
     "list_assertion_claims": ("envelope", frozenset({"items", "total", "limit"})),
+    "join_typed_annotations": (
+        "envelope",
+        frozenset({"rows", "groups", "selected_annotation_count", "joined_count"}),
+    ),
     "explain_query_expression": "single_object",
     "query_completions": "single_object",
     "action_affordances": "single_object",

@@ -73,6 +73,7 @@ from polylogue.surfaces.temporal_evidence import (
 from polylogue.types import SessionId
 
 if TYPE_CHECKING:
+    from polylogue.annotations.join import AnnotationStructuralJoinResult
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
@@ -2274,6 +2275,36 @@ class PolylogueArchiveMixin:
             replacement_value=replacement_value,
         )
         return AssertionJudgmentResultPayload.from_envelope(result)
+
+    async def join_typed_annotations(
+        self,
+        *,
+        schema_id: str,
+        schema_version: int,
+        statuses: Sequence[str | AssertionStatus],
+        target_kind: str | None = None,
+        group_by: Sequence[Literal["repo", "model", "time", "origin"]] = (),
+        limit: int = 500,
+        offset: int = 0,
+    ) -> AnnotationStructuralJoinResult:
+        """Join selected typed annotations to exact structural targets."""
+
+        from polylogue.annotations.join import (
+            AnnotationStructuralJoinRequest,
+            StructuralJoinArchive,
+            join_typed_annotations,
+        )
+
+        request = AnnotationStructuralJoinRequest(
+            schema_id=schema_id,
+            schema_version=schema_version,
+            statuses=tuple(AssertionStatus.from_string(status) for status in statuses),
+            target_kind=target_kind,
+            group_by=tuple(group_by),
+            limit=limit,
+            offset=offset,
+        )
+        return await join_typed_annotations(cast(StructuralJoinArchive, self), request)
 
     async def _compile_context_seed_query(
         self,
