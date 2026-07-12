@@ -222,6 +222,16 @@ receiver outages, and successful durable ACKs remain distinct in the exported
 diagnostic ledger. Receiver-down artifacts remain queued and are retried
 without refetching provider data.
 
+Execution itself is leased in IndexedDB, not only the queue item. Request
+budget is reserved atomically before a provider call, and pause/cancel bumps a
+generation checked by every asynchronous continuation, so two service workers
+cannot spend the same token or resurrect cancelled work. Provider requests
+time out before the execution lease can expire. Exact provider revision
+timestamps are recorded in a durable native-id ledger; a later job skips only
+an exact known revision, while missing/untrusted revisions are fetched again.
+Receiver retries and stored native envelopes are bounded and fail-paused on
+attempt, byte, or IndexedDB quota exhaustion.
+
 Completion means the loopback receiver atomically wrote the artifact and
 returned both a request id and the exact submitted JSON-byte SHA-256. The
 deduplication identity is provider native id plus content hash. It does **not**

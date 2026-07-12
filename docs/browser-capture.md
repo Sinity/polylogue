@@ -121,6 +121,17 @@ request count are bounded. Receiver downtime never marks an item complete and
 does not force a second provider fetch: the native-full envelope waits durably
 for an idempotent receiver ACK.
 
+An IndexedDB execution lease serializes inventory and native-fetch requests as
+well as queue ownership. The coordinator atomically reserves provider budget
+before network I/O; request timeouts are shorter than the lease. Pause/cancel
+increments the job generation and transactionally cancels queue entries, so a
+late response cannot restore stale running state. Successful ACK finalization
+atomically updates job, queue, and the provider-native revision ledger. A later
+job skips only an exact trusted `(provider, native id, updated_at)` revision;
+records without a revision are fetched. Stored-envelope bytes, receiver retry
+attempts, and actual IndexedDB quota errors all fail paused rather than growing
+without bound.
+
 This workflow repairs gaps relative to an immutable export/GDPR baseline and a
 user-selected cutoff. It honors provider authentication and controls and cannot
 prove completeness beyond the authenticated inventory returned by the provider.
