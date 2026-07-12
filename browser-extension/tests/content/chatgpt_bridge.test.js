@@ -68,7 +68,8 @@ function syntheticEndpointAdapter({
   authStatus = 200,
   authBody = { accessToken: bearerToken },
   metadataStatus = 200,
-  metadataBody = { download_url: signedUrl, file_name: "kit.zip" },
+  signedDownloadUrl = signedUrl,
+  metadataBody = { download_url: signedDownloadUrl, file_name: "kit.zip" },
   signedStatus = 200,
   signedBytes = assetBytes,
   declaredSize = null,
@@ -95,7 +96,7 @@ function syntheticEndpointAdapter({
       }
       return jsonResponse(metadataBody, metadataStatus);
     }
-    if (url.href === signedUrl) {
+    if (url.href === signedDownloadUrl) {
       return byteResponse(signedBytes, signedStatus, declaredSize);
     }
     throw new Error(`unexpected synthetic request: ${url.origin}${url.pathname}`);
@@ -305,6 +306,23 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
     const disclosed = JSON.stringify(harness.posted);
     expect(disclosed).not.toContain(bearerToken);
     expect(disclosed).not.toContain("synthetic-signed-secret");
+  });
+
+  it("keeps cookies for same-origin estuary bytes without forwarding the bearer", async () => {
+    const estuaryUrl = "https://chatgpt.com/backend-api/estuary/content?download=synthetic-secret";
+    const adapter = syntheticEndpointAdapter({ signedDownloadUrl: estuaryUrl });
+    const harness = installBridge(adapter);
+
+    await expect(harness.requestAsset()).resolves.toMatchObject({
+      status: "acquired",
+      asset: { sha256: expectedSha256 },
+    });
+    const byteCall = adapter.calls.find((call) => call.url.href === estuaryUrl);
+    expect(byteCall.options.credentials).toBe("include");
+    expect(authorizationHeader(byteCall.options)).toBe(null);
+    const disclosed = JSON.stringify(harness.posted);
+    expect(disclosed).not.toContain(bearerToken);
+    expect(disclosed).not.toContain("synthetic-secret");
   });
 
   it("prefers the current session token over a stale legacy bootstrap token", async () => {

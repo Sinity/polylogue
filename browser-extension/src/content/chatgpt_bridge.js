@@ -322,9 +322,14 @@
     if (signedUrl.protocol !== "https:") {
       return assetOutcome("invalid_response", { phase: "metadata", detail: "download_url_not_https" });
     }
+    // Current ChatGPT interpreter downloads may point at the authenticated
+    // same-origin estuary endpoint rather than at a self-authenticating object
+    // store URL. Keep page cookies for that exact origin, but never forward
+    // them (or the bearer) to provider-issued cross-origin signed URLs.
+    const byteCredentials = signedUrl.origin === currentOrigin ? "include" : "omit";
     const fileResponse = await fetchWithAbort(
       signedUrl.href,
-      { credentials: "omit", cache: "no-store" },
+      { credentials: byteCredentials, cache: "no-store" },
       "asset_bytes_fetch"
     );
     if ([401, 403, 404, 410].includes(fileResponse.status)) {
