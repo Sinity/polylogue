@@ -147,31 +147,21 @@ References:
 
 Live site: <https://sinity.github.io/polylogue/> (auto-published on every merge to `master`).
 
-Start with the generated command and architecture references; use [docs/README.md](docs/README.md) for the complete map. Current sequencing and active workstreams live in the Beads backlog (`bd ready`, `bd list --status open`), not a standalone execution-plan document.
+Start with the task-oriented guides below; [docs/README.md](docs/README.md) separates guides, reference, internals, operations, evidence, design, and historical records. Current sequencing and active workstreams live in the Beads backlog (`bd ready`, `bd list --status open`).
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
+| [Getting Started](docs/getting-started.md) | First archive, first query, and the next documentation steps. |
 | [Installation](docs/installation.md) | Source checkout, Nix flake, and managed NixOS/Home Manager install paths. |
-| [Architecture Spine](docs/architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
-| [Design Direction](docs/design/README.md) | Beads-first design doctrine and the standing domain-model references that survive it. |
-| [Query-Action Workflows](docs/product/workflows.md) | Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths. |
-| [Demos and Proofs](docs/demos.md) | Current reproducible proofs, construct-valid demo doctrine, and flagship demonstrations under construction. |
-| [Public Claim: Structured Failure Follow-Up](docs/findings/claim-vs-evidence.md) | Bounded field finding with structural oracle, sample frame, calibration, reproduction, and caveats. |
-| [Polylogue on Sinex](docs/sinex-interop.md) | Current bridge, maximal Sinex-backed target, authority split, identity contract, and decisive rebuild proof. |
-| [Proof Artifacts](docs/proof-artifacts.md) | Claim-to-proof map for public-facing demo, cost, failure-follow-up, and affordance-analysis claims. |
-| [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
+| [Demos and Proofs](docs/demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
+| [Proof Artifacts](docs/proof-artifacts.md) | Claim-to-proof map for public-facing demo and evidence claims. |
+| [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Search & Query](docs/search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
-| [Browser Capture](docs/browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
-| [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
+| [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
 | [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
-| [Provider, Origin, and Source Identity](docs/provider-origin-identity.md) | Vocabulary map for provider-wire family, public origin, material source, capture mode, parser binding, and refs. |
-| [Provider Package Completeness](docs/provider-completeness.md) | Readiness report for provider/importer package modes by origin and capture mode. |
-| [Archive Backup](docs/archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
-| [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
-| [Branch-Local Development Loop](docs/dev-loop.md) | Branch-local daemon, web-shell, browser-capture, and extension debugging workflow. |
-| [Visual Evidence](docs/visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
+| [Security](docs/security.md) | Security boundaries for local archives and readers. |
+| [Developer Tools](docs/devtools.md) | Generated surfaces, validation, and repo hygiene. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
 
 <!-- END GENERATED: docs-surface -->
