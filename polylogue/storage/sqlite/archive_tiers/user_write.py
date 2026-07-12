@@ -920,6 +920,9 @@ def list_archive_blackboard_note_envelopes(
     envelopes = [
         _blackboard_envelope_from_assertion(assertion)
         for assertion in list_assertions_by_kind(conn, AssertionKind.NOTE)
+        # Candidate notes are deliberately visible only through the judgment
+        # queue.  The blackboard is the active, operator-approved read model.
+        if assertion.status == AssertionStatus.ACTIVE
     ]
     if limit is not None and limit > 0:
         return envelopes[:limit]

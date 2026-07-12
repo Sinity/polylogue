@@ -98,20 +98,28 @@ polylogued status
 ## Optional terminal note widget (zsh)
 
 To turn the last shell command into an editable capture candidate, add this
-optional widget to `~/.zshrc`. It has no Polylogue runtime dependency; it only
-prefills the command line, leaving you to edit and submit it normally.
+optional widget to `~/.zshrc`, after any other `precmd` hook registration. It
+has no Polylogue runtime dependency; it only prefills the command line, leaving
+you to edit and submit it normally.
 
 ```zsh
 typeset -g POLYLOGUE_NOTE_LAST_STATUS=0
-precmd_functions+=('_polylogue_note_remember_status')
 
 _polylogue_note_remember_status() {
   POLYLOGUE_NOTE_LAST_STATUS=$?
 }
 
+# Run first: later precmd hooks may themselves return a different status.
+precmd_functions=(
+  _polylogue_note_remember_status
+  ${precmd_functions:#_polylogue_note_remember_status}
+)
+
 _polylogue_note_prefill() {
-  local last_command="$(fc -ln -1)"
-  BUFFER="polylogue note --ref last \"${last_command} [exit ${POLYLOGUE_NOTE_LAST_STATUS}]\""
+  local last_command note_text
+  last_command="$(fc -ln -1)"
+  note_text="${last_command} [exit ${POLYLOGUE_NOTE_LAST_STATUS}]"
+  BUFFER="polylogue note --ref last ${(qq)note_text}"
   zle end-of-line
 }
 

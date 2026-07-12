@@ -138,10 +138,24 @@ def test_terminal_note_rejects_non_session_refs(cli_workspace: dict[str, Path]) 
 def test_terminal_note_is_visible_to_the_real_pending_candidate_reader(cli_workspace: dict[str, Path]) -> None:
     payload = _capture(cli_workspace, ["candidate stays pending"])
 
-    async def read() -> AssertionCandidateReviewListPayload:
+    async def read() -> tuple[AssertionCandidateReviewListPayload, list[str], list[str]]:
         async with Polylogue(archive_root=cli_workspace["archive_root"]) as poly:
-            return await poly.list_assertion_candidate_reviews()
+            reviews = await poly.list_assertion_candidate_reviews()
+            before_judgment = await poly.list_blackboard_notes()
+            await poly.judge_assertion_candidate(
+                candidate_ref=f"assertion:{payload['assertion_id']}",
+                decision="accept",
+                reason="operator approved terminal capture",
+            )
+            after_judgment = await poly.list_blackboard_notes()
+            return (
+                reviews,
+                [note.note_id for note in before_judgment],
+                [note.note_id for note in after_judgment],
+            )
 
-    reviews = asyncio.run(read())
+    reviews, blackboard_before_judgment, blackboard_after_judgment = asyncio.run(read())
     assert [review.candidate.assertion_id for review in reviews.items] == [payload["assertion_id"]]
     assert reviews.items[0].candidate.status is AssertionStatus.CANDIDATE
+    assert blackboard_before_judgment == []
+    assert blackboard_after_judgment == [payload["assertion_id"]]
