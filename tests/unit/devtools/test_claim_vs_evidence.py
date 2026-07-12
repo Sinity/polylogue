@@ -515,12 +515,13 @@ def test_claim_vs_evidence_refuses_rates_for_cells_below_n_min(tmp_path: Path) -
 
 def test_claim_vs_evidence_refuses_aggregate_rates_below_n_min(tmp_path: Path) -> None:
     archive = tmp_path / "archive"
+    out_dir = tmp_path / "out"
     _seed_archive(archive)
 
     report = build_report(
         _report_args(
             archive_root=archive,
-            out_dir=None,
+            out_dir=out_dir,
             limit=4,
             sample_limit=2,
             n_min=5,
@@ -531,6 +532,14 @@ def test_claim_vs_evidence_refuses_aggregate_rates_below_n_min(tmp_path: Path) -
     assert report["rates"]["publication_status"] == "not_supported"
     assert report["rates"]["silent_rate_lower_bound"] is None
     assert report["rates"]["window3_silent_rate_lower_bound"] is None
+    public_summary = json.loads((out_dir / "public-summary.json").read_text())
+    assert public_summary["proofs"][1]["silent_rate_lower_bound_coverage_status"] == "insufficient_n"
+    assert public_summary["proofs"][1]["silent_rate_lower_bound_publication_status"] == "not_supported"
+    summary = json.loads((out_dir / "summary.json").read_text())
+    assert summary["proof_report"]["silent_rate_lower_bound_coverage_status"] == "insufficient_n"
+    assert summary["proof_report"]["window3_silent_rate_lower_bound_publication_status"] == "not_supported"
+    public_reproduction = (out_dir / "PUBLIC_REPRODUCTION.md").read_text()
+    assert "not enough labels (insufficient_n / not_supported)" in public_reproduction
 
 
 def test_claim_vs_evidence_public_reproduction_handles_unlabeled_sample(tmp_path: Path) -> None:
