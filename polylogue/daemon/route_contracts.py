@@ -167,6 +167,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     RouteContract("GET", "/api/status", "operational", "stable", "credential_if_configured", "Daemon status JSON"),
     RouteContract(
         "GET",
+        "/api/overview",
+        "read_query",
+        "shell_supported",
+        "credential_if_configured",
+        "bounded cockpit overview",
+        "Privacy-safe landing aggregates, readiness, and a fixed recent-session page.",
+    ),
+    RouteContract(
+        "GET",
         "/api/dev-loop",
         "operational",
         "shell_supported",
@@ -302,6 +311,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET", "/api/sessions/:id/cost", "read_detail", "shell_supported", "credential_if_configured", "cost JSON"
+    ),
+    RouteContract(
+        "GET",
+        "/api/sessions/:id/evidence-summary",
+        "read_detail",
+        "shell_supported",
+        "credential_if_configured",
+        "bounded session evidence summary",
+        "Structural tool outcome counts, cost projection, and capped lineage refs for the transcript header.",
     ),
     RouteContract(
         "GET",

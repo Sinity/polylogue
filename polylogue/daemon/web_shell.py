@@ -470,7 +470,7 @@ var state = {
   origin: '', query: '', offset: 0, limit: 100, total: 0,
   // Cached /api/status envelope (evidence-cockpit redesign): the landing
   // view reads totals/readiness from here instead of a second fetch.
-  status: {}, facets: null, inspectorTab: 'info',
+  status: {}, overview: undefined, facets: null, inspectorTab: 'info',
   facetError: '',
   marks: {}, annotations: {}, savedViews: [], workspaces: [], userStateError: '',
   mode: 'single', stackPayload: null, comparePayload: null,
@@ -495,7 +495,7 @@ var state = {
   // on demand when the Insights inspector tab is opened. Holds the
   // ``GET /api/insights/sessions/{id}`` envelope: ``{kinds: {profile,
   // timeline, phases, threads}, include, session_id, origin}``.
-  insightsPanels: {},
+  insightsPanels: {}, evidenceSummaries: {},
   // Per-session collapsed-section toggles for the Insights tab.
   // Keyed as ``"<session_id>:<kind>"``; default = expanded.
   insightsCollapsed: {},
@@ -1010,10 +1010,15 @@ async function loadSession(id, updateURL) {
   state.comparePayload = null;
   state.selectedLoadError = null;
   if (updateURL !== false) pushSingleURL(id);
-  var route = '/api/sessions/' + encodeURIComponent(id);
+  var route = '/api/sessions/' + encodeURIComponent(id) + '?shape=summary';
+  var messagesRoute = '/api/sessions/' + encodeURIComponent(id) + '/messages?limit=100&offset=0';
   setRouteState('sessionDetail', {state: 'loading', route: route, error: '', status: ''});
   try {
-    var data = await fetchJSON(route, {timeoutMs: 10000});
+    var payloads = await Promise.all([fetchJSON(route, {timeoutMs: 10000}), fetchJSON(messagesRoute, {timeoutMs: 10000})]);
+    var data = payloads[0];
+    data.messages = payloads[1].messages || [];
+    data.total = payloads[1].total;
+    data.message_page = {limit: payloads[1].limit, offset: payloads[1].offset};
     state.selected = data;
     setRouteState('sessionDetail', {state: 'ready', route: route, status: '200', error: ''});
   } catch(e) {
@@ -1647,21 +1652,25 @@ function landingVerbCard(title, body, onclickJs) {
   return '<div class="verb-card" onclick="' + escAttr(onclickJs) + '"><h4>' + esc(title) + '</h4><p>' + esc(body) + '</p></div>';
 }
 
-// Archive landing: rendered in #main when the Search verb has no session
-// selected. Every number comes from the already-loaded /api/status snapshot
-// (state.status, cached by loadStatus()) and the already-loaded session list
-// (state.sessions) -- no dedicated landing route exists or is required.
+// Archive landing uses its dedicated bounded aggregate rather than stitching
+// status and a broad session-list response client-side.
 function renderLandingView() {
-  var status = state.status || {};
-  var readiness = status.component_readiness || {};
-  var recent = (state.sessions || []).slice(0, 6);
+  var overview = state.overview;
+  if (overview === undefined) {
+    loadOverview();
+    return '<div class="main-empty"><h3>Loading archive overview…</h3></div>';
+  }
+  if (overview && overview.error) return renderInlineRouteFailure('Archive overview unavailable', overview.details, 'retryOverview()');
+  var totals = overview.totals || {};
+  var readiness = overview.readiness || {};
+  var recent = overview.recent || [];
   var html = '<div class="landing">';
   html += '<div class="landing-hero"><h1>Keep the receipts for AI work.</h1>'
     + '<p>Search every archived session, analyze usage and cost, audit claims against structural '
     + 'evidence, and remember reviewed judgment across Claude, Codex, ChatGPT, Gemini, and more.</p></div>';
   html += '<div class="stat-row">'
-    + statTile('Sessions', status.total_sessions != null ? Number(status.total_sessions).toLocaleString() : null)
-    + statTile('Messages', status.total_messages != null ? Number(status.total_messages).toLocaleString() : null)
+    + statTile('Sessions', totals.sessions != null ? Number(totals.sessions).toLocaleString() : null)
+    + statTile('Messages', totals.messages != null ? Number(totals.messages).toLocaleString() : null)
     + statTile('Search index', readinessLabel((readiness.search || {}).state))
     + statTile('Embeddings', readinessLabel((readiness.embeddings || {}).state))
     + '</div>';
@@ -1692,6 +1701,14 @@ function renderLandingView() {
   html += '</div>';
   return html;
 }
+
+async function loadOverview() {
+  var route = '/api/overview';
+  try { state.overview = await fetchJSON(route, {timeoutMs: 5000}); }
+  catch(e) { state.overview = {error: true, details: routeErrorDetails(e, route)}; }
+  if (!state.selected && state.activeView === 'search') renderMain();
+}
+function retryOverview() { state.overview = undefined; renderMain(); }
 
 function renderVerbView(view) {
   var headerEl = document.getElementById('conv-header');
@@ -2161,51 +2178,41 @@ function messageBlocksHtml(messages) {
 // keystone tool_result_is_error/exit_code-derived event.inference.kind --
 // command_succeeded/command_failed/test_passed/test_failed -- computed in
 // insights/transforms.py). No new API surface; this is presentation order.
-function evidenceStripToolCounts(insightsBody) {
-  var kinds = (insightsBody && insightsBody.kinds) || {};
-  var events = (kinds.timeline && kinds.timeline.events) || [];
-  var ok = 0, failed = 0, other = 0;
-  events.forEach(function(ev) {
-    var kind = (ev.inference && ev.inference.kind) || '';
-    if (kind === 'command_failed' || kind === 'test_failed') failed++;
-    else if (kind === 'command_succeeded' || kind === 'test_passed') ok++;
-    else other++;
-  });
-  var toolUseCount = null;
-  var profile = kinds.profile && kinds.profile.profile;
-  if (profile && profile.tool_use_count != null) toolUseCount = profile.tool_use_count;
-  return {ok: ok, failed: failed, other: other, total: events.length, tool_use_count: toolUseCount};
-}
-
 function renderEvidenceStrip(c) {
   if (!c || !c.id) return '';
-  var data = state.insightsPanels[c.id];
+  var data = state.evidenceSummaries[c.id];
   if (data === undefined) {
-    if (typeof loadInsightsPanel === 'function') loadInsightsPanel(c.id);
+    loadEvidenceSummary(c.id);
     return '<div class="evidence-strip muted">Loading evidence summary…</div>';
   }
   if (data && data.error) return ''; // the Evidence/Insights tabs already surface this failure with retry.
-  var counts = evidenceStripToolCounts(data);
+  var counts = data.outcomes || {};
   var chips = [];
-  if (counts.tool_use_count != null) {
-    chips.push('<span class="chip">' + esc(String(counts.tool_use_count)) + ' tool call' + (counts.tool_use_count === 1 ? '' : 's') + '</span>');
+  if (data.tool_calls != null) {
+    chips.push('<span class="chip">' + esc(String(data.tool_calls)) + ' tool call' + (data.tool_calls === 1 ? '' : 's') + '</span>');
   }
-  if (counts.total > 0) {
-    chips.push('<span class="chip q-canonical" title="Structurally successful outcomes (exit_code/is_error)">' + esc(String(counts.ok)) + ' ok</span>');
+  if ((counts.ok || counts.failed || counts.unknown) > 0) {
+    chips.push('<span class="chip q-canonical" title="Structurally successful outcomes (exit_code/is_error)">' + esc(String(counts.ok || 0)) + ' ok</span>');
     if (counts.failed > 0) {
       chips.push('<span class="chip q-unresolved" title="Structurally failed outcomes (exit_code/is_error)">' + esc(String(counts.failed)) + ' failed</span>');
     }
   } else {
     chips.push('<span class="chip q-missing" title="No structured work-event evidence materialized for this session">no work events</span>');
   }
-  var costPanel = state.costPanels[c.id];
-  if (costPanel && !costPanel.error && costPanel.total_usd !== undefined) {
-    var costTag = costPanel.confidence_tag || 'q-unavailable';
-    chips.push('<span class="chip ' + esc(costTag) + '" title="Session cost">' + esc(formatUsd(costPanel.total_usd)) + '</span>');
+  var cost = data.cost || {};
+  if (cost.total_usd !== undefined && cost.total_usd !== null) {
+    chips.push('<span class="chip ' + esc(cost.confidence_tag || 'q-unavailable') + '" title="Session cost">' + esc(formatUsd(cost.total_usd)) + '</span>');
   }
   var branchChip = renderTopologyBranchChip(c);
   if (branchChip) chips.push(branchChip);
   return '<div class="evidence-strip" aria-label="Session evidence summary">' + chips.join('') + '</div>';
+}
+
+async function loadEvidenceSummary(id) {
+  var route = '/api/sessions/' + encodeURIComponent(id) + '/evidence-summary';
+  try { state.evidenceSummaries[id] = await fetchJSON(route, {timeoutMs: 5000}); }
+  catch(e) { state.evidenceSummaries[id] = {error: true, details: routeErrorDetails(e, route)}; }
+  if (state.selected && state.selected.id === id) renderMain();
 }
 
 // --- Topology branch chip + parent-chain stack (#1203) ----------------
@@ -3109,6 +3116,7 @@ loadSessions().then(function() {
   if (cid) selectSession(cid, false);
 });
 loadFacets();
+loadOverview();
 loadReadViewProfiles();
 loadUserState();
 loadStatus();
