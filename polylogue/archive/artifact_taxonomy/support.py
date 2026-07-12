@@ -28,6 +28,7 @@ _RECORDISH_KEYS = frozenset(
 _MESSAGE_KEYS = frozenset({"role", "content", "text", "parts", "author"})
 _RELATIONSHIP_INDEX_KEYS = frozenset({"session", "parent", "child", "type", "timestamp"})
 _HOOK_EVENT_KEYS = frozenset({"event_type", "session_id", "timestamp", "provider"})
+_BEADS_INTERACTION_KEYS = frozenset({"id", "kind", "created_at", "issue_id", "extra"})
 
 
 def path_only_sidecars() -> dict[str, str]:
@@ -104,6 +105,19 @@ def looks_like_hook_event_stream(payload: list[JSONDocument]) -> bool:
         return False
     recordish = sum(1 for item in payload if looks_like_hook_event(item))
     return recordish == len(payload) and recordish >= 1
+
+
+def looks_like_beads_interaction(payload: object) -> bool:
+    """Return whether a record is one append-only Beads interaction."""
+    if not isinstance(payload, dict) or not _BEADS_INTERACTION_KEYS.issubset(payload):
+        return False
+    return (
+        isinstance(payload.get("id"), str)
+        and isinstance(payload.get("kind"), str)
+        and isinstance(payload.get("created_at"), str)
+        and isinstance(payload.get("issue_id"), str)
+        and isinstance(payload.get("extra"), dict)
+    )
 
 
 def looks_like_message_entry(payload: object) -> bool:

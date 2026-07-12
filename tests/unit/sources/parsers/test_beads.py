@@ -66,3 +66,19 @@ def test_dispatch_detects_and_parses_interaction_ledger() -> None:
 
     assert detected is Provider.BEADS
     assert [session.provider_session_id for session in sessions] == ["polylogue-7fj"]
+
+
+def test_workspace_namespace_prevents_cross_repository_issue_collisions(tmp_path: Path) -> None:
+    payload = _fixture_payload()
+    first_path = tmp_path / "first" / ".beads" / "interactions.jsonl"
+    second_path = tmp_path / "second" / ".beads" / "interactions.jsonl"
+    first_path.parent.mkdir(parents=True)
+    second_path.parent.mkdir(parents=True)
+
+    [first] = beads.parse(payload, "ignored", source_path=str(first_path))
+    [first_replay] = beads.parse(payload, "ignored", source_path=str(first_path))
+    [second] = beads.parse(payload, "ignored", source_path=str(second_path))
+
+    assert first.provider_session_id == first_replay.provider_session_id
+    assert first.provider_session_id != second.provider_session_id
+    assert first.working_directories == [str(first_path.parent.parent.resolve())]

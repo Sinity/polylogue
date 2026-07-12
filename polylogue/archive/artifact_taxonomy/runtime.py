@@ -7,6 +7,7 @@ from pathlib import Path
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
 from polylogue.archive.artifact_taxonomy.support import (
     is_subagent_path,
+    looks_like_beads_interaction,
     looks_like_hook_event,
     looks_like_hook_event_stream,
     looks_like_record_entry,
@@ -140,6 +141,16 @@ def _classify_list(
             reason="hook event stream",
         )
 
+    if provider is Provider.BEADS and dict_items and all(looks_like_beads_interaction(item) for item in dict_items):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_RECORD_STREAM,
+            parse_as_session=True,
+            schema_eligible=False,
+            default_priority=120,
+            reason="Beads interaction-history stream",
+        )
+
     if dict_items and looks_like_record_stream(dict_items):
         subagent = is_subagent_path(source_path)
         kind = ArtifactKind.SUBAGENT_SESSION_STREAM if subagent else ArtifactKind.SESSION_RECORD_STREAM
@@ -188,6 +199,16 @@ def _classify_dict(
     provider: Provider,
     source_path: str | Path | None,
 ) -> ArtifactClassification:
+    if provider is Provider.BEADS and looks_like_beads_interaction(payload):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_RECORD_STREAM,
+            parse_as_session=True,
+            schema_eligible=False,
+            default_priority=120,
+            reason="Beads interaction-history record",
+        )
+
     if provider is Provider.ANTIGRAVITY and _is_antigravity_markdown_export(payload):
         return ArtifactClassification(
             provider=provider,

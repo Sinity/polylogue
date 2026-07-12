@@ -25,7 +25,7 @@ from polylogue.storage.backup_attestation import (
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite import migration_runner
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL, SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
@@ -448,6 +448,54 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         conn.close()
 
 
+def test_source_tier_v7_expands_origin_checks_with_verified_backup(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The Beads origin copy-forward retains v7 evidence and accepts new raws."""
+    db_path = workspace_env["archive_root"] / "source.db"
+    old_ddl = SOURCE_DDL.replace(", 'beads-issue'", "")
+    blob_hash, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(b"before-beads")
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(old_ddl)
+        conn.execute("PRAGMA user_version = 7")
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "before-beads",
+                "codex-session",
+                "session-1",
+                "/before.jsonl",
+                0,
+                bytes.fromhex(blob_hash),
+                blob_size,
+                1,
+            ),
+        )
+        conn.commit()
+    manifest = _verified_backup_manifest(tmp_path / "backup-v7")
+
+    with sqlite3.connect(db_path) as conn:
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
+        assert result.from_version == 7
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 8
+        assert result.applied_versions == (8,)
+        assert conn.execute("SELECT raw_id FROM raw_sessions WHERE raw_id = 'before-beads'").fetchone()
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("beads-raw", "beads-issue", "polylogue-7fj", "/repo/.beads/interactions.jsonl", 0, b"b" * 32, 1, 2),
+        )
+        assert conn.execute("SELECT raw_id FROM raw_sessions WHERE origin = 'beads-issue'").fetchone()
+
+
 def _create_source_v2_with_pending_blob_refs(path: Path) -> None:
     """A v2 source tier that still carries ``pending_blob_refs``.
 
@@ -513,8 +561,23 @@ def _create_source_v3_with_referenced_blob(path: Path, blob_hash: str) -> None:
         conn.executescript(
             """
             CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32)
+                raw_id                  TEXT PRIMARY KEY,
+                origin                  TEXT NOT NULL,
+                native_id               TEXT,
+                source_path             TEXT NOT NULL,
+                source_index            INTEGER NOT NULL DEFAULT 0,
+                blob_hash               BLOB NOT NULL CHECK(length(blob_hash) = 32),
+                blob_size               INTEGER NOT NULL CHECK(blob_size >= 0),
+                acquired_at_ms          INTEGER NOT NULL,
+                file_mtime_ms           INTEGER,
+                parsed_at_ms            INTEGER,
+                parse_error             TEXT,
+                validated_at_ms         INTEGER,
+                validation_status       TEXT,
+                validation_error        TEXT,
+                validation_drift_count  INTEGER NOT NULL DEFAULT 0 CHECK(validation_drift_count >= 0),
+                validation_mode         TEXT,
+                detection_warnings_json TEXT NOT NULL DEFAULT '[]'
             ) STRICT;
             CREATE TABLE blob_refs (
                 blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
@@ -526,7 +589,12 @@ def _create_source_v3_with_referenced_blob(path: Path, blob_hash: str) -> None:
             """
         )
         conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_hash) VALUES (?, ?)", ("raw-one", bytes.fromhex(blob_hash))
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("raw-one", "codex-session", "session-1", "/fixture.jsonl", 0, bytes.fromhex(blob_hash), 1, 0),
         )
         conn.execute(
             "INSERT INTO blob_refs (blob_hash, ref_id, ref_type) VALUES (?, ?, ?)",
@@ -584,8 +652,23 @@ def test_source_tier_v3_adds_publication_reservations_with_verified_backup_recei
         conn.executescript(
             """
             CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32)
+                raw_id                  TEXT PRIMARY KEY,
+                origin                  TEXT NOT NULL,
+                native_id               TEXT,
+                source_path             TEXT NOT NULL,
+                source_index            INTEGER NOT NULL DEFAULT 0,
+                blob_hash               BLOB NOT NULL CHECK(length(blob_hash) = 32),
+                blob_size               INTEGER NOT NULL CHECK(blob_size >= 0),
+                acquired_at_ms          INTEGER NOT NULL,
+                file_mtime_ms           INTEGER,
+                parsed_at_ms            INTEGER,
+                parse_error             TEXT,
+                validated_at_ms         INTEGER,
+                validation_status       TEXT,
+                validation_error        TEXT,
+                validation_drift_count  INTEGER NOT NULL DEFAULT 0 CHECK(validation_drift_count >= 0),
+                validation_mode         TEXT,
+                detection_warnings_json TEXT NOT NULL DEFAULT '[]'
             ) STRICT;
             CREATE TABLE blob_refs (
                 blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
