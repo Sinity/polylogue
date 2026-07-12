@@ -49,6 +49,7 @@ from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, IndexStatus
+from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveAttachmentRow,
@@ -99,7 +100,6 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.search.models import SearchResult
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
-    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ArchiveAssertionCandidateReviewEnvelope,
         ArchiveAssertionEnvelope,

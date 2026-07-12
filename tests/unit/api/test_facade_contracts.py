@@ -31,7 +31,7 @@ import shutil
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_type_hints
 
 import pytest
 
@@ -1005,6 +1005,15 @@ async def test_explain_import_exposes_shared_import_payload(tmp_path: Path) -> N
         assert payload.entries[0].produced.session_refs
     finally:
         await archive.close()
+
+
+def test_get_context_delivery_return_annotation_resolves_at_runtime() -> None:
+    """Receipt readers can inspect the public facade's concrete return type."""
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+
+    hints = get_type_hints(Polylogue.get_context_delivery)
+
+    assert hints["return"] == ArchiveContextDeliveryEnvelope | None
 
 
 async def test_get_context_delivery_scopes_exact_receipt_to_recipient(tmp_path: Path) -> None:
