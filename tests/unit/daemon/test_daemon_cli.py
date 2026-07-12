@@ -2383,6 +2383,34 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     assert stopped == [True]
 
 
+def test_lifecycle_heartbeat_runs_without_index_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The degraded daemon heartbeat must not depend on index.db existing."""
+    from polylogue.daemon import cli as daemon_cli
+
+    calls: list[str] = []
+
+    class Lifecycle:
+        def heartbeat(self) -> None:
+            calls.append("heartbeat")
+
+    async def exercise() -> None:
+        monkeypatch.setattr(daemon_cli, "_daemon_lifecycle", Lifecycle())
+        task = asyncio.create_task(daemon_cli._periodic_lifecycle_heartbeat(interval_s=0))
+        try:
+            for _ in range(5):
+                await asyncio.sleep(0)
+                if calls:
+                    break
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(exercise())
+
+    assert calls
+
+
 def test_run_daemon_services_checks_archive_identity_before_component_startup(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.storage.archive_identity import ArchiveIdentityConflictError
@@ -2957,6 +2985,7 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
         patch.object(daemon_cli, "_check_schema_version_fast", return_value=critical),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_heartbeat", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", lambda: asyncio.Event().wait()),
         patch.object(daemon_cli, "_periodic_convergence_check", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_health_check", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),

@@ -387,17 +387,12 @@ async def _periodic_drive_source_catchup() -> None:
 
 async def _periodic_heartbeat() -> None:
     """Log daemon heartbeat with archive stats every 15 minutes."""
-    from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_INTERVAL_SECONDS
-
     while True:
-        await asyncio.sleep(DAEMON_HEARTBEAT_INTERVAL_SECONDS)
+        await asyncio.sleep(900)  # 15 minutes
         db = _active_index_db_path()
         if not db.exists():
             continue
         try:
-            lifecycle = _daemon_lifecycle
-            if lifecycle is not None:
-                await asyncio.to_thread(lifecycle.heartbeat)
             n_sessions, n_messages, noun = await asyncio.to_thread(_heartbeat_counts, db)
             logger.info(
                 "daemon heartbeat: %d %s, %d messages indexed",
@@ -407,6 +402,30 @@ async def _periodic_heartbeat() -> None:
             )
         except Exception:
             logger.warning("daemon: heartbeat query failed", exc_info=True)
+
+
+async def _periodic_lifecycle_heartbeat(*, interval_s: float | None = None) -> None:
+    """Advance the ops-only heartbeat even when archive work is blocked.
+
+    This must remain independent of index stats and convergence: a daemon that
+    deliberately keeps only API/health surfaces available after schema
+    preflight failure is still alive and must not age into a false vanished
+    state.
+    """
+    from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_INTERVAL_SECONDS
+
+    interval = DAEMON_HEARTBEAT_INTERVAL_SECONDS if interval_s is None else interval_s
+    while True:
+        await asyncio.sleep(interval)
+        lifecycle = _daemon_lifecycle
+        if lifecycle is None:
+            continue
+        try:
+            await asyncio.to_thread(lifecycle.heartbeat)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("daemon: lifecycle heartbeat write failed", exc_info=True)
 
 
 async def _periodic_db_optimize() -> None:
@@ -1134,7 +1153,11 @@ async def run_daemon_services(
     # Several maintenance loops can write the archive, especially convergence
     # debt retry; starting them before FTS startup freshness recovery self-contends on
     # SQLite during daemon bootstrap.
-    maintenance_tasks: list[asyncio.Task[None]] = []
+    # The lifecycle tick is deliberately scheduled before the schema-block
+    # guard. It writes only the disposable ops tier and proves that the
+    # surviving API/health process is still alive while archive work is
+    # intentionally withheld.
+    maintenance_tasks: list[asyncio.Task[None]] = [asyncio.create_task(_periodic_lifecycle_heartbeat())]
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
