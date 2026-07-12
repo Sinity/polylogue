@@ -198,7 +198,8 @@ class _AsyncCursorAdapter:
         return list(self._cursor.fetchall())
 
     async def fetchone(self) -> sqlite3.Row | None:
-        return self._cursor.fetchone()
+        result: sqlite3.Row | None = self._cursor.fetchone()
+        return result
 
     @property
     def rowcount(self) -> int:
