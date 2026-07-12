@@ -352,7 +352,7 @@ async function drainCaptureQueue(trigger = "alarm") {
         extension_instance_id: result.capture_instance_id || null,
         deduplicated: Boolean(result.deduplicated),
         last_receiver_request_id: result.receiver_request_id || null,
-      });
+      }, entry.tab_url);
     } catch (error) {
       const attempts = entry.attempts + 1;
       remaining.push({
@@ -533,14 +533,16 @@ async function setState(state) {
   await chrome.action.setBadgeBackgroundColor({ color: badge.color });
 }
 
-async function setStateForTab(tabId, state) {
+async function setStateForTab(tabId, state, expectedTabUrl = null) {
   if (!tabId || !chrome.tabs?.query) return setState(state);
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!activeTab || activeTab.id !== tabId) return null;
+  const activeUrl = activeTab.url || activeTab.pendingUrl || "";
+  if (expectedTabUrl && activeUrl && activeUrl !== expectedTabUrl) return null;
   const expectedProvider = state.provider || null;
   const expectedSessionId = state.provider_session_id || null;
-  const activeProvider = archiveProviderForUrl(activeTab.url || activeTab.pendingUrl || "");
-  const activeSessionId = conversationIdForUrl(activeTab.url || activeTab.pendingUrl || "");
+  const activeProvider = archiveProviderForUrl(activeUrl);
+  const activeSessionId = conversationIdForUrl(activeUrl);
   if (
     expectedProvider
     && expectedSessionId
@@ -894,7 +896,7 @@ async function captureTab(tab, reason = "background") {
         turn_count: Array.isArray(envelopeSession.turns) ? envelopeSession.turns.length : null,
         last_receiver_request_id:
           resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null
-      });
+      }, tab.url || tab.pendingUrl || null);
       await appendDebugLog({
         stage: "capture_result",
         ok: true,
@@ -1056,7 +1058,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
         active_tab_id: tab?.id || null,
         passive_reason: reason,
         last_receiver_request_id: state.receiver_request_id || null,
-      });
+      }, url);
       await updateSessionLedger({
         provider,
         providerSessionId,
@@ -1102,7 +1104,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
       active_tab_id: tab?.id || null,
       passive_reason: reason,
       last_receiver_request_id: status.receiver_request_id || null,
-    });
+    }, url);
   } catch (error) {
     await setStateForTab(tab?.id || null, {
       online: false,
@@ -1114,7 +1116,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
       passive_reason: reason,
       error: String(error.message || error),
       last_receiver_request_id: error.receiverRequestId || null,
-    });
+    }, url);
   }
 }
 
@@ -1339,7 +1341,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             provider_session_id: summary.providerSessionId,
             error: String(error.message || error),
             last_receiver_request_id: error.receiverRequestId || null,
-          });
+          }, sender.tab?.url || sender.tab?.pendingUrl || null);
           sendResponse({
             ok: false,
             queued: true,
@@ -1397,7 +1399,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         extension_instance_id: result.capture_instance_id || null,
         deduplicated: Boolean(result.deduplicated),
         last_receiver_request_id: result.receiver_request_id || null
-      });
+      }, sender.tab?.url || sender.tab?.pendingUrl || null);
       // Receiver just proved reachable — flush anything queued from earlier
       // outages before returning this capture's result.
       void drainCaptureQueue("post_success");
@@ -1457,7 +1459,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         provider: message.provider,
         provider_session_id: message.provider_session_id,
         last_receiver_request_id: state.receiver_request_id || null
-      });
+      }, sender.tab?.url || sender.tab?.pendingUrl || null);
       await updateSessionLedger({
         provider: message.provider,
         providerSessionId: message.provider_session_id,

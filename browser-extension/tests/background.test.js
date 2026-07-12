@@ -354,6 +354,26 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState.provider_session_id).toBe("conv-b");
   });
 
+  it("does not restore a delayed conversation after same-tab navigation to a new page", async () => {
+    tabs = [{ id: 1, url: "https://chatgpt.com/c/conv-a", title: "A", active: true }];
+    let resolveA;
+    let fetchCount = 0;
+    globalThis.fetch = vi.fn(async () => {
+      fetchCount += 1;
+      if (fetchCount === 1) return new Promise((resolve) => { resolveA = resolve; });
+      return new Promise(() => {});
+    });
+
+    updatedListener(1, { status: "complete" }, tabs[0]);
+    tabs[0] = { id: 1, url: "https://chatgpt.com/new", title: "New", active: true };
+    updatedListener(1, { url: "https://chatgpt.com/new" }, tabs[0]);
+
+    await vi.waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
+    resolveA(responseJson({ provider: "chatgpt", provider_session_id: "conv-a", state: "archived", captured: true }));
+    await vi.waitFor(() => expect(stored.polylogueSessionLedger["chatgpt:conv-a"]?.archive_state?.state).toBe("archived"));
+    expect(stored.polylogueState?.provider_session_id).not.toBe("conv-a");
+  });
+
   it("does not capture existing provider tabs on extension update", async () => {
     expect(installedListener).toBeTypeOf("function");
     globalThis.fetch = vi.fn(async () => responseJson({ ok: true, active: true }));
