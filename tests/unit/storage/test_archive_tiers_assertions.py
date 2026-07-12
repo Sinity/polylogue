@@ -1243,6 +1243,25 @@ def test_findings_reuse_candidate_judgment_lifecycle_and_deduplicate(tmp_path: P
         )
         assert accepted.resulting_assertion is not None
         assert accepted.resulting_assertion.kind is AssertionKind.FINDING
+        rematerialized = upsert_findings_as_assertions(
+            conn,
+            (
+                FindingAssertionInput(
+                    finding_kind=finding.finding_kind,
+                    target_ref=finding.target_ref,
+                    body_text="Detector wording changed after operator review.",
+                    evidence_refs=finding.evidence_refs,
+                    detector_ref=finding.detector_ref,
+                    value=finding.value,
+                    scope_ref="insight:changed-detector-scope",
+                ),
+            ),
+            now_ms=13,
+        )
+        assert rematerialized == [accepted.candidate]
+        assert rematerialized[0].body_text == finding.body_text
+        assert rematerialized[0].scope_ref is None
+        assert rematerialized[0].updated_at_ms == accepted.candidate.updated_at_ms
     finally:
         conn.close()
 

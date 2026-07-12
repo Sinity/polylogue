@@ -1290,6 +1290,10 @@ def upsert_findings_as_assertions(
             evidence_refs=finding.evidence_refs,
             detector_ref=finding.detector_ref,
         )
+        existing = read_assertion_envelope(conn, assertion_id)
+        if existing is not None and existing.status != AssertionStatus.CANDIDATE:
+            envelopes.append(existing)
+            continue
         envelopes.append(
             upsert_assertion(
                 conn,
