@@ -234,6 +234,7 @@ class BrowserCaptureAcceptedPayload(BaseModel):
     provider: str
     provider_session_id: str
     artifact_ref: str
+    content_hash: str
     bytes_written: int
     replaced: bool
 

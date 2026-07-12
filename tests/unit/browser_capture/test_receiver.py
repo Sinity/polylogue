@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -135,12 +136,12 @@ def _seed_browser_capture_archive(
 
 
 def _request(
-    host: str, port: int, method: str, path: str, *, body: object | str | None = None, origin: str
+    host: str, port: int, method: str, path: str, *, body: object | str | bytes | None = None, origin: str
 ) -> HTTPResponse:
     conn = HTTPConnection(host, port)
     headers = {"Origin": origin}
-    payload: str | None
-    if isinstance(body, str):
+    payload: str | bytes | None
+    if isinstance(body, (bytes, str)):
         payload = body
         headers["Content-Type"] = "application/json"
     elif body is not None:
@@ -423,8 +424,33 @@ def test_receiver_accepts_extension_capture_and_reports_typed_dto(tmp_path: Path
     assert body.schema_version == 1
     assert body.capture_id == "chatgpt:conv-123"
     assert body.artifact_ref == capture_artifact_ref(BrowserCaptureEnvelope.model_validate(_payload()), tmp_path)
+    request_body = json.dumps(_payload()).encode()
+    assert body.content_hash == hashlib.sha256(request_body).hexdigest()
     assert Path(body.artifact_ref).is_absolute() is False
     assert (tmp_path / body.artifact_ref).exists()
+
+
+def test_receiver_ack_hashes_exact_javascript_request_bytes(tmp_path: Path) -> None:
+    request_body = (
+        '{"polylogue_capture_kind":"browser_llm_session","schema_version":1,'
+        '"provenance":{"source_url":"https://chatgpt.com/c/conv-123",'
+        '"captured_at":"2026-04-24T00:00:00.000Z","adapter_name":"chatgpt-backfill-native-v1"},'
+        '"session":{"provider":"chatgpt","provider_session_id":"conv-123",'
+        '"turns":[{"provider_turn_id":"u1","role":"user","text":"żółć 😀"}]},'
+        '"provider_meta":{"number":1.25,"nested":{"b":2,"a":1}}}'
+    ).encode()
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "POST",
+            "/v1/browser-captures",
+            body=request_body,
+            origin=_EXTENSION_ORIGIN,
+        )
+        accepted = BrowserCaptureAcceptedPayload.model_validate(json.loads(response.read()))
+
+    assert accepted.content_hash == hashlib.sha256(request_body).hexdigest()
 
 
 def test_receiver_returns_429_without_writing_when_spool_quota_exceeded(
