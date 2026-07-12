@@ -12,6 +12,7 @@ from polylogue.storage.fts.fts_lifecycle import (
     reset_message_fts_index_sync,
     restore_fts_triggers_sync,
 )
+from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import (
     FTS_INDEX_DOC_COUNT_SQL,
     FTS_INDEXABLE_MESSAGE_COUNT_SQL,
@@ -111,9 +112,9 @@ def _repair_session_work_events_fts_rows_sync(conn: sqlite3.Connection) -> tuple
         source_table="session_work_events",
         fts_table="session_work_events_fts",
         key_column="event_id",
-        insert_sql="""
+        insert_sql=f"""
             INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-            SELECT swe.event_id, swe.session_id, swe.work_event_type, swe.search_text
+            SELECT swe.event_id, swe.session_id, swe.work_event_type, {pl_fold_sql_expr("swe.search_text")}
             FROM session_work_events AS swe
             LEFT JOIN session_work_events_fts AS fts ON fts.event_id = swe.event_id
             WHERE fts.event_id IS NULL
@@ -127,9 +128,9 @@ def _repair_threads_fts_rows_sync(conn: sqlite3.Connection) -> tuple[int, int, i
         source_table="threads",
         fts_table="threads_fts",
         key_column="thread_id",
-        insert_sql="""
+        insert_sql=f"""
             INSERT INTO threads_fts (thread_id, root_id, text)
-            SELECT wt.thread_id, wt.thread_id AS root_id, wt.search_text
+            SELECT wt.thread_id, wt.thread_id AS root_id, {pl_fold_sql_expr("wt.search_text")}
             FROM threads AS wt
             LEFT JOIN threads_fts AS fts ON fts.thread_id = wt.thread_id
             WHERE fts.thread_id IS NULL

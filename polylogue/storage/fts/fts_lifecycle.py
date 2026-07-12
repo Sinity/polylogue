@@ -10,6 +10,7 @@ from typing import TypeAlias
 
 import aiosqlite
 
+from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import (
     FTS_INDEX_DOC_COUNT_SQL,
     FTS_INDEX_EXISTS_SQL,
@@ -195,58 +196,58 @@ async def restore_fts_triggers_async(conn: aiosqlite.Connection) -> None:
 
 
 _BLOCKS_FTS_TRIGGER_DDL = [
-    """CREATE TRIGGER IF NOT EXISTS messages_fts_ai
+    f"""CREATE TRIGGER IF NOT EXISTS messages_fts_ai
        AFTER INSERT ON blocks WHEN new.search_text != '' BEGIN
            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-           VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text);
+           VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")});
        END""",
     """CREATE TRIGGER IF NOT EXISTS messages_fts_ad
        AFTER DELETE ON blocks WHEN old.search_text != '' BEGIN
            DELETE FROM messages_fts WHERE rowid = old.rowid;
        END""",
-    """CREATE TRIGGER IF NOT EXISTS messages_fts_au
+    f"""CREATE TRIGGER IF NOT EXISTS messages_fts_au
        AFTER UPDATE ON blocks BEGIN
            DELETE FROM messages_fts WHERE rowid = old.rowid;
            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-           SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text
+           SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")}
            WHERE new.search_text != '';
        END""",
 ]
 
 
 _SESSION_WORK_EVENT_FTS_TRIGGER_DDL = [
-    """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
+    f"""CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
        AFTER INSERT ON session_work_events BEGIN
            INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-           VALUES (new.event_id, new.session_id, new.work_event_type, new.search_text);
+           VALUES (new.event_id, new.session_id, new.work_event_type, {pl_fold_sql_expr("new.search_text")});
        END""",
     """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ad
        AFTER DELETE ON session_work_events BEGIN
            DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
        END""",
-    """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
+    f"""CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
        AFTER UPDATE ON session_work_events BEGIN
            DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
            INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-           VALUES (new.event_id, new.session_id, new.work_event_type, new.search_text);
+           VALUES (new.event_id, new.session_id, new.work_event_type, {pl_fold_sql_expr("new.search_text")});
        END""",
 ]
 
 _THREAD_FTS_TRIGGER_DDL = [
-    """CREATE TRIGGER IF NOT EXISTS threads_fts_ai
+    f"""CREATE TRIGGER IF NOT EXISTS threads_fts_ai
        AFTER INSERT ON threads BEGIN
            INSERT INTO threads_fts (thread_id, root_id, text)
-           VALUES (new.thread_id, new.thread_id, new.search_text);
+           VALUES (new.thread_id, new.thread_id, {pl_fold_sql_expr("new.search_text")});
        END""",
     """CREATE TRIGGER IF NOT EXISTS threads_fts_ad
        AFTER DELETE ON threads BEGIN
            DELETE FROM threads_fts WHERE thread_id = old.thread_id;
        END""",
-    """CREATE TRIGGER IF NOT EXISTS threads_fts_au
+    f"""CREATE TRIGGER IF NOT EXISTS threads_fts_au
        AFTER UPDATE ON threads BEGIN
            DELETE FROM threads_fts WHERE thread_id = old.thread_id;
            INSERT INTO threads_fts (thread_id, root_id, text)
-           VALUES (new.thread_id, new.thread_id, new.search_text);
+           VALUES (new.thread_id, new.thread_id, {pl_fold_sql_expr("new.search_text")});
        END""",
 ]
 
@@ -501,9 +502,9 @@ def _rebuild_session_work_events_fts_sync(conn: sqlite3.Connection) -> None:
         return
     conn.execute("DELETE FROM session_work_events_fts")
     conn.execute(
-        """
+        f"""
         INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-        SELECT event_id, session_id, work_event_type, search_text
+        SELECT event_id, session_id, work_event_type, {pl_fold_sql_expr("search_text")}
         FROM session_work_events
         """
     )
@@ -514,9 +515,9 @@ def _rebuild_threads_fts_sync(conn: sqlite3.Connection) -> None:
         return
     conn.execute("DELETE FROM threads_fts")
     conn.execute(
-        """
+        f"""
         INSERT INTO threads_fts (thread_id, root_id, text)
-        SELECT thread_id, thread_id AS root_id, search_text
+        SELECT thread_id, thread_id AS root_id, {pl_fold_sql_expr("search_text")}
         FROM threads
         """
     )

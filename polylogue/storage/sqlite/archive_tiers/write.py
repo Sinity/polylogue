@@ -40,6 +40,7 @@ from polylogue.storage.fts.fts_lifecycle import (
     restore_message_fts_triggers_sync,
     suspend_message_fts_triggers_sync,
 )
+from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import delete_session_rows_sql, insert_session_rows_sql
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
@@ -1465,9 +1466,9 @@ def rebuild_archive_messages_fts(conn: sqlite3.Connection) -> int:
     """Rebuild the archive message FTS index from canonical ``blocks`` rows."""
     conn.execute("DELETE FROM messages_fts")
     conn.execute(
-        """
+        f"""
         INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-        SELECT rowid, block_id, message_id, session_id, block_type, search_text
+        SELECT rowid, block_id, message_id, session_id, block_type, {pl_fold_sql_expr("search_text")}
         FROM blocks
         WHERE search_text != ''
         """
