@@ -46,16 +46,17 @@ polylogue --since "last month" find 'since:"last month"' then read --all --forma
 
 | Format | Description |
 |--------|-------------|
-| `markdown` | Default human-readable query-set output |
+| `markdown` | Human-readable query-set output |
 | `json` | Query-set envelope as structured JSON |
-| `ndjson` | One JSON object per line (query-set default) |
+| `ndjson` | One JSON object per line |
 | `yaml` | Query-set envelope as YAML |
 | `plaintext` | Unformatted query-set rows |
 | `csv` | Comma-separated query-set rows |
 
-These are the formats supported by the standard query-set export path. Other
+These are the formats supported by the standard query-set export path. Default
+output varies by view and cardinality, so specify a format in automation. Other
 views have their own contracts; use `polylogue read --views --format json` to
-inspect the current view-specific formats before relying on one in automation.
+inspect the current view-specific formats before relying on one.
 
 Set format with `--format` / `-f`:
 

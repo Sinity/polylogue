@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from devtools import render_docs_surface
+from devtools.docs_surface import DocsEntry
 
 
 def test_build_docs_readme_groups_docs_by_reader_tier() -> None:
@@ -38,6 +39,30 @@ def test_render_outputs_rejects_an_unregistered_doc(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="unindexed documentation: docs/new-guide.md"):
+        render_docs_surface.render_outputs(
+            readme_path=readme_path,
+            docs_readme_path=docs_root / "README.md",
+        )
+
+
+def test_render_outputs_rejects_duplicate_document_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docs_root = tmp_path / "docs"
+    docs_root.mkdir()
+    (docs_root / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    readme_path = tmp_path / "README.md"
+    readme_path.write_text(
+        "<!-- BEGIN GENERATED: docs-surface -->\nold\n<!-- END GENERATED: docs-surface -->\n",
+        encoding="utf-8",
+    )
+    duplicate_entries = (
+        DocsEntry("Guide", "docs/guide.md", "First registration.", "guide"),
+        DocsEntry("Guide again", "docs/guide.md", "Duplicate registration.", "reference"),
+    )
+    monkeypatch.setattr(render_docs_surface, "DOCS_REFERENCE_ENTRIES", duplicate_entries)
+
+    with pytest.raises(ValueError, match="duplicate documentation entries: docs/guide.md"):
         render_docs_surface.render_outputs(
             readme_path=readme_path,
             docs_readme_path=docs_root / "README.md",

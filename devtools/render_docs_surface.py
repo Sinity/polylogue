@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from devtools.command_catalog import control_plane_command
@@ -52,6 +52,25 @@ def undocumented_paths(docs_entries: tuple[DocsEntry, ...], *, docs_root: Path) 
     expected = {f"docs/{path.relative_to(docs_root).as_posix()}" for path in docs_root.rglob("*.md")}
     documented = {entry.path for entry in docs_entries}
     return expected - documented - GENERATED_DOC_PATHS
+
+
+def documentation_registry_errors(docs_entries: tuple[DocsEntry, ...], *, docs_root: Path) -> tuple[str, ...]:
+    """Return catalog violations that would make the generated map dishonest."""
+    missing = undocumented_paths(docs_entries, docs_root=docs_root)
+    path_counts = Counter(entry.path for entry in docs_entries)
+    duplicate_paths = sorted(path for path, count in path_counts.items() if count > 1)
+    nonexistent_paths = sorted(
+        path for path in path_counts if path not in GENERATED_DOC_PATHS and not (docs_root.parent / path).is_file()
+    )
+
+    errors: list[str] = []
+    if missing:
+        errors.append(f"unindexed documentation: {', '.join(sorted(missing))}")
+    if duplicate_paths:
+        errors.append(f"duplicate documentation entries: {', '.join(duplicate_paths)}")
+    if nonexistent_paths:
+        errors.append(f"nonexistent documentation entries: {', '.join(nonexistent_paths)}")
+    return tuple(errors)
 
 
 def build_docs_readme(
@@ -110,10 +129,9 @@ def replace_marked_section(text: str, *, marker: str, replacement: str) -> str:
 
 
 def render_outputs(*, readme_path: Path, docs_readme_path: Path) -> tuple[str, str]:
-    missing = undocumented_paths(DOCS_REFERENCE_ENTRIES, docs_root=docs_readme_path.parent)
-    if missing:
-        joined = ", ".join(sorted(missing))
-        raise ValueError(f"unindexed documentation: {joined}")
+    errors = documentation_registry_errors(DOCS_REFERENCE_ENTRIES, docs_root=docs_readme_path.parent)
+    if errors:
+        raise ValueError("; ".join(errors))
     docs_readme = build_docs_readme()
     readme = replace_marked_section(
         readme_path.read_text(encoding="utf-8"), marker=README_MARKER, replacement=build_readme_section()
