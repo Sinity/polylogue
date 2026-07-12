@@ -28,6 +28,7 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     upsert_message_embeddings,
 )
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _INDEX_DDL = """
@@ -49,6 +50,7 @@ def _build_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
     index_db = tmp_path / "index.db"
     conn = sqlite3.connect(index_db)
     conn.executescript(_INDEX_DDL)
+    conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
     conn.execute("INSERT INTO sessions (session_id, origin) VALUES (?, 'codex-session')", (session_id,))
     conn.commit()
     conn.close()
@@ -139,6 +141,28 @@ def test_reconcile_embedding_orphans_once_removes_orphan_when_enabled(tmp_path: 
         assert status_row[1] == 1
     finally:
         conn.close()
+
+
+def test_reconcile_embedding_orphans_once_refuses_stale_index_schema(tmp_path: Path) -> None:
+    index_db, embeddings_db, _session_id, orphan_message_id = _build_fixture(tmp_path)
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("PRAGMA user_version = 32")
+
+    with (
+        patch("polylogue.daemon.convergence_stages.load_polylogue_config") as mock_cfg,
+        pytest.raises(RuntimeError, match=rf"active index is v32, packaged index is v{INDEX_SCHEMA_VERSION}"),
+    ):
+        mock_cfg.return_value.embedding_enabled = True
+        mock_cfg.return_value.voyage_api_key = "test-key"
+        reconcile_embedding_orphans_once(index_db)
+
+    with sqlite3.connect(embeddings_db) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (orphan_message_id,)
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_daemon_coordinator_owns_real_orphan_reconcile_mutation(tmp_path: Path) -> None:

@@ -928,6 +928,33 @@ def test_embedding_orphan_reconcile_cli_apply_requires_exclusive_offline_lease(
     assert "index rebuild lease is already held" in result.output
 
 
+def test_embedding_orphan_reconcile_cli_apply_refuses_stale_index_schema(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """The break-glass writer cannot treat a pre-rebuild index as deletion truth."""
+    _session_id, message_id = _seed_orphan_embedding_row(cli_workspace["archive_root"])
+    index_db = cli_workspace["archive_root"] / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("PRAGMA user_version = 32")
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "embedding-orphan-reconcile", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, RuntimeError)
+    assert "active index is v32, packaged index is v" in str(result.exception)
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (message_id,)).fetchone()[
+                0
+            ]
+            == 1
+        )
+
+
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
     _stage_uninitialized_archive(cli_workspace)
     result = cli_runner.invoke(

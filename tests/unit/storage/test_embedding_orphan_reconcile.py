@@ -29,6 +29,7 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     upsert_message_embeddings,
 )
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _INDEX_DDL = """
@@ -60,6 +61,7 @@ def _connect_index(path: Path, *, sessions: list[str], messages: dict[str, list[
     conn = sqlite3.connect(path)
     try:
         conn.executescript(_INDEX_DDL)
+        conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
         for session_id in sessions:
             conn.execute(
                 "INSERT INTO sessions (session_id, origin) VALUES (?, ?)",
@@ -446,6 +448,47 @@ def test_apply_requires_owned_writer_authority(tmp_path: Path) -> None:
             dry_run=False,
             now_ms=_NOW_MS,
         )
+
+
+def test_apply_refuses_live_v32_index_and_preserves_orphans(tmp_path: Path) -> None:
+    """A stale active generation cannot be authoritative deletion truth.
+
+    This reproduces the live pre-rebuild shape observed while packaged schema
+    v34 was active: index v32 with orphan candidates accumulated in
+    embeddings.db. Removing the schema guard makes the real rows disappear.
+    """
+    session_id = "codex-session:stale-index"
+    message_id = f"{session_id}:orphan"
+    index_db = tmp_path / "index.db"
+    _connect_index(index_db, sessions=[session_id], messages={session_id: []})
+    with sqlite3.connect(index_db) as index_conn:
+        index_conn.execute("PRAGMA user_version = 32")
+
+    embeddings_db = tmp_path / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    _write_embedding(conn, message_id=message_id, session_id=session_id, embedded_at_ms=_OLD_MS)
+    _write_status(conn, session_id=session_id, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
+    conn.close()
+
+    inspected = inspect_embedding_orphans(index_db, embeddings_db, now_ms=_NOW_MS)
+    assert inspected.orphan_message_rows == 1
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"active index is v32, packaged index is v{INDEX_SCHEMA_VERSION}",
+    ):
+        reconcile_embedding_orphans(
+            index_db,
+            embeddings_db,
+            dry_run=False,
+            now_ms=_NOW_MS,
+            mutation_authority="daemon-coordinator",
+        )
+
+    with _connect_embeddings(embeddings_db) as verify:
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
+        assert verify.execute("SELECT COUNT(*) FROM embedding_status").fetchone()[0] == 1
 
 
 def test_reconcile_counts_and_removes_meta_only_and_vec_only_orphans(tmp_path: Path) -> None:

@@ -46,6 +46,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+
 DEFAULT_QUIET_WINDOW_MS = 5 * 60 * 1000  # 5 minutes
 DEFAULT_SAMPLE_SIZE = 30
 DEFAULT_MAX_COUNT = 500
@@ -226,6 +228,13 @@ def reconcile_embedding_orphans(
 
         expected_index_identity = _index_identity(index_path)
         conn.execute("ATTACH DATABASE ? AS idx", (expected_index_identity.resolved_path,))
+        if not dry_run:
+            actual_index_schema_version = _scalar(conn, "PRAGMA idx.user_version")
+            if actual_index_schema_version != INDEX_SCHEMA_VERSION:
+                raise RuntimeError(
+                    "embedding orphan reconciliation apply requires an authoritative index schema: "
+                    f"active index is v{actual_index_schema_version}, packaged index is v{INDEX_SCHEMA_VERSION}"
+                )
         conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
 
         scanned_message_meta_rows = _scalar(conn, "SELECT COUNT(*) FROM message_embeddings_meta")
