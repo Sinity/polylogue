@@ -22,7 +22,7 @@ over the `CREATE TABLE` statement.
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
 | `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 7` |
-| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 32` |
+| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 34` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
 | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 5` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
@@ -122,6 +122,14 @@ contract is visible in canonical DDL instead of hand-written per table.
 
 Recent index-tier versions:
 
+- version 34 (polylogue-rgbj) adds `idx_web_constructs_message` on
+  `web_content_constructs(message_id)` — the only `messages(message_id)` FK
+  child table that lacked a leading index on its foreign-key column. Without
+  it, SQLite's `ON DELETE CASCADE` enforcement fell back to a full table scan
+  of `web_content_constructs` per deleted message, making
+  `_replace_full_session_messages_and_blocks`'s session-scoped
+  `DELETE FROM messages` cost O(deleted_messages x web_content_constructs_rows)
+  — the dominant cost in a production 10+ minute full-session replacement;
 - version 9 adds typed `sessions.session_kind` for standard vs temporary
   sessions, so temporary chats are archive schema rather than only parser tags;
 - version 8 adds `web_content_constructs` for provider-native web/export

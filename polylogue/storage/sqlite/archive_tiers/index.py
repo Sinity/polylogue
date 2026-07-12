@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 33
+INDEX_SCHEMA_VERSION = 34
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -354,6 +354,25 @@ CREATE TABLE IF NOT EXISTS web_content_constructs (
 
 CREATE INDEX IF NOT EXISTS idx_web_constructs_session_type
 ON web_content_constructs(session_id, construct_type);
+
+-- polylogue-rgbj: the only messages(message_id) FK child table that lacked a
+-- leading index on its foreign key column. Every other referencing table
+-- (blocks, attachment_refs, paste_spans, session_events,
+-- session_agent_policies, session_provider_usage_events) already has one
+-- via its PRIMARY KEY or a dedicated index. Without this index, SQLite's FK
+-- `ON DELETE CASCADE` enforcement falls back to a full table scan of
+-- web_content_constructs for EVERY deleted message row (SQLite does not
+-- require a child-key index for FK enforcement, it just scans if one is
+-- missing). `_replace_full_session_messages_and_blocks`'s bare
+-- `DELETE FROM messages WHERE session_id = ?` therefore cost
+-- O(deleted_messages x web_content_constructs_rows): confirmed live at
+-- 132,796 web_content_constructs rows, `EXPLAIN QUERY PLAN` showed
+-- `SCAN web_content_constructs` before this index, `SEARCH ... USING INDEX`
+-- after. See tests/unit/storage/test_schema_safety.py and
+-- tests/benchmarks/test_full_session_replace.py for the query-plan and
+-- timing proof.
+CREATE INDEX IF NOT EXISTS idx_web_constructs_message
+ON web_content_constructs(message_id);
 
 CREATE INDEX IF NOT EXISTS idx_web_constructs_url
 ON web_content_constructs(url)

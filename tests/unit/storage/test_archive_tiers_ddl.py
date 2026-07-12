@@ -608,6 +608,56 @@ def test_archive_tiers_blocks_have_tool_family_index(tmp_path: Path) -> None:
     assert columns[:2] == ["block_type", None]
 
 
+def test_archive_tiers_every_message_fk_backreference_has_leading_index(tmp_path: Path) -> None:
+    """Every FK to ``messages(message_id)`` must have a leading index on its
+    child column, or SQLite's ``ON DELETE`` cascade/set-null enforcement
+    silently falls back to a full table scan of that child table for *every*
+    deleted/updated message row (SQLite does not require a child-key index
+    for FK enforcement — it just scans if one is missing).
+
+    polylogue-rgbj: ``web_content_constructs`` was exactly this gap.
+    ``_replace_full_session_messages_and_blocks``'s session-scoped
+    ``DELETE FROM messages WHERE session_id = ?`` triggers SQLite's internal
+    FK cascade check against every table with a ``messages(message_id)`` FK,
+    once per deleted message row. With no leading index on
+    ``web_content_constructs.message_id``, that cascade check scanned the
+    *entire* table (all sessions, not just the one being replaced) for each
+    deleted message — confirmed live at 132,796 rows via
+    ``EXPLAIN QUERY PLAN`` (``SCAN web_content_constructs``), turning a
+    15k-message session replacement into a 10+ minute stall while the writer
+    held the transaction. This test makes that class of gap structural: any
+    future table with a FK to ``messages(message_id)`` must ship its leading
+    index in the same change, not be discovered via production py-spy
+    sampling. See ``tests/benchmarks/test_full_session_replace.py`` for the
+    timing proof.
+    """
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    table_names = [
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    ]
+
+    unindexed: list[str] = []
+    for table in table_names:
+        for fk in conn.execute(f"PRAGMA foreign_key_list('{table}')").fetchall():
+            if fk["table"] != "messages" or fk["to"] != "message_id":
+                continue
+            from_column = fk["from"]
+            plan_rows = conn.execute(f"EXPLAIN QUERY PLAN SELECT 1 FROM {table} WHERE {from_column} = 'x'").fetchall()
+            plan = " | ".join(str(row["detail"]) for row in plan_rows)
+            if "SEARCH" not in plan.upper():
+                unindexed.append(f"{table}.{from_column}: {plan}")
+
+    assert not unindexed, (
+        "Table(s) with a messages(message_id) FK lack a leading index on the FK "
+        f"column, forcing a full scan on every deleted/updated message: {unindexed}"
+    )
+
+
 def test_archive_tier_specs_capture_file_and_backup_policy() -> None:
     assert {tier: spec.filename for tier, spec in ARCHIVE_TIER_SPECS.items()} == {
         ArchiveTier.SOURCE: "source.db",
