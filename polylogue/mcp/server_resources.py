@@ -97,7 +97,8 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 code="internal_error",
                 detail=type(exc).__name__,
             )
-        return hooks.json_payload(MCPTagCountsPayload(root=tags))
+        with hooks.response_context("list_tags", {"limit": 3, "offset": 0}):
+            return hooks.json_payload(MCPTagCountsPayload(root=tags))
 
     @mcp.resource("polylogue://capabilities/action-affordances")
     def action_affordances_resource() -> str:

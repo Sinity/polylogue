@@ -220,6 +220,10 @@ def _narrow_continuation(context: _ResponseContext | None) -> dict[str, object] 
         requested_max_chars = arguments.get("max_chars_per_correction")
         max_chars = requested_max_chars if isinstance(requested_max_chars, int) else 4096
         arguments["max_chars_per_correction"] = min(max_chars, 4096)
+    if "max_chars_per_item" in arguments:
+        requested_max_chars = arguments.get("max_chars_per_item")
+        max_chars = requested_max_chars if isinstance(requested_max_chars, int) else 512
+        arguments["max_chars_per_item"] = min(max_chars, 512)
     return {
         "tool": context.tool,
         "arguments": arguments,

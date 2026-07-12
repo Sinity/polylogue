@@ -2103,6 +2103,52 @@ class TestMutationTools:
         assert payload["continuation"]["arguments"]["limit"] == 3
         assert len(json.loads(replay)) == 3
 
+    @pytest.mark.asyncio
+    async def test_tags_resource_over_budget_replays_through_paged_tool(self, mcp_server: MCPServerUnderTest) -> None:
+        tags = {f"tag-{index:03d}-{'x' * 300}": index for index in range(100)}
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_tags = AsyncMock(return_value=tags)
+            mock_get_polylogue.return_value = mock_poly
+            raw = await invoke_surface_async(mcp_server._resource_manager._resources["polylogue://tags"].fn)
+            payload = json.loads(raw)
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+
+        assert payload["continuation"]["tool"] == "list_tags"
+        assert payload["continuation"]["arguments"] == {"limit": 3, "offset": 0}
+        assert len(json.loads(replay)) == 3
+
+    @pytest.mark.asyncio
+    async def test_list_annotations_over_budget_replays_with_item_cap(self, mcp_server: MCPServerUnderTest) -> None:
+        annotation = {
+            "annotation_id": "annotation-1",
+            "target_type": "session",
+            "target_id": "codex-session:annotation",
+            "session_id": "codex-session:annotation",
+            "message_id": "",
+            "note_text": "a" * 30_000,
+            "created_at": "2026-07-12T00:00:00+00:00",
+            "updated_at": "2026-07-12T00:00:00+00:00",
+        }
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_annotations = AsyncMock(return_value=[annotation])
+            mock_get_polylogue.return_value = mock_poly
+            raw = await invoke_surface_async(mcp_server._tool_manager._tools["list_annotations"].fn)
+            payload = json.loads(raw)
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+
+        assert payload["status"] == "response_budget_exceeded"
+        assert payload["continuation"]["arguments"]["max_chars_per_item"] == 512
+        replay_payload = json.loads(replay)
+        assert replay_payload["items"][0]["note_text"] == "a" * 512
+
     def test_get_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()

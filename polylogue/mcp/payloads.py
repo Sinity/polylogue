@@ -726,6 +726,9 @@ class MCPUserMarkPayload(SurfacePayloadModel):
 class MCPUserMarkListPayload(SurfacePayloadModel):
     items: tuple[MCPUserMarkPayload, ...]
     total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
 
 
 class MCPUserAnnotationPayload(SurfacePayloadModel):
@@ -742,6 +745,9 @@ class MCPUserAnnotationPayload(SurfacePayloadModel):
 class MCPUserAnnotationListPayload(SurfacePayloadModel):
     items: tuple[MCPUserAnnotationPayload, ...]
     total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
 
 
 class MCPSavedViewPayload(SurfacePayloadModel):
@@ -754,6 +760,9 @@ class MCPSavedViewPayload(SurfacePayloadModel):
 class MCPSavedViewListPayload(SurfacePayloadModel):
     items: tuple[MCPSavedViewPayload, ...]
     total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
 
 
 class MCPRecallPackPayload(SurfacePayloadModel):
@@ -767,6 +776,9 @@ class MCPRecallPackPayload(SurfacePayloadModel):
 class MCPRecallPackListPayload(SurfacePayloadModel):
     items: tuple[MCPRecallPackPayload, ...]
     total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
 
 
 class MCPReaderWorkspacePayload(SurfacePayloadModel):
@@ -783,6 +795,9 @@ class MCPReaderWorkspacePayload(SurfacePayloadModel):
 class MCPReaderWorkspaceListPayload(SurfacePayloadModel):
     items: tuple[MCPReaderWorkspacePayload, ...]
     total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
 
 
 class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):

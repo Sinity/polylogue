@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from hashlib import sha256
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.annotations.importer import (
     AnnotationBatchImportError,
@@ -64,6 +65,43 @@ def _bounded_correction_text(value: str | None, max_chars: int | None) -> str | 
     if value is None or max_chars is None or len(value) <= max_chars:
         return value
     return value[:max_chars]
+
+
+TItem = TypeVar("TItem")
+
+
+def _page_items(items: Sequence[TItem], *, limit: int, offset: int) -> tuple[tuple[TItem, ...], int, int, int | None]:
+    """Slice a list response while retaining deterministic continuation state."""
+    total = len(items)
+    page_offset = max(0, offset)
+    page = tuple(items[page_offset : page_offset + limit])
+    next_offset = page_offset + len(page) if page_offset + len(page) < total else None
+    return page, total, page_offset, next_offset
+
+
+def _bounded_json_value(value: object, max_chars: int | None, *, depth: int = 0) -> object:
+    """Compact arbitrary saved payloads only when a bounded replay requests it."""
+    if max_chars is None:
+        return value
+    if isinstance(value, str):
+        return _bounded_correction_text(value, max_chars)
+    if depth >= 2:
+        return {"truncated": True} if isinstance(value, Mapping | Sequence) else value
+    if isinstance(value, Mapping):
+        return {
+            str(key): _bounded_json_value(item, max_chars, depth=depth + 1) for key, item in list(value.items())[:4]
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_bounded_json_value(item, max_chars, depth=depth + 1) for item in value[:4]]
+    return value
+
+
+def _bounded_sequence(value: Sequence[object], max_chars: int | None) -> tuple[object, ...]:
+    """Return the compact sequence form while keeping the type boundary explicit."""
+    bounded = _bounded_json_value(value, max_chars)
+    if isinstance(bounded, Sequence) and not isinstance(bounded, (str, bytes, bytearray)):
+        return tuple(bounded)
+    return ()
 
 
 def _saved_view_payload(row: dict[str, str]) -> MCPSavedViewPayload:
@@ -341,6 +379,8 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         target_type: str | None = None,
         target_id: str | None = None,
         message_id: str | None = None,
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
     ) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
@@ -362,7 +402,29 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 )
                 for row in rows
             )
-            return hooks.json_payload(MCPUserMarkListPayload(items=items, total=len(items)))
+            clamped_limit = hooks.clamp_limit(limit)
+            page, total, page_offset, next_offset = _page_items(items, limit=clamped_limit, offset=offset)
+            with hooks.response_context(
+                "list_marks",
+                {
+                    "mark_type": mark_type,
+                    "session_id": session_id,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "message_id": message_id,
+                    "limit": clamped_limit,
+                    "offset": page_offset,
+                },
+            ):
+                return hooks.json_payload(
+                    MCPUserMarkListPayload(
+                        items=page,
+                        total=total,
+                        limit=clamped_limit,
+                        offset=page_offset,
+                        next_offset=next_offset,
+                    )
+                )
 
         return await hooks.async_safe_call("list_marks", run, session_id=session_id)
 
@@ -446,6 +508,9 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         target_type: str | None = None,
         target_id: str | None = None,
         message_id: str | None = None,
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
+        max_chars_per_item: MCPCharacterLimit = None,
     ) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
@@ -455,8 +520,35 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 target_id=target_id,
                 message_id=message_id,
             )
-            items = tuple(_annotation_payload(row) for row in rows)
-            return hooks.json_payload(MCPUserAnnotationListPayload(items=items, total=len(items)))
+            items = tuple(
+                _annotation_payload(
+                    {**row, "note_text": _bounded_correction_text(row["note_text"], max_chars_per_item) or ""}
+                )
+                for row in rows
+            )
+            clamped_limit = hooks.clamp_limit(limit)
+            page, total, page_offset, next_offset = _page_items(items, limit=clamped_limit, offset=offset)
+            with hooks.response_context(
+                "list_annotations",
+                {
+                    "session_id": session_id,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "message_id": message_id,
+                    "limit": clamped_limit,
+                    "offset": page_offset,
+                    "max_chars_per_item": max_chars_per_item,
+                },
+            ):
+                return hooks.json_payload(
+                    MCPUserAnnotationListPayload(
+                        items=page,
+                        total=total,
+                        limit=clamped_limit,
+                        offset=page_offset,
+                        next_offset=next_offset,
+                    )
+                )
 
         return await hooks.async_safe_call("list_annotations", run, session_id=session_id)
 
@@ -516,12 +608,35 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("delete_annotation", run)
 
     @mcp.tool()
-    async def list_saved_views() -> str:
+    async def list_saved_views(
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
+        max_chars_per_item: MCPCharacterLimit = None,
+    ) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
             rows = await poly.list_views()
-            items = tuple(_saved_view_payload(row) for row in rows)
-            return hooks.json_payload(MCPSavedViewListPayload(items=items, total=len(items)))
+            items = tuple(
+                (payload := _saved_view_payload(row)).model_copy(
+                    update={"query": _bounded_json_value(payload.query, max_chars_per_item)}
+                )
+                for row in rows
+            )
+            clamped_limit = hooks.clamp_limit(limit)
+            page, total, page_offset, next_offset = _page_items(items, limit=clamped_limit, offset=offset)
+            with hooks.response_context(
+                "list_saved_views",
+                {"limit": clamped_limit, "offset": page_offset, "max_chars_per_item": max_chars_per_item},
+            ):
+                return hooks.json_payload(
+                    MCPSavedViewListPayload(
+                        items=page,
+                        total=total,
+                        limit=clamped_limit,
+                        offset=page_offset,
+                        next_offset=next_offset,
+                    )
+                )
 
         return await hooks.async_safe_call("list_saved_views", run)
 
@@ -577,12 +692,40 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("delete_saved_view", run)
 
     @mcp.tool()
-    async def list_recall_packs() -> str:
+    async def list_recall_packs(
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
+        max_chars_per_item: MCPCharacterLimit = None,
+    ) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
             rows = await poly.list_recall_packs()
-            items = tuple(_recall_pack_payload(row) for row in rows)
-            return hooks.json_payload(MCPRecallPackListPayload(items=items, total=len(items)))
+            items = tuple(
+                (payload := _recall_pack_payload(row)).model_copy(
+                    update={
+                        "session_ids": tuple(
+                            str(item) for item in _bounded_sequence(payload.session_ids, max_chars_per_item)
+                        ),
+                        "payload": _bounded_json_value(payload.payload, max_chars_per_item),
+                    }
+                )
+                for row in rows
+            )
+            clamped_limit = hooks.clamp_limit(limit)
+            page, total, page_offset, next_offset = _page_items(items, limit=clamped_limit, offset=offset)
+            with hooks.response_context(
+                "list_recall_packs",
+                {"limit": clamped_limit, "offset": page_offset, "max_chars_per_item": max_chars_per_item},
+            ):
+                return hooks.json_payload(
+                    MCPRecallPackListPayload(
+                        items=page,
+                        total=total,
+                        limit=clamped_limit,
+                        offset=page_offset,
+                        next_offset=next_offset,
+                    )
+                )
 
         return await hooks.async_safe_call("list_recall_packs", run)
 
@@ -640,12 +783,43 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("delete_recall_pack", run)
 
     @mcp.tool()
-    async def list_workspaces() -> str:
+    async def list_workspaces(
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
+        max_chars_per_item: MCPCharacterLimit = None,
+    ) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
             rows = await poly.list_workspaces()
-            items = tuple(_workspace_payload(row) for row in rows)
-            return hooks.json_payload(MCPReaderWorkspaceListPayload(items=items, total=len(items)))
+            items = tuple(
+                (payload := _workspace_payload(row)).model_copy(
+                    update={
+                        "open_targets": tuple(
+                            item
+                            for item in _bounded_sequence(payload.open_targets, max_chars_per_item)
+                            if isinstance(item, dict)
+                        ),
+                        "layout": _bounded_json_value(payload.layout, max_chars_per_item),
+                        "active_target": _bounded_json_value(payload.active_target, max_chars_per_item),
+                    }
+                )
+                for row in rows
+            )
+            clamped_limit = hooks.clamp_limit(limit)
+            page, total, page_offset, next_offset = _page_items(items, limit=clamped_limit, offset=offset)
+            with hooks.response_context(
+                "list_workspaces",
+                {"limit": clamped_limit, "offset": page_offset, "max_chars_per_item": max_chars_per_item},
+            ):
+                return hooks.json_payload(
+                    MCPReaderWorkspaceListPayload(
+                        items=page,
+                        total=total,
+                        limit=clamped_limit,
+                        offset=page_offset,
+                        next_offset=next_offset,
+                    )
+                )
 
         return await hooks.async_safe_call("list_workspaces", run)
 
