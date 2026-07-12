@@ -31,6 +31,38 @@ if [[ "${1:-}" == "--status" ]]; then
   exec bash "$LAUNCHER" --status --output-dir "$OUTPUT_DIR"
 fi
 
+# resume-headless <lane...|--all>: relaunch lanes HEADLESS on codex-lean
+# (lean MCP profile, hooks disabled) resuming their persisted sessions from
+# .agent/scratch/fanout-sessions.json. Survives kitty/desktop death; use
+# after an auth cutoff or when visibility isn't needed. Logs/exit markers in
+# the output dir; monitor with --status.
+if [[ "${1:-}" == "resume-headless" ]]; then
+  shift
+  MAN="$REPO_ROOT/.agent/scratch/fanout-sessions.json"
+  lanes=()
+  if [[ "${1:-}" == "--all" ]]; then
+    lanes=($(python3 -c "import json;print('\n'.join(json.load(open('$MAN'))))"))
+  else
+    lanes=("$@")
+  fi
+  mkdir -p "$OUTPUT_DIR"
+  for lane in "${lanes[@]}"; do
+    sid=$(python3 -c "import json;print(json.load(open('$MAN')).get('$lane',{}).get('sid',''))")
+    wt="/realm/worktrees/$lane"
+    [[ -z "$sid" || ! -d "$wt" ]] && { echo "skip $lane (sid='$sid')"; continue }
+    rm -f "$OUTPUT_DIR/$lane.exit"
+    n=1; while [[ -e "$OUTPUT_DIR/$lane.headless-$n.log" ]]; do n=$((n+1)); done
+    hlog="$OUTPUT_DIR/$lane.headless-$n.log"
+    cont="Coordinator: resumed headless after interruption. Run git status && git log --oneline -5 first; continue your mission from where you left off (re-read your bead list with bd show; your PR may already exist — continue on the same branch). Commit and push every chunk. Do not merge."
+    scope=(); command -v sinnix-scope >/dev/null && scope=(sinnix-scope background --)
+    contq=$(printf '%q' "$cont")
+    nohup zsh -c "cd $wt && printf '%s' $contq | ${scope[*]} $HOME/.local/bin/codex-lean exec resume $sid --model ${FANOUT_MODEL:-gpt-5.6-terra} -c 'model_reasoning_effort=\"${FANOUT_EFFORT:-high}\"' -c 'features.hooks=false' --output-last-message $OUTPUT_DIR/$lane.last.md - ; ec=\$?; echo \$ec > $OUTPUT_DIR/$lane.exit" >"$hlog" 2>&1 &
+    echo "headless-resumed $lane (sid $sid) log=$hlog pid=$!"
+    sleep "${FANOUT_STAGGER:-8}"
+  done
+  exit 0
+fi
+
 # resume <lane...> [--workspace N]: continue a dead lane's PERSISTED codex
 # session (context intact) instead of paying fresh re-orientation. Extracts
 # the exact session id from the lane's launch receipt in the log — never
