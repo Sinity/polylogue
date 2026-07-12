@@ -257,6 +257,20 @@ describe("popup capture", () => {
     expect(document.getElementById("fidelity-flag").hidden).toBe(false);
   });
 
+  it("maps every archive pipeline state through the shared operator vocabulary", async () => {
+    await loadPopup();
+
+    const { operatorStatusForState } = globalThis.PolylogueOperatorStatus;
+    expect(operatorStatusForState({ online: true, archive_state: { state: "missing" } }).label).toBe("Not saved");
+    expect(operatorStatusForState({ online: true, archive_state: { state: "spooled_only" } }).label).toBe("Catching up");
+    expect(operatorStatusForState({ online: true, archive_state: { state: "ingest_pending" } }).label).toBe("Catching up");
+    expect(operatorStatusForState({ online: true, archive_state: { state: "stale" } }).label).toBe("Catching up");
+    expect(operatorStatusForState({ online: true, archive_state: { state: "archived" } }).label).toBe("Safe");
+    expect(operatorStatusForState({ online: true, archive_state: { state: "failed" } }).label).toBe("Failed");
+    expect(operatorStatusForState({ online: true }).label).toBe("Needs attention");
+    expect(operatorStatusForState({ online: true, capture_mode: "dom_degraded" }).partialFidelity).toBe(true);
+  });
+
   it("renders supported pages without a conversation id without implying capture happened", async () => {
     await loadPopup({
       polylogueState: {
