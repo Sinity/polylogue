@@ -13,6 +13,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab census provider-vocabulary",
     "lab graph",
     "lab lanes",
+    "lab policy backlog-hygiene",
     "lab policy demo-packet-registry",
     "lab policy docs-drift",
     "lab policy insight-honesty",
@@ -779,6 +780,26 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "blue-green replaced from source evidence."
         ),
         examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
+    ),
+    CommandSpec(
+        "lab policy backlog-hygiene",
+        "verification lab",
+        "Verify Beads backlog structure invariants (.beads/issues.jsonl).",
+        "devtools.verify_backlog_hygiene",
+        use_when=(
+            "Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 15 checks "
+            "over the Beads export catching dangling dependency refs, blocks-cycles, missing "
+            "horizon/AC/design content on tech-tree beads, P0/P1 beads without acceptance "
+            "criteria, unlabeled non-epic beads, epics with no members or description, stale "
+            "'adopted' decisions left open, duplicate titles, and bead ids named but never "
+            "created -- catches backlog structure drift before it needs an archaeology sweep "
+            "to recover, instead of only a manually-invoked script."
+        ),
+        examples=(
+            "devtools lab policy backlog-hygiene",
+            "devtools lab policy backlog-hygiene --json",
+            "devtools lab policy backlog-hygiene --fresh",
+        ),
     ),
     CommandSpec(
         "lab policy demo-packet-registry",
