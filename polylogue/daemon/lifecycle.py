@@ -61,6 +61,7 @@ class DaemonLifecycle:
     run_id: str
     ops_db_path: Path
     stopped: bool = False
+    received_signal_name: str | None = None
 
     @classmethod
     def start(cls, *, details: dict[str, object] | None = None) -> DaemonLifecycle:
@@ -93,6 +94,7 @@ class DaemonLifecycle:
     def record_signal_best_effort(self, signum: int) -> None:
         """Persist a terminating signal from a synchronous signal handler."""
         signal_name = signal.Signals(signum).name
+        self.received_signal_name = signal_name
         try:
             _write_lifecycle(
                 self.ops_db_path,
@@ -108,6 +110,8 @@ class DaemonLifecycle:
         """Mark the lifecycle row cleanly stopped exactly once."""
         if self.stopped:
             return
+        if self.received_signal_name is not None:
+            exit_kind = "signal"
         _write_lifecycle(
             self.ops_db_path,
             record_daemon_lifecycle_stop,

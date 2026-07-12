@@ -2388,13 +2388,21 @@ def test_lifecycle_heartbeat_runs_without_index_stats(monkeypatch: pytest.Monkey
     from polylogue.daemon import cli as daemon_cli
 
     calls: list[str] = []
+    actors: list[str] = []
 
     class Lifecycle:
         def heartbeat(self) -> None:
             calls.append("heartbeat")
 
+    class Coordinator:
+        async def run_sync(self, actor: str, function: object, /, *args: object, **kwargs: object) -> object:
+            actors.append(actor)
+            assert callable(function)
+            return function(*args, **kwargs)
+
     async def exercise() -> None:
         monkeypatch.setattr(daemon_cli, "_daemon_lifecycle", Lifecycle())
+        monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: Coordinator())
         task = asyncio.create_task(daemon_cli._periodic_lifecycle_heartbeat(interval_s=0))
         try:
             for _ in range(5):
@@ -2409,6 +2417,7 @@ def test_lifecycle_heartbeat_runs_without_index_stats(monkeypatch: pytest.Monkey
     asyncio.run(exercise())
 
     assert calls
+    assert actors == ["daemon.lifecycle.heartbeat"]
 
 
 def test_run_daemon_services_checks_archive_identity_before_component_startup(tmp_path: Path) -> None:

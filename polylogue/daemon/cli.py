@@ -421,7 +421,7 @@ async def _periodic_lifecycle_heartbeat(*, interval_s: float | None = None) -> N
         if lifecycle is None:
             continue
         try:
-            await asyncio.to_thread(lifecycle.heartbeat)
+            await daemon_write_coordinator().run_sync("daemon.lifecycle.heartbeat", lifecycle.heartbeat)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1113,7 +1113,9 @@ async def run_daemon_services(
     _pidfile_path = pidfile
     from polylogue.daemon.lifecycle import DaemonLifecycle, install_signal_handlers, restore_signal_handlers
 
-    _daemon_lifecycle = await asyncio.to_thread(
+    write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
+    _daemon_lifecycle = await write_coordinator.run_sync(
+        "daemon.lifecycle.start",
         DaemonLifecycle.start,
         details={"archive_root": str(archive_root_path)},
     )
@@ -1123,8 +1125,6 @@ async def run_daemon_services(
     # never-yet-used sources (e.g. hooks sidecar dir) as missing.
     for src in sources:
         src.root.mkdir(parents=True, exist_ok=True)
-
-    write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
 
     if lifecycle_events_enabled:
         await _emit_daemon_lifecycle_event(
@@ -1419,13 +1419,13 @@ async def run_daemon_services(
             lifecycle = _daemon_lifecycle
             if lifecycle is not None:
                 exit_kind = "clean"
-                if isinstance(termination, SystemExit):
+                if lifecycle.received_signal_name is not None or isinstance(termination, SystemExit):
                     exit_kind = "signal"
                 elif termination is not None and not isinstance(
                     termination, (KeyboardInterrupt, asyncio.CancelledError)
                 ):
                     exit_kind = "error"
-                await asyncio.to_thread(lifecycle.stop, exit_kind=exit_kind)
+                await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind=exit_kind)
 
             writer_drained = await write_coordinator.shutdown(timeout=5.0)
             pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)

@@ -114,6 +114,27 @@ def test_sigterm_dumps_threads_and_persists_signal_before_exit(
         lifecycle.stop(exit_kind="signal")
 
 
+def test_sigint_is_recorded_as_signal_not_clean_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bind_ops_db(monkeypatch, tmp_path)
+    lifecycle = DaemonLifecycle.start()
+    previous = install_signal_handlers(lifecycle)
+    try:
+        with patch("polylogue.daemon.lifecycle.faulthandler.dump_traceback"):
+            with pytest.raises(KeyboardInterrupt):
+                signal.raise_signal(signal.SIGINT)
+        lifecycle.stop(exit_kind="clean")
+    finally:
+        restore_signal_handlers(previous)
+
+    status = lifecycle_status()
+
+    assert status["signal"] == "SIGINT"
+    assert status["exit_kind"] == "signal"
+
+
 def test_atexit_sentinel_marks_python_exit_without_claiming_a_clean_stop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
