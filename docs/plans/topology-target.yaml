@@ -24,7 +24,7 @@ files:
     target: polylogue/annotations/importer.py
     owner: stable
   - path: polylogue/annotations/join.py
-    loc: 354
+    loc: 438
     target: polylogue/annotations/join.py
     owner: stable
   - path: polylogue/annotations/schema.py
@@ -41,7 +41,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 5646
+    loc: 5648
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -508,11 +508,6 @@ files:
     target: polylogue/archive/semantic/models.py
     owner: archive-semantic
     reason: archive-domain semantics
-  - path: polylogue/archive/semantic/outlook.py
-    loc: 194
-    target: polylogue/archive/semantic/outlook.py
-    owner: archive-semantic
-    reason: archive-domain semantics
   - path: polylogue/archive/semantic/pricing.py
     loc: 945
     target: polylogue/archive/semantic/pricing.py
@@ -711,7 +706,7 @@ files:
     target: polylogue/browser_capture/identity.py
     owner: stable
   - path: polylogue/browser_capture/models.py
-    loc: 393
+    loc: 394
     target: polylogue/browser_capture/models.py
     owner: stable
   - path: polylogue/browser_capture/receiver.py
@@ -723,7 +718,7 @@ files:
     target: polylogue/browser_capture/route_contracts.py
     owner: stable
   - path: polylogue/browser_capture/server.py
-    loc: 422
+    loc: 426
     target: polylogue/browser_capture/server.py
     owner: stable
   - path: polylogue/cli/__init__.py
@@ -763,7 +758,7 @@ files:
     target: polylogue/cli/commands/agents.py
     owner: stable
   - path: polylogue/cli/commands/annotations.py
-    loc: 136
+    loc: 139
     target: polylogue/cli/commands/annotations.py
     owner: stable
   - path: polylogue/cli/commands/auth.py
@@ -1108,10 +1103,6 @@ files:
   - path: polylogue/context/__init__.py
     loc: 29
     target: polylogue/context/__init__.py
-    owner: stable
-  - path: polylogue/context/assertion_claims.py
-    loc: 11
-    target: polylogue/context/assertion_claims.py
     owner: stable
   - path: polylogue/context/compiler.py
     loc: 532
@@ -1855,7 +1846,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 1106
+    loc: 1108
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -2065,10 +2056,6 @@ files:
     target: polylogue/protocols.py
     owner: kernel
     reason: kernel root rule
-  - path: polylogue/publication/__init__.py
-    loc: 65
-    target: polylogue/publication/__init__.py
-    owner: stable
   - path: polylogue/readiness/__init__.py
     loc: 1007
     target: polylogue/readiness/__init__.py
@@ -3509,7 +3496,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 1731
+    loc: 1806
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
@@ -3615,10 +3602,6 @@ files:
   - path: polylogue/storage/sqlite/queries/mappers_insight_timelines.py
     loc: 177
     target: polylogue/storage/sqlite/queries/mappers_insight_timelines.py
-    owner: stable
-  - path: polylogue/storage/sqlite/queries/mappers_run_projection.py
-    loc: 71
-    target: polylogue/storage/sqlite/queries/mappers_run_projection.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_support.py
     loc: 149
