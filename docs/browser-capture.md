@@ -113,6 +113,16 @@ queue state, attempts, eligibility deadline, lease owner/expiry, fidelity,
 submitted envelope, and receiver receipt. MV3 alarms resume eligible work after
 service-worker termination; expired leases return to their prior state.
 
+Provider HTTP runs through a strict first-party page broker. The service worker
+retains durable scheduling, budgets, and receiver ACK ownership, while an
+existing or inactive provider tab supplies ephemeral authenticated context.
+ChatGPT access-token and selected-account values never leave MAIN world;
+Claude requests must match the organization selected by the UI. Only fixed
+inventory and native-conversation operations are allowed. Timeouts,
+response-size limits, auth/challenge classification, and response-shape drift
+fail closed; HTTP 200 without proven page context is not accepted as an empty
+inventory.
+
 The default provider concurrency is one. Token cadence is conservative and
 learned upward after throttling. `Retry-After` is authoritative, retry delays
 use exponential full jitter, and repeated 429/403/challenge or transport

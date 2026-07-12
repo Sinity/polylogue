@@ -213,6 +213,14 @@ captured artifact, retry deadline, or receiver receipt. `chrome.alarms` wakes
 the next eligible item; expired leases are recovered and only one extension
 instance may own an item at a time.
 
+Provider reads run through an already-open or inactive first-party tab, not
+the service worker's cookie context. ChatGPT bearer and selected-account values
+remain inside MAIN world; Claude resolves the exact organization selected by
+the UI. The broker accepts only fixed inventory and native-conversation
+operations, bounds time and response bytes, and never persists or logs
+credential values. Missing or stale page auth context pauses for operator
+action instead of accepting a plausible-looking empty inventory.
+
 The scheduler uses concurrency one per provider, a conservative learned
 request cadence, daily and per-wake budgets, `Retry-After`, exponential
 full-jitter backoff, and a circuit breaker. A 403/auth/challenge pauses for

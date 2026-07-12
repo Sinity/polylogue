@@ -10,6 +10,9 @@ const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
 const POST_POLL_INTERVAL_MS = 5000;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
+const BACKFILL_PAGE_REQUEST_TIMEOUT_MS = 58000;
+const BACKFILL_TRANSPORT_TAB_TTL_MS = 5 * 60 * 1000;
+const BACKFILL_TRANSPORT_CLEANUP_PREFIX = "polylogueBackfillTransportCleanup";
 const recentBackgroundCaptures = new Map();
 const recentActiveTabStateChecks = new Map();
 // command_id -> true once dispatched to a content script this SW lifetime, so a
@@ -32,7 +35,7 @@ async function backfillCoordinator() {
   if (!backfillCoordinatorPromise) {
     backfillCoordinatorPromise = extensionInstanceId().then((instanceId) => new BackfillCoordinator({
       store: new IndexedDbBackfillStore(),
-      adapters: providerAdapters(globalThis.fetch.bind(globalThis)),
+      adapters: providerAdapters(providerPageFetch, { requirePageContext: true }),
       receiver: (envelope, serialized) => postJson(
         "/v1/browser-captures",
         envelope,
@@ -87,14 +90,14 @@ function injectionPlanForUrl(url) {
     const parsed = new URL(url || "");
     if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
       return [
-        { files: ["src/content/chatgpt_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/chatgpt.js"] },
+        { files: ["src/content/chatgpt_bridge.js", "src/content/provider_backfill_bridge.js"], world: "MAIN" },
+        { files: ["src/common.js", "src/content/chatgpt.js", "src/content/provider_backfill_content.js"] },
       ];
     }
     if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
       return [
-        { files: ["src/content/claude_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/claude.js"] },
+        { files: ["src/content/claude_bridge.js", "src/content/provider_backfill_bridge.js"], world: "MAIN" },
+        { files: ["src/common.js", "src/content/claude.js", "src/content/provider_backfill_content.js"] },
       ];
     }
     if (
@@ -578,6 +581,118 @@ async function ensureCaptureScripts(tab) {
   return true;
 }
 
+function providerForUrl(url) {
+  try {
+    const hostname = new URL(url || "").hostname;
+    if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) return "chatgpt";
+    if (hostname === "claude.ai" || hostname.endsWith(".claude.ai")) return "claude-ai";
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function providerRequestFromUrl(urlValue) {
+  const url = new URL(urlValue);
+  if (url.hostname === "chatgpt.com") {
+    if (url.pathname === "/backend-api/conversations") {
+      return { provider: "chatgpt", operation: "inventory", params: {
+        offset: Number.parseInt(url.searchParams.get("offset") || "0", 10),
+        limit: Number.parseInt(url.searchParams.get("limit") || "28", 10),
+      } };
+    }
+    const conversation = url.pathname.match(/^\/backend-api\/conversation\/([A-Za-z0-9_-]+)$/);
+    if (conversation) return { provider: "chatgpt", operation: "conversation", params: { nativeId: decodeURIComponent(conversation[1]) } };
+  }
+  if (url.hostname === "claude.ai") {
+    if (url.pathname === "/api/organizations") return { provider: "claude-ai", operation: "organizations", params: {} };
+    const inventory = url.pathname.match(/^\/api\/organizations\/([0-9a-f-]{36})\/chat_conversations$/i);
+    if (inventory) return { provider: "claude-ai", operation: "inventory", params: {
+      organizationId: inventory[1],
+      offset: Number.parseInt(url.searchParams.get("offset") || "0", 10),
+      limit: Number.parseInt(url.searchParams.get("limit") || "100", 10),
+    } };
+    const conversation = url.pathname.match(/^\/api\/organizations\/([0-9a-f-]{36})\/chat_conversations\/([A-Za-z0-9_-]+)$/i);
+    if (conversation) return { provider: "claude-ai", operation: "conversation", params: {
+      organizationId: conversation[1],
+      nativeId: decodeURIComponent(conversation[2]),
+    } };
+  }
+  throw new Error("backfill_provider_url_not_allowed");
+}
+
+async function waitForProviderTab(tabId, provider) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const tab = await chrome.tabs.get(tabId);
+    if (providerForUrl(tab?.url || tab?.pendingUrl) === provider && tab?.status === "complete") return tab;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
+  }
+  throw new Error("backfill_provider_tab_load_timeout");
+}
+
+async function providerTab(provider) {
+  const tabs = await chrome.tabs.query({});
+  const existing = tabs.find((tab) => providerForUrl(tab.url || tab.pendingUrl) === provider);
+  if (existing) return existing;
+  const url = provider === "chatgpt" ? "https://chatgpt.com/" : "https://claude.ai/";
+  const created = await chrome.tabs.create({ url, active: false });
+  if (!created?.id) throw new Error("backfill_provider_tab_create_failed");
+  const ready = created.status === "complete" ? created : await waitForProviderTab(created.id, provider);
+  await chrome.alarms.create(`${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:${provider}:${ready.id}`, {
+    when: Date.now() + BACKFILL_TRANSPORT_TAB_TTL_MS,
+  });
+  return ready;
+}
+
+function pageContextResponse(response) {
+  const body = typeof response?.body === "string" ? response.body : "";
+  return {
+    ok: Boolean(response?.ok),
+    status: Number(response?.status || 0),
+    polyloguePageContext: true,
+    headers: { get: (name) => {
+      const normalized = name.toLowerCase();
+      if (normalized === "content-type") return response?.contentType || "";
+      if (normalized === "retry-after") return response?.retryAfter || null;
+      return null;
+    } },
+    async json() { return JSON.parse(body); },
+  };
+}
+
+async function providerPageFetch(url, options = {}) {
+  if (options.method && options.method !== "GET") throw new Error("backfill_provider_method_not_allowed");
+  const request = providerRequestFromUrl(url);
+  const tab = await providerTab(request.provider);
+  await ensureCaptureScripts(tab);
+  const result = await withTimeout(
+    chrome.tabs.sendMessage(tab.id, { type: "polylogue.backfill.pageRequest", ...request }),
+    BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
+    "backfill_page_request",
+  );
+  if (!result?.ok) {
+    const error = String(result?.error || "backfill_page_request_failed");
+    if (error.includes("auth_context") || error.includes("selected_organization")) {
+      return pageContextResponse({ ok: false, status: 401, contentType: "application/json", body: JSON.stringify({ error }) });
+    }
+    throw new Error(error);
+  }
+  return pageContextResponse(result.response);
+}
+
+async function cleanupBackfillTransportTab(alarmName) {
+  const parts = alarmName.split(":");
+  const provider = parts[1];
+  const tabId = Number.parseInt(parts[2] || "", 10);
+  if (!provider || !Number.isInteger(tabId)) return;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (providerForUrl(tab?.url || tab?.pendingUrl) === provider) await chrome.tabs.remove(tabId);
+  } catch {
+    // The operator or browser already closed the inactive transport tab.
+  }
+}
+
 async function captureTab(tab, reason = "background") {
   if (!tab?.id || !injectionPlanForUrl(tab.url || tab.pendingUrl || "").length) return null;
   const now = Date.now();
@@ -930,6 +1045,10 @@ void startPostPolling();
 void loadCaptureQueueIntoCache();
 
 chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (alarm?.name?.startsWith(`${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:`)) {
+    void cleanupBackfillTransportTab(alarm.name);
+    return;
+  }
   if (alarm?.name === CAPTURE_RETRY_ALARM) {
     void drainCaptureQueue("alarm");
   }

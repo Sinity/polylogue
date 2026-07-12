@@ -99,6 +99,8 @@ describe("build.mjs full archive emission", () => {
     expect(listing).toContain("src/backfill/coordinator.js");
     expect(listing).toContain("src/backfill/providers.js");
     expect(listing).toContain("src/backfill/storage.js");
+    expect(listing).toContain("src/content/provider_backfill_bridge.js");
+    expect(listing).toContain("src/content/provider_backfill_content.js");
   });
 
   it("executes the packaged service worker fixture without foreground tab activation", async () => {
@@ -114,7 +116,20 @@ describe("build.mjs full archive emission", () => {
     let messageListener;
     let alarmListener;
     let stored = { receiverBaseUrl: "http://127.0.0.1:8765", receiverAuthToken: "token" };
-    const tabs = { create: vi.fn(), update: vi.fn(), sendMessage: vi.fn(), query: vi.fn(async () => []) };
+    const pageResponses = [];
+    const tabs = {
+      create: vi.fn(async ({ url, active }) => ({ id: 77, url, active, status: "complete" })),
+      update: vi.fn(),
+      remove: vi.fn(),
+      query: vi.fn(async () => []),
+      sendMessage: vi.fn(async (_tabId, message) => {
+        pageResponses.push(message);
+        const body = message.operation === "inventory"
+          ? { items: [{ id: "fixture-1", update_time: 1780000000 }], total: 1 }
+          : { id: "fixture-1", mapping: { one: { message: { id: "m1", author: { role: "user" }, content: { parts: ["fixture"] } } } } };
+        return { ok: true, response: { ok: true, status: 200, contentType: "application/json", body: JSON.stringify(body) } };
+      }),
+    };
     globalThis.indexedDB = indexedDB;
     globalThis.chrome = {
       action: { setBadgeText: vi.fn(), setBadgeBackgroundColor: vi.fn() },
@@ -137,24 +152,21 @@ describe("build.mjs full archive emission", () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       let body;
-      if (String(url).includes("/backend-api/conversations?")) body = { items: [{ id: "fixture-1", update_time: 1780000000 }], total: 1 };
-      else if (String(url).includes("/backend-api/conversation/fixture-1")) body = { id: "fixture-1", mapping: { one: { message: { id: "m1", author: { role: "user" }, content: { parts: ["fixture"] } } } } };
-      else {
-        const contentHash = createHash("sha256").update(options.body, "utf8").digest("hex");
-        body = { ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: contentHash };
-      }
+      const contentHash = createHash("sha256").update(options.body, "utf8").digest("hex");
+      body = { ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: contentHash };
       return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-ack" : null }, json: async () => body };
     });
     const packagedWorkerUrl = `${pathToFileURL(join(unpacked, "src", "background.js")).href}?smoke=${Date.now()}`;
     await import(/* @vite-ignore */ packagedWorkerUrl);
     const send = (message) => new Promise((resolve) => messageListener(message, {}, resolve));
     const started = await send({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", policy: { baseCadenceMs: 0 } });
-    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).includes("/backend-api/conversations?"))).toBe(true));
+    await vi.waitFor(() => expect(pageResponses.some((message) => message.operation === "inventory")).toBe(true));
     alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
     await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).includes("/v1/browser-captures"))).toBe(true));
-    expect(tabs.create).not.toHaveBeenCalled();
+    expect(tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false });
     expect(tabs.update).not.toHaveBeenCalled();
-    expect(tabs.sendMessage).not.toHaveBeenCalled();
+    expect(pageResponses.map((message) => message.operation)).toEqual(["inventory", "conversation"]);
+    expect(fetchCalls.every((call) => String(call.url).includes("127.0.0.1"))).toBe(true);
     rmSync(smokeRoot, { recursive: true, force: true });
   });
 });

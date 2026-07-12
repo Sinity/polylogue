@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
 
 let messageListener;
 let installedListener;
@@ -62,7 +63,9 @@ function installChromeMock() {
       },
     },
     tabs: {
+      create: vi.fn(async ({ url }) => ({ id: 99, url, status: "complete" })),
       get: vi.fn(async (tabId) => tabs.find((tab) => tab.id === tabId)),
+      remove: vi.fn(async () => undefined),
       onActivated: {
         addListener: vi.fn((fn) => {
           activatedListener = fn;
@@ -74,24 +77,33 @@ function installChromeMock() {
         }),
       },
       query: vi.fn(async () => tabs),
-      sendMessage: vi.fn(async () => ({
-        ok: true,
-        captureResult: {
-          receiver_request_id: "capture-request-1",
-          provider: "chatgpt",
-          provider_session_id: "temporary:abc",
-        },
-        archiveState: {
-          receiver_request_id: "state-request-1",
-          captured: true,
-        },
-      })),
+      sendMessage: vi.fn(async (_tabId, message) => {
+        if (message.type === "polylogue.backfill.pageRequest") {
+          const body = message.operation === "inventory"
+            ? { items: [{ id: "backfill-1", update_time: 1780000000 }], total: 1 }
+            : { id: "backfill-1", mapping: {} };
+          return { ok: true, response: { ok: true, status: 200, contentType: "application/json", body: JSON.stringify(body) } };
+        }
+        return {
+          ok: true,
+          captureResult: {
+            receiver_request_id: "capture-request-1",
+            provider: "chatgpt",
+            provider_session_id: "temporary:abc",
+          },
+          archiveState: {
+            receiver_request_id: "state-request-1",
+            captured: true,
+          },
+        };
+      }),
     },
   };
 }
 
 async function loadBackground() {
   vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
   installChromeMock();
   await import("../src/background.js");
   expect(messageListener).toBeTypeOf("function");
@@ -179,6 +191,59 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("routes backfill inventory through an existing provider page instead of service-worker fetch", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "unexpected_service_worker_provider_fetch" }, { ok: false, status: 500 }));
+
+    const started = await sendRuntimeMessage({
+      type: "polylogue.backfill.start",
+      provider: "chatgpt",
+      cutoff: "2026-01-01T00:00:00Z",
+      policy: { baseCadenceMs: 1000 },
+    });
+
+    expect(started.ok).toBe(true);
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, expect.objectContaining({
+      type: "polylogue.backfill.pageRequest",
+      provider: "chatgpt",
+      operation: "inventory",
+    })));
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: 42 },
+      world: "MAIN",
+    }));
+  });
+
+  it("preserves page-bridge Retry-After through the adapter and coordinator", async () => {
+    globalThis.chrome.tabs.sendMessage = vi.fn(async (_tabId, message) => {
+      if (message.type === "polylogue.backfill.pageRequest") {
+        return { ok: true, response: {
+          ok: false,
+          status: 429,
+          contentType: "application/json",
+          retryAfter: "60",
+          body: JSON.stringify({ detail: "slow down" }),
+        } };
+      }
+      return { ok: true };
+    });
+
+    const started = await sendRuntimeMessage({
+      type: "polylogue.backfill.start",
+      provider: "chatgpt",
+      cutoff: "2026-01-01T00:00:00Z",
+    });
+    let status;
+    await vi.waitFor(async () => {
+      status = (await sendRuntimeMessage({ type: "polylogue.backfill.status" })).jobs[0];
+      expect(status.cooldown_reason).toBe("provider_rate_limited");
+    });
+
+    expect(status.cooldown_until_ms).toBe(Date.parse(started.job.created_at) + 60000);
+    expect(status.inventory_complete).toBe(false);
+  });
+
   it("refreshes active conversation archive state on tab activation without capturing page content", async () => {
     expect(activatedListener).toBeTypeOf("function");
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-123", title: "ChatGPT" }];
@@ -233,12 +298,12 @@ describe("background receiver diagnostics", () => {
 
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
       target: { tabId: 42 },
-      files: ["src/content/chatgpt_bridge.js"],
+      files: ["src/content/chatgpt_bridge.js", "src/content/provider_backfill_bridge.js"],
       world: "MAIN",
     });
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
       target: { tabId: 42 },
-      files: ["src/common.js", "src/content/chatgpt.js"],
+      files: ["src/common.js", "src/content/chatgpt.js", "src/content/provider_backfill_content.js"],
     });
     expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
       type: "polylogue.capturePage",
@@ -261,7 +326,7 @@ describe("background receiver diagnostics", () => {
     expect(response).toEqual({ ok: true });
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
       target: { tabId: 42 },
-      files: ["src/content/chatgpt_bridge.js"],
+      files: ["src/content/chatgpt_bridge.js", "src/content/provider_backfill_bridge.js"],
       world: "MAIN",
     });
     expect(stored.polylogueCaptureLog[0].ok).toBe(false);

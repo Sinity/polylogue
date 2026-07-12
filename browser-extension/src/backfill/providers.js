@@ -103,12 +103,19 @@ function envelope({ provider, nativeId, title, createdAt, updatedAt, turns, rawP
 }
 
 export class ChatGptBackfillAdapter {
-  constructor(fetchImpl = globalThis.fetch) { this.fetchImpl = fetchImpl; this.provider = "chatgpt"; }
+  constructor(fetchImpl = globalThis.fetch, options = {}) {
+    this.fetchImpl = fetchImpl;
+    this.requirePageContext = Boolean(options.requirePageContext);
+    this.provider = "chatgpt";
+  }
   configure() {}
   requestCost() { return 1; }
   async enumerate(cursor = "0", cutoff = null) {
     const offset = Number.parseInt(cursor || "0", 10) || 0;
-    const response = await providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversations?offset=${offset}&limit=100&order=updated`);
+    const response = await providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversations?offset=${offset}&limit=28&order=updated&is_archived=false&is_starred=false`);
+    if (this.requirePageContext && response.polyloguePageContext !== true) {
+      return { response, classification: "auth_or_challenge", items: [], next_cursor: cursor, done: false, request_count: 1 };
+    }
     if (!response.ok) return { response, classification: responseClass(response), items: [], next_cursor: cursor, done: false, request_count: 1 };
     const body = await jsonResponse(response, "chatgpt_inventory");
     const records = requireArray(body.items, "chatgpt_inventory.items");
@@ -124,7 +131,10 @@ export class ChatGptBackfillAdapter {
     return { response, classification: "success", items, next_cursor: String(nextOffset), done: nextOffset >= total || crossedCutoff, request_count: 1 };
   }
   async fetchNative(nativeId) { return providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversation/${encodeURIComponent(nativeId)}`); }
-  classifyResponse(response) { return responseClass(response); }
+  classifyResponse(response) {
+    if (this.requirePageContext && response.polyloguePageContext !== true) return "auth_or_challenge";
+    return responseClass(response);
+  }
   async normalizeCapture(response, item, attribution) {
     const body = await jsonResponse(response, "chatgpt_conversation");
     const mapping = body.mapping && typeof body.mapping === "object" ? Object.entries(body.mapping) : null;
@@ -155,7 +165,12 @@ export class ChatGptBackfillAdapter {
 }
 
 export class ClaudeBackfillAdapter {
-  constructor(fetchImpl = globalThis.fetch, organizationId = null) { this.fetchImpl = fetchImpl; this.organizationId = organizationId; this.provider = "claude-ai"; }
+  constructor(fetchImpl = globalThis.fetch, organizationId = null, options = {}) {
+    this.fetchImpl = fetchImpl;
+    this.organizationId = organizationId;
+    this.requirePageContext = Boolean(options.requirePageContext);
+    this.provider = "claude-ai";
+  }
   configure(options = {}) {
     if (options.claudeOrganizationId) this.organizationId = options.claudeOrganizationId;
   }
@@ -165,6 +180,9 @@ export class ClaudeBackfillAdapter {
   async organization() {
     if (this.organizationId) return { id: this.organizationId, request_count: 0 };
     const response = await providerRequest(this.fetchImpl, "https://claude.ai/api/organizations");
+    if (this.requirePageContext && response.polyloguePageContext !== true) {
+      return { response, classification: "auth_or_challenge", request_count: 1 };
+    }
     if (!response.ok) return { response, classification: responseClass(response), request_count: 1 };
     const organizations = requireArray(await response.json(), "claude_organizations");
     this.organizationId = requireString(organizations[0]?.uuid, "claude_organizations[0].uuid");
@@ -201,7 +219,10 @@ export class ClaudeBackfillAdapter {
       `https://claude.ai/api/organizations/${encodeURIComponent(organization.id)}/chat_conversations/${encodeURIComponent(nativeId)}?${query}`,
     );
   }
-  classifyResponse(response) { return responseClass(response); }
+  classifyResponse(response) {
+    if (this.requirePageContext && response.polyloguePageContext !== true) return "auth_or_challenge";
+    return responseClass(response);
+  }
   async normalizeCapture(response, item, attribution) {
     const body = await jsonResponse(response, "claude_conversation");
     const messages = requireArray(body.chat_messages, "claude_conversation.chat_messages");
@@ -227,8 +248,8 @@ export class ClaudeBackfillAdapter {
 
 export function providerAdapters(fetchImpl = globalThis.fetch, options = {}) {
   return {
-    chatgpt: new ChatGptBackfillAdapter(fetchImpl),
-    "claude-ai": new ClaudeBackfillAdapter(fetchImpl, options.claudeOrganizationId || null),
+    chatgpt: new ChatGptBackfillAdapter(fetchImpl, { requirePageContext: options.requirePageContext }),
+    "claude-ai": new ClaudeBackfillAdapter(fetchImpl, options.claudeOrganizationId || null, { requirePageContext: options.requirePageContext }),
   };
 }
 import { PROVIDER_REQUEST_TIMEOUT_MS } from "./models.js";

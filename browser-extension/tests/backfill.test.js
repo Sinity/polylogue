@@ -397,6 +397,41 @@ describe("provider adapter contracts", () => {
     await expect(drifted.enumerate()).rejects.toThrow("provider_contract_drift:chatgpt_inventory.items_must_be_array");
   });
 
+  it("refuses a false-empty ChatGPT inventory without proven page auth context", async () => {
+    const adapter = new ChatGptBackfillAdapter(
+      vi.fn(async () => response({ items: [], total: 0 })),
+      { requirePageContext: true },
+    );
+
+    await expect(adapter.enumerate("0", "2026-01-01T00:00:00Z")).resolves.toMatchObject({
+      classification: "auth_or_challenge",
+      done: false,
+      items: [],
+    });
+  });
+
+  it("keeps an unproven 200-empty inventory paused and resumable in the coordinator", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ items: [], total: 0 }))
+      .mockResolvedValueOnce(Object.assign(response({ items: [], total: 0 }), { polyloguePageContext: true }));
+    const adapter = new ChatGptBackfillAdapter(fetchImpl, { requirePageContext: true });
+    const h = harness({ adapter });
+    const job = await startJob(h);
+
+    await h.coordinator.wake(job.id);
+    let status = await h.coordinator.status(job.id);
+    expect(status).toMatchObject({ status: "paused", inventory_complete: false, cooldown_reason: "provider_auth_or_challenge" });
+
+    await h.coordinator.control(job.id, "resume");
+    h.advance(h.policy.baseCadenceMs);
+    await h.coordinator.wake(job.id);
+    h.advance(h.policy.baseCadenceMs);
+    await h.coordinator.wake(job.id);
+    status = await h.coordinator.status(job.id);
+    expect(status).toMatchObject({ status: "complete", inventory_complete: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("stops descending inventory pagination when a page crosses the cutoff", async () => {
     const adapter = new ChatGptBackfillAdapter(vi.fn(async () => response({
       items: [
@@ -408,6 +443,25 @@ describe("provider adapter contracts", () => {
     const inventory = await adapter.enumerate("0", "2026-01-01T00:00:00Z");
     expect(inventory.items.map((item) => item.native_id)).toEqual(["new"]);
     expect(inventory.done).toBe(true);
+  });
+
+  it("treats ChatGPT total as a page sentinel rather than a global corpus count", async () => {
+    const firstPage = Array.from({ length: 28 }, (_value, index) => ({
+      id: `conversation-${index}`,
+      update_time: 1780000000 - index,
+    }));
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ items: firstPage, total: 29 }))
+      .mockResolvedValueOnce(response({ items: [{ id: "conversation-28", update_time: 1779990000 }], total: 29 }));
+    const adapter = new ChatGptBackfillAdapter(fetchImpl);
+
+    const first = await adapter.enumerate("0", null);
+    const second = await adapter.enumerate(first.next_cursor, null);
+
+    expect(first).toMatchObject({ next_cursor: "28", done: false });
+    expect(second).toMatchObject({ next_cursor: "29", done: true });
+    expect(fetchImpl.mock.calls[0][0]).toContain("limit=28");
+    expect(fetchImpl.mock.calls[1][0]).toContain("offset=28");
   });
 
   it("does not assume Claude inventory order when filtering a full page", async () => {

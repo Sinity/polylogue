@@ -23,24 +23,24 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["src/content/chatgpt_bridge.js"],
+      "js": ["src/content/chatgpt_bridge.js", "src/content/provider_backfill_bridge.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["src/common.js", "src/content/chatgpt.js"],
+      "js": ["src/common.js", "src/content/chatgpt.js", "src/content/provider_backfill_content.js"],
       "run_at": "document_start"
     },
     {
       "matches": ["https://claude.ai/*"],
-      "js": ["src/content/claude_bridge.js"],
+      "js": ["src/content/claude_bridge.js", "src/content/provider_backfill_bridge.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
       "matches": ["https://claude.ai/*"],
-      "js": ["src/common.js", "src/content/claude.js"],
+      "js": ["src/common.js", "src/content/claude.js", "src/content/provider_backfill_content.js"],
       "run_at": "document_idle"
     },
     {
