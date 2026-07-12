@@ -374,7 +374,11 @@ def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_ap
 
     payload = report.to_dict()
     assert payload["subscription_credit_usd"] == pytest.approx(priced_lane.subscription_credit_usd)
-    assert payload["pricing_lanes"][0]["subscription_credit_usd"] is not None
+    payload_lanes = payload["pricing_lanes"]
+    assert isinstance(payload_lanes, list)
+    first_lane = payload_lanes[0]
+    assert isinstance(first_lane, dict)
+    assert first_lane["subscription_credit_usd"] is not None
 
 
 def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None:
