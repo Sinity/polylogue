@@ -2250,6 +2250,48 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         await archive.close()
 
 
+@pytest.mark.parametrize(
+    ("kind", "object_id"),
+    [
+        ("query", "sha256:deadbeef"),
+        ("query-run", "sha256:deadbeef:run-1"),
+        ("result-set", "sha256:deadbeef:run-1:result-1"),
+        ("finding", "finding-hash-1"),
+        ("cohort", "cohort-1"),
+        ("analysis", "analysis-1"),
+        ("annotation-batch", "batch-1"),
+    ],
+)
+async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance_kinds(
+    tmp_path: Path, kind: str, object_id: str
+) -> None:
+    """polylogue-rxdo.1: refs land ahead of storage; resolution stubs cleanly.
+
+    ``query``/``query-run``/``result-set``/``finding``/``cohort``/``analysis``/
+    ``annotation-batch`` are registered ObjectRefKind values with no backing
+    table yet (polylogue-rxdo.2/.3/.4/.7/.8). resolve_ref must not raise and
+    must not silently pretend to resolve them — it returns a typed pending
+    payload carrying reason=substrate-pending so a client can distinguish
+    "not implemented yet" from "does not exist".
+    """
+    archive = _archive(tmp_path)
+    try:
+        ref = f"{kind}:{object_id}"
+        payload = await archive.resolve_ref(ref)
+
+        assert payload.resolved is False
+        assert payload.kind == kind
+        assert payload.normalized_ref == ref
+        assert payload.payload_kind == "pending"
+        assert payload.payload is not None
+        assert payload.payload["reason"] == "substrate-pending"
+        assert payload.payload["kind"] == kind
+        assert payload.payload["unit"] == "pending"
+        assert any("substrate-pending" in caveat for caveat in payload.caveats)
+    finally:
+        await archive.close()
+
+
 async def test_resolve_ref_returns_assertion_payload(tmp_path: Path) -> None:
     """Assertion refs resolve through the shared assertion claim DTO."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database

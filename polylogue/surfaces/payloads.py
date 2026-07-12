@@ -1774,6 +1774,22 @@ class PublicRefResolutionPayload(SurfacePayloadModel):
         return tuple(normalize_public_ref_text(ref) for ref in value)
 
 
+class PendingObjectRefPayload(SurfacePayloadModel):
+    """Typed placeholder embedded in ``PublicRefResolutionPayload.payload``.
+
+    Some ``ObjectRefKind`` values (the polylogue-rxdo analysis-provenance
+    kinds: ``query``, ``query-run``, ``result-set``, ``finding``, ``cohort``,
+    ``analysis``, ``annotation-batch``) are registered before their backing
+    storage tiers exist. ``resolve_ref`` returns this typed payload for them
+    instead of an opaque not-found so clients can distinguish "not yet
+    implemented" from "does not exist".
+    """
+
+    unit: Literal["pending"] = "pending"
+    kind: str
+    reason: Literal["substrate-pending"] = "substrate-pending"
+
+
 class SessionReadViewEnvelope(SurfacePayloadModel):
     """Stable daemon envelope for one executed session read-view."""
 
@@ -2882,6 +2898,7 @@ __all__ = [
     "ProviderPackageCompletenessPayload",
     "ProviderPackageCompletenessRowPayload",
     "ProviderPackageCompletenessTotalsPayload",
+    "PendingObjectRefPayload",
     "PublicRefResolutionPayload",
     "MachineErrorPayload",
     "MachineErrorEnvelope",
