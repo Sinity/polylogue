@@ -2988,6 +2988,7 @@ class PolylogueArchiveMixin:
         from polylogue.surfaces.payloads import (
             AnnotationBatchPayload,
             PublicRefResolutionPayload,
+            RefResolutionActionPayload,
             model_json_document,
         )
 
@@ -3003,33 +3004,38 @@ class PolylogueArchiveMixin:
                 ),
             )
         payload = AnnotationBatchPayload.from_batch(batch)
-        object_refs = tuple(
-            dict.fromkeys(
-                (
-                    normalized_ref,
-                    payload.target_ref,
-                    payload.source_result_ref,
-                    payload.actor_ref,
-                    payload.model_ref,
-                    payload.prompt_ref,
-                )
-            )
+        scalar_ref_pairs = (
+            (batch.batch_ref, payload.batch_ref),
+            (batch.target_ref, payload.target_ref),
+            (batch.source_result_ref, payload.source_result_ref),
+            (batch.actor_ref, payload.actor_ref),
+            (batch.model_ref, payload.model_ref),
+            (batch.prompt_ref, payload.prompt_ref),
         )
+        object_refs = tuple(dict.fromkeys(value for value, preview in scalar_ref_pairs if not preview.truncated))
+        public_ref = normalized_ref
+        public_normalized_ref: str | None = normalized_ref
+        if payload.batch_ref.truncated:
+            public_ref = f"annotation-batch:sha256-{payload.batch_ref.text_sha256}"
+            public_normalized_ref = None
+        actions: tuple[RefResolutionActionPayload, ...] = ()
+        if not payload.target_ref.truncated:
+            actions = (_resolution_action("read annotation target", f"polylogue find {batch.target_ref} then read"),)
         return PublicRefResolutionPayload(
-            ref=ref,
-            normalized_ref=normalized_ref,
+            ref=public_ref,
+            normalized_ref=public_normalized_ref,
             kind="annotation-batch",
             resolved=True,
             payload_kind="annotation-batch",
             payload=model_json_document(payload),
-            title=f"{payload.qualified_schema_id} batch {payload.batch_id}",
+            title="annotation batch provenance",
             summary=(
                 f"{payload.valid_count}/{payload.total_count} valid; "
                 f"{payload.invalid_count} invalid; {payload.abstained_count} abstained"
             ),
             object_refs=object_refs,
             caveats=payload.truncation_caveats(),
-            actions=(_resolution_action("read annotation target", f"polylogue find {payload.target_ref} then read"),),
+            actions=actions,
         )
 
     def _resolve_delegation_object_ref(

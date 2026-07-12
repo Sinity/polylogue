@@ -24,6 +24,7 @@ pin the public contract directly:
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import shutil
@@ -2324,8 +2325,9 @@ async def test_resolve_ref_reads_persisted_annotation_batch_and_reports_missing(
         assert payload.payload_kind == "annotation-batch"
         assert payload.payload is not None
         assert payload.payload["unit"] == "annotation-batch"
-        assert payload.payload["batch_id"] == batch.batch_id
-        assert payload.payload["qualified_schema_id"] == batch.qualified_schema_id
+        assert payload.payload["batch_id"]["text_prefix"] == batch.batch_id
+        assert payload.payload["batch_id"]["truncated"] is False
+        assert payload.payload["qualified_schema_id"]["text_prefix"] == batch.qualified_schema_id
         assert json.loads(payload.payload["metadata"]["json_prefix"]) == {"campaign": "facade-contract"}
         assert payload.payload["metadata"]["truncated"] is False
         assert payload.payload["assertion_refs_total_count"] == 0
@@ -2401,7 +2403,11 @@ async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: P
         assert resolution.resolved is True
         assert resolution.payload is not None
         document = resolution.payload
-        assert document["assertion_refs"] == list(assertion_refs[:20])
+        assert [item["text_sha256"] for item in document["assertion_refs"]] == [
+            hashlib.sha256(ref.encode("utf-8")).hexdigest() for ref in assertion_refs[:20]
+        ]
+        assert all(item["truncated"] is True for item in document["assertion_refs"])
+        assert document["assertion_ref_values_truncated_count"] == 20
         assert document["assertion_refs_total_count"] == 64
         assert document["assertion_refs_omitted_count"] == 44
         assert document["assertion_refs_truncated"] is True
@@ -2425,11 +2431,61 @@ async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: P
         assert not any(ref.startswith("assertion:") for ref in resolution.object_refs)
         assert resolution.caveats == (
             "annotation_batch_assertion_refs_capped: returned=20 total=64 omitted=44",
+            "annotation_batch_assertion_ref_values_capped: clipped=20 json_byte_cap=96",
             "annotation_batch_validation_failures_capped: returned=5 total=64 omitted=59",
-            "annotation_batch_validation_failure_json_capped: clipped=5 byte_cap=1024",
+            "annotation_batch_validation_failure_json_capped: clipped=5 byte_cap=256",
             f"annotation_batch_metadata_json_capped: total_bytes={document['metadata']['json_bytes_total']} "
-            "byte_cap=1024",
+            "byte_cap=256",
         )
+        assert len(resolution.model_dump_json().encode("utf-8")) < 16_000
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_byte_bounds_opaque_annotation_refs_and_scalars(tmp_path: Path) -> None:
+    """Count-bounded opaque refs cannot expand a public response without limit."""
+    from polylogue.annotations.batch import AnnotationBatch
+
+    huge_id = "x" * (128 * 1024)
+    assertion_refs = tuple(f"assertion:{index:02d}-{huge_id}" for index in range(20))
+    batch = AnnotationBatch(
+        batch_id=f"batch-{huge_id}",
+        schema_id="delegation.discourse",
+        schema_version=1,
+        target_ref=f"delegation:{huge_id}",
+        source_result_ref=f"result-set:{huge_id}",
+        actor_ref=f"agent:{huge_id}",
+        model_ref=f"agent:model-{huge_id}",
+        prompt_ref=f"block:{huge_id}:0",
+        total_count=20,
+        valid_count=20,
+        invalid_count=0,
+        abstained_count=0,
+        assertion_refs=assertion_refs,
+        created_at_ms=789,
+    )
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore.open_existing(tmp_path) as store:
+            store.save_annotation_batch(batch)
+            persisted = store.get_annotation_batch(batch.batch_id)
+            assert persisted is not None
+            assert persisted.assertion_refs == assertion_refs
+            assert persisted.target_ref == batch.target_ref
+
+        resolution = await archive.resolve_ref(batch.batch_ref)
+
+        assert resolution.resolved is True
+        assert resolution.normalized_ref is None
+        assert resolution.ref.startswith("annotation-batch:sha256-")
+        assert resolution.payload is not None
+        assert resolution.payload["assertion_ref_values_truncated_count"] == 20
+        assert all(item["truncated"] is True for item in resolution.payload["assertion_refs"])
+        assert resolution.payload["target_ref"]["truncated"] is True
+        assert resolution.object_refs == ()
+        assert resolution.actions == ()
+        assert any("assertion_ref_values_capped" in caveat for caveat in resolution.caveats)
+        assert any("scalar_values_capped" in caveat for caveat in resolution.caveats)
         assert len(resolution.model_dump_json().encode("utf-8")) < 16_000
     finally:
         await archive.close()
