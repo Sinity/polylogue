@@ -373,6 +373,43 @@ def test_readiness_failure_branch_counts_error_message_rows(tmp_path: Path) -> N
     assert info["embedding_failure_count"] == 1
 
 
+# ── degrade-loudly (polylogue-cpf.4): a query failure must not look like ──
+# ── a clean, empty archive ─────────────────────────────────────────────
+
+
+def test_readiness_query_failure_logs_instead_of_looking_like_a_clean_archive(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A transient query failure returns the same shape as "nothing to embed
+    yet", so the failure must be logged loudly — otherwise it is invisible
+    that ``embedding_status="empty"`` came from an error, not a fresh archive.
+    """
+    db = tmp_path / "status.sqlite"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    db.touch()
+
+    cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise sqlite3.OperationalError("database is locked")
+
+    with (
+        patch("polylogue.config.load_polylogue_config", return_value=cfg),
+        patch("polylogue.daemon.embedding_readiness.embedding_status_payload", side_effect=_boom),
+        caplog.at_level("WARNING"),
+    ):
+        info = embedding_readiness_info(db)
+
+    # Same shape as a genuinely empty archive -- this is exactly the
+    # ambiguity the doctrine flags. The log line is what makes the two
+    # distinguishable.
+    assert info["embedding_status"] == "empty"
+    assert info["embedding_retrieval_ready"] is False
+    assert "embedding readiness query failed" in caplog.text
+    assert "database is locked" in caplog.text
+
+
 def test_reconcile_embedding_dimension_mismatch_marks_reindex_and_drops_vec0(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

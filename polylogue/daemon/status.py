@@ -32,7 +32,7 @@ from polylogue.daemon.cursor_lag_status import CursorLagSummary as CursorLagSumm
 from polylogue.daemon.cursor_lag_status import cursor_lag_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import FTSReadiness, fts_readiness_info
-from polylogue.daemon.health import DaemonHealth, check_health
+from polylogue.daemon.health import DaemonHealth, HealthAlert, HealthSeverity, check_health
 from polylogue.daemon.live_ingest_attempt_models import (
     LiveIngestAttemptState,
 )
@@ -51,6 +51,7 @@ from polylogue.daemon.live_ingest_attempt_workload import (
     latest_stage_events,
     workload_fields,
 )
+from polylogue.logging import get_logger
 from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.readiness.claim_guard import derive_claim_guard
@@ -65,6 +66,8 @@ from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+logger = get_logger(__name__)
 
 # Backwards-compatible alias for the stuck threshold (#1246). The "stale"
 # rollup field stays in the typed status payload to avoid breaking
@@ -488,8 +491,12 @@ def _archive_tier_status(
             )
         finally:
             conn.close()
-    except sqlite3.Error:
-        pass
+    except sqlite3.Error as exc:
+        # version_status already defaults to "invalid" above and stays that
+        # way here, so this branch does carry a signal — but the exception
+        # itself was previously discarded. Log it so operators can tell a
+        # read failure from a genuinely corrupt/unversioned tier.
+        logger.warning("archive tier status query failed for %s (%s): %s", path, name, exc, exc_info=True)
     return ArchiveTierStatus(
         name=name,
         path=str(path),
@@ -544,7 +551,8 @@ def _insight_freshness_info() -> dict[str, object]:
             "sessions_with_profiles": sessions_with_profiles,
             "total_sessions": total_sessions,
         }
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("status: insight-freshness query failed for %s: %s", dbf, exc, exc_info=True)
         return {"sessions_with_profiles": 0, "total_sessions": 0}
 
 
@@ -663,8 +671,12 @@ def _raw_failure_info() -> dict[str, object]:
                         ).fetchone()[0]
                         or 0
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                # contextlib.suppress above already covers the expected
+                # "detection_warnings column not on this schema yet" case;
+                # anything reaching here is unexpected and previously
+                # vanished silently behind a 0 count.
+                logger.warning("detection-warnings count query failed: %s", exc, exc_info=True)
             # Bounded failure samples (most recent 50), typed.
             samples: list[RawFailureSample] = []
             raw_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_sessions)").fetchall()}
@@ -714,7 +726,8 @@ def _raw_failure_info() -> dict[str, object]:
             "maintenance_failures": maintenance_count,
             "samples": combined,
         }
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("status: raw-failure query failed for %s: %s", dbf, exc, exc_info=True)
         return {
             "parse_failures": 0,
             "validation_failures": 0,
@@ -829,7 +842,8 @@ def _maintenance_failure_info() -> tuple[list[RawFailureSample], int]:
         root = archive_root()
         records = read_maintenance_failures(root)
         total = count_maintenance_failures(root)
-    except Exception:
+    except Exception as exc:
+        logger.warning("status: maintenance-failure read failed: %s", exc, exc_info=True)
         return [], 0
 
     samples: list[RawFailureSample] = []
@@ -964,7 +978,8 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("status: live-cursor summary query failed for %s: %s", dbf, exc, exc_info=True)
         return LiveCursorSummary()
 
     now = datetime.now(UTC)
@@ -1157,7 +1172,8 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
             slow_threshold_s = compute_slow_threshold_s(conn)
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("status: live-ingest-attempt summary query failed for %s: %s", dbf, exc, exc_info=True)
         return LiveIngestAttemptSummary()
 
     now = datetime.now(UTC)
@@ -1979,8 +1995,25 @@ def build_daemon_status(
         health_tiers.update({HealthTier.MEDIUM, HealthTier.EXPENSIVE})
     try:
         health = check_health(tiers=health_tiers)
-    except Exception:
-        health = DaemonHealth()
+    except Exception as exc:
+        # DaemonHealth() alone defaults to overall_status=OK with zero
+        # alerts — the single most misleading fallback possible for a
+        # health check: a failed check would present as "everything is
+        # fine" instead of "the check itself broke" (polylogue-cpf.4).
+        logger.warning("status: check_health() failed: %s", exc, exc_info=True)
+        health = DaemonHealth(
+            overall_status=HealthSeverity.ERROR,
+            checked_at=datetime.now(UTC).isoformat(),
+            alerts=[
+                HealthAlert(
+                    check_name="check_health",
+                    tier=HealthTier.FAST,
+                    severity=HealthSeverity.ERROR,
+                    message=f"health check itself failed: {exc}",
+                    checked_at=datetime.now(UTC).isoformat(),
+                )
+            ],
+        )
 
     # Surface memory pressure from the most recent running attempt
     rss_current_mb: float | None = None
@@ -2124,8 +2157,11 @@ def daemon_status_payload(
                 "ts": last.get("ts"),
                 "payload": last.get("payload"),
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        # last_ingestion stays None, identical to "daemon hasn't ingested
+        # anything yet" — log so a get_last_ingestion_batch() failure isn't
+        # mistaken for a cold-start daemon.
+        logger.warning("daemon status last-ingestion lookup failed: %s", exc, exc_info=True)
 
     status = build_daemon_status(
         sources=sources,

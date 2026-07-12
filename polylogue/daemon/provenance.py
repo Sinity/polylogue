@@ -34,8 +34,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
+from polylogue.logging import get_logger
 from polylogue.paths import active_index_db_path
 from polylogue.storage.blob_store import get_blob_store
+
+logger = get_logger(__name__)
 
 # Hard server-side cap on the preview window. The endpoint will never
 # return more than this many bytes of raw content regardless of what a
@@ -155,7 +158,12 @@ def _fetch_archive_provenance_row(archive_db: Path, session_id: str) -> Provenan
                 """,
                 (session_id,),
             ).fetchone()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        # None already means "no provenance row for this session_id" —
+        # identical to a query failure. Provenance is the evidence-chain
+        # surface itself, so log loudly rather than let a transient error
+        # look like "nothing to show" (polylogue-cpf.4).
+        logger.warning("provenance row query failed for session %s: %s", session_id, exc, exc_info=True)
         return None
     finally:
         conn.close()

@@ -900,6 +900,10 @@ def _schema_archive_session_ids_for_source_paths(
             if not _ensure_source_tier_attached(conn):
                 return {path: [] for path in normalized_paths}
         except sqlite3.Error:
+            # Swallowed here, one level below the stage's own check/execute
+            # logging (the 1xc.11 fix), so the outer probe never sees this
+            # failure and can't log it either.
+            logger.warning("archive convergence: failed to attach source tier", exc_info=True)
             return {path: [] for path in normalized_paths}
     result: dict[Path, list[str]] = {path: [] for path in normalized_paths}
     paths_by_text = {str(path): path for path in normalized_paths}
@@ -1395,6 +1399,7 @@ def _archive_hot_insight_session_ids(
             if not _ensure_source_tier_attached(conn):
                 return set()
         except sqlite3.Error:
+            logger.warning("archive convergence: failed to attach source tier", exc_info=True)
             return set()
     placeholders = ", ".join("?" for _ in unique_ids)
     rows = conn.execute(

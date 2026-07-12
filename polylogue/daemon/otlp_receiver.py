@@ -283,6 +283,6 @@ def _count_entities(request: Any, signal_type: str) -> tuple[int, int]:
                 resources += 1
                 for sl in rl.scope_logs:
                     entities += len(sl.log_records)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("otlp entity count failed for signal_type=%s: %s", signal_type, exc, exc_info=True)
     return resources, entities

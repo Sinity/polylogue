@@ -9,7 +9,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+logger = get_logger(__name__)
 
 
 class CatchupStageEvent(BaseModel):
@@ -174,7 +177,8 @@ def _recent_stage_events(dbf: Path) -> list[CatchupStageEvent]:
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("catchup live stage-event query failed for %s: %s", dbf, exc, exc_info=True)
         return []
     return [_catchup_stage_event_from_row(row) for row in rows]
 
@@ -200,7 +204,8 @@ def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("catchup archive stage-event query failed for %s: %s", ops_db, exc, exc_info=True)
         return []
     return [_archive_catchup_stage_event_from_row(row) for row in rows]
 

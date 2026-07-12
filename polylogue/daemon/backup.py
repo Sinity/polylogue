@@ -293,8 +293,12 @@ def _check_prerequisites(*, profile: BackupProfile = "rebuildable_cache_exclude"
                 f"low disk space: {free / (1024**3):.1f} GB free, "
                 f"~{needed / (1024**3):.1f} GB needed for backup and scratch verification"
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        # A swallowed failure here previously left the disk-space check
+        # unrepresented in `warnings` at all — indistinguishable from "disk
+        # space is fine". Surface it as its own warning so the check's own
+        # failure is visible (polylogue-cpf.4).
+        warnings.append(f"disk space check failed: {exc}")
 
     return warnings
 

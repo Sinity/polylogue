@@ -7,7 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import polylogue.config as polylogue_config
+from polylogue.logging import get_logger
 from polylogue.storage.embeddings.status_payload import embedding_status_payload
+
+logger = get_logger(__name__)
 
 
 def _defaults(*, enabled: bool, config_enabled: bool, has_key: bool, model: str, dimension: int) -> dict[str, object]:
@@ -56,7 +59,12 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
             include_retrieval_bands=False,
             include_detail=detail,
         )
-    except (sqlite3.Error, OSError):
+    except (sqlite3.Error, OSError) as exc:
+        # _defaults() reports embedding_status="empty" / retrieval_ready=False
+        # / pending counts of 0 — identical to a genuinely fresh archive with
+        # no embeddings yet. Log loudly so a transient DB error doesn't read
+        # as "nothing to embed" (polylogue-cpf.4).
+        logger.warning("embedding readiness query failed for %s: %s", db_file, exc, exc_info=True)
         return _defaults(
             enabled=enabled,
             config_enabled=config_enabled,

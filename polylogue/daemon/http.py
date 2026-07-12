@@ -390,7 +390,8 @@ def _web_reader_archive_root() -> Path | None:
         try:
             with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            logger.warning("web-reader archive-root version probe failed for %s: %s", path, exc, exc_info=True)
             return None
         if version != ARCHIVE_VERSION_BY_TIER[tier]:
             return None
