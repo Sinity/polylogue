@@ -42,7 +42,12 @@ LANES: dict[str, dict] = {
             "descriptive Fable delegation packet, only if 1+2 land cleanly."
         ),
         "own": ["polylogue/archive/query/", "polylogue/insights/", "tests/unit/archive/", "tests/unit/insights/"],
-        "avoid": ["polylogue/storage/sqlite/", "polylogue/daemon/", "browser-extension/"],
+        "avoid": [
+            "polylogue/storage/sqlite/",
+            "polylogue/daemon/",
+            "browser-extension/",
+            "insights rigor/field contracts (rigor-contracts lane owns them; you CREATE new packet modules)",
+        ],
         "verify": "devtools test tests/unit/archive tests/unit/insights -k 'aggregate or cohort or manifest' (narrow further per change)",
     },
     "polylogue-hermes-wedge": {
@@ -57,20 +62,24 @@ LANES: dict[str, dict] = {
         ),
         "own": [
             "polylogue/sources/parsers/hermes_state.py",
-            "polylogue/mcp/",
+            "polylogue/mcp/ (recall/context tools only)",
             "polylogue/daemon/recall*",
             "tests/unit/sources/",
             "tests/unit/mcp/",
         ],
-        "avoid": ["polylogue/storage/sqlite/archive_tiers/", "browser-extension/"],
+        "avoid": [
+            "polylogue/storage/sqlite/archive_tiers/",
+            "browser-extension/",
+            "mcp response envelope/pagination plumbing (mcp-ergonomics lane)",
+        ],
         "verify": "devtools test tests/unit/sources/test_hermes* tests/unit/mcp -k 'hermes or recall or manifest'",
     },
     "polylogue-extension-redesign": {
-        "beads": [],  # ids assigned by the design-pack import in the beads pass
+        "beads": ["r4no", "bkff", "r2kb", "4g3n"],
         "goal": (
-            "Extension redesign per docs/design/browser-capture-redesign/ and "
-            "the handoff pack (coordinator files beads before launch; read "
-            "them via bd ready --json | grep redesign). Order: silent-capture "
+            "Extension redesign first slice (epic polylogue-yyvg; in-page "
+            "layers ys30/wvji/bj5h are follow-ups, NOT this lane). Order: "
+            "r4no silent-capture "
             "P1 bug (auto-capture trigger never fires — 160 GETs, 0 POSTs) "
             "first; then popup mission-control; operator status vocabulary; "
             "'What Polylogue did here' timeline (doing-nothing must be a "
@@ -111,12 +120,13 @@ LANES: dict[str, dict] = {
         "verify": "devtools test tests/unit/daemon -k 'web or shell' + playwright smoke if route shapes change",
     },
     "polylogue-distribution": {
-        "beads": ["y8s5"],
+        "beads": ["y8s5", "6rvt"],
         "goal": (
             "Distribution/legibility: everything y8s5 unblocks — PyPI/pipx "
             "publishable package, Homebrew/GHCR smoke lanes, install matrix "
             "doc, extension packaging for store submission. v0.2.0 is tagged; "
-            "wire the release artifacts, don't re-cut."
+            "wire the release artifacts, don't re-cut. Include 6rvt: packaged "
+            "runtimes must expose the full build revision."
         ),
         "own": [
             "pyproject.toml",
@@ -210,6 +220,7 @@ LANES: dict[str, dict] = {
         "verify": "devtools verify --quick + testmon-affected; zero behavior diffs expected",
     },
     "polylogue-origin-interop": {
+        "wave2_after": "polylogue-provider-origin",
         "beads": ["2ilz"],
         "goal": (
             "Origin identity hygiene: 2ilz durable capture-mode field "
@@ -224,7 +235,7 @@ LANES: dict[str, dict] = {
         "verify": "devtools test tests/unit/core -k 'source or origin'",
     },
     "polylogue-demo-corpus": {
-        "beads": ["212.11"],
+        "beads": ["212.11", "67ac"],
         "goal": (
             "Demo construct validity: 212.11 shared deterministic proof "
             "world for flagship demos; PLUS the measured-result experiment — "
@@ -239,20 +250,183 @@ LANES: dict[str, dict] = {
         "verify": "polylogue demo seed && polylogue demo verify && polylogue demo receipts (deterministic, CI-green)",
     },
     "polylogue-fastforward-mech": {
-        "beads": [],  # bead filed in the beads pass; informed by the live v35 run
+        "beads": ["9rw0", "ma2"],
         "goal": (
-            "Productize derived-tier fast-forward plans (bead filed by "
-            "coordinator; read it + the fanout-prep doc section 'v35 "
-            "rebuild'). Each index bump declares a delta class (constraint/"
+            "Productize derived-tier fast-forward plans (polylogue-9rw0; read "
+            "it + the fanout-prep doc section 'v35 rebuild'). Each index bump declares a delta class (constraint/"
             "view/index-only vs semantic-reparse); non-semantic deltas get a "
             "generated SQL fast-forward validated by equivalence sampling "
             "on a reflink clone. Codify what the live v32->v35 fast-forward "
             "just did manually; add the policy lint so bumps without a "
-            "declared class fail devtools lab policy schema-versioning."
+            "declared class fail devtools lab policy schema-versioning. "
+            "Live exercise: ma2 (FK-supporting index for web_content_constructs "
+            "cleanup) is an index-only delta — ship it THROUGH the new "
+            "mechanism as its first proof."
         ),
         "own": ["polylogue/storage/sqlite/lifecycle*", "devtools/ (policy)", "tests/unit/storage/"],
         "avoid": ["archive_tiers DDL semantics"],
         "verify": "devtools lab policy schema-versioning + focused lifecycle tests",
+    },
+    "polylogue-search-coverage": {
+        "beads": ["013x"],
+        "goal": (
+            "Close the search_text coverage gap: Write-tool file bodies "
+            "(tool_input.$.content) are excluded from search_text — decide "
+            "and implement the documented contract (include with bounds, or "
+            "document exclusion + expose via a dedicated lane). Bead notes "
+            "carry the #2740 documentation groundwork."
+        ),
+        "own": ["polylogue/pipeline/", "docs/search.md", "tests/unit/pipeline/"],
+        "avoid": ["polylogue/storage/sqlite/archive_tiers/", "polylogue/archive/query/"],
+        "verify": "devtools test tests/unit/pipeline -k 'search_text or tool_body'",
+    },
+    "polylogue-docs-ia": {
+        "beads": ["ttu"],
+        "goal": (
+            "Docs information architecture: tiered index, orphan sweep, "
+            "stale-doc triage. Hand-written docs only — generated surfaces "
+            "(cli-reference.md, mcp-reference.md, topology-status.md) are "
+            "off-limits; fix their generators only if an orphan points there."
+        ),
+        "own": ["docs/ (hand-written)", "README.md cross-links"],
+        "avoid": ["docs/cli-reference.md", "docs/mcp-reference.md", "docs/topology-status.md", "polylogue/"],
+        "verify": "devtools render all --check (grep output for 'out of sync' — exit code alone lies)",
+    },
+    "polylogue-coverage-triage": {
+        "beads": ["kp4q"],
+        "goal": (
+            "Triage the 4 zero-coverage files: classify each as dead/unwired "
+            "(delete or file removal bead) vs untested-but-live (add focused "
+            "real-route tests). Deletion needs the safe-delete evidence "
+            "standard: no dynamic imports, no CLI/MCP registration reach."
+        ),
+        "own": ["tests/", "the 4 files named in the bead (delete-only changes)"],
+        "avoid": ["any behavior change to live code"],
+        "verify": "devtools test <new tests> + devtools verify --quick",
+    },
+    "polylogue-eqp-census": {
+        "beads": ["20d.7"],
+        "goal": (
+            "READ-ONLY analysis lane: EQP sweep + dbstat census against the "
+            "live archive opened strictly read-only "
+            "(file:...index.db?mode=ro URI; never set POLYLOGUE_ARCHIVE_ROOT "
+            "to the live root for write commands). Deliverables: a report in "
+            "your worktree .agent/reports/eqp-census-2026-07.md ranking "
+            "missing-index/scan hotspots with measured timings, plus "
+            "follow-up bead proposals (list them in the PR body; do NOT "
+            "create beads yourself). Note the archive may transition "
+            "v32->v35 mid-run; record which generation you measured."
+        ),
+        "own": [".agent/reports/ (new file in your worktree only)"],
+        "avoid": ["ALL code; this lane ships a report PR only"],
+        "verify": "every claim in the report carries the exact query + timing; no code changes to test",
+    },
+    "polylogue-test-harness": {
+        "beads": ["th0"],
+        "goal": (
+            "Interactive-surface test harness: pty flows, completion menus, "
+            "fuzzy pickers — the untested interactive tier. Build on "
+            "tests/infra patterns; harness first, then 2-3 exemplar tests "
+            "proving real interactive routes (not toy replicas)."
+        ),
+        "own": ["tests/infra/", "tests/unit/cli/ (new interactive tests)"],
+        "avoid": ["polylogue/ (harness may not change production code)"],
+        "verify": "devtools test <new harness tests>; anti-vacuity statement mandatory",
+    },
+    "polylogue-cost-honesty": {
+        "beads": ["d3xj", "w8et", "w379"],
+        "goal": (
+            "Cost/usage honesty cluster: d3xj Codex per-message fallback path "
+            "still double-bills cached input (token-lane divergence — the "
+            "7.7x-inflation bug class); w8et reconciliation probe for state_5 "
+            "sentinel/stale/cross-thread tokens_used; w379 price catalog_hash "
+            "computed but never compared — wire or delete."
+        ),
+        "own": ["polylogue/archive/semantic/ (pricing/costs)", "polylogue/costs*", "tests/unit/costs/"],
+        "avoid": ["polylogue/storage/sqlite/archive_tiers/", "polylogue/insights/"],
+        "verify": "devtools test -k 'cost or pricing or token_lane' with cross-provider control cases",
+    },
+    "polylogue-hooks-capture": {
+        "beads": ["qqyg"],
+        "goal": (
+            "Comprehensive hook-event capture for Claude Code, Codex, and "
+            "Hermes (epic-shaped bead — read notes for the staged plan; ship "
+            "the Claude Code + Codex stages, leave Hermes for the "
+            "hermes-wedge lane's spool work if absent). Durable local spool, "
+            "receiver-ack semantics per the browser-capture pattern."
+        ),
+        "own": ["polylogue/sources/hooks*", "polylogue/sources/live/", "tests/unit/sources/hooks/"],
+        "avoid": ["polylogue/sources/parsers/hermes_state.py", "browser-extension/"],
+        "verify": "devtools test tests/unit/sources -k hook",
+    },
+    "polylogue-rigor-contracts": {
+        "beads": ["uwk3", "jph5"],
+        "goal": (
+            "A-trust-floor frontier: uwk3 extend RigorFieldContract coverage "
+            "to remaining quantitative insight fields; jph5 verify/implement "
+            "n_min coverage refusal in the claim-vs-evidence generator. "
+            "Boundary: you own the rigor/field-contract modules; the "
+            "fable-demo lane CREATES new packet modules — do not edit its "
+            "new files, it does not edit yours."
+        ),
+        "own": [
+            "polylogue/insights/ (rigor/field contracts + claim-vs-evidence generator)",
+            "tests/unit/insights/rigor*",
+        ],
+        "avoid": ["polylogue/archive/query/", "new delegation-packet modules"],
+        "verify": "devtools test -k 'rigor or n_min or claim' + insight_rigor_audit output before/after",
+    },
+    "polylogue-api-parity": {
+        "beads": ["9e5.16"],
+        "goal": (
+            "A-trust-floor frontier: audit the Python API (Polylogue facade + "
+            "SessionRepository) against CLI/MCP capabilities; produce the "
+            "parity matrix, then close the tractable gaps in-lane and file "
+            "follow-up proposals (PR body) for the rest."
+        ),
+        "own": ["polylogue/api/", "tests/unit/api/"],
+        "avoid": ["polylogue/cli/", "polylogue/mcp/", "polylogue/storage/"],
+        "verify": "devtools test tests/unit/api + the parity matrix as a PR artifact",
+    },
+    "polylogue-test-hardening": {
+        "beads": ["n4hb", "c52g", "znwj"],
+        "goal": (
+            "Test-quality cluster (tests-only lane): n4hb convert the 3 "
+            "cleanest mock-depth offenders to infra-backed tests; c52g harden "
+            "cli/query_verbs.py + commands/status.py coverage; znwj harden "
+            "daemon/cli.py + status.py (highest fix-churn file). You may NOT "
+            "change production code — if a test exposes a real bug, document "
+            "it in the PR body as a proposed bead."
+        ),
+        "own": ["tests/ only"],
+        "avoid": ["polylogue/ entirely"],
+        "verify": "devtools test <new/changed tests>; anti-vacuity statement per test",
+    },
+    "polylogue-mcp-ergonomics": {
+        "beads": ["rsad"],
+        "goal": (
+            "MCP agent ergonomics (ac-patched, execution-ready): oversized "
+            "responses, boilerplate affordances, metadata-only summaries. "
+            "Boundary: you own response envelope/pagination plumbing; the "
+            "hermes-wedge lane owns recall/context tools — coordinate via "
+            "PR if a tool needs both."
+        ),
+        "own": ["polylogue/mcp/ (envelope/pagination/summaries)", "tests/unit/mcp/"],
+        "avoid": ["recall/context/compile tools (hermes-wedge lane)", "polylogue/daemon/"],
+        "verify": "devtools test tests/unit/mcp -k 'envelope or pagination or summary'; EXPECTED_TOOL_NAMES untouched unless a tool is added",
+    },
+    "polylogue-temporal-provenance": {
+        "beads": ["cuxz"],
+        "goal": (
+            "Design + implement the time_confidence/degraded-provenance "
+            "signal for timeless rows (cpf.5/.6 landed the propagation "
+            "substrate; this is the consumer-visible signal). Weakest-source "
+            "propagation rules apply; no fabricated timestamps — unknown "
+            "renders as unknown."
+        ),
+        "own": ["polylogue/core/temporal*", "polylogue/insights/temporal*", "tests/unit/core/"],
+        "avoid": ["polylogue/storage/sqlite/archive_tiers/"],
+        "verify": "devtools test -k 'temporal or time_confidence'",
     },
     # ---- wave 2: launch only after the named lane's PR merges ----
     "polylogue-query-polish": {
