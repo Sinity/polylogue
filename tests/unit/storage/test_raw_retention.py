@@ -1129,7 +1129,59 @@ def test_raw_frontier_integrity_snapshot_detects_missing_accepted_predecessor(tm
     assert sample.accepted_raw_id == "raw-append"
     assert sample.logical_source_key == "codex:session-1"
     assert "missing from source tier" in sample.reason
-    assert "1 accepted append head" in snapshot.broken_head_reason
+    assert "1 active index raw seed" in snapshot.broken_head_reason
+    assert snapshot.overall_status == "violated"
+
+
+def test_raw_frontier_integrity_snapshot_traverses_session_seed_without_head(tmp_path: Path) -> None:
+    """Removing the sessions.raw_id retention seed makes this regression false-green."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "session.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-session-append",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="append",
+            source_revision="revision-1",
+            generation=1,
+            blob_size=5,
+            predecessor_raw_id="raw-session-missing",
+            predecessor_revision="revision-0",
+            baseline_raw_id="raw-session-missing",
+            append_start_offset=10,
+            append_end_offset=15,
+        )
+        conn.commit()
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('session-only', 'codex-session', 'raw-session-append', 'session seed', ?)
+            """,
+            (bytes(32),),
+        )
+        conn.commit()
+
+    with sqlite3.connect(source_db) as conn:
+        with pytest.raises(RawRetentionSafetyError, match="raw-session-missing"):
+            active_raw_retention_authority(conn, index_db_path=index_db)
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.broken_head_status == "violated"
+    assert snapshot.broken_head_count == 1
+    assert snapshot.broken_head_checked_count == 1
+    assert snapshot.broken_head_samples[0].accepted_raw_id == "raw-session-append"
+    assert "raw-session-missing" in snapshot.broken_head_samples[0].reason
+    assert snapshot.cursor_ahead_status == "healthy"
     assert snapshot.overall_status == "violated"
 
 
@@ -1727,6 +1779,37 @@ def test_raw_frontier_integrity_snapshot_unavailable_source_tier_is_unknown_neve
     assert snapshot.cursor_ahead_status == "unknown"
     assert snapshot.overall_status == "unknown"
     assert "unreadable" in snapshot.broken_head_reason
+
+
+def test_raw_frontier_integrity_snapshot_partial_source_schema_is_unknown_not_violated(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-baseline",
+        accepted_raw_id="raw-baseline",
+        accepted_revision="revision-0",
+        generation=0,
+        frontier=15,
+        append_end_offset=None,
+    )
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY) STRICT")
+        conn.execute("INSERT INTO raw_sessions (raw_id) VALUES ('raw-baseline')")
+        conn.commit()
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.broken_head_status == "unknown"
+    assert snapshot.broken_head_count == 0
+    assert snapshot.broken_head_checked_count == 0
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.overall_status == "unknown"
+    assert "schema missing column(s)" in snapshot.broken_head_reason
 
 
 def test_raw_frontier_integrity_snapshot_unavailable_ops_tier_is_unknown_never_healthy(tmp_path: Path) -> None:

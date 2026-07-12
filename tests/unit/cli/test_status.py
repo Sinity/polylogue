@@ -24,6 +24,7 @@ from polylogue.cli.commands.status import (
     _show_direct_json,
     _show_direct_status,
     _show_status_json,
+    _status_ok,
     status_command,
 )
 from polylogue.cli.shared.types import AppEnv
@@ -1555,6 +1556,72 @@ class TestNoArchiveStatus:
         assert payload["raw_frontier_integrity"]["overall_status"] == "violated"
         assert "broken_head_samples" not in payload["raw_frontier_integrity"]
 
+    @pytest.mark.parametrize("full", [False, True])
+    def test_daemon_status_json_missing_frontier_is_explicit_unknown(self, full: bool) -> None:
+        env = _make_app_env()
+
+        _show_status_json(env, {"ok": True, "daemon_liveness": True}, full=full)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["ok"] is False
+        assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
+        assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
+
+    def test_status_ok_requires_complete_fresh_frontier_authority(self) -> None:
+        assert _status_ok({"ok": True, "daemon_liveness": True}) is False
+        healthy = {
+            "available": True,
+            "overall_status": "healthy",
+            "broken_head_status": "healthy",
+            "missing_source_raw_status": "healthy",
+            "cursor_ahead_status": "healthy",
+        }
+        assert _status_ok({"ok": True, "raw_frontier_integrity": healthy}) is True
+        assert (
+            _status_ok(
+                {
+                    "ok": True,
+                    "daemon_liveness": True,
+                    "status_snapshot": {"state": "stale"},
+                    "raw_frontier_integrity": healthy,
+                }
+            )
+            is False
+        )
+
+    def test_daemon_status_text_marks_missing_frontier_non_green(self) -> None:
+        env = _make_app_env()
+
+        _show_daemon_status(env, {"ok": True, "daemon_liveness": True})
+
+        rendered = _combined_calls(env)
+        assert "[bold yellow]Daemon: running; status degraded[/bold yellow]" in rendered
+        assert "Raw frontier: [yellow]unknown[/yellow]" in rendered
+
+    def test_daemon_status_stale_healthy_frontier_becomes_unknown(self) -> None:
+        env = _make_app_env()
+        _show_status_json(
+            env,
+            {
+                "ok": True,
+                "daemon_liveness": True,
+                "status_snapshot": {"state": "stale"},
+                "raw_frontier_integrity": {
+                    "available": True,
+                    "overall_status": "healthy",
+                    "broken_head_status": "healthy",
+                    "missing_source_raw_status": "healthy",
+                    "cursor_ahead_status": "healthy",
+                },
+            },
+            full=True,
+        )
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["ok"] is False
+        assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
+        assert "stale" in payload["raw_frontier_integrity"]["broken_head_reason"]
+
     def test_daemon_status_json_is_compact_by_default(self) -> None:
         env = _make_app_env()
         full_payload = {
@@ -1611,7 +1678,7 @@ class TestNoArchiveStatus:
         for heavy_key in ("live_cursor", "catchup", "convergence", "failing_files", "last_ingestion_batch"):
             assert heavy_key not in payload
 
-    def test_daemon_status_json_full_preserves_raw_payload(self) -> None:
+    def test_daemon_status_json_full_preserves_fields_but_normalizes_missing_authority(self) -> None:
         env = _make_app_env()
         full_payload = {
             "daemon_liveness": True,
@@ -1621,9 +1688,15 @@ class TestNoArchiveStatus:
 
         _show_status_json(env, full_payload, full=True)
 
-        assert json.loads(_combined_calls(env)) == full_payload
+        payload = json.loads(_combined_calls(env))
+        assert payload["daemon_liveness"] is True
+        assert payload["live_cursor"] == full_payload["live_cursor"]
+        assert payload["archive_debt"] == full_payload["archive_debt"]
+        assert payload["ok"] is False
+        assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
+        assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
 
-    def test_status_command_full_json_preserves_daemon_payload(self) -> None:
+    def test_status_command_full_json_preserves_fields_but_normalizes_missing_authority(self) -> None:
         env = _make_app_env()
         full_payload = {
             "daemon_liveness": True,
@@ -1639,7 +1712,13 @@ class TestNoArchiveStatus:
             )
 
         assert result.exit_code == 0
-        assert json.loads(_combined_calls(env)) == full_payload
+        payload = json.loads(_combined_calls(env))
+        assert payload["daemon_liveness"] is True
+        assert payload["live_cursor"] == full_payload["live_cursor"]
+        assert payload["archive_debt"] == full_payload["archive_debt"]
+        assert payload["ok"] is False
+        assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
+        assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
 
     def test_status_command_default_json_compacts_daemon_payload(self) -> None:
         env = _make_app_env()

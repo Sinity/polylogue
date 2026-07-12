@@ -296,6 +296,105 @@ def component_from_raw_frontier_integrity(payload: Mapping[str, Any] | None) -> 
     )
 
 
+def raw_frontier_integrity_is_proven_healthy(payload: object) -> bool:
+    """Return whether a complete frontier projection proves every check healthy."""
+
+    if not isinstance(payload, Mapping):
+        return False
+    return (
+        payload.get("available") is True
+        and payload.get("overall_status") == "healthy"
+        and payload.get("broken_head_status") == "healthy"
+        and payload.get("missing_source_raw_status") == "healthy"
+        and payload.get("cursor_ahead_status") == "healthy"
+    )
+
+
+def normalize_raw_frontier_status_payload(
+    payload: Mapping[str, Any],
+    *,
+    snapshot_state: str | None = None,
+) -> dict[str, Any]:
+    """Fail closed at cached/presentation boundaries lacking fresh authority.
+
+    Rich status is cached for request-time boundedness. A legacy, partial, or
+    stale cache entry must not retain a top-level green bit after the canonical
+    frontier projection becomes unavailable. Proven violations remain visible
+    when stale; formerly healthy or unknown snapshots become explicit unknown.
+    The raw-frontier component and converged claim are replaced from the same
+    normalized mapping so adapters cannot drift.
+    """
+
+    from polylogue.storage.raw_retention import (
+        raw_frontier_integrity_summary,
+        unknown_raw_frontier_integrity_projection,
+    )
+
+    normalized: dict[str, Any] = dict(payload)
+    if snapshot_state is None:
+        snapshot = payload.get("status_snapshot")
+        snapshot_state = str(snapshot.get("state") or "") if isinstance(snapshot, Mapping) else None
+
+    raw_frontier = payload.get("raw_frontier_integrity")
+    frontier = dict(raw_frontier) if isinstance(raw_frontier, Mapping) else None
+    overall = str(frontier.get("overall_status") or "") if frontier is not None else ""
+    stale_or_minimal = bool(snapshot_state and snapshot_state != "fresh")
+
+    reason: str | None = None
+    if frontier is None:
+        reason = "status payload omitted a valid raw frontier integrity projection"
+    elif overall not in {"healthy", "unknown", "violated"}:
+        reason = "status payload contains a malformed raw frontier integrity projection"
+    elif stale_or_minimal and overall != "violated":
+        reason = f"status snapshot is {snapshot_state}; fresh raw frontier authority is unavailable"
+    elif overall == "healthy" and not raw_frontier_integrity_is_proven_healthy(frontier):
+        reason = "status payload contains an incomplete healthy raw frontier integrity projection"
+
+    if reason is not None:
+        frontier = unknown_raw_frontier_integrity_projection(reason).to_dict()
+    elif frontier is not None and overall == "unknown":
+        explicit_unknown = unknown_raw_frontier_integrity_projection(raw_frontier_integrity_summary(frontier)).to_dict()
+        explicit_unknown.update(frontier)
+        explicit_unknown["available"] = False
+        explicit_unknown["overall_status"] = "unknown"
+        frontier = explicit_unknown
+    elif frontier is not None and overall == "violated":
+        explicit_violation = unknown_raw_frontier_integrity_projection(
+            raw_frontier_integrity_summary(frontier)
+        ).to_dict()
+        explicit_violation.update(frontier)
+        explicit_violation["overall_status"] = "violated"
+        if stale_or_minimal:
+            explicit_violation["available"] = False
+        frontier = explicit_violation
+
+    assert frontier is not None
+    normalized["raw_frontier_integrity"] = frontier
+    proven_healthy = raw_frontier_integrity_is_proven_healthy(frontier) and not stale_or_minimal
+    normalized["ok"] = bool(payload.get("ok", payload.get("daemon_liveness"))) and proven_healthy
+
+    existing_components = payload.get("component_readiness")
+    components = dict(existing_components) if isinstance(existing_components, Mapping) else {}
+    components["raw_frontier_integrity"] = component_from_raw_frontier_integrity(frontier).to_dict()
+    normalized["component_readiness"] = components
+
+    existing_guard = payload.get("claim_guard")
+    if isinstance(existing_guard, Mapping):
+        guard = {
+            str(key): dict(value) if isinstance(value, Mapping) else value for key, value in existing_guard.items()
+        }
+        converged = guard.get("converged")
+        if not proven_healthy and isinstance(converged, dict) and bool(converged.get("value")):
+            converged["value"] = False
+            converged["reason"] = raw_frontier_integrity_summary(frontier)
+            converged["signal"] = (
+                "raw_frontier_integrity (fresh accepted raw chains and ingest cursors proven consistent)"
+            )
+        normalized["claim_guard"] = guard
+
+    return normalized
+
+
 def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentReadiness:
     if not bool(payload.get("config_enabled")):
         state = CapabilityReadinessState.MISSING
@@ -570,4 +669,6 @@ __all__ = [
     "component_from_raw_frontier_integrity",
     "component_from_raw_materialization_readiness",
     "component_from_transform_registry",
+    "normalize_raw_frontier_status_payload",
+    "raw_frontier_integrity_is_proven_healthy",
 ]

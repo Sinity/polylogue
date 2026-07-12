@@ -21,6 +21,8 @@ from typing import Any
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.paths import active_index_db_path
+from polylogue.readiness.capability import normalize_raw_frontier_status_payload
+from polylogue.storage.raw_retention import unknown_raw_frontier_integrity_projection
 
 _MAX_FRESH_AGE_S = 30.0
 _SNAPSHOT_LOCK = threading.Lock()
@@ -54,10 +56,15 @@ class StatusSnapshot:
 
     def with_metadata(self) -> JSONDocument:
         age_s = max(0.0, time.monotonic() - self.captured_monotonic)
-        payload: dict[str, object] = dict(self.payload)
-        payload.setdefault("component_readiness", _minimal_component_readiness(payload))
+        state = "fresh" if age_s <= _MAX_FRESH_AGE_S else "stale"
+        base_payload: dict[str, object] = dict(self.payload)
+        base_payload.setdefault("component_readiness", _minimal_component_readiness(base_payload))
+        payload: dict[str, object] = normalize_raw_frontier_status_payload(
+            base_payload,
+            snapshot_state=state,
+        )
         payload["status_snapshot"] = {
-            "state": "fresh" if age_s <= _MAX_FRESH_AGE_S else "stale",
+            "state": state,
             "captured_at": self.captured_at,
             "age_s": round(age_s, 3),
             "refresh_error": self.refresh_error,
@@ -197,28 +204,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
 def _minimal_raw_frontier_integrity(reason: str) -> dict[str, object]:
     """Return an explicit unknown projection when the rich tier scan has not run."""
 
-    return {
-        "available": False,
-        "overall_status": "unknown",
-        "broken_head_status": "unknown",
-        "broken_head_count": 0,
-        "broken_head_checked_count": 0,
-        "broken_head_samples": [],
-        "broken_head_reason": reason,
-        "missing_source_raw_status": "unknown",
-        "missing_source_raw_count": 0,
-        "missing_source_raw_samples": [],
-        "missing_source_raw_reason": reason,
-        "cursor_ahead_status": "unknown",
-        "cursor_ahead_count": 0,
-        "cursor_ahead_checked_count": 0,
-        "cursor_head_comparison_count": 0,
-        "cursor_ahead_comparison_count": 0,
-        "cursor_ahead_samples": [],
-        "cursor_authority_gap_count": 0,
-        "cursor_authority_gap_samples": [],
-        "cursor_ahead_reason": reason,
-    }
+    return unknown_raw_frontier_integrity_projection(reason).to_dict()
 
 
 def _daemon_write_coordinator_payload() -> dict[str, object]:

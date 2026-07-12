@@ -167,8 +167,9 @@ class RawFrontierIntegrity(BaseModel):
     through manual SQL after ordinary use broke. This model composes three
     independently-degrading facts so that gap can never render silently green:
 
-    * ``broken_head_*`` — a current accepted append head
-      (``raw_revision_heads``) whose transitive predecessor chain (the same
+    * ``broken_head_*`` — a distinct current raw seed from either
+      ``sessions.raw_id`` or ``raw_revision_heads`` whose transitive
+      predecessor chain (the same
       chain validator ``active_raw_retention_authority`` uses to protect
       retention) is missing or invalid.
     * ``missing_source_raw_*`` — re-projects

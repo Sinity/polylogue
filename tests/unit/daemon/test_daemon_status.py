@@ -47,6 +47,14 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     result = get_status_snapshot_payload()
 
     assert result["checked_at"] == "cached"
+    assert result["ok"] is False
+    frontier = result["raw_frontier_integrity"]
+    assert isinstance(frontier, dict)
+    assert frontier["overall_status"] == "unknown"
+    readiness = result["component_readiness"]
+    assert isinstance(readiness, dict)
+    frontier_component = cast(dict[str, Any], readiness["raw_frontier_integrity"])
+    assert frontier_component["state"] == "unknown"
     snapshot = result["status_snapshot"]
     assert isinstance(snapshot, dict)
     assert snapshot["state"] == "fresh"
@@ -54,6 +62,55 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     assert isinstance(writer, dict)
     assert "active_actor" in writer
     assert "queued_actors" in writer
+
+
+def test_status_snapshot_stale_healthy_authority_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: JSONDocument = {
+        "ok": True,
+        "daemon_liveness": True,
+        "raw_frontier_integrity": {
+            "available": True,
+            "overall_status": "healthy",
+            "broken_head_status": "healthy",
+            "missing_source_raw_status": "healthy",
+            "cursor_ahead_status": "healthy",
+        },
+        "component_readiness": {"raw_frontier_integrity": {"component": "raw_frontier_integrity", "state": "ready"}},
+        "claim_guard": {
+            "converged": {
+                "claim": "converged",
+                "value": True,
+                "reason": "ready",
+                "signal": "raw_frontier_integrity",
+            }
+        },
+    }
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 100.0)
+    refresh_status_snapshot(payload=payload)
+
+    fresh = get_status_snapshot_payload()
+    assert fresh["ok"] is True
+    fresh_frontier = cast(dict[str, Any], fresh["raw_frontier_integrity"])
+    fresh_readiness = cast(dict[str, Any], fresh["component_readiness"])
+    fresh_component = cast(dict[str, Any], fresh_readiness["raw_frontier_integrity"])
+    assert fresh_frontier["overall_status"] == "healthy"
+    assert fresh_component["state"] == "ready"
+
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 131.0)
+    stale = get_status_snapshot_payload()
+
+    stale_snapshot = cast(dict[str, Any], stale["status_snapshot"])
+    stale_frontier = cast(dict[str, Any], stale["raw_frontier_integrity"])
+    stale_readiness = cast(dict[str, Any], stale["component_readiness"])
+    stale_component = cast(dict[str, Any], stale_readiness["raw_frontier_integrity"])
+    stale_guard = cast(dict[str, Any], stale["claim_guard"])
+    stale_converged = cast(dict[str, Any], stale_guard["converged"])
+    assert stale_snapshot["state"] == "stale"
+    assert stale["ok"] is False
+    assert stale_frontier["overall_status"] == "unknown"
+    assert stale_component["state"] == "unknown"
+    assert stale_converged["value"] is False
+    assert "stale" in stale_converged["reason"]
 
 
 def test_status_snapshot_minimal_refresh_stays_request_safe(

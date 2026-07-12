@@ -40,16 +40,30 @@ ORDER BY r.blob_size DESC, r.acquired_at_ms ASC, r.raw_id ASC
 LIMIT ?
 """
 
-_RAW_REVISION_CHAIN_COLUMNS = """
-raw_id, source_index, logical_source_key, revision_kind, source_revision,
-predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
-append_start_offset, append_end_offset, acquisition_generation,
-revision_authority, blob_size
-"""
+_RAW_REVISION_CHAIN_COLUMN_NAMES = (
+    "raw_id",
+    "source_index",
+    "logical_source_key",
+    "revision_kind",
+    "source_revision",
+    "predecessor_source_revision",
+    "predecessor_raw_id",
+    "baseline_raw_id",
+    "append_start_offset",
+    "append_end_offset",
+    "acquisition_generation",
+    "revision_authority",
+    "blob_size",
+)
+_RAW_REVISION_CHAIN_COLUMNS = ", ".join(_RAW_REVISION_CHAIN_COLUMN_NAMES)
 
 
 class RawRetentionSafetyError(RuntimeError):
     """Raised when active raw evidence cannot be proven safe for retention."""
+
+
+class _RawRevisionAuthorityUnavailableError(RawRetentionSafetyError):
+    """Raised when source-tier authority cannot be read, not when it is invalid."""
 
 
 @dataclass(frozen=True)
@@ -205,6 +219,8 @@ def _active_index_raw_authority(
 def _raw_revision_rows(
     conn: sqlite3.Connection,
     raw_ids: set[str],
+    *,
+    allow_missing: bool = False,
 ) -> dict[str, sqlite3.Row]:
     rows_by_id: dict[str, sqlite3.Row] = {}
     pending = set(raw_ids)
@@ -218,10 +234,10 @@ def _raw_revision_rows(
                 batch,
             ).fetchall()
         except sqlite3.Error as exc:
-            raise RawRetentionSafetyError(f"source raw revision authority is unreadable: {exc}") from exc
+            raise _RawRevisionAuthorityUnavailableError(f"source raw revision authority is unreadable: {exc}") from exc
         found = {str(row["raw_id"]): row for row in rows}
         missing = set(batch).difference(found)
-        if missing:
+        if missing and not allow_missing:
             rendered = ", ".join(sorted(missing)[:3])
             raise RawRetentionSafetyError(f"active index raw is missing from source tier: {rendered}")
         rows_by_id.update(found)
@@ -245,7 +261,9 @@ def _validate_active_revision_chain(
         if current_raw_id in protected:
             raise RawRetentionSafetyError(f"active raw revision chain contains a cycle at {current_raw_id}")
         protected.add(current_raw_id)
-        row = rows_by_id[current_raw_id]
+        row = rows_by_id.get(current_raw_id)
+        if row is None:
+            raise RawRetentionSafetyError(f"active index raw is missing from source tier: {current_raw_id}")
         kind = str(row["revision_kind"])
         if kind == "full":
             if str(row["revision_authority"]) != "byte_proven":
@@ -399,9 +417,9 @@ def protected_active_raw_revision_ids(
 # broken accepted append head or a cursor that has committed past the
 # material actually accepted into the index can sit invisible until an
 # operator runs manual SQL (as happened before yla8.6). This section reuses
-# the exact same head/source binding and chain validators
+# the exact same source binding and chain validators
 # (``_validate_byte_head`` plus ``_validate_active_revision_chain``) to build
-# a *reporting* projection instead: it never raises on a per-head violation,
+# a *reporting* projection instead: it never raises on a per-seed violation,
 # it counts and samples it, so readiness and retention safety cannot drift.
 
 RawFrontierIntegrityStatus = Literal["healthy", "unknown", "violated"]
@@ -411,7 +429,12 @@ not be read — it is never collapsed into a false ``"healthy"`` zero."""
 
 @dataclass(frozen=True)
 class BrokenAppendHeadSample:
-    """One accepted append head whose predecessor chain failed validation."""
+    """One active index raw seed whose revision chain failed validation.
+
+    Accepted heads are the usual seed, so the wire field remains
+    ``accepted_raw_id``. ``sessions.raw_id`` is an equally load-bearing
+    retention seed and is reported here when no head references the same raw.
+    """
 
     logical_source_key: str
     accepted_raw_id: str
@@ -690,6 +713,39 @@ def raw_frontier_integrity_projection(
     )
 
 
+def unknown_raw_frontier_integrity_projection(reason: str) -> RawFrontierIntegrityProjection:
+    """Return the canonical explicit-unknown projection for an unavailable read.
+
+    Cache and presentation adapters use this instead of inventing partial
+    legacy payloads. Zero-valued counts are not healthy claims because every
+    check is explicitly ``unknown`` and ``available`` is false.
+    """
+
+    snapshot = _unavailable_frontier_integrity_snapshot(reason)
+    return RawFrontierIntegrityProjection(
+        available=False,
+        overall_status="unknown",
+        broken_head_status=snapshot.broken_head_status,
+        broken_head_count=snapshot.broken_head_count,
+        broken_head_checked_count=snapshot.broken_head_checked_count,
+        broken_head_samples=snapshot.broken_head_samples,
+        broken_head_reason=snapshot.broken_head_reason,
+        missing_source_raw_status="unknown",
+        missing_source_raw_count=0,
+        missing_source_raw_samples=(),
+        missing_source_raw_reason=reason,
+        cursor_ahead_status=snapshot.cursor_ahead_status,
+        cursor_ahead_count=snapshot.cursor_ahead_count,
+        cursor_ahead_checked_count=snapshot.cursor_ahead_checked_count,
+        cursor_head_comparison_count=snapshot.cursor_head_comparison_count,
+        cursor_ahead_comparison_count=snapshot.cursor_ahead_comparison_count,
+        cursor_ahead_samples=snapshot.cursor_ahead_samples,
+        cursor_authority_gap_count=snapshot.cursor_authority_gap_count,
+        cursor_authority_gap_samples=snapshot.cursor_authority_gap_samples,
+        cursor_ahead_reason=snapshot.cursor_ahead_reason,
+    )
+
+
 def raw_frontier_integrity_snapshot(
     conn: sqlite3.Connection,
     *,
@@ -703,9 +759,9 @@ def raw_frontier_integrity_snapshot(
     raw-materialization candidate counts cannot see on their own
     (polylogue-yla8.7):
 
-    * ``broken_head`` — a current accepted append head
-      (``index.raw_revision_heads``) whose transitive predecessor chain is
-      missing or invalid. Uses the exact same
+    * ``broken_head`` — a distinct active raw seed from either
+      ``index.sessions.raw_id`` or ``index.raw_revision_heads`` whose
+      transitive predecessor chain is missing or invalid. Uses the exact same
       :func:`_validate_active_revision_chain` that
       :func:`active_raw_retention_authority` uses to protect retention, so
       cleanup safety and readiness visibility cannot drift.
@@ -716,18 +772,18 @@ def raw_frontier_integrity_snapshot(
     Each check independently degrades to ``"unknown"`` (never a false
     ``"healthy"`` zero) when its authority tier cannot be read.
 
-    Exact totals deliberately inspect every current head and every committed,
+    Exact totals deliberately inspect every current index seed and committed,
     non-excluded cursor; only samples are capped. On the 2026-07-12 live
-    archive this covered 17,718 heads in 1003.389 ms cold and 263.161/262.230
-    ms warm. A cardinality cap would make ordinary status cheaper by hiding
-    unchecked authority, so this projection records empirical boundedness
-    rather than inventing a false-green permanent cap.
+    archive this covered 17,619 distinct seeds in 1130.902 ms cold and
+    266.659/276.331 ms warm. A cardinality cap would make ordinary status
+    cheaper by hiding unchecked authority, so this projection records
+    empirical boundedness rather than inventing a false-green permanent cap.
     """
     original_row_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
     try:
         try:
-            _session_raw_ids, heads, _eligible = _active_index_raw_authority(index_db_path)
+            session_raw_ids, heads, _eligible = _active_index_raw_authority(index_db_path)
         except RawRetentionSafetyError as exc:
             return _unavailable_frontier_integrity_snapshot(str(exc))
 
@@ -735,8 +791,11 @@ def raw_frontier_integrity_snapshot(
         if source_reason is not None:
             return _unavailable_frontier_integrity_snapshot(source_reason)
 
-        broken_status, broken_count, broken_checked, broken_samples, broken_reason = _check_broken_append_heads(
-            conn, heads, sample_limit=sample_limit
+        broken_status, broken_count, broken_checked, broken_samples, broken_reason = _check_broken_active_chains(
+            conn,
+            session_raw_ids,
+            heads,
+            sample_limit=sample_limit,
         )
         (
             cursor_status,
@@ -790,34 +849,69 @@ def _unavailable_frontier_integrity_snapshot(reason: str) -> RawFrontierIntegrit
 
 def _source_tier_unavailable_reason(conn: sqlite3.Connection) -> str | None:
     try:
-        conn.execute("SELECT 1 FROM raw_sessions LIMIT 1")
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_xinfo(raw_sessions)").fetchall()}
+        missing = set(_RAW_REVISION_CHAIN_COLUMN_NAMES).difference(columns)
+        if missing:
+            rendered = ", ".join(sorted(missing))
+            return f"source raw revision authority is unreadable: schema missing column(s): {rendered}"
+        conn.execute(f"SELECT {_RAW_REVISION_CHAIN_COLUMNS} FROM raw_sessions LIMIT 0")
     except sqlite3.Error as exc:
         logger.warning("raw frontier integrity: source revision authority is unreadable: %s", exc)
         return f"source raw revision authority is unreadable: {exc}"
     return None
 
 
-def _check_broken_append_heads(
+def _check_broken_active_chains(
     conn: sqlite3.Connection,
+    session_raw_ids: frozenset[str],
     heads: tuple[_IndexRawRevisionHead, ...],
     *,
     sample_limit: int,
 ) -> tuple[RawFrontierIntegrityStatus, int, int, tuple[BrokenAppendHeadSample, ...], str]:
+    """Validate every distinct retention seed against one complete authority read."""
+
     samples: list[BrokenAppendHeadSample] = []
     broken_count = 0
+    heads_by_raw_id: dict[str, list[_IndexRawRevisionHead]] = {}
     for head in heads:
+        heads_by_raw_id.setdefault(head.accepted_raw_id, []).append(head)
+    seed_raw_ids = set(session_raw_ids).union(heads_by_raw_id)
+    try:
+        rows_by_id = _raw_revision_rows(conn, seed_raw_ids, allow_missing=True)
+    except _RawRevisionAuthorityUnavailableError as exc:
+        logger.warning("raw frontier integrity: %s", exc)
+        return "unknown", 0, 0, (), str(exc)
+
+    checked_count = 0
+    for seed_raw_id in sorted(seed_raw_ids):
+        seed_heads = heads_by_raw_id.get(seed_raw_id, [])
+        row = rows_by_id.get(seed_raw_id)
+        if row is None and not seed_heads:
+            # Directly missing sessions.raw_id rows are counted once by the
+            # canonical lost-source-evidence projection. There is no chain to
+            # traverse here; do not double-count the same absence.
+            continue
+        checked_count += 1
         try:
-            rows_by_id = _raw_revision_rows(conn, {head.accepted_raw_id})
-            if head.accepted_frontier_kind == "byte":
-                _validate_byte_head(rows_by_id[head.accepted_raw_id], head)
-            _validate_active_revision_chain(rows_by_id, head.accepted_raw_id)
+            if row is None:
+                raise RawRetentionSafetyError(f"active index raw is missing from source tier: {seed_raw_id}")
+            for head in seed_heads:
+                if head.accepted_frontier_kind == "byte":
+                    _validate_byte_head(row, head)
+            _validate_active_revision_chain(rows_by_id, seed_raw_id)
         except RawRetentionSafetyError as exc:
             broken_count += 1
             if len(samples) < sample_limit:
+                if seed_heads:
+                    logical_source_key = seed_heads[0].logical_source_key
+                elif row is not None:
+                    logical_source_key = str(row["logical_source_key"] or "session.raw_id")
+                else:
+                    logical_source_key = "session.raw_id"
                 samples.append(
                     BrokenAppendHeadSample(
-                        logical_source_key=head.logical_source_key,
-                        accepted_raw_id=head.accepted_raw_id,
+                        logical_source_key=logical_source_key,
+                        accepted_raw_id=seed_raw_id,
                         reason=str(exc),
                     )
                 )
@@ -825,9 +919,9 @@ def _check_broken_append_heads(
     reason = (
         ""
         if broken_count == 0
-        else f"{broken_count} accepted append head(s) have a broken predecessor chain or invalid source binding"
+        else f"{broken_count} active index raw seed(s) have a broken predecessor chain or invalid source binding"
     )
-    return status, broken_count, len(heads), tuple(samples), reason
+    return status, broken_count, checked_count, tuple(samples), reason
 
 
 def _check_cursor_ahead_of_accepted(
@@ -1223,4 +1317,5 @@ __all__ = [
     "raw_frontier_integrity_summary",
     "raw_frontier_integrity_snapshot",
     "superseded_raw_snapshot_candidates",
+    "unknown_raw_frontier_integrity_projection",
 ]

@@ -14,6 +14,10 @@ from urllib.request import Request, urlopen
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.readiness.capability import (
+    normalize_raw_frontier_status_payload,
+    raw_frontier_integrity_is_proven_healthy,
+)
 from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
 from polylogue.storage.insights.session.status import session_insight_status_sync
@@ -1327,9 +1331,11 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
 
 def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> None:
     """Render daemon status from the real DaemonStatus payload."""
+    status = normalize_raw_frontier_status_payload(status)
     liveness = status.get("daemon_liveness", False)
-    liveness_color = "green" if liveness else "yellow"
-    liveness_text = "running" if liveness else "degraded"
+    overall_ok = _status_ok(status)
+    liveness_color = "green" if liveness and overall_ok else "yellow"
+    liveness_text = "running" if liveness and overall_ok else "running; status degraded" if liveness else "degraded"
     env.ui.console.print(f"\n[bold {liveness_color}]Daemon: {liveness_text}[/bold {liveness_color}]")
 
     # Component state
@@ -1410,12 +1416,14 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
 
 def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False) -> None:
     """Machine-readable JSON status output."""
-    payload = status if full else _compact_status_payload(status, source="daemon")
+    normalized = normalize_raw_frontier_status_payload(status)
+    payload = normalized if full else _compact_status_payload(normalized, source="daemon")
     env.ui.console.print(json.dumps(payload, indent=2, default=str))
 
 
 def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Return the operator-facing status JSON without debug-heavy subtrees."""
+    status = normalize_raw_frontier_status_payload(status)
     payload: dict[str, Any] = {
         "ok": _status_ok(status),
         "source": source,
@@ -1518,10 +1526,10 @@ def _status_ok(status: dict[str, Any]) -> bool:
     """Preserve existing status health while requiring proven raw authority."""
 
     ok = bool(status.get("ok", status.get("daemon_liveness")))
-    integrity = status.get("raw_frontier_integrity")
-    if isinstance(integrity, dict) and integrity.get("overall_status") != "healthy":
+    snapshot = status.get("status_snapshot")
+    if isinstance(snapshot, dict) and snapshot.get("state") not in {None, "fresh"}:
         return False
-    return ok
+    return ok and raw_frontier_integrity_is_proven_healthy(status.get("raw_frontier_integrity"))
 
 
 def _render_raw_frontier_integrity(env: AppEnv, integrity: dict[str, Any]) -> None:
