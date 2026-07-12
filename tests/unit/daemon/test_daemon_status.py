@@ -284,6 +284,34 @@ def test_daemon_status_honors_explicit_disabled_browser_capture(
     assert status.component_state.browser_capture == "stopped"
 
 
+def test_daemon_status_check_health_failure_reports_error_not_ok(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A check_health() exception must not present as a clean bill of health.
+
+    Before the fix, ``except Exception: health = DaemonHealth()`` defaulted
+    to ``overall_status=OK`` with zero alerts -- the single most misleading
+    fallback possible for a health check: the check itself breaking would
+    have looked identical to "everything is fine" (polylogue-cpf.4).
+    """
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("health backend unavailable")
+
+    monkeypatch.setattr(status_module, "check_health", _boom)
+
+    with caplog.at_level("WARNING"):
+        status = build_daemon_status(sources=())
+
+    assert status.health.overall_status == "error"
+    assert len(status.health.alerts) == 1
+    alert = status.health.alerts[0]
+    assert alert.severity == "error"
+    assert "health backend unavailable" in alert.message
+    assert "check_health() failed" in caplog.text
+
+
 def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     failed = tmp_path / "failed.jsonl"

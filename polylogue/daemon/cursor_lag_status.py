@@ -34,7 +34,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+logger = get_logger(__name__)
 
 
 class CursorLagBaselineState(BaseModel):
@@ -119,7 +122,12 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None) -> Cursor
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        # A bare CursorLagSummary() reports zero families/stuck files, which
+        # reads identically to "archive genuinely has no cursor lag" — log
+        # loudly so a transient query failure isn't mistaken for a clean
+        # ingest state (polylogue-cpf.4).
+        logger.warning("cursor-lag summary query failed for %s: %s", dbf, exc, exc_info=True)
         return CursorLagSummary()
 
     summary = _project_rows(rows, now=resolved_now)
@@ -153,7 +161,8 @@ def _archive_cursor_lag_summary_info(ops_db: Path, *, now: datetime) -> CursorLa
                 return None
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("cursor-lag ops-archive query failed for %s: %s", ops_db, exc, exc_info=True)
         return None
 
     projected_rows: list[sqlite3.Row | tuple[object, ...]] = [
@@ -202,7 +211,8 @@ def _decorate_with_baselines(
             min_samples=thresholds.baseline_min_samples,
             now=now,
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning("cursor-lag baseline decoration failed: %s", exc, exc_info=True)
         return summary
 
     decorated: list[CursorLagFamilySummary] = []

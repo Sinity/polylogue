@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config
+from polylogue.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -70,8 +73,13 @@ def _referenced_blob_hashes(
                 surfaces.extend(source_surfaces)
             finally:
                 source_conn.close()
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            # hashes/surfaces feed a repair decision about which blobs are
+            # still referenced; silently dropping source.db's references
+            # here could make a still-referenced blob look orphaned.
+            logger.warning(
+                "blob repair: source.db referenced-hash query failed for %s: %s", source_db_path, exc, exc_info=True
+            )
 
     return hashes, surfaces
 

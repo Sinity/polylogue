@@ -841,6 +841,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify pytest-timeout-overrides", "devtools verify pytest-timeout-overrides --json"),
     ),
     CommandSpec(
+        "verify degrade-loudly",
+        "verification",
+        "Verify broad except-handlers in daemon/storage/insights/coordination log or signal on failure.",
+        "devtools.verify_degrade_loudly",
+        use_when=(
+            "Enforce the degrade-loudly doctrine (polylogue-cpf.4): a broad except-handler "
+            "(Exception/BaseException/*.Error) in derived-read, status, or probe code that "
+            "swallows the exception with no log call and no re-raise is indistinguishable from "
+            "'no data' to a reader. New silent sites must add a log call, or add a typed signal "
+            "plus a rationale entry in docs/plans/degrade-loudly-allowlist.yaml."
+        ),
+        examples=("devtools verify degrade-loudly", "devtools verify degrade-loudly --json"),
+    ),
+    CommandSpec(
         "release verify-distribution",
         "release",
         "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",

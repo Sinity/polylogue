@@ -41,7 +41,10 @@ from polylogue.coordination.payloads import (
     CoordinationView,
     CoordinationWorkItemPayload,
 )
+from polylogue.logging import get_logger
 from polylogue.paths import active_index_db_path, archive_root
+
+logger = get_logger(__name__)
 
 CommandRunner = Callable[[Sequence[str], Path | None], "CommandResult"]
 
@@ -121,14 +124,21 @@ def build_coordination_envelope(
     resources = all_resources[:resource_limit]
     archive = _archive_payload(resources)
     handoff = _handoff_payloads(repo.root or str(root_cwd), archive=archive, limit=peer_limit)
-    session_trees, activity_episodes, subagent_exchanges, proof_refs, context_flow_refs = _archive_evidence_payloads(
+    (
+        session_trees,
+        activity_episodes,
+        subagent_exchanges,
+        proof_refs,
+        context_flow_refs,
+        archive_evidence_degraded_reason,
+    ) = _archive_evidence_payloads(
         repo,
         self_payload,
         archive,
         limit=peer_limit,
     )
     overlaps = _overlap_payloads(repo, work_item, peers, resources)
-    advisories = _advisories(repo, work_item, overlaps, archive)
+    advisories = _advisories(repo, work_item, overlaps, archive, archive_evidence_degraded_reason)
     provenance = (repo.provenance, work_item.provenance, self_payload.provenance)
     payload = AgentCoordinationPayload(
         view=view,
@@ -1053,7 +1063,8 @@ def _process_snapshot(runner: CommandRunner) -> tuple[CommandResult, tuple[_Proc
 def _configured_archive_resource() -> str | None:
     try:
         return str(archive_root().resolve())
-    except Exception:
+    except Exception as exc:
+        logger.warning("coordination archive-resource resolution failed: %s", exc, exc_info=True)
         return None
 
 
@@ -1455,7 +1466,8 @@ def _assertion_handoff_payloads(
                 """,
                 (limit * 4,),
             ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("coordination assertion-handoff query failed: %s", exc, exc_info=True)
         return ()
     repo_tokens = {str(repo_root), repo_root.name}
     scoped_rows = [
@@ -1503,7 +1515,14 @@ def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) 
     try:
         archive = archive_root().resolve()
         index = active_index_db_path().resolve()
-    except Exception:
+    except Exception as exc:
+        # archive_root()/active_index_db_path() raise both for the ordinary
+        # "no archive configured" case and for genuine config-resolution
+        # bugs; a bare None return makes the two indistinguishable to the
+        # caller (no archive field, no advisory). Log loudly so the failure
+        # is visible even though the payload shape can't carry a reason here
+        # (polylogue-cpf.4).
+        logger.warning("coordination archive-root resolution failed: %s", exc, exc_info=True)
         return None
     hook_flow_states: dict[str, str] = {}
     hook_flow_healthy: bool | None = None
@@ -1519,7 +1538,11 @@ def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) 
         hook_flow_gaps = tuple(
             f"{status.harness}:{status.flow_state}" for status in configured if status.flow_healthy is not True
         )
-    except Exception:
+    except Exception as exc:
+        # hook_flow_healthy stays None ("unknown"), not True, so this does
+        # not misreport as healthy — but it looks identical to "no hooks
+        # configured" without a log line.
+        logger.warning("coordination hook-status query failed: %s", exc, exc_info=True)
         hook_flow_states = {}
     return CoordinationArchivePayload(
         archive_root=str(archive),
@@ -1543,7 +1566,8 @@ def _sqlite_user_version(path: Path) -> int | None:
     try:
         with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("coordination user_version probe failed for %s: %s", path, exc, exc_info=True)
         return None
     return int(row[0]) if row else None
 
@@ -1560,15 +1584,33 @@ def _archive_evidence_payloads(
     tuple[CoordinationSubagentExchangePayload, ...],
     tuple[CoordinationProofRefPayload, ...],
     tuple[CoordinationContextFlowRefPayload, ...],
+    str | None,
 ]:
+    """Return bounded archive-evidence tuples plus a degradation reason.
+
+    Empty tuples are ambiguous on their own: they mean "no archive
+    configured", "archive schema not ready yet", and "the read-only SQLite
+    query hit the 0.2s timeout/lock/corruption" alike. The trailing
+    ``str | None`` distinguishes the last case (a genuine query failure,
+    logged here too) from ordinary absence of evidence, per the
+    degrade-loudly doctrine (polylogue-cpf.4).
+    """
+    empty: tuple[
+        tuple[CoordinationSessionTreePayload, ...],
+        tuple[CoordinationActivityEpisodePayload, ...],
+        tuple[CoordinationSubagentExchangePayload, ...],
+        tuple[CoordinationProofRefPayload, ...],
+        tuple[CoordinationContextFlowRefPayload, ...],
+    ] = ((), (), (), (), ())
     if archive is None or not archive.index_exists or archive.index_user_version is None:
-        return (), (), (), (), ()
+        return (*empty, None)
     index = Path(archive.index_db)
     try:
         conn = sqlite3.connect(f"file:{index}?mode=ro", uri=True, timeout=0.2)
         conn.row_factory = sqlite3.Row
-    except sqlite3.Error:
-        return (), (), (), (), ()
+    except sqlite3.Error as exc:
+        logger.warning("coordination archive-evidence connect failed: %s", exc, exc_info=True)
+        return (*empty, f"archive-evidence connect failed: {exc}")
     try:
         if not _archive_tables_present(
             conn,
@@ -1580,7 +1622,7 @@ def _archive_evidence_payloads(
                 "session_context_snapshots",
             ),
         ):
-            return (), (), (), (), ()
+            return (*empty, None)
         target_session_id = _resolve_coordination_session(conn, repo, self_payload)
         session_tree: tuple[CoordinationSessionTreePayload, ...] = ()
         if target_session_id is not None:
@@ -1590,9 +1632,10 @@ def _archive_evidence_payloads(
         subagent_exchanges = _archive_subagent_exchange_payloads(conn, target_session_id, repo, limit=limit)
         proof_refs = _archive_proof_payloads(conn, target_session_id, repo, limit=limit)
         context_refs = _archive_context_flow_payloads(conn, target_session_id, repo, limit=limit)
-        return session_tree, activity, subagent_exchanges, proof_refs, context_refs
-    except sqlite3.Error:
-        return (), (), (), (), ()
+        return session_tree, activity, subagent_exchanges, proof_refs, context_refs, None
+    except sqlite3.Error as exc:
+        logger.warning("coordination archive-evidence query failed: %s", exc, exc_info=True)
+        return (*empty, f"archive-evidence query failed: {exc}")
     finally:
         conn.close()
 
@@ -2144,6 +2187,7 @@ def _advisories(
     work_item: CoordinationWorkItemPayload,
     overlaps: tuple[CoordinationOverlapPayload, ...],
     archive: CoordinationArchivePayload | None,
+    archive_evidence_degraded_reason: str | None = None,
 ) -> tuple[str, ...]:
     advisories: list[str] = []
     if repo.dirty:
@@ -2154,4 +2198,10 @@ def _advisories(
         advisories.append("One or more overlap/resource signals deserve review before heavy work.")
     if archive is not None and not archive.index_exists:
         advisories.append("Active index.db is not present for the resolved archive root.")
+    if archive_evidence_degraded_reason is not None:
+        # Distinguishes "the archive genuinely has no matching evidence" from
+        # "the bounded archive-evidence query failed" — session_trees/
+        # activity_episodes/subagent_exchanges/proof_refs/context_flow_refs
+        # are empty in both cases without this advisory (polylogue-cpf.4).
+        advisories.append(f"Archive-evidence lookup degraded: {archive_evidence_degraded_reason}")
     return tuple(advisories)

@@ -24,8 +24,11 @@ from typing import Any, Literal
 
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
+from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.connection import open_read_connection
+
+logger = get_logger(__name__)
 
 BlobIntegrityKind = Literal["orphan_blobs", "missing_referenced_blobs", "hash_mismatch"]
 BlobIntegritySeverity = Literal["warning", "critical"]
@@ -522,8 +525,14 @@ def _referenced_blob_hashes(db_path: Path, conn: sqlite3.Connection) -> list[str
                     return source_archive_hashes
             finally:
                 source_conn.close()
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            # Falls through to _raw_session_hashes(conn), a less-complete
+            # reference set — a report consuming this could mis-classify a
+            # still-referenced blob as orphaned if source.db's evidence was
+            # silently dropped here (polylogue-cpf.4).
+            logger.warning(
+                "blob integrity: source.db referenced-hash query failed for %s: %s", source_db, exc, exc_info=True
+            )
 
     return _raw_session_hashes(conn)
 
@@ -543,8 +552,10 @@ def _reference_source_counts(db_path: Path, conn: sqlite3.Connection) -> dict[st
                     return {f"source.db:{table}": len(hashes) for table, hashes in source.items()}
             finally:
                 source_conn.close()
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            logger.warning(
+                "blob integrity: source.db reference-count query failed for %s: %s", source_db, exc, exc_info=True
+            )
 
     fallback_count = len(_raw_session_hashes(conn))
     return {"raw_sessions.raw_id": fallback_count} if fallback_count else {}

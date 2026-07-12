@@ -8,7 +8,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+logger = get_logger(__name__)
 
 
 class ConvergenceDebtStageSummary(BaseModel):
@@ -76,7 +79,13 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
                 return None
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        # Falls through to convergence_debt_summary_info()'s bare
+        # ConvergenceDebtSummary() default, which reports zero debt — the
+        # same shape as a genuinely converged archive. Log loudly so a
+        # transient ops.db failure isn't mistaken for "no debt"
+        # (polylogue-cpf.4).
+        logger.warning("convergence-debt summary query failed for %s: %s", ops_db, exc, exc_info=True)
         return None
 
     items = [

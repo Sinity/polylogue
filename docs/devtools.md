@@ -155,6 +155,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |
 | `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
+| `devtools verify degrade-loudly` | Verify broad except-handlers in daemon/storage/insights/coordination log or signal on failure. |
 | `devtools verify doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
 | `devtools verify evidence` | Render the pytest-first evidence dashboard or a changed-path trace. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
