@@ -150,6 +150,25 @@ def _judge(
     )
 
 
+def _edit_and_accept(
+    env: AppEnv,
+    *,
+    selected: JudgeCandidateRow,
+    edited_body: str,
+    inject: bool,
+) -> AssertionBulkJudgmentPayload:
+    """Promote an edited candidate without overriding its lifecycle kind."""
+
+    return _judge(
+        env,
+        refs=(selected.ref,),
+        decision="supersede",
+        reason="operator edited candidate",
+        inject=inject,
+        replacement_body_text=edited_body,
+    )
+
+
 @click.command("judge")
 @click.option("--list", "list_only", is_flag=True, help="List the pending queue without judging.")
 @click.option("--accept", "accept_refs", multiple=True, help="Accept one or more candidate assertion refs.")
@@ -251,14 +270,11 @@ def judge_command(
         if edited is None:
             click.echo("Skipped; editor closed without saving.")
             return
-        _judge(
+        _edit_and_accept(
             env,
-            refs=(selected.ref,),
-            decision="supersede",
-            reason="operator edited candidate",
+            selected=selected,
+            edited_body=edited,
             inject=inject,
-            replacement_body_text=edited,
-            replacement_kind=selected.kind,
         )
         click.echo("Edited candidate promoted.")
         return

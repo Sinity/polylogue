@@ -1481,13 +1481,26 @@ def judge_assertion_candidate(
     normalized_decision = decision.strip().lower()
     if normalized_decision not in {"accept", "reject", "defer", "supersede"}:
         raise ValueError("candidate assertion decision must be accept, reject, defer, or supersede")
+    normalized_replacement_kind = None if replacement_kind is None else _normalize_assertion_kind(replacement_kind)
+    normalized_replacement_value = (
+        None if replacement_value is None else _normalize_assertion_value(replacement_value).as_json_value()
+    )
     candidate_id = _assertion_id_from_ref(candidate_ref)
     candidate = read_assertion_envelope(conn, candidate_id)
     if candidate is None:
         raise ValueError(f"candidate assertion not found: {candidate_ref}")
     if candidate.status != AssertionStatus.CANDIDATE:
         latest = _latest_candidate_judgment(conn, candidate_id)
-        if latest is not None and _is_exact_judgment_retry(latest, decision=normalized_decision, inject=inject):
+        if latest is not None and _is_exact_judgment_retry(
+            latest,
+            decision=normalized_decision,
+            reason=reason,
+            actor_ref=actor_ref,
+            inject=inject,
+            replacement_kind=normalized_replacement_kind,
+            replacement_body_text=replacement_body_text,
+            replacement_value=normalized_replacement_value,
+        ):
             return ArchiveAssertionJudgmentEnvelope(
                 candidate=candidate,
                 judgment=latest,
@@ -1511,9 +1524,9 @@ def judge_assertion_candidate(
             candidate,
             actor_ref=actor_ref,
             inject=inject,
-            replacement_kind=replacement_kind,
+            replacement_kind=normalized_replacement_kind,
             replacement_body_text=replacement_body_text,
-            replacement_value=replacement_value,
+            replacement_value=normalized_replacement_value,
             now_ms=timestamp,
         )
 
@@ -1525,6 +1538,21 @@ def judge_assertion_candidate(
     evidence_refs = [*candidate.evidence_refs, f"assertion:{candidate_id}"]
     if resulting_assertion is not None:
         evidence_refs.append(f"assertion:{resulting_assertion.assertion_id}")
+    judgment_value: dict[str, JSONValue] = {
+        "decision": normalized_decision,
+        "candidate_ref": f"assertion:{candidate_id}",
+        "reason": reason,
+        "inject_authorized": inject if normalized_decision in {"accept", "supersede"} else False,
+        "resulting_assertion_ref": None
+        if resulting_assertion is None
+        else f"assertion:{resulting_assertion.assertion_id}",
+    }
+    if normalized_decision == "supersede":
+        judgment_value.update(
+            replacement_kind=None if normalized_replacement_kind is None else normalized_replacement_kind.value,
+            replacement_body_text=replacement_body_text,
+            replacement_value=normalized_replacement_value,
+        )
     judgment = upsert_assertion(
         conn,
         assertion_id=assertion_id_for_candidate_judgment(candidate_id, normalized_decision),
@@ -1532,15 +1560,7 @@ def judge_assertion_candidate(
         target_ref=f"assertion:{candidate_id}",
         key=f"{normalized_decision}/{candidate_id}",
         kind=AssertionKind.JUDGMENT,
-        value={
-            "decision": normalized_decision,
-            "candidate_ref": f"assertion:{candidate_id}",
-            "reason": reason,
-            "inject_authorized": inject if normalized_decision in {"accept", "supersede"} else False,
-            "resulting_assertion_ref": None
-            if resulting_assertion is None
-            else f"assertion:{resulting_assertion.assertion_id}",
-        },
+        value=judgment_value,
         body_text=reason,
         author_ref=actor_ref,
         author_kind="user",
@@ -1676,10 +1696,32 @@ def _is_exact_judgment_retry(
     judgment: ArchiveAssertionEnvelope,
     *,
     decision: str,
+    reason: str | None,
+    actor_ref: str,
     inject: bool,
+    replacement_kind: AssertionKind | None,
+    replacement_body_text: str | None,
+    replacement_value: JSONValue | None,
 ) -> bool:
     value = judgment.value if isinstance(judgment.value, dict) else {}
-    return value.get("decision") == decision and bool(value.get("inject_authorized", False)) == inject
+    if decision == "supersede" and not {
+        "replacement_kind",
+        "replacement_body_text",
+        "replacement_value",
+    }.issubset(value):
+        # Earlier judgment rows did not preserve replacement intent, so they
+        # cannot prove an edited retry is exact.  Fail closed rather than
+        # silently treating a possible correction as already applied.
+        return False
+    return (
+        value.get("decision") == decision
+        and value.get("reason") == reason
+        and judgment.author_ref == actor_ref
+        and bool(value.get("inject_authorized", False)) == inject
+        and value.get("replacement_kind") == (None if replacement_kind is None else replacement_kind.value)
+        and value.get("replacement_body_text") == replacement_body_text
+        and value.get("replacement_value") == replacement_value
+    )
 
 
 def _resulting_assertion_from_judgment(

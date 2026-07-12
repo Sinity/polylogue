@@ -1129,8 +1129,34 @@ def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path:
             "candidate_ref": f"assertion:{candidate.assertion_id}",
             "reason": "replacement is more precise",
             "inject_authorized": False,
+            "replacement_kind": AssertionKind.DECISION.value,
+            "replacement_body_text": "Accepted replacement decision",
+            "replacement_value": {"source": "operator"},
             "resulting_assertion_ref": f"assertion:{result.resulting_assertion.assertion_id}",
         }
+        retry = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{candidate.assertion_id}",
+            decision="supersede",
+            reason="replacement is more precise",
+            actor_ref="user:local",
+            replacement_kind=AssertionKind.DECISION,
+            replacement_body_text="Accepted replacement decision",
+            replacement_value={"source": "operator"},
+            now_ms=1_700_000_011_000,
+        )
+        assert retry.outcome == "idempotent"
+        with pytest.raises(ValueError, match="conflicting prior judgment"):
+            judge_assertion_candidate(
+                conn,
+                candidate_ref=f"assertion:{candidate.assertion_id}",
+                decision="supersede",
+                reason="replacement is more precise",
+                actor_ref="user:local",
+                replacement_kind=AssertionKind.DECISION,
+                replacement_body_text="Changed replacement decision",
+                replacement_value={"source": "operator"},
+            )
     finally:
         conn.close()
 

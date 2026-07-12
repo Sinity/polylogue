@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 from click.testing import CliRunner
 
-from polylogue.cli.commands.judge import judge_command
+from polylogue.cli.commands.judge import JudgeCandidateRow, _edit_and_accept, judge_command
+from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.surfaces.payloads import (
     AssertionBulkJudgmentItemPayload,
@@ -58,7 +60,7 @@ def test_judge_noninteractive_accept_uses_bulk_lifecycle_payload() -> None:
         failed_count=0,
     )
     polylogue = SimpleNamespace(judge_assertion_candidates=AsyncMock(return_value=payload))
-    env = SimpleNamespace(polylogue=polylogue)
+    env = cast(AppEnv, SimpleNamespace(polylogue=polylogue))
 
     invocation = CliRunner().invoke(
         judge_command,
@@ -72,6 +74,26 @@ def test_judge_noninteractive_accept_uses_bulk_lifecycle_payload() -> None:
     item = polylogue.judge_assertion_candidates.await_args.kwargs["items"][0]
     assert item.candidate_ref == "assertion:candidate-judge-1"
     assert item.inject is True
+
+
+def test_judge_edit_preserves_the_candidate_lifecycle_kind() -> None:
+    payload = AssertionBulkJudgmentPayload(items=(), applied_count=0, idempotent_count=0, failed_count=0)
+    polylogue = SimpleNamespace(judge_assertion_candidates=AsyncMock(return_value=payload))
+    env = cast(AppEnv, SimpleNamespace(polylogue=polylogue))
+    selected = JudgeCandidateRow(
+        assertion_id="candidate-transform-1",
+        kind=AssertionKind.TRANSFORM_CANDIDATE.value,
+        target_ref="session:judge",
+        body="Operator wording for a decision candidate.",
+        evidence_refs=(),
+    )
+
+    _edit_and_accept(env, selected=selected, edited_body="Edited decision wording.", inject=True)
+
+    item = polylogue.judge_assertion_candidates.await_args.kwargs["items"][0]
+    assert item.decision == "supersede"
+    assert item.replacement_body_text == "Edited decision wording."
+    assert item.replacement_kind is None
 
 
 def test_judge_accept_all_of_kind_applies_the_real_queue_filters() -> None:
