@@ -1,9 +1,8 @@
 """Single-row annotation write path: schema-validated labels as assertions.
 
-This is the atomic operation a future batch/JSONL import surface would loop
-over (polylogue-rxdo.7 residual scope: ``annotation_batches`` provenance
-container, CLI/MCP import surface). It deliberately does not attempt that
-surface here -- it validates one label against a declared
+This is the atomic operation a future batch/JSONL import surface loops over.
+It accepts durable ``annotation-batch:`` provenance but deliberately does not
+attempt the CLI/MCP surface here -- it validates one label against a declared
 :class:`~polylogue.annotations.schema.AnnotationSchema` and writes it through
 the existing single assertion-write chokepoint
 (:func:`polylogue.storage.sqlite.archive_tiers.user_write.upsert_assertion`),
@@ -33,10 +32,15 @@ from polylogue.annotations.schema import (
     validate_annotation_row,
 )
 from polylogue.core.enums import AssertionKind
-from polylogue.core.refs import normalize_object_ref_text
+from polylogue.core.refs import ObjectRef, normalize_object_ref_text
+from polylogue.storage.sqlite.archive_tiers.user_annotations import (
+    read_annotation_batch,
+    read_durable_annotation_schema,
+)
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope, upsert_assertion
 
 _SCHEMA_PROVENANCE_KEY = "_schema"
+_BATCH_PROVENANCE_KEY = "_batch"
 
 
 class AnnotationValidationError(ValueError):
@@ -53,7 +57,12 @@ class AnnotationValidationError(ValueError):
 
 
 def assertion_id_for_schema_annotation(
-    *, schema_qualified_id: str, target_ref: str, author_ref: str, row_key: str
+    *,
+    schema_qualified_id: str,
+    target_ref: str,
+    author_ref: str,
+    row_key: str,
+    batch_ref: str | None = None,
 ) -> str:
     """Return a deterministic assertion id for one schema-validated annotation row.
 
@@ -64,7 +73,10 @@ def assertion_id_for_schema_annotation(
     """
 
     digest = hashlib.sha256()
-    for part in (schema_qualified_id, target_ref, author_ref, row_key):
+    identity_parts = [schema_qualified_id, target_ref, author_ref, row_key]
+    if batch_ref is not None:
+        identity_parts.append(normalize_object_ref_text(batch_ref))
+    for part in identity_parts:
         digest.update(part.encode("utf-8", errors="surrogatepass"))
         digest.update(b"\0")
     return f"assertion-annotation-schema:{digest.hexdigest()}"
@@ -83,6 +95,7 @@ def upsert_annotation_assertion(
     author_kind: str = "agent",
     confidence: float | None = None,
     body_text: str | None = None,
+    batch_ref: str | None = None,
     now_ms: int | None = None,
 ) -> ArchiveAssertionEnvelope:
     """Validate one label against *schema* and upsert it as a candidate assertion.
@@ -95,7 +108,8 @@ def upsert_annotation_assertion(
     On success, delegates to ``upsert_assertion`` with
     ``kind=AssertionKind.ANNOTATION``; the resulting row's status/context
     policy is decided by that function's own author-kind chokepoint, not by
-    this caller.
+    this caller. When ``batch_ref`` is supplied, it must resolve to durable
+    provenance for the same schema, target, actor, and declared assertion id.
     """
 
     registered_schema = registry.require_active(schema)
@@ -113,22 +127,85 @@ def upsert_annotation_assertion(
         )
 
     normalized_target_ref = normalize_object_ref_text(target_ref)
+    normalized_batch_ref: str | None = None
+    durable_batch = None
+    if batch_ref is not None:
+        batch_errors: list[str] = []
+        try:
+            normalized_batch_ref = normalize_object_ref_text(batch_ref)
+            parsed_batch_ref = ObjectRef.parse(normalized_batch_ref)
+        except ValueError:
+            parsed_batch_ref = None
+            batch_errors.append("batch_ref must be a valid ObjectRef")
+        if parsed_batch_ref is not None and parsed_batch_ref.kind != "annotation-batch":
+            batch_errors.append("batch_ref must use the 'annotation-batch' ObjectRef kind")
+        durable_batch = (
+            read_annotation_batch(conn, parsed_batch_ref.object_id)
+            if parsed_batch_ref is not None and not batch_errors
+            else None
+        )
+        if not batch_errors and durable_batch is None:
+            batch_errors.append(f"batch_ref {normalized_batch_ref!r} does not resolve to durable batch provenance")
+        if durable_batch is not None and durable_batch.qualified_schema_id != registered_schema.qualified_id:
+            batch_errors.append(
+                f"batch_ref {normalized_batch_ref!r} uses schema {durable_batch.qualified_schema_id!r}, "
+                f"not {registered_schema.qualified_id!r}"
+            )
+        if durable_batch is not None and durable_batch.target_ref != normalized_target_ref:
+            batch_errors.append(
+                f"batch_ref {normalized_batch_ref!r} targets {durable_batch.target_ref!r}, "
+                f"not {normalized_target_ref!r}"
+            )
+        if durable_batch is not None and durable_batch.actor_ref != author_ref:
+            batch_errors.append(
+                f"batch_ref {normalized_batch_ref!r} records actor {durable_batch.actor_ref!r}, not {author_ref!r}"
+            )
+        durable_schema = (
+            read_durable_annotation_schema(conn, durable_batch.schema_id, durable_batch.schema_version)
+            if durable_batch is not None
+            else None
+        )
+        if durable_batch is not None and durable_schema is None:
+            batch_errors.append(f"batch_ref {normalized_batch_ref!r} does not resolve its durable schema definition")
+        if (
+            durable_schema is not None
+            and durable_schema.definition_json != registered_schema.canonical_definition_json()
+        ):
+            batch_errors.append(
+                f"batch_ref {normalized_batch_ref!r} resolves a durable schema definition that differs from the writer"
+            )
+        if batch_errors:
+            raise AnnotationValidationError(
+                schema_id=registered_schema.qualified_id,
+                target_ref=normalized_target_ref,
+                errors=batch_errors,
+            )
     assertion_id = assertion_id_for_schema_annotation(
         schema_qualified_id=registered_schema.qualified_id,
         target_ref=normalized_target_ref,
         author_ref=author_ref,
         row_key=row_key,
+        batch_ref=normalized_batch_ref,
     )
+    if durable_batch is not None and f"assertion:{assertion_id}" not in durable_batch.assertion_refs:
+        raise AnnotationValidationError(
+            schema_id=registered_schema.qualified_id,
+            target_ref=normalized_target_ref,
+            errors=(f"batch_ref {normalized_batch_ref!r} does not declare assertion:{assertion_id}",),
+        )
     stamped_value: dict[str, object] = {
         _SCHEMA_PROVENANCE_KEY: registered_schema.qualified_id,
         **dict(value),
     }
+    if normalized_batch_ref is not None:
+        stamped_value[_BATCH_PROVENANCE_KEY] = normalized_batch_ref
 
     return upsert_assertion(
         conn,
         assertion_id=assertion_id,
         target_ref=normalized_target_ref,
         kind=AssertionKind.ANNOTATION,
+        scope_ref=normalized_batch_ref,
         key=row_key,
         value=stamped_value,
         body_text=body_text,

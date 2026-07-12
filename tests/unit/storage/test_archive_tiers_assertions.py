@@ -125,6 +125,9 @@ def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
     try:
         assert _table_exists(conn, "assertions")
         assert _table_exists(conn, "user_settings")
+        assert _table_exists(conn, "context_deliveries")
+        assert _table_exists(conn, "annotation_schemas")
+        assert _table_exists(conn, "annotation_batches")
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
     finally:
         conn.close()
@@ -146,7 +149,13 @@ def test_fresh_user_tier_has_no_legacy_overlay_tables(tmp_path: Path) -> None:
             "corrections",
             "suppressions",
         }
-        assert tables == {"assertions", "user_settings"}
+        assert tables == {
+            "annotation_batches",
+            "annotation_schemas",
+            "assertions",
+            "context_deliveries",
+            "user_settings",
+        }
         assert tables.isdisjoint(obsolete_overlay_tables)
     finally:
         conn.close()
@@ -176,6 +185,7 @@ def test_assertions_have_read_path_indexes_for_overlay_and_candidate_flows(tmp_p
             "status",
             "visibility",
         ]
+        assert index_columns["idx_assertions_scope_kind_status"] == ["scope_ref", "kind", "status"]
     finally:
         conn.close()
 

@@ -257,7 +257,13 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "insight_materialization",
     ),
     "embeddings": ("message_embeddings_meta", "embedding_status"),
-    "user": ("assertions",),
+    "user": (
+        "assertions",
+        "annotation_schemas",
+        "annotation_batches",
+        "user_settings",
+        "context_deliveries",
+    ),
     "ops": (
         "ingest_cursor",
         "ingest_attempts",

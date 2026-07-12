@@ -93,7 +93,7 @@ unresolved/resolved/repaired/**quarantined** (cycle-break).
 | `source.db` | 3 | durable | raw acquired bytes (`raw_sessions`), artifact taxonomy, blob/GC substrate (`blob_refs`, `gc_generations`), hook events, sidecars |
 | `index.db` | 24 | **rebuildable** | the whole parsed tree, FTS, `session_links`, cost tables, and all materialized insights |
 | `embeddings.db` | 1 | rebuildable | `vec0` virtual table (Voyage 1024-dim), meta, status |
-| `user.db` | 4 | **durable, irreplaceable** | unified `assertions` + `user_settings` |
+| `user.db` | 6 | **durable, irreplaceable** | unified `assertions`, settings/context receipts, immutable annotation schemas + batch provenance |
 | `ops.db` | 1 | disposable | ingest cursors, attempts, `convergence_debt`, cursor-lag samples, daemon events, embed catch-up runs, otlp |
 
 `user.db` is a **single unified `assertions` table** keyed by a closed
@@ -104,7 +104,10 @@ overlay tables; `context_policy_json` (default `{"inject":false}`) gates whether
 an assertion is injected into agent context. The column is plain `TEXT` so the
 vocabulary can grow without a user-tier schema bump. User corrections are
 `AssertionKind.CORRECTION` rows here (a legacy `user_corrections` table survives
-only as a compat read path for pre-split single-file archives).
+only as a compat read path for pre-split single-file archives). Versioned
+annotation construct definitions live in `annotation_schemas`; independent
+label-run provenance lives in `annotation_batches`, while the labels remain
+ordinary assertion rows scoped by `annotation-batch:<id>` ObjectRefs.
 
 ### Content-hash idempotency
 

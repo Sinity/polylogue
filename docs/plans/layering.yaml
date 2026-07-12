@@ -82,6 +82,12 @@ writer_modules:
         upsert_blackboard_note, upsert_correction, upsert_mark, upsert_pathology_findings_as_assertions,
         upsert_recall_pack, upsert_saved_view, upsert_session_metadata_assertion, upsert_session_tag_assertion,
         upsert_suppression, upsert_transform_candidate_assertions, upsert_workspace]
+    - path: polylogue/storage/sqlite/archive_tiers/user_annotations.py
+      surfaces:
+        - tier: user
+          durability: durable
+          interruption: atomic
+      entrypoints: [persist_annotation_batch, persist_annotation_schema]
     - path: polylogue/storage/sqlite/archive_tiers/context_delivery_write.py
       surfaces:
         - tier: user
