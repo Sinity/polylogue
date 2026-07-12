@@ -1,0 +1,208 @@
+"""Consumer-facing temporal-confidence contract tests."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Mapping
+from pathlib import Path
+from typing import get_args
+
+import pytest
+
+from polylogue.insights.archive import SessionProfileInsight, SessionWorkEventInsight, records_provenance
+from polylogue.insights.archive_models import (
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
+)
+from polylogue.insights.temporal_source import (
+    TIME_CONFIDENCE_VALUES,
+    TemporalSource,
+    time_confidence_for_record,
+    time_confidence_for_source,
+    time_confidence_for_sources,
+    weakest_source,
+)
+from polylogue.storage.insights.session.records import SessionProfileRecord
+from polylogue.storage.insights.timeline.records import SessionWorkEventRecord
+from tests.infra.storage_records import SessionBuilder, db_setup
+
+_TEMPORAL_SOURCES: tuple[TemporalSource, ...] = get_args(TemporalSource)
+
+
+def _profile_record_with_temporal_source(
+    source: str | None,
+    *,
+    session_id: str = "profile-1",
+    minute: int = 0,
+) -> SessionProfileRecord:
+    """Build the production record consumed by profile and aggregate adapters."""
+
+    timestamp = f"2026-07-12T09:{minute:02d}:00+00:00"
+    return SessionProfileRecord.model_construct(
+        session_id=session_id,
+        logical_session_id=session_id,
+        materializer_version=1,
+        materialized_at=f"2026-07-12T10:{minute:02d}:00+00:00",
+        source_updated_at=timestamp,
+        source_sort_key=1_784_265_600.0 + minute * 60,
+        input_high_water_mark=timestamp,
+        input_high_water_mark_source=source,
+        input_row_count=1,
+        source_name="claude-code",
+        title="profile",
+        evidence_payload=SessionEvidencePayload(),
+        inference_payload=SessionInferencePayload(),
+        enrichment_payload=SessionEnrichmentPayload(),
+        terminal_state="unknown",
+        terminal_state_confidence=0.0,
+        workflow_shape="unknown",
+        workflow_shape_confidence=0.0,
+        inference_version=1,
+        inference_family="test",
+        enrichment_version=1,
+        enrichment_family="test",
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("provider_ts", "recorded"),
+        ("hook_event_ts", "recorded"),
+        ("sort_key", "estimated"),
+        ("file_mtime", "estimated"),
+        ("materialization_ts", "unknown"),
+        ("fallback_date", "unknown"),
+        (None, "unknown"),
+        ("legacy-unrecognized-source", "unknown"),
+    ],
+)
+def test_time_confidence_projects_source_without_fabricating_event_time(source: str | None, expected: str) -> None:
+    """The production source projection keeps materialization/fallback time unknown."""
+
+    assert time_confidence_for_source(source) == expected
+
+
+@pytest.mark.parametrize("right", _TEMPORAL_SOURCES)
+@pytest.mark.parametrize("left", _TEMPORAL_SOURCES)
+def test_time_confidence_uses_the_weakest_temporal_source(left: TemporalSource, right: TemporalSource) -> None:
+    """Aggregate confidence delegates to the production provenance lattice."""
+
+    weakest = weakest_source(left, right)
+    assert time_confidence_for_sources((left, right)) == time_confidence_for_source(weakest)
+
+
+def test_timeless_profile_record_round_trips_as_unknown_time(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    """The library profile-record route never upgrades timeless provenance."""
+
+    db_path = db_setup(workspace_env)
+    session = SessionBuilder(db_path, "timeless-profile").provider("chatgpt").title("timeless")
+    session.conv = session.conv.model_copy(update={"created_at": None, "updated_at": None, "sort_key": None})
+    session.add_message(role="user", text="no provider timestamp", timestamp=None).add_message(
+        role="assistant", text="still no provider timestamp", timestamp=None
+    ).save()
+
+    from polylogue.api import Polylogue
+
+    async def read_record() -> SessionProfileRecord | None:
+        archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
+        try:
+            await archive.rebuild_insights()
+            return await archive.get_session_profile_record(session.native_session_id())
+        finally:
+            await archive.close()
+
+    record = asyncio.run(read_record())
+    assert record is not None
+    # Current rebuilt rows may carry the explicit fallback tag or the older
+    # absent tag. Both mean event time is unknown; the consumer projection
+    # must stay correct while the storage propagation path converges.
+    assert record.input_high_water_mark_source in {None, "fallback_date"}
+    assert time_confidence_for_record(record) == "unknown"
+    assert time_confidence_for_record(record) in TIME_CONFIDENCE_VALUES
+
+
+def test_profile_insight_projects_recorded_temporal_source_to_public_provenance() -> None:
+    """The public insight builder projects the record provenance, not a display fallback."""
+
+    record = _profile_record_with_temporal_source("provider_ts")
+
+    insight = SessionProfileInsight.from_record(record)
+
+    assert insight.provenance.input_high_water_mark_source == "provider_ts"
+    assert insight.provenance.time_confidence == "recorded"
+    assert insight.inference_provenance is not None
+    assert insight.inference_provenance.input_high_water_mark_source == "provider_ts"
+    assert insight.inference_provenance.time_confidence == "recorded"
+    assert insight.enrichment_provenance is not None
+    assert insight.enrichment_provenance.input_high_water_mark_source == "provider_ts"
+    assert insight.enrichment_provenance.time_confidence == "recorded"
+
+
+def test_timeline_materialization_time_projects_to_unknown_public_provenance() -> None:
+    """Materialization time orders a timeless event but must not pose as event time."""
+
+    record = SessionWorkEventRecord.model_construct(
+        event_id="event-1",
+        session_id="profile-1",
+        materializer_version=1,
+        materialized_at="2026-07-12T10:00:00+00:00",
+        source_updated_at=None,
+        source_sort_key=None,
+        input_high_water_mark=None,
+        input_high_water_mark_source="materialization_ts",
+        input_row_count=1,
+        source_name="claude-code",
+        event_index=0,
+        heuristic_label="implementation",
+        confidence=0.5,
+        start_index=0,
+        end_index=1,
+        summary="timeless event",
+        evidence_payload=WorkEventEvidencePayload(start_index=0, end_index=1),
+        inference_payload=WorkEventInferencePayload(
+            heuristic_label="implementation",
+            summary="timeless event",
+            confidence=0.5,
+        ),
+        search_text="timeless event",
+    )
+
+    insight = SessionWorkEventInsight.from_record(record)
+
+    assert insight.provenance.input_high_water_mark_source == "materialization_ts"
+    assert insight.provenance.time_confidence == "unknown"
+
+
+def test_aggregate_provenance_uses_the_weakest_contributor_source() -> None:
+    """Aggregate output must not launder one weak contributor into recorded time."""
+
+    provenance = records_provenance(
+        [
+            _profile_record_with_temporal_source("provider_ts", minute=0),
+            _profile_record_with_temporal_source("sort_key", session_id="profile-2", minute=1),
+        ]
+    )
+
+    assert provenance.input_high_water_mark_source == "sort_key"
+    assert provenance.time_confidence == "estimated"
+
+
+@pytest.mark.parametrize("source", [None, "legacy-unrecognized-source"])
+def test_aggregate_provenance_treats_absent_or_legacy_source_as_unknown(source: str | None) -> None:
+    """A mixed rollup cannot upgrade legacy provenance to recorded time."""
+
+    provenance = records_provenance(
+        [
+            _profile_record_with_temporal_source("provider_ts", minute=0),
+            _profile_record_with_temporal_source(source, session_id="profile-2", minute=1),
+        ]
+    )
+
+    assert provenance.input_high_water_mark_source is None
+    assert provenance.time_confidence == "unknown"

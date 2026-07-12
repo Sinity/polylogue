@@ -169,6 +169,8 @@ class TestInsightItemsPayload:
             provenance=ArchiveInsightProvenance(
                 materializer_version=1,
                 materialized_at="2026-01-01T00:00:00Z",
+                input_high_water_mark_source="sort_key",
+                time_confidence="estimated",
             ),
         )
         insight_type = get_insight_type("session_profiles")
@@ -179,6 +181,8 @@ class TestInsightItemsPayload:
         item_dict = items_list[0]
         # Verify origin projection happened
         assert item_dict["origin"] == "claude-code-session"
+        provenance = cast(dict[str, object], item_dict["provenance"])
+        assert provenance["time_confidence"] == "estimated"
 
 
 class TestRegistryOperations:
@@ -528,6 +532,7 @@ class TestRenderInsightItems:
             provenance=ArchiveInsightProvenance(
                 materializer_version=1,
                 materialized_at="2026-01-01T00:00:00Z",
+                time_confidence="estimated",
             ),
         )
         insight_type = get_insight_type("session_profiles")
@@ -538,6 +543,7 @@ class TestRenderInsightItems:
         assert "Session Profiles: 1" in captured.out
         # Should include some field output
         assert "sess-001" in captured.out
+        assert "time=estimated" in captured.out
 
 
 class TestBuildQuery:

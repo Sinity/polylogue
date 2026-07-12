@@ -1185,6 +1185,7 @@ class TestInsightTools:
         payload = json.loads(raw)
         assert payload["insight_kind"] == "session_profile"
         assert payload["session_id"] == "conv-1"
+        assert payload["provenance"]["time_confidence"] == "unknown"
 
     @pytest.mark.asyncio
     async def test_insight_list_tools_use_archive_queries(self, mcp_server: MCPServerUnderTest) -> None:

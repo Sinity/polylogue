@@ -34,6 +34,14 @@ from polylogue.insights.archive_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
+from polylogue.insights.temporal_source import (
+    TemporalSource,
+    TimeConfidence,
+    is_valid_temporal_source,
+    time_confidence_for_record,
+    time_confidence_for_sources,
+    weakest_of,
+)
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 
@@ -170,6 +178,8 @@ class _InsightRecordWithProvenance(Protocol):
     materialized_at: str
     source_updated_at: str | None
     source_sort_key: float | None
+    input_high_water_mark: str | None
+    input_high_water_mark_source: str | None
 
 
 class _InsightRecordWithInference(_InsightRecordWithProvenance, Protocol):
@@ -188,6 +198,9 @@ def _record_provenance(record: _InsightRecordWithProvenance) -> ArchiveInsightPr
         materialized_at=record.materialized_at,
         source_updated_at=record.source_updated_at,
         source_sort_key=record.source_sort_key,
+        input_high_water_mark=record.input_high_water_mark,
+        input_high_water_mark_source=record.input_high_water_mark_source,
+        time_confidence=time_confidence_for_record(record),
     )
 
 
@@ -197,6 +210,9 @@ def _record_inference_provenance(record: _InsightRecordWithInference) -> Archive
         materialized_at=record.materialized_at,
         source_updated_at=record.source_updated_at,
         source_sort_key=record.source_sort_key,
+        input_high_water_mark=record.input_high_water_mark,
+        input_high_water_mark_source=record.input_high_water_mark_source,
+        time_confidence=time_confidence_for_record(record),
         inference_version=record.inference_version,
         inference_family=record.inference_family,
     )
@@ -208,6 +224,9 @@ def _record_enrichment_provenance(record: _InsightRecordWithEnrichment) -> Archi
         materialized_at=record.materialized_at,
         source_updated_at=record.source_updated_at,
         source_sort_key=record.source_sort_key,
+        input_high_water_mark=record.input_high_water_mark,
+        input_high_water_mark_source=record.input_high_water_mark_source,
+        time_confidence=time_confidence_for_record(record),
         enrichment_version=record.enrichment_version,
         enrichment_family=record.enrichment_family,
     )
@@ -379,6 +398,9 @@ class ThreadInsight(ArchiveInsightModel):
                 materialized_at=record.materialized_at,
                 source_updated_at=record.end_time or record.start_time,
                 source_sort_key=None,
+                input_high_water_mark=record.input_high_water_mark,
+                input_high_water_mark_source=record.input_high_water_mark_source,
+                time_confidence=time_confidence_for_record(record),
             ),
             thread=record.payload,
         )
@@ -596,6 +618,8 @@ def records_provenance(
     materialized_at_attr: str = "materialized_at",
     source_updated_at_attr: str = "source_updated_at",
     source_sort_key_attr: str = "source_sort_key",
+    input_high_water_mark_attr: str = "input_high_water_mark",
+    input_high_water_mark_source_attr: str = "input_high_water_mark_source",
 ) -> ArchiveInsightProvenance:
     row_list = list(rows)
     materialized_at_values = [
@@ -618,11 +642,32 @@ def records_provenance(
         ),
         default=None,
     )
+    input_high_water_mark_values = [
+        _parse_iso_timestamp(str(getattr(row, input_high_water_mark_attr)))
+        for row in row_list
+        if getattr(row, input_high_water_mark_attr, None)
+    ]
+    input_high_water_mark = max(input_high_water_mark_values).isoformat() if input_high_water_mark_values else None
+    contributor_sources: list[TemporalSource] = []
+    has_unknown_contributor_source = False
+    for row in row_list:
+        value = getattr(row, input_high_water_mark_source_attr, None)
+        if isinstance(value, str) and is_valid_temporal_source(value):
+            contributor_sources.append(value)
+        else:
+            has_unknown_contributor_source = True
+    input_high_water_mark_source = None if has_unknown_contributor_source else weakest_of(contributor_sources)
+    time_confidence: TimeConfidence = (
+        "unknown" if has_unknown_contributor_source else time_confidence_for_sources(contributor_sources)
+    )
     return ArchiveInsightProvenance(
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         materialized_at=materialized_at,
         source_updated_at=source_updated_at,
         source_sort_key=source_sort_key,
+        input_high_water_mark=input_high_water_mark,
+        input_high_water_mark_source=input_high_water_mark_source,
+        time_confidence=time_confidence,
     )
 
 
