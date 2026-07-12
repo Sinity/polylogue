@@ -402,7 +402,7 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 1
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8)
+        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('raw_sessions')")}
         assert "predecessor_source_revision" in columns
@@ -455,6 +455,13 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     """The Beads origin copy-forward retains v7 evidence and accepts new raws."""
     db_path = workspace_env["archive_root"] / "source.db"
     old_ddl = SOURCE_DDL.replace(", 'beads-issue'", "")
+    old_ddl = old_ddl.replace(
+        "    capture_mode            TEXT CHECK ((capture_mode IN "
+        "('chatgpt', 'claude-ai', 'claude-code', 'codex', 'gemini', 'gemini-cli', "
+        "'hermes', 'antigravity', 'beads', 'grok', 'drive', 'unknown') "
+        "OR capture_mode IS NULL)),\n",
+        "",
+    )
     blob_hash, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(b"before-beads")
     with sqlite3.connect(db_path) as conn:
         conn.executescript(old_ddl)
@@ -482,8 +489,8 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     with sqlite3.connect(db_path) as conn:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 7
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 8
-        assert result.applied_versions == (8,)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 9
+        assert result.applied_versions == (8, 9)
         assert conn.execute("SELECT raw_id FROM raw_sessions WHERE raw_id = 'before-beads'").fetchone()
         conn.execute(
             """

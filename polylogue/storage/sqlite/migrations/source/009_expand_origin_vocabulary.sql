@@ -98,7 +98,11 @@ CREATE TABLE raw_sessions (
     append_start_offset     INTEGER CHECK(append_start_offset >= 0),
     append_end_offset       INTEGER CHECK(append_end_offset > append_start_offset),
     acquisition_generation  INTEGER CHECK(acquisition_generation >= 0),
-    revision_authority      TEXT NOT NULL DEFAULT 'quarantined' CHECK(revision_authority IN ('asserted', 'byte_proven', 'quarantined'))
+    revision_authority      TEXT NOT NULL DEFAULT 'quarantined' CHECK(revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
+    capture_mode            TEXT CHECK(capture_mode IN (
+        'chatgpt', 'claude-ai', 'claude-code', 'codex', 'gemini', 'gemini-cli',
+        'hermes', 'antigravity', 'grok', 'drive', 'unknown'
+    ))
 ) STRICT;
 
 CREATE TABLE raw_session_memberships (

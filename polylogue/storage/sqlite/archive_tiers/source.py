@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 8
+SOURCE_SCHEMA_VERSION = 9
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (

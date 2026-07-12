@@ -11,7 +11,7 @@ from polylogue.core.enums import Provider
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -50,6 +50,21 @@ def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
 
 def _bundle(*sessions: dict[str, object]) -> bytes:
     return json.dumps(list(sessions), sort_keys=True).encode()
+
+
+def test_revision_reparse_preserves_beads_workspace_identity(tmp_path: Path) -> None:
+    """Replay must retain the same workspace-scoped native ID as ingest."""
+    source_path = tmp_path / "workspace" / ".beads" / "interactions.jsonl"
+    payload = (
+        b'{"id":"event-1","kind":"closed","created_at":"2026-07-12T00:00:00Z",'
+        b'"issue_id":"polylogue-7fj","actor":"agent","extra":{}}\n'
+    )
+
+    sessions = _parse_one(Provider.BEADS, payload, str(source_path))
+
+    assert len(sessions) == 1
+    assert sessions[0].provider_session_id.startswith("polylogue-7fj@workspace-")
+    assert sessions[0].working_directories == [str(source_path.parent.parent.resolve())]
 
 
 def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_order(tmp_path: Path) -> None:

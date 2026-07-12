@@ -1560,12 +1560,14 @@ class LiveBatchProcessor:
                                     provider,
                                     _iter_json_stream(payload_handle, source_name),
                                     fallback_id,
+                                    source_path=record.source_path,
                                 )
                         else:
                             sessions = parse_stream_payload(
                                 provider,
                                 _iter_json_stream(BytesIO(payload), source_name),
                                 fallback_id,
+                                source_path=record.source_path,
                             )
                     else:
                         if payload is None:
@@ -1782,6 +1784,7 @@ class LiveBatchProcessor:
                 provider,
                 _iter_json_stream(BytesIO(payload), source_name),
                 fallback_id,
+                source_path=source_path,
             )
         return parse_payload(
             provider,
