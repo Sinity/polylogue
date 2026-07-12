@@ -6,6 +6,8 @@ import inspect
 import json
 import os
 import sqlite3
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -104,6 +106,47 @@ def _combined_calls(env: AppEnv) -> str:
     """Get combined output from the capturing console."""
     console: Any = env.ui.console
     return " ".join(console.calls)
+
+
+def test_status_command_reads_a_real_daemon_http_status_route() -> None:
+    """The CLI must consume the daemon's JSON route without a mocked urlopen."""
+
+    class _StatusHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            assert self.path == "/api/status"
+            body = json.dumps({"daemon_liveness": True, "component_state": {}, "checked_at": "now"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StatusHandler)
+    worker = threading.Thread(target=server.serve_forever)
+    worker.start()
+    try:
+        env = _make_app_env()
+        callback = getattr(status_command.callback, "__wrapped__", None)
+        assert callable(callback)
+        callback(
+            env,
+            daemon_url=f"http://127.0.0.1:{server.server_port}",
+            output_format="json",
+            json_alias=False,
+            full_payload=False,
+            exact_archive_readiness=False,
+        )
+    finally:
+        server.shutdown()
+        worker.join()
+        server.server_close()
+
+    output = _combined_calls(env)
+    assert '"source": "daemon"' in output
+    assert '"daemon_liveness": true' in output
 
 
 def test_raw_replay_backlog_plain_status_explains_containment() -> None:

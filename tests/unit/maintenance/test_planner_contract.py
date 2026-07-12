@@ -32,6 +32,7 @@ from polylogue.maintenance.planner import (
     preview_backfill,
 )
 from polylogue.maintenance.targets import build_maintenance_target_catalog
+from tests.infra.storage_records import SessionBuilder, db_setup
 
 
 def _make_config(tmp_path: Path) -> Config:
@@ -335,36 +336,22 @@ class TestConfigThreading:
     (the original scaffold did the latter and broke multi-archive tests).
     """
 
-    def test_preview_threads_config_db_path(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    def test_preview_reads_the_callers_seeded_archive(self, workspace_env: dict[str, Path]) -> None:
+        """Planner debt comes from the supplied archive, not ambient paths."""
+        index_db = db_setup(workspace_env)
+        SessionBuilder(index_db, "planner-config").provider("chatgpt").save()
+        config = Config(
+            archive_root=workspace_env["archive_root"],
+            render_root=workspace_env["data_root"] / "render",
+            sources=[],
+            db_path=index_db,
+        )
 
-        config = _make_config(tmp_path)
-        initialize_active_archive_root(config.archive_root)
-        expected_index = config.archive_root / "index.db"
+        preview = preview_backfill(config, targets=("empty_sessions",))
 
-        seen: list[Path] = []
-
-        def fake_open(path: object, **_: object) -> MagicMock:
-            seen.append(Path(str(path)))
-            return MagicMock()
-
-        with (
-            patch(
-                "polylogue.storage.sqlite.connection_profile.open_readonly_connection",
-                side_effect=fake_open,
-            ),
-            patch(
-                "polylogue.storage.repair.collect_archive_debt_statuses_sync",
-                return_value={},
-            ),
-            patch(
-                "polylogue.storage.repair.preview_counts_from_archive_debt",
-                return_value={},
-            ),
-        ):
-            preview_backfill(config, targets=("session_insights",))
-
-        assert seen == [expected_index]
+        assert preview.targets == ("empty_sessions",)
+        assert preview.affected_rows == 1
+        assert preview.results
 
     def test_execute_threads_config_db_path(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root

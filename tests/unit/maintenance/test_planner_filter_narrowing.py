@@ -28,6 +28,7 @@ import pytest
 from polylogue.config import Config
 from polylogue.maintenance.planner import preview_backfill
 from polylogue.maintenance.scope import MaintenanceScopeFilter
+from tests.infra.storage_records import SessionBuilder, db_setup
 
 
 def _make_config(tmp_path: Path) -> Config:
@@ -43,11 +44,23 @@ def _make_config(tmp_path: Path) -> Config:
     )
 
 
+def _seeded_config(workspace_env: dict[str, Path]) -> Config:
+    index_db = db_setup(workspace_env)
+    for session_id in ("one", "two", "three"):
+        SessionBuilder(index_db, session_id).provider("chatgpt").save()
+    return Config(
+        archive_root=workspace_env["archive_root"],
+        render_root=workspace_env["data_root"] / "render",
+        sources=[],
+        db_path=index_db,
+    )
+
+
 def _patched_debt(pending: int) -> tuple[Any, Any]:
-    """Return patched debt collector + preview callables advertising ``pending`` rows."""
+    """Build debt doubles for the remaining synthetic filter-dimension cases."""
     from polylogue.maintenance.models import DerivedModelStatus
 
-    fake_status = DerivedModelStatus(
+    status = DerivedModelStatus(
         name="session_insights",
         ready=False,
         detail=f"{pending} pending",
@@ -57,30 +70,25 @@ def _patched_debt(pending: int) -> tuple[Any, Any]:
         missing_provenance_rows=0,
     )
 
-    def _fake_collect(*_a: Any, **_kw: Any) -> dict[str, DerivedModelStatus]:
-        return {"session_insights": fake_status}
+    def collect(*_args: Any, **_kwargs: Any) -> dict[str, DerivedModelStatus]:
+        return {"session_insights": status}
 
-    def _fake_counts(_statuses: dict[str, DerivedModelStatus]) -> dict[str, int]:
+    def counts(_statuses: dict[str, DerivedModelStatus]) -> dict[str, int]:
         return {"session_insights": pending}
 
-    return _fake_collect, _fake_counts
+    return collect, counts
 
 
 class TestPlannerNarrowsBySessionIds:
     """A ``session_ids`` filter clamps preview rows to the filter size."""
 
-    def test_single_session_filter_clamps_to_one(self, tmp_path: Path) -> None:
-        config = _make_config(tmp_path)
-        collect, counts = _patched_debt(1000)
-        with (
-            patch("polylogue.storage.repair.collect_archive_debt_statuses_sync", collect),
-            patch("polylogue.storage.repair.preview_counts_from_archive_debt", counts),
-        ):
-            narrow = preview_backfill(
-                config,
-                targets=("session_insights",),
-                scope_filter=MaintenanceScopeFilter(session_ids=("only-one",)),
-            )
+    def test_single_session_filter_clamps_real_archive_debt(self, workspace_env: dict[str, Path]) -> None:
+        config = _seeded_config(workspace_env)
+        narrow = preview_backfill(
+            config,
+            targets=("empty_sessions",),
+            scope_filter=MaintenanceScopeFilter(session_ids=("only-one",)),
+        )
         assert narrow.affected_rows == 1
         # And the filter is echoed back on the returned scope so the
         # envelope can serialize it.

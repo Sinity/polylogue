@@ -52,6 +52,17 @@ def test_polylogued_version_option_reports_version() -> None:
     assert result.output.startswith("polylogued, version ")
 
 
+def test_polylogued_health_json_runs_against_isolated_workspace(workspace_env: dict[str, Path]) -> None:
+    """Health CLI returns structured output without requiring a live daemon."""
+    result = CliRunner().invoke(main, ["health", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = loads(result.output)
+    assert isinstance(payload, dict)
+    assert "overall_status" in payload
+    assert isinstance(payload["alerts"], list)
+
+
 @pytest.mark.contract
 def test_polylogued_status_json_reports_daemon_components(
     tmp_path: Path,

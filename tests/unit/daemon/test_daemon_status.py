@@ -89,6 +89,39 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     assert "queued_actors" in writer
 
 
+def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
+    """Daemon status must surface actionable split-store and cursor-state evidence."""
+    lines = format_daemon_status_lines(
+        {
+            "daemon_liveness": True,
+            "archive_storage": {
+                "active_store": "archive_file_set",
+                "present_tiers": ["source", "index"],
+                "missing_tiers": ["embeddings", "user", "ops"],
+                "schema_mismatches": ["index"],
+                "archive_root_matches_configured": False,
+                "archive_root": "/tmp/active-archive",
+            },
+            "live_cursor": {
+                "tracked_file_count": 3,
+                "failed_file_count": 1,
+                "excluded_file_count": 1,
+                "retry_due_file_count": 1,
+                "in_backoff_file_count": 0,
+                "omitted_file_count": 2,
+            },
+            "failing_files": ["/capture/broken.jsonl"],
+        }
+    )
+
+    assert (
+        "Storage: archive_file_set (source, index); missing embeddings, user, ops; schema mismatch index; active root /tmp/active-archive"
+        in lines
+    )
+    assert "Live cursor: 3 tracked, 1 failed, 1 excluded, 1 retry due, 0 in backoff" in lines
+    assert "Failing files: 1 shown, 2 omitted" in lines
+
+
 def test_status_snapshot_stale_healthy_authority_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     payload: JSONDocument = {
         "ok": True,

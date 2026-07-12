@@ -269,8 +269,7 @@ def test_list_inferred_corpus_specs_reads_registry_catalog_and_manifest() -> Non
         manifests={"chatgpt": manifest},
     )
 
-    with patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry):
-        specs = list_inferred_corpus_specs()
+    specs = list_inferred_corpus_specs(registry=fake_registry)
 
     assert len(specs) == 1
     assert specs[0].provider == "chatgpt"
@@ -329,8 +328,7 @@ def test_list_inferred_corpus_scenarios_groups_specs_by_provider_and_version() -
         manifests={"chatgpt": manifest},
     )
 
-    with patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry):
-        scenarios = list_inferred_corpus_scenarios()
+    scenarios = list_inferred_corpus_scenarios(registry=fake_registry)
 
     assert len(scenarios) == 1
     assert scenarios[0].provider == "chatgpt"
@@ -376,8 +374,7 @@ def test_list_inferred_corpus_specs_can_scope_to_one_provider() -> None:
         manifests={"chatgpt": None, "codex": None},
     )
 
-    with patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry):
-        specs = list_inferred_corpus_specs(provider="chatgpt")
+    specs = list_inferred_corpus_specs(provider="chatgpt", registry=fake_registry)
 
     assert tuple(spec.provider for spec in specs) == ("chatgpt",)
     assert specs[0].package_version == "v3"
