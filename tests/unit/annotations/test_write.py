@@ -106,6 +106,46 @@ class TestUpsertAnnotationAssertion:
         assert value["status"] == "approved"
         assert envelope.kind == "annotation"
 
+    def test_unbatched_same_identity_remains_upsertable(self, user_conn: sqlite3.Connection) -> None:
+        schema = _delegation_tone_schema()
+        registry = _registry_for(schema)
+        target_ref = "session:codex-session:demo"
+        first = upsert_annotation_assertion(
+            user_conn,
+            schema=schema,
+            registry=registry,
+            target_ref=target_ref,
+            value={"score": 2, "status": "rejected"},
+            row_key="row-upsert",
+            evidence_refs=[target_ref],
+            author_ref="agent:labeler",
+            body_text="first label",
+            confidence=0.25,
+            now_ms=1_000,
+        )
+
+        updated = upsert_annotation_assertion(
+            user_conn,
+            schema=schema,
+            registry=registry,
+            target_ref=target_ref,
+            value={"score": 5, "status": "approved"},
+            row_key="row-upsert",
+            evidence_refs=["session:codex-session:new-evidence"],
+            author_ref="agent:labeler",
+            body_text="corrected label",
+            confidence=0.9,
+            now_ms=2_000,
+        )
+
+        assert updated.assertion_id == first.assertion_id
+        assert updated.created_at_ms == first.created_at_ms == 1_000
+        assert updated.updated_at_ms == 2_000
+        assert _value_dict(updated.value)["score"] == 5
+        assert updated.body_text == "corrected label"
+        assert updated.evidence_refs == ["session:codex-session:new-evidence"]
+        assert updated.confidence == 0.9
+
     def test_invalid_row_raises_and_writes_nothing(self, user_conn: sqlite3.Connection) -> None:
         schema = _delegation_tone_schema()
         with pytest.raises(AnnotationValidationError) as excinfo:

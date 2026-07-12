@@ -294,7 +294,7 @@ def upsert_annotation_assertion(
         ) from exc
 
     existing = read_assertion_envelope(conn, assertion_id)
-    if existing is not None:
+    if existing is not None and normalized_batch_ref is not None:
         existing_inputs = _immutable_annotation_inputs(
             scope_ref=existing.scope_ref,
             target_ref=existing.target_ref,

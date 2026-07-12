@@ -106,6 +106,13 @@ def _single_row_batch(
     )
 
 
+def test_batch_id_must_form_a_round_trippable_public_ref() -> None:
+    batch, _ = _single_row_batch(batch_id="round-trip-baseline")
+
+    with pytest.raises(AnnotationBatchError, match="batch_id.*round-trippable annotation-batch ObjectRef"):
+        replace(batch, batch_id="run:")
+
+
 def test_schema_definition_is_durable_canonical_and_fails_closed_on_reuse(
     workspace_env: dict[str, Path],
 ) -> None:

@@ -136,6 +136,17 @@ class AnnotationBatch:
     def __post_init__(self) -> None:
         if not _BATCH_ID_RE.fullmatch(self.batch_id):
             raise AnnotationBatchError(f"batch_id {self.batch_id!r} must match {_BATCH_ID_RE.pattern!r}")
+        batch_ref = ObjectRef(kind="annotation-batch", object_id=self.batch_id)
+        try:
+            parsed_batch_ref = ObjectRef.parse(batch_ref.format())
+        except ValueError as exc:
+            raise AnnotationBatchError(
+                f"batch_id {self.batch_id!r} must form a round-trippable annotation-batch ObjectRef"
+            ) from exc
+        if parsed_batch_ref != batch_ref:
+            raise AnnotationBatchError(
+                f"batch_id {self.batch_id!r} must form a round-trippable annotation-batch ObjectRef"
+            )
         if not _SCHEMA_ID_RE.fullmatch(self.schema_id):
             raise AnnotationBatchError(f"schema_id {self.schema_id!r} must match {_SCHEMA_ID_RE.pattern!r}")
         if not _is_positive_int(self.schema_version):
