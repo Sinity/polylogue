@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from itertools import permutations
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from polylogue.archive.session_revision_membership import (
 )
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
+from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -60,6 +62,54 @@ def _candidate(
 
 def _decisions(candidates: list[RevisionCandidate]) -> dict[str, ApplicationDecision]:
     return {item.raw_id: item.decision for item in plan_revision_replay(candidates).applications}
+
+
+def _codex_jsonl(records: list[dict[str, object]]) -> bytes:
+    return b"".join(json.dumps(record, separators=(",", ":")).encode() + b"\n" for record in records)
+
+
+def _parse_codex_jsonl(payload: bytes) -> ParsedSession:
+    sessions = parse_stream_payload(
+        Provider.CODEX,
+        (json.loads(line) for line in payload.splitlines() if line),
+        "fold-codex",
+    )
+    assert len(sessions) == 1
+    return sessions[0]
+
+
+def _codex_fold_payloads() -> tuple[bytes, bytes]:
+    baseline = _codex_jsonl(
+        [
+            {"type": "session_meta", "payload": {"id": "fold-codex", "timestamp": "2026-07-12T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "m1",
+                    "role": "user",
+                    "timestamp": "2026-07-12T00:00:01Z",
+                    "content": [{"type": "input_text", "text": "needle alpha"}],
+                },
+            },
+        ]
+    )
+    append = _codex_jsonl(
+        [
+            {"type": "turn_context", "payload": {"cwd": "/repo", "model": "gpt-5"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "m2",
+                    "role": "assistant",
+                    "timestamp": "2026-07-12T00:00:02Z",
+                    "content": [{"type": "output_text", "text": "needle beta"}],
+                },
+            },
+        ]
+    )
+    return baseline, append
 
 
 def test_replay_selects_newest_full_and_exact_contiguous_suffix_independent_of_order() -> None:
@@ -373,18 +423,15 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
 def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
 
-    def parsed(*messages: tuple[str, str]) -> ParsedSession:
-        return ParsedSession(
-            source_name=Provider.CODEX,
-            provider_session_id="session",
-            messages=[
-                ParsedMessage(provider_message_id=message_id, role=Role.USER, text=text)
-                for message_id, text in messages
-            ],
-        )
-
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        baseline_payload, tail = b"0123456789", b"abcdefghij"
+        baseline_payload, tail = _codex_fold_payloads()
+        baseline_session = _parse_codex_jsonl(baseline_payload)
+        append_session = _parse_codex_jsonl(tail)
+        folded_payload = baseline_payload + tail
+        folded_session = _parse_codex_jsonl(folded_payload)
+        assert session_content_hash(
+            merge_parsed_session_chunks([baseline_session, append_session])[0]
+        ) != session_content_hash(folded_session)
         baseline = archive.write_raw_payload(
             provider=Provider.CODEX, payload=baseline_payload, source_path="session.jsonl", acquired_at_ms=1
         )
@@ -408,18 +455,18 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
                 predecessor_source_revision="base",
                 predecessor_raw_id=baseline,
                 baseline_raw_id=baseline,
-                append_start_offset=10,
-                append_end_offset=20,
+                append_start_offset=len(baseline_payload),
+                append_end_offset=len(folded_payload),
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
         archive.apply_raw_revision_replay(
             archive.raw_revision_replay_plan("codex:session"),
-            {baseline: parsed(("m0", "zero")), append: parsed(("m1", "one"))},
+            {baseline: baseline_session, append: append_session},
             acquired_at_ms=0,
         )
         folded = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=baseline_payload + tail, source_path="session.jsonl", acquired_at_ms=3
+            provider=Provider.CODEX, payload=folded_payload, source_path="session.jsonl", acquired_at_ms=3
         )
         archive.bind_raw_revision(
             folded,
@@ -427,7 +474,6 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
                 "codex:session", RawRevisionKind.FULL, "folded", 2, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        folded_session = parsed(("folded-0", "zero"), ("folded-1", "one"))
         before_hash = archive._conn.execute(
             "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = ?", ("codex:session",)
         ).fetchone()
@@ -455,19 +501,45 @@ def test_real_append_fold_proof_mutations_roll_back(
             ],
         )
 
-    def state(archive: ArchiveStore) -> tuple[object, ...]:
-        return (
-            archive._conn.execute("SELECT content_hash, message_count FROM sessions").fetchall(),
-            archive._conn.execute("SELECT message_id, content_hash FROM messages ORDER BY message_id").fetchall(),
-            archive._conn.execute("SELECT id, sz FROM messages_fts_docsize ORDER BY id").fetchall(),
-            archive._conn.execute(
+    def state(archive: ArchiveStore) -> dict[str, object]:
+        fts_matches = archive._conn.execute(
+            """
+            SELECT b.block_id, b.message_id, b.text
+            FROM messages_fts
+            JOIN blocks AS b ON b.rowid = messages_fts.rowid
+            WHERE messages_fts MATCH 'needle'
+            ORDER BY b.block_id
+            """
+        ).fetchall()
+        return {
+            "sessions": archive._conn.execute("SELECT content_hash, message_count FROM sessions").fetchall(),
+            "messages": archive._conn.execute(
+                "SELECT message_id, content_hash FROM messages ORDER BY message_id"
+            ).fetchall(),
+            "blocks": archive._conn.execute(
+                "SELECT block_id, message_id, block_type, text, search_text, content_hash FROM blocks ORDER BY block_id"
+            ).fetchall(),
+            "session_events": archive._conn.execute(
+                "SELECT event_id, source_message_id, event_type, summary, payload_json FROM session_events ORDER BY event_id"
+            ).fetchall(),
+            "attachments": archive._conn.execute(
+                "SELECT attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status FROM attachments ORDER BY attachment_id"
+            ).fetchall(),
+            "fts_docsize": archive._conn.execute("SELECT id, sz FROM messages_fts_docsize ORDER BY id").fetchall(),
+            "fts_needle": fts_matches,
+            "head": archive._conn.execute(
                 "SELECT accepted_raw_id, accepted_content_hash, accepted_frontier FROM raw_revision_heads"
             ).fetchall(),
-            archive._conn.execute("SELECT decision_id FROM raw_revision_applications ORDER BY decision_id").fetchall(),
-        )
+            "receipts": archive._conn.execute(
+                "SELECT decision_id FROM raw_revision_applications ORDER BY decision_id"
+            ).fetchall(),
+        }
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        baseline_payload, tail = b"0123456789", b"abcdefghij"
+        baseline_payload, tail = _codex_fold_payloads()
+        baseline_session = _parse_codex_jsonl(baseline_payload)
+        append_session = _parse_codex_jsonl(tail)
+        folded_session = _parse_codex_jsonl(baseline_payload + tail)
         baseline = archive.write_raw_payload(
             provider=Provider.CODEX, payload=baseline_payload, source_path="session.jsonl", acquired_at_ms=1
         )
@@ -491,15 +563,13 @@ def test_real_append_fold_proof_mutations_roll_back(
                 predecessor_source_revision="base",
                 predecessor_raw_id=baseline,
                 baseline_raw_id=baseline,
-                append_start_offset=10,
-                append_end_offset=20,
+                append_start_offset=len(baseline_payload),
+                append_end_offset=len(baseline_payload + tail),
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
         chain = archive.raw_revision_replay_plan("codex:session")
-        archive.apply_raw_revision_replay(
-            chain, {baseline: parsed(("m0", "zero")), append: parsed(("m1", "one"))}, acquired_at_ms=0
-        )
+        archive.apply_raw_revision_replay(chain, {baseline: baseline_session, append: append_session}, acquired_at_ms=0)
         folded_payload = baseline_payload + tail
         if mutation in {"baseline", "divergent"}:
             folded_payload = (b"X" if mutation == "baseline" else baseline_payload[:5] + b"X") + folded_payload[
@@ -516,9 +586,13 @@ def test_real_append_fold_proof_mutations_roll_back(
         )
         source = archive._ensure_source_conn()
         if mutation == "gap":
-            source.execute("UPDATE raw_sessions SET append_start_offset = 11 WHERE raw_id = ?", (append,))
+            source.execute(
+                "UPDATE raw_sessions SET append_start_offset = ? WHERE raw_id = ?", (len(baseline_payload) + 1, append)
+            )
         elif mutation == "overlap":
-            source.execute("UPDATE raw_sessions SET append_start_offset = 9 WHERE raw_id = ?", (append,))
+            source.execute(
+                "UPDATE raw_sessions SET append_start_offset = ? WHERE raw_id = ?", (len(baseline_payload) - 1, append)
+            )
         elif mutation == "predecessor":
             source.execute("UPDATE raw_sessions SET predecessor_source_revision = 'wrong' WHERE raw_id = ?", (append,))
         elif mutation == "missing":
@@ -529,7 +603,7 @@ def test_real_append_fold_proof_mutations_roll_back(
             def mutated_material(raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
                 provider, payload, source_path, kind = original(raw_id)
                 return (
-                    (provider, b"Z" * 10, source_path, kind)
+                    (provider, b"Z" * len(tail), source_path, kind)
                     if raw_id == append
                     else (provider, payload, source_path, kind)
                 )
@@ -541,9 +615,12 @@ def test_real_append_fold_proof_mutations_roll_back(
             )
         source.commit()
         before = state(archive)
+        assert before["blocks"]
+        assert before["session_events"]
+        assert before["fts_needle"]
         plan = archive.raw_revision_replay_plan("codex:session")
         with pytest.raises(RuntimeError, match="conflicting accepted head"):
-            archive.apply_raw_revision_replay(plan, {folded: parsed(("f0", "zero"), ("f1", "one"))}, acquired_at_ms=0)
+            archive.apply_raw_revision_replay(plan, {folded: folded_session}, acquired_at_ms=0)
         assert state(archive) == before
 
 
