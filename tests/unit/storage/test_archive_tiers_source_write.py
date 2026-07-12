@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
-from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationStatus
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHistorySidecar,
@@ -24,6 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     read_raw_artifact,
     write_history_sidecar,
     write_source_raw_session,
+    write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -59,6 +60,7 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
     raw_id = write_source_raw_session(
         conn,
         origin=Origin.CLAUDE_CODE_SESSION,
+        capture_mode=Provider.CLAUDE_CODE,
         source_path="/tmp/record.jsonl",
         source_index=0,
         native_id="session-1",
@@ -99,12 +101,17 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
         ),
     )
 
+    assert (
+        conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0] == "claude-code"
+    )
+
     assert raw_id == expected_raw_id
 
     envelope = read_archive_raw_session_envelope(conn, raw_id)
     assert isinstance(envelope, ArchiveRawSessionEnvelope)
     assert envelope.raw_id == expected_raw_id
     assert envelope.origin == Origin.CLAUDE_CODE_SESSION.value
+    assert envelope.capture_mode == Provider.CLAUDE_CODE.value
     assert envelope.native_id == "session-1"
     assert envelope.source_path == "/tmp/record.jsonl"
     assert envelope.blob_hash == computed_blob_hash
@@ -233,6 +240,63 @@ def test_archive_tiers_source_writer_keeps_multiple_raw_captures_for_one_native_
         (second_raw_id, "/captures/browser.json"),
         (first_raw_id, "/captures/direct.json"),
     ]
+
+
+def test_source_writers_backfill_legacy_capture_mode_on_duplicate_raw_id(tmp_path: Path) -> None:
+    """A post-migration re-acquisition enriches, but never replaces, NULL provenance."""
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"chunkedPrompt":{"chunks":[]}}'
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.AISTUDIO_DRIVE,
+        source_path="/captures/aistudio.json",
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=1,
+    )
+    assert conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0] is None
+
+    assert (
+        write_source_raw_session(
+            conn,
+            origin=Origin.AISTUDIO_DRIVE,
+            capture_mode=Provider.DRIVE,
+            source_path="/captures/aistudio.json",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1,
+        )
+        == raw_id
+    )
+    assert conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0] == "drive"
+
+    blob_hash = deterministic_blob_hash(b"blob-backed aistudio")
+    blob_raw_id = write_source_raw_session_blob_ref(
+        conn,
+        origin=Origin.AISTUDIO_DRIVE,
+        source_path="/captures/aistudio-blob.json",
+        source_index=0,
+        blob_hash=blob_hash,
+        blob_size=len(b"blob-backed aistudio"),
+        acquired_at_ms=2,
+    )
+    assert conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (blob_raw_id,)).fetchone()[0] is None
+    assert (
+        write_source_raw_session_blob_ref(
+            conn,
+            origin=Origin.AISTUDIO_DRIVE,
+            capture_mode=Provider.DRIVE,
+            source_path="/captures/aistudio-blob.json",
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=len(b"blob-backed aistudio"),
+            acquired_at_ms=2,
+        )
+        == blob_raw_id
+    )
+    assert (
+        conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (blob_raw_id,)).fetchone()[0] == "drive"
+    )
 
 
 def test_archive_tiers_source_writer_deterministic_ids() -> None:

@@ -13,6 +13,7 @@ class RawSessionRecord(BaseModel):
     blob_hash: str | None = None
     blob_publication_receipt_id: str | None = Field(default=None, exclude=True)
     payload_provider: Provider | None = None
+    capture_mode: Provider | None = None
     source_name: str | None = None
     source_path: str
     source_index: int | None = None
@@ -53,6 +54,15 @@ class RawSessionRecord(BaseModel):
     @field_validator("payload_provider", mode="before")
     @classmethod
     def coerce_payload_provider(cls, v: object) -> Provider | None:
+        if v is None:
+            return None
+        if isinstance(v, Provider):
+            return v
+        return Provider.from_string(str(v))
+
+    @field_validator("capture_mode", mode="before")
+    @classmethod
+    def coerce_capture_mode(cls, v: object) -> Provider | None:
         if v is None:
             return None
         if isinstance(v, Provider):

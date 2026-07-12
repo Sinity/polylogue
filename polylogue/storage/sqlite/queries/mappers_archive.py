@@ -14,6 +14,7 @@ from polylogue.core.enums import (
     BlockType,
     MaterialOrigin,
     Origin,
+    Provider,
     SemanticBlockType,
     SessionKind,
     ValidationMode,
@@ -128,7 +129,11 @@ def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
     # raw_sessions carries a single ``origin`` column (#1743). The in-memory
     # record still exposes provider-wire ``source_name``/``payload_provider``;
     # both project from the stored origin.
-    provider = provider_from_origin(Origin.from_string(row["origin"]))
+    capture_mode = _row_text(row, "capture_mode")
+    provider = provider_from_origin(
+        Origin.from_string(row["origin"]),
+        family_hint=capture_mode,
+    )
     logical_source_key = _row_text(row, "logical_source_key")
     source_revision = _row_text(row, "source_revision")
     generation = _row_int(row, "acquisition_generation")
@@ -150,6 +155,7 @@ def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
         raw_id=row["raw_id"],
         blob_hash=blob_hash,
         payload_provider=provider,
+        capture_mode=Provider.from_string(capture_mode) if capture_mode is not None else None,
         source_name=provider.value,
         source_path=row["source_path"],
         source_index=row["source_index"],

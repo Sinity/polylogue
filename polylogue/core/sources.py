@@ -369,13 +369,12 @@ def provider_from_origin(origin: Origin, *, family_hint: Provider | SourceFamily
     A hint that fails to resolve, or resolves to a ``Provider`` outside
     ``origin``'s fiber, is ignored (falls back to the canonical choice)
     rather than raising: disambiguation here is advisory, not authoritative.
-    No current storage tier persists the acquisition-time provider once a
-    session is written -- ``sessions``/``raw_sessions`` only carry the
-    already-collapsed ``origin`` column (polylogue-9e5.8 Step 5 investigation;
-    see polylogue-4rrv for the follow-up durable-field bead) -- so this
-    parameter only helps call sites that already have independent knowledge
-    of which fiber member applies, not ones trying to recover it from a
-    previously-persisted session alone.
+    The durable ``source.db`` ``raw_sessions.capture_mode`` field preserves
+    acquisition-time provenance for new raw captures, so source-tier readers
+    can pass it here to recover a persisted fiber member.  ``index.db``
+    sessions still carry only the collapsed ``origin`` and historical source
+    rows retain ``NULL`` for unknown provenance; those callers still need
+    independent context or receive the canonical fallback.
     """
 
     if family_hint is not None:

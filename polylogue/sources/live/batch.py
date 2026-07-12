@@ -1133,6 +1133,7 @@ class LiveBatchProcessor:
         ingested: list[Path] = []
         source_payload_read_bytes = 0
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        acquisition_capture_mode = fallback_provider
 
         archive_bootstrapped = not self._archive_active(archive_root)
         if archive_bootstrapped:
@@ -1361,6 +1362,9 @@ class LiveBatchProcessor:
                     raw_id=raw_id,
                     blob_hash=(blob_hash if provider is Provider.HERMES and blob_hash is not None else None),
                     payload_provider=provider,
+                    capture_mode=(
+                        acquisition_capture_mode if acquisition_capture_mode is not Provider.UNKNOWN else provider
+                    ),
                     source_name=source_name,
                     source_path=(
                         str(original_sqlite_source_path(path) or path) if path in raw_source_revisions else str(path)
@@ -1509,6 +1513,7 @@ class LiveBatchProcessor:
                     if payload is None:
                         source_raw_id = archive.write_raw_blob_ref(
                             provider=provider,
+                            capture_mode=record.capture_mode,
                             blob_hash_hex=blob_hash,
                             blob_size=record.blob_size,
                             source_path=record.source_path,
@@ -1521,6 +1526,7 @@ class LiveBatchProcessor:
                     else:
                         source_raw_id = archive.write_raw_payload(
                             provider=provider,
+                            capture_mode=record.capture_mode,
                             payload=payload,
                             source_path=record.source_path,
                             source_index=record.source_index or 0,
@@ -1843,6 +1849,11 @@ class LiveBatchProcessor:
                                 RawSessionRecord(
                                     raw_id=raw_data.blob_hash,
                                     payload_provider=member_provider,
+                                    capture_mode=(
+                                        fallback_provider
+                                        if fallback_provider is not Provider.UNKNOWN
+                                        else member_provider
+                                    ),
                                     source_name=member_provider.value,
                                     source_path=raw_data.source_path,
                                     source_index=raw_data.source_index or 0,

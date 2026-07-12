@@ -101,6 +101,10 @@ class SQLiteRawMixin:
             origin = origin_from_provider(record.payload_provider)
         else:
             origin = origin_from_provider(Provider.from_string(record.source_name or "unknown"))
+        # ``payload_provider`` may be the canonical compatibility projection
+        # for a historical NULL capture mode.  Preserve that NULL unless an
+        # acquisition path explicitly supplied capture provenance.
+        capture_mode = record.capture_mode
         blob_hash_hex = record.blob_hash or record.raw_id
         try:
             blob_hash = bytes.fromhex(blob_hash_hex)
@@ -113,20 +117,24 @@ class SQLiteRawMixin:
         async with aiosqlite.connect(self._source_db_path) as conn:
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA foreign_keys = ON")
-            cursor = await conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (record.raw_id,))
-            existed = await cursor.fetchone() is not None
+            cursor = await conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (record.raw_id,))
+            existing = await cursor.fetchone()
+            existed = existing is not None
+            if existing is not None and existing["capture_mode"] is not None:
+                capture_mode = Provider.from_string(str(existing["capture_mode"]))
             await conn.execute(
                 """
                 INSERT OR REPLACE INTO raw_sessions (
-                    raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
                     blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
                     validated_at_ms, validation_status, validation_error, validation_drift_count,
                     validation_mode, detection_warnings_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.raw_id,
                     origin.value,
+                    capture_mode.value if capture_mode is not None else None,
                     None,
                     record.source_path,
                     int(record.source_index or 0),

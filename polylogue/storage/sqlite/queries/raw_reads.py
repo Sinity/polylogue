@@ -215,6 +215,7 @@ async def get_raw_session_states(conn: aiosqlite.Connection, raw_ids: list[str])
         SELECT
             raw_id,
             origin,
+            capture_mode,
             source_path,
             parsed_at_ms,
             parse_error,
@@ -227,7 +228,7 @@ async def get_raw_session_states(conn: aiosqlite.Connection, raw_ids: list[str])
     rows = await cursor.fetchall()
 
     def _state(row: aiosqlite.Row) -> RawSessionState:
-        provider = provider_from_origin(Origin.from_string(row["origin"]))
+        provider = provider_from_origin(Origin.from_string(row["origin"]), family_hint=row["capture_mode"])
         return RawSessionState(
             raw_id=row["raw_id"],
             source_name=provider.value,

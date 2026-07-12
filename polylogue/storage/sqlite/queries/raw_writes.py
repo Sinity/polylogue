@@ -23,6 +23,11 @@ async def save_raw_session(
         origin = origin_from_provider(record.payload_provider)
     else:
         origin = origin_from_provider(Provider.from_string(record.source_name or "unknown"))
+    # Only the acquisition path can assert a capture mode.  A hydrated legacy
+    # row has ``None`` here even though its compatibility projection supplies
+    # a canonical payload provider; writing that projection back must not turn
+    # historical unknown provenance into a guess.
+    capture_mode = record.capture_mode
     blob_hash_hex = record.blob_hash or record.raw_id
     try:
         blob_hash = bytes.fromhex(blob_hash_hex)
@@ -35,17 +40,18 @@ async def save_raw_session(
     cursor = await conn.execute(
         """
         INSERT OR IGNORE INTO raw_sessions (
-            raw_id, origin, native_id, source_path, source_index, blob_hash,
+            raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
             blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
             validated_at_ms, validation_status, validation_error, validation_drift_count,
             validation_mode, detection_warnings_json, logical_source_key, revision_kind,
             source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
             append_end_offset, acquisition_generation, revision_authority
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.raw_id,
             origin.value,
+            capture_mode.value if capture_mode is not None else None,
             None,
             record.source_path,
             int(record.source_index or 0),
@@ -75,6 +81,11 @@ async def save_raw_session(
     )
     inserted = bool(cursor.rowcount > 0)
 
+    if not inserted and capture_mode is not None:
+        await conn.execute(
+            "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
+            (capture_mode.value, record.raw_id),
+        )
     if not inserted and record.file_mtime is not None:
         file_mtime_ms = _timestamp_ms(record.file_mtime)
         await conn.execute(

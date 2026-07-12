@@ -9,6 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from polylogue.config import Config, Source
+from polylogue.core.enums import Provider
 from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.pipeline.services.acquisition_records import make_raw_record
 from polylogue.pipeline.services.parsing import ParsingService
@@ -105,6 +106,23 @@ def test_non_hermes_acquisition_keeps_content_addressed_raw_identity(tmp_path: P
 
     assert record.raw_id == sha256(payload).hexdigest()
     assert record.blob_hash is None
+    assert record.capture_mode is Provider.CHATGPT
+
+
+def test_drive_acquisition_retains_drive_mode_despite_gemini_payload_hint(tmp_path: Path) -> None:
+    """Configured Drive acquisition is distinct from a shape-detected GEMINI payload."""
+    record = make_raw_record(
+        RawSessionData(
+            raw_bytes=b'{"chunkedPrompt":{"chunks":[]}}',
+            source_path="/drive/live-capture.json",
+            provider_hint=Provider.GEMINI,
+        ),
+        "drive",
+        blob_root=tmp_path / "blob",
+    )
+
+    assert record.source_name == Provider.GEMINI.value
+    assert record.capture_mode is Provider.DRIVE
 
 
 async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp_path: Path) -> None:

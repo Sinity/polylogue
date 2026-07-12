@@ -12,14 +12,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.queries.raw_reads import get_raw_session as get_query_raw_session
+from polylogue.storage.sqlite.queries.raw_writes import save_raw_session as save_query_raw_session
 from tests.infra.storage_records import make_raw_session, make_session, save_session_to_archive
 
 # test_db and test_conn fixtures are in conftest.py
@@ -138,6 +142,123 @@ class TestRawSessionStorage:
         assert retrieved.blob_size == original.blob_size
         assert retrieved.acquired_at == original.acquired_at
         assert retrieved.file_mtime == original.file_mtime
+
+    async def test_capture_mode_round_trips_aistudio_drive_provenance(self, backend: SQLiteBackend) -> None:
+        """A shared public origin retains its acquisition-time fiber member."""
+        gemini = make_raw_session(
+            raw_id="gemini-export",
+            source_name="gemini",
+            source_path="/tmp/export.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        ).model_copy(update={"capture_mode": Provider.GEMINI})
+        drive = make_raw_session(
+            raw_id="drive-live",
+            source_name="gemini",
+            source_path="/tmp/live-drive.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        ).model_copy(update={"capture_mode": Provider.DRIVE})
+
+        assert await backend.save_raw_session(gemini) is True
+        assert await backend.save_raw_session(drive) is True
+
+        recovered_gemini = await backend.get_raw_session(gemini.raw_id)
+        recovered_drive = await backend.get_raw_session(drive.raw_id)
+
+        assert recovered_gemini is not None
+        assert recovered_drive is not None
+        assert recovered_gemini.capture_mode is Provider.GEMINI
+        assert recovered_drive.capture_mode is Provider.DRIVE
+        assert recovered_gemini.payload_provider is Provider.GEMINI
+        assert recovered_drive.payload_provider is Provider.DRIVE
+
+    async def test_reacquisition_keeps_first_known_capture_mode(self, backend: SQLiteBackend) -> None:
+        """Later canonical fallback cannot erase durable live-Drive provenance."""
+        drive = make_raw_session(
+            raw_id="reacquired-aistudio",
+            source_name="gemini",
+            source_path="/tmp/live-drive.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        ).model_copy(update={"capture_mode": Provider.DRIVE})
+        canonical_retry = drive.model_copy(update={"capture_mode": Provider.GEMINI})
+
+        assert await backend.save_raw_session(drive) is True
+        assert await backend.save_raw_session(canonical_retry) is False
+
+        recovered = await backend.get_raw_session(drive.raw_id)
+        assert recovered is not None
+        assert recovered.capture_mode is Provider.DRIVE
+        assert recovered.payload_provider is Provider.DRIVE
+
+    async def test_rehydrated_unknown_capture_mode_remains_unknown(self, backend: SQLiteBackend) -> None:
+        """A legacy NULL must not become the canonical GEMINI projection on save."""
+        legacy = make_raw_session(
+            raw_id="legacy-aistudio-unknown",
+            source_name="gemini",
+            source_path="/tmp/pre-capture-mode.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        )
+        assert legacy.capture_mode is None
+
+        assert await backend.save_raw_session(legacy) is True
+        rehydrated = await backend.get_raw_session(legacy.raw_id)
+
+        assert rehydrated is not None
+        assert rehydrated.capture_mode is None
+        assert rehydrated.payload_provider is Provider.GEMINI
+
+        assert await backend.save_raw_session(rehydrated) is False
+        reread = await backend.get_raw_session(legacy.raw_id)
+        assert reread is not None
+        assert reread.capture_mode is None
+
+    async def test_query_writer_preserves_rehydrated_unknown_capture_mode(self, tmp_path: Path) -> None:
+        """Repository raw writes do not promote a legacy NULL from its fallback."""
+        source_db = tmp_path / "source.db"
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        legacy = make_raw_session(
+            raw_id="query-legacy-aistudio-unknown",
+            source_name="gemini",
+            source_path="/tmp/pre-capture-mode.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        )
+
+        async with aiosqlite.connect(source_db) as conn:
+            conn.row_factory = aiosqlite.Row
+            assert await save_query_raw_session(conn, legacy, transaction_depth=0) is True
+            rehydrated = await get_query_raw_session(conn, legacy.raw_id)
+
+            assert rehydrated is not None
+            assert rehydrated.capture_mode is None
+            assert rehydrated.payload_provider is Provider.GEMINI
+
+            assert await save_query_raw_session(conn, rehydrated, transaction_depth=0) is False
+            row = await (
+                await conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (legacy.raw_id,))
+            ).fetchone()
+
+        assert row is not None
+        assert row[0] is None
+
+    async def test_raw_session_state_preserves_capture_mode(self, backend: SQLiteBackend) -> None:
+        """Planning-state reads preserve the live-Drive fiber member."""
+        record = make_raw_session(
+            raw_id="drive-planning-state",
+            source_name="gemini",
+            source_path="/tmp/live-drive.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        ).model_copy(update={"capture_mode": Provider.DRIVE})
+        assert await backend.save_raw_session(record) is True
+
+        state = (await backend.get_raw_session_states([record.raw_id]))[record.raw_id]
+        assert state.source_name == Provider.DRIVE.value
+        assert state.payload_provider is Provider.DRIVE
+        assert state.validation_provider is Provider.DRIVE
 
     async def test_get_raw_session_not_found(self, backend: SQLiteBackend) -> None:
         """Retrieving non-existent raw session returns None."""
