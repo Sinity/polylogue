@@ -202,7 +202,12 @@ def judge_command(
         return
 
     kinds = None if kind_filter is None else (AssertionKind.from_string(kind_filter),)
-    claims = run_coroutine_sync(env.polylogue.list_assertion_candidates(kinds=kinds, limit=50))
+    # ``since`` has no storage pushdown yet.  Read the selected kind before
+    # applying that local time predicate so a page of older rows cannot hide
+    # recent daily-triage work.  The interactive/list view remains bounded
+    # after filtering; an explicit bulk action intentionally consumes all.
+    candidate_limit = None if since is not None or accept_all_of_kind else 50
+    claims = run_coroutine_sync(env.polylogue.list_assertion_candidates(kinds=kinds, limit=candidate_limit))
     claims = _filter_candidates(claims, kind_filter=kind_filter, since=since)
     if accept_all_of_kind:
         bulk_payload = _judge(
@@ -220,6 +225,7 @@ def judge_command(
             f"{bulk_payload.failed_count} failed"
         )
         return
+    claims = claims[:50]
     rows = [JudgeCandidateRow.from_claim(claim) for claim in claims]
     if output_format == "json":
         list_payload = AssertionClaimListPayload(items=tuple(claims), total=len(rows), limit=50)
