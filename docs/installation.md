@@ -266,6 +266,7 @@ attached to every GitHub release by
 | --- | --- | --- |
 | `polylogue-browser-capture-<version>-chrome.zip` | Chrome, Chromium, Edge, Brave, Vivaldi | Developer-mode unpacked install |
 | `polylogue-browser-capture-<version>-firefox.xpi` | Firefox | Temporary install via `about:debugging` |
+| `polylogue-browser-capture-<version>-store-submission.json` | Store operators | Version, source revision, Gecko ID, SHA-256, and size for both archives |
 | `store-screenshots-<tag>.tar.gz` | — | Submission media for store listings |
 
 Download the artifacts from the
@@ -273,7 +274,9 @@ Download the artifacts from the
 The version is locked to the polylogue Python project version on the same
 tag — the workflow rewrites `manifest.json` from `pyproject.toml` before
 packaging so the extension version always matches the daemon protocol it
-was built against.
+was built against. Before uploading to a store, verify each downloaded archive
+against the matching `store-submission.json`; it binds the pair to the release
+version and complete source revision.
 
 ### Install paths
 

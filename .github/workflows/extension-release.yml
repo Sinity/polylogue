@@ -54,6 +54,9 @@ jobs:
           # Recovery builds the extension sources that belong to the release,
           # not whatever code later reached the default branch.
           ref: ${{ inputs.release_tag || github.ref }}
+      - name: Record packaged source revision
+        id: source
+        run: echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -96,6 +99,42 @@ jobs:
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "Built artifacts for version ${version}:"
           ls -la dist/
+      - name: Write store-submission manifest
+        env:
+          VERSION: ${{ steps.summary.outputs.version }}
+          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          dist = Path("dist")
+          version = os.environ["VERSION"]
+          artifacts = sorted(
+              [*dist.glob("polylogue-browser-capture-*-chrome.zip"), *dist.glob("polylogue-browser-capture-*-firefox.xpi")]
+          )
+          if len(artifacts) != 2:
+              raise SystemExit(f"expected one Chrome zip and one Firefox xpi, found: {artifacts}")
+          payload = {
+              "schema_version": 1,
+              "version": version,
+              "source_revision": os.environ["SOURCE_REVISION"],
+              "firefox_gecko_id": json.loads((dist / "build-manifest.json").read_text())["firefox_gecko_id"],
+              "artifacts": [
+                  {
+                      "name": path.name,
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                      "size_bytes": path.stat().st_size,
+                  }
+                  for path in artifacts
+              ],
+          }
+          target = dist / f"polylogue-browser-capture-{version}-store-submission.json"
+          target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          print(target.read_text(), end="")
+          PY
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -103,6 +142,7 @@ jobs:
           path: |
             browser-extension/dist/polylogue-browser-capture-*-chrome.zip
             browser-extension/dist/polylogue-browser-capture-*-firefox.xpi
+            browser-extension/dist/polylogue-browser-capture-*-store-submission.json
             browser-extension/dist/build-manifest.json
             browser-extension/dist/screenshots/**
           if-no-files-found: error
@@ -156,6 +196,7 @@ jobs:
           gh release upload "${TAG}" \
             artifacts/polylogue-browser-capture-*-chrome.zip \
             artifacts/polylogue-browser-capture-*-firefox.xpi \
+            artifacts/polylogue-browser-capture-*-store-submission.json \
             artifacts/build-manifest.json \
             --clobber --repo "${GITHUB_REPOSITORY}"
           # Screenshots are uploaded as a tar.gz so the release page does
