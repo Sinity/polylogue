@@ -156,6 +156,7 @@ def _ranked(mapping: dict[str, dict[str, int]], *, n_min: int) -> list[dict[str,
         silent = counts["silent_proceed"]
         classified = counts["acknowledged"] + silent
         supported = failed >= n_min
+        classified_supported = classified >= n_min
         rows.append(
             {
                 "name": name,
@@ -164,8 +165,10 @@ def _ranked(mapping: dict[str, dict[str, int]], *, n_min: int) -> list[dict[str,
                 "n_min": n_min,
                 "coverage_status": "supported" if supported else "insufficient_n",
                 "publication_status": "supported" if supported else "not_supported",
+                "classified_coverage_status": "supported" if classified_supported else "insufficient_n",
+                "classified_publication_status": "supported" if classified_supported else "not_supported",
                 "silent_rate_lower_bound": (silent / failed) if supported else None,
-                "silent_rate_among_classified": (silent / classified) if supported and classified else None,
+                "silent_rate_among_classified": (silent / classified) if classified_supported else None,
             }
         )
 
@@ -964,7 +967,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "n_min": args.n_min,
             "thin_cell_policy": (
                 "Split cells below n_min are retained for coverage accounting but publish no rates: "
-                "coverage_status=insufficient_n and publication_status=not_supported."
+                "coverage_status=insufficient_n and publication_status=not_supported; "
+                "classified-denominator rates independently require classified_outcomes >= n_min."
             ),
             "total_by_origin": total_by_origin,
             "sampled_by_origin": sampled_by_origin,
@@ -979,12 +983,18 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "rates": {
             "coverage_status": "supported" if aggregate_supported else "insufficient_n",
             "publication_status": "supported" if aggregate_supported else "not_supported",
+            "classified_coverage_status": "supported" if classified >= args.n_min else "insufficient_n",
+            "classified_publication_status": "supported" if classified >= args.n_min else "not_supported",
+            "window3_classified_coverage_status": "supported" if window3_classified >= args.n_min else "insufficient_n",
+            "window3_classified_publication_status": "supported"
+            if window3_classified >= args.n_min
+            else "not_supported",
             "n_min": args.n_min,
             "silent_rate_lower_bound": (silent / failed) if aggregate_supported else None,
-            "silent_rate_among_classified": (silent / classified) if aggregate_supported and classified else None,
+            "silent_rate_among_classified": (silent / classified) if classified >= args.n_min else None,
             "window3_silent_rate_lower_bound": (window3_silent / failed) if aggregate_supported else None,
             "window3_silent_rate_among_classified": (
-                (window3_silent / window3_classified) if aggregate_supported and window3_classified else None
+                (window3_silent / window3_classified) if window3_classified >= args.n_min else None
             ),
             "ack_later_within_3": max(0, window3_totals["acknowledged"] - totals["acknowledged"]),
         },

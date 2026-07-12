@@ -15,6 +15,7 @@ def test_insight_rigor_honesty_passes_when_every_product_is_covered(capsys: pyte
     assert payload["uncovered_insight_names"] == []
     assert payload["missing_numeric_field_coverage"] == []
     assert payload["missing_numeric_item_models"] == []
+    assert payload["invalid_nullable_field_contracts"] == []
 
 
 def test_insight_rigor_honesty_fails_when_a_contract_is_monkeypatched_out(

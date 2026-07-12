@@ -53,6 +53,12 @@ def _missing_numeric_item_models() -> tuple[str, ...]:
     return missing_numeric_item_models()
 
 
+def _invalid_nullable_field_contracts() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    from polylogue.insights.rigor import invalid_nullable_field_contracts
+
+    return invalid_nullable_field_contracts()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -64,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     uncovered = _uncovered_insight_names()
     missing_fields = _missing_numeric_field_coverage()
     missing_item_models = _missing_numeric_item_models()
+    invalid_contracts = _invalid_nullable_field_contracts()
 
     if args.json:
         print(
@@ -74,12 +81,15 @@ def main(argv: list[str] | None = None) -> int:
                         {"insight_name": name, "field_path": list(field_path)} for name, field_path in missing_fields
                     ],
                     "missing_numeric_item_models": list(missing_item_models),
-                    "ok": not uncovered and not missing_fields and not missing_item_models,
+                    "invalid_nullable_field_contracts": [
+                        {"insight_name": name, "field_path": list(field_path)} for name, field_path in invalid_contracts
+                    ],
+                    "ok": not uncovered and not missing_fields and not missing_item_models and not invalid_contracts,
                 },
                 indent=2,
             )
         )
-    elif uncovered or missing_fields or missing_item_models:
+    elif uncovered or missing_fields or missing_item_models or invalid_contracts:
         if uncovered:
             print(f"insight rigor honesty: {len(uncovered)} registered insight(s) uncovered")
             for name in uncovered:
@@ -92,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"insight rigor honesty: {len(missing_item_models)} registered insight item model(s) missing")
             for name in missing_item_models:
                 print(f"  {name}")
+        if invalid_contracts:
+            print(f"insight rigor honesty: {len(invalid_contracts)} nullable field contract(s) invalid")
+            for name, field_path in invalid_contracts:
+                print(f"  {name}.{'.'.join(field_path)}")
         print("")
         print(
             "Policy violation: every registered insight needs a RigorContract row "
@@ -101,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("insight rigor honesty: every registered insight and public numeric field is contracted or exempt.")
 
-    return 0 if not uncovered and not missing_fields and not missing_item_models else 1
+    return 0 if not uncovered and not missing_fields and not missing_item_models and not invalid_contracts else 1
 
 
 if __name__ == "__main__":

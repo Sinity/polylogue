@@ -25,6 +25,7 @@ runner lives in :mod:`polylogue.insights.audit`.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from types import NoneType
 from typing import get_args, get_origin
 
 from pydantic import BaseModel
@@ -954,6 +955,48 @@ def missing_numeric_item_models() -> tuple[str, ...]:
     return tuple(sorted(name for name, insight_type in INSIGHT_REGISTRY.items() if insight_type.item_model is None))
 
 
+def _model_type_for_annotation(annotation: object) -> type[BaseModel] | None:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    for argument in get_args(annotation):
+        if model := _model_type_for_annotation(argument):
+            return model
+    return None
+
+
+def _annotation_at_path(model: type[BaseModel], path: Sequence[str]) -> object | None:
+    current: type[BaseModel] | None = model
+    annotation: object | None = None
+    for segment in path:
+        if current is None or (field := current.model_fields.get(segment)) is None:
+            return None
+        annotation = field.annotation
+        current = _model_type_for_annotation(annotation)
+    return annotation
+
+
+def _annotation_allows_none(annotation: object | None) -> bool:
+    return annotation is NoneType or NoneType in get_args(annotation)
+
+
+def invalid_nullable_field_contracts(
+    contracts: Sequence[RigorContract] | None = None,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return contracts that promise null-over-empty on a non-nullable field."""
+
+    from polylogue.insights.registry import INSIGHT_REGISTRY
+
+    invalid: list[tuple[str, tuple[str, ...]]] = []
+    for contract in contracts or _RIGOR_MATRIX:
+        item_model = INSIGHT_REGISTRY.get(contract.insight_name, None)
+        model = item_model.item_model if item_model is not None else None
+        for field_contract in contract.field_contracts:
+            annotation = _annotation_at_path(model, field_contract.field_path) if model is not None else None
+            if not field_contract.nullable_when_ungrounded or not _annotation_allows_none(annotation):
+                invalid.append((contract.insight_name, field_contract.field_path))
+    return tuple(sorted(invalid))
+
+
 def numeric_insight_field_paths() -> frozenset[tuple[str, tuple[str, ...]]]:
     """Recursively discover public numeric leaves from registered item models."""
 
@@ -1037,6 +1080,7 @@ __all__ = [
     "RigorFieldExemption",
     "RigorVersionField",
     "get_rigor_contract",
+    "invalid_nullable_field_contracts",
     "list_rigor_contracts",
     "missing_numeric_item_models",
     "missing_numeric_field_coverage",

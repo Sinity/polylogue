@@ -36,6 +36,7 @@ from polylogue.insights.registry import INSIGHT_REGISTRY
 from polylogue.insights.rigor import (
     RigorFieldContract,
     get_rigor_contract,
+    invalid_nullable_field_contracts,
     list_rigor_contracts,
     missing_numeric_field_coverage,
     missing_numeric_item_models,
@@ -229,6 +230,35 @@ def test_numeric_field_policy_discovers_new_registered_nested_numeric_field(monk
     monkeypatch.setitem(INSIGHT_REGISTRY, "cost_rollups", replace(original, item_model=ExtendedCostRollupInsight))
 
     assert missing_numeric_field_coverage() == (("cost_rollups", ("basis", "unclassified_metric")),)
+
+
+def test_nullable_contract_policy_rejects_non_nullable_registered_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A null-over-empty contract must target a production model that permits null."""
+
+    class NonNullableCostRollupInsight(CostRollupInsight):
+        confidence: float = 0.0
+
+    original = INSIGHT_REGISTRY["cost_rollups"]
+    monkeypatch.setitem(INSIGHT_REGISTRY, "cost_rollups", replace(original, item_model=NonNullableCostRollupInsight))
+
+    assert invalid_nullable_field_contracts() == (("cost_rollups", ("confidence",)),)
+
+
+def test_nullable_contract_policy_rejects_contract_that_disables_null_refusal() -> None:
+    """A field contract cannot opt out of its promised null-over-empty behavior."""
+
+    contract = get_rigor_contract("cost_rollups")
+    assert contract is not None
+    disabled_refusal = contract.model_copy(
+        update={
+            "field_contracts": (contract.field_contracts[0].model_copy(update={"nullable_when_ungrounded": False}),)
+        }
+    )
+    contracts = tuple(
+        disabled_refusal if item.insight_name == "cost_rollups" else item for item in list_rigor_contracts()
+    )
+
+    assert invalid_nullable_field_contracts(contracts) == (("cost_rollups", ("confidence",)),)
 
 
 def test_every_registered_insight_declares_its_item_model() -> None:

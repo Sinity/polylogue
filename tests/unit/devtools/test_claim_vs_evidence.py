@@ -258,7 +258,8 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "sensitivity_scope": "next 3 assistant messages after the failed result, stopping before the next user message",
         "thin_cell_policy": (
             "Split cells below n_min are retained for coverage accounting but publish no rates: "
-            "coverage_status=insufficient_n and publication_status=not_supported."
+            "coverage_status=insufficient_n and publication_status=not_supported; "
+            "classified-denominator rates independently require classified_outcomes >= n_min."
         ),
         "total_by_origin": [
             {"failed_outcomes": 2, "origin": "claude-code-session"},
@@ -304,6 +305,8 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
             "n_min": 1,
             "coverage_status": "supported",
             "publication_status": "supported",
+            "classified_coverage_status": "insufficient_n",
+            "classified_publication_status": "not_supported",
             "silent_rate_lower_bound": 0.0,
             "silent_rate_among_classified": None,
         },
@@ -319,6 +322,8 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
             "n_min": 1,
             "coverage_status": "supported",
             "publication_status": "supported",
+            "classified_coverage_status": "supported",
+            "classified_publication_status": "supported",
             "silent_rate_lower_bound": 0.5,
             "silent_rate_among_classified": 0.5,
         },
@@ -478,6 +483,9 @@ def test_claim_vs_evidence_refuses_rates_for_cells_below_n_min(tmp_path: Path) -
     assert thin["silent_rate_lower_bound"] is None
     assert thin["silent_rate_among_classified"] is None
     assert report["rates"]["coverage_status"] == "supported"
+    assert report["rates"]["classified_coverage_status"] == "insufficient_n"
+    assert report["rates"]["silent_rate_lower_bound"] == 1 / 4
+    assert report["rates"]["silent_rate_among_classified"] is None
 
     at_threshold = build_report(
         _report_args(
@@ -494,6 +502,12 @@ def test_claim_vs_evidence_refuses_rates_for_cells_below_n_min(tmp_path: Path) -
     assert supported["coverage_status"] == "supported"
     assert supported["publication_status"] == "supported"
     assert supported["silent_rate_lower_bound"] == 0.5
+
+    benign = next(row for row in at_threshold["by_handler_class"] if row["name"] == "benign_recovery")
+    assert benign["coverage_status"] == "supported"
+    assert benign["classified_coverage_status"] == "insufficient_n"
+    assert benign["classified_publication_status"] == "not_supported"
+    assert benign["silent_rate_among_classified"] is None
 
     assert at_threshold["rates"]["coverage_status"] == "supported"
     assert at_threshold["rates"]["silent_rate_lower_bound"] == 0.25
