@@ -92,6 +92,17 @@
           "title": "Detector Evidence",
           "type": "array"
         },
+        "fidelity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImportFidelityDeclarationPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "normalization_warnings": {
           "default": [],
           "items": {
@@ -208,6 +219,113 @@
         "detector"
       ],
       "title": "ImportExplainEntryPayload",
+      "type": "object"
+    },
+    "ImportFidelityCapabilityPayload": {
+      "additionalProperties": false,
+      "description": "Coverage and fidelity for one source capability.",
+      "properties": {
+        "counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Counts",
+          "type": "object"
+        },
+        "detail": {
+          "title": "Detail",
+          "type": "string"
+        },
+        "expected": {
+          "default": 0,
+          "title": "Expected",
+          "type": "integer"
+        },
+        "observed": {
+          "default": 0,
+          "title": "Observed",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "exact",
+            "absent",
+            "redacted",
+            "degraded",
+            "inferred"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "detail"
+      ],
+      "title": "ImportFidelityCapabilityPayload",
+      "type": "object"
+    },
+    "ImportFidelityDeclarationPayload": {
+      "additionalProperties": false,
+      "description": "Per-source declaration of retained import evidence and known gaps.",
+      "properties": {
+        "acquisition_method": {
+          "title": "Acquisition Method",
+          "type": "string"
+        },
+        "capabilities": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ImportFidelityCapabilityPayload"
+          },
+          "title": "Capabilities",
+          "type": "object"
+        },
+        "caveats": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Caveats",
+          "type": "array"
+        },
+        "producer": {
+          "title": "Producer",
+          "type": "string"
+        },
+        "profile_namespace": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile Namespace"
+        },
+        "retained_blob_reproducibility": {
+          "$ref": "#/$defs/ImportFidelityCapabilityPayload"
+        },
+        "schema_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schema Version"
+        }
+      },
+      "required": [
+        "producer",
+        "acquisition_method",
+        "retained_blob_reproducibility"
+      ],
+      "title": "ImportFidelityDeclarationPayload",
       "type": "object"
     },
     "ImportProducedRowsPayload": {

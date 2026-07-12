@@ -209,6 +209,31 @@ class ImportSkippedRowPayload(SurfacePayloadModel):
     raw_ref: str | None = None
 
 
+ImportFidelityStatus: TypeAlias = Literal["exact", "absent", "redacted", "degraded", "inferred"]
+
+
+class ImportFidelityCapabilityPayload(SurfacePayloadModel):
+    """Coverage and fidelity for one source capability."""
+
+    status: ImportFidelityStatus
+    observed: int = 0
+    expected: int = 0
+    counts: Mapping[str, int] = Field(default_factory=dict)
+    detail: str
+
+
+class ImportFidelityDeclarationPayload(SurfacePayloadModel):
+    """Per-source declaration of retained import evidence and known gaps."""
+
+    producer: str
+    schema_version: int | None = None
+    profile_namespace: str | None = None
+    acquisition_method: str
+    retained_blob_reproducibility: ImportFidelityCapabilityPayload
+    capabilities: Mapping[str, ImportFidelityCapabilityPayload] = Field(default_factory=dict)
+    caveats: tuple[str, ...] = ()
+
+
 class ImportExplainEntryPayload(SurfacePayloadModel):
     """Explanation for one raw artifact or archive entry inspected by import explain."""
 
@@ -229,6 +254,7 @@ class ImportExplainEntryPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
     raw_evidence_refs: tuple[str, ...] = ()
     normalization_warnings: tuple[str, ...] = ()
+    fidelity: ImportFidelityDeclarationPayload | None = None
 
 
 class ImportExplainPayload(SurfacePayloadModel):
@@ -3476,6 +3502,9 @@ __all__ = [
     "ArchiveDebtStatus",
     "ArchiveDebtTotalsPayload",
     "ImportDetectorEvidencePayload",
+    "ImportFidelityCapabilityPayload",
+    "ImportFidelityDeclarationPayload",
+    "ImportFidelityStatus",
     "ImportExplainEntryPayload",
     "ImportExplainPayload",
     "ImportProducedRowsPayload",
