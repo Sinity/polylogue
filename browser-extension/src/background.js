@@ -458,13 +458,14 @@ async function updateSessionLedger({ provider, providerSessionId, patch }) {
   return next;
 }
 
-async function appendConversationTimeline({ provider, providerSessionId, event, reason = null, detail = null, tabId = null }) {
+async function appendConversationTimeline({ provider, providerSessionId, event, reason = null, detail = null, tabId = null, onlyIfEmpty = false }) {
   if (!provider || !providerSessionId) return null;
   const stored = await chrome.storage.local.get({ [CONVERSATION_TIMELINE_KEY]: {} });
   const timelines = stored[CONVERSATION_TIMELINE_KEY] && typeof stored[CONVERSATION_TIMELINE_KEY] === "object"
     ? stored[CONVERSATION_TIMELINE_KEY]
     : {};
   const key = sessionKey(provider, providerSessionId);
+  if (onlyIfEmpty && Array.isArray(timelines[key]) && timelines[key].length) return null;
   const entry = {
     at: new Date().toISOString(),
     event,
@@ -1000,6 +1001,15 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
     if (provider && providerSessionId) {
       const query = new URLSearchParams({ provider, provider_session_id: providerSessionId });
       const state = await getJson(`/v1/archive-state?${query.toString()}`);
+      await appendConversationTimeline({
+        provider,
+        providerSessionId,
+        event: "first_seen",
+        reason,
+        detail: "archive_state_checked",
+        tabId: tab?.id || null,
+        onlyIfEmpty: true,
+      });
       await setState({
         online: true,
         captured: Boolean(state.captured),

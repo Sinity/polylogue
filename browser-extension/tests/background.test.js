@@ -361,7 +361,7 @@ describe("background receiver diagnostics", () => {
       reason: "auto_capture_missing",
     });
     const timeline = stored.polylogueConversationTimeline["chatgpt:conv-123"];
-    expect(timeline.map((entry) => entry.event)).toEqual(["captured", "detected_new"]);
+    expect(timeline.map((entry) => entry.event)).toEqual(["captured", "detected_new", "first_seen"]);
     expect(timeline[0].reason).toBe("auto_capture_missing");
   });
 
