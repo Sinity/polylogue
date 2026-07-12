@@ -35,6 +35,18 @@ ObjectRefKind: TypeAlias = Literal[
     "github-issue",
     "github-pr",
     "github-review",
+    # Analysis-provenance object kinds (polylogue-rxdo epic). Refs land here
+    # first; resolution is stubbed pending=true until the backing storage
+    # tiers exist (polylogue-rxdo.2/.3/.4/.7/.8). Do not append a
+    # ``@content-hash`` anchor suffix onto these — that belongs to the
+    # separate citation-anchor work (polylogue-bby.11).
+    "query",
+    "query-run",
+    "result-set",
+    "finding",
+    "cohort",
+    "analysis",
+    "annotation-batch",
 ]
 
 EvidenceRefKind: TypeAlias = Literal["session", "message", "block"]
@@ -70,6 +82,13 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "github-issue": "github-issue",
     "github-pr": "github-pr",
     "github-review": "github-review",
+    "query": "query",
+    "query-run": "query-run",
+    "result-set": "result-set",
+    "finding": "finding",
+    "cohort": "cohort",
+    "analysis": "analysis",
+    "annotation-batch": "annotation-batch",
 }
 
 

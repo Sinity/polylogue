@@ -42,6 +42,15 @@ from polylogue.core.refs import (
         ("agent:codex/main", "agent", "codex/main", ()),
         ("tool-call:codex-session:demo:tool-1", "tool-call", "codex-session:demo:tool-1", ()),
         ("subagent-report:codex-session:demo:tool-2", "subagent-report", "codex-session:demo:tool-2", ()),
+        # Analysis-provenance object kinds (polylogue-rxdo.1). Resolvers are
+        # stubbed pending the storage tiers; the ref shape round-trips today.
+        ("query:sha256:deadbeef", "query", "sha256:deadbeef", ()),
+        ("query-run:sha256:deadbeef:run-1", "query-run", "sha256:deadbeef:run-1", ()),
+        ("result-set:sha256:deadbeef:run-1:result-1", "result-set", "sha256:deadbeef:run-1:result-1", ()),
+        ("finding:finding-hash-1", "finding", "finding-hash-1", ()),
+        ("cohort:cohort-1", "cohort", "cohort-1", ()),
+        ("analysis:analysis-1", "analysis", "analysis-1", ()),
+        ("annotation-batch:batch-1", "annotation-batch", "batch-1", ()),
     ],
 )
 def test_object_ref_parses_and_formats_existing_assertion_ref_shapes(
@@ -111,3 +120,43 @@ def test_public_ref_parser_prefers_object_refs_and_accepts_recovery_evidence_ref
 def test_object_ref_normalizer_rejects_unscoped_raw_strings() -> None:
     with pytest.raises(ValueError):
         normalize_object_ref_text("demo-fixture-world")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "query:sha256:deadbeef",
+        "query-run:sha256:deadbeef:run-1",
+        "result-set:sha256:deadbeef:run-1:result-1",
+        "finding:finding-hash-1",
+        "cohort:cohort-1",
+        "analysis:analysis-1",
+        "annotation-batch:batch-1",
+    ],
+)
+def test_normalize_object_ref_text_accepts_analysis_provenance_kinds(raw: str) -> None:
+    """polylogue-rxdo.1: the analysis-provenance kinds normalize/round-trip today.
+
+    Resolution is stubbed pending storage (see resolve_ref tests); the ref
+    grammar itself must accept these kinds without any special-casing.
+    """
+    assert normalize_object_ref_text(raw) == raw
+    assert normalize_public_ref_text(raw) == raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "query:",
+        "query-run:",
+        "result-set:",
+        "finding:",
+        "cohort:",
+        "analysis:",
+        "annotation-batch:",
+    ],
+)
+def test_object_ref_rejects_empty_ids_for_analysis_provenance_kinds(raw: str) -> None:
+    """New kinds reuse the shared empty-id guard; they don't weaken validation."""
+    with pytest.raises(ValueError):
+        normalize_object_ref_text(raw)

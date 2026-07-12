@@ -274,6 +274,29 @@ def _unresolved_ref_payload(
     )
 
 
+#: ObjectRefKind values registered ahead of their backing storage tier
+#: (polylogue-rxdo analysis-provenance epic). ``resolve_ref`` returns a typed
+#: ``PendingObjectRefPayload`` (reason=substrate-pending) for these instead of
+#: attempting a lookup against tables that do not exist yet.
+_PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset(
+    {"query", "query-run", "result-set", "finding", "cohort", "analysis", "annotation-batch"}
+)
+
+
+def _pending_ref_payload(ref: str, normalized_ref: str, kind: str) -> Any:
+    from polylogue.surfaces.payloads import PendingObjectRefPayload, PublicRefResolutionPayload, model_json_document
+
+    return PublicRefResolutionPayload(
+        ref=ref,
+        normalized_ref=normalized_ref,
+        kind=kind,
+        resolved=False,
+        payload_kind="pending",
+        payload=model_json_document(PendingObjectRefPayload(kind=kind)),
+        caveats=(f"{kind} substrate is not implemented yet (reason=substrate-pending)",),
+    )
+
+
 def _archive_action_sequence(values: Sequence[str]) -> tuple[str, ...]:
     return normalize_action_sequence("action_sequence", ",".join(values))
 
@@ -2734,6 +2757,11 @@ class PolylogueArchiveMixin:
                 return self._resolve_assertion_object_ref(archive_root, ref, normalized_ref, object_ref)
             if object_ref.kind in {"run", "observed-event", "context-snapshot"}:
                 return self._resolve_runtime_object_ref(archive, ref, normalized_ref, object_ref)
+            if object_ref.kind in _PENDING_OBJECT_REF_KINDS:
+                return cast(
+                    PublicRefResolutionPayload,
+                    _pending_ref_payload(ref, normalized_ref, object_ref.kind),
+                )
         return cast(
             PublicRefResolutionPayload,
             _unresolved_ref_payload(
