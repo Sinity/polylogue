@@ -45,7 +45,7 @@ from pathlib import Path
 
 from devtools import repo_root as _get_root
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-from polylogue.storage.sqlite.lifecycle import index_delta_declaration_report
+from polylogue.storage.sqlite.lifecycle import IndexDeltaDeclarationReport, index_delta_declaration_report
 
 ROOT = _get_root()
 STORAGE_SQLITE_DIR = ROOT / "polylogue" / "storage" / "sqlite"
@@ -116,7 +116,9 @@ def _invalid_migration_paths() -> list[Path]:
     return invalid
 
 
-def _format_report(*, helpers: list[HelperHit], invalid_migrations: list[Path], delta_report: dict[str, object]) -> str:
+def _format_report(
+    *, helpers: list[HelperHit], invalid_migrations: list[Path], delta_report: IndexDeltaDeclarationReport
+) -> str:
     lines = [
         f"derived-tier upgrade helpers found: {len(helpers)}",
         f"invalid durable migration resources found: {len(invalid_migrations)}",

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TypedDict
 
 
 class DerivedDeltaClass(StrEnum):
@@ -82,6 +83,17 @@ class IndexFastForwardPlan:
         )
 
 
+class IndexDeltaDeclarationReport(TypedDict):
+    """Static coverage result consumed by the schema-version policy lint."""
+
+    compatibility_floor: int
+    declared_versions: tuple[int, ...]
+    missing_versions: tuple[int, ...]
+    duplicate_versions: tuple[int, ...]
+    invalid_versions: tuple[int, ...]
+    ok: bool
+
+
 # Deliberately bounded: v32 is the oldest observed live generation for which
 # we retain a clone-proof plan.  Earlier versions continue to rebuild from raw
 # evidence rather than silently acquiring an unsupported upgrade path.
@@ -148,7 +160,7 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
 )
 
 
-def index_delta_declaration_report(current_version: int) -> dict[str, object]:
+def index_delta_declaration_report(current_version: int) -> IndexDeltaDeclarationReport:
     """Return the static declaration coverage used by the schema-policy lint."""
     versions = tuple(declaration.version for declaration in INDEX_DELTA_DECLARATIONS)
     expected = tuple(range(INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR + 1, current_version + 1))
@@ -193,6 +205,7 @@ __all__ = [
     "INDEX_DELTA_DECLARATIONS",
     "INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR",
     "IndexDeltaDeclaration",
+    "IndexDeltaDeclarationReport",
     "IndexFastForwardPlan",
     "index_delta_declaration_report",
     "index_fast_forward_plan",
