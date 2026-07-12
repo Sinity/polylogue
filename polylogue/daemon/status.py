@@ -53,6 +53,7 @@ from polylogue.daemon.live_ingest_attempt_workload import (
 )
 from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.archive_readiness import (
@@ -303,6 +304,7 @@ class DaemonStatus(BaseModel):
     raw_replay_backlog: dict[str, object] = Field(default_factory=dict)
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
     component_readiness: dict[str, object] = Field(default_factory=dict)
+    claim_guard: dict[str, object] = Field(default_factory=dict)
     browser_capture_active: bool = False
     raw_parse_failures: int = 0
     raw_validation_failures: int = 0
@@ -1655,6 +1657,37 @@ def _daemon_component_readiness(
     return components
 
 
+def _daemon_claim_guard(
+    *,
+    archive_storage: ArchiveStorageStatus,
+    raw_materialization_readiness: RawMaterializationReadiness,
+    fts_readiness: FTSReadiness,
+    live_ingest_attempts: LiveIngestAttemptSummary,
+) -> dict[str, object]:
+    """Derive the claim-guard block for the daemon-serving status path."""
+    raw_component = _component_from_raw_materialization_readiness(raw_materialization_readiness)
+    fts_component = _component_from_fts_readiness(fts_readiness)
+    rebuild_attempts = len(archive_storage.active_rebuild_index_attempts)
+    active_writer = bool(live_ingest_attempts.running_count) or bool(rebuild_attempts)
+    writer_parts: list[str] = []
+    if live_ingest_attempts.running_count:
+        writer_parts.append(f"{live_ingest_attempts.running_count} live ingest attempt(s) running")
+    if rebuild_attempts:
+        writer_parts.append(f"{rebuild_attempts} index rebuild attempt(s) running")
+    guard = derive_claim_guard(
+        archive_schema_ready=archive_storage.archive_schema_ready,
+        schema_mismatches=archive_storage.schema_mismatches,
+        missing_tiers=archive_storage.missing_tiers,
+        raw_materialization_ready=raw_materialization_ready(raw_materialization_readiness),
+        raw_materialization_summary=raw_component.summary,
+        search_ready=fts_readiness.messages_ready,
+        search_summary=fts_component.summary,
+        active_writer=active_writer,
+        active_writer_summary="; ".join(writer_parts),
+    )
+    return cast(dict[str, object], guard.to_dict())
+
+
 def _component_from_daemon_state(component: str, state: str, *, scope: str) -> ComponentReadiness:
     readiness_state = {
         "running": CapabilityReadinessState.READY,
@@ -2056,6 +2089,12 @@ def build_daemon_status(
             archive_storage=storage_info,
             live_ingest_attempts=live_ingest_attempts,
         ),
+        claim_guard=_daemon_claim_guard(
+            archive_storage=storage_info,
+            raw_materialization_readiness=raw_materialization_readiness,
+            fts_readiness=fts_readiness,
+            live_ingest_attempts=live_ingest_attempts,
+        ),
         health=health,
         browser_capture_active=browser_capture_active,
         rss_current_mb=rss_current_mb,
@@ -2103,6 +2142,7 @@ def daemon_status_payload(
             "checked_at": status.checked_at,
             "component_state": status.component_state.model_dump(),
             "component_readiness": status.component_readiness,
+            "claim_guard": status.claim_guard,
             "live": live_source_status_payload(watch_sources),
             "browser_capture": browser_capture_status_payload(
                 browser_capture_spool_path,
