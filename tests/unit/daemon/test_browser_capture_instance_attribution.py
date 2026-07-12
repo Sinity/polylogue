@@ -8,7 +8,11 @@ from pathlib import Path
 from threading import Barrier
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
-from polylogue.browser_capture.receiver import capture_dedup_content_hash, write_capture_envelope
+from polylogue.browser_capture.receiver import (
+    BrowserCaptureWriteResult,
+    capture_dedup_content_hash,
+    write_capture_envelope,
+)
 
 
 def _envelope(instance_id: str) -> BrowserCaptureEnvelope:
@@ -39,7 +43,7 @@ def test_concurrent_extension_instances_deduplicate_without_corrupting_spool(tmp
 
     barrier = Barrier(2)
 
-    def post(envelope: BrowserCaptureEnvelope):
+    def post(envelope: BrowserCaptureEnvelope) -> BrowserCaptureWriteResult:
         barrier.wait()
         return write_capture_envelope(envelope, spool_path=tmp_path)
 
