@@ -3018,6 +3018,13 @@ x-polylogue-route-contracts:
   auth_policy: credential_if_configured
   response_contract: Daemon status JSON
 - method: GET
+  pattern: /api/overview
+  kind: read_query
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: bounded cockpit overview
+  notes: Privacy-safe landing aggregates, readiness, and a fixed recent-session page.
+- method: GET
   pattern: /api/dev-loop
   kind: operational
   stability: shell_supported
@@ -3147,6 +3154,13 @@ x-polylogue-route-contracts:
   stability: shell_supported
   auth_policy: credential_if_configured
   response_contract: cost JSON
+- method: GET
+  pattern: /api/sessions/:id/evidence-summary
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: bounded session evidence summary
+  notes: Structural tool outcome counts, cost projection, and capped lineage refs for the transcript header.
 - method: GET
   pattern: /api/sessions/:id/provenance
   kind: read_detail
