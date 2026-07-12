@@ -1378,9 +1378,7 @@ async def run_daemon_services(
                 cleanup_task.uncancel()
         try:
             lifecycle = _daemon_lifecycle
-            signal_termination = (lifecycle is not None and lifecycle.received_signal_name is not None) or isinstance(
-                termination, SystemExit
-            )
+            signal_termination = lifecycle.received_signal_name is not None or isinstance(termination, SystemExit)
             if lifecycle_events_enabled and not signal_termination:
                 await _emit_daemon_lifecycle_event(
                     "shutdown_started",
