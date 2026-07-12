@@ -58,25 +58,20 @@ areas:
       crawl-owned file artifacts in the current source tree; a crawler must
       add its own permission contract and coverage when introduced.
 
-  secrets_detection:
-    description: Secret-candidate detection and safe handling of captured content
+  secret_log_hygiene:
+    description: Prevent secret values from leaking through Polylogue log and print calls
     implemented: true
     controls:
       - log_secret_guard: >
           The repository-wide AST guard rejects logger/print calls that
           interpolate known secret-bearing variable names or credential-shaped
           literal prefixes.
-      - candidate_only_intake: >
-          Content secret scanning is not implemented yet. polylogue-27m owns
-          a candidate-only scanner that must retain span/evidence references
-          without persisting or logging the matched secret value.
     test_coverage:
       location: tests/unit/security/test_no_secret_leak_in_logs.py
       hypothesis: false
     notes: >
-      The existing test protects logging boundaries only; it is not evidence
-      that captured-content secret scanning exists. The remaining scanner gap
-      is explicitly tracked by the owning Beads task.
+      This log-boundary control is distinct from captured-content secret
+      detection, which remains unimplemented and is tracked as a coverage gap.
 
   redaction:
     description: PII/private-content redaction in schema inference
@@ -169,8 +164,8 @@ areas:
       on the repo; see the comment block in dep-audit.yml.
 
 coverage_gaps:
-   - id: security.secrets-detection
-     area: secrets_detection
+   - id: security.captured-content-secret-detection
+     area: captured_content_secret_detection
      gap: Captured-content secrets have no candidate-only scanner or excision handoff
      owner: security-privacy
      severity: major
