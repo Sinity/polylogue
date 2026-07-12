@@ -22,6 +22,7 @@ from polylogue.mcp.payloads import (
     MCPReaderWorkspacePayload,
     MCPRecallPackListPayload,
     MCPRecallPackPayload,
+    MCPRootPayload,
     MCPSavedViewListPayload,
     MCPSavedViewPayload,
     MCPTagCountsPayload,
@@ -31,6 +32,7 @@ from polylogue.mcp.payloads import (
     MCPUserMarkPayload,
     MutationResultPayload,
 )
+from polylogue.mcp.query_contracts import MCPCharacterLimit, MCPToolLimit, MCPToolOffset
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -55,6 +57,13 @@ def _mark_type_error(hooks: ServerCallbacks, mark_type: str) -> str | None:
 def _default_saved_view_id(name: str, query_json: str) -> str:
     digest = sha256(f"{name}\0{query_json}".encode()).hexdigest()
     return f"saved-view-{digest[:16]}"
+
+
+def _bounded_correction_text(value: str | None, max_chars: int | None) -> str | None:
+    """Cap user-authored correction fields without changing their structure."""
+    if value is None or max_chars is None or len(value) <= max_chars:
+        return value
+    return value[:max_chars]
 
 
 def _saved_view_payload(row: dict[str, str]) -> MCPSavedViewPayload:
@@ -866,6 +875,9 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def list_corrections(
         session_id: str | None = None,
         kind: str | None = None,
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
+        max_chars_per_correction: MCPCharacterLimit = None,
     ) -> str:
         """List stored learning corrections."""
 
@@ -877,17 +889,44 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 corrections = await poly.list_corrections(session_id=session_id, kind=kind)
             except UnknownCorrectionKindError as exc:
                 return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
-            items = [
+            clamped_limit = hooks.clamp_limit(limit)
+            all_items = [
                 {
                     "session_id": c.session_id,
                     "kind": c.kind.value,
-                    "payload": dict(c.payload),
-                    "note": c.note,
+                    "payload": {
+                        key: _bounded_correction_text(value, max_chars_per_correction)
+                        for key, value in c.payload.items()
+                    },
+                    "note": _bounded_correction_text(c.note, max_chars_per_correction),
                     "created_at": c.created_at.isoformat(),
                 }
                 for c in corrections
             ]
-            return json.dumps({"corrections": items, "total": len(items)}, sort_keys=True)
+            page_offset = max(0, offset)
+            items = all_items[page_offset : page_offset + clamped_limit]
+            next_offset = page_offset + len(items) if page_offset + len(items) < len(all_items) else None
+            with hooks.response_context(
+                "list_corrections",
+                {
+                    "session_id": session_id,
+                    "kind": kind,
+                    "limit": clamped_limit,
+                    "offset": page_offset,
+                    "max_chars_per_correction": max_chars_per_correction,
+                },
+            ):
+                return hooks.json_payload(
+                    MCPRootPayload(
+                        root={
+                            "corrections": items,
+                            "total": len(all_items),
+                            "limit": clamped_limit,
+                            "offset": page_offset,
+                            "next_offset": next_offset,
+                        }
+                    )
+                )
 
         return await hooks.async_safe_call("list_corrections", run, session_id=session_id)
 

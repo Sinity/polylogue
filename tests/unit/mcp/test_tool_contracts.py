@@ -901,8 +901,8 @@ class TestArchiveTools:
         assert payload["messages"][0]["blocks"][0]["text"] == "hello from mcp"
 
     @pytest.mark.asyncio
-    async def test_archive_get_session_over_budget_has_replayable_continuation(
-        self, mcp_server: MCPServerUnderTest
+    async def test_archive_get_session_over_budget_replays_as_bounded_messages(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
     ) -> None:
         from polylogue.storage.sqlite.archive_tiers.write import (
             ArchiveBlockRow,
@@ -910,8 +910,9 @@ class TestArchiveTools:
             ArchiveSessionEnvelope,
         )
 
-        session_id = "codex-session:oversized"
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root, provider=Provider.CODEX, native_id="oversized", text="e" * 5000)
+        with _archive_config(archive_root), patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
             mock_poly.archive_get_session = AsyncMock(
                 return_value=ArchiveSessionEnvelope(
@@ -950,10 +951,74 @@ class TestArchiveTools:
 
         payload = json.loads(raw)
         assert payload["continuation"] == {
-            "tool": "archive_get_session",
-            "arguments": {"session_id": session_id},
-            "reason": "The original response exceeded the MCP response budget; retry this narrower call to read the same evidence.",
+            "tool": "get_messages",
+            "arguments": {
+                "session_id": session_id,
+                "limit": 3,
+                "max_chars_per_message": 4096,
+                "excerpt": True,
+            },
+            "reason": "The full session exceeded the MCP response budget; read a bounded message page instead.",
         }
+        with _archive_config(archive_root):
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+        assert json.loads(replay).get("status") != "response_budget_exceeded"
+
+    @pytest.mark.asyncio
+    async def test_messages_resource_over_budget_replays_as_bounded_messages(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root, provider=Provider.CODEX, native_id="resource", text="r" * 30_000)
+
+        with _archive_config(archive_root):
+            raw = await invoke_surface_async(
+                mcp_server._resource_manager._templates["polylogue://messages/{conv_id}"].fn,
+                conv_id=session_id,
+            )
+
+        payload = json.loads(raw)
+        assert payload["continuation"]["tool"] == "get_messages"
+        with _archive_config(archive_root):
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+        assert json.loads(replay).get("status") != "response_budget_exceeded"
+
+    @pytest.mark.asyncio
+    async def test_list_corrections_over_budget_replays_with_character_cap(
+        self, mcp_server: MCPServerUnderTest
+    ) -> None:
+        from polylogue.insights.feedback import CorrectionKind, LearningCorrection
+        from tests.infra.frozen_clock import fixed_now
+
+        correction = LearningCorrection(
+            session_id="codex-session:correction",
+            kind=CorrectionKind.SUMMARY_OVERRIDE,
+            payload={"summary": "c" * 30_000},
+            note="n" * 30_000,
+            created_at=fixed_now(),
+        )
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_corrections = AsyncMock(return_value=[correction])
+            mock_get_polylogue.return_value = mock_poly
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["list_corrections"].fn,
+                session_id=correction.session_id,
+            )
+            payload = json.loads(raw)
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+
+        assert payload["status"] == "response_budget_exceeded"
+        assert json.loads(replay).get("status") != "response_budget_exceeded"
 
 
 class TestGetSessionSummaryTool:

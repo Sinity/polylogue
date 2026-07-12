@@ -117,7 +117,16 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     session = archive.read_session(session_id)
                 except (KeyError, ValueError):
                     return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
-                return hooks.json_payload(archive_messages_payload(session, limit=20, offset=0))
+                with hooks.response_context(
+                    "get_messages",
+                    {
+                        "session_id": session_id,
+                        "limit": 20,
+                        "max_chars_per_message": 4096,
+                        "excerpt": True,
+                    },
+                ):
+                    return hooks.json_payload(archive_messages_payload(session, limit=20, offset=0))
         except sqlite3.OperationalError:
             return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
         except Exception as exc:

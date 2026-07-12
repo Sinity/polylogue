@@ -195,6 +195,19 @@ def _narrow_continuation(context: _ResponseContext | None) -> dict[str, object] 
     if context is None:
         return None
     arguments = dict(context.arguments)
+    if context.tool == "archive_get_session":
+        session_id = arguments.get("session_id")
+        if isinstance(session_id, str):
+            return {
+                "tool": "get_messages",
+                "arguments": {
+                    "session_id": session_id,
+                    "limit": 3,
+                    "max_chars_per_message": 4096,
+                    "excerpt": True,
+                },
+                "reason": "The full session exceeded the MCP response budget; read a bounded message page instead.",
+            }
     limit = arguments.get("limit")
     if isinstance(limit, int) and not isinstance(limit, bool):
         arguments["limit"] = max(1, min(limit, 3))
@@ -203,6 +216,10 @@ def _narrow_continuation(context: _ResponseContext | None) -> dict[str, object] 
         max_chars = requested_max_chars if isinstance(requested_max_chars, int) else 4096
         arguments["max_chars_per_message"] = min(max_chars, 4096)
         arguments["excerpt"] = True
+    if context.tool == "list_corrections":
+        requested_max_chars = arguments.get("max_chars_per_correction")
+        max_chars = requested_max_chars if isinstance(requested_max_chars, int) else 4096
+        arguments["max_chars_per_correction"] = min(max_chars, 4096)
     return {
         "tool": context.tool,
         "arguments": arguments,
