@@ -379,7 +379,13 @@
     const pending = assetResponses.get(data.requestId);
     if (!pending) return;
     assetResponses.delete(data.requestId);
-    pending.resolve({ asset: data.asset || null, error: data.error || null });
+    if (data.outcome && typeof data.outcome === "object") {
+      pending.resolve(data.outcome);
+    } else if (data.asset) {
+      pending.resolve({ status: "acquired", phase: "legacy_bridge", asset: data.asset });
+    } else {
+      pending.resolve({ status: "request_failed", phase: "legacy_bridge", detail: "legacy_bridge_error" });
+    }
   });
 
   function requestAssetFromPage(request) {
@@ -387,7 +393,7 @@
     const responsePromise = new Promise((resolve) => {
       const timeout = window.setTimeout(() => {
         assetResponses.delete(requestId);
-        resolve({ asset: null, error: "timeout" });
+        resolve({ status: "request_failed", phase: "content_bridge", detail: "response_timeout" });
       }, assetFetchTimeoutMs);
       assetResponses.set(requestId, {
         resolve(value) {
@@ -420,7 +426,33 @@
         descriptors.push(descriptor);
       }
     };
-    for (const [nodeId, node] of Object.entries(mapping)) {
+    // ChatGPT's mapping insertion order is not conversation order. In a
+    // branched conversation it can put old, expired interpreter assets before
+    // the selected branch's newest deliverable. Because acquisition is
+    // deliberately bounded by a failure breaker and a wall-clock budget, that
+    // incidental order can prevent the current node's live asset from ever
+    // being attempted. Walk the selected lineage newest-first, then cover the
+    // remaining branches newest-first as best-effort backfill.
+    const orderedNodeIds = [];
+    const orderedNodeIdSet = new Set();
+    let lineageNodeId = typeof payload.current_node === "string" ? payload.current_node : null;
+    while (lineageNodeId && !orderedNodeIdSet.has(lineageNodeId)) {
+      const node = mapping[lineageNodeId];
+      if (!node) break;
+      orderedNodeIds.push(lineageNodeId);
+      orderedNodeIdSet.add(lineageNodeId);
+      lineageNodeId = typeof node.parent === "string" ? node.parent : null;
+    }
+    const remainingNodeIds = Object.keys(mapping)
+      .filter((nodeId) => !orderedNodeIdSet.has(nodeId))
+      .sort((left, right) => {
+        const leftTime = Number(mapping[left]?.message?.create_time) || 0;
+        const rightTime = Number(mapping[right]?.message?.create_time) || 0;
+        return rightTime - leftTime;
+      });
+
+    for (const nodeId of [...orderedNodeIds, ...remainingNodeIds]) {
+      const node = mapping[nodeId];
       const message = node && node.message;
       if (!message) continue;
       const messageId = String(message.id || node.id || nodeId);
@@ -479,6 +511,8 @@
       attempted: descriptors.length,
       acquired: 0,
       failed: [],
+      acquired_assets: [],
+      status_counts: {},
       skipped_over_budget: 0,
       skipped_time_budget: 0,
       skipped_circuit_breaker: 0
@@ -511,10 +545,25 @@
         maxBytes: Math.min(assetMaxBytesPerFile, assetMaxBytesTotal - totalBytes)
       };
       const result = await requestAssetFromPage(request);
-      if (result.asset && result.asset.base64) {
+      const status = typeof result.status === "string" ? result.status : "request_failed";
+      const contentSha256 = result.asset && result.asset.sha256;
+      const acquiredIsValid =
+        status === "acquired" &&
+        result.asset &&
+        result.asset.base64 &&
+        typeof contentSha256 === "string" &&
+        /^[0-9a-f]{64}$/.test(contentSha256);
+      const recordedStatus = acquiredIsValid ? "acquired" : status === "acquired" ? "invalid_response" : status;
+      outcome.status_counts[recordedStatus] = (outcome.status_counts[recordedStatus] || 0) + 1;
+      if (acquiredIsValid) {
         totalBytes += result.asset.size_bytes || 0;
         consecutiveFailuresByKind[descriptor.kind] = 0;
         outcome.acquired += 1;
+        outcome.acquired_assets.push({
+          provider_attachment_id: descriptor.provider_attachment_id,
+          sha256: contentSha256,
+          size_bytes: result.asset.size_bytes || 0
+        });
         attachments.push({
           provider_attachment_id: descriptor.provider_attachment_id,
           message_provider_id: descriptor.message_provider_id,
@@ -525,14 +574,19 @@
           provider_meta: {
             capture_source: "chatgpt_page_asset_fetch",
             asset_kind: descriptor.kind,
-            sandbox_path: descriptor.sandboxPath || null
+            sandbox_path: descriptor.sandboxPath || null,
+            content_sha256: contentSha256
           }
         });
       } else {
         consecutiveFailuresByKind[descriptor.kind] += 1;
         outcome.failed.push({
           provider_attachment_id: descriptor.provider_attachment_id,
-          error: result.error || "unknown"
+          status: recordedStatus,
+          error: recordedStatus,
+          phase: result.phase || null,
+          http_status: typeof result.http_status === "number" ? result.http_status : null,
+          detail: status === "acquired" ? "acquired_asset_missing_sha256" : result.detail || null
         });
       }
     }
@@ -574,10 +628,26 @@
           nativePayload,
           String(nativePayload.conversation_id || nativePayload.id || conversationIdFromUrl())
         );
-      } catch (error) {
+      } catch {
         assetAcquisition = {
           attachments: [],
-          outcome: { attempted: 0, acquired: 0, failed: [{ provider_attachment_id: null, error: String(error && error.message ? error.message : error) }], skipped_over_budget: 0 }
+          outcome: {
+            attempted: 0,
+            acquired: 0,
+            acquired_assets: [],
+            status_counts: { request_failed: 1 },
+            failed: [
+              {
+                provider_attachment_id: null,
+                status: "request_failed",
+                error: "request_failed",
+                detail: "asset_acquisition_failed"
+              }
+            ],
+            skipped_over_budget: 0,
+            skipped_time_budget: 0,
+            skipped_circuit_breaker: 0
+          }
         };
       }
     }
