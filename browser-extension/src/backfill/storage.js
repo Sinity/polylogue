@@ -149,7 +149,7 @@ export class IndexedDbBackfillStore {
     await transactionDone(tx);
   }
 
-  async controlJob(jobId, status, nowIsoValue, patch = {}) {
+  async controlJob(jobId, status, nowIsoValue, patch = {}, resumeQueueAtMs = null) {
     const db = await this.database();
     const tx = db.transaction(["jobs", "queue"], "readwrite");
     const store = tx.objectStore("jobs");
@@ -168,8 +168,25 @@ export class IndexedDbBackfillStore {
       updated_at: nowIsoValue,
     };
     store.put(next);
+    const queueStore = tx.objectStore("queue");
+    if (status === "running" && resumeQueueAtMs !== null) {
+      const items = await requestResult(queueStore.getAll());
+      for (const item of items) {
+        if (item.job_id === jobId && item.state === "auth_required") {
+          queueStore.put({
+            ...item,
+            state: "eligible",
+            resume_state: "eligible",
+            lease_owner: null,
+            lease_expires_at_ms: null,
+            next_eligible_at_ms: resumeQueueAtMs,
+            last_response_class: null,
+            last_error: null,
+          });
+        }
+      }
+    }
     if (status === "cancelled") {
-      const queueStore = tx.objectStore("queue");
       const items = await requestResult(queueStore.getAll());
       for (const item of items) {
         if (item.job_id === jobId && !["complete", "unchanged", "no_turns"].includes(item.state)) {
@@ -378,11 +395,27 @@ export class MemoryBackfillStore {
     const current = this.jobs.get(jobId);
     if (current?.execution_owner === owner && current.execution_generation === generation) this.jobs.set(jobId, { ...current, execution_owner: null, execution_expires_at_ms: null });
   }
-  async controlJob(jobId, status, nowIsoValue, patch = {}) {
+  async controlJob(jobId, status, nowIsoValue, patch = {}, resumeQueueAtMs = null) {
     const current = this.jobs.get(jobId);
     if (!current) throw new Error(`backfill_job_not_found:${jobId}`);
     const next = { ...current, ...patch, status, execution_owner: null, execution_expires_at_ms: null, execution_generation: (current.execution_generation || 0) + 1, updated_at: nowIsoValue };
     this.jobs.set(jobId, structuredClone(next));
+    if (status === "running" && resumeQueueAtMs !== null) {
+      for (const item of this.queue.values()) {
+        if (item.job_id === jobId && item.state === "auth_required") {
+          this.queue.set(item.id, {
+            ...item,
+            state: "eligible",
+            resume_state: "eligible",
+            lease_owner: null,
+            lease_expires_at_ms: null,
+            next_eligible_at_ms: resumeQueueAtMs,
+            last_response_class: null,
+            last_error: null,
+          });
+        }
+      }
+    }
     if (status === "cancelled") {
       for (const item of this.queue.values()) {
         if (item.job_id === jobId && !["complete", "unchanged", "no_turns"].includes(item.state)) {

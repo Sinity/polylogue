@@ -74,7 +74,8 @@ export class BackfillCoordinator {
       cooldown_until_ms: null,
       cooldown_reason: null,
       throttle_count: 0,
-    } : {});
+      last_error: null,
+    } : {}, action === "resume" ? now : null);
     if (status === "running") {
       await this.schedule(jobId, now);
     }
@@ -162,7 +163,7 @@ export class BackfillCoordinator {
       if (job.status !== "running" || (job.cooldown_until_ms && currentNow < job.cooldown_until_ms)) break;
     }
     const queue = await this.store.listQueue(jobId);
-    if (job.inventory_complete && jobFinished(queue)) {
+    if (job.status === "running" && job.inventory_complete && jobFinished(queue)) {
       await this.saveJob({ ...job, status: "complete", updated_at: nowIso(this.clock()) });
     } else if (job.status === "running") {
       const receiverDue = Math.min(

@@ -59,9 +59,8 @@ class FixtureAdapter {
   }
 }
 
-function harness({ adapter = new FixtureAdapter(), receiver = null, start = 100000, instanceId = "instance-a", policy = {} } = {}) {
+function harness({ adapter = new FixtureAdapter(), receiver = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
   let now = start;
-  const store = new MemoryBackfillStore();
   const alarms = { create: vi.fn(async () => undefined) };
   const durableReceiver = receiver || vi.fn(async (envelope, serialized) => ({ receiver_request_id: `ack-${envelope.session.provider_session_id}`, content_hash: await serializedContentHash(serialized) }));
   const coordinator = new BackfillCoordinator({
@@ -171,6 +170,42 @@ describe("background backfill coordinator", () => {
       expect((await h.store.listQueue(job.id))[0].state).toBe(scenario.expected);
       expect((await h.coordinator.status(job.id)).daily_requests).toBe(2);
     }
+  });
+
+  it.each([
+    ["memory storage", () => new MemoryBackfillStore()],
+    ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],
+  ])("atomically requeues auth-required work when resuming with %s", async (_label, makeStore) => {
+    const adapter = new FixtureAdapter(["one"]);
+    adapter.responses = [response({}, { status: 403 }), response(chatGptNative("one"))];
+    const store = makeStore();
+    const h = harness({ adapter, store });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+
+    expect((await h.coordinator.status(job.id)).status).toBe("paused");
+    expect((await store.listQueue(job.id))[0].state).toBe("auth_required");
+
+    await h.coordinator.control(job.id, "resume");
+    const resumed = (await store.listQueue(job.id))[0];
+    expect(resumed).toMatchObject({
+      state: "eligible",
+      resume_state: "eligible",
+      lease_owner: null,
+      lease_expires_at_ms: null,
+      next_eligible_at_ms: h.now(),
+      last_response_class: null,
+      last_error: null,
+    });
+
+    h.advance(h.policy.baseCadenceMs);
+    await h.coordinator.wake(job.id);
+    const status = await h.coordinator.status(job.id);
+    expect(status.status).toBe("complete");
+    expect(status.progress).toMatchObject({ complete: 1, operator_action: 0 });
+    expect(adapter.fetchCalls).toEqual(["one", "one"]);
+    expect(h.receiver).toHaveBeenCalledTimes(1);
   });
 
   it("grants only one lease across simultaneous extension instances", async () => {
