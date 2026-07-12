@@ -11,6 +11,7 @@ substrate reconciliation logic already covered directly in
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +20,8 @@ import pytest
 
 from polylogue.core.enums import Origin
 from polylogue.daemon.embedding_backlog import reconcile_embedding_orphans_once
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+from polylogue.storage.embeddings.reconcile import EmbeddingOrphanReconcileReport
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     ArchiveEmbeddingWrite,
@@ -129,9 +132,42 @@ def test_reconcile_embedding_orphans_once_removes_orphan_when_enabled(tmp_path: 
             == 0
         )
         status_row = conn.execute(
-            "SELECT message_count_embedded FROM embedding_status WHERE session_id = ?", (session_id,)
+            "SELECT message_count_embedded, needs_reindex FROM embedding_status WHERE session_id = ?", (session_id,)
         ).fetchone()
         assert status_row is not None
         assert status_row[0] == 0
+        assert status_row[1] == 1
     finally:
         conn.close()
+
+
+def test_daemon_coordinator_owns_real_orphan_reconcile_mutation(tmp_path: Path) -> None:
+    """Production-route proof; bypassing run_sync or its authority token makes this fail."""
+    index_db, embeddings_db, session_id, orphan_message_id = _build_fixture(tmp_path)
+    coordinator = DaemonWriteCoordinator()
+
+    async def run() -> EmbeddingOrphanReconcileReport | None:
+        with patch("polylogue.daemon.convergence_stages.load_polylogue_config") as mock_cfg:
+            mock_cfg.return_value.embedding_enabled = True
+            mock_cfg.return_value.voyage_api_key = "test-key"
+            return await coordinator.run_sync(
+                "maintenance.embedding_orphan_reconcile",
+                reconcile_embedding_orphans_once,
+                index_db,
+            )
+
+    report = asyncio.run(run())
+    assert report is not None
+    assert report.removed_message_rows == 1
+    assert coordinator.snapshot().active_actor is None
+    with sqlite3.connect(embeddings_db) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (orphan_message_id,)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute("SELECT needs_reindex FROM embedding_status WHERE session_id = ?", (session_id,)).fetchone()[0]
+            == 1
+        )

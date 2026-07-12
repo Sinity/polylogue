@@ -44,10 +44,19 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 DEFAULT_QUIET_WINDOW_MS = 5 * 60 * 1000  # 5 minutes
 DEFAULT_SAMPLE_SIZE = 30
 DEFAULT_MAX_COUNT = 500
+EmbeddingReconcileMutationAuthority = Literal["daemon-coordinator", "offline-exclusive"]
+
+
+@dataclass(frozen=True, slots=True)
+class _IndexIdentity:
+    resolved_path: str
+    device: int
+    inode: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,8 +89,11 @@ class EmbeddingOrphanReconcileReport:
     now_ms: int
     quiet_window_ms: int
     scanned_message_meta_rows: int
+    scanned_vector_rows: int
     scanned_status_rows: int
     orphan_message_rows: int
+    orphan_message_meta_rows: int
+    orphan_vector_rows: int
     orphan_status_rows: int
     skipped_recent_message_rows: int
     skipped_recent_status_rows: int
@@ -106,8 +118,11 @@ class EmbeddingOrphanReconcileReport:
             "now_ms": self.now_ms,
             "quiet_window_ms": self.quiet_window_ms,
             "scanned_message_meta_rows": self.scanned_message_meta_rows,
+            "scanned_vector_rows": self.scanned_vector_rows,
             "scanned_status_rows": self.scanned_status_rows,
             "orphan_message_rows": self.orphan_message_rows,
+            "orphan_message_meta_rows": self.orphan_message_meta_rows,
+            "orphan_vector_rows": self.orphan_vector_rows,
             "orphan_status_rows": self.orphan_status_rows,
             "skipped_recent_message_rows": self.skipped_recent_message_rows,
             "skipped_recent_status_rows": self.skipped_recent_status_rows,
@@ -150,6 +165,7 @@ def reconcile_embedding_orphans(
     sample_size: int = DEFAULT_SAMPLE_SIZE,
     quiet_window_ms: int = DEFAULT_QUIET_WINDOW_MS,
     now_ms: int | None = None,
+    mutation_authority: EmbeddingReconcileMutationAuthority | None = None,
 ) -> EmbeddingOrphanReconcileReport:
     """Reconcile one bounded batch of orphan embedding rows.
 
@@ -157,6 +173,12 @@ def reconcile_embedding_orphans(
     reports zero orphans and performs no writes), and a batch capped by
     ``max_count`` leaves ``more_pending=True`` so a caller (daemon
     convergence tick, CLI retry) can drain the rest across subsequent calls.
+
+    Apply is deliberately unavailable to arbitrary callers. The daemon must
+    enter through its process-wide write coordinator; the manual CLI must own
+    the archive's exclusive offline lease. The attached index identity is
+    checked before mutation and again before commit so a generation swap
+    rolls the whole transaction back instead of deleting against stale truth.
     """
 
     index_path = Path(index_db_path)
@@ -164,6 +186,10 @@ def reconcile_embedding_orphans(
         Path(embeddings_db_path) if embeddings_db_path is not None else index_path.with_name("embeddings.db")
     )
     resolved_now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    if not dry_run and mutation_authority is None:
+        raise RuntimeError(
+            "embedding orphan reconciliation apply requires daemon-coordinator or offline-exclusive authority"
+        )
 
     if not embeddings_path.exists():
         return EmbeddingOrphanReconcileReport(
@@ -173,8 +199,11 @@ def reconcile_embedding_orphans(
             now_ms=resolved_now_ms,
             quiet_window_ms=quiet_window_ms,
             scanned_message_meta_rows=0,
+            scanned_vector_rows=0,
             scanned_status_rows=0,
             orphan_message_rows=0,
+            orphan_message_meta_rows=0,
+            orphan_vector_rows=0,
             orphan_status_rows=0,
             skipped_recent_message_rows=0,
             skipped_recent_status_rows=0,
@@ -195,25 +224,15 @@ def reconcile_embedding_orphans(
         if not loaded:
             raise RuntimeError("embedding orphan reconciliation requires sqlite-vec") from error
 
-        conn.execute("ATTACH DATABASE ? AS idx", (str(index_path),))
+        expected_index_identity = _index_identity(index_path)
+        conn.execute("ATTACH DATABASE ? AS idx", (expected_index_identity.resolved_path,))
+        conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
 
         scanned_message_meta_rows = _scalar(conn, "SELECT COUNT(*) FROM message_embeddings_meta")
+        scanned_vector_rows = _scalar(conn, "SELECT COUNT(*) FROM message_embeddings")
         scanned_status_rows = _scalar(conn, "SELECT COUNT(*) FROM embedding_status")
 
-        message_rows = conn.execute(
-            """
-            SELECT em.message_id AS message_id,
-                   me.session_id AS session_id,
-                   em.content_hash AS content_hash,
-                   em.embedded_at_ms AS embedded_at_ms
-            FROM message_embeddings_meta AS em
-            LEFT JOIN message_embeddings AS me ON me.message_id = em.message_id
-            WHERE NOT EXISTS (
-                SELECT 1 FROM idx.messages AS im WHERE im.message_id = em.message_id
-            )
-            ORDER BY em.message_id
-            """
-        ).fetchall()
+        message_rows = _orphan_message_rows(conn)
 
         message_candidates: list[sqlite3.Row] = []
         skipped_recent_message = 0
@@ -253,32 +272,47 @@ def reconcile_embedding_orphans(
         sessions_recounted = 0
         action_label = "would_remove" if dry_run else "removed"
 
-        if not dry_run and limited_message:
-            with conn:
-                for row in limited_message:
-                    conn.execute("DELETE FROM message_embeddings_meta WHERE message_id = ?", (row["message_id"],))
-                    conn.execute("DELETE FROM message_embeddings WHERE message_id = ?", (row["message_id"],))
-            removed_message_rows = len(limited_message)
-            removed_vector_rows = len(limited_message)
+        if not dry_run:
+            _assert_index_identity(index_path, expected_index_identity)
+            affected_sessions: set[str] = set()
+            for row in limited_message:
+                message_id = str(row["message_id"])
+                removed_meta = _delete_if_still_orphan(conn, "message_embeddings_meta", message_id)
+                removed_vector = _delete_if_still_orphan(conn, "message_embeddings", message_id)
+                removed_message_rows += removed_meta
+                removed_vector_rows += removed_vector
+                if (removed_meta or removed_vector) and row["session_id"]:
+                    affected_sessions.add(str(row["session_id"]))
 
-            affected_sessions = sorted({row["session_id"] for row in limited_message if row["session_id"]})
-            if affected_sessions:
-                with conn:
-                    for session_id in affected_sessions:
-                        remaining = _scalar(
-                            conn, "SELECT COUNT(*) FROM message_embeddings WHERE session_id = ?", (session_id,)
-                        )
-                        conn.execute(
-                            "UPDATE embedding_status SET message_count_embedded = ? WHERE session_id = ?",
-                            (remaining, session_id),
-                        )
-                sessions_recounted = len(affected_sessions)
+            for session_id in sorted(affected_sessions):
+                if not _index_session_exists(conn, session_id):
+                    continue
+                remaining = _scalar(conn, "SELECT COUNT(*) FROM message_embeddings WHERE session_id = ?", (session_id,))
+                cursor = conn.execute(
+                    """
+                    UPDATE embedding_status
+                    SET message_count_embedded = ?, needs_reindex = 1
+                    WHERE session_id = ?
+                    """,
+                    (remaining, session_id),
+                )
+                sessions_recounted += max(0, cursor.rowcount)
 
-        if not dry_run and limited_status:
-            with conn:
-                for row in limited_status:
-                    conn.execute("DELETE FROM embedding_status WHERE session_id = ?", (row["session_id"],))
-            removed_status_rows = len(limited_status)
+            for row in limited_status:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM embedding_status
+                    WHERE session_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM idx.sessions WHERE idx.sessions.session_id = embedding_status.session_id
+                      )
+                    """,
+                    (row["session_id"],),
+                )
+                removed_status_rows += max(0, cursor.rowcount)
+
+            _assert_index_identity(index_path, expected_index_identity)
+            conn.commit()
 
         samples: list[EmbeddingOrphanSample] = [
             EmbeddingOrphanSample(
@@ -303,10 +337,24 @@ def reconcile_embedding_orphans(
         )
 
         orphan_message_rows = len(message_candidates) + skipped_recent_message
+        orphan_message_meta_rows = sum(int(row["has_meta"]) for row in message_rows)
+        orphan_vector_rows = sum(int(row["has_vector"]) for row in message_rows)
         orphan_status_rows = len(status_candidates) + skipped_recent_status
-        more_pending = (orphan_message_rows - removed_message_rows) > 0 or (
-            orphan_status_rows - removed_status_rows
-        ) > 0
+        if dry_run:
+            more_pending = orphan_message_rows > 0 or orphan_status_rows > 0
+            conn.rollback()
+        else:
+            more_pending = bool(_orphan_message_rows(conn)) or bool(
+                conn.execute(
+                    """
+                    SELECT 1 FROM embedding_status
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM idx.sessions WHERE idx.sessions.session_id = embedding_status.session_id
+                    )
+                    LIMIT 1
+                    """
+                ).fetchone()
+            )
 
         return EmbeddingOrphanReconcileReport(
             index_db=str(index_path),
@@ -315,8 +363,11 @@ def reconcile_embedding_orphans(
             now_ms=resolved_now_ms,
             quiet_window_ms=quiet_window_ms,
             scanned_message_meta_rows=scanned_message_meta_rows,
+            scanned_vector_rows=scanned_vector_rows,
             scanned_status_rows=scanned_status_rows,
             orphan_message_rows=orphan_message_rows,
+            orphan_message_meta_rows=orphan_message_meta_rows,
+            orphan_vector_rows=orphan_vector_rows,
             orphan_status_rows=orphan_status_rows,
             skipped_recent_message_rows=skipped_recent_message,
             skipped_recent_status_rows=skipped_recent_status,
@@ -327,8 +378,79 @@ def reconcile_embedding_orphans(
             more_pending=more_pending,
             samples=tuple(samples),
         )
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
+
+
+def _orphan_message_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        WITH embedding_ids AS (
+            SELECT message_id FROM message_embeddings_meta
+            UNION
+            SELECT message_id FROM message_embeddings
+        )
+        SELECT ids.message_id,
+               COALESCE(
+                   vec.session_id,
+                   (
+                       SELECT status.session_id
+                       FROM embedding_status AS status
+                       WHERE ids.message_id LIKE status.session_id || ':%'
+                       ORDER BY length(status.session_id) DESC
+                       LIMIT 1
+                   )
+               ) AS session_id,
+               meta.content_hash,
+               meta.embedded_at_ms,
+               meta.message_id IS NOT NULL AS has_meta,
+               vec.message_id IS NOT NULL AS has_vector
+        FROM embedding_ids AS ids
+        LEFT JOIN message_embeddings_meta AS meta ON meta.message_id = ids.message_id
+        LEFT JOIN message_embeddings AS vec ON vec.message_id = ids.message_id
+        WHERE NOT EXISTS (
+            SELECT 1 FROM idx.messages AS indexed WHERE indexed.message_id = ids.message_id
+        )
+        ORDER BY ids.message_id
+        """
+    ).fetchall()
+
+
+def _delete_if_still_orphan(conn: sqlite3.Connection, table: str, message_id: str) -> int:
+    if table not in {"message_embeddings_meta", "message_embeddings"}:
+        raise ValueError(f"unsupported embedding table: {table}")
+    cursor = conn.execute(
+        f"""
+        DELETE FROM {table}
+        WHERE message_id = ?
+          AND NOT EXISTS (
+              SELECT 1 FROM idx.messages WHERE idx.messages.message_id = {table}.message_id
+          )
+        """,
+        (message_id,),
+    )
+    return max(0, cursor.rowcount)
+
+
+def _index_session_exists(conn: sqlite3.Connection, session_id: str) -> bool:
+    return conn.execute("SELECT 1 FROM idx.sessions WHERE session_id = ? LIMIT 1", (session_id,)).fetchone() is not None
+
+
+def _index_identity(index_path: Path) -> _IndexIdentity:
+    resolved = index_path.resolve(strict=True)
+    stat = resolved.stat()
+    return _IndexIdentity(str(resolved), stat.st_dev, stat.st_ino)
+
+
+def _assert_index_identity(index_path: Path, expected: _IndexIdentity) -> None:
+    actual = _index_identity(index_path)
+    if actual != expected:
+        raise RuntimeError(
+            "active index generation changed during embedding orphan reconciliation; transaction rolled back"
+        )
 
 
 def _is_recent(timestamp_ms: int | None, now_ms: int, quiet_window_ms: int) -> bool:
@@ -346,6 +468,7 @@ __all__ = [
     "DEFAULT_MAX_COUNT",
     "DEFAULT_QUIET_WINDOW_MS",
     "DEFAULT_SAMPLE_SIZE",
+    "EmbeddingReconcileMutationAuthority",
     "EmbeddingOrphanReconcileReport",
     "EmbeddingOrphanSample",
     "inspect_embedding_orphans",

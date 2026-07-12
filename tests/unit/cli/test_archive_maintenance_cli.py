@@ -899,10 +899,33 @@ def test_embedding_orphan_reconcile_cli_apply_removes_rows(
             == 0
         )
         status = conn.execute(
-            "SELECT message_count_embedded FROM embedding_status WHERE session_id = ?", (session_id,)
+            "SELECT message_count_embedded, needs_reindex FROM embedding_status WHERE session_id = ?", (session_id,)
         ).fetchone()
         assert status is not None
         assert status[0] == 0
+        assert status[1] == 1
+
+
+def test_embedding_orphan_reconcile_cli_apply_requires_exclusive_offline_lease(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """Production CLI proof: a live/shared writer lease blocks break-glass apply."""
+    from polylogue.storage.index_generation import ActiveWriterLease
+
+    _seed_orphan_embedding_row(cli_workspace["archive_root"])
+    writer = ActiveWriterLease(cli_workspace["archive_root"])
+    writer.acquire()
+    try:
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "embedding-orphan-reconcile", "--yes"],
+        )
+    finally:
+        writer.close()
+
+    assert result.exit_code != 0
+    assert "index rebuild lease is already held" in result.output
 
 
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:

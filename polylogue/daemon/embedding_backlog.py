@@ -138,6 +138,7 @@ def reconcile_embedding_orphans_once(db_path: Path) -> EmbeddingOrphanReconcileR
         dry_run=False,
         max_count=EMBEDDING_ORPHAN_RECONCILE_MAX_COUNT,
         quiet_window_ms=EMBEDDING_ORPHAN_RECONCILE_QUIET_WINDOW_MS,
+        mutation_authority="daemon-coordinator",
     )
 
 

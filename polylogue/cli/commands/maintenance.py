@@ -2264,14 +2264,38 @@ def embedding_orphan_reconcile_command(
     root = archive_file_set_root_for_paths(archive_root_path=archive_root(), db_anchor=db_path())
     index_db = root / "index.db"
     embeddings_db = root / "embeddings.db"
-    report = reconcile_embedding_orphans(
-        index_db,
-        embeddings_db,
-        dry_run=not yes,
-        max_count=max_count,
-        sample_size=sample_limit,
-        quiet_window_ms=quiet_window_seconds * 1000,
-    )
+    if yes:
+        from polylogue.maintenance.offline_guard import running_daemon_pid
+        from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+        active_config = Config(archive_root=root, render_root=render_root(), sources=[], db_path=index_db)
+        try:
+            with RebuildLease(root):
+                daemon_pid = running_daemon_pid(active_config)
+                if daemon_pid is not None:
+                    raise click.ClickException(
+                        f"embedding orphan reconcile refused while polylogued PID {daemon_pid} is running"
+                    )
+                report = reconcile_embedding_orphans(
+                    index_db,
+                    embeddings_db,
+                    dry_run=False,
+                    max_count=max_count,
+                    sample_size=sample_limit,
+                    quiet_window_ms=quiet_window_seconds * 1000,
+                    mutation_authority="offline-exclusive",
+                )
+        except RebuildLeaseUnavailableError as exc:
+            raise click.ClickException(str(exc)) from exc
+    else:
+        report = reconcile_embedding_orphans(
+            index_db,
+            embeddings_db,
+            dry_run=True,
+            max_count=max_count,
+            sample_size=sample_limit,
+            quiet_window_ms=quiet_window_seconds * 1000,
+        )
     payload = {
         "mode": "embedding_orphan_reconcile",
         "mutates": bool(yes),
@@ -2292,10 +2316,13 @@ def _render_embedding_orphan_reconcile_plain(report: EmbeddingOrphanReconcileRep
     click.echo(f"Mode:          {'dry-run' if report.dry_run else 'apply'}")
     click.echo(
         f"Scanned:       {report.scanned_message_meta_rows:,} message meta row(s), "
+        f"{report.scanned_vector_rows:,} vector row(s), "
         f"{report.scanned_status_rows:,} status row(s)"
     )
     click.echo(
-        f"Orphans:       {report.orphan_message_rows:,} message row(s), {report.orphan_status_rows:,} status row(s)"
+        f"Orphans:       {report.orphan_message_rows:,} message identity row(s) "
+        f"({report.orphan_message_meta_rows:,} meta, {report.orphan_vector_rows:,} vector), "
+        f"{report.orphan_status_rows:,} status row(s)"
     )
     if report.skipped_recent_message_rows or report.skipped_recent_status_rows:
         click.echo(

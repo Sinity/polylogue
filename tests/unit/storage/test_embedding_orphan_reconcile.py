@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from polylogue.core.enums import Origin
+from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
 from polylogue.storage.embeddings.reconcile import (
     inspect_embedding_orphans,
     reconcile_embedding_orphans,
@@ -32,11 +34,21 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 _INDEX_DDL = """
 CREATE TABLE sessions (
     session_id TEXT PRIMARY KEY,
-    origin TEXT NOT NULL
+    origin TEXT NOT NULL,
+    title TEXT,
+    sort_key_ms INTEGER DEFAULT 0,
+    authored_user_message_count INTEGER NOT NULL DEFAULT 1,
+    assistant_message_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE messages (
     message_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL
+    session_id TEXT NOT NULL,
+    text TEXT DEFAULT 'authored prose long enough for embedding',
+    role TEXT NOT NULL DEFAULT 'user',
+    message_type TEXT NOT NULL DEFAULT 'message',
+    material_origin TEXT NOT NULL DEFAULT 'human_authored',
+    word_count INTEGER NOT NULL DEFAULT 8,
+    content_hash BLOB DEFAULT x'01'
 );
 """
 
@@ -138,7 +150,13 @@ def test_reconcile_removes_message_orphaned_by_index_rebuild(tmp_path: Path) -> 
     _write_status(conn, session_id=session_id, message_count_embedded=2, last_embedded_at_ms=_OLD_MS)
     conn.close()
 
-    report = reconcile_embedding_orphans(tmp_path / "index.db", embeddings_db, dry_run=False, now_ms=_NOW_MS)
+    report = reconcile_embedding_orphans(
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
+    )
 
     assert report.orphan_message_rows == 1
     assert report.removed_message_rows == 1
@@ -155,11 +173,21 @@ def test_reconcile_removes_message_orphaned_by_index_rebuild(tmp_path: Path) -> 
             conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (m2,)).fetchone()[0] == 0
         )
         status = conn.execute(
-            "SELECT message_count_embedded FROM embedding_status WHERE session_id = ?", (session_id,)
+            "SELECT message_count_embedded, needs_reindex FROM embedding_status WHERE session_id = ?", (session_id,)
         ).fetchone()
         assert status[0] == 1, "message_count_embedded must be recounted after removing the orphan"
+        assert status[1] == 1, "surviving affected sessions must enter the ambient reindex backlog"
     finally:
         conn.close()
+
+    with sqlite3.connect(tmp_path / "index.db") as selector_conn:
+        selector_conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        pending = select_pending_archive_session_window(
+            selector_conn,
+            status_table="embeddings.embedding_status",
+            include_stale_checks=False,
+        )
+    assert [item.session_id for item in pending] == [session_id]
 
 
 def test_reconcile_preserves_content_hash_mismatch_when_identity_present(tmp_path: Path) -> None:
@@ -178,7 +206,13 @@ def test_reconcile_preserves_content_hash_mismatch_when_identity_present(tmp_pat
     _write_status(conn, session_id=session_id, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
     conn.close()
 
-    report = reconcile_embedding_orphans(tmp_path / "index.db", embeddings_db, dry_run=False, now_ms=_NOW_MS)
+    report = reconcile_embedding_orphans(
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
+    )
 
     assert report.orphan_message_rows == 0
     assert report.removed_message_rows == 0
@@ -204,7 +238,13 @@ def test_reconcile_removes_orphan_status_for_deleted_session(tmp_path: Path) -> 
     _write_status(conn, session_id=session_id, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
     conn.close()
 
-    report = reconcile_embedding_orphans(tmp_path / "index.db", embeddings_db, dry_run=False, now_ms=_NOW_MS)
+    report = reconcile_embedding_orphans(
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
+    )
 
     assert report.orphan_status_rows == 1
     assert report.removed_status_rows == 1
@@ -235,7 +275,13 @@ def test_reconcile_respects_quiet_window(tmp_path: Path) -> None:
     _write_status(conn, session_id=session_id, message_count_embedded=1, last_embedded_at_ms=recent_ms)
     conn.close()
 
-    guarded = reconcile_embedding_orphans(tmp_path / "index.db", embeddings_db, dry_run=False, now_ms=_NOW_MS)
+    guarded = reconcile_embedding_orphans(
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
+    )
     assert guarded.removed_message_rows == 0
     assert guarded.skipped_recent_message_rows == 1
     assert guarded.more_pending is True
@@ -249,7 +295,12 @@ def test_reconcile_respects_quiet_window(tmp_path: Path) -> None:
         conn.close()
 
     unguarded = reconcile_embedding_orphans(
-        tmp_path / "index.db", embeddings_db, dry_run=False, quiet_window_ms=0, now_ms=_NOW_MS
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        quiet_window_ms=0,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
     )
     assert unguarded.removed_message_rows == 1
 
@@ -267,26 +318,47 @@ def test_reconcile_is_bounded_and_resumable(tmp_path: Path) -> None:
     conn.close()
 
     first = reconcile_embedding_orphans(
-        tmp_path / "index.db", embeddings_db, dry_run=False, max_count=2, now_ms=_NOW_MS
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        max_count=2,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
     )
     assert first.removed_message_rows == 2
     assert first.more_pending is True
 
     second = reconcile_embedding_orphans(
-        tmp_path / "index.db", embeddings_db, dry_run=False, max_count=2, now_ms=_NOW_MS
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        max_count=2,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
     )
     assert second.removed_message_rows == 2
     assert second.more_pending is True
 
     third = reconcile_embedding_orphans(
-        tmp_path / "index.db", embeddings_db, dry_run=False, max_count=2, now_ms=_NOW_MS
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        max_count=2,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
     )
     assert third.removed_message_rows == 1
     assert third.more_pending is False
     assert third.ok is True
 
     # Idempotent: a clean archive reports zero orphans and mutates nothing.
-    clean = reconcile_embedding_orphans(tmp_path / "index.db", embeddings_db, dry_run=False, now_ms=_NOW_MS)
+    clean = reconcile_embedding_orphans(
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
+    )
     assert clean.orphan_message_rows == 0
     assert clean.removed_message_rows == 0
     assert clean.ok is True
@@ -348,10 +420,190 @@ def test_reconcile_missing_embeddings_db_is_noop(tmp_path: Path) -> None:
     _connect_index(tmp_path / "index.db", sessions=[], messages={})
 
     report = reconcile_embedding_orphans(
-        tmp_path / "index.db", tmp_path / "embeddings.db", dry_run=False, now_ms=_NOW_MS
+        tmp_path / "index.db",
+        tmp_path / "embeddings.db",
+        dry_run=False,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
     )
 
     assert report.orphan_message_rows == 0
     assert report.orphan_status_rows == 0
     assert report.more_pending is False
     assert report.ok is True
+
+
+def test_apply_requires_owned_writer_authority(tmp_path: Path) -> None:
+    """Anti-vacuity: removing the mutation-authority floor makes this unsafe direct apply succeed."""
+    _connect_index(tmp_path / "index.db", sessions=[], messages={})
+    conn = _connect_embeddings(tmp_path / "embeddings.db")
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="requires daemon-coordinator or offline-exclusive"):
+        reconcile_embedding_orphans(
+            tmp_path / "index.db",
+            tmp_path / "embeddings.db",
+            dry_run=False,
+            now_ms=_NOW_MS,
+        )
+
+
+def test_reconcile_counts_and_removes_meta_only_and_vec_only_orphans(tmp_path: Path) -> None:
+    """Real vec0/DDL proof: row-kind counts and removals must not be inferred from identity count."""
+    meta_session = "codex-session:meta-only"
+    vec_session = "codex-session:vec-only"
+    meta_id = f"{meta_session}:m1"
+    vec_id = f"{vec_session}:m1"
+    _connect_index(
+        tmp_path / "index.db",
+        sessions=[meta_session, vec_session],
+        messages={meta_session: [], vec_session: []},
+    )
+    embeddings_db = tmp_path / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    _write_embedding(conn, message_id=meta_id, session_id=meta_session, embedded_at_ms=_OLD_MS)
+    _write_embedding(conn, message_id=vec_id, session_id=vec_session, embedded_at_ms=_OLD_MS)
+    _write_status(conn, session_id=meta_session, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
+    _write_status(conn, session_id=vec_session, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
+    conn.execute("DELETE FROM message_embeddings WHERE message_id = ?", (meta_id,))
+    conn.execute("DELETE FROM message_embeddings_meta WHERE message_id = ?", (vec_id,))
+    conn.commit()
+    conn.close()
+
+    inspected = inspect_embedding_orphans(tmp_path / "index.db", embeddings_db, now_ms=_NOW_MS)
+    assert inspected.scanned_message_meta_rows == 1
+    assert inspected.scanned_vector_rows == 1
+    assert inspected.orphan_message_rows == 2
+    assert inspected.orphan_message_meta_rows == 1
+    assert inspected.orphan_vector_rows == 1
+
+    applied = reconcile_embedding_orphans(
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
+    )
+    assert applied.removed_message_rows == 1
+    assert applied.removed_vector_rows == 1
+    assert applied.sessions_recounted == 2
+
+    with _connect_embeddings(embeddings_db) as verify:
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 0
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 0
+        statuses = [
+            tuple(row)
+            for row in verify.execute(
+                "SELECT session_id, message_count_embedded, needs_reindex FROM embedding_status ORDER BY session_id"
+            ).fetchall()
+        ]
+    assert statuses == [(meta_session, 0, 1), (vec_session, 0, 1)]
+
+
+def test_reconcile_rolls_back_delete_recount_and_status_cleanup_then_retries(tmp_path: Path) -> None:
+    """Failure injection enters real DDL and production transaction.
+
+    Anti-vacuity: committing message/vector deletion before the status recount,
+    or removing the enclosing rollback, leaves either embedding table changed.
+    """
+    session_id = "codex-session:rollback"
+    message_id = f"{session_id}:orphan"
+    deleted_session_id = "codex-session:deleted"
+    deleted_message_id = f"{deleted_session_id}:orphan"
+    _connect_index(tmp_path / "index.db", sessions=[session_id], messages={session_id: []})
+    embeddings_db = tmp_path / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    _write_embedding(conn, message_id=message_id, session_id=session_id, embedded_at_ms=_OLD_MS)
+    _write_embedding(
+        conn,
+        message_id=deleted_message_id,
+        session_id=deleted_session_id,
+        embedded_at_ms=_OLD_MS,
+    )
+    _write_status(conn, session_id=session_id, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
+    _write_status(conn, session_id=deleted_session_id, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
+    conn.execute(
+        f"""
+        CREATE TRIGGER inject_status_cleanup_failure
+        BEFORE DELETE ON embedding_status
+        WHEN OLD.session_id = '{deleted_session_id}'
+        BEGIN SELECT RAISE(ABORT, 'injected status cleanup failure'); END
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected status cleanup failure"):
+        reconcile_embedding_orphans(
+            tmp_path / "index.db",
+            embeddings_db,
+            dry_run=False,
+            now_ms=_NOW_MS,
+            mutation_authority="offline-exclusive",
+        )
+
+    with _connect_embeddings(embeddings_db) as verify:
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 2
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 2
+        status = verify.execute(
+            "SELECT message_count_embedded, needs_reindex FROM embedding_status WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert status is not None and tuple(status) == (1, 0)
+        assert (
+            verify.execute(
+                "SELECT COUNT(*) FROM embedding_status WHERE session_id = ?", (deleted_session_id,)
+            ).fetchone()[0]
+            == 1
+        )
+        verify.execute("DROP TRIGGER inject_status_cleanup_failure")
+        verify.commit()
+
+    retry = reconcile_embedding_orphans(
+        tmp_path / "index.db",
+        embeddings_db,
+        dry_run=False,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
+    )
+    assert retry.removed_message_rows == 2
+    assert retry.removed_vector_rows == 2
+    assert retry.removed_status_rows == 1
+    assert retry.sessions_recounted == 1
+    assert retry.more_pending is False
+
+
+def test_index_identity_is_revalidated_before_atomic_commit(tmp_path: Path) -> None:
+    """Anti-vacuity: removing the final identity check commits against stale index truth."""
+    session_id = "codex-session:generation-race"
+    message_id = f"{session_id}:orphan"
+    _connect_index(tmp_path / "index.db", sessions=[session_id], messages={session_id: []})
+    embeddings_db = tmp_path / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    _write_embedding(conn, message_id=message_id, session_id=session_id, embedded_at_ms=_OLD_MS)
+    _write_status(conn, session_id=session_id, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
+    conn.close()
+
+    with (
+        patch(
+            "polylogue.storage.embeddings.reconcile._assert_index_identity",
+            side_effect=[None, RuntimeError("active index generation changed")],
+        ),
+        pytest.raises(RuntimeError, match="generation changed"),
+    ):
+        reconcile_embedding_orphans(
+            tmp_path / "index.db",
+            embeddings_db,
+            dry_run=False,
+            now_ms=_NOW_MS,
+            mutation_authority="daemon-coordinator",
+        )
+
+    with _connect_embeddings(embeddings_db) as verify:
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
+        status = verify.execute(
+            "SELECT message_count_embedded, needs_reindex FROM embedding_status WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert status is not None and tuple(status) == (1, 0)
