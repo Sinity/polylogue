@@ -11,6 +11,7 @@ condemns, never the ones the content-hash and quiet-window guards protect.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -650,3 +651,49 @@ def test_index_identity_is_revalidated_before_atomic_commit(tmp_path: Path) -> N
             (session_id,),
         ).fetchone()
         assert status is not None and tuple(status) == (1, 0)
+
+
+def test_apply_refuses_inactive_generation_even_when_schema_matches(tmp_path: Path) -> None:
+    """Only the source-snapshotted active generation may authorize deletion.
+
+    Anti-vacuity: removing the generation-authority guard lets an inactive
+    v35 rebuild candidate delete this real orphan vector and metadata row.
+    """
+    session_id = "codex-session:inactive-generation"
+    message_id = f"{session_id}:orphan"
+    index_db = tmp_path / "index.db"
+    _connect_index(index_db, sessions=[session_id], messages={session_id: []})
+    generations = tmp_path / ".index-generations" / "gen-inactive"
+    generations.mkdir(parents=True)
+    (tmp_path / ".index-active-pointer").write_text(str(index_db.resolve()), encoding="utf-8")
+    (generations / "generation.json").write_text(
+        json.dumps(
+            {
+                "generation_id": "gen-inactive",
+                "owner_id": "test",
+                "archive_root": str(tmp_path),
+                "index_path": str(index_db),
+                "state": "inactive",
+                "created_at_ms": _NOW_MS,
+                "source_snapshot": "source-at-rebuild-start",
+            }
+        ),
+        encoding="utf-8",
+    )
+    embeddings_db = tmp_path / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    _write_embedding(conn, message_id=message_id, session_id=session_id, embedded_at_ms=_OLD_MS)
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="active source-snapshotted index generation"):
+        reconcile_embedding_orphans(
+            index_db,
+            embeddings_db,
+            dry_run=False,
+            now_ms=_NOW_MS,
+            mutation_authority="offline-exclusive",
+        )
+
+    with _connect_embeddings(embeddings_db) as verify:
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
