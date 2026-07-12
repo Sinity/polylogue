@@ -71,6 +71,8 @@ files:
     reason: "Raw-ingest test uses now() as opaque acquired_at metadata."
   - path: tests/unit/daemon/test_metrics_endpoint.py
     reason: "Metrics endpoint test records a live rebuild-ingest heartbeat timestamp; production readiness and metrics intentionally compare it against the host clock."
+  - path: tests/unit/daemon/test_daemon_lifecycle.py
+    reason: "Lifecycle signal-forensics test holds a real SQLite write lock and measures that the terminating handler respects its bounded busy timeout."
   - path: tests/integration/test_daemon_resilience.py
     reason: "Daemon resilience integration tests (#1735) measure real elapsed wall-clock for process lifecycle events (SIGKILL delivery, subprocess startup, concurrency timing). frozen_clock cannot substitute for real time when waiting on OS process state."
   - path: tests/integration/test_ingest_pipeline_correctness.py
