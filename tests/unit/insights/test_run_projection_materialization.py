@@ -16,6 +16,7 @@ import aiosqlite
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.insights.transforms import compile_session_digest
@@ -350,3 +351,99 @@ def test_subagent_and_child_main_runs_do_not_collide(tmp_path: Path) -> None:
         ("run:codex-session:parent:subagent:1:shared-tool", "codex-session:parent", "subagent"),
     ]
     conn.close()
+
+
+def test_continuation_session_projection_boundary_is_resume() -> None:
+    """polylogue-aoe5: a genuine continuation/resume session gets boundary='resume'."""
+    session = _session().model_copy(
+        update={
+            "id": SessionId("codex-session:demo-continuation"),
+            "parent_id": SessionId("codex-session:demo-root"),
+            "branch_type": BranchType.CONTINUATION,
+        }
+    )
+    assert session.is_continuation
+
+    projection = compile_session_digest(session, session_links=()).run_projection
+    main_snapshot = projection.context_snapshots[0]
+    main_run = projection.runs[0]
+
+    assert main_snapshot.boundary == "resume"
+    assert main_snapshot.snapshot_ref.object_id == "codex-session:demo-continuation:resume"
+    assert main_run.context_snapshot_ref == main_snapshot.snapshot_ref
+
+    # A fresh (non-continuation) session is unaffected.
+    fresh_projection = compile_session_digest(_session(), session_links=()).run_projection
+    assert fresh_projection.context_snapshots[0].boundary == "session_start"
+
+
+async def test_continuation_session_resume_boundary_read_through_source_and_materialized(tmp_path: Path) -> None:
+    """The SQL source fallback and the materializer agree on boundary='resume'.
+
+    The cheap ``sessions``-derived read path (``run_projection_relations.py``)
+    must reflect ``branch_type='continuation'`` without requiring the session
+    to be re-materialized, and materializing afterward must not produce a
+    duplicate context-snapshot row for the same run.
+    """
+    from tests.infra.storage_records import SessionBuilder
+
+    db_path = tmp_path / "index.db"
+    (
+        SessionBuilder(db_path, "resume-boundary-root")
+        .provider("claude-code")
+        .title("Resume Boundary Root")
+        .add_message("root-u1", role="user", text="Start the work.")
+        .save()
+    )
+    (
+        SessionBuilder(db_path, "resume-boundary-child")
+        .provider("claude-code")
+        .title("Resume Boundary Continuation")
+        .parent_session("ext-resume-boundary-root")
+        .branch_type("continuation")
+        .add_message("child-u1", role="user", text="Continue the work after a crash.")
+        .save()
+    )
+    session_id = "claude-code-session:ext-resume-boundary-child"
+
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+
+        # session_context_snapshots is populated by daemon convergence, not by
+        # SessionBuilder.save(); the source/cheap path must already carry the
+        # resume boundary before any materialization happens.
+        source_snapshots = await list_context_snapshots(conn, RunProjectionListQuery(session_id=session_id, limit=None))
+        assert [record.snapshot.boundary for record in source_snapshots] == ["resume"]
+        assert source_snapshots[0].snapshot.snapshot_ref.object_id == f"{session_id}:resume"
+
+        resume_filtered = await list_context_snapshots(
+            conn, RunProjectionListQuery(session_id=session_id, boundary="resume", limit=None)
+        )
+        assert [record.snapshot.snapshot_ref for record in resume_filtered] == [
+            source_snapshots[0].snapshot.snapshot_ref
+        ]
+
+        main_runs = await list_runs(conn, RunProjectionListQuery(session_id=session_id, role="main", limit=None))
+        assert main_runs[0].run.context_snapshot_ref == source_snapshots[0].snapshot.snapshot_ref
+
+        # Now materialize explicitly and confirm the read path still returns
+        # exactly one resume-boundary snapshot for this session (no duplicate
+        # row from the union of source + materialized rows).
+        session = Session(
+            id=SessionId(session_id),
+            origin=Origin.CLAUDE_CODE_SESSION,
+            title="Resume Boundary Continuation",
+            parent_id=SessionId("claude-code-session:ext-resume-boundary-root"),
+            branch_type=BranchType.CONTINUATION,
+            messages=MessageCollection(
+                messages=[Message(id="child-u1", role=Role.USER, text="Continue the work after a crash.")]
+            ),
+        )
+        projection = compile_session_digest(session, session_links=()).run_projection
+        snapshot_records = build_session_context_snapshot_records(projection, materialized_at=_MATERIALIZED_AT)
+        await replace_session_context_snapshots(conn, session_id, snapshot_records, 0)
+
+        after_materialize = await list_context_snapshots(
+            conn, RunProjectionListQuery(session_id=session_id, limit=None)
+        )
+        assert [record.snapshot.boundary for record in after_materialize] == ["resume"]

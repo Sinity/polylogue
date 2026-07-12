@@ -219,7 +219,8 @@ WITH source_runs AS (
         'raw' AS confidence,
         s0.session_id AS transcript_ref,
         json_array(s0.session_id) AS evidence_refs_json,
-        'context-snapshot:' || s0.session_id || ':session_start' AS context_snapshot_ref,
+        'context-snapshot:' || s0.session_id || ':' ||
+            CASE WHEN s0.branch_type = 'continuation' THEN 'resume' ELSE 'session_start' END AS context_snapshot_ref,
         trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '') || ' ' || COALESCE(s0.git_branch, '')) AS search_text,
         NULL AS payload_json,
         1 AS materializer_version,
@@ -409,7 +410,12 @@ materialized_context_snapshots AS (
         c.materializer_version,
         c.materialized_at
     FROM session_context_snapshots c
-    WHERE c.boundary <> 'session_start'
+    -- 'session_start'/'resume' are the two boundaries the cheap source CTE below
+    -- can synthesize live from sessions.branch_type (polylogue-aoe5); excluding
+    -- both here (not just 'session_start') keeps the cheap path authoritative
+    -- for the main run's snapshot even if a materialized row predates a
+    -- branch_type backfill, avoiding a stale-boundary duplicate row.
+    WHERE c.boundary NOT IN ('session_start', 'resume')
         OR NOT EXISTS (
             SELECT 1
             FROM source_context_snapshots source
@@ -424,12 +430,13 @@ materialized_context_snapshots AS (
 WITH source_context_snapshots AS (
     SELECT
         'source' AS row_source,
-        'context-snapshot:' || s0.session_id || ':session_start' AS snapshot_ref,
+        'context-snapshot:' || s0.session_id || ':' ||
+            CASE WHEN s0.branch_type = 'continuation' THEN 'resume' ELSE 'session_start' END AS snapshot_ref,
         s0.session_id AS session_id,
         'run:' || s0.session_id AS run_ref,
         0 AS position,
         printf('%016d', COALESCE(s0.updated_at_ms, s0.created_at_ms, 0)) AS source_updated_at,
-        'session_start' AS boundary,
+        CASE WHEN s0.branch_type = 'continuation' THEN 'resume' ELSE 'session_start' END AS boundary,
         'unknown' AS inheritance_mode,
         json_array('session:' || s0.session_id) AS segment_refs_json,
         json_array(s0.session_id) AS evidence_refs_json,
@@ -503,7 +510,7 @@ def context_snapshot_from_row(row: RowLike) -> ContextSnapshot:
     return ContextSnapshot(
         snapshot_ref=ObjectRef.parse(str(row["snapshot_ref"])),
         run_ref=ObjectRef.parse(str(row["run_ref"])),
-        boundary="session_start",
+        boundary=str(row["boundary"]),  # type: ignore[arg-type]
         inheritance_mode="unknown",
         segment_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["segment_refs_json"])),
         evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
