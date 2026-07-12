@@ -73,7 +73,10 @@ from polylogue.surfaces.temporal_evidence import (
 from polylogue.types import SessionId
 
 if TYPE_CHECKING:
+    from polylogue.annotations.importer import AnnotationBatchImportRequest, AnnotationBatchImportResult
     from polylogue.annotations.join import AnnotationStructuralJoinResult
+    from polylogue.annotations.schema import AnnotationSchemaRegistry
+    from polylogue.api import Polylogue
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
@@ -1824,6 +1827,25 @@ class PolylogueArchiveMixin:
 
         @property
         def repository(self) -> SessionRepository: ...
+
+    async def import_annotation_batch(
+        self,
+        request: AnnotationBatchImportRequest,
+        *,
+        registry: AnnotationSchemaRegistry | None = None,
+    ) -> AnnotationBatchImportResult:
+        """Import bounded, provenance-stamped annotation candidates.
+
+        This is the library binding for the shared annotation-import product
+        operation used by the CLI and MCP surfaces. ``registry`` lets callers
+        use a deliberately constructed schema registry without bypassing the
+        facade.
+        """
+        from polylogue.annotations.importer import import_annotation_batch
+
+        if registry is None:
+            return await import_annotation_batch(cast("Polylogue", self), request)
+        return await import_annotation_batch(cast("Polylogue", self), request, registry=registry)
 
     async def get_session(
         self,

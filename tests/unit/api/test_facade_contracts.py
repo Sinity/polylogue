@@ -36,6 +36,8 @@ from typing import Any, cast
 import pytest
 
 from polylogue import Polylogue
+from polylogue.annotations.importer import AnnotationBatchImportRequest
+from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, BranchType, MaterialOrigin, Origin, Provider
@@ -194,6 +196,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "list_sessions_for_spec",
         "search_session_hits",
         "diagnose_query_miss",
+        "import_annotation_batch",
         "storage_stats",
         "bulk_tag_sessions",
         "list_session_profile_insights",
@@ -4780,6 +4783,67 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
             ("saved_view:view-v1", "saved_query", "deleted"),
             ("workspace:workspace-v1", "workspace_note", "deleted"),
         ]
+    finally:
+        await archive.close()
+
+
+async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_path: Path) -> None:
+    """The facade reaches the bounded CLI/MCP annotation import operation.
+
+    Anti-vacuity: removing facade delegation, schema validation, live
+    reference resolution, or the user-tier write makes this test fail.
+    """
+    archive = _archive(tmp_path)
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="annotation-facade-v1",
+            title="Annotation facade target",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+        )
+        with ArchiveStore(tmp_path) as archive_db:
+            session_id = archive_db.write_parsed(session)
+
+        registry = AnnotationSchemaRegistry()
+        registry.register(
+            AnnotationSchema(
+                schema_id="test.facade-import",
+                version=1,
+                title="Facade import fixture",
+                fields=(AnnotationField(name="label", value_type="enum", enum_values=("yes", "no")),),
+                target_ref_kinds=("session",),
+                evidence_policy="required",
+                status="active",
+            )
+        )
+        request = AnnotationBatchImportRequest(
+            jsonl=json.dumps(
+                {
+                    "row_key": "row-1",
+                    "value": {"label": "yes"},
+                    "evidence_refs": [str(session_id)],
+                }
+            ),
+            batch_id="facade-import",
+            schema_id="test.facade-import",
+            schema_version=1,
+            target_ref=f"session:{session_id}",
+            source_result_ref="result-set:facade-import",
+            actor_ref="agent:facade-test",
+            model_ref="agent:model",
+            prompt_ref="block:prompt:0",
+            created_at_ms=1_000,
+        )
+
+        result = await archive.import_annotation_batch(request, registry=registry)
+
+        assert result.status == "ok"
+        assert result.qualified_schema_id == "test.facade-import@v1"
+        assert result.valid_count == 1
+        assert result.rows[0].assertion_ref is not None
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            persisted = conn.execute("SELECT status, scope_ref FROM assertions WHERE key = 'row-1'").fetchone()
+        assert persisted == ("candidate", "annotation-batch:facade-import")
     finally:
         await archive.close()
 
