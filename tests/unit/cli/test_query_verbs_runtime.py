@@ -67,6 +67,15 @@ def test_read_projection_expression_rejects_invalid_operator_input(expression: s
         query_verbs._parse_read_projection_expression(expression)
 
 
+def test_read_projection_expression_normalizes_public_aliases() -> None:
+    """Projection aliases must reach the typed projection field names."""
+    assert query_verbs._parse_read_projection_expression("tokens:7 redact=excluded assertions=yes") == {
+        "max_tokens": 7,
+        "redact_paths": False,
+        "include_assertions": True,
+    }
+
+
 def test_execute_query_verb_dispatches_typed_request() -> None:
     _, child = _context_pair()
     request = RootModeRequest.from_params({"query": ("alpha",)})

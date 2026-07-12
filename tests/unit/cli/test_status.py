@@ -149,6 +149,53 @@ def test_status_command_reads_a_real_daemon_http_status_route() -> None:
     assert '"daemon_liveness": true' in output
 
 
+def test_status_command_reports_live_daemon_with_unavailable_status_snapshot() -> None:
+    """A malformed status payload must not be mistaken for a stopped daemon."""
+
+    class _UnavailableStatusHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path == "/api/status":
+                body = b"not-json"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/healthz/live":
+                self.send_response(204)
+                self.end_headers()
+                return
+            self.send_error(404)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _UnavailableStatusHandler)
+    worker = threading.Thread(target=server.serve_forever)
+    worker.start()
+    try:
+        env = _make_app_env()
+        callback = getattr(status_command.callback, "__wrapped__", None)
+        assert callable(callback)
+        callback(
+            env,
+            daemon_url=f"http://127.0.0.1:{server.server_port}",
+            output_format="json",
+            json_alias=False,
+            full_payload=False,
+            exact_archive_readiness=False,
+        )
+    finally:
+        server.shutdown()
+        worker.join()
+        server.server_close()
+
+    output = _combined_calls(env)
+    assert '"daemon_liveness": true' in output
+    assert '"state": "unavailable"' in output
+
+
 def test_raw_replay_backlog_plain_status_explains_containment() -> None:
     env = _make_app_env()
     reason = "raw source-to-index replay is disabled pending per-session revision authority"
