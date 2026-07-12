@@ -2863,6 +2863,7 @@ class ArchiveStore:
         raw_id = write_source_raw_session_blob_ref(
             source_conn,
             origin=origin_from_provider(session.source_name),
+            capture_mode=session.source_name,
             source_path=source_path,
             source_index=source_index,
             native_id=session.provider_session_id,

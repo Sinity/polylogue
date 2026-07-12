@@ -79,6 +79,11 @@ async def save_raw_session(
     )
     inserted = bool(cursor.rowcount > 0)
 
+    if not inserted:
+        await conn.execute(
+            "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
+            (capture_mode.value, record.raw_id),
+        )
     if not inserted and record.file_mtime is not None:
         file_mtime_ms = _timestamp_ms(record.file_mtime)
         await conn.execute(

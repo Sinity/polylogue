@@ -24,6 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     read_raw_artifact,
     write_history_sidecar,
     write_source_raw_session,
+    write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -238,6 +239,63 @@ def test_archive_tiers_source_writer_keeps_multiple_raw_captures_for_one_native_
         (second_raw_id, "/captures/browser.json"),
         (first_raw_id, "/captures/direct.json"),
     ]
+
+
+def test_source_writers_backfill_legacy_capture_mode_on_duplicate_raw_id(tmp_path: Path) -> None:
+    """A post-migration re-acquisition enriches, but never replaces, NULL provenance."""
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"chunkedPrompt":{"chunks":[]}}'
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.AISTUDIO_DRIVE,
+        source_path="/captures/aistudio.json",
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=1,
+    )
+    assert conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0] is None
+
+    assert (
+        write_source_raw_session(
+            conn,
+            origin=Origin.AISTUDIO_DRIVE,
+            capture_mode=Provider.DRIVE,
+            source_path="/captures/aistudio.json",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1,
+        )
+        == raw_id
+    )
+    assert conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0] == "drive"
+
+    blob_hash = deterministic_blob_hash(b"blob-backed aistudio")
+    blob_raw_id = write_source_raw_session_blob_ref(
+        conn,
+        origin=Origin.AISTUDIO_DRIVE,
+        source_path="/captures/aistudio-blob.json",
+        source_index=0,
+        blob_hash=blob_hash,
+        blob_size=len(b"blob-backed aistudio"),
+        acquired_at_ms=2,
+    )
+    assert conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (blob_raw_id,)).fetchone()[0] is None
+    assert (
+        write_source_raw_session_blob_ref(
+            conn,
+            origin=Origin.AISTUDIO_DRIVE,
+            capture_mode=Provider.DRIVE,
+            source_path="/captures/aistudio-blob.json",
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=len(b"blob-backed aistudio"),
+            acquired_at_ms=2,
+        )
+        == blob_raw_id
+    )
+    assert (
+        conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (blob_raw_id,)).fetchone()[0] == "drive"
+    )
 
 
 def test_archive_tiers_source_writer_deterministic_ids() -> None:

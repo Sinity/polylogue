@@ -407,6 +407,11 @@ def write_source_raw_session(
             ),
         )
         if cursor.rowcount == 0:
+            if capture_mode is not None:
+                conn.execute(
+                    "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
+                    (_enum_value(capture_mode), resolved_raw_id),
+                )
             _assert_existing_raw_identity(
                 conn,
                 raw_id=resolved_raw_id,
@@ -519,6 +524,11 @@ def write_source_raw_session_blob_ref(
             ),
         )
         if cursor.rowcount == 0:
+            if capture_mode is not None:
+                conn.execute(
+                    "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
+                    (_enum_value(capture_mode), resolved_raw_id),
+                )
             _assert_existing_raw_identity(
                 conn,
                 raw_id=resolved_raw_id,
