@@ -92,6 +92,25 @@ def _render_next_actions(payload: EmbeddingStatusPayload) -> None:
     _render_field("Command", command)
 
 
+def _render_failure_details(payload: EmbeddingStatusPayload) -> None:
+    """Render bounded actionable identities for the human status surface."""
+
+    details = payload["failure_details"]
+    if not details:
+        return
+    click.echo("  Active embedding failures:")
+    for detail in details:
+        refs = ", ".join(detail["message_refs"]) or "session-only"
+        click.echo(
+            f"    {detail['failure_id']}: {detail['lifecycle_state']}; "
+            f"{detail['origin']} / {detail['session_id']}; {detail['provider']} {detail['model']}; "
+            f"{detail['error_class']}"
+        )
+        click.echo(f"      refs: {refs}")
+        click.echo(f"      error: {detail['error_message']}")
+        click.echo(f"      resolve: {detail['resolution_command']}")
+
+
 def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool = False) -> None:
     """Render an embedding statistics payload."""
     if json_output:
@@ -133,6 +152,7 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     else:
         _render_field("Estimated total cost", f"~${payload['total_estimated_cost_usd']:.2f}")
     _render_next_actions(payload)
+    _render_failure_details(payload)
     _render_embedding_window(payload)
     _render_named_counts("Models", payload["embedding_models"])
     _render_named_counts("Dimensions", payload["embedding_dimensions"])

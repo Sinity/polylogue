@@ -149,13 +149,18 @@ def _run_status(db_path: Path, *args: str, cfg: _Cfg | None = None) -> dict[str,
     return _payload(result.output)
 
 
-def _run_status_text(db_path: Path, *, cfg: _Cfg | None = None) -> str:
+def _run_status_text(db_path: Path, *, detail: bool = False, cfg: _Cfg | None = None) -> str:
     runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
     with patch(
         "polylogue.config.load_polylogue_config",
         return_value=cfg or _Cfg(embedding_enabled=False, voyage_api_key=None),
     ):
-        result = runner.invoke(embed_command, ["status"], obj=_env(db_path), catch_exceptions=False)
+        result = runner.invoke(
+            embed_command,
+            ["status", *(["--detail"] if detail else [])],
+            obj=_env(db_path),
+            catch_exceptions=False,
+        )
     assert result.exit_code == 0
     return str(result.output)
 
@@ -215,7 +220,11 @@ def test_status_json_reports_archive_embedding_metadata_without_detail(tmp_path:
 
 
 def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Path) -> None:
-    """Status must name an actionable terminal row rather than only its aggregate."""
+    """Status must name an actionable terminal row rather than only its aggregate.
+
+    Anti-vacuity: omitting the text renderer leaves the exact failure id and
+    resolution command unreachable to the operator despite JSON detail.
+    """
     db_anchor = tmp_path / "custom.sqlite"
     index_db = tmp_path / "index.db"
     _seed_archive_file_set_from_archive_tiers(index_db)
@@ -280,6 +289,10 @@ def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Pat
             ),
         }
     ]
+    text = _run_status_text(db_anchor, detail=True, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    assert "embedding-failure:terminal: terminal" in text
+    assert "refs: codex-session:pending:m1" in text
+    assert "resolve: polylogue ops embed resolve-failure embedding-failure:terminal" in text
 
 
 def test_status_json_detail_does_not_derive_coverage_from_analyzed_prose_estimate(tmp_path: Path) -> None:
