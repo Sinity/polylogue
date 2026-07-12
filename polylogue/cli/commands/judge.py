@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.query.spec import QuerySpecError, parse_query_date
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import AssertionKind
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
@@ -100,6 +101,28 @@ def _render_rows(rows: Sequence[JudgeCandidateRow]) -> None:
         click.echo(f"{row.assertion_id:<36} {row.kind:<20} {row.target_ref} {row.first_line[:100]}")
 
 
+def _filter_candidates(
+    claims: Sequence[AssertionClaimPayload],
+    *,
+    kind_filter: str | None,
+    since: str | None,
+) -> list[AssertionClaimPayload]:
+    """Apply the terminal queue's kind and lower-time filters locally."""
+
+    filtered = list(claims)
+    if kind_filter is not None:
+        filtered = [claim for claim in filtered if claim.kind.value == kind_filter]
+    if since is None:
+        return filtered
+    try:
+        lower = parse_query_date("since", since)
+    except QuerySpecError as exc:
+        raise click.UsageError(str(exc)) from exc
+    assert lower is not None
+    lower_ms = int(lower.timestamp() * 1000)
+    return [claim for claim in filtered if claim.created_at_ms >= lower_ms]
+
+
 def _judge(
     env: AppEnv,
     *,
@@ -131,10 +154,13 @@ def _judge(
 @click.option("--list", "list_only", is_flag=True, help="List the pending queue without judging.")
 @click.option("--accept", "accept_refs", multiple=True, help="Accept one or more candidate assertion refs.")
 @click.option("--reject", "reject_refs", multiple=True, help="Reject one or more candidate assertion refs.")
-@click.option("--kind", "kind_filter", type=click.Choice([kind.value for kind in AssertionKind]), default=None)
 @click.option(
-    "--since", default=None, help="Daily-triage lower timestamp bound (currently advisory in terminal output)."
+    "--accept-all-of-kind",
+    is_flag=True,
+    help="Accept every pending candidate selected by --kind and --since.",
 )
+@click.option("--kind", "kind_filter", type=click.Choice([kind.value for kind in AssertionKind]), default=None)
+@click.option("--since", default=None, help="Daily-triage lower timestamp bound (ISO or relative date).")
 @click.option("--reason", default=None)
 @click.option("--inject", is_flag=True, help="Authorize injection for accepted candidates.")
 @click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text", show_default=True)
@@ -144,6 +170,7 @@ def judge_command(
     list_only: bool,
     accept_refs: tuple[str, ...],
     reject_refs: tuple[str, ...],
+    accept_all_of_kind: bool,
     kind_filter: str | None,
     since: str | None,
     reason: str | None,
@@ -152,8 +179,10 @@ def judge_command(
 ) -> None:
     """Interactively triage candidate assertions through the normal lifecycle."""
 
-    if accept_refs and reject_refs:
-        raise click.UsageError("choose either --accept or --reject for one invocation")
+    if accept_refs and reject_refs or accept_all_of_kind and (accept_refs or reject_refs):
+        raise click.UsageError("choose one judgment action for one invocation")
+    if accept_all_of_kind and kind_filter is None:
+        raise click.UsageError("--accept-all-of-kind requires --kind")
     if accept_refs or reject_refs:
         decision = "accept" if accept_refs else "reject"
         bulk_payload = _judge(
@@ -173,8 +202,23 @@ def judge_command(
         return
 
     claims = run_coroutine_sync(env.polylogue.list_assertion_candidates(limit=50))
-    if kind_filter is not None:
-        claims = [claim for claim in claims if claim.kind.value == kind_filter]
+    claims = _filter_candidates(claims, kind_filter=kind_filter, since=since)
+    if accept_all_of_kind:
+        bulk_payload = _judge(
+            env,
+            refs=tuple(f"assertion:{claim.assertion_id}" for claim in claims),
+            decision="accept",
+            reason=reason,
+            inject=inject,
+        )
+        if output_format == "json":
+            click.echo(serialize_surface_payload(bulk_payload, exclude_none=True))
+            return
+        click.echo(
+            f"{bulk_payload.applied_count} accepted, {bulk_payload.idempotent_count} unchanged, "
+            f"{bulk_payload.failed_count} failed"
+        )
+        return
     rows = [JudgeCandidateRow.from_claim(claim) for claim in claims]
     if output_format == "json":
         list_payload = AssertionClaimListPayload(items=tuple(claims), total=len(rows), limit=50)
@@ -183,8 +227,6 @@ def judge_command(
     if list_only or not sys.stdin.isatty() or not sys.stdout.isatty():
         _render_rows(rows)
         return
-    if since is not None:
-        click.echo(f"Daily triage since {since}; candidate timestamps remain visible in the review list.")
     selected = _choose_candidate(rows)
     if selected is None:
         _render_rows(rows)

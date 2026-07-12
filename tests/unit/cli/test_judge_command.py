@@ -72,3 +72,26 @@ def test_judge_noninteractive_accept_uses_bulk_lifecycle_payload() -> None:
     item = polylogue.judge_assertion_candidates.await_args.kwargs["items"][0]
     assert item.candidate_ref == "assertion:candidate-judge-1"
     assert item.inject is True
+
+
+def test_judge_accept_all_of_kind_applies_the_real_queue_filters() -> None:
+    finding = _candidate()
+    decision = finding.model_copy(update={"assertion_id": "candidate-decision-1", "kind": AssertionKind.DECISION})
+    payload = AssertionBulkJudgmentPayload(items=(), applied_count=0, idempotent_count=0, failed_count=0)
+    polylogue = SimpleNamespace(
+        list_assertion_candidates=AsyncMock(return_value=[finding, decision]),
+        judge_assertion_candidates=AsyncMock(return_value=payload),
+    )
+    env = SimpleNamespace(polylogue=polylogue)
+
+    invocation = CliRunner().invoke(
+        judge_command,
+        ["--accept-all-of-kind", "--kind", "finding", "--since", "1970-01-01", "--format", "json"],
+        obj=env,
+        catch_exceptions=False,
+    )
+
+    assert invocation.exit_code == 0
+    assert json.loads(invocation.output)["applied_count"] == 0
+    items = polylogue.judge_assertion_candidates.await_args.kwargs["items"]
+    assert [item.candidate_ref for item in items] == ["assertion:candidate-judge-1"]
