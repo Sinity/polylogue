@@ -858,6 +858,12 @@ def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
             "message:abc-123:7",
             "block:abc-123:7:2",
             "github-issue:Sinity/polylogue#1883",
+            # polylogue-lph4: delegation attempts are a registered ObjectRef
+            # target -- candidate annotations/judgments can scope to a
+            # delegation the same way as any other object ref, action-observed
+            # (bare instruction block id) or edge-only (edge:<parent>::<child>).
+            "delegation:claude-code-session:parent:dispatch:0",
+            "delegation:edge:codex-session:parent::codex-session:child",
         ]
         for idx, ref in enumerate(refs):
             upsert_assertion(

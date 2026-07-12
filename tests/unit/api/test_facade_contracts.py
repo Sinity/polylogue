@@ -37,7 +37,8 @@ import pytest
 from polylogue import Polylogue
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, MaterialOrigin, Origin, Provider
+from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, BranchType, MaterialOrigin, Origin, Provider
+from polylogue.core.refs import delegation_edge_object_id
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -2319,6 +2320,219 @@ async def test_resolve_ref_returns_assertion_payload(tmp_path: Path) -> None:
         assert payload.payload is not None
         assert payload.payload["assertion_id"] == "assertion-ref-resolution"
         assert payload.evidence_refs == ("codex-session:ref-resolution-v1",)
+    finally:
+        await archive.close()
+
+
+def _delegation_parent_session(*, provider_session_id: str, with_dispatch: bool) -> ParsedSession:
+    """Ingest-shaped parent fixture: writes real session/message/block rows
+    through the live archive writer (``ArchiveStore.write_parsed`` ->
+    ``write_parsed_session_to_archive``), the same seam the daemon uses --
+    not a hand-inserted SQL row. A Task ``tool_use``/``tool_result`` pair
+    gets classified ``semantic_type='subagent'`` at write time
+    (``polylogue/storage/sqlite/archive_tiers/write.py:_semantic_type``),
+    which is what the polylogue-y964 `delegations` view spines on."""
+
+    messages = [
+        ParsedMessage(
+            provider_message_id="turn-0",
+            role=Role.USER,
+            text="please look into this",
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="please look into this")],
+        )
+    ]
+    if with_dispatch:
+        messages.append(
+            ParsedMessage(
+                provider_message_id="dispatch",
+                role=Role.ASSISTANT,
+                model_name="claude-opus-4-8",
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Task",
+                        tool_id="task-1",
+                        tool_input={"prompt": "audit the thing", "subagent_type": "general-purpose"},
+                    )
+                ],
+            )
+        )
+        messages.append(
+            ParsedMessage(
+                provider_message_id="dispatch-result",
+                role=Role.USER,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="task-1",
+                        text="3 gaps found",
+                        is_error=False,
+                        exit_code=0,
+                    )
+                ],
+            )
+        )
+    return ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id=provider_session_id,
+        title="Delegation parent fixture",
+        messages=messages,
+    )
+
+
+async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path: Path) -> None:
+    """polylogue-lph4: action-observed delegation identity is
+    (parent_session_id, instruction_tool_use_block_id) -- the ref carries
+    only the block id since it already embeds the parent session id
+    structurally (block_id = message_id:position, message_id =
+    session_id:native_id)."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="delegation-parent-v1", with_dispatch=True)
+            )
+            child_session_id = archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-child-v1",
+                    title="Delegation child fixture",
+                    messages=[
+                        ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it"),
+                    ],
+                    parent_session_provider_id="delegation-parent-v1",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+
+        instruction_block_id = f"{parent_session_id}:dispatch:0"
+        payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
+
+        assert payload.resolved is True
+        assert payload.kind == "delegation"
+        assert payload.payload_kind == "delegation-attempt"
+        assert payload.payload is not None
+        assert payload.payload["mapping_state"] == "resolved"
+        assert payload.payload["parent_session_id"] == parent_session_id
+        assert payload.payload["child_session_id"] == child_session_id
+        assert payload.payload["instruction_tool_use_block_id"] == instruction_block_id
+        assert payload.payload["dispatch_turn_model"] == "claude-opus-4-8"
+        assert payload.object_refs == (f"session:{parent_session_id}", f"session:{child_session_id}")
+        assert f"block:{instruction_block_id}" in payload.evidence_refs
+        assert payload.caveats == ()
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_edge_only_delegation_attempt_payload(tmp_path: Path) -> None:
+    """A resolved child with no parent-side dispatch action (e.g. a Codex
+    async subagent) resolves through the deterministic edge identity and is
+    typed edge_only -- never given a fabricated instruction."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="delegation-edge-parent-v1", with_dispatch=False)
+            )
+            child_session_id = archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-edge-child-v1",
+                    title="Delegation edge-only child fixture",
+                    messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
+                    parent_session_provider_id="delegation-edge-parent-v1",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+
+        edge_ref = f"delegation:{delegation_edge_object_id(parent_session_id, child_session_id)}"
+        payload = await archive.resolve_ref(edge_ref)
+
+        assert payload.resolved is True
+        assert payload.payload_kind == "delegation-attempt"
+        assert payload.payload is not None
+        assert payload.payload["mapping_state"] == "edge_only"
+        assert payload.payload["parent_session_id"] == parent_session_id
+        assert payload.payload["child_session_id"] == child_session_id
+        assert payload.payload["instruction_tool_use_block_id"] is None
+        assert payload.payload["instruction_payload"] is None
+        assert any("edge_only" in caveat for caveat in payload.caveats)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_ambiguous_delegation_attempt_payload(tmp_path: Path) -> None:
+    """Two dispatch actions but only one resolved child: rank-pairing would
+    have to guess, so both dispatch rows surface as ambiguous with a real
+    instruction but no fabricated child (polylogue-y964)."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-ambiguous-parent-v1",
+                    title="Delegation ambiguous fixture",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="dispatch-a",
+                            role=Role.ASSISTANT,
+                            blocks=[
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_USE, tool_name="Task", tool_id="task-a", tool_input={}
+                                )
+                            ],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="dispatch-b",
+                            role=Role.ASSISTANT,
+                            blocks=[
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_USE, tool_name="Task", tool_id="task-b", tool_input={}
+                                )
+                            ],
+                        ),
+                    ],
+                )
+            )
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-ambiguous-child-v1",
+                    title="Delegation ambiguous child fixture",
+                    messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
+                    parent_session_provider_id="delegation-ambiguous-parent-v1",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+
+        instruction_block_id = f"{parent_session_id}:dispatch-a:0"
+        payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
+
+        assert payload.resolved is True
+        assert payload.payload is not None
+        assert payload.payload["mapping_state"] == "ambiguous"
+        assert payload.payload["child_session_id"] is None
+        assert payload.payload["instruction_tool_use_block_id"] == instruction_block_id
+        assert any("ambiguous" in caveat for caveat in payload.caveats)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_missing_payload_for_unknown_delegation_identity(tmp_path: Path) -> None:
+    archive = _archive(tmp_path)
+    try:
+        block_missing = await archive.resolve_ref("delegation:claude-code-session:no-such-parent:dispatch:0")
+        assert block_missing.resolved is False
+        assert block_missing.kind == "delegation"
+        assert block_missing.payload_kind == "missing"
+        assert block_missing.payload is None
+
+        edge_missing = await archive.resolve_ref(
+            f"delegation:{delegation_edge_object_id('claude-code-session:no-parent', 'claude-code-session:no-child')}"
+        )
+        assert edge_missing.resolved is False
+        assert edge_missing.payload_kind == "missing"
     finally:
         await archive.close()
 
