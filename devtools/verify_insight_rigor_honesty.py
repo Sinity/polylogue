@@ -41,6 +41,12 @@ def _uncovered_insight_names() -> tuple[str, ...]:
     return tuple(sorted(registered - covered))
 
 
+def _missing_nullable_field_contracts() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    from polylogue.insights.rigor import missing_nullable_field_contracts
+
+    return missing_nullable_field_contracts()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -50,22 +56,40 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     uncovered = _uncovered_insight_names()
+    missing_fields = _missing_nullable_field_contracts()
 
     if args.json:
-        print(json.dumps({"uncovered_insight_names": list(uncovered), "ok": not uncovered}, indent=2))
-    elif uncovered:
-        print(f"insight rigor honesty: {len(uncovered)} registered insight(s) uncovered")
-        for name in uncovered:
-            print(f"  {name}")
+        print(
+            json.dumps(
+                {
+                    "uncovered_insight_names": list(uncovered),
+                    "missing_nullable_field_contracts": [
+                        {"insight_name": name, "field_path": list(field_path)} for name, field_path in missing_fields
+                    ],
+                    "ok": not uncovered and not missing_fields,
+                },
+                indent=2,
+            )
+        )
+    elif uncovered or missing_fields:
+        if uncovered:
+            print(f"insight rigor honesty: {len(uncovered)} registered insight(s) uncovered")
+            for name in uncovered:
+                print(f"  {name}")
+        if missing_fields:
+            print(f"insight rigor honesty: {len(missing_fields)} nullable field contract(s) missing")
+            for name, field_path in missing_fields:
+                print(f"  {name}.{'.'.join(field_path)}")
         print("")
         print(
             "Policy violation: every registered insight needs a RigorContract row "
-            "(polylogue/insights/rigor.py _RIGOR_MATRIX) or a justified RIGOR_EXEMPT entry."
+            "(polylogue/insights/rigor.py _RIGOR_MATRIX) or a justified RIGOR_EXEMPT entry, "
+            "and every known zero-denominator field needs a RigorFieldContract."
         )
     else:
-        print("insight rigor honesty: every registered insight is contracted or exempt.")
+        print("insight rigor honesty: every registered insight and nullable field is contracted or exempt.")
 
-    return 0 if not uncovered else 1
+    return 0 if not uncovered and not missing_fields else 1
 
 
 if __name__ == "__main__":

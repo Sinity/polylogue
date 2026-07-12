@@ -17,6 +17,7 @@ def _report_args(
     out_dir: Path | None,
     limit: int,
     sample_limit: int,
+    n_min: int = 30,
     calibration_size: int = 3,
     calibration_seed: int = 7,
     calibration_labels: Path | None = None,
@@ -26,6 +27,7 @@ def _report_args(
         out_dir=out_dir,
         limit=limit,
         sample_limit=sample_limit,
+        n_min=n_min,
         calibration_size=calibration_size,
         calibration_seed=calibration_seed,
         calibration_labels=calibration_labels,
@@ -231,6 +233,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
         "inspected_structured_failures": 4,
         "limit": 4,
+        "n_min": 30,
         "time_window": "entire archive (no since/until filter)",
         "sampled_by_origin": [
             {
@@ -253,6 +256,10 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
             "before pairing to tool-use rows"
         ),
         "sensitivity_scope": "next 3 assistant messages after the failed result, stopping before the next user message",
+        "thin_cell_policy": (
+            "Split cells below n_min are retained for coverage accounting but publish no rates: "
+            "coverage_status=insufficient_n and publication_status=not_supported."
+        ),
         "total_by_origin": [
             {"failed_outcomes": 2, "origin": "claude-code-session"},
             {"failed_outcomes": 2, "origin": "codex-session"},
@@ -294,8 +301,11 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
             "ambiguous_wordless_continuation": 1,
             "ambiguous_prose_no_marker": 1,
             "classified_outcomes": 0,
-            "silent_rate_lower_bound": 0.0,
-            "silent_rate_among_classified": 0.0,
+            "n_min": 30,
+            "coverage_status": "insufficient_n",
+            "publication_status": "not_supported",
+            "silent_rate_lower_bound": None,
+            "silent_rate_among_classified": None,
         },
         {
             "name": "consequential",
@@ -306,8 +316,11 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
             "ambiguous_wordless_continuation": 0,
             "ambiguous_prose_no_marker": 0,
             "classified_outcomes": 2,
-            "silent_rate_lower_bound": 0.5,
-            "silent_rate_among_classified": 0.5,
+            "n_min": 30,
+            "coverage_status": "insufficient_n",
+            "publication_status": "not_supported",
+            "silent_rate_lower_bound": None,
+            "silent_rate_among_classified": None,
         },
     ]
     assert set(report["samples_by_origin_classification"]) == {"claude-code-session", "codex-session"}
@@ -353,7 +366,9 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "ack_marker_recall": 0.5,
     }
     assert summary["proof_report"]["by_handler_class"][0]["name"] == "benign_recovery"
-    assert summary["proof_report"]["by_handler_class"][1]["silent_rate_lower_bound"] == 0.5
+    assert summary["proof_report"]["by_handler_class"][1]["coverage_status"] == "insufficient_n"
+    assert summary["proof_report"]["by_handler_class"][1]["publication_status"] == "not_supported"
+    assert summary["proof_report"]["by_handler_class"][1]["silent_rate_lower_bound"] is None
     assert summary["proof_report"]["time_window"] == "entire archive (no since/until filter)"
     assert summary["proof_report"]["sampled_by_origin"] == [
         {
@@ -394,7 +409,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert "Claim-vs-Evidence" in readme
     assert "- time window: entire archive (no since/until filter)" in readme
     assert "### Handler-Class Split" in readme
-    assert "- consequential: failed 2; silent 1; ambiguous 0; silent lower bound 50.0%" in readme
+    assert "- consequential: failed 2; silent 1; ambiguous 0; not supported (n < 30)" in readme
     assert "- acknowledgments appearing only after the next turn: 1" in readme
     assert "- silent lower bound after next-3 sensitivity: 0.0%" in readme
     assert "### Marker Calibration" in readme
@@ -439,6 +454,31 @@ def test_claim_vs_evidence_bounded_sample_is_origin_stratified(tmp_path: Path) -
     assert {row["name"] for row in report["by_origin"]} == {"claude-code-session", "codex-session"}
 
 
+def test_claim_vs_evidence_refuses_rates_for_cells_below_n_min(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    _seed_archive(archive)
+
+    report = build_report(
+        _report_args(
+            archive_root=archive,
+            out_dir=None,
+            limit=4,
+            sample_limit=2,
+            n_min=3,
+        )
+    )
+
+    assert report["sample_frame"]["n_min"] == 3
+    assert "publication_status=not_supported" in report["sample_frame"]["thin_cell_policy"]
+    by_model = {str(row["name"]): row for row in report["by_model"]}
+    thin = by_model["claude-haiku"]
+    assert thin["failed_outcomes"] == 1
+    assert thin["coverage_status"] == "insufficient_n"
+    assert thin["publication_status"] == "not_supported"
+    assert thin["silent_rate_lower_bound"] is None
+    assert thin["silent_rate_among_classified"] is None
+
+
 def test_claim_vs_evidence_public_reproduction_handles_unlabeled_sample(tmp_path: Path) -> None:
     archive = tmp_path / "archive"
     out_dir = tmp_path / "out"
@@ -475,13 +515,13 @@ async def test_claim_vs_evidence_seeded_demo_reproduces_method(tmp_path: Path) -
         )
     )
 
-    assert report["sample_frame"]["total_structured_failures"] == 5
-    assert report["sample_frame"]["inspected_structured_failures"] == 5
+    assert report["sample_frame"]["total_structured_failures"] == 7
+    assert report["sample_frame"]["inspected_structured_failures"] == 7
     assert report["totals"]["acknowledged"] == 3
-    assert report["totals"]["silent_proceed"] == 2
+    assert report["totals"]["silent_proceed"] == 4
     assert report["totals"]["ambiguous"] == 0
     public_summary = json.loads((out_dir / "public-summary.json").read_text())
-    assert public_summary["proofs"][0]["total_structured_failures"] == 5
+    assert public_summary["proofs"][0]["total_structured_failures"] == 7
     public_reproduction = (out_dir / "PUBLIC_REPRODUCTION.md").read_text()
     assert "Counts will differ because the deterministic demo archive is synthetic." in public_reproduction
 

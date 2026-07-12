@@ -467,10 +467,20 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "per_model_breakdown",
         ),
         version_fields=(),
+        field_contracts=(
+            RigorFieldContract(
+                field_path=("confidence",),
+                provenance_class="derived",
+                denominator_field=("priced_session_count",),
+                evidence_tier="cost-pricing-rollup",
+            ),
+        ),
         notes=(
             "provenance.materializer_version is a hardcoded literal 0 (archive.py), a sentinel "
             "for 'computed live at query time', not a stored materialized artifact -- not "
-            "declared as a version_field."
+            "declared as a version_field. ``confidence`` is null when no priced sessions "
+            "provide a denominator; other numeric fields are direct counts or sums where "
+            "zero is a measured aggregate."
         ),
     ),
     RigorContract(
@@ -549,6 +559,21 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
 #: that is in neither set.
 RIGOR_EXEMPT: dict[str, str] = {}
 
+# Quantitative fields whose denominators can be absent.  The static honesty
+# gate checks this inventory against the declared contracts so a newly added
+# zero-denominator field cannot silently fall back to a numeric sentinel.
+REQUIRED_NULLABLE_FIELD_CONTRACTS: frozenset[tuple[str, tuple[str, ...]]] = frozenset(
+    {
+        ("archive_coverage", ("avg_messages_per_session",)),
+        ("archive_coverage", ("avg_user_words",)),
+        ("archive_coverage", ("avg_authored_user_words",)),
+        ("archive_coverage", ("avg_assistant_words",)),
+        ("archive_coverage", ("tool_use_percentage",)),
+        ("archive_coverage", ("thinking_percentage",)),
+        ("cost_rollups", ("confidence",)),
+    }
+)
+
 
 def list_rigor_contracts() -> tuple[RigorContract, ...]:
     """Return the immutable per-product rigor contract matrix."""
@@ -577,6 +602,18 @@ def rigor_exemption_reason(insight_name: str) -> str | None:
     return RIGOR_EXEMPT.get(insight_name)
 
 
+def missing_nullable_field_contracts() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return known zero-denominator fields not protected by a contract."""
+
+    declared = {
+        (contract.insight_name, field.field_path)
+        for contract in _RIGOR_MATRIX
+        for field in contract.field_contracts
+        if field.nullable_when_ungrounded
+    }
+    return tuple(sorted(REQUIRED_NULLABLE_FIELD_CONTRACTS - declared))
+
+
 def resolve_payload(obj: object, path: Sequence[str]) -> object | None:
     """Walk a dotted attribute/key path against an insight item.
 
@@ -597,11 +634,13 @@ def resolve_payload(obj: object, path: Sequence[str]) -> object | None:
 
 __all__ = [
     "RIGOR_EXEMPT",
+    "REQUIRED_NULLABLE_FIELD_CONTRACTS",
     "RigorContract",
     "RigorFieldContract",
     "RigorVersionField",
     "get_rigor_contract",
     "list_rigor_contracts",
+    "missing_nullable_field_contracts",
     "resolve_payload",
     "rigor_contract_names",
     "rigor_exemption_reason",

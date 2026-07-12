@@ -31,8 +31,10 @@ from polylogue.insights.audit import (
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.registry import INSIGHT_REGISTRY
 from polylogue.insights.rigor import (
+    RigorFieldContract,
     get_rigor_contract,
     list_rigor_contracts,
+    missing_nullable_field_contracts,
     resolve_payload,
     rigor_contract_names,
 )
@@ -170,6 +172,22 @@ def test_rigor_contract_lookup_round_trips() -> None:
     assert contract.fallback_markers == (("inference", "fallback_inference"),)
     assert contract.confidence_field == ("inference", "confidence")
     assert get_rigor_contract("not-a-real-insight") is None
+
+
+def test_cost_rollup_confidence_declares_priced_session_denominator() -> None:
+    """The public confidence value cannot be published without priced rows."""
+
+    contract = get_rigor_contract("cost_rollups")
+    assert contract is not None
+    assert contract.field_contracts == (
+        RigorFieldContract(
+            field_path=("confidence",),
+            provenance_class="derived",
+            denominator_field=("priced_session_count",),
+            evidence_tier="cost-pricing-rollup",
+        ),
+    )
+    assert missing_nullable_field_contracts() == ()
 
 
 def test_phase_rigor_contract_is_evidence_only() -> None:

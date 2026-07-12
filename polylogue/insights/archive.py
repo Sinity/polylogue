@@ -507,7 +507,9 @@ class CostRollupInsight(ArchiveInsightModel):
     unavailable_reason_counts: dict[str, int] = {}
     per_model_breakdown: tuple[CostModelBreakdown, ...] = ()
     usage: CostUsagePayload
-    confidence: float = 0.0
+    # A rollup with no priced sessions has no confidence frame.  ``None`` is
+    # deliberately distinct from a measured 0.0 confidence (9e5.29/uwk3).
+    confidence: float | None = None
     provenance: ArchiveInsightProvenance
 
 

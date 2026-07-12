@@ -49,6 +49,7 @@ _CALIBRATION_LABELS_FILE = "ack-marker-calibration.labels.csv"
 _PUBLIC_SUMMARY_FILE = "public-summary.json"
 _PUBLIC_REPRODUCTION_FILE = "PUBLIC_REPRODUCTION.md"
 _COLD_READER_GATE_FILE = "COLD_READER_GATE.md"
+_DEFAULT_N_MIN = 30
 _CALIBRATION_FIELDS = (
     "sample_id",
     "human_label",
@@ -78,6 +79,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path, default=None, help="Write report.json, summary.json, and README.md.")
     parser.add_argument("--limit", type=int, default=5000, help="Maximum structured failed outcomes to classify.")
     parser.add_argument("--sample-limit", type=int, default=30, help="Maximum evidence samples per class.")
+    parser.add_argument(
+        "--n-min",
+        type=int,
+        default=_DEFAULT_N_MIN,
+        help="Minimum failures required before a split-cell rate is supported.",
+    )
     parser.add_argument(
         "--calibration-size",
         type=int,
@@ -142,19 +149,23 @@ def _object_str_list(value: object) -> list[str]:
     return []
 
 
-def _ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, object]]:
+def _ranked(mapping: dict[str, dict[str, int]], *, n_min: int) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for name, counts in mapping.items():
         failed = counts["failed_outcomes"]
         silent = counts["silent_proceed"]
         classified = counts["acknowledged"] + silent
+        supported = failed >= n_min
         rows.append(
             {
                 "name": name,
                 **counts,
                 "classified_outcomes": classified,
-                "silent_rate_lower_bound": (silent / failed) if failed else 0.0,
-                "silent_rate_among_classified": (silent / classified) if classified else 0.0,
+                "n_min": n_min,
+                "coverage_status": "supported" if supported else "insufficient_n",
+                "publication_status": "supported" if supported else "not_supported",
+                "silent_rate_lower_bound": (silent / failed) if supported else None,
+                "silent_rate_among_classified": (silent / classified) if supported and classified else None,
             }
         )
 
@@ -775,6 +786,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--limit must be positive")
     if args.sample_limit < 1:
         raise ValueError("--sample-limit must be positive")
+    if args.n_min < 1:
+        raise ValueError("--n-min must be positive")
     if args.calibration_size < 0:
         raise ValueError("--calibration-size must be non-negative")
     config = _config_with_archive_root(get_config(), args.archive_root)
@@ -947,6 +960,11 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
             "classification_scope": "immediately following assistant message only",
             "sensitivity_scope": "next 3 assistant messages after the failed result, stopping before the next user message",
+            "n_min": args.n_min,
+            "thin_cell_policy": (
+                "Split cells below n_min are retained for coverage accounting but publish no rates: "
+                "coverage_status=insufficient_n and publication_status=not_supported."
+            ),
             "total_by_origin": total_by_origin,
             "sampled_by_origin": sampled_by_origin,
         },
@@ -966,10 +984,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "ack_later_within_3": max(0, window3_totals["acknowledged"] - totals["acknowledged"]),
         },
-        "by_tool": _ranked(by_tool),
-        "by_model": _ranked(by_model),
-        "by_origin": _ranked(by_origin),
-        "by_handler_class": _ranked(by_handler_class),
+        "by_tool": _ranked(by_tool, n_min=args.n_min),
+        "by_model": _ranked(by_model, n_min=args.n_min),
+        "by_origin": _ranked(by_origin, n_min=args.n_min),
+        "by_handler_class": _ranked(by_handler_class, n_min=args.n_min),
         "handler_class_definition": {
             "benign_recovery": sorted(_BENIGN_RECOVERY_TOOLS),
             "consequential": sorted(_CONSEQUENTIAL_TOOLS),
@@ -1023,6 +1041,8 @@ def _public_summary(report: dict[str, Any]) -> dict[str, Any]:
                 "unpaired_structured_failures": frame["unpaired_structured_failures"],
                 "selection_strategy": frame["selection_strategy"],
                 "selection_order": frame["selection_order"],
+                "n_min": frame["n_min"],
+                "thin_cell_policy": frame["thin_cell_policy"],
             },
             {
                 "name": "next_turn_classification",
@@ -1046,6 +1066,7 @@ def _public_summary(report: dict[str, Any]) -> dict[str, Any]:
             "Deterministic demo reproduction validates the method and renderer, not the private rate estimates.",
             "The classifier is an explicit marker detector; ambiguous rows remain in the denominator.",
             "The report is bounded by --limit unless the limit exceeds the full structured-failure frame.",
+            "Split cells below n_min are coverage-only and explicitly not supported for rate publication.",
         ],
         "reproduction": {
             "demo_archive_root": "/realm/tmp/polylogue-claim-vs-evidence-demo",
@@ -1275,7 +1296,11 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
             f"- {row['name']}: failed {int(row['failed_outcomes']):,}; "
             f"silent {int(row['silent_proceed']):,}; "
             f"ambiguous {int(row['ambiguous']):,}; "
-            f"silent lower bound {float(row['silent_rate_lower_bound']):.1%}"
+            + (
+                f"silent lower bound {float(row['silent_rate_lower_bound']):.1%}"
+                if row["silent_rate_lower_bound"] is not None
+                else f"not supported (n < {int(row['n_min'])})"
+            )
         )
         for row in report["by_handler_class"]
     ]
@@ -1310,6 +1335,7 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         f"- acknowledgments appearing only after the next turn: {rates['ack_later_within_3']:,}",
         f"- silent lower bound after next-3 sensitivity: {rates['window3_silent_rate_lower_bound']:.1%}",
         f"- configured limit: {report['limit']:,}",
+        f"- split-cell minimum n: {frame['n_min']:,} (below this, rates are not supported)",
         f"- selection order: {frame['selection_order']}",
         f"- selection strategy: {frame['selection_strategy']}",
         "",
