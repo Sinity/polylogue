@@ -232,6 +232,7 @@ def test_untyped_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(tmp_p
         "typed_quarantined_competitor",
         "other_session_head",
         "other_session_application",
+        "second_indexed_session",
         "membership",
         "envelope",
         "multi_session",
@@ -331,6 +332,14 @@ def test_untyped_accepted_raw_repair_mutations_fail_closed(tmp_path: Path, mutat
                 """,
                 ("3" * 64, "4" * 64),
             )
+        elif mutation == "second_indexed_session":
+            index.execute(
+                """
+                INSERT INTO sessions (native_id, origin, raw_id, content_hash)
+                SELECT 'unexpected-second-session', origin, raw_id, content_hash
+                FROM sessions LIMIT 1
+                """
+            )
         elif mutation == "membership":
             source.execute(
                 """
@@ -429,6 +438,109 @@ def test_untyped_accepted_raw_repair_resumes_planned_receipt_after_committed_sou
     records = [json.loads(line) for line in receipt.read_text().splitlines()]
     assert [record["state"] for record in records] == ["planned", "applied"]
     assert records[1]["repaired_raw_ids"] == [raw_id]
+
+
+def test_untyped_accepted_raw_repair_writes_every_receipt_record_in_full(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    receipt = tmp_path / "short-write.jsonl"
+    from polylogue.storage import repair as repair_module
+
+    original_write = repair_module._receipt_write
+
+    def short_write(descriptor: int, payload: bytes) -> int:
+        return original_write(descriptor, payload[: max(1, min(11, len(payload)))])
+
+    monkeypatch.setattr(repair_module, "_receipt_write", short_write)
+    repair_untyped_accepted_raws(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    records = [json.loads(line) for line in receipt.read_text().splitlines()]
+    assert [record["state"] for record in records] == ["planned", "applied"]
+
+
+def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    receipt = tmp_path / "torn-terminal.jsonl"
+    from polylogue.storage import repair as repair_module
+
+    original_finish = repair_module._finish_untyped_raw_repair_receipt
+
+    def tear_terminal(locked: Any, *, items: list[Any]) -> None:
+        del items
+        repair_module._write_receipt_all(locked.descriptor, b'{"schema":')
+        repair_module.os.fsync(locked.descriptor)
+        raise RuntimeError("injected torn terminal")
+
+    monkeypatch.setattr(repair_module, "_finish_untyped_raw_repair_receipt", tear_terminal)
+    with pytest.raises(RuntimeError, match="torn terminal"):
+        repair_untyped_accepted_raws(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=receipt,
+            proof_digest=dry_run.proof_digest,
+        )
+    assert _raw_session_row(tmp_path, raw_id)["revision_authority"] == "byte_proven"
+    assert not receipt.read_bytes().endswith(b"\n")
+
+    monkeypatch.setattr(repair_module, "_finish_untyped_raw_repair_receipt", original_finish)
+    repair_untyped_accepted_raws(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    lines = receipt.read_bytes().splitlines()
+    assert len(lines) == 3
+    assert lines[1] == b'{"schema":'
+    recovered = json.loads(lines[2])
+    assert recovered["state"] == "applied"
+    assert recovered["torn_terminal_bytes"] == len(lines[1])
+    assert recovered["torn_terminal_sha256"] == hashlib.sha256(lines[1]).hexdigest()
+
+    reapplied = repair_untyped_accepted_raws(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    assert reapplied.already_repaired_count == 1
+
+
+def test_untyped_accepted_raw_repair_rejects_torn_terminal_without_source_commit(tmp_path: Path) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    receipt_path = tmp_path / "false-torn-terminal.jsonl"
+    from polylogue.storage import repair as repair_module
+
+    locked = repair_module._lock_untyped_raw_repair_receipt(receipt_path, list(dry_run.items))
+    repair_module._write_receipt_all(locked.descriptor, b'{"state":')
+    repair_module.os.fsync(locked.descriptor)
+    locked.close()
+
+    with pytest.raises(RuntimeError, match="no matching committed source refinement"):
+        repair_untyped_accepted_raws(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=receipt_path,
+            proof_digest=dry_run.proof_digest,
+        )
+    assert _raw_session_row(tmp_path, raw_id)["revision_authority"] == "quarantined"
 
 
 @pytest.mark.parametrize(

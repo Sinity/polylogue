@@ -230,11 +230,11 @@ def _inspect_untyped_accepted_raw(
         logical_source_key = str(head["logical_source_key"])
         session_id = str(head["session_id"])
         session_rows = conn.execute(
-            "SELECT session_id, raw_id, content_hash FROM index_tier.sessions WHERE session_id = ? AND raw_id = ?",
-            (session_id, raw_id),
+            "SELECT session_id, raw_id, content_hash FROM index_tier.sessions WHERE raw_id = ?",
+            (raw_id,),
         ).fetchall()
-        if len(session_rows) != 1:
-            return _untyped_raw_item(raw_id, "accepted head and indexed session do not share the raw")
+        if len(session_rows) != 1 or str(session_rows[0]["session_id"]) != session_id:
+            return _untyped_raw_item(raw_id, "accepted head is not the raw's unique indexed session")
         session_row = session_rows[0]
         applications = conn.execute(
             """
@@ -539,13 +539,27 @@ class _LockedUntypedRawRepairReceipt:
     target_hash: str
     terminal: bool
     repair_intent_raw_ids: tuple[str, ...]
+    torn_terminal: bytes | None = None
 
     def close(self) -> None:
         fcntl.flock(self.descriptor, fcntl.LOCK_UN)
         os.close(self.descriptor)
 
 
-def _receipt_records(descriptor: int) -> list[dict[str, object]]:
+def _receipt_write(descriptor: int, payload: bytes) -> int:
+    return os.write(descriptor, payload)
+
+
+def _write_receipt_all(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = _receipt_write(descriptor, payload[offset:])
+        if written <= 0:
+            raise RuntimeError("operator repair receipt write made no progress")
+        offset += written
+
+
+def _receipt_records(descriptor: int) -> tuple[list[dict[str, object] | bytes], bool]:
     size = os.fstat(descriptor).st_size
     if size > 16 * 1024 * 1024:
         raise RuntimeError("existing repair receipt exceeds the bounded parser limit")
@@ -559,25 +573,36 @@ def _receipt_records(descriptor: int) -> list[dict[str, object]]:
         chunks.append(chunk)
         remaining -= len(chunk)
     payload = b"".join(chunks)
-    try:
-        lines = payload.decode("utf-8").splitlines()
-        parsed_records: list[object] = [json.loads(line) for line in lines]
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"existing repair receipt is unreadable: {exc}") from exc
-    if any(not isinstance(record, dict) for record in parsed_records):
-        raise RuntimeError("existing repair receipt records must be JSON objects")
-    return [cast(dict[str, object], record) for record in parsed_records]
+    terminated = payload.endswith(b"\n")
+    lines = payload.split(b"\n")
+    if terminated:
+        lines.pop()
+    records: list[dict[str, object] | bytes] = []
+    for index, line in enumerate(lines):
+        if index == len(lines) - 1 and not terminated:
+            records.append(line)
+            continue
+        try:
+            parsed: object = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            records.append(line)
+            continue
+        records.append(cast(dict[str, object], parsed) if isinstance(parsed, dict) else line)
+    return records, terminated
 
 
 def _validate_repair_receipt_records(
-    records: list[dict[str, object]],
+    parsed_receipt: tuple[list[dict[str, object] | bytes], bool],
     *,
     targets: list[dict[str, object]],
     target_hash: str,
-) -> tuple[bool, tuple[str, ...]]:
+) -> tuple[bool, tuple[str, ...], bytes | None]:
+    records, terminated = parsed_receipt
     if not records:
         raise RuntimeError("existing repair receipt is empty")
     planned = records[0]
+    if not isinstance(planned, dict):
+        raise RuntimeError("existing repair receipt does not start with valid planned JSON")
     planned_keys = {"schema", "state", "target_hash", "targets", "repair_intent_raw_ids", "planned_at_ms"}
     if set(planned) != planned_keys or planned.get("schema") != _UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
         raise RuntimeError("existing repair receipt has an invalid planned record schema")
@@ -596,10 +621,24 @@ def _validate_repair_receipt_records(
     if len(set(intent_ids)) != len(intent_ids) or any(raw_id not in raw_ids for raw_id in intent_ids):
         raise RuntimeError("existing repair receipt repair intent does not match its targets")
     if len(records) == 1:
-        return False, intent_ids
-    if len(records) != 2:
+        if not terminated:
+            raise RuntimeError("existing repair receipt has a torn planned record")
+        return False, intent_ids, None
+    torn_terminal: bytes | None = None
+    if len(records) == 2 and isinstance(records[1], bytes) and not terminated:
+        torn_terminal = records[1]
+        if not torn_terminal:
+            raise RuntimeError("existing repair receipt has an empty torn terminal")
+        return False, intent_ids, torn_terminal
+    if len(records) == 2 and isinstance(records[1], dict):
+        applied = records[1]
+        recovered = False
+    elif len(records) == 3 and isinstance(records[1], bytes) and isinstance(records[2], dict) and terminated:
+        torn_terminal = records[1]
+        applied = records[2]
+        recovered = True
+    else:
         raise RuntimeError("existing repair receipt has an invalid state transition")
-    applied = records[1]
     applied_keys = {
         "schema",
         "state",
@@ -608,6 +647,8 @@ def _validate_repair_receipt_records(
         "repaired_raw_ids",
         "proven_raw_ids",
     }
+    if recovered:
+        applied_keys |= {"torn_terminal_bytes", "torn_terminal_sha256"}
     if set(applied) != applied_keys or applied.get("schema") != _UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
         raise RuntimeError("existing repair receipt has an invalid applied record schema")
     if applied.get("state") != "applied" or applied.get("target_hash") != target_hash:
@@ -617,7 +658,12 @@ def _validate_repair_receipt_records(
         raise RuntimeError("existing repair receipt applied timestamp is invalid")
     if applied.get("proven_raw_ids") != list(raw_ids) or applied.get("repaired_raw_ids") != list(intent_ids):
         raise RuntimeError("existing repair receipt applied ids do not match the planned targets")
-    return True, intent_ids
+    if recovered and (
+        applied.get("torn_terminal_bytes") != len(torn_terminal or b"")
+        or applied.get("torn_terminal_sha256") != hashlib.sha256(torn_terminal or b"").hexdigest()
+    ):
+        raise RuntimeError("existing repair receipt recovery does not match its preserved torn terminal")
+    return True, intent_ids, torn_terminal
 
 
 def _lock_untyped_raw_repair_receipt(
@@ -643,10 +689,12 @@ def _lock_untyped_raw_repair_receipt(
         if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
             raise RuntimeError("operator repair receipt path changed while it was being locked")
         if opened.st_size:
-            terminal, existing_intent = _validate_repair_receipt_records(
+            terminal, existing_intent, torn_terminal = _validate_repair_receipt_records(
                 _receipt_records(descriptor), targets=targets, target_hash=target_hash
             )
-            return _LockedUntypedRawRepairReceipt(path, descriptor, target_hash, terminal, existing_intent)
+            return _LockedUntypedRawRepairReceipt(
+                path, descriptor, target_hash, terminal, existing_intent, torn_terminal
+            )
         planned = {
             "schema": _UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
             "state": "planned",
@@ -656,7 +704,7 @@ def _lock_untyped_raw_repair_receipt(
             "planned_at_ms": int(time.time() * 1000),
         }
         encoded = (json.dumps(planned, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        os.write(descriptor, encoded)
+        _write_receipt_all(descriptor, encoded)
         os.fsync(descriptor)
         _fsync_parent(path)
         return _LockedUntypedRawRepairReceipt(path, descriptor, target_hash, False, repair_intent_raw_ids)
@@ -679,14 +727,18 @@ def _finish_untyped_raw_repair_receipt(
         "repaired_raw_ids": list(receipt.repair_intent_raw_ids),
         "proven_raw_ids": [item.raw_id for item in items],
     }
+    if receipt.torn_terminal is not None:
+        terminal["torn_terminal_bytes"] = len(receipt.torn_terminal)
+        terminal["torn_terminal_sha256"] = hashlib.sha256(receipt.torn_terminal).hexdigest()
     opened = os.fstat(receipt.descriptor)
     named = receipt.path.stat(follow_symlinks=False)
     if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
         raise RuntimeError("operator repair receipt path changed before terminal append")
     os.lseek(receipt.descriptor, 0, os.SEEK_END)
-    os.write(
-        receipt.descriptor,
-        (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode(),
+    if receipt.torn_terminal is not None:
+        _write_receipt_all(receipt.descriptor, b"\n")
+    _write_receipt_all(
+        receipt.descriptor, (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode()
     )
     os.fsync(receipt.descriptor)
     _fsync_parent(receipt.path)
@@ -781,6 +833,10 @@ def repair_untyped_accepted_raws(
                             raise RuntimeError("a repair target became ineligible after acquiring the transaction")
                         if receipt.terminal and any(item.status != "already_repaired" for item in locked_items):
                             raise RuntimeError("terminal operator receipt disagrees with durable source authority")
+                        if receipt.torn_terminal is not None and any(
+                            item.status != "already_repaired" for item in locked_items
+                        ):
+                            raise RuntimeError("torn terminal receipt has no matching committed source refinement")
                         for item in locked_items:
                             if item.status == "eligible":
                                 _cas_refine_untyped_accepted_raw(source_conn, item)
