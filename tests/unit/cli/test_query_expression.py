@@ -1111,6 +1111,28 @@ class TestBooleanQueryExpression:
         assert source.unit == "assertion"
         assert source.predicate == QueryFieldPredicate(field="value.status", values=("approved",), op="=")
 
+    def test_assertion_value_path_quoted_string_preserves_literal_type(self) -> None:
+        source = parse_unit_source_expression('assertions where value.status:"true"')
+
+        assert source is not None
+        assert source.predicate == QueryFieldPredicate(field="value.status", values=('"true"',), op="=")
+
+    def test_assertion_value_path_equality_preserves_alternation(self) -> None:
+        source = parse_unit_source_expression('assertions where value.status:("4"|"true"|null)')
+
+        assert source is not None
+        assert source.predicate == QueryFieldPredicate(
+            field="value.status",
+            values=('"4"', '"true"', "null"),
+            op="=",
+        )
+
+    def test_assertion_value_path_quoted_pipe_is_not_an_alternation(self) -> None:
+        source = parse_unit_source_expression('assertions where value.status:"a|b"')
+
+        assert source is not None
+        assert source.predicate == QueryFieldPredicate(field="value.status", values=('"a|b"',), op="=")
+
     def test_assertion_value_path_comparison_predicate(self) -> None:
         source = parse_unit_source_expression("assertions where value.score:>=4")
 
@@ -1158,6 +1180,10 @@ class TestBooleanQueryExpression:
     def test_assertion_value_path_non_numeric_comparator_rejected(self) -> None:
         with pytest.raises(ExpressionCompileError, match="numeric value"):
             parse_unit_source_expression("assertions where value.score:>=not-a-number")
+
+    def test_assertion_value_path_non_finite_comparator_rejected(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="finite numeric value"):
+            parse_unit_source_expression("assertions where value.score:>=NaN")
 
     def test_assertion_value_path_rejected_for_non_assertion_unit(self) -> None:
         with pytest.raises(ExpressionCompileError, match="not supported"):

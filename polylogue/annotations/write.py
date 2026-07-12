@@ -26,7 +26,12 @@ import hashlib
 import sqlite3
 from collections.abc import Mapping, Sequence
 
-from polylogue.annotations.schema import AnnotationSchema, validate_annotation_row
+from polylogue.annotations.schema import (
+    ANNOTATION_SCHEMA_REGISTRY,
+    AnnotationSchema,
+    AnnotationSchemaRegistry,
+    validate_annotation_row,
+)
 from polylogue.core.enums import AssertionKind
 from polylogue.core.refs import normalize_object_ref_text
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope, upsert_assertion
@@ -69,6 +74,7 @@ def upsert_annotation_assertion(
     conn: sqlite3.Connection,
     *,
     schema: AnnotationSchema,
+    registry: AnnotationSchemaRegistry = ANNOTATION_SCHEMA_REGISTRY,
     target_ref: str,
     value: Mapping[str, object],
     row_key: str,
@@ -81,26 +87,42 @@ def upsert_annotation_assertion(
 ) -> ArchiveAssertionEnvelope:
     """Validate one label against *schema* and upsert it as a candidate assertion.
 
-    Raises :class:`AnnotationValidationError` (and writes nothing) if the row
-    fails schema validation -- target grain, field shape, or evidence policy.
+    The schema must match an active entry in *registry*. Raises
+    :class:`~polylogue.annotations.schema.AnnotationSchemaError` for missing,
+    drifted, draft, or deprecated registrations, and
+    :class:`AnnotationValidationError` (writing nothing) when the row fails
+    target-grain, field-shape, or evidence-policy validation.
     On success, delegates to ``upsert_assertion`` with
     ``kind=AssertionKind.ANNOTATION``; the resulting row's status/context
     policy is decided by that function's own author-kind chokepoint, not by
     this caller.
     """
 
-    errors = validate_annotation_row(schema, target_ref=target_ref, value=value, evidence_refs=evidence_refs)
+    registered_schema = registry.require_active(schema)
+    errors = validate_annotation_row(
+        registered_schema,
+        target_ref=target_ref,
+        value=value,
+        evidence_refs=evidence_refs,
+    )
     if errors:
-        raise AnnotationValidationError(schema_id=schema.qualified_id, target_ref=target_ref, errors=errors)
+        raise AnnotationValidationError(
+            schema_id=registered_schema.qualified_id,
+            target_ref=target_ref,
+            errors=errors,
+        )
 
     normalized_target_ref = normalize_object_ref_text(target_ref)
     assertion_id = assertion_id_for_schema_annotation(
-        schema_qualified_id=schema.qualified_id,
+        schema_qualified_id=registered_schema.qualified_id,
         target_ref=normalized_target_ref,
         author_ref=author_ref,
         row_key=row_key,
     )
-    stamped_value: dict[str, object] = {_SCHEMA_PROVENANCE_KEY: schema.qualified_id, **dict(value)}
+    stamped_value: dict[str, object] = {
+        _SCHEMA_PROVENANCE_KEY: registered_schema.qualified_id,
+        **dict(value),
+    }
 
     return upsert_assertion(
         conn,
