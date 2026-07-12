@@ -1232,6 +1232,7 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
     assert integrity["overall_status"] == "violated"
     assert integrity["broken_head_status"] == "violated"
     assert integrity["broken_head_count"] == 1
+    assert integrity["cursor_authority_gap_count"] == 0
     samples = cast(list[dict[str, object]], integrity["broken_head_samples"])
     assert "missing from source tier" in str(samples[0]["reason"])
 
@@ -1244,6 +1245,26 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
     assert claim_guard["openable"]["value"] is True
     assert claim_guard["converged"]["value"] is False
     assert "broken predecessor chain" in str(claim_guard["converged"]["reason"])
+
+
+def test_daemon_and_direct_status_share_zero_head_unavailable_ops_semantics(tmp_path: Path) -> None:
+    """Both status routes consume the canonical projection, including zero-head unknowns."""
+
+    from polylogue.cli.commands.status import _direct_raw_frontier_integrity
+    from polylogue.daemon.status import RawMaterializationReadiness, _raw_frontier_integrity_info
+
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    readiness = RawMaterializationReadiness(available=True)
+
+    with patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"):
+        daemon_payload = _raw_frontier_integrity_info(readiness).model_dump()
+    direct_payload = _direct_raw_frontier_integrity(tmp_path, readiness.model_dump())
+
+    assert daemon_payload == direct_payload
+    assert daemon_payload["broken_head_status"] == "healthy"
+    assert daemon_payload["cursor_ahead_status"] == "unknown"
+    assert daemon_payload["overall_status"] == "unknown"
 
 
 def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> None:

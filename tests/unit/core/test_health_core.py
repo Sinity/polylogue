@@ -53,6 +53,7 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "database",
                 "index",
                 "orphaned_messages",
+                "raw_frontier_integrity",
                 "empty_sessions",
                 "duplicate_sessions",
                 "fts_sync",
@@ -70,6 +71,7 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "sqlite_integrity",
                 "index",
                 "orphaned_messages",
+                "raw_frontier_integrity",
                 "empty_sessions",
                 "duplicate_sessions",
                 "fts_sync",
@@ -97,6 +99,10 @@ def test_run_health_core_contract(
     assert report.timestamp > 0
     assert expected_checks.issubset(names)
     assert sum(report.summary.values()) == len(report.checks)
+    assert report.raw_frontier_integrity["overall_status"] in {"healthy", "unknown", "violated"}
+    convergence = report.to_dict()["archive_convergence"]
+    assert isinstance(convergence, dict)
+    assert convergence["raw_frontier_integrity"] == report.raw_frontier_integrity
 
 
 @pytest.mark.parametrize(

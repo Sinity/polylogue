@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import json
 import os
 import re
@@ -63,7 +62,7 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
-from polylogue.storage.raw_retention import raw_frontier_integrity_snapshot
+from polylogue.storage.raw_retention import raw_frontier_integrity_projection
 from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -180,9 +179,9 @@ class RawFrontierIntegrity(BaseModel):
       past the byte frontier actually accepted into the index for that
       logical source — the exact symptom yla8.6 found only via manual SQL.
 
-    ``overall_status`` is ``"unknown"`` if any sub-check's authority tier is
-    unreadable, ``"violated"`` if any sub-check found a real gap, else
-    ``"healthy"``. Never a false-green zero when authority is unavailable.
+    ``overall_status`` is ``"violated"`` when any check proves a real gap,
+    even if a sibling remains unknown; otherwise unknown authority degrades
+    the result and only fully-proven zeroes render ``"healthy"``.
     """
 
     available: bool = False
@@ -203,6 +202,8 @@ class RawFrontierIntegrity(BaseModel):
     cursor_ahead_count: int = 0
     cursor_ahead_checked_count: int = 0
     cursor_ahead_samples: list[dict[str, object]] = Field(default_factory=list)
+    cursor_authority_gap_count: int = 0
+    cursor_authority_gap_samples: list[dict[str, object]] = Field(default_factory=list)
     cursor_ahead_reason: str = ""
 
 
@@ -1993,104 +1994,17 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
     return RawMaterializationReadiness.model_validate(payload)
 
 
-def _missing_source_raw_status(
-    readiness: RawMaterializationReadiness,
-) -> tuple[Literal["healthy", "unknown", "violated"], str]:
-    """Reproject lost-source-evidence into the raw-frontier-integrity vocabulary.
-
-    This intentionally re-reads an already-computed signal instead of
-    requerying source/index — see ``RawFrontierIntegritySnapshot``'s
-    docstring in ``polylogue.storage.raw_retention``.
-    """
-    if not readiness.available:
-        return "unknown", "raw materialization readiness unavailable"
-    if readiness.lost_source_evidence_count:
-        return (
-            "violated",
-            f"{readiness.lost_source_evidence_count} indexed session(s) reference raw evidence "
-            "missing from source tier",
-        )
-    return "healthy", ""
-
-
 def _raw_frontier_integrity_info(
     raw_materialization_readiness: RawMaterializationReadiness,
 ) -> RawFrontierIntegrity:
-    """Compose the polylogue-yla8.7 raw-frontier-integrity projection for status.
+    """Read the one canonical split-tier projection used by every surface."""
 
-    Bounded by construction: the broken-head/cursor-ahead checks are scoped
-    to ``raw_revision_heads`` rows (one per actively-appended logical
-    source), not a full-archive scan.
-    """
-    missing_status, missing_reason = _missing_source_raw_status(raw_materialization_readiness)
-
-    dbf = _active_status_db_path()
-    source_db = dbf.with_name("source.db")
-    ops_db = dbf.with_name("ops.db")
-
-    broken_status: Literal["healthy", "unknown", "violated"] = "unknown"
-    broken_count = 0
-    broken_checked = 0
-    broken_samples: list[dict[str, object]] = []
-    broken_reason = f"source tier is unavailable: {source_db}"
-    cursor_status: Literal["healthy", "unknown", "violated"] = "unknown"
-    cursor_count = 0
-    cursor_checked = 0
-    cursor_samples: list[dict[str, object]] = []
-    cursor_reason = broken_reason
-
-    if source_db.exists():
-        try:
-            conn = open_readonly_connection(source_db)
-        except sqlite3.Error as exc:
-            broken_reason = cursor_reason = f"source tier is unreadable: {exc}"
-        else:
-            try:
-                snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=dbf, ops_db_path=ops_db)
-            except Exception as exc:
-                logger.warning("status: raw-frontier-integrity snapshot failed: %s", exc, exc_info=True)
-                broken_reason = cursor_reason = f"raw frontier integrity check failed: {exc}"
-            else:
-                broken_status = snapshot.broken_head_status
-                broken_count = snapshot.broken_head_count
-                broken_checked = snapshot.broken_head_checked_count
-                broken_samples = [dataclasses.asdict(sample) for sample in snapshot.broken_head_samples]
-                broken_reason = snapshot.broken_head_reason
-                cursor_status = snapshot.cursor_ahead_status
-                cursor_count = snapshot.cursor_ahead_count
-                cursor_checked = snapshot.cursor_ahead_checked_count
-                cursor_samples = [dataclasses.asdict(sample) for sample in snapshot.cursor_ahead_samples]
-                cursor_reason = snapshot.cursor_ahead_reason
-            finally:
-                conn.close()
-
-    statuses = {broken_status, missing_status, cursor_status}
-    overall: Literal["healthy", "unknown", "violated"]
-    if "unknown" in statuses:
-        overall = "unknown"
-    elif "violated" in statuses:
-        overall = "violated"
-    else:
-        overall = "healthy"
-
-    return RawFrontierIntegrity(
-        available=overall != "unknown",
-        overall_status=overall,
-        broken_head_status=broken_status,
-        broken_head_count=broken_count,
-        broken_head_checked_count=broken_checked,
-        broken_head_samples=broken_samples,
-        broken_head_reason=broken_reason,
-        missing_source_raw_status=missing_status,
-        missing_source_raw_count=raw_materialization_readiness.lost_source_evidence_count,
-        missing_source_raw_samples=list(raw_materialization_readiness.lost_source_evidence_samples),
-        missing_source_raw_reason=missing_reason,
-        cursor_ahead_status=cursor_status,
-        cursor_ahead_count=cursor_count,
-        cursor_ahead_checked_count=cursor_checked,
-        cursor_ahead_samples=cursor_samples,
-        cursor_ahead_reason=cursor_reason,
+    active_root = _active_status_db_path().parent
+    projection = raw_frontier_integrity_projection(
+        active_root,
+        raw_materialization_readiness.model_dump(),
     )
+    return RawFrontierIntegrity.model_validate(projection.to_dict())
 
 
 def _raw_replay_backlog_info() -> dict[str, object]:

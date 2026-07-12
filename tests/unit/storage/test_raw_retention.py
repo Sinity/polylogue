@@ -18,6 +18,7 @@ from polylogue.storage.raw_retention import (
     active_raw_retention_authority,
     cleanup_superseded_raw_snapshots,
     protected_active_raw_revision_ids,
+    raw_frontier_integrity_projection,
     raw_frontier_integrity_snapshot,
     superseded_raw_snapshot_candidates,
 )
@@ -1318,6 +1319,81 @@ def test_raw_frontier_integrity_snapshot_cursor_at_exact_accepted_frontier_is_he
     assert snapshot.cursor_ahead_status == "healthy"
     assert snapshot.cursor_ahead_count == 0
     assert snapshot.cursor_ahead_checked_count == 1
+
+
+def test_raw_frontier_integrity_snapshot_reads_ops_with_zero_accepted_heads(tmp_path: Path) -> None:
+    """Zero heads cannot bypass the ops authority check and false-green."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(
+            conn,
+            index_db_path=index_db,
+            ops_db_path=tmp_path / "missing-ops.db",
+        )
+
+    assert snapshot.broken_head_status == "healthy"
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert "ops tier is unavailable" in snapshot.cursor_ahead_reason
+    assert snapshot.overall_status == "unknown"
+
+
+def test_raw_frontier_integrity_snapshot_surfaces_cursor_without_accepted_head(tmp_path: Path) -> None:
+    """A committed cursor with no comparable head is explicit unknown debt."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "unmaterialized.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=42)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_ahead_count == 0
+    assert snapshot.cursor_authority_gap_count == 1
+    assert snapshot.cursor_authority_gap_samples[0].source_path == str(source_path)
+    assert snapshot.cursor_authority_gap_samples[0].cursor_byte_offset == 42
+    assert "no accepted byte head" in snapshot.cursor_authority_gap_samples[0].reason
+    assert snapshot.overall_status == "unknown"
+
+
+def test_raw_frontier_integrity_projection_preserves_violation_when_sibling_is_unknown(tmp_path: Path) -> None:
+    """Known corruption dominates unavailable cursor authority without claiming full availability."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-missing",
+        accepted_raw_id="raw-missing",
+        accepted_revision="revision-1",
+        generation=1,
+        frontier=15,
+        append_end_offset=15,
+    )
+
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        {"available": True, "lost_source_evidence_count": 0},
+    )
+
+    assert projection.broken_head_status == "violated"
+    assert projection.cursor_ahead_status == "unknown"
+    assert projection.cursor_authority_gap_count == 1
+    assert projection.overall_status == "violated"
+    assert projection.available is False
 
 
 @pytest.mark.parametrize("index_kind", ["missing", "malformed"])

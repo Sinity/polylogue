@@ -287,6 +287,7 @@ def component_from_raw_frontier_integrity(payload: Mapping[str, Any] | None) -> 
             "missing_source_raw_count": int(data.get("missing_source_raw_count") or 0),
             "cursor_ahead_count": int(data.get("cursor_ahead_count") or 0),
             "cursor_ahead_checked_count": int(data.get("cursor_ahead_checked_count") or 0),
+            "cursor_authority_gap_count": int(data.get("cursor_authority_gap_count") or 0),
         },
         caveats=tuple(caveats),
         repair_hint=None if state == CapabilityReadinessState.READY else "polylogue ops status --full",

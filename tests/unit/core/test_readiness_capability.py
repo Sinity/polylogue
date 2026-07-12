@@ -267,6 +267,7 @@ def test_raw_frontier_integrity_maps_healthy_to_ready() -> None:
             "cursor_ahead_status": "healthy",
             "cursor_ahead_count": 0,
             "cursor_ahead_checked_count": 3,
+            "cursor_authority_gap_count": 0,
         }
     )
 
@@ -276,6 +277,7 @@ def test_raw_frontier_integrity_maps_healthy_to_ready() -> None:
     assert component.caveats == ()
     assert component.repair_hint is None
     assert component.counts["broken_head_checked_count"] == 3
+    assert component.counts["cursor_authority_gap_count"] == 0
 
 
 def test_raw_frontier_integrity_maps_violated_broken_head_to_poisoned_with_caveat() -> None:
@@ -316,6 +318,24 @@ def test_raw_frontier_integrity_maps_unavailable_authority_to_unknown_never_read
     assert "broken_head_status:unknown" in component.caveats
     assert "cursor_ahead_status:unknown" in component.caveats
     assert "missing_source_raw_status" not in "".join(component.caveats)
+
+
+def test_raw_frontier_integrity_maps_known_violation_with_unknown_sibling_to_poisoned() -> None:
+    component = component_from_raw_frontier_integrity(
+        {
+            "available": False,
+            "overall_status": "violated",
+            "broken_head_status": "violated",
+            "broken_head_count": 1,
+            "missing_source_raw_status": "healthy",
+            "cursor_ahead_status": "unknown",
+            "cursor_authority_gap_count": 1,
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.POISONED
+    assert component.counts["cursor_authority_gap_count"] == 1
+    assert component.caveats == ("broken_head_status:violated", "cursor_ahead_status:unknown")
 
 
 def test_raw_frontier_integrity_maps_none_payload_to_unknown() -> None:

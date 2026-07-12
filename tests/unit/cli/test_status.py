@@ -1082,6 +1082,7 @@ class TestNoArchiveStatus:
         assert integrity["broken_head_status"] == "violated"
         assert integrity["broken_head_count"] == 1
         assert "missing from source tier" in integrity["broken_head_samples"][0]["reason"]
+        assert integrity["cursor_authority_gap_count"] == 0
 
         component = payload["component_readiness"]["raw_frontier_integrity"]
         assert component["state"] == "poisoned"
