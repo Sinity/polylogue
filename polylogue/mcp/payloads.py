@@ -13,6 +13,7 @@ from polylogue.core.json import JSONDocument
 from polylogue.core.user_state_targets import TARGET_SESSION
 from polylogue.core.web_urls import canonical_session_url
 from polylogue.readiness import component_from_outcome_check, component_from_raw_materialization_readiness
+from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     AssertionClaimPayload,
@@ -58,7 +59,6 @@ if TYPE_CHECKING:
     from polylogue.readiness import ReadinessCheck, ReadinessReport
     from polylogue.storage.runtime import RawSessionRecord
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
-    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
 
 MCPAssertionClaimPayload = AssertionClaimPayload

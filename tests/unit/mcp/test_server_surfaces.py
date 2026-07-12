@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_type_hints
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1080,6 +1080,15 @@ class TestArchiveGenericToolSurfaces:
         assert called_spec.seed_refs == ("session:session-1",)
         assert called_spec.read_views == ("messages",)
         assert called_spec.max_tokens == 1000
+
+    def test_context_delivery_payload_mapper_annotations_resolve_at_runtime(self: object) -> None:
+        from polylogue.mcp.payloads import MCPContextDeliveryPayload
+        from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+
+        hints = get_type_hints(MCPContextDeliveryPayload.from_envelope)
+
+        assert hints["envelope"] is ArchiveContextDeliveryEnvelope
+        assert hints["return"] is MCPContextDeliveryPayload
 
     @pytest.mark.asyncio
     async def test_get_context_delivery_reads_recipient_scoped_facade_receipt(
