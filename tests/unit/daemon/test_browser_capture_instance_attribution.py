@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 
+import pytest
+
+from polylogue.api import Polylogue
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import (
     BrowserCaptureWriteResult,
     capture_dedup_content_hash,
     write_capture_envelope,
 )
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.cursor import CursorStore
 
 
 def _envelope(instance_id: str, *, backfill_job_id: str) -> BrowserCaptureEnvelope:
@@ -50,8 +57,9 @@ def _envelope(instance_id: str, *, backfill_job_id: str) -> BrowserCaptureEnvelo
     )
 
 
-def test_concurrent_extension_instances_deduplicate_without_corrupting_spool(tmp_path: Path) -> None:
-    """The real receiver writer ignores observer-only backfill attribution."""
+@pytest.mark.asyncio
+async def test_concurrent_extension_instances_deduplicate_without_corrupting_spool(tmp_path: Path) -> None:
+    """Concurrent receiver writes converge to one artifact and archived session."""
     first = _envelope("extension-instance-a", backfill_job_id="job-a")
     second = _envelope("extension-instance-b", backfill_job_id="job-b")
     assert capture_dedup_content_hash(first) == capture_dedup_content_hash(second)
@@ -73,3 +81,21 @@ def test_concurrent_extension_instances_deduplicate_without_corrupting_spool(tmp
         "extension-instance-b",
     }
     assert not list(tmp_path.rglob(".*.tmp"))
+
+    archive = Polylogue(archive_root=tmp_path / "archive")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="browser-capture", root=tmp_path, suffixes=(".json",)),),
+        cursor=CursorStore(archive.backend.db_path),
+        parser_fingerprint="test-parser",
+    )
+    try:
+        metrics = await processor.ingest_files([results[0].path], emit_event=False)
+        with sqlite3.connect(archive.archive_root / "index.db") as conn:
+            archived_count = conn.execute("SELECT COUNT(*) FROM sessions WHERE native_id = 'concurrent-1'").fetchone()[
+                0
+            ]
+        assert metrics.ingested_session_count == 1
+        assert archived_count == 1
+    finally:
+        await archive.close()
