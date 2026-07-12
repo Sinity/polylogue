@@ -1185,6 +1185,19 @@ class TestBooleanQueryExpression:
         with pytest.raises(ExpressionCompileError, match="finite numeric value"):
             parse_unit_source_expression("assertions where value.score:>=NaN")
 
+    @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1" + "0" * 400])
+    def test_assertion_value_path_non_finite_equality_rejected(self, literal: str) -> None:
+        with pytest.raises(ExpressionCompileError, match="finite JSON scalar"):
+            parse_unit_source_expression(f"assertions where value.score:{literal}")
+
+    @pytest.mark.parametrize("literal", ["[]", "{}"])
+    def test_assertion_value_path_structured_equality_rejected(self, literal: str) -> None:
+        # These shapes are rejected at the grammar boundary before the
+        # value-path scalar validator runs; either way they cannot become an
+        # equality predicate or reach SQL lowering.
+        with pytest.raises(ExpressionCompileError):
+            parse_unit_source_expression(f"assertions where value.score:{literal}")
+
     def test_assertion_value_path_rejected_for_non_assertion_unit(self) -> None:
         with pytest.raises(ExpressionCompileError, match="not supported"):
             parse_unit_source_expression("messages where value.score:>=4")

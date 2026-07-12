@@ -63,6 +63,10 @@ class TestAnnotationFieldValidation:
         assert field.validate_value(1) is None
         assert field.validate_value(1.5) is not None
 
+    def test_numeric_field_accepts_arbitrarily_large_finite_integer_without_crashing(self) -> None:
+        field = AnnotationField(name="count", value_type="integer")
+        assert field.validate_value(10**400) is None
+
     @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
     def test_number_field_rejects_non_finite_values(self, value: float) -> None:
         field = AnnotationField(name="confidence", value_type="number")
@@ -86,6 +90,19 @@ class TestAnnotationFieldValidation:
     def test_bounds_on_non_numeric_field_rejected(self) -> None:
         with pytest.raises(AnnotationSchemaError):
             AnnotationField(name="note", value_type="string", minimum=0)
+
+    @pytest.mark.parametrize("bound", [math.nan, math.inf, -math.inf])
+    @pytest.mark.parametrize("bound_name", ["minimum", "maximum"])
+    def test_non_finite_numeric_bound_rejected(self, bound_name: str, bound: float) -> None:
+        with pytest.raises(AnnotationSchemaError, match="finite number"):
+            if bound_name == "minimum":
+                AnnotationField(name="score", value_type="number", minimum=bound)
+            else:
+                AnnotationField(name="score", value_type="number", maximum=bound)
+
+    def test_unknown_field_type_rejected_at_runtime(self) -> None:
+        with pytest.raises(AnnotationSchemaError, match="unknown value_type"):
+            AnnotationField(name="score", value_type="not-a-type")  # type: ignore[arg-type]
 
     def test_invalid_field_name_rejected(self) -> None:
         with pytest.raises(AnnotationSchemaError):
@@ -123,6 +140,14 @@ class TestAnnotationSchemaConstruction:
     def test_invalid_schema_id_rejected(self) -> None:
         with pytest.raises(AnnotationSchemaError):
             _schema(schema_id="Not Valid")
+
+    def test_unknown_evidence_policy_rejected_at_runtime(self) -> None:
+        with pytest.raises(AnnotationSchemaError, match="unknown evidence_policy"):
+            _schema(evidence_policy="bogus")
+
+    def test_unknown_status_rejected_at_runtime(self) -> None:
+        with pytest.raises(AnnotationSchemaError, match="unknown status"):
+            _schema(status="bogus")
 
     def test_abstain_field_must_be_declared(self) -> None:
         with pytest.raises(AnnotationSchemaError):
