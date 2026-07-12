@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -115,15 +116,46 @@ def _logical_state(root: Path, raw_id: str) -> dict[str, list[tuple[object, ...]
     return result
 
 
+def _raw_session_row(root: Path, raw_id: str) -> dict[str, object]:
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    assert row is not None
+    return dict(row)
+
+
 def test_untyped_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(tmp_path: Path) -> None:
     raw_id = _seed_invalid_head(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+            ) VALUES ('artifact-witness', ?, 'chatgpt-export', 'repair-one.json', 0,
+                      'session', 'supported_parseable', 'witness', 1, 1, 0, 1, 2)
+            """,
+            (raw_id,),
+        )
     before = _logical_state(tmp_path, raw_id)
+    before_raw = _raw_session_row(tmp_path, raw_id)
 
     dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
 
     assert dry_run.eligible_count == 1
     assert dry_run.items[0].proof_digest
     assert dry_run.items[0].application_decision_id
+    assert dry_run.items[0].origin == "chatgpt-export"
+    assert dry_run.items[0].source_index == 0
+    assert dry_run.items[0].blob_hash == dry_run.items[0].accepted_source_revision
+    assert dry_run.items[0].blob_ref_hash == dry_run.items[0].blob_hash
+    assert dry_run.items[0].accepted_frontier_kind == "byte"
+    assert dry_run.items[0].accepted_frontier == dry_run.items[0].blob_size
+    assert dry_run.items[0].head_decided_at_ms == 2
+    assert [artifact.artifact_id for artifact in dry_run.items[0].artifact_witnesses] == ["artifact-witness"]
+    assert dry_run.items[0].application_witness is not None
+    assert dry_run.items[0].application_witness.detail == "newest unique byte-proven full baseline"
     assert _logical_state(tmp_path, raw_id) == before
 
     receipt_path = tmp_path / "recovery" / "untyped-raw-repair.jsonl"
@@ -161,6 +193,17 @@ def test_untyped_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(tmp_p
     for key in before:
         if key != "source.raw_sessions":
             assert after[key] == before[key]
+    after_raw = _raw_session_row(tmp_path, raw_id)
+    expected_updates = {
+        "logical_source_key": "chatgpt:repair-one",
+        "revision_kind": "full",
+        "source_revision": dry_run.items[0].accepted_source_revision,
+        "baseline_raw_id": raw_id,
+        "acquisition_generation": 0,
+        "revision_authority": "byte_proven",
+    }
+    assert {key: after_raw[key] for key in expected_updates} == expected_updates
+    assert {key for key in before_raw if before_raw[key] != after_raw[key]} == set(expected_updates)
 
     reapplied = repair_untyped_accepted_raws(
         _config(tmp_path),
@@ -186,6 +229,9 @@ def test_untyped_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(tmp_p
         "application",
         "receipt_time",
         "typed_competitor",
+        "typed_quarantined_competitor",
+        "other_session_head",
+        "other_session_application",
         "membership",
         "envelope",
         "multi_session",
@@ -247,6 +293,44 @@ def test_untyped_accepted_raw_repair_mutations_fail_closed(tmp_path: Path, mutat
                 """,
                 ("1" * 64, "2" * 64, "1" * 64, raw_id),
             )
+        elif mutation == "typed_quarantined_competitor":
+            source.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms,
+                    logical_source_key, revision_kind, source_revision, baseline_raw_id,
+                    acquisition_generation, revision_authority
+                ) SELECT ?, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms,
+                         'chatgpt:repair-one', 'full', ?, ?, 1, 'quarantined'
+                  FROM raw_sessions WHERE raw_id = ?
+                """,
+                ("1" * 64, "2" * 64, "1" * 64, raw_id),
+            )
+        elif mutation == "other_session_head":
+            index.execute(
+                """
+                INSERT INTO raw_revision_heads (
+                    logical_source_key, session_id, accepted_raw_id, accepted_source_revision,
+                    accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+                    acquisition_generation, append_end_offset, decided_at_ms
+                ) SELECT 'chatgpt:different-key', session_id, accepted_raw_id,
+                         accepted_source_revision, accepted_content_hash, accepted_frontier_kind,
+                         accepted_frontier, acquisition_generation, append_end_offset, decided_at_ms
+                  FROM raw_revision_heads LIMIT 1
+                """
+            )
+        elif mutation == "other_session_application":
+            index.execute(
+                """
+                INSERT INTO raw_revision_applications (
+                    decision_id, raw_id, session_id, logical_source_key, source_revision,
+                    acquisition_generation, decision, detail, decided_at_ms
+                ) SELECT 'other-session-application', ?, session_id, 'chatgpt:different-key', ?,
+                         acquisition_generation + 1, 'ambiguous', 'test', decided_at_ms + 1
+                  FROM raw_revision_applications LIMIT 1
+                """,
+                ("3" * 64, "4" * 64),
+            )
         elif mutation == "membership":
             source.execute(
                 """
@@ -305,3 +389,161 @@ def test_untyped_accepted_raw_repair_rejects_duplicates_and_rolls_back_batch(
 
     assert _logical_state(tmp_path, first) == before
     assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
+
+
+def test_untyped_accepted_raw_repair_resumes_planned_receipt_after_committed_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    receipt = tmp_path / "planned-resume.jsonl"
+    from polylogue.storage import repair as repair_module
+
+    original_finish = repair_module._finish_untyped_raw_repair_receipt
+    monkeypatch.setattr(
+        repair_module,
+        "_finish_untyped_raw_repair_receipt",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected terminal append crash")),
+    )
+    with pytest.raises(RuntimeError, match="terminal append crash"):
+        repair_untyped_accepted_raws(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=receipt,
+            proof_digest=dry_run.proof_digest,
+        )
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
+    assert _raw_session_row(tmp_path, raw_id)["revision_authority"] == "byte_proven"
+
+    monkeypatch.setattr(repair_module, "_finish_untyped_raw_repair_receipt", original_finish)
+    resumed = repair_untyped_accepted_raws(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    assert resumed.already_repaired_count == 1
+    records = [json.loads(line) for line in receipt.read_text().splitlines()]
+    assert [record["state"] for record in records] == ["planned", "applied"]
+    assert records[1]["repaired_raw_ids"] == [raw_id]
+
+
+@pytest.mark.parametrize(
+    ("record_index", "field", "value"),
+    [
+        (0, "state", "applied"),
+        (0, "planned_at_ms", "not-an-int"),
+        (1, "schema", "wrong"),
+        (1, "target_hash", "0" * 64),
+        (1, "proven_raw_ids", []),
+        (1, "repaired_raw_ids", []),
+    ],
+)
+def test_untyped_accepted_raw_repair_rejects_corrupt_receipt_records(
+    tmp_path: Path,
+    record_index: int,
+    field: str,
+    value: object,
+) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    receipt = tmp_path / "corrupt.jsonl"
+    repair_untyped_accepted_raws(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    records = [json.loads(line) for line in receipt.read_text().splitlines()]
+    records[record_index][field] = value
+    receipt.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+    with pytest.raises(RuntimeError, match="receipt"):
+        repair_untyped_accepted_raws(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=receipt,
+            proof_digest=dry_run.proof_digest,
+        )
+
+
+def test_untyped_accepted_raw_repair_serializes_one_receipt_inode(tmp_path: Path) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    receipt_path = tmp_path / "locked.jsonl"
+    from polylogue.storage import repair as repair_module
+
+    locked = repair_module._lock_untyped_raw_repair_receipt(receipt_path, list(dry_run.items))
+    try:
+        with pytest.raises(RuntimeError, match="already locked"):
+            repair_untyped_accepted_raws(
+                _config(tmp_path),
+                [raw_id],
+                apply=True,
+                receipt_path=receipt_path,
+                proof_digest=dry_run.proof_digest,
+            )
+        assert _raw_session_row(tmp_path, raw_id)["revision_authority"] == "quarantined"
+    finally:
+        locked.close()
+
+
+def test_untyped_accepted_raw_repair_cas_failure_rolls_back_entire_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _seed_invalid_head(tmp_path, "cas-first")
+    second = _seed_invalid_head(tmp_path, "cas-second")
+    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [first, second])
+    before = {raw_id: _raw_session_row(tmp_path, raw_id) for raw_id in (first, second)}
+    from polylogue.storage import repair as repair_module
+
+    original = repair_module._cas_refine_untyped_accepted_raw
+    calls = 0
+
+    def fail_second(conn: sqlite3.Connection, item: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected CAS failure")
+        original(conn, item)
+
+    monkeypatch.setattr(repair_module, "_cas_refine_untyped_accepted_raw", fail_second)
+    with pytest.raises(RuntimeError, match="injected CAS failure"):
+        repair_untyped_accepted_raws(
+            _config(tmp_path),
+            [first, second],
+            apply=True,
+            receipt_path=tmp_path / "cas-rollback.jsonl",
+            proof_digest=dry_run.proof_digest,
+        )
+    assert {raw_id: _raw_session_row(tmp_path, raw_id) for raw_id in (first, second)} == before
+
+
+@pytest.mark.parametrize("limit_kind", ["target", "aggregate"])
+def test_untyped_accepted_raw_repair_checks_blob_budget_before_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_kind: str,
+) -> None:
+    raw_ids = [_seed_invalid_head(tmp_path, "budget-first")]
+    if limit_kind == "aggregate":
+        raw_ids.append(_seed_invalid_head(tmp_path, "budget-second"))
+    from polylogue.storage import repair as repair_module
+
+    blob_sizes = [_raw_session_row(tmp_path, raw_id)["blob_size"] for raw_id in raw_ids]
+    if limit_kind == "target":
+        monkeypatch.setattr(repair_module, "_UNTYPED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES", int(blob_sizes[0]) - 1)
+    else:
+        monkeypatch.setattr(
+            repair_module, "_UNTYPED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES", sum(map(int, blob_sizes)) - 1
+        )
+    monkeypatch.setattr(BlobStore, "read_all", lambda *args, **kwargs: pytest.fail("blob was read before budget check"))
+
+    with pytest.raises(RuntimeError, match="blob limit"):
+        repair_untyped_accepted_raws(_config(tmp_path), raw_ids)
