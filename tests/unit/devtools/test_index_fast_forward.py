@@ -177,6 +177,15 @@ def _seed_v32_fixture(path: Path) -> dict[str, int]:
             """,
             (message_id, session_id, digest),
         )
+        block_id = str(conn.execute("SELECT block_id FROM blocks").fetchone()[0])
+        conn.execute(
+            """
+            INSERT INTO web_content_constructs (
+                session_id, message_id, block_id, position, provider, construct_type
+            ) VALUES (?, ?, ?, 0, 'chatgpt', 'content_reference')
+            """,
+            (session_id, message_id, block_id),
+        )
         conn.execute(
             """
             INSERT INTO threads(thread_id, search_text)
@@ -255,6 +264,16 @@ def test_fast_forward_v32_fixture_applies_exact_deltas_without_raw_reparse(tmp_p
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_web_constructs_message'"
         ).fetchone()
+        web_construct_message_id = str(conn.execute("SELECT message_id FROM web_content_constructs").fetchone()[0])
+        query_plan = " ".join(
+            str(row[3])
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT 1 FROM web_content_constructs WHERE message_id = ? LIMIT 1",
+                (web_construct_message_id,),
+            )
+        )
+        assert "INDEX idx_web_constructs_message" in query_plan
+        assert "SCAN web_content_constructs" not in query_plan
         delegation_columns = [row[1] for row in conn.execute("PRAGMA table_info(delegations)")]
         assert "instruction_tool_use_block_id" in delegation_columns
         for fts_table in ("messages_fts", "session_work_events_fts", "threads_fts"):
