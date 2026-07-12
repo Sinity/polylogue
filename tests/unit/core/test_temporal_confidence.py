@@ -9,7 +9,7 @@ from typing import get_args
 
 import pytest
 
-from polylogue.insights.archive import SessionProfileInsight, SessionWorkEventInsight
+from polylogue.insights.archive import SessionProfileInsight, SessionWorkEventInsight, records_provenance
 from polylogue.insights.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
@@ -30,6 +30,41 @@ from polylogue.storage.insights.timeline.records import SessionWorkEventRecord
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 _TEMPORAL_SOURCES: tuple[TemporalSource, ...] = get_args(TemporalSource)
+
+
+def _profile_record_with_temporal_source(
+    source: str | None,
+    *,
+    session_id: str = "profile-1",
+    minute: int = 0,
+) -> SessionProfileRecord:
+    """Build the production record consumed by profile and aggregate adapters."""
+
+    timestamp = f"2026-07-12T09:{minute:02d}:00+00:00"
+    return SessionProfileRecord.model_construct(
+        session_id=session_id,
+        logical_session_id=session_id,
+        materializer_version=1,
+        materialized_at=f"2026-07-12T10:{minute:02d}:00+00:00",
+        source_updated_at=timestamp,
+        source_sort_key=1_784_265_600.0 + minute * 60,
+        input_high_water_mark=timestamp,
+        input_high_water_mark_source=source,
+        input_row_count=1,
+        source_name="claude-code",
+        title="profile",
+        evidence_payload=SessionEvidencePayload(),
+        inference_payload=SessionInferencePayload(),
+        enrichment_payload=SessionEnrichmentPayload(),
+        terminal_state="unknown",
+        terminal_state_confidence=0.0,
+        workflow_shape="unknown",
+        workflow_shape_confidence=0.0,
+        inference_version=1,
+        inference_family="test",
+        enrichment_version=1,
+        enrichment_family="test",
+    )
 
 
 @pytest.mark.parametrize(
@@ -95,35 +130,18 @@ def test_timeless_profile_record_round_trips_as_unknown_time(
 def test_profile_insight_projects_recorded_temporal_source_to_public_provenance() -> None:
     """The public insight builder projects the record provenance, not a display fallback."""
 
-    record = SessionProfileRecord.model_construct(
-        session_id="profile-1",
-        logical_session_id="profile-1",
-        materializer_version=1,
-        materialized_at="2026-07-12T10:00:00+00:00",
-        source_updated_at="2026-07-12T09:00:00+00:00",
-        source_sort_key=1_784_265_600.0,
-        input_high_water_mark="2026-07-12T09:00:00+00:00",
-        input_high_water_mark_source="provider_ts",
-        input_row_count=1,
-        source_name="claude-code",
-        title="profile",
-        evidence_payload=SessionEvidencePayload(),
-        inference_payload=SessionInferencePayload(),
-        enrichment_payload=SessionEnrichmentPayload(),
-        terminal_state="unknown",
-        terminal_state_confidence=0.0,
-        workflow_shape="unknown",
-        workflow_shape_confidence=0.0,
-        inference_version=1,
-        inference_family="test",
-        enrichment_version=1,
-        enrichment_family="test",
-    )
+    record = _profile_record_with_temporal_source("provider_ts")
 
     insight = SessionProfileInsight.from_record(record)
 
     assert insight.provenance.input_high_water_mark_source == "provider_ts"
     assert insight.provenance.time_confidence == "recorded"
+    assert insight.inference_provenance is not None
+    assert insight.inference_provenance.input_high_water_mark_source == "provider_ts"
+    assert insight.inference_provenance.time_confidence == "recorded"
+    assert insight.enrichment_provenance is not None
+    assert insight.enrichment_provenance.input_high_water_mark_source == "provider_ts"
+    assert insight.enrichment_provenance.time_confidence == "recorded"
 
 
 def test_timeline_materialization_time_projects_to_unknown_public_provenance() -> None:
@@ -159,3 +177,32 @@ def test_timeline_materialization_time_projects_to_unknown_public_provenance() -
 
     assert insight.provenance.input_high_water_mark_source == "materialization_ts"
     assert insight.provenance.time_confidence == "unknown"
+
+
+def test_aggregate_provenance_uses_the_weakest_contributor_source() -> None:
+    """Aggregate output must not launder one weak contributor into recorded time."""
+
+    provenance = records_provenance(
+        [
+            _profile_record_with_temporal_source("provider_ts", minute=0),
+            _profile_record_with_temporal_source("sort_key", session_id="profile-2", minute=1),
+        ]
+    )
+
+    assert provenance.input_high_water_mark_source == "sort_key"
+    assert provenance.time_confidence == "estimated"
+
+
+@pytest.mark.parametrize("source", [None, "legacy-unrecognized-source"])
+def test_aggregate_provenance_treats_absent_or_legacy_source_as_unknown(source: str | None) -> None:
+    """A mixed rollup cannot upgrade legacy provenance to recorded time."""
+
+    provenance = records_provenance(
+        [
+            _profile_record_with_temporal_source("provider_ts", minute=0),
+            _profile_record_with_temporal_source(source, session_id="profile-2", minute=1),
+        ]
+    )
+
+    assert provenance.input_high_water_mark_source is None
+    assert provenance.time_confidence == "unknown"
