@@ -18,6 +18,7 @@ QueryExistsUnit: TypeAlias = Literal[
     "run",
     "observed-event",
     "context-snapshot",
+    "delegation",
 ]
 QuerySequenceConstraintKind: TypeAlias = Literal["ordered", "next", "within"]
 

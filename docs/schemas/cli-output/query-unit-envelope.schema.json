@@ -547,6 +547,278 @@
       "title": "ContextSnapshotQueryRowPayload",
       "type": "object"
     },
+    "DelegationQueryRowPayload": {
+      "additionalProperties": false,
+      "description": "Bounded terminal-query row for one delegation attempt.",
+      "properties": {
+        "artifact_block_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Block Id"
+        },
+        "artifact_preview": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Preview"
+        },
+        "artifact_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Sha256"
+        },
+        "artifact_truncated": {
+          "default": false,
+          "title": "Artifact Truncated",
+          "type": "boolean"
+        },
+        "child_session_dominant_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Child Session Dominant Model"
+        },
+        "child_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Child Session Id"
+        },
+        "delegation_ref": {
+          "title": "Delegation Ref",
+          "type": "string"
+        },
+        "dispatch_turn_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dispatch Turn Model"
+        },
+        "evidence_basis": {
+          "enum": [
+            "action",
+            "edge"
+          ],
+          "title": "Evidence Basis",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "inheritance": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inheritance"
+        },
+        "instruction_message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instruction Message Id"
+        },
+        "instruction_preview": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instruction Preview"
+        },
+        "instruction_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instruction Sha256"
+        },
+        "instruction_tool_use_block_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instruction Tool Use Block Id"
+        },
+        "instruction_truncated": {
+          "default": false,
+          "title": "Instruction Truncated",
+          "type": "boolean"
+        },
+        "link_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Link Confidence"
+        },
+        "link_method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Link Method"
+        },
+        "mapping_state": {
+          "enum": [
+            "resolved",
+            "unresolved",
+            "ambiguous",
+            "edge_only",
+            "quarantined"
+          ],
+          "title": "Mapping State",
+          "type": "string"
+        },
+        "parent_origin": {
+          "title": "Parent Origin",
+          "type": "string"
+        },
+        "parent_session_id": {
+          "title": "Parent Session Id",
+          "type": "string"
+        },
+        "requested_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Model"
+        },
+        "result_exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Exit Code"
+        },
+        "result_is_error": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Is Error"
+        },
+        "result_status": {
+          "enum": [
+            "ok",
+            "error",
+            "unknown"
+          ],
+          "title": "Result Status",
+          "type": "string"
+        },
+        "unit": {
+          "const": "delegation",
+          "default": "delegation",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delegation_ref",
+        "parent_session_id",
+        "parent_origin",
+        "mapping_state",
+        "evidence_basis",
+        "result_status"
+      ],
+      "title": "DelegationQueryRowPayload",
+      "type": "object"
+    },
     "FileQueryRowPayload": {
       "additionalProperties": false,
       "description": "Shared terminal-query row for affected file-path evidence.",
@@ -1010,7 +1282,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/query-unit-envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Terminal row envelope for explicit `messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "description": "Terminal row envelope for explicit `messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots/delegations where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "items": {
       "items": {
@@ -1038,6 +1310,9 @@
           },
           {
             "$ref": "#/$defs/ContextSnapshotQueryRowPayload"
+          },
+          {
+            "$ref": "#/$defs/DelegationQueryRowPayload"
           }
         ]
       },
@@ -1143,7 +1418,8 @@
         "file",
         "run",
         "observed-event",
-        "context-snapshot"
+        "context-snapshot",
+        "delegation"
       ],
       "title": "Unit",
       "type": "string"
@@ -1168,6 +1444,7 @@
     "polylogue --format json runs where ...",
     "polylogue --format json observed-events where ...",
     "polylogue --format json context-snapshots where ...",
+    "polylogue --format json delegations where ...",
     "Polylogue.query_units(...)",
     "MCP query_units",
     "GET /api/query-units?expression=..."

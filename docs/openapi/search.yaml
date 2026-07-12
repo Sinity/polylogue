@@ -225,7 +225,7 @@ paths:
   /api/query-units:
     get:
       summary: Terminal query-unit rows
-      description: Returns terminal row results for explicit ``messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots
+      description: Returns terminal row results for explicit ``messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots/delegations
         where ...`` expressions. This endpoint shares the query-unit row and aggregate envelope contracts with CLI JSON output,
         MCP ``query_units``, and ``Polylogue.query_units()``.
       operationId: queryUnits
@@ -240,7 +240,7 @@ paths:
           AND type:code AND text:timeout``; ``assertions where kind:decision AND status:active AND text:review``; ``files
           where session.repo:polylogue AND action:file_edit AND path:archive/query``; ``runs where session.repo:polylogue
           AND role:main``; ``observed-events where kind:tool_finished AND status:failed | group by tool | count``; ``context-snapshots
-          where boundary:session_start``.'
+          where boundary:session_start``; ``delegations where mapping_state:resolved AND instruction:review``.'
         required: true
         schema:
           type: string
@@ -1765,6 +1765,165 @@ components:
       - metadata
       title: ContextSnapshotQueryRowPayload
       type: object
+    DelegationQueryRowPayload:
+      additionalProperties: false
+      description: Bounded terminal-query row for one delegation attempt.
+      properties:
+        unit:
+          const: delegation
+          default: delegation
+          title: Unit
+          type: string
+        delegation_ref:
+          title: Delegation Ref
+          type: string
+        parent_session_id:
+          title: Parent Session Id
+          type: string
+        child_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Child Session Id
+        parent_origin:
+          title: Parent Origin
+          type: string
+        mapping_state:
+          enum:
+          - resolved
+          - unresolved
+          - ambiguous
+          - edge_only
+          - quarantined
+          title: Mapping State
+          type: string
+        evidence_basis:
+          enum:
+          - action
+          - edge
+          title: Evidence Basis
+          type: string
+        instruction_message_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Instruction Message Id
+        instruction_tool_use_block_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Instruction Tool Use Block Id
+        instruction_preview:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Instruction Preview
+        instruction_sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Instruction Sha256
+        instruction_truncated:
+          default: false
+          title: Instruction Truncated
+          type: boolean
+        artifact_block_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Artifact Block Id
+        artifact_preview:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Artifact Preview
+        artifact_sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Artifact Sha256
+        artifact_truncated:
+          default: false
+          title: Artifact Truncated
+          type: boolean
+        dispatch_turn_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Dispatch Turn Model
+        requested_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Requested Model
+        child_session_dominant_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Child Session Dominant Model
+        result_is_error:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: null
+          title: Result Is Error
+        result_exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Result Exit Code
+        result_status:
+          enum:
+          - ok
+          - error
+          - unknown
+          title: Result Status
+          type: string
+        link_confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          title: Link Confidence
+        link_method:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Link Method
+        inheritance:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Inheritance
+        evidence_refs:
+          default: []
+          items:
+            type: string
+          title: Evidence Refs
+          type: array
+      required:
+      - delegation_ref
+      - parent_session_id
+      - parent_origin
+      - mapping_state
+      - evidence_basis
+      - result_status
+      title: DelegationQueryRowPayload
+      type: object
     FileQueryRowPayload:
       additionalProperties: false
       description: Shared terminal-query row for affected file-path evidence.
@@ -2078,6 +2237,7 @@ components:
           - run
           - observed-event
           - context-snapshot
+          - delegation
           title: Unit
           type: string
         query:
@@ -2094,6 +2254,7 @@ components:
             - $ref: '#/components/schemas/RunQueryRowPayload'
             - $ref: '#/components/schemas/ObservedEventQueryRowPayload'
             - $ref: '#/components/schemas/ContextSnapshotQueryRowPayload'
+            - $ref: '#/components/schemas/DelegationQueryRowPayload'
           title: Items
           type: array
         pipeline:
@@ -2172,6 +2333,7 @@ components:
           - run
           - observed-event
           - context-snapshot
+          - delegation
           title: Unit
           type: string
         group_by:
@@ -2213,6 +2375,7 @@ components:
           - run
           - observed-event
           - context-snapshot
+          - delegation
           title: Unit
           type: string
         query:

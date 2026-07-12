@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 from polylogue.demo import seed_demo_archive, verify_demo_archive
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
@@ -14,6 +16,7 @@ from polylogue.scenarios import (
     DEMO_EMBEDDING_PROSE_SESSION_ID,
     DEMO_SESSION_IDS,
 )
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
 @pytest.mark.asyncio
@@ -41,6 +44,34 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert verify.construct_coverage
     assert all(row.ok for row in verify.construct_coverage)
     assert verify.problems == ()
+
+    with ArchiveStore.open_existing(archive_root) as archive:
+        delegation_rows = query_unit_envelope(
+            archive,
+            query_unit_request(
+                expression="delegations where parent:demo-lineage-parent AND mapping_state:resolved",
+                limit=10,
+            ),
+        )
+        [delegation_item] = delegation_rows.items
+        delegation = delegation_item.model_dump(mode="json")
+        assert delegation["parent_session_id"] == "codex-session:demo-lineage-parent"
+        assert delegation["child_session_id"] == "codex-session:demo-lineage-subagent"
+        assert delegation["mapping_state"] == "resolved"
+        assert delegation["evidence_basis"] == "action"
+        assert delegation["instruction_preview"] == "Inspect the demo lineage child and report caveats."
+        expected_instruction = "Inspect the demo lineage child and report caveats."
+        assert delegation["instruction_sha256"] == hashlib.sha256(expected_instruction.encode()).hexdigest()
+        assert delegation["instruction_truncated"] is False
+        instruction_block_id = delegation["instruction_tool_use_block_id"]
+        assert isinstance(instruction_block_id, str)
+        card = archive.get_delegation_card(instruction_tool_use_block_id=instruction_block_id)
+        assert card is not None
+        assert card.instruction == expected_instruction
+        assert card.dispatch_result == "Subagent completed. Session: codex-session:demo-lineage-subagent"
+        assert card.child_excerpt == (
+            "Subagent report: lineage fixture has a parent, a fork, and a resolved child link."
+        )
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         conn.execute("ATTACH DATABASE ? AS source", (str(archive_root / "source.db"),))

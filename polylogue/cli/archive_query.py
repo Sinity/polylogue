@@ -2090,6 +2090,11 @@ def _context_snapshot_query_line(item: dict[str, object]) -> str:
     return f"{item['snapshot_ref']} [{item['boundary']}/{item['inheritance_mode']}] {_snippet(detail)}"
 
 
+def _delegation_query_line(item: dict[str, object]) -> str:
+    detail = item.get("instruction_preview") or item.get("artifact_preview") or item.get("child_session_id") or ""
+    return f"{item['delegation_ref']} [{item['mapping_state']}/{item['result_status']}] {_snippet(detail)}"
+
+
 _QUERY_UNIT_TEXT_LINES: dict[str, _QueryUnitTextLine] = {
     "message": _message_query_line,
     "action": _action_query_line,
@@ -2099,6 +2104,7 @@ _QUERY_UNIT_TEXT_LINES: dict[str, _QueryUnitTextLine] = {
     "run": _run_query_line,
     "observed-event": _observed_event_query_line,
     "context-snapshot": _context_snapshot_query_line,
+    "delegation": _delegation_query_line,
 }
 
 
