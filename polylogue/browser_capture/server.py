@@ -284,6 +284,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             logger.warning("browser_capture.invalid_payload", request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_payload")
             return
+        if envelope.provenance.extension_instance_id is None:
+            logger.warning("browser_capture.missing_instance_id", request_id=self._request_id())
+            self._safe_error(HTTPStatus.BAD_REQUEST, "missing_extension_instance_id")
+            return
         try:
             result = write_capture_envelope(envelope, spool_path=self.server.config.spool_path)
         except SpoolQuotaExceededError as exc:
@@ -302,6 +306,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             artifact_ref=result.artifact_ref,
             bytes_written=result.bytes_written,
             replaced=result.replaced,
+            deduplicated=result.deduplicated,
+            capture_instance_id=result.capture_instance_id,
         )
         self._send_json(
             HTTPStatus.ACCEPTED,
@@ -311,8 +317,11 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 provider_session_id=result.provider_session_id,
                 artifact_ref=result.artifact_ref,
                 content_hash=self._request_content_hash,
+                dedup_content_hash=result.dedup_content_hash,
                 bytes_written=result.bytes_written,
                 replaced=result.replaced,
+                deduplicated=result.deduplicated,
+                capture_instance_id=result.capture_instance_id,
             ).model_dump(mode="json"),
         )
 

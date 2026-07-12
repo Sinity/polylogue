@@ -38,6 +38,7 @@ def _capture_payload(session_id: str = "conv-123") -> dict[str, object]:
             "page_title": "ChatGPT - Work plan",
             "captured_at": "2026-04-24T00:00:00+00:00",
             "adapter_name": "chatgpt-dom-v1",
+            "extension_instance_id": "test-extension-instance",
         },
         "session": {
             "provider": "chatgpt",

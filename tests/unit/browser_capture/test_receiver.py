@@ -49,6 +49,7 @@ def _payload(provider: str = "chatgpt", session_id: str = "conv-123") -> dict[st
             "page_title": "ChatGPT - Work plan",
             "captured_at": "2026-04-24T00:00:00+00:00",
             "adapter_name": "chatgpt-dom-v1",
+            "extension_instance_id": "test-extension-instance",
         },
         "session": {
             "provider": provider,
@@ -430,11 +431,32 @@ def test_receiver_accepts_extension_capture_and_reports_typed_dto(tmp_path: Path
     assert (tmp_path / body.artifact_ref).exists()
 
 
+def test_receiver_rejects_capture_without_extension_instance_id(tmp_path: Path) -> None:
+    payload = _payload()
+    cast(dict[str, object], payload["provenance"]).pop("extension_instance_id")
+
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "POST",
+            "/v1/browser-captures",
+            body=payload,
+            origin=_EXTENSION_ORIGIN,
+        )
+        error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+
+    assert response.status == HTTPStatus.BAD_REQUEST
+    assert error.error == "missing_extension_instance_id"
+    assert not list(tmp_path.rglob("*.json"))
+
+
 def test_receiver_ack_hashes_exact_javascript_request_bytes(tmp_path: Path) -> None:
     request_body = (
         '{"polylogue_capture_kind":"browser_llm_session","schema_version":1,'
         '"provenance":{"source_url":"https://chatgpt.com/c/conv-123",'
-        '"captured_at":"2026-04-24T00:00:00.000Z","adapter_name":"chatgpt-backfill-native-v1"},'
+        '"captured_at":"2026-04-24T00:00:00.000Z","adapter_name":"chatgpt-backfill-native-v1",'
+        '"extension_instance_id":"test-extension-instance"},'
         '"session":{"provider":"chatgpt","provider_session_id":"conv-123",'
         '"turns":[{"provider_turn_id":"u1","role":"user","text":"żółć 😀"}]},'
         '"provider_meta":{"number":1.25,"nested":{"b":2,"a":1}}}'
