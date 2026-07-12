@@ -154,22 +154,18 @@ def mark_session_embedding_error(
     error_message: str,
     retryable: bool = True,
 ) -> ArchiveEmbeddingStatus:
-    """Record a resumable embedding error for one session."""
-    origin_value = _enum_value(origin)
-    needs_reindex = 1 if retryable else 0
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO embedding_status (
-                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
-            ) VALUES (?, ?, 0, NULL, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                origin = excluded.origin,
-                needs_reindex = excluded.needs_reindex,
-                error_message = excluded.error_message
-            """,
-            (session_id, origin_value, needs_reindex, error_message),
-        )
+    """Record a failure with a status projection for compatibility callers."""
+    record_embedding_failure(
+        conn,
+        session_id=session_id,
+        origin=origin,
+        message_refs=(),
+        provider="unknown",
+        model="unknown",
+        error_class="embedding_error",
+        error_message=error_message,
+        retryable=retryable,
+    )
     return read_embedding_status(conn, session_id)
 
 

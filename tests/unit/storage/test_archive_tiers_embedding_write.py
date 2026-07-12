@@ -150,6 +150,12 @@ def test_archive_tiers_embedding_writer_records_terminal_errors(tmp_path: Path) 
         needs_reindex=False,
         error_message="Embedding generation failed: HTTP 400",
     )
+    [failure] = list_active_embedding_failures(conn)
+    assert failure.session_id == "codex-session:bad-input"
+    assert failure.lifecycle_state == "terminal"
+    assert failure.message_refs == ()
+    assert failure.provider == "unknown"
+    assert failure.error_class == "embedding_error"
 
 
 def test_embedding_failure_lifecycle_preserves_audit_and_requeues(tmp_path: Path) -> None:
