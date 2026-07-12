@@ -821,6 +821,17 @@ def _service_state(service: str) -> dict[str, object]:
     return fields
 
 
+def _service_remains_stable(service: str, initial_state: dict[str, object], *, seconds: float = 5.0) -> bool:
+    initial_pid = initial_state.get("MainPID")
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        state = _service_state(service)
+        if not _service_active(service) or state.get("ActiveState") != "active" or state.get("MainPID") != initial_pid:
+            return False
+    return True
+
+
 def _swap_active_symlink(source_link: Path, target: Path, *, label: str) -> None:
     temporary = source_link.with_name(f".{source_link.name}.{label}-{uuid.uuid4().hex}.tmp")
     temporary.symlink_to(target)
@@ -873,7 +884,7 @@ def _restart_and_verify_or_rollback(
             time.sleep(0.5)
         state = _service_state(service)
         validation = _runtime_version_sanity(source_link)
-        if not _service_active(service) or not bool(validation["ready"]):
+        if not _service_active(service) or not bool(validation["ready"]) or not _service_remains_stable(service, state):
             raise RuntimeError(f"post-restart contract failed: service={state}, ready={validation['ready']}")
         receipt.update(
             {

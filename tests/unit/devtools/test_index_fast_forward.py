@@ -406,7 +406,13 @@ def test_failed_restart_contract_automatically_restores_v32_symlink(
     clone = Path(str(receipt["clone_path"]))
     from devtools import index_fast_forward as fast_forward_module
 
-    monkeypatch.setattr(fast_forward_module, "_service_active", lambda service: False)
+    service_checks = iter((False, True, True))
+    monkeypatch.setattr(
+        fast_forward_module,
+        "_service_active",
+        lambda service: next(service_checks, True),
+    )
+    monkeypatch.setattr(fast_forward_module, "_service_remains_stable", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         subprocess,
         "run",
