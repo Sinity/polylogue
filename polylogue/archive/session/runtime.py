@@ -26,11 +26,15 @@ if TYPE_CHECKING:
 
 
 def _primary_model(cost_summary: SessionCostSummary) -> tuple[str | None, str | None]:
-    """Return (primary_model_name, primary_model_family): the dominant model
-    by assistant output-token share, and its canonical family. 1vpm.1: the
-    enabling primitive for the `delegations` view's orchestrator/subagent
-    model identity. Reuses the per-model tally cost_compute already builds --
-    no separate pass over messages."""
+    """Return (primary_model_name, primary_model_family): the SESSION-WIDE
+    dominant model by assistant output-token share, and its canonical
+    family. This is a session-level aggregate, not a per-turn claim --
+    polylogue-4c27 explicitly excludes it from dispatch-turn/requested/
+    child-observed model identity in the `delegations` view; it remains the
+    named fallback (`parent_session_dominant_model`/
+    `child_session_dominant_model`) for when no finer-grained attribution is
+    available. Reuses the per-model tally cost_compute already builds -- no
+    separate pass over messages."""
     from polylogue.archive.semantic.pricing import canonical_model_family
 
     dominant: SessionCostBreakdown | None = None

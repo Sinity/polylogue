@@ -161,6 +161,26 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   hash, so concurrent publishers of identical bytes remain independent.
   Existing v3 tiers migrate additively through
   `004_blob_publication_reservations.sql` after a verified backup manifest.
+- Index schema version 34 rebuilds the `delegations` view (polylogue-y964,
+  polylogue-4c27). The prior view aliased `session_links.src_session_id`
+  (canonically the CHILD) as `parent_session_id` and
+  `resolved_dst_session_id` (canonically the PARENT) as `child_session_id` —
+  backwards — and joined `branch_point_message_id` (the child's last
+  inherited parent message, for lineage composition) as if it were the Task
+  dispatch pointer. The rebuilt view spines on parent-side `actions` rows
+  (`semantic_type='subagent'`) instead of `session_links`, exposes a
+  `mapping_state` (`resolved`/`unresolved`/`ambiguous`/`edge_only`/
+  `quarantined`) instead of silently dropping unpaired or quarantined edges,
+  and separates model identity into `dispatch_turn_model` (the message that
+  authored the dispatch), `requested_model` (an explicit routing override
+  from the dispatch tool_input, if the provider recorded one), and
+  `parent_session_dominant_model`/`child_session_dominant_model` (the
+  session-level dominant-model fallback, explicitly named and excluded from
+  turn-level claims) — replacing the old `orchestrator_model`/
+  `subagent_model` columns, which conflated a session-wide aggregate with
+  per-turn dispatch authorship. Existing index tiers must be rebuilt from
+  source evidence (`polylogue ops reset --index && polylogued run`); no
+  public reader should keep consuming the old column names.
 - Index schema version 33 adds `'provider_usage'` to the
   `insight_materialization.insight_type` CHECK constraint (polylogue-f2qv.5),
   so `session_model_usage` can carry a materializer-version stamp and
