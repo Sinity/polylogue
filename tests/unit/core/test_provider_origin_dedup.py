@@ -25,6 +25,12 @@ canonical function for every ``Origin`` value, including the previously-drifted
 is preserved (not "fixed" -- that needs a Source-family disambiguator, Step 5
 of the plan, out of scope here).
 
+The two tool-usage filter paths had the same drift shape in the opposite
+direction: incomplete hand-maintained sets failed to recognize the canonical
+``grok-export`` token. Their production helpers are covered together below so
+every current and future ``Origin`` member must pass through unchanged while
+legacy provider tokens continue to normalize through the shared helper.
+
 Un-collapsing DRIVE from GEMINI is explicitly *not* what this fix does or
 claims to do -- see polylogue-9e5.8's design field, "The non-injective
 GEMINI/DRIVE blocker" section.
@@ -41,13 +47,24 @@ from polylogue.archive.query.archive_execution import _provider_for_origin as _a
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import provider_from_origin
 from polylogue.mcp.insight_tool_contracts import _origin_to_provider_token as _contracts_origin_to_provider_token
+from polylogue.storage.sqlite.archive_tiers.archive import (
+    _origin_for_tool_usage_filter as _archive_tiers_origin_for_tool_usage_filter,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin as _archive_tiers_provider_for_origin
+from polylogue.storage.sqlite.queries.tool_usage import (
+    _origin_for_tool_usage_filter as _query_origin_for_tool_usage_filter,
+)
 from polylogue.storage.sqlite.queries.tool_usage import _provider_for_origin as _tool_usage_provider_for_origin
 
 _DUPLICATED_PROVIDER_FOR_ORIGIN: tuple[Callable[[str], Provider], ...] = (
     _archive_execution_provider_for_origin,
     _archive_tiers_provider_for_origin,
     _tool_usage_provider_for_origin,
+)
+
+_TOOL_USAGE_ORIGIN_FILTERS: tuple[Callable[[str | None], str | None], ...] = (
+    _archive_tiers_origin_for_tool_usage_filter,
+    _query_origin_for_tool_usage_filter,
 )
 
 
@@ -84,6 +101,23 @@ def test_aistudio_drive_still_canonically_resolves_to_gemini(fn: Callable[[str],
 @pytest.mark.parametrize("fn", _DUPLICATED_PROVIDER_FOR_ORIGIN)
 def test_unknown_origin_token_falls_back_to_unknown_provider(fn: Callable[[str], Provider]) -> None:
     assert fn("not-a-real-origin") == Provider.UNKNOWN
+
+
+@pytest.mark.parametrize("fn", _TOOL_USAGE_ORIGIN_FILTERS)
+def test_tool_usage_origin_filters_preserve_every_canonical_origin(
+    fn: Callable[[str | None], str | None],
+) -> None:
+    for origin in Origin:
+        assert fn(origin.value) == origin.value
+
+
+@pytest.mark.parametrize("fn", _TOOL_USAGE_ORIGIN_FILTERS)
+def test_tool_usage_origin_filters_accept_legacy_and_unknown_values(
+    fn: Callable[[str | None], str | None],
+) -> None:
+    assert fn(Provider.GROK.value) == Origin.GROK_EXPORT.value
+    assert fn("not-a-real-provider-or-origin") == Origin.UNKNOWN_EXPORT.value
+    assert fn(None) is None
 
 
 def test_origin_to_provider_token_is_a_single_shared_definition() -> None:
