@@ -5,14 +5,23 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
+from polylogue.insights.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.scenarios import (
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
     DEMO_CODEX_RECEIPTS_SESSION_ID,
 )
 
 _EXPECTED_CLAIM = "All tests pass. The clock fix is complete."
+_COMPLETION_CLAIM_SAMPLE_SIZE = 250
+_COMPLETION_CLAIM_SEED = "polylogue-demo-receipts-v1"
+_COMPLETION_CLAIM_QUERY = (
+    "assistant text blocks matching the declared completion lexicon: "
+    "all tests pass | tests pass | complete | completed | finished"
+)
+_COMPLETION_MARKERS = ("all tests pass", "tests pass", "complete", "completed", "finished")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +65,7 @@ class DemoReceiptsResult:
     anti_grep_failed_actions: int
     raw_id: str | None
     raw_blob_sha256: str | None
+    completion_claims: CompletionClaimExperimentResult | None = None
     problems: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
@@ -77,7 +87,74 @@ class DemoReceiptsResult:
                 "raw_id": self.raw_id,
                 "blob_sha256": self.raw_blob_sha256,
             },
+            "completion_claim_experiment": (
+                self.completion_claims.to_payload() if self.completion_claims is not None else None
+            ),
             "problems": list(self.problems),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionClaimEvidence:
+    """One sampled completion claim resolved against typed action outcomes."""
+
+    claim_ref: str
+    session_ref: str
+    origin: str
+    classification: str
+    prior_action_ref: str | None
+    repair_action_ref: str | None
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "claim_ref": self.claim_ref,
+            "session_ref": self.session_ref,
+            "origin": self.origin,
+            "classification": self.classification,
+            "prior_action_ref": self.prior_action_ref,
+            "repair_action_ref": self.repair_action_ref,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionClaimExperimentResult:
+    """Aggregate completion-claim result with a deterministic sample manifest."""
+
+    archive_root: Path
+    manifest: CohortManifest
+    evidence: tuple[CompletionClaimEvidence, ...]
+    unsupported_count: int
+    contradicted_then_repaired_count: int
+
+    @property
+    def sample_size(self) -> int:
+        return len(self.evidence)
+
+    def to_payload(self) -> dict[str, object]:
+        denominator = self.sample_size
+        return {
+            "archive_root": str(self.archive_root),
+            "method": {
+                "population_query": _COMPLETION_CLAIM_QUERY,
+                "unsupported_definition": (
+                    "No structurally recorded action outcome precedes the selected completion claim."
+                ),
+                "contradicted_then_repaired_definition": (
+                    "The latest structurally recorded action before the claim failed, and a later action "
+                    "with the same tool and command succeeded."
+                ),
+            },
+            "manifest": self.manifest.to_payload(),
+            "headline": {
+                "denominator": denominator,
+                "unsupported_count": self.unsupported_count,
+                "unsupported_rate": self.unsupported_count / denominator if denominator else None,
+                "contradicted_then_repaired_count": self.contradicted_then_repaired_count,
+                "contradicted_then_repaired_rate": (
+                    self.contradicted_then_repaired_count / denominator if denominator else None
+                ),
+            },
+            "evidence": [item.to_payload() for item in self.evidence],
         }
 
 
@@ -116,6 +193,138 @@ def _action_receipt(row: sqlite3.Row) -> DemoActionReceipt:
         exit_code=int(row["exit_code"]),
         is_error=bool(row["is_error"]),
         output=str(row["output_text"] or ""),
+    )
+
+
+def _completion_template(text: str) -> str:
+    lowered = text.lower()
+    return next((marker for marker in _COMPLETION_MARKERS if marker in lowered), "other")
+
+
+def _archive_cursor(conn: sqlite3.Connection) -> str:
+    schema_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    session_count, message_count, last_message_id = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM sessions), COUNT(*), COALESCE(MAX(message_id), '') FROM messages"
+    ).fetchone()
+    payload = f"index-v{schema_version}:sessions={session_count}:messages={message_count}:last={last_message_id}"
+    return f"sha256:{sha256(payload.encode()).hexdigest()}"
+
+
+def _action_rows(conn: sqlite3.Connection, session_id: str, position_clause: str, position: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        f"""
+        SELECT a.*, m.position AS message_position
+        FROM actions AS a
+        JOIN messages AS m ON m.message_id = a.message_id
+        WHERE a.session_id = ?
+          AND a.exit_code IS NOT NULL
+          AND m.position {position_clause} ?
+        ORDER BY m.position, a.tool_result_block_id
+        """,
+        (session_id, position),
+    ).fetchall()
+
+
+def _is_failed_action(row: sqlite3.Row) -> bool:
+    return int(row["is_error"] or 0) == 1 or int(row["exit_code"] or 0) != 0
+
+
+def _is_matching_repair(failed: sqlite3.Row, candidate: sqlite3.Row) -> bool:
+    return (
+        not _is_failed_action(candidate)
+        and str(candidate["tool_name"] or "") == str(failed["tool_name"] or "")
+        and _command_from_row(candidate) == _command_from_row(failed)
+    )
+
+
+def inspect_completion_claims(
+    archive_root: Path,
+    *,
+    sample_size: int = _COMPLETION_CLAIM_SAMPLE_SIZE,
+) -> CompletionClaimExperimentResult:
+    """Sample completion claims and resolve them against typed action evidence.
+
+    The population is deliberately lexical and declared in the result rather
+    than inferred as every possible claim. Action outcomes, not prose, decide
+    whether a sampled claim lacks evidence or was contradicted then repaired.
+    """
+
+    with _connect(archive_root / "index.db") as conn:
+        candidates_rows = conn.execute(
+            """
+            SELECT b.block_id, b.text, m.session_id, m.position, s.origin, m.model_name
+            FROM blocks AS b
+            JOIN messages AS m ON m.message_id = b.message_id
+            JOIN sessions AS s ON s.session_id = m.session_id
+            WHERE b.block_type = 'text'
+              AND m.role = 'assistant'
+              AND (
+                  LOWER(b.text) LIKE '%all tests pass%'
+                  OR LOWER(b.text) LIKE '%tests pass%'
+                  OR LOWER(b.text) LIKE '%complete%'
+                  OR LOWER(b.text) LIKE '%finished%'
+              )
+            ORDER BY b.block_id
+            """
+        ).fetchall()
+        candidates = [
+            CohortCandidate(
+                object_ref=f"block:{row['block_id']}",
+                dimensions={"origin": str(row["origin"]), "model": str(row["model_name"] or "unknown")},
+                template_key=_completion_template(str(row["text"] or "")),
+            )
+            for row in candidates_rows
+        ]
+        manifest = compile_cohort_manifest(
+            CohortSpec(
+                population_query=_COMPLETION_CLAIM_QUERY,
+                archive_cursor=_archive_cursor(conn),
+                seed=_COMPLETION_CLAIM_SEED,
+                requested_size=sample_size,
+                strata=("origin",),
+                exact_template_cap=25,
+            ),
+            candidates,
+        )
+        selected = {ref.removeprefix("block:") for ref in manifest.selected_refs}
+        evidence: list[CompletionClaimEvidence] = []
+        for row in candidates_rows:
+            block_id = str(row["block_id"])
+            if block_id not in selected:
+                continue
+            prior = _action_rows(conn, str(row["session_id"]), "<", int(row["position"]))
+            prior_action = prior[-1] if prior else None
+            failed = prior_action if prior_action is not None and _is_failed_action(prior_action) else None
+            repair = None
+            classification = "supported_at_claim_time"
+            if prior_action is None:
+                classification = "unsupported_by_structural_tool_evidence"
+            elif failed is not None:
+                later = _action_rows(conn, str(row["session_id"]), ">", int(row["position"]))
+                repair = next((candidate for candidate in later if _is_matching_repair(failed, candidate)), None)
+                classification = (
+                    "contradicted_then_repaired" if repair is not None else "contradicted_without_recorded_repair"
+                )
+            evidence.append(
+                CompletionClaimEvidence(
+                    claim_ref=f"block:{block_id}",
+                    session_ref=f"session:{row['session_id']}",
+                    origin=str(row["origin"]),
+                    classification=classification,
+                    prior_action_ref=(
+                        f"block:{prior_action['tool_result_block_id']}" if prior_action is not None else None
+                    ),
+                    repair_action_ref=f"block:{repair['tool_result_block_id']}" if repair is not None else None,
+                )
+            )
+    unsupported_count = sum(item.classification == "unsupported_by_structural_tool_evidence" for item in evidence)
+    repaired_count = sum(item.classification == "contradicted_then_repaired" for item in evidence)
+    return CompletionClaimExperimentResult(
+        archive_root=archive_root,
+        manifest=manifest,
+        evidence=tuple(evidence),
+        unsupported_count=unsupported_count,
+        contradicted_then_repaired_count=repaired_count,
     )
 
 
@@ -245,6 +454,7 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
         anti_grep_failed_actions=anti_grep_failed_actions,
         raw_id=raw_id,
         raw_blob_sha256=raw_blob_sha256,
+        completion_claims=inspect_completion_claims(archive_root),
         problems=tuple(problems),
     )
 
@@ -302,6 +512,20 @@ def render_demo_receipts(result: DemoReceiptsResult) -> str:
             f"  blob_sha256: {result.raw_blob_sha256 or 'unavailable'}",
         ]
     )
+    experiment = result.completion_claims
+    if experiment is not None:
+        headline = experiment.to_payload()["headline"]
+        assert isinstance(headline, dict)
+        lines.extend(
+            [
+                "",
+                "completion-claim experiment:",
+                f"  sample manifest: {experiment.manifest.manifest_id}",
+                f"  denominator: {headline['denominator']}",
+                f"  unsupported by structural evidence: {headline['unsupported_count']}",
+                f"  contradicted then repaired: {headline['contradicted_then_repaired_count']}",
+            ]
+        )
     if result.problems:
         lines.extend(["", "problems:", *(f"  - {problem}" for problem in result.problems)])
     return "\n".join(lines) + "\n"
@@ -309,7 +533,10 @@ def render_demo_receipts(result: DemoReceiptsResult) -> str:
 
 __all__ = [
     "DemoActionReceipt",
+    "CompletionClaimEvidence",
+    "CompletionClaimExperimentResult",
     "DemoReceiptsResult",
+    "inspect_completion_claims",
     "inspect_demo_receipts",
     "render_demo_receipts",
 ]
