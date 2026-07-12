@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 ProbeStatus = Literal["pass", "fail", "skip"]
+_MAX_PLAUSIBLE_CODEX_THREAD_TOKENS = 2_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +137,30 @@ def _counter_dict(counter: Counter[Any], *, limit: int = 10) -> list[dict[str, o
     return [{"value": value, "count": count} for value, count in counter.most_common(limit)]
 
 
+def _codex_external_state_unreliable(
+    external: dict[str, dict[str, object]],
+) -> dict[str, str]:
+    """Classify ``state_5`` counters that cannot support a token comparison.
+
+    ``threads.tokens_used`` is external runtime state, not archived evidence.
+    Exact zeroes are sentinels, repeated values across threads are stale
+    defaults, and values over any known Codex context window are inherited or
+    cumulative counters. None can establish archive accounting drift.
+    """
+
+    token_counts = Counter(_coerce_int(item["tokens_used"]) for item in external.values())
+    unreliable: dict[str, str] = {}
+    for thread_id, item in external.items():
+        tokens_used = _coerce_int(item["tokens_used"])
+        if tokens_used == 0:
+            unreliable[thread_id] = "zero_sentinel"
+        elif tokens_used > _MAX_PLAUSIBLE_CODEX_THREAD_TOKENS:
+            unreliable[thread_id] = "implausible_context_window"
+        elif token_counts[tokens_used] > 1:
+            unreliable[thread_id] = "repeated_cross_thread_value"
+    return unreliable
+
+
 def _codex_residual_classification(
     pairs: list[tuple[str, int, int, dict[str, object]]],
     *,
@@ -147,15 +172,10 @@ def _codex_residual_classification(
         for _, _, _, extra in outside
     )
     chain_size = Counter(_coerce_int(extra.get("archive_chain_session_count")) for _, _, _, extra in outside)
-    external_flags: Counter[str] = Counter()
-    for _, _, _, extra in outside:
-        external_flags[f"archived={extra.get('external_archived')}"] += 1
-        external_flags[f"has_user_event={extra.get('external_has_user_event')}"] += 1
     return {
         "outside_tolerance": len(outside),
         "replay_gap_classes": _counter_dict(replay_gap),
         "chain_session_counts": _counter_dict(chain_size),
-        "external_flag_counts": [{"flag": flag, "count": count} for flag, count in external_flags.most_common(10)],
         "external_token_values": [
             {"tokens_used": tokens, "count": count}
             for tokens, count in Counter(external for _, _, external, _ in outside).most_common(10)
@@ -345,11 +365,12 @@ def _probe_codex(
             details={"copied_path": str(copied), "error": str(exc)},
         )
 
+    external_unreliable = _codex_external_state_unreliable(external)
     pairs: list[tuple[str, int, int, dict[str, object]]] = []
     logical_pairs: list[tuple[str, int, int, dict[str, object]]] = []
     for thread_id, ext in external.items():
         ext_tokens = _coerce_int(ext["tokens_used"])
-        if thread_id in archive and ext_tokens > 0:
+        if thread_id in archive and thread_id not in external_unreliable:
             arch = archive[thread_id]
             pairs.append(
                 (
@@ -361,8 +382,6 @@ def _probe_codex(
                         "model": ext.get("model"),
                         "external_source": ext.get("source"),
                         "external_cli_version": ext.get("cli_version"),
-                        "external_archived": ext.get("archived"),
-                        "external_has_user_event": ext.get("has_user_event"),
                         "external_updated_at_ms": ext.get("updated_at_ms"),
                         "input_tokens": arch["input_tokens"],
                         "cached_input_tokens": arch["cached_input_tokens"],
@@ -375,7 +394,7 @@ def _probe_codex(
                     },
                 )
             )
-        if thread_id in logical_archive and ext_tokens > 0:
+        if thread_id in logical_archive and thread_id not in external_unreliable:
             logical = logical_archive[thread_id]
             logical_pairs.append(
                 (
@@ -387,8 +406,6 @@ def _probe_codex(
                         "model": ext.get("model"),
                         "external_source": ext.get("source"),
                         "external_cli_version": ext.get("cli_version"),
-                        "external_archived": ext.get("archived"),
-                        "external_has_user_event": ext.get("has_user_event"),
                         "external_updated_at_ms": ext.get("updated_at_ms"),
                         "archive_logical_native_id": logical.get("logical_native_id"),
                         "archive_logical_high_water_tokens": logical.get("total_tokens"),
@@ -427,11 +444,6 @@ def _probe_codex(
     outside_external_tokens = Counter(
         external_tokens for _, _, external_tokens, _ in _outside_pairs(pairs, tolerance=tolerance)
     )
-    outside_external_flags: Counter[str] = Counter()
-    for _, _, _, extra in _outside_pairs(pairs, tolerance=tolerance):
-        outside_external_flags[f"archived={extra.get('external_archived')}"] += 1
-        outside_external_flags[f"has_user_event={extra.get('external_has_user_event')}"] += 1
-        outside_external_flags[f"source={extra.get('external_source')}"] += 1
     status: ProbeStatus = "pass" if comparison.outside_tolerance == 0 else "fail"
     fewest_outside_grain = (
         "logical_session_model_high_water"
@@ -470,6 +482,19 @@ def _probe_codex(
             },
             "logical_comparison": logical_comparison.to_dict(),
             "logical_residual_classification": _codex_residual_classification(logical_pairs, tolerance=tolerance),
+            "external_state_unreliable": {
+                "count": len(external_unreliable),
+                "classes": _counter_dict(Counter(external_unreliable.values())),
+                "samples": [
+                    {
+                        "thread_id": thread_id,
+                        "tokens_used": _coerce_int(external[thread_id]["tokens_used"]),
+                        "classification": classification,
+                        "archive_present": thread_id in archive,
+                    }
+                    for thread_id, classification in sorted(external_unreliable.items())[:max_samples]
+                ],
+            },
             "outside_external_token_values": [
                 {"tokens_used": tokens, "count": count} for tokens, count in outside_external_tokens.most_common(10)
             ],
@@ -477,9 +502,6 @@ def _probe_codex(
                 {"tokens_used": tokens, "count": count}
                 for tokens, count in outside_external_tokens.most_common(10)
                 if count > 1
-            ],
-            "outside_external_flag_counts": [
-                {"flag": flag, "count": count} for flag, count in outside_external_flags.most_common(20)
             ],
             "lane_contract": (
                 "archive session_model_usage disjoint lanes and Codex threads.tokens_used both include cached input; "
