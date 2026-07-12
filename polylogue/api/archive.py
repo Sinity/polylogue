@@ -274,12 +274,64 @@ def _unresolved_ref_payload(
     )
 
 
+def _oversized_annotation_batch_ref_payload(ref: str) -> Any | None:
+    """Return a bounded unresolved descriptor for an oversized batch-like ref."""
+
+    if not ref.startswith("annotation-batch"):
+        return None
+    from polylogue.surfaces.payloads import (
+        AnnotationBatchRefDigestPayload,
+        PublicRefResolutionPayload,
+        model_json_document,
+    )
+
+    try:
+        descriptor = AnnotationBatchRefDigestPayload.from_oversized_ref(ref)
+    except (UnicodeEncodeError, ValueError):
+        return None
+    return PublicRefResolutionPayload(
+        ref=f"annotation-batch:sha256-{descriptor.original_ref_sha256}",
+        normalized_ref=None,
+        kind="annotation-batch",
+        resolved=False,
+        payload_kind="annotation-batch-ref-digest",
+        payload=model_json_document(descriptor),
+        caveats=("oversized annotation batch reference omitted from the public response",),
+    )
+
+
+def _invalid_unicode_ref_payload(ref: str) -> Any | None:
+    """Fail closed before an invalid Python string reaches parsing or SQLite."""
+
+    from polylogue.surfaces.payloads import (
+        InvalidUnicodeRefDigestPayload,
+        PublicRefResolutionPayload,
+        model_json_document,
+    )
+
+    try:
+        descriptor = InvalidUnicodeRefDigestPayload.from_invalid_ref(ref)
+    except ValueError:
+        return None
+    batch_like = ref.startswith("annotation-batch")
+    stable_prefix = "annotation-batch:invalid-unicode" if batch_like else "invalid-unicode-ref"
+    return PublicRefResolutionPayload(
+        ref=f"{stable_prefix}:sha256-{descriptor.original_ref_surrogatepass_sha256}",
+        normalized_ref=None,
+        kind="annotation-batch" if batch_like else None,
+        resolved=False,
+        payload_kind="invalid-unicode-ref-digest",
+        payload=model_json_document(descriptor),
+        caveats=("invalid Unicode public reference omitted from the response",),
+    )
+
+
 #: ObjectRefKind values registered ahead of their backing storage tier
 #: (polylogue-rxdo analysis-provenance epic). ``resolve_ref`` returns a typed
 #: ``PendingObjectRefPayload`` (reason=substrate-pending) for these instead of
 #: attempting a lookup against tables that do not exist yet.
 _PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset(
-    {"query", "query-run", "result-set", "finding", "cohort", "analysis", "annotation-batch"}
+    {"query", "query-run", "result-set", "finding", "cohort", "analysis"}
 )
 
 
@@ -2733,9 +2785,26 @@ class PolylogueArchiveMixin:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
+        invalid_unicode_ref = _invalid_unicode_ref_payload(ref)
+        if invalid_unicode_ref is not None:
+            return cast(PublicRefResolutionPayload, invalid_unicode_ref)
+        bounded_batch_ref = _oversized_annotation_batch_ref_payload(ref)
+        if bounded_batch_ref is not None:
+            # ``parse_public_ref`` deliberately falls back to EvidenceRef, whose
+            # one-segment form accepts arbitrary colon-bearing session ids. Guard
+            # batch-like malformed inputs before that fallback can misclassify
+            # and reflect a multi-megabyte value through the session miss path.
+            try:
+                batch_candidate = ObjectRef.parse(ref)
+            except ValueError:
+                return cast(PublicRefResolutionPayload, bounded_batch_ref)
+            if batch_candidate.kind != "annotation-batch":
+                return cast(PublicRefResolutionPayload, bounded_batch_ref)
         try:
             parsed = parse_public_ref(ref)
         except ValueError as exc:
+            if bounded_batch_ref is not None:
+                return cast(PublicRefResolutionPayload, bounded_batch_ref)
             return cast(PublicRefResolutionPayload, _unresolved_ref_payload(ref, str(exc)))
 
         if isinstance(parsed, EvidenceRef):
@@ -2755,6 +2824,8 @@ class PolylogueArchiveMixin:
                 return self._resolve_block_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
             if object_ref.kind == "assertion":
                 return self._resolve_assertion_object_ref(archive_root, ref, normalized_ref, object_ref)
+            if object_ref.kind == "annotation-batch":
+                return self._resolve_annotation_batch_object_ref(archive, ref, normalized_ref, object_ref)
             if object_ref.kind == "delegation":
                 return self._resolve_delegation_object_ref(archive, ref, normalized_ref, object_ref)
             if object_ref.kind in {"run", "observed-event", "context-snapshot"}:
@@ -2974,6 +3045,69 @@ class PolylogueArchiveMixin:
             object_refs=(normalized_ref, payload.target_ref),
             evidence_refs=payload.evidence_refs,
             actions=(_resolution_action("list assertion target", f"polylogue find {payload.target_ref} then read"),),
+        )
+
+    def _resolve_annotation_batch_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+    ) -> PublicRefResolutionPayload:
+        from polylogue.surfaces.payloads import (
+            AnnotationBatchPayload,
+            PublicRefResolutionPayload,
+            RefResolutionActionPayload,
+            model_json_document,
+        )
+
+        batch = archive.get_annotation_batch(object_ref.object_id)
+        if batch is None:
+            bounded = _oversized_annotation_batch_ref_payload(ref)
+            if bounded is not None:
+                return cast(PublicRefResolutionPayload, bounded)
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(
+                    ref,
+                    "annotation batch not found",
+                    normalized_ref=normalized_ref,
+                    kind="annotation-batch",
+                ),
+            )
+        payload = AnnotationBatchPayload.from_batch(batch)
+        scalar_ref_pairs = (
+            (batch.batch_ref, payload.batch_ref),
+            (batch.target_ref, payload.target_ref),
+            (batch.source_result_ref, payload.source_result_ref),
+            (batch.actor_ref, payload.actor_ref),
+            (batch.model_ref, payload.model_ref),
+            (batch.prompt_ref, payload.prompt_ref),
+        )
+        object_refs = tuple(dict.fromkeys(value for value, preview in scalar_ref_pairs if not preview.truncated))
+        public_ref = normalized_ref
+        public_normalized_ref: str | None = normalized_ref
+        if payload.batch_ref.truncated:
+            public_ref = f"annotation-batch:sha256-{payload.batch_ref.text_sha256}"
+            public_normalized_ref = None
+        actions: tuple[RefResolutionActionPayload, ...] = ()
+        if not payload.target_ref.truncated:
+            actions = (_resolution_action("read annotation target", f"polylogue find {batch.target_ref} then read"),)
+        return PublicRefResolutionPayload(
+            ref=public_ref,
+            normalized_ref=public_normalized_ref,
+            kind="annotation-batch",
+            resolved=True,
+            payload_kind="annotation-batch",
+            payload=model_json_document(payload),
+            title="annotation batch provenance",
+            summary=(
+                f"{payload.valid_count}/{payload.total_count} valid; "
+                f"{payload.invalid_count} invalid; {payload.abstained_count} abstained"
+            ),
+            object_refs=object_refs,
+            caveats=payload.truncation_caveats(),
+            actions=actions,
         )
 
     def _resolve_delegation_object_ref(

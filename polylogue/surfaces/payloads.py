@@ -73,6 +73,7 @@ MutationOperation: TypeAlias = Literal[
 if TYPE_CHECKING:
     from collections.abc import Container
 
+    from polylogue.annotations.batch import AnnotationBatch
     from polylogue.archive.models import Message, Session, SessionSummary
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
@@ -1882,15 +1883,309 @@ class PublicRefResolutionPayload(SurfacePayloadModel):
         return tuple(normalize_public_ref_text(ref) for ref in value)
 
 
+ANNOTATION_BATCH_ASSERTION_REF_LIMIT = 20
+ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT = 5
+ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT = 256
+ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT = 96
+ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT = 256
+
+
+class AnnotationBatchRefDigestPayload(SurfacePayloadModel):
+    """Identity-only descriptor for an oversized public annotation-batch ref.
+
+    The original ref is intentionally absent. This keeps missing and malformed
+    lookup responses bounded while retaining enough information to correlate
+    the response with the exact UTF-8 input.
+    """
+
+    unit: Literal["annotation-batch-ref-digest"] = "annotation-batch-ref-digest"
+    original_ref_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_ref_utf8_bytes_total: int = Field(gt=ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT)
+    truncated: Literal[True] = True
+
+    @classmethod
+    def from_oversized_ref(cls, value: str) -> AnnotationBatchRefDigestPayload:
+        encoded = value.encode("utf-8")
+        if len(encoded) <= ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT:
+            raise ValueError("annotation batch ref does not exceed the public byte limit")
+        return cls(
+            original_ref_sha256=hashlib.sha256(encoded).hexdigest(),
+            original_ref_utf8_bytes_total=len(encoded),
+        )
+
+
+class InvalidUnicodeRefDigestPayload(SurfacePayloadModel):
+    """Identity-only descriptor for a public ref that is not valid UTF-8.
+
+    ``surrogatepass`` gives Python's otherwise-unencodable code-point sequence
+    a deterministic digest input without claiming that those bytes are UTF-8.
+    The original text is never exposed on a public surface.
+    """
+
+    unit: Literal["invalid-unicode-ref-digest"] = "invalid-unicode-ref-digest"
+    reason: Literal["invalid-unicode"] = "invalid-unicode"
+    original_ref_surrogatepass_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_ref_codepoints_total: int = Field(ge=1)
+    truncated: Literal[True] = True
+
+    @classmethod
+    def from_invalid_ref(cls, value: str) -> InvalidUnicodeRefDigestPayload:
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            digest_input = value.encode("utf-8", errors="surrogatepass")
+        else:
+            raise ValueError("public ref is valid UTF-8")
+        return cls(
+            original_ref_surrogatepass_sha256=hashlib.sha256(digest_input).hexdigest(),
+            original_ref_codepoints_total=len(value),
+        )
+
+
+class AnnotationBatchTextPreviewPayload(SurfacePayloadModel):
+    """Serialization-bounded text prefix with exact UTF-8 identity metadata."""
+
+    text_prefix: str
+    text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    text_bytes_total: int = Field(ge=0)
+    truncated: bool
+
+    @classmethod
+    def from_text(cls, value: str) -> AnnotationBatchTextPreviewPayload:
+        encoded = value.encode("utf-8")
+        low = 0
+        high = len(value)
+        while low < high:
+            midpoint = (low + high + 1) // 2
+            serialized = json.dumps(value[:midpoint], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(serialized) <= ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT:
+                low = midpoint
+            else:
+                high = midpoint - 1
+        prefix = value[:low]
+        return cls(
+            text_prefix=prefix,
+            text_sha256=hashlib.sha256(encoded).hexdigest(),
+            text_bytes_total=len(encoded),
+            truncated=prefix != value,
+        )
+
+    @model_validator(mode="after")
+    def _validate_text_prefix_bound(self) -> AnnotationBatchTextPreviewPayload:
+        serialized = json.dumps(self.text_prefix, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        prefix_bytes = len(self.text_prefix.encode("utf-8"))
+        if len(serialized) > ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT:
+            raise ValueError("annotation batch text prefix exceeds the public serialization bound")
+        if self.text_bytes_total < prefix_bytes:
+            raise ValueError("annotation batch text total cannot be smaller than its prefix")
+        if self.truncated != (self.text_bytes_total > prefix_bytes):
+            raise ValueError("annotation batch text truncation must match its exact byte total")
+        return self
+
+
+class AnnotationBatchJSONPreviewPayload(SurfacePayloadModel):
+    """Byte-bounded canonical JSON prefix with exact identity metadata."""
+
+    json_prefix: str
+    json_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    json_bytes_total: int = Field(ge=0)
+    truncated: bool
+
+    @classmethod
+    def from_document(cls, document: JSONDocument) -> AnnotationBatchJSONPreviewPayload:
+        encoded = json.dumps(
+            document,
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        prefix = encoded[:ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT]
+        # ``encoded`` is valid UTF-8; ``ignore`` can only discard a partial
+        # trailing code point when the byte cap bisects one.
+        json_prefix = prefix.decode("utf-8", errors="ignore")
+        return cls(
+            json_prefix=json_prefix,
+            json_sha256=hashlib.sha256(encoded).hexdigest(),
+            json_bytes_total=len(encoded),
+            truncated=len(encoded) > ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT,
+        )
+
+    @model_validator(mode="after")
+    def _validate_json_prefix_bound(self) -> AnnotationBatchJSONPreviewPayload:
+        prefix_bytes = len(self.json_prefix.encode("utf-8"))
+        if prefix_bytes > ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT:
+            raise ValueError("annotation batch JSON prefix exceeds the public byte bound")
+        if self.json_bytes_total < prefix_bytes:
+            raise ValueError("annotation batch JSON total cannot be smaller than its prefix")
+        if self.truncated != (self.json_bytes_total > prefix_bytes):
+            raise ValueError("annotation batch JSON truncation must match its exact byte total")
+        return self
+
+
+class AnnotationBatchPayload(SurfacePayloadModel):
+    """Bounded durable provenance returned for an ``annotation-batch:`` ref."""
+
+    unit: Literal["annotation-batch"] = "annotation-batch"
+    batch_id: AnnotationBatchTextPreviewPayload
+    batch_ref: AnnotationBatchTextPreviewPayload
+    schema_id: AnnotationBatchTextPreviewPayload
+    schema_version: int
+    qualified_schema_id: AnnotationBatchTextPreviewPayload
+    target_ref: AnnotationBatchTextPreviewPayload
+    source_result_ref: AnnotationBatchTextPreviewPayload
+    actor_ref: AnnotationBatchTextPreviewPayload
+    model_ref: AnnotationBatchTextPreviewPayload
+    prompt_ref: AnnotationBatchTextPreviewPayload
+    total_count: int
+    valid_count: int
+    invalid_count: int
+    abstained_count: int
+    assertion_refs: tuple[AnnotationBatchTextPreviewPayload, ...] = Field(
+        default=(),
+        max_length=ANNOTATION_BATCH_ASSERTION_REF_LIMIT,
+    )
+    assertion_refs_total_count: int = Field(ge=0)
+    assertion_refs_omitted_count: int = Field(ge=0)
+    assertion_refs_truncated: bool
+    assertion_ref_values_truncated_count: int = Field(ge=0)
+    validation_failures: tuple[AnnotationBatchJSONPreviewPayload, ...] = Field(
+        default=(),
+        max_length=ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT,
+    )
+    validation_failures_total_count: int = Field(ge=0)
+    validation_failures_omitted_count: int = Field(ge=0)
+    validation_failures_truncated: bool
+    metadata: AnnotationBatchJSONPreviewPayload
+    created_at_ms: int
+
+    @model_validator(mode="after")
+    def _validate_exact_bounded_counts(self) -> AnnotationBatchPayload:
+        assertion_refs_omitted = self.assertion_refs_total_count - len(self.assertion_refs)
+        if self.assertion_refs_total_count != self.valid_count or assertion_refs_omitted < 0:
+            raise ValueError("annotation batch assertion-ref totals must match valid_count")
+        if self.assertion_refs_omitted_count != assertion_refs_omitted:
+            raise ValueError("annotation batch assertion-ref omitted count must be exact")
+        if self.assertion_refs_truncated != (assertion_refs_omitted > 0):
+            raise ValueError("annotation batch assertion-ref truncation must match omitted count")
+        truncated_ref_values = sum(item.truncated for item in self.assertion_refs)
+        if self.assertion_ref_values_truncated_count != truncated_ref_values:
+            raise ValueError("annotation batch assertion-ref value truncation count must be exact")
+
+        validation_failures_omitted = self.validation_failures_total_count - len(self.validation_failures)
+        if self.validation_failures_total_count != self.invalid_count or validation_failures_omitted < 0:
+            raise ValueError("annotation batch validation-failure totals must match invalid_count")
+        if self.validation_failures_omitted_count != validation_failures_omitted:
+            raise ValueError("annotation batch validation-failure omitted count must be exact")
+        if self.validation_failures_truncated != (validation_failures_omitted > 0):
+            raise ValueError("annotation batch validation-failure truncation must match omitted count")
+        return self
+
+    @classmethod
+    def from_batch(cls, batch: AnnotationBatch) -> AnnotationBatchPayload:
+        assertion_refs = tuple(
+            AnnotationBatchTextPreviewPayload.from_text(ref)
+            for ref in batch.assertion_refs[:ANNOTATION_BATCH_ASSERTION_REF_LIMIT]
+        )
+        validation_failures = tuple(
+            AnnotationBatchJSONPreviewPayload.from_document(document)
+            for document in batch.validation_failures[:ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT]
+        )
+        return cls(
+            batch_id=AnnotationBatchTextPreviewPayload.from_text(batch.batch_id),
+            batch_ref=AnnotationBatchTextPreviewPayload.from_text(batch.batch_ref),
+            schema_id=AnnotationBatchTextPreviewPayload.from_text(batch.schema_id),
+            schema_version=batch.schema_version,
+            qualified_schema_id=AnnotationBatchTextPreviewPayload.from_text(batch.qualified_schema_id),
+            target_ref=AnnotationBatchTextPreviewPayload.from_text(batch.target_ref),
+            source_result_ref=AnnotationBatchTextPreviewPayload.from_text(batch.source_result_ref),
+            actor_ref=AnnotationBatchTextPreviewPayload.from_text(batch.actor_ref),
+            model_ref=AnnotationBatchTextPreviewPayload.from_text(batch.model_ref),
+            prompt_ref=AnnotationBatchTextPreviewPayload.from_text(batch.prompt_ref),
+            total_count=batch.total_count,
+            valid_count=batch.valid_count,
+            invalid_count=batch.invalid_count,
+            abstained_count=batch.abstained_count,
+            assertion_refs=assertion_refs,
+            assertion_refs_total_count=len(batch.assertion_refs),
+            assertion_refs_omitted_count=len(batch.assertion_refs) - len(assertion_refs),
+            assertion_refs_truncated=len(assertion_refs) < len(batch.assertion_refs),
+            assertion_ref_values_truncated_count=sum(item.truncated for item in assertion_refs),
+            validation_failures=validation_failures,
+            validation_failures_total_count=len(batch.validation_failures),
+            validation_failures_omitted_count=len(batch.validation_failures) - len(validation_failures),
+            validation_failures_truncated=len(validation_failures) < len(batch.validation_failures),
+            metadata=AnnotationBatchJSONPreviewPayload.from_document(batch.metadata),
+            created_at_ms=batch.created_at_ms,
+        )
+
+    def truncation_caveats(self) -> tuple[str, ...]:
+        """Return explicit bounded-read caveats for omitted or clipped data."""
+
+        caveats: list[str] = []
+        if self.assertion_refs_truncated:
+            caveats.append(
+                "annotation_batch_assertion_refs_capped: "
+                f"returned={len(self.assertion_refs)} total={self.assertion_refs_total_count} "
+                f"omitted={self.assertion_refs_omitted_count}"
+            )
+        if self.assertion_ref_values_truncated_count:
+            caveats.append(
+                "annotation_batch_assertion_ref_values_capped: "
+                f"clipped={self.assertion_ref_values_truncated_count} "
+                f"json_byte_cap={ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT}"
+            )
+        if self.validation_failures_truncated:
+            caveats.append(
+                "annotation_batch_validation_failures_capped: "
+                f"returned={len(self.validation_failures)} total={self.validation_failures_total_count} "
+                f"omitted={self.validation_failures_omitted_count}"
+            )
+        clipped_failure_count = sum(item.truncated for item in self.validation_failures)
+        if clipped_failure_count:
+            caveats.append(
+                "annotation_batch_validation_failure_json_capped: "
+                f"clipped={clipped_failure_count} byte_cap={ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT}"
+            )
+        if self.metadata.truncated:
+            caveats.append(
+                "annotation_batch_metadata_json_capped: "
+                f"total_bytes={self.metadata.json_bytes_total} byte_cap={ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT}"
+            )
+        clipped_scalar_fields = tuple(
+            name
+            for name in (
+                "batch_id",
+                "batch_ref",
+                "schema_id",
+                "qualified_schema_id",
+                "target_ref",
+                "source_result_ref",
+                "actor_ref",
+                "model_ref",
+                "prompt_ref",
+            )
+            if getattr(self, name).truncated
+        )
+        if clipped_scalar_fields:
+            caveats.append(
+                "annotation_batch_scalar_values_capped: "
+                f"fields={','.join(clipped_scalar_fields)} "
+                f"json_byte_cap={ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT}"
+            )
+        return tuple(caveats)
+
+
 class PendingObjectRefPayload(SurfacePayloadModel):
     """Typed placeholder embedded in ``PublicRefResolutionPayload.payload``.
 
     Some ``ObjectRefKind`` values (the polylogue-rxdo analysis-provenance
     kinds: ``query``, ``query-run``, ``result-set``, ``finding``, ``cohort``,
-    ``analysis``, ``annotation-batch``) are registered before their backing
-    storage tiers exist. ``resolve_ref`` returns this typed payload for them
-    instead of an opaque not-found so clients can distinguish "not yet
-    implemented" from "does not exist".
+    and ``analysis``) are registered before their backing storage tiers exist.
+    ``resolve_ref`` returns this typed payload for them instead of an opaque
+    not-found so clients can distinguish "not yet implemented" from "does not
+    exist". Annotation batches have durable user-tier storage and resolve
+    through :class:`AnnotationBatchPayload`.
     """
 
     unit: Literal["pending"] = "pending"
@@ -3191,6 +3486,13 @@ __all__ = [
     "ProviderPackageCompletenessPayload",
     "ProviderPackageCompletenessRowPayload",
     "ProviderPackageCompletenessTotalsPayload",
+    "ANNOTATION_BATCH_ASSERTION_REF_LIMIT",
+    "ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT",
+    "ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT",
+    "ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT",
+    "AnnotationBatchJSONPreviewPayload",
+    "AnnotationBatchPayload",
+    "AnnotationBatchTextPreviewPayload",
     "PendingObjectRefPayload",
     "PublicRefResolutionPayload",
     "MachineErrorPayload",

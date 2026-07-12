@@ -18,6 +18,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal, TypedDict, cast
 
+from polylogue.annotations.batch import AnnotationBatch
+from polylogue.annotations.schema import AnnotationSchema
 from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
@@ -168,6 +170,17 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_annotations import (
+    DurableAnnotationSchema,
+    list_durable_annotation_schemas,
+    persist_annotation_batch,
+    persist_annotation_schema,
+    read_annotation_batch,
+    read_durable_annotation_schema,
+)
+from polylogue.storage.sqlite.archive_tiers.user_annotations import (
+    list_annotation_batches as _list_annotation_batches,
+)
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_AUTHOR_KIND,
     ASSERTION_DEFAULT_AUTHOR_REF,
@@ -5253,6 +5266,104 @@ class ArchiveStore:
                     annotation_id=annotation_id,
                 )
             return not exists
+        finally:
+            user_conn.close()
+
+    def save_annotation_schema(
+        self,
+        schema: AnnotationSchema,
+        *,
+        registered_at_ms: int | None = None,
+    ) -> DurableAnnotationSchema:
+        """Persist an immutable annotation schema definition in ``user.db``."""
+
+        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
+        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            with user_conn:
+                return persist_annotation_schema(
+                    user_conn,
+                    schema,
+                    registered_at_ms=registered_at_ms if registered_at_ms is not None else int(time.time() * 1000),
+                )
+        finally:
+            user_conn.close()
+
+    def get_annotation_schema(
+        self,
+        schema_id: str,
+        version: int | None = None,
+    ) -> DurableAnnotationSchema | None:
+        """Resolve one durable schema definition, defaulting to its latest version."""
+
+        if not self.user_db_path.exists():
+            return None
+        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            return read_durable_annotation_schema(user_conn, schema_id, version)
+        finally:
+            user_conn.close()
+
+    def list_annotation_schemas(self) -> tuple[DurableAnnotationSchema, ...]:
+        """List durable annotation schema definitions in identity order."""
+
+        if not self.user_db_path.exists():
+            return ()
+        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            return list_durable_annotation_schemas(user_conn)
+        finally:
+            user_conn.close()
+
+    def save_annotation_batch(self, batch: AnnotationBatch) -> AnnotationBatch:
+        """Persist one immutable annotation-batch provenance container."""
+
+        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
+        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            with user_conn:
+                return persist_annotation_batch(user_conn, batch)
+        finally:
+            user_conn.close()
+
+    def get_annotation_batch(self, batch_id: str) -> AnnotationBatch | None:
+        """Read one durable annotation batch by id."""
+
+        if not self.user_db_path.exists():
+            return None
+        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            return read_annotation_batch(user_conn, batch_id)
+        finally:
+            user_conn.close()
+
+    def list_annotation_batches(
+        self,
+        *,
+        schema_id: str | None = None,
+        schema_version: int | None = None,
+        target_ref: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[AnnotationBatch, ...]:
+        """List durable batch metadata with focused schema/target filters."""
+
+        if not self.user_db_path.exists():
+            return ()
+        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            return _list_annotation_batches(
+                user_conn,
+                schema_id=schema_id,
+                schema_version=schema_version,
+                target_ref=target_ref,
+                limit=limit,
+            )
         finally:
             user_conn.close()
 

@@ -24,7 +24,7 @@ over the `CREATE TABLE` statement.
 | `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 7` |
 | `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 35` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
-| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 5` |
+| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 6` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
 
 There is no single global "schema version" number. Each tier is versioned and
@@ -86,7 +86,11 @@ durable claims and are not returned by candidate-review reads. `index.db.session
 remains a rebuildable auto-tag/read-model projection; human-owned tag and
 metadata writes do not have separate user-tier tables. `user_settings` stores
 durable local settings, while `context_deliveries` records exact context-image
-delivery receipts without overloading epistemic assertions.
+delivery receipts without overloading epistemic assertions. Immutable,
+versioned annotation construct definitions live in `annotation_schemas`;
+independent labeling-run provenance and counts live in `annotation_batches`.
+The resulting annotation rows stay in `assertions` and link to their batch via
+an `annotation-batch:<id>` `scope_ref`.
 
 ### `ops.db` — disposable daemon telemetry
 

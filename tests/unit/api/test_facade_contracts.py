@@ -24,6 +24,7 @@ pin the public contract directly:
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import shutil
@@ -38,6 +39,7 @@ from polylogue import Polylogue
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, BranchType, MaterialOrigin, Origin, Provider
+from polylogue.core.json import JSONDocument
 from polylogue.core.refs import delegation_edge_object_id
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
@@ -2260,7 +2262,6 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         ("finding", "finding-hash-1"),
         ("cohort", "cohort-1"),
         ("analysis", "analysis-1"),
-        ("annotation-batch", "batch-1"),
     ],
 )
 async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance_kinds(
@@ -2268,9 +2269,9 @@ async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance
 ) -> None:
     """polylogue-rxdo.1: refs land ahead of storage; resolution stubs cleanly.
 
-    ``query``/``query-run``/``result-set``/``finding``/``cohort``/``analysis``/
-    ``annotation-batch`` are registered ObjectRefKind values with no backing
-    table yet (polylogue-rxdo.2/.3/.4/.7/.8). resolve_ref must not raise and
+    ``query``/``query-run``/``result-set``/``finding``/``cohort``/``analysis``
+    are registered ObjectRefKind values with no backing table yet
+    (polylogue-rxdo.2/.3/.4/.8). resolve_ref must not raise and
     must not silently pretend to resolve them — it returns a typed pending
     payload carrying reason=substrate-pending so a client can distinguish
     "not implemented yet" from "does not exist".
@@ -2289,6 +2290,275 @@ async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance
         assert payload.payload["kind"] == kind
         assert payload.payload["unit"] == "pending"
         assert any("substrate-pending" in caveat for caveat in payload.caveats)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_reads_persisted_annotation_batch_and_reports_missing(tmp_path: Path) -> None:
+    """Annotation-batch refs resolve through the real user-tier repository."""
+    from polylogue.annotations.batch import AnnotationBatch
+
+    archive = _archive(tmp_path)
+    batch = AnnotationBatch(
+        batch_id="batch-ref-resolution",
+        schema_id="delegation.discourse",
+        schema_version=1,
+        target_ref="delegation:dispatch-ref-resolution",
+        source_result_ref="result-set:ref-resolution",
+        actor_ref="agent:labeler",
+        model_ref="agent:model",
+        prompt_ref="block:prompt-ref-resolution:0",
+        total_count=0,
+        valid_count=0,
+        invalid_count=0,
+        abstained_count=0,
+        metadata={"campaign": "facade-contract"},
+        created_at_ms=123,
+    )
+    try:
+        with ArchiveStore.open_existing(tmp_path) as store:
+            store.save_annotation_batch(batch)
+
+        payload = await archive.resolve_ref(batch.batch_ref)
+        assert payload.resolved is True
+        assert payload.kind == "annotation-batch"
+        assert payload.payload_kind == "annotation-batch"
+        assert payload.payload is not None
+        assert payload.payload["unit"] == "annotation-batch"
+        assert payload.payload["batch_id"]["text_prefix"] == batch.batch_id
+        assert payload.payload["batch_id"]["truncated"] is False
+        assert payload.payload["qualified_schema_id"]["text_prefix"] == batch.qualified_schema_id
+        assert json.loads(payload.payload["metadata"]["json_prefix"]) == {"campaign": "facade-contract"}
+        assert payload.payload["metadata"]["truncated"] is False
+        assert payload.payload["assertion_refs_total_count"] == 0
+        assert payload.payload["assertion_refs_omitted_count"] == 0
+        assert payload.payload["assertion_refs_truncated"] is False
+        assert payload.payload["validation_failures_total_count"] == 0
+        assert payload.payload["validation_failures_omitted_count"] == 0
+        assert payload.payload["validation_failures_truncated"] is False
+        assert payload.caveats == ()
+        assert payload.object_refs == (
+            batch.batch_ref,
+            batch.target_ref,
+            batch.source_result_ref,
+            batch.actor_ref,
+            batch.model_ref,
+            batch.prompt_ref,
+        )
+
+        missing = await archive.resolve_ref("annotation-batch:missing")
+        assert missing.resolved is False
+        assert missing.kind == "annotation-batch"
+        assert missing.normalized_ref == "annotation-batch:missing"
+        assert missing.payload is None
+        assert missing.caveats == ("annotation batch not found",)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_byte_bounds_missing_and_malformed_giant_annotation_batch_refs(tmp_path: Path) -> None:
+    """The production facade never reflects a giant unresolved batch ref.
+
+    Anti-vacuity: both inputs pass through ``Polylogue.resolve_ref``. The first
+    parses as a real annotation-batch lookup and misses durable storage; the
+    second fails ObjectRef parsing. Removing either bounded failure branch
+    makes the serialized response scale with the two-megabyte input.
+    """
+
+    missing_ref = f"annotation-batch:missing-{'x' * (2 * 1024 * 1024)}"
+    malformed_ref = f"annotation-batch{'y' * (2 * 1024 * 1024)}:missing"
+    archive = _archive(tmp_path)
+    try:
+        for ref in (missing_ref, malformed_ref):
+            resolution = await archive.resolve_ref(ref)
+            encoded = ref.encode("utf-8")
+            digest = hashlib.sha256(encoded).hexdigest()
+
+            assert resolution.resolved is False
+            assert resolution.kind == "annotation-batch"
+            assert resolution.ref == f"annotation-batch:sha256-{digest}"
+            assert resolution.normalized_ref is None
+            assert resolution.payload_kind == "annotation-batch-ref-digest"
+            assert resolution.payload == {
+                "unit": "annotation-batch-ref-digest",
+                "original_ref_sha256": digest,
+                "original_ref_utf8_bytes_total": len(encoded),
+                "truncated": True,
+            }
+            assert resolution.caveats == ("oversized annotation batch reference omitted from the public response",)
+            rendered = resolution.model_dump_json()
+            assert ref not in rendered
+            assert len(rendered.encode("utf-8")) < 1_024
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_fail_closes_giant_annotation_batch_ref_with_lone_surrogate(tmp_path: Path) -> None:
+    """Invalid Unicode is bounded before ObjectRef parsing or SQLite binding.
+
+    Anti-vacuity: this invokes the production facade with a value that
+    ``str.encode('utf-8')`` rejects. Without the pre-parse guard, the valid
+    annotation-batch kind reaches the durable lookup and raises instead of
+    returning a serializable response.
+    """
+
+    ref = f"annotation-batch:{'x' * 300}\ud800"
+    digest = hashlib.sha256(ref.encode("utf-8", errors="surrogatepass")).hexdigest()
+    archive = _archive(tmp_path)
+    try:
+        resolution = await archive.resolve_ref(ref)
+
+        assert resolution.resolved is False
+        assert resolution.kind == "annotation-batch"
+        assert resolution.ref == f"annotation-batch:invalid-unicode:sha256-{digest}"
+        assert resolution.normalized_ref is None
+        assert resolution.payload_kind == "invalid-unicode-ref-digest"
+        assert resolution.payload == {
+            "unit": "invalid-unicode-ref-digest",
+            "reason": "invalid-unicode",
+            "original_ref_surrogatepass_sha256": digest,
+            "original_ref_codepoints_total": len(ref),
+            "truncated": True,
+        }
+        assert resolution.caveats == ("invalid Unicode public reference omitted from the response",)
+        rendered = resolution.model_dump_json()
+        assert ref not in rendered
+        assert len(rendered.encode("utf-8")) < 1_024
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: Path) -> None:
+    """The real durable-read -> facade route stays finite for oversized batches.
+
+    Anti-vacuity: this persists the complete batch, proves the repository still
+    returns every row, and then calls production ``Polylogue.resolve_ref``.
+    Removing the resolver's count or JSON-byte caps breaks the sample, caveat,
+    top-level ref, and serialized-size assertions below.
+    """
+    from polylogue.annotations.batch import AnnotationBatch
+
+    assertion_refs = tuple(f"assertion:oversized-{index:03d}-{'a' * 160}" for index in range(64))
+    validation_failures: tuple[JSONDocument, ...] = tuple(
+        {"row": index, "errors": ["invalid label"], "details": "f" * 4096} for index in range(64)
+    )
+    batch = AnnotationBatch(
+        batch_id="batch-ref-resolution-oversized",
+        schema_id="delegation.discourse",
+        schema_version=1,
+        target_ref="delegation:dispatch-ref-resolution-oversized",
+        source_result_ref="result-set:ref-resolution-oversized",
+        actor_ref="agent:labeler",
+        model_ref="agent:model",
+        prompt_ref="block:prompt-ref-resolution-oversized:0",
+        total_count=128,
+        valid_count=64,
+        invalid_count=64,
+        abstained_count=0,
+        assertion_refs=assertion_refs,
+        validation_failures=validation_failures,
+        metadata={"campaign": "oversized", "details": "m" * 16_384},
+        created_at_ms=456,
+    )
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore.open_existing(tmp_path) as store:
+            store.save_annotation_batch(batch)
+            persisted = store.get_annotation_batch(batch.batch_id)
+            assert persisted is not None
+            assert persisted.assertion_refs == assertion_refs
+            assert persisted.validation_failures == validation_failures
+            assert persisted.metadata == batch.metadata
+
+        resolution = await archive.resolve_ref(batch.batch_ref)
+
+        assert resolution.resolved is True
+        assert resolution.payload is not None
+        document = resolution.payload
+        assert [item["text_sha256"] for item in document["assertion_refs"]] == [
+            hashlib.sha256(ref.encode("utf-8")).hexdigest() for ref in assertion_refs[:20]
+        ]
+        assert all(item["truncated"] is True for item in document["assertion_refs"])
+        assert document["assertion_ref_values_truncated_count"] == 20
+        assert document["assertion_refs_total_count"] == 64
+        assert document["assertion_refs_omitted_count"] == 44
+        assert document["assertion_refs_truncated"] is True
+        assert len(document["validation_failures"]) == 5
+        assert document["validation_failures_total_count"] == 64
+        assert document["validation_failures_omitted_count"] == 59
+        assert document["validation_failures_truncated"] is True
+        assert all(item["truncated"] is True for item in document["validation_failures"])
+        assert all(len(item["json_prefix"].encode("utf-8")) <= 1024 for item in document["validation_failures"])
+        assert document["metadata"]["truncated"] is True
+        assert document["metadata"]["json_bytes_total"] > 1024
+        assert len(document["metadata"]["json_prefix"].encode("utf-8")) <= 1024
+        assert resolution.object_refs == (
+            batch.batch_ref,
+            batch.target_ref,
+            batch.source_result_ref,
+            batch.actor_ref,
+            batch.model_ref,
+            batch.prompt_ref,
+        )
+        assert not any(ref.startswith("assertion:") for ref in resolution.object_refs)
+        assert resolution.caveats == (
+            "annotation_batch_assertion_refs_capped: returned=20 total=64 omitted=44",
+            "annotation_batch_assertion_ref_values_capped: clipped=20 json_byte_cap=96",
+            "annotation_batch_validation_failures_capped: returned=5 total=64 omitted=59",
+            "annotation_batch_validation_failure_json_capped: clipped=5 byte_cap=256",
+            f"annotation_batch_metadata_json_capped: total_bytes={document['metadata']['json_bytes_total']} "
+            "byte_cap=256",
+        )
+        assert len(resolution.model_dump_json().encode("utf-8")) < 16_000
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_byte_bounds_opaque_annotation_refs_and_scalars(tmp_path: Path) -> None:
+    """Count-bounded opaque refs cannot expand a public response without limit."""
+    from polylogue.annotations.batch import AnnotationBatch
+
+    huge_id = "x" * (128 * 1024)
+    assertion_refs = tuple(f"assertion:{index:02d}-{huge_id}" for index in range(20))
+    batch = AnnotationBatch(
+        batch_id=f"batch-{huge_id}",
+        schema_id="delegation.discourse",
+        schema_version=1,
+        target_ref=f"delegation:{huge_id}",
+        source_result_ref=f"result-set:{huge_id}",
+        actor_ref=f"agent:{huge_id}",
+        model_ref=f"agent:model-{huge_id}",
+        prompt_ref=f"block:{huge_id}:0",
+        total_count=20,
+        valid_count=20,
+        invalid_count=0,
+        abstained_count=0,
+        assertion_refs=assertion_refs,
+        created_at_ms=789,
+    )
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore.open_existing(tmp_path) as store:
+            store.save_annotation_batch(batch)
+            persisted = store.get_annotation_batch(batch.batch_id)
+            assert persisted is not None
+            assert persisted.assertion_refs == assertion_refs
+            assert persisted.target_ref == batch.target_ref
+
+        resolution = await archive.resolve_ref(batch.batch_ref)
+
+        assert resolution.resolved is True
+        assert resolution.normalized_ref is None
+        assert resolution.ref.startswith("annotation-batch:sha256-")
+        assert resolution.payload is not None
+        assert resolution.payload["assertion_ref_values_truncated_count"] == 20
+        assert all(item["truncated"] is True for item in resolution.payload["assertion_refs"])
+        assert resolution.payload["target_ref"]["truncated"] is True
+        assert resolution.object_refs == ()
+        assert resolution.actions == ()
+        assert any("assertion_ref_values_capped" in caveat for caveat in resolution.caveats)
+        assert any("scalar_values_capped" in caveat for caveat in resolution.caveats)
+        assert len(resolution.model_dump_json().encode("utf-8")) < 16_000
     finally:
         await archive.close()
 
