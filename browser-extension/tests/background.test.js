@@ -262,6 +262,22 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState.last_receiver_request_id).toBe("reject-42");
   });
 
+  it("records a held decision when archive-state cannot be checked", async () => {
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-offline", title: "ChatGPT" }];
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+
+    activatedListener({ tabId: 42 });
+
+    await vi.waitFor(() => expect(stored.polylogueConversationTimeline["chatgpt:conv-offline"]?.[0]).toMatchObject({
+      event: "held_with_reason",
+      reason: "tab_activated",
+      detail: "archive_state_check_failed",
+    }));
+    expect(stored.polylogueState.active_page_state).toBe("receiver_error");
+  });
+
   it("refreshes the active conversation instead of discarding its archive identity", async () => {
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-status", title: "ChatGPT" }];
     globalThis.fetch = vi.fn(async () => responseJson({

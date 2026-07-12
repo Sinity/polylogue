@@ -1106,6 +1106,14 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
       last_receiver_request_id: status.receiver_request_id || null,
     }, url);
   } catch (error) {
+    await appendConversationTimeline({
+      provider,
+      providerSessionId,
+      event: "held_with_reason",
+      reason,
+      detail: "archive_state_check_failed",
+      tabId: tab?.id || null,
+    });
     await setStateForTab(tab?.id || null, {
       online: false,
       captured: false,

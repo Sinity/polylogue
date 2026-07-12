@@ -619,7 +619,7 @@
     });
   }
 
-  async function capture() {
+  async function capture(reason = null) {
     const nativePayload = latestNativePayload() || (await fetchNativePayloadOnDemand());
     let assetAcquisition = null;
     if (nativePayload) {
@@ -667,7 +667,7 @@
     };
     const finalEnvelope = envelope || fallbackEnvelope();
     if (!finalEnvelope) return { ok: false, error: "no_turns" };
-    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope);
+    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
     const archiveState = await window.polylogueCapture.refreshArchiveState(
       "chatgpt",
       finalEnvelope.session.provider_session_id
@@ -678,7 +678,7 @@
   window.polylogueCapture.capturePage = capture;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
-    capture().then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    capture(message.reason || null).then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
   });
   // Outbound posting (reverse channel). Selectors target the ChatGPT composer

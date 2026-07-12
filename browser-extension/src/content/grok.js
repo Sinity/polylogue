@@ -95,7 +95,7 @@
       .filter(Boolean);
   }
 
-  async function capture() {
+  async function capture(reason = null) {
     const turns = collectTurns();
     if (!turns.length) return { ok: false, error: "no_turns" };
     const envelope = window.polylogueCapture.buildEnvelope({
@@ -108,7 +108,7 @@
         native_attempts: [],
       },
     });
-    const captureResult = await window.polylogueCapture.sendCapture(envelope);
+    const captureResult = await window.polylogueCapture.sendCapture(envelope, reason);
     const archiveState = await window.polylogueCapture.refreshArchiveState(
       "grok",
       envelope.session.provider_session_id,
@@ -119,7 +119,7 @@
   window.polylogueCapture.capturePage = capture;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
-    capture().then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    capture(message.reason || null).then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
   });
 })();

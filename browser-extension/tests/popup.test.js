@@ -212,7 +212,7 @@ describe("popup capture", () => {
 
     expect(globalThis.document.getElementById("badge").textContent).toBe("missing");
     expect(globalThis.document.getElementById("archive").textContent).toBe("Not archived");
-    expect(globalThis.document.getElementById("state").textContent).toContain("No capture exists");
+    expect(globalThis.document.getElementById("state").textContent).toContain("not been saved");
   });
 
   it("renders mission-control status, open tabs, and the active decision timeline", async () => {
