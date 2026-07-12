@@ -12,7 +12,7 @@ from polylogue.archive.semantic.pricing import (
     estimate_cost,
     estimate_session_cost,
 )
-from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, get_credit_rate
+from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd, get_credit_rate
 from polylogue.archive.semantic.tokenizer import TOKENIZER_VERSION, estimate_tokens_from_words
 
 if TYPE_CHECKING:
@@ -130,7 +130,7 @@ def compute_session_cost(
         sub_equivalent = 0.0
         credit_rate = get_credit_rate(norm) if norm else None
         if credit_rate and credit_cost > 0:
-            sub_equivalent = round(credit_cost / 21_700_000 * 20.0, 6)
+            sub_equivalent = round(credits_to_usd(credit_cost), 6)
 
         updated = SessionCostBreakdown(
             normalized_model=norm,

@@ -319,6 +319,64 @@ def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tm
     assert payload["logical_catalog_api_equivalent_usd"] == pytest.approx(3.6551)
 
 
+def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_api_equivalent(
+    tmp_path: Path,
+) -> None:
+    """polylogue-f2qv.3 / polylogue-5hf: the ledger reports both cost bases.
+
+    A session with cache reads must show subscription_credit_usd strictly
+    below catalog_api_equivalent_usd for the same lane (cache reads are free
+    on the Claude Code subscription credit model but billed at list price
+    against the API-equivalent basis), and a model without a declared credit
+    rate (a non-Claude model) must report subscription_credit_usd == 0.0
+    rather than a fabricated figure.
+    """
+    conn = _connect(tmp_path / "index.db")
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            origin, native_id, title, session_kind,
+            created_at_ms, updated_at_ms, message_count, word_count, content_hash
+        ) VALUES
+            ('claude-code-session', 'priced', 'priced', 'standard', 1, 1, 1, 1, zeroblob(32)),
+            ('codex-session', 'origin', 'origin', 'standard', 2, 2, 1, 1, zeroblob(32))
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens, message_count, cost_provenance, cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        [
+            ("claude-code-session:priced", "claude-sonnet-4-5", 1000, 100, 2000, 0, "priced", 1.25),
+            ("codex-session:origin", "gpt-4o", 1_000_000, 100_000, 0, 0, "origin_reported", None),
+        ],
+    )
+
+    report = provider_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
+    lanes = {lane.provenance: lane for lane in report.pricing_lanes}
+
+    priced_lane = lanes["priced"]
+    assert priced_lane.catalog_api_equivalent_usd == pytest.approx(1.25)
+    assert priced_lane.subscription_credit_usd == pytest.approx(0.000553, abs=1e-6)
+    assert priced_lane.subscription_credit_usd < priced_lane.catalog_api_equivalent_usd
+
+    # gpt-4o has no declared Claude Code credit rate: never fabricate a figure.
+    origin_reported_lane = lanes["origin_reported"]
+    assert origin_reported_lane.subscription_credit_usd == 0.0
+    assert origin_reported_lane.catalog_api_equivalent_usd > 0.0
+
+    assert report.subscription_credit_usd == pytest.approx(priced_lane.subscription_credit_usd)
+    assert report.subscription_credit_usd < report.catalog_api_equivalent_usd
+    assert any("subscription_credit_usd assumes" in caveat for caveat in report.caveats)
+
+    payload = report.to_dict()
+    assert payload["subscription_credit_usd"] == pytest.approx(priced_lane.subscription_credit_usd)
+    assert payload["pricing_lanes"][0]["subscription_credit_usd"] is not None
+
+
 def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
 
