@@ -342,7 +342,7 @@ describe("background backfill coordinator", () => {
     expect(byteHarness.receiver).not.toHaveBeenCalled();
   });
 
-  it("persists Claude organization identity across restart and hard-reserves its request budget", async () => {
+  it("pins Claude organization identity across restart and hard-reserves its request budget", async () => {
     let now = 1000;
     const store = new MemoryBackfillStore();
     const alarms = { create: vi.fn(async () => undefined) };
@@ -397,6 +397,49 @@ describe("provider adapter contracts", () => {
     await expect(drifted.enumerate()).rejects.toThrow("provider_contract_drift:chatgpt_inventory.items_must_be_array");
   });
 
+  it("refuses a false-empty ChatGPT inventory without proven page auth context", async () => {
+    const adapter = new ChatGptBackfillAdapter(
+      vi.fn(async () => response({ items: [], total: 0 })),
+      { requirePageContext: true },
+    );
+
+    await expect(adapter.enumerate("0", "2026-01-01T00:00:00Z")).resolves.toMatchObject({
+      classification: "auth_or_challenge",
+      done: false,
+      items: [],
+    });
+  });
+
+  it.each([
+    ["memory storage", () => new MemoryBackfillStore()],
+    ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],
+  ])("keeps an unproven 200-empty inventory paused, then captures once with %s", async (_label, makeStore) => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ items: [], total: 0 }))
+      .mockResolvedValueOnce(Object.assign(response({ items: [{ id: "one", update_time: 1780000000 }], total: 1 }), { polyloguePageContext: true }))
+      .mockResolvedValueOnce(Object.assign(response({ items: [], total: 0 }), { polyloguePageContext: true }))
+      .mockResolvedValueOnce(Object.assign(response({ items: [], total: 0 }), { polyloguePageContext: true }))
+      .mockResolvedValueOnce(Object.assign(response({ items: [], total: 0 }), { polyloguePageContext: true }))
+      .mockResolvedValueOnce(Object.assign(response(chatGptNative("one")), { polyloguePageContext: true }));
+    const adapter = new ChatGptBackfillAdapter(fetchImpl, { requirePageContext: true });
+    const h = harness({ adapter, store: makeStore() });
+    const job = await startJob(h);
+
+    await h.coordinator.wake(job.id);
+    let status = await h.coordinator.status(job.id);
+    expect(status).toMatchObject({ status: "paused", inventory_complete: false, cooldown_reason: "provider_auth_or_challenge" });
+
+    await h.coordinator.control(job.id, "resume");
+    for (let wake = 0; wake < 5; wake += 1) {
+      h.advance(h.policy.baseCadenceMs);
+      await h.coordinator.wake(job.id);
+    }
+    status = await h.coordinator.status(job.id);
+    expect(status).toMatchObject({ status: "complete", inventory_complete: true, progress: { complete: 1 } });
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
+    expect(h.receiver).toHaveBeenCalledTimes(1);
+  });
+
   it("stops descending inventory pagination when a page crosses the cutoff", async () => {
     const adapter = new ChatGptBackfillAdapter(vi.fn(async () => response({
       items: [
@@ -405,9 +448,50 @@ describe("provider adapter contracts", () => {
       ],
       total: 5000,
     })));
-    const inventory = await adapter.enumerate("0", "2026-01-01T00:00:00Z");
+    const inventory = await adapter.enumerate("3:0", "2026-01-01T00:00:00Z");
     expect(inventory.items.map((item) => item.native_id)).toEqual(["new"]);
     expect(inventory.done).toBe(true);
+  });
+
+  it("treats ChatGPT total as a page sentinel rather than a global corpus count", async () => {
+    const firstPage = Array.from({ length: 28 }, (_value, index) => ({
+      id: `conversation-${index}`,
+      update_time: 1780000000 - index,
+    }));
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ items: firstPage, total: 29 }))
+      .mockResolvedValueOnce(response({ items: [{ id: "conversation-28", update_time: 1779990000 }], total: 29 }));
+    const adapter = new ChatGptBackfillAdapter(fetchImpl);
+
+    const first = await adapter.enumerate("0", null);
+    const second = await adapter.enumerate(first.next_cursor, null);
+
+    expect(first).toMatchObject({ next_cursor: "0:28", done: false });
+    expect(second).toMatchObject({ next_cursor: "1:0", done: false });
+    expect(fetchImpl.mock.calls[0][0]).toContain("limit=28");
+    expect(fetchImpl.mock.calls[1][0]).toContain("offset=28");
+  });
+
+  it("enumerates every active, starred, and archived ChatGPT partition", async () => {
+    const fetchImpl = vi.fn(async () => response({ items: [], total: 0 }));
+    const adapter = new ChatGptBackfillAdapter(fetchImpl);
+    let cursor = "0";
+    let result;
+    for (let partition = 0; partition < 4; partition += 1) {
+      result = await adapter.enumerate(cursor, null);
+      cursor = result.next_cursor;
+    }
+
+    expect(result.done).toBe(true);
+    expect(fetchImpl.mock.calls.map(([url]) => {
+      const parsed = new URL(url);
+      return [parsed.searchParams.get("is_archived"), parsed.searchParams.get("is_starred")];
+    })).toEqual([
+      ["false", "false"],
+      ["false", "true"],
+      ["true", "false"],
+      ["true", "true"],
+    ]);
   });
 
   it("does not assume Claude inventory order when filtering a full page", async () => {

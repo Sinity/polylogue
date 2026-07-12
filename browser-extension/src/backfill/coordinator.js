@@ -342,7 +342,10 @@ export class BackfillCoordinator {
   }
 
   async handleProviderBlock(job, response, classification, now) {
-    if (classification === "auth_or_challenge") return this.pauseJob({ ...job, last_error: "provider_auth_or_challenge" }, "provider_auth_or_challenge", now);
+    if (classification === "auth_or_challenge") {
+      const reason = response?.polylogueAuthReason || "provider_auth_or_challenge";
+      return this.pauseJob({ ...job, last_error: reason }, reason, now);
+    }
     if (classification !== "rate_limited") return this.handleJobTransport(job, new Error(`provider_${classification}`), now);
     const count = (job.throttle_count || 0) + 1;
     const learned = Math.min(job.policy.maxCadenceMs, Math.max(job.learned_cadence_ms * 2, job.policy.baseCadenceMs));

@@ -113,6 +113,21 @@ queue state, attempts, eligibility deadline, lease owner/expiry, fidelity,
 submitted envelope, and receiver receipt. MV3 alarms resume eligible work after
 service-worker termination; expired leases return to their prior state.
 
+Provider HTTP runs through a strict first-party page broker. The service worker
+retains durable scheduling, budgets, and receiver ACK ownership, while an
+existing or inactive provider tab supplies ephemeral authenticated context.
+ChatGPT access-token and selected-account values never leave MAIN world;
+Claude requests must match the organization selected by the UI. Only fixed
+inventory and native-conversation operations are allowed. Timeouts,
+response-size limits, auth/challenge classification, and response-shape drift
+fail closed; HTTP 200 without proven page context is not accepted as an empty
+inventory.
+Claude jobs pin their initial UI-selected organization so a later account
+switch cannot mix one organization's inventory with another organization's
+native conversations. A `selected_organization_stale` pause requires cancelling
+the old job and starting a new one; Resume is appropriate only after restoring
+the original selection.
+
 The default provider concurrency is one. Token cadence is conservative and
 learned upward after throttling. `Retry-After` is authoritative, retry delays
 use exponential full jitter, and repeated 429/403/challenge or transport
@@ -137,6 +152,8 @@ user-selected cutoff. It honors provider authentication and controls and cannot
 prove completeness beyond the authenticated inventory returned by the provider.
 It never bypasses anti-bot checks, discovers deleted/ephemeral records absent
 from inventory, or activates an operator foreground tab.
+ChatGPT enumeration traverses all active/starred/archived flag partitions and
+deduplicates repeated native ids in the durable queue.
 
 ## Dataflow and boundary
 
