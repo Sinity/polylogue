@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
 from polylogue.operations.operation_contract import OperationStatus
@@ -25,6 +27,7 @@ from polylogue.readiness import (
 )
 from polylogue.readiness.capability import normalize_raw_frontier_status_payload
 from polylogue.storage.repair import ArchiveDebtStatus
+from tests.infra.frozen_clock import FrozenClock
 
 
 def _complete_healthy_frontier() -> dict[str, object]:
@@ -471,10 +474,13 @@ def test_raw_frontier_status_normalizer_rejects_impossible_cursor_cardinalities(
         assert normalized["raw_frontier_integrity"]["overall_status"] == "unknown"
 
 
-def test_daemon_normalizer_rejects_malformed_or_stale_freshness_provenance() -> None:
+@pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
+def test_daemon_normalizer_rejects_malformed_or_stale_freshness_provenance(
+    frozen_clock: FrozenClock,
+) -> None:
     valid_snapshot = {
         "state": "fresh",
-        "captured_at": "2026-07-12T14:00:00+00:00",
+        "captured_at": frozen_clock.now().isoformat(),
         "age_s": 0.1,
         "refresh_error": None,
     }
@@ -488,6 +494,7 @@ def test_daemon_normalizer_rejects_malformed_or_stale_freshness_provenance() -> 
     invalid_updates = (
         {"captured_at": "not-a-timestamp"},
         {"captured_at": "2026-07-12T14:00:00"},
+        {"captured_at": "2000-01-01T00:00:00+00:00", "age_s": 0.0},
         {"age_s": 30.001},
         {"age_s": float("inf")},
         {"refresh_error": "refresh failed"},

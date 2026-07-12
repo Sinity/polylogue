@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from math import isfinite
 from pathlib import Path
@@ -369,6 +369,7 @@ _RAW_FRONTIER_REASON_KEYS = (
 )
 _RAW_FRONTIER_MAX_SAMPLE_COUNT = 10
 STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S = 30.0
+_STATUS_SNAPSHOT_CLOCK_SKEW_TOLERANCE_S = 5.0
 
 
 def _validate_raw_frontier_projection(
@@ -483,11 +484,17 @@ def status_snapshot_has_fresh_provenance(payload: Mapping[str, Any]) -> bool:
         return False
     if captured.tzinfo is None or captured.utcoffset() is None:
         return False
+    wall_age_s = (datetime.now(UTC) - captured.astimezone(UTC)).total_seconds()
     return bool(
         isinstance(age_s, int | float)
         and not isinstance(age_s, bool)
         and isfinite(age_s)
         and 0 <= age_s <= STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S
+        and isfinite(wall_age_s)
+        and -_STATUS_SNAPSHOT_CLOCK_SKEW_TOLERANCE_S
+        <= wall_age_s
+        <= STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S + _STATUS_SNAPSHOT_CLOCK_SKEW_TOLERANCE_S
+        and abs(wall_age_s - float(age_s)) <= _STATUS_SNAPSHOT_CLOCK_SKEW_TOLERANCE_S
         and refresh_error in {None, ""}
     )
 
