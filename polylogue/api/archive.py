@@ -146,6 +146,24 @@ _FACET_DEFERRED_FAMILIES = (
 
 _FACET_COMPLETE_FAMILIES = _FACET_CORE_FAMILIES + _FACET_DEFERRED_FAMILIES
 
+_CANDIDATE_CAPTURE_KIND_MAP: dict[str, AssertionKind] = {
+    "note": AssertionKind.NOTE,
+    "claim": AssertionKind.DECISION,
+    "correction": AssertionKind.CORRECTION,
+    "lesson": AssertionKind.LESSON,
+}
+
+
+def candidate_capture_kind(value: str) -> AssertionKind:
+    """Resolve the stable terminal/MCP candidate-capture kind vocabulary."""
+
+    try:
+        return _CANDIDATE_CAPTURE_KIND_MAP[value]
+    except KeyError as exc:
+        choices = ", ".join(_CANDIDATE_CAPTURE_KIND_MAP)
+        raise ValueError(f"candidate kind must be one of: {choices}") from exc
+
+
 _FACET_FAMILY_METADATA: dict[str, dict[str, object]] = {
     "total_counts": {
         "label": "Total counts",
@@ -1174,16 +1192,21 @@ def _archive_capture_assertion_candidate(
     with ArchiveStore.open_existing(_active_archive_root(config), read_only=False) as archive:
         for ref in refs:
             if ref == "last":
-                summaries = archive.list_summaries(cwd_prefix=str(cwd or Path.cwd()), limit=1)
+                resolved_cwd = (cwd or Path.cwd()).resolve()
+                repo_root = next(
+                    (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
+                    resolved_cwd,
+                )
+                summaries = archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
                 if not summaries:
-                    raise ValueError("--ref last found no archived session for the current working directory")
-                resolved_refs.append(f"session:{summaries[0].session_id}")
+                    raise ValueError("--ref last found no archived session for the current repository/cwd")
+                session_ref = f"session:{summaries[0].session_id}"
+                resolved_refs.append(session_ref)
                 continue
-            parsed = parse_public_ref(ref)
-            if isinstance(parsed, ObjectRef) and parsed.kind == "session":
-                resolved_refs.append(f"session:{archive.resolve_session_id(parsed.object_id)}")
-            else:
-                resolved_refs.append(parsed.format())
+            parsed = ObjectRef.parse(ref)
+            if parsed.kind != "session":
+                raise ValueError("--ref must be a session:<id> ref or 'last'")
+            resolved_refs.append(f"session:{archive.resolve_session_id(parsed.object_id)}")
 
         normalized_scope_refs = [parse_public_ref(ref).format() for ref in scope_refs]
         target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"

@@ -4,20 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import cast
 
 from click.testing import CliRunner
 
 from polylogue.api import Polylogue
-from polylogue.cli.commands.note import MAX_NOTE_STDIN_BYTES, note_command
+from polylogue.cli import cli
+from polylogue.cli.commands.note import MAX_NOTE_STDIN_BYTES
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload
 from tests.infra.storage_records import SessionBuilder
 
 
 def _capture(cli_workspace: dict[str, Path], args: list[str], *, input: str | bytes | None = None) -> dict[str, object]:
-    result = CliRunner().invoke(note_command, [*args, "--format", "json"], input=input, catch_exceptions=False)
+    result = CliRunner().invoke(
+        cli,
+        ["--plain", "note", *args, "--format", "json"],
+        input=input,
+        catch_exceptions=False,
+    )
     assert result.exit_code == 0, result.output
     return cast(dict[str, object], json.loads(result.output))
 
@@ -91,22 +98,41 @@ def test_terminal_note_reads_bounded_stdin(cli_workspace: dict[str, Path]) -> No
     assert payload["body_text"] == "lesson from a diff"
     assert payload["kind"] == "lesson"
 
-    oversized = CliRunner().invoke(note_command, ["--stdin"], input=b"x" * (MAX_NOTE_STDIN_BYTES + 1))
+    oversized = CliRunner().invoke(cli, ["--plain", "note", "--stdin"], input=b"x" * (MAX_NOTE_STDIN_BYTES + 1))
     assert oversized.exit_code == 2
     assert "stdin note exceeds" in oversized.output
 
 
 def test_terminal_note_last_resolves_the_latest_session_for_current_cwd(cli_workspace: dict[str, Path]) -> None:
+    repo_root = cli_workspace["archive_root"].parent / "repo"
+    nested_cwd = repo_root / "nested" / "terminal"
+    nested_cwd.mkdir(parents=True)
+    (repo_root / ".git").mkdir()
     session = (
         SessionBuilder(cli_workspace["db_path"], "terminal-note-last")
         .provider("codex")
-        .working_directories([str(Path.cwd())])
+        .working_directories([str(repo_root)])
     )
     session.save()
 
-    payload = _capture(cli_workspace, ["anchor to last", "--ref", "last"])
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(nested_cwd)
+        payload = _capture(cli_workspace, ["anchor to last", "--ref", "last"])
+    finally:
+        os.chdir(previous_cwd)
     assert payload["target_ref"] == f"session:{session.native_session_id()}"
     assert payload["evidence_refs"] == [f"session:{session.native_session_id()}"]
+
+
+def test_terminal_note_rejects_non_session_refs(cli_workspace: dict[str, Path]) -> None:
+    result = CliRunner().invoke(
+        cli,
+        ["--plain", "note", "not an anchor", "--ref", "repo:polylogue"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 1
+    assert "--ref must be a session" in result.output
 
 
 def test_terminal_note_is_visible_to_the_real_pending_candidate_reader(cli_workspace: dict[str, Path]) -> None:

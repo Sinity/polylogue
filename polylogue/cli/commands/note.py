@@ -10,18 +10,13 @@ from pathlib import Path
 import click
 
 from polylogue.api import Polylogue
-from polylogue.core.enums import AssertionKind
+from polylogue.api.archive import candidate_capture_kind
 from polylogue.paths import archive_root
 from polylogue.surfaces.payloads import AssertionClaimPayload
 
 MAX_NOTE_STDIN_BYTES = 256 * 1024
 
-_KIND_MAP: dict[str, AssertionKind] = {
-    "note": AssertionKind.NOTE,
-    "claim": AssertionKind.DECISION,
-    "correction": AssertionKind.CORRECTION,
-    "lesson": AssertionKind.LESSON,
-}
+_KIND_NAMES = ("note", "claim", "correction", "lesson")
 
 
 def _scope_refs(repo: str | None, topic: str | None) -> tuple[str, ...]:
@@ -46,10 +41,12 @@ def _stdin_note() -> str:
 @click.command("note")
 @click.argument("text", required=False)
 @click.option("--stdin", "from_stdin", is_flag=True, help="Read note text from stdin (bounded).")
-@click.option("--ref", "refs", multiple=True, help="Evidence ref, or 'last' for the latest session in this cwd.")
+@click.option(
+    "--ref", "refs", multiple=True, help="Session ref, or 'last' for the latest session in this repository/cwd."
+)
 @click.option("--repo", default=None, help="Attach repository scope (accepts repo:NAME or NAME).")
 @click.option("--topic", default=None, help="Attach topic scope (accepts insight:NAME or NAME).")
-@click.option("--kind", "kind_name", type=click.Choice(tuple(_KIND_MAP)), default="note", show_default=True)
+@click.option("--kind", "kind_name", type=click.Choice(_KIND_NAMES), default="note", show_default=True)
 @click.option("--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
 def note_command(
     text: str | None,
@@ -71,7 +68,7 @@ def note_command(
         async with Polylogue(archive_root=archive_root()) as poly:
             return await poly.capture_assertion_candidate(
                 body_text=body_text,
-                kind=_KIND_MAP[kind_name],
+                kind=candidate_capture_kind(kind_name),
                 refs=refs,
                 scope_refs=_scope_refs(repo, topic),
                 cwd=Path.cwd(),

@@ -146,6 +146,11 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
             "prompt_ref": "block:contract:0",
         },
     },
+    "capture_assertion_candidate": {
+        "required": {"body_text"},
+        "happy": {"body_text": "capture this", "kind": "lesson"},
+        "invalid_value": {"body_text": "capture this", "kind": "bogus"},
+    },
     "add_tag": {
         "required": {"session_id", "tag"},
         "happy": {
@@ -748,7 +753,22 @@ def _arrange_poly_for(poly: Any, tool_name: str) -> None:
     poly.list_corrections = AsyncMock(return_value=[])
     poly.clear_corrections = AsyncMock(return_value=0)
     poly.delete_correction = AsyncMock(return_value=False)
-    if tool_name == "import_annotation_batch":
+    if tool_name == "capture_assertion_candidate":
+        from polylogue.core.enums import AssertionKind, AssertionStatus
+        from polylogue.surfaces.payloads import AssertionClaimPayload
+
+        poly.capture_assertion_candidate = AsyncMock(
+            return_value=AssertionClaimPayload(
+                assertion_id="assertion-terminal-note:contract",
+                target_ref="assertion:assertion-terminal-note:contract",
+                kind=AssertionKind.LESSON,
+                body_text="capture this",
+                status=AssertionStatus.CANDIDATE,
+                created_at_ms=1,
+                updated_at_ms=1,
+            )
+        )
+    elif tool_name == "import_annotation_batch":
         poly.resolve_ref = AsyncMock(return_value=MagicMock(resolved=False))
     elif tool_name == "add_tag":
         poly.add_tag = AsyncMock(return_value=TagMutationResult(outcome="added"))
