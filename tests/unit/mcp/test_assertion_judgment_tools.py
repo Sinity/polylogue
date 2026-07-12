@@ -68,3 +68,27 @@ def test_mcp_bulk_judgment_rejects_non_boolean_injection() -> None:
 
     assert json.loads(result)["code"] == "invalid_assertion_judgment"
     poly.judge_assertion_candidates.assert_not_awaited()
+
+
+def test_mcp_bulk_judgment_rejects_invalid_supersede_replacement_fields() -> None:
+    """Malformed replacement fields must not silently promote original content."""
+
+    poly = MagicMock()
+    poly.judge_assertion_candidates = AsyncMock()
+    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
+        server = cast(MCPServerUnderTest, build_server(role="review"))
+        tool = server._tool_manager._tools["judge_assertion_candidates"]
+        result = invoke_surface(
+            tool.fn,
+            items=[
+                {
+                    "candidate_ref": "assertion:candidate-1",
+                    "decision": "supersede",
+                    "replacement_kind": 7,
+                    "replacement_body_text": "Corrected claim",
+                }
+            ],
+        )
+
+    assert json.loads(result)["code"] == "invalid_assertion_judgment"
+    poly.judge_assertion_candidates.assert_not_awaited()

@@ -1251,14 +1251,18 @@ def register_assertion_review_tools(mcp: FastMCP, hooks: ServerCallbacks) -> Non
             reason = item.get("reason")
             replacement_kind = item.get("replacement_kind")
             replacement_body_text = item.get("replacement_body_text")
+            if replacement_kind is not None and not isinstance(replacement_kind, str):
+                raise ValueError("replacement_kind must be a string when provided")
+            if replacement_body_text is not None and not isinstance(replacement_body_text, str):
+                raise ValueError("replacement_body_text must be a string when provided")
             return ArchiveAssertionBulkJudgmentItemEnvelope(
                 candidate_ref=candidate_ref,
                 decision=decision,
                 reason=reason if isinstance(reason, str) else None,
                 inject=inject,
                 actor_ref=actor_ref,
-                replacement_kind=replacement_kind if isinstance(replacement_kind, str) else None,
-                replacement_body_text=replacement_body_text if isinstance(replacement_body_text, str) else None,
+                replacement_kind=replacement_kind,
+                replacement_body_text=replacement_body_text,
                 replacement_value=item.get("replacement_value"),
             )
 
