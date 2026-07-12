@@ -476,6 +476,53 @@ def test_batch_canonical_nfc_retry_returns_existing_durable_provenance(workspace
     assert replay.metadata == {"label": "Caf\u00e9"}
 
 
+def test_batch_opaque_refs_preserve_decomposed_bytes_across_retry_and_cold_read(
+    workspace_env: dict[str, Path],
+) -> None:
+    decomposed = "Cafe\u0301"
+    composed = "Caf\u00e9"
+    original = AnnotationBatch(
+        batch_id="opaque-ref-retry",
+        schema_id=DELEGATION_DISCOURSE_SCHEMA.schema_id,
+        schema_version=DELEGATION_DISCOURSE_SCHEMA.version,
+        target_ref=f"delegation:{decomposed}",
+        source_result_ref=f"result-set:{decomposed}",
+        actor_ref=f"agent:{decomposed}",
+        model_ref=f"agent:model-{decomposed}",
+        prompt_ref=f"block:{decomposed}:0",
+        total_count=1,
+        valid_count=1,
+        invalid_count=0,
+        abstained_count=0,
+        assertion_refs=(f"assertion:{decomposed}",),
+        created_at_ms=1,
+    )
+    exact_retry = replace(original)
+    composed_target = replace(original, target_ref=f"delegation:{composed}")
+
+    assert original.canonical_provenance_bytes() == exact_retry.canonical_provenance_bytes()
+    assert original.canonical_provenance_bytes() != composed_target.canonical_provenance_bytes()
+
+    archive_root = workspace_env["archive_root"]
+    with ArchiveStore(archive_root) as archive:
+        archive.save_annotation_batch(original)
+
+    with ArchiveStore.open_existing(archive_root) as reopened:
+        cold = reopened.get_annotation_batch(original.batch_id)
+        assert cold is not None
+        assert cold.target_ref == f"delegation:{decomposed}"
+        assert cold.source_result_ref == f"result-set:{decomposed}"
+        assert cold.actor_ref == f"agent:{decomposed}"
+        assert cold.model_ref == f"agent:model-{decomposed}"
+        assert cold.prompt_ref == f"block:{decomposed}:0"
+        assert cold.assertion_refs == (f"assertion:{decomposed}",)
+        assert cold.canonical_provenance_bytes() == original.canonical_provenance_bytes()
+        replay = reopened.save_annotation_batch(exact_retry)
+        assert replay.canonical_provenance_bytes() == original.canonical_provenance_bytes()
+        with pytest.raises(AnnotationBatchError, match="incompatible provenance"):
+            reopened.save_annotation_batch(composed_target)
+
+
 @pytest.mark.parametrize(
     ("metadata", "validation_failures"),
     [

@@ -274,6 +274,32 @@ def _unresolved_ref_payload(
     )
 
 
+def _oversized_annotation_batch_ref_payload(ref: str) -> Any | None:
+    """Return a bounded unresolved descriptor for an oversized batch-like ref."""
+
+    if not ref.startswith("annotation-batch"):
+        return None
+    from polylogue.surfaces.payloads import (
+        AnnotationBatchRefDigestPayload,
+        PublicRefResolutionPayload,
+        model_json_document,
+    )
+
+    try:
+        descriptor = AnnotationBatchRefDigestPayload.from_oversized_ref(ref)
+    except (UnicodeEncodeError, ValueError):
+        return None
+    return PublicRefResolutionPayload(
+        ref=f"annotation-batch:sha256-{descriptor.original_ref_sha256}",
+        normalized_ref=None,
+        kind="annotation-batch",
+        resolved=False,
+        payload_kind="annotation-batch-ref-digest",
+        payload=model_json_document(descriptor),
+        caveats=("oversized annotation batch reference omitted from the public response",),
+    )
+
+
 #: ObjectRefKind values registered ahead of their backing storage tier
 #: (polylogue-rxdo analysis-provenance epic). ``resolve_ref`` returns a typed
 #: ``PendingObjectRefPayload`` (reason=substrate-pending) for these instead of
@@ -2733,9 +2759,23 @@ class PolylogueArchiveMixin:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
+        bounded_batch_ref = _oversized_annotation_batch_ref_payload(ref)
+        if bounded_batch_ref is not None:
+            # ``parse_public_ref`` deliberately falls back to EvidenceRef, whose
+            # one-segment form accepts arbitrary colon-bearing session ids. Guard
+            # batch-like malformed inputs before that fallback can misclassify
+            # and reflect a multi-megabyte value through the session miss path.
+            try:
+                batch_candidate = ObjectRef.parse(ref)
+            except ValueError:
+                return cast(PublicRefResolutionPayload, bounded_batch_ref)
+            if batch_candidate.kind != "annotation-batch":
+                return cast(PublicRefResolutionPayload, bounded_batch_ref)
         try:
             parsed = parse_public_ref(ref)
         except ValueError as exc:
+            if bounded_batch_ref is not None:
+                return cast(PublicRefResolutionPayload, bounded_batch_ref)
             return cast(PublicRefResolutionPayload, _unresolved_ref_payload(ref, str(exc)))
 
         if isinstance(parsed, EvidenceRef):
@@ -2994,6 +3034,9 @@ class PolylogueArchiveMixin:
 
         batch = archive.get_annotation_batch(object_ref.object_id)
         if batch is None:
+            bounded = _oversized_annotation_batch_ref_payload(ref)
+            if bounded is not None:
+                return cast(PublicRefResolutionPayload, bounded)
             return cast(
                 PublicRefResolutionPayload,
                 _unresolved_ref_payload(

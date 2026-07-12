@@ -69,7 +69,12 @@ def _require_string(value: object, *, context: str) -> str:
 def _nfc_string(value: object, *, context: str) -> str:
     """Return one detached NFC-normalized declaration string."""
 
-    return unicodedata.normalize("NFC", _require_string(value, context=context))
+    raw = _require_string(value, context=context)
+    try:
+        raw.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise AnnotationSchemaError(f"{context} must be valid UTF-8") from exc
+    return unicodedata.normalize("NFC", raw)
 
 
 def _nfc_string_tuple(value: object, *, context: str) -> tuple[str, ...]:

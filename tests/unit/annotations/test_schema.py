@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import pytest
 
@@ -125,6 +126,33 @@ class TestAnnotationSchemaConstruction:
     def test_valid_schema_constructs(self) -> None:
         schema = _schema()
         assert schema.qualified_id == "test.delegation-tone@v1"
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            pytest.param(
+                lambda: AnnotationField(name="note", value_type="string", description="bad\ud800"),
+                id="field-description",
+            ),
+            pytest.param(
+                lambda: AnnotationField(name="status", value_type="enum", enum_values=("ok", "bad\ud800")),
+                id="enum-value",
+            ),
+            pytest.param(lambda: _schema(schema_id="test.bad\ud800"), id="schema-id"),
+            pytest.param(lambda: _schema(title="bad\ud800"), id="title"),
+            pytest.param(lambda: _schema(description="bad\ud800"), id="description"),
+            pytest.param(lambda: _schema(abstain_field="bad\ud800"), id="abstain-field"),
+            pytest.param(lambda: _schema(evidence_policy="bad\ud800"), id="evidence-policy"),
+            pytest.param(lambda: _schema(status="bad\ud800"), id="status"),
+            pytest.param(lambda: _schema(target_ref_kinds=("session", "bad\ud800")), id="target-ref-kind"),
+        ],
+    )
+    def test_lone_surrogate_declaration_strings_fail_at_construction(
+        self,
+        factory: Callable[[], object],
+    ) -> None:
+        with pytest.raises(AnnotationSchemaError, match="must be valid UTF-8"):
+            factory()
 
     def test_duplicate_field_names_rejected(self) -> None:
         with pytest.raises(AnnotationSchemaError):

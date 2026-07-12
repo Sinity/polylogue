@@ -75,10 +75,15 @@ def _document_copy(value: object, *, context: str) -> JSONDocument:
         raise AnnotationBatchError(f"{context} must be a finite JSON object") from exc
 
 
-def _canonical_json_text(value: object, *, context: str) -> str:
+def _canonical_json_text(
+    value: object,
+    *,
+    context: str,
+    normalize_strings: bool = True,
+) -> str:
     try:
         return json.dumps(
-            _nfc_json_value(value),
+            _nfc_json_value(value) if normalize_strings else value,
             allow_nan=False,
             ensure_ascii=False,
             sort_keys=True,
@@ -90,9 +95,18 @@ def _canonical_json_text(value: object, *, context: str) -> str:
         raise AnnotationBatchError(f"{context} must be finite canonical JSON") from exc
 
 
-def _canonical_json_bytes(value: object, *, context: str) -> bytes:
+def _canonical_json_bytes(
+    value: object,
+    *,
+    context: str,
+    normalize_strings: bool = True,
+) -> bytes:
     try:
-        return _canonical_json_text(value, context=context).encode("utf-8")
+        return _canonical_json_text(
+            value,
+            context=context,
+            normalize_strings=normalize_strings,
+        ).encode("utf-8")
     except UnicodeEncodeError as exc:
         raise AnnotationBatchError(f"{context} must be valid UTF-8") from exc
 
@@ -178,6 +192,11 @@ class AnnotationBatch:
             _canonical_json_bytes(
                 self._provenance_document_from_fields(),
                 context="annotation batch provenance",
+                # ObjectRef ids are deliberately opaque. Metadata and validation
+                # documents were already NFC-snapshotted above, but normalizing
+                # the complete provenance object here would silently rewrite ref
+                # bytes and conflate canonically equivalent yet distinct ids.
+                normalize_strings=False,
             ),
         )
 

@@ -1887,6 +1887,31 @@ ANNOTATION_BATCH_ASSERTION_REF_LIMIT = 20
 ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT = 5
 ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT = 256
 ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT = 96
+ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT = 256
+
+
+class AnnotationBatchRefDigestPayload(SurfacePayloadModel):
+    """Identity-only descriptor for an oversized public annotation-batch ref.
+
+    The original ref is intentionally absent. This keeps missing and malformed
+    lookup responses bounded while retaining enough information to correlate
+    the response with the exact UTF-8 input.
+    """
+
+    unit: Literal["annotation-batch-ref-digest"] = "annotation-batch-ref-digest"
+    original_ref_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_ref_utf8_bytes_total: int = Field(gt=ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT)
+    truncated: Literal[True] = True
+
+    @classmethod
+    def from_oversized_ref(cls, value: str) -> AnnotationBatchRefDigestPayload:
+        encoded = value.encode("utf-8")
+        if len(encoded) <= ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT:
+            raise ValueError("annotation batch ref does not exceed the public byte limit")
+        return cls(
+            original_ref_sha256=hashlib.sha256(encoded).hexdigest(),
+            original_ref_utf8_bytes_total=len(encoded),
+        )
 
 
 class AnnotationBatchTextPreviewPayload(SurfacePayloadModel):

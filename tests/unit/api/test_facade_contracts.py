@@ -2356,6 +2356,43 @@ async def test_resolve_ref_reads_persisted_annotation_batch_and_reports_missing(
         await archive.close()
 
 
+async def test_resolve_ref_byte_bounds_missing_and_malformed_giant_annotation_batch_refs(tmp_path: Path) -> None:
+    """The production facade never reflects a giant unresolved batch ref.
+
+    Anti-vacuity: both inputs pass through ``Polylogue.resolve_ref``. The first
+    parses as a real annotation-batch lookup and misses durable storage; the
+    second fails ObjectRef parsing. Removing either bounded failure branch
+    makes the serialized response scale with the two-megabyte input.
+    """
+
+    missing_ref = f"annotation-batch:missing-{'x' * (2 * 1024 * 1024)}"
+    malformed_ref = f"annotation-batch{'y' * (2 * 1024 * 1024)}:missing"
+    archive = _archive(tmp_path)
+    try:
+        for ref in (missing_ref, malformed_ref):
+            resolution = await archive.resolve_ref(ref)
+            encoded = ref.encode("utf-8")
+            digest = hashlib.sha256(encoded).hexdigest()
+
+            assert resolution.resolved is False
+            assert resolution.kind == "annotation-batch"
+            assert resolution.ref == f"annotation-batch:sha256-{digest}"
+            assert resolution.normalized_ref is None
+            assert resolution.payload_kind == "annotation-batch-ref-digest"
+            assert resolution.payload == {
+                "unit": "annotation-batch-ref-digest",
+                "original_ref_sha256": digest,
+                "original_ref_utf8_bytes_total": len(encoded),
+                "truncated": True,
+            }
+            assert resolution.caveats == ("oversized annotation batch reference omitted from the public response",)
+            rendered = resolution.model_dump_json()
+            assert ref not in rendered
+            assert len(rendered.encode("utf-8")) < 1_024
+    finally:
+        await archive.close()
+
+
 async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: Path) -> None:
     """The real durable-read -> facade route stays finite for oversized batches.
 
