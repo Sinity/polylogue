@@ -98,20 +98,20 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
         )
     )
 
-    assert promoted.package_version == "v1"
+    assert promoted.package_version == "v2"
     assert promoted.schema is not None
     specs = list_inferred_corpus_specs(provider="chatgpt")
     scenarios = list_inferred_corpus_scenarios(provider="chatgpt")
     registry = SchemaRegistry()
     registry.register_schema("chatgpt", {"type": "object", "properties": {"mapping": {"type": "object"}}})
-    comparison = compare_schema_versions(SchemaCompareRequest(provider="chatgpt", from_version="v1", to_version="v2"))
+    comparison = compare_schema_versions(SchemaCompareRequest(provider="chatgpt", from_version="v2", to_version="v3"))
     selected = list_schemas(SchemaListRequest(provider="chatgpt"))
 
-    assert comparison.diff.version_a == "v1"
-    assert comparison.diff.version_b == "v2"
+    assert comparison.diff.version_a == "v2"
+    assert comparison.diff.version_b == "v3"
     assert selected.selected is not None
-    assert selected.selected.versions == ["v1", "v2"]
-    assert specs[0].package_version == "v1"
+    assert selected.selected.versions == ["v1", "v2", "v3"]
+    assert specs[0].package_version == "v2"
     assert scenarios[0].provider == "chatgpt"
 
 
