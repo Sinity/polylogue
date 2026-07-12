@@ -261,6 +261,24 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueSessionLedger["chatgpt:conv-status"].archive_state.state).toBe("spooled_only");
   });
 
+  it("propagates content-script archive state into the multi-tab ledger", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "chatgpt",
+      provider_session_id: "conv-content",
+      state: "stale",
+      captured: false,
+    }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.archiveState",
+      provider: "chatgpt",
+      provider_session_id: "conv-content",
+    });
+
+    expect(stored.polylogueSessionLedger["chatgpt:conv-content"].archive_state.state).toBe("stale");
+    expect(globalThis.chrome.action.setBadgeText.mock.calls.at(-1)[0]).toEqual({ text: "…" });
+  });
+
   it("does not capture existing provider tabs on extension update", async () => {
     expect(installedListener).toBeTypeOf("function");
     globalThis.fetch = vi.fn(async () => responseJson({ ok: true, active: true }));

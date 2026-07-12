@@ -515,7 +515,7 @@ function badgeForState(state) {
   if (!state.online) return { text: "off", color: "#9b2c2c" };
   const archiveState = state.archive_state?.state;
   if (archiveState === "failed" || state.error) return { text: "err", color: "#ad2f2f" };
-  if (archiveState === "spooled_only" || archiveState === "ingest_pending") return { text: "…", color: "#9a5b00" };
+  if (["spooled_only", "ingest_pending", "stale"].includes(archiveState)) return { text: "…", color: "#9a5b00" };
   if (archiveState === "missing") return { text: "on", color: "#325d8f" };
   if (archiveState === "archived" || state.captured) return { text: "ok", color: "#14764e" };
   if (state.capture_mode === "dom_degraded") return { text: "dom", color: "#8a5a00" };
@@ -1420,6 +1420,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         provider: message.provider,
         provider_session_id: message.provider_session_id,
         last_receiver_request_id: state.receiver_request_id || null
+      });
+      await updateSessionLedger({
+        provider: message.provider,
+        providerSessionId: message.provider_session_id,
+        patch: {
+          archive_state: state,
+          tab_id: sender.tab?.id || null,
+          tab_url: sender.tab?.url || null,
+          last_error: null,
+        },
       });
       sendResponse(state);
       return;
