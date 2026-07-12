@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from polylogue.annotations.schema import (
@@ -60,6 +62,11 @@ class TestAnnotationFieldValidation:
         assert field.validate_value(0.5) is None
         assert field.validate_value(1) is None
         assert field.validate_value(1.5) is not None
+
+    @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+    def test_number_field_rejects_non_finite_values(self, value: float) -> None:
+        field = AnnotationField(name="confidence", value_type="number")
+        assert "finite JSON number" in str(field.validate_value(value))
 
     def test_numeric_bounds_enforced(self) -> None:
         field = AnnotationField(name="score", value_type="integer", minimum=1, maximum=5)
@@ -266,3 +273,22 @@ class TestAnnotationSchemaRegistry:
         registry.register(a2)
         registry.register(a1)
         assert registry.list() == (a1, a2, b1)
+
+    def test_require_active_rejects_unregistered_schema(self) -> None:
+        registry = AnnotationSchemaRegistry()
+        with pytest.raises(AnnotationSchemaError, match="must be registered"):
+            registry.require_active(_schema(status="active"))
+
+    def test_require_active_rejects_drifted_definition(self) -> None:
+        registry = AnnotationSchemaRegistry()
+        registry.register(_schema(status="active", title="Registered"))
+        with pytest.raises(AnnotationSchemaError, match="does not match"):
+            registry.require_active(_schema(status="active", title="Drifted"))
+
+    @pytest.mark.parametrize("status", ["draft", "deprecated"])
+    def test_require_active_rejects_inactive_status(self, status: str) -> None:
+        registry = AnnotationSchemaRegistry()
+        schema = _schema(status=status)
+        registry.register(schema)
+        with pytest.raises(AnnotationSchemaError, match="not 'active'"):
+            registry.require_active(schema)

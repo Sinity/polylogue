@@ -16,7 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.annotations.schema import AnnotationField, AnnotationSchema
+from polylogue.annotations.schema import (
+    AnnotationField,
+    AnnotationSchema,
+    AnnotationSchemaError,
+    AnnotationSchemaRegistry,
+)
 from polylogue.annotations.write import (
     AnnotationValidationError,
     assertion_id_for_schema_annotation,
@@ -31,6 +36,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     judge_assertion_candidate,
     read_assertion_envelope,
     upsert_annotation,
+    upsert_assertion,
 )
 from tests.infra.storage_records import SessionBuilder
 
@@ -53,9 +59,16 @@ def _delegation_tone_schema(**overrides: object) -> AnnotationSchema:
         "target_ref_kinds": ("session",),
         "abstain_field": "abstain",
         "evidence_policy": "required",
+        "status": "active",
     }
     defaults.update(overrides)
     return AnnotationSchema(**defaults)  # type: ignore[arg-type]
+
+
+def _registry_for(schema: AnnotationSchema) -> AnnotationSchemaRegistry:
+    registry = AnnotationSchemaRegistry()
+    registry.register(schema)
+    return registry
 
 
 @pytest.fixture
@@ -73,6 +86,7 @@ class TestUpsertAnnotationAssertion:
         envelope = upsert_annotation_assertion(
             user_conn,
             schema=schema,
+            registry=_registry_for(schema),
             target_ref="session:codex-session:demo",
             value={"score": 5, "status": "approved"},
             row_key="row-1",
@@ -97,6 +111,7 @@ class TestUpsertAnnotationAssertion:
             upsert_annotation_assertion(
                 user_conn,
                 schema=schema,
+                registry=_registry_for(schema),
                 target_ref="session:codex-session:demo",
                 value={"score": 99, "status": "approved"},
                 row_key="row-bad",
@@ -120,6 +135,7 @@ class TestUpsertAnnotationAssertion:
             upsert_annotation_assertion(
                 user_conn,
                 schema=schema,
+                registry=_registry_for(schema),
                 target_ref="session:codex-session:demo",
                 value={"score": 4, "status": "approved"},
                 row_key="row-no-evidence",
@@ -135,6 +151,7 @@ class TestUpsertAnnotationAssertion:
             upsert_annotation_assertion(
                 user_conn,
                 schema=schema,
+                registry=_registry_for(schema),
                 target_ref="block:codex-session:demo:0",
                 value={"score": 4, "status": "approved"},
                 row_key="row-wrong-kind",
@@ -149,6 +166,7 @@ class TestUpsertAnnotationAssertion:
         envelope = upsert_annotation_assertion(
             user_conn,
             schema=schema,
+            registry=_registry_for(schema),
             target_ref="session:codex-session:demo",
             value={"abstain": True},
             row_key="row-abstain",
@@ -169,6 +187,7 @@ class TestUpsertAnnotationAssertion:
         envelope = upsert_annotation_assertion(
             user_conn,
             schema=schema,
+            registry=_registry_for(schema),
             target_ref="session:codex-session:demo",
             value={"score": 3, "status": "approved"},
             row_key="row-user",
@@ -181,6 +200,55 @@ class TestUpsertAnnotationAssertion:
         # documents that the write helper itself makes no candidacy promise
         # -- promotion policy is entirely upsert_assertion's chokepoint.
         assert envelope.status == "active"
+
+    def test_unregistered_schema_rejected_before_write(self, user_conn: sqlite3.Connection) -> None:
+        schema = _delegation_tone_schema()
+        with pytest.raises(AnnotationSchemaError, match="must be registered"):
+            upsert_annotation_assertion(
+                user_conn,
+                schema=schema,
+                registry=AnnotationSchemaRegistry(),
+                target_ref="session:codex-session:demo",
+                value={"score": 3, "status": "approved"},
+                row_key="row-unregistered",
+                evidence_refs=["session:codex-session:demo"],
+                author_ref="agent:labeler",
+            )
+
+    def test_same_identity_drift_rejected_by_public_writer(self, user_conn: sqlite3.Connection) -> None:
+        registered = _delegation_tone_schema(title="Registered")
+        drifted = _delegation_tone_schema(title="Drifted")
+        registry = _registry_for(registered)
+        with pytest.raises(AnnotationSchemaError, match="does not match"):
+            upsert_annotation_assertion(
+                user_conn,
+                schema=drifted,
+                registry=registry,
+                target_ref="session:codex-session:demo",
+                value={"score": 3, "status": "approved"},
+                row_key="row-drifted",
+                evidence_refs=["session:codex-session:demo"],
+                author_ref="agent:labeler",
+            )
+
+    @pytest.mark.parametrize("status", ["draft", "deprecated"])
+    def test_inactive_registered_schema_rejected_by_public_writer(
+        self,
+        user_conn: sqlite3.Connection,
+        status: str,
+    ) -> None:
+        schema = _delegation_tone_schema(status=status)
+        with pytest.raises(AnnotationSchemaError, match="not 'active'"):
+            upsert_annotation_assertion(
+                user_conn,
+                schema=schema,
+                registry=_registry_for(schema),
+                target_ref="session:codex-session:demo",
+                value={"score": 3, "status": "approved"},
+                row_key=f"row-{status}",
+                evidence_refs=["session:codex-session:demo"],
+                author_ref="agent:labeler",
+            )
 
     def test_deterministic_id_distinct_from_freeform_annotation_helper(self) -> None:
         schema = _delegation_tone_schema()
@@ -212,6 +280,7 @@ class TestAnnotationRoundtripWithQueryAndJudge:
         initialize_archive_database(user_db, ArchiveTier.USER)
 
         schema = _delegation_tone_schema()
+        registry = _registry_for(schema)
         rows: list[dict[str, object]] = [
             {"score": 5, "status": "approved"},
             {"score": 4, "status": "approved"},
@@ -227,6 +296,7 @@ class TestAnnotationRoundtripWithQueryAndJudge:
                     upsert_annotation_assertion(
                         conn,
                         schema=schema,
+                        registry=registry,
                         target_ref=target_ref,
                         value=row_value,
                         row_key=f"row-{index}",
@@ -275,6 +345,54 @@ class TestAnnotationRoundtripWithQueryAndJudge:
             assert active_source is not None
             active_rows = archive.query_assertions(active_source.predicate, limit=100)
             assert [row.assertion_id for row in active_rows] == [resulting_assertion.assertion_id]
+
+    def test_value_predicates_preserve_json_types_and_reject_mixed_numeric_scalars(self, tmp_path: Path) -> None:
+        index_db = tmp_path / "index.db"
+        SessionBuilder(index_db, "typed-values").provider("codex").add_message(
+            "m1", role="assistant", text="typed values"
+        ).save()
+        user_db = tmp_path / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        target_ref = "session:codex-session:typed-values"
+        values = {
+            "string-number": {"probe": "4", "score": "5"},
+            "number": {"probe": 4, "score": 5},
+            "string-boolean": {"probe": "true", "score": False},
+            "boolean": {"probe": True, "score": True},
+            "string-null": {"probe": "null"},
+            "null": {"probe": None},
+            "missing": {"other": None},
+        }
+        with sqlite3.connect(user_db) as conn:
+            for assertion_id, value in values.items():
+                upsert_assertion(
+                    conn,
+                    assertion_id=assertion_id,
+                    target_ref=target_ref,
+                    kind="annotation",
+                    value=value,
+                    author_ref="user:operator",
+                    author_kind="user",
+                )
+            conn.commit()
+
+        def matching_ids(expression: str) -> set[str]:
+            source = parse_unit_source_expression(expression)
+            assert source is not None
+            with ArchiveStore.open_existing(tmp_path) as archive:
+                return {row.assertion_id for row in archive.query_assertions(source.predicate, limit=100)}
+
+        assert matching_ids('assertions where value.probe:"4"') == {"string-number"}
+        assert matching_ids("assertions where value.probe:4") == {"number"}
+        assert matching_ids('assertions where value.probe:"true"') == {"string-boolean"}
+        assert matching_ids("assertions where value.probe:true") == {"boolean"}
+        assert matching_ids('assertions where value.probe:"null"') == {"string-null"}
+        assert matching_ids("assertions where value.probe:null") == {"null"}
+        assert matching_ids('assertions where value.probe:("4"|"true")') == {
+            "string-number",
+            "string-boolean",
+        }
+        assert matching_ids("assertions where value.score:>=4") == {"number"}
 
 
 def test_upsert_annotation_freeform_note_still_works_independently_of_schema_path(tmp_path: Path) -> None:

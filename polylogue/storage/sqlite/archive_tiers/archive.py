@@ -9051,42 +9051,51 @@ def _assertion_value_path_predicate_clause(
     identifier segments, so ``path`` cannot carry SQLite JSON-path
     metacharacters; it is still passed as a bound parameter rather than
     interpolated, so this holds even if that upstream guarantee ever weakens.
-    Comparison operators (``>``, ``>=``, ``<``, ``<=``) require a numeric
-    right-hand side and cast the extracted scalar to REAL; ``=`` compares the
-    raw extracted scalar so string/boolean/integer labels still match by
-    value (``value.status:approved``).
+    Comparison operators (``>``, ``>=``, ``<``, ``<=``) require both the
+    stored JSON scalar and right-hand side to be numeric. Equality preserves
+    JSON scalar type, including the distinction between strings such as
+    ``"4"``/``"true"``/``"null"`` and their numeric/boolean/null peers.
     """
 
     if not predicate.values:
         return "", []
     json_path = f"$.{path}"
     extract_expr = f"json_extract({assertion_alias}.value_json, ?)"
-    raw_value = predicate.values[-1]
     if predicate.op == "=":
-        return f"{extract_expr} = ?", [json_path, _coerce_assertion_value_path_literal(raw_value)]
+        clauses: list[str] = []
+        params: list[object] = []
+        for raw_value in predicate.values:
+            decoded = _decode_assertion_value_path_literal(raw_value)
+            if decoded is None:
+                clauses.append(f"json_type({assertion_alias}.value_json, ?) = 'null'")
+                params.append(json_path)
+            else:
+                clauses.append(f"{extract_expr} = ?")
+                params.extend((json_path, decoded))
+        return "(" + " OR ".join(clauses) + ")", params
     op_sql = {">": ">", ">=": ">=", "<": "<", "<=": "<="}[predicate.op]
-    return f"CAST({extract_expr} AS REAL) {op_sql} ?", [json_path, float(raw_value)]
+    raw_value = predicate.values[0]
+    return (
+        f"(json_type({assertion_alias}.value_json, ?) IN ('integer', 'real') "
+        f"AND CAST({extract_expr} AS REAL) {op_sql} ?)",
+        [json_path, json_path, float(raw_value)],
+    )
 
 
-def _coerce_assertion_value_path_literal(text: str) -> object:
-    """Coerce DSL literal text to the scalar type ``json_extract`` would return for it."""
+def _decode_assertion_value_path_literal(text: str) -> object:
+    """Decode one DSL literal while preserving explicit JSON string quoting."""
 
     stripped = text.strip()
-    lowered = stripped.lower()
-    if lowered == "true":
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped
+    if decoded is True:
         return 1
-    if lowered == "false":
+    if decoded is False:
         return 0
-    if lowered == "null":
-        return None
-    try:
-        return int(stripped)
-    except ValueError:
-        pass
-    try:
-        return float(stripped)
-    except ValueError:
-        pass
+    if decoded is None or isinstance(decoded, str | int | float):
+        return decoded
     return stripped
 
 

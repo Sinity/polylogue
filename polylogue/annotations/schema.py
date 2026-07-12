@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from math import isfinite
 from typing import Literal, get_args
 
 from polylogue.core.refs import ObjectRef, ObjectRefKind
@@ -91,6 +92,8 @@ class AnnotationField:
             return f"field {self.name!r} must be a {self.value_type}, got {type(value).__name__}"
         if self.value_type == "integer" and not isinstance(value, int):
             return f"field {self.name!r} must be an integer, got {type(value).__name__}"
+        if not isfinite(value):
+            return f"field {self.name!r} must be a finite JSON number, got {value!r}"
         if self.minimum is not None and value < self.minimum:
             return f"field {self.name!r} value {value} is below minimum {self.minimum}"
         if self.maximum is not None and value > self.maximum:
@@ -252,6 +255,32 @@ class AnnotationSchemaRegistry:
         if not candidates:
             raise KeyError(f"no registered annotation schema with schema_id {schema_id!r}")
         return max(candidates, key=lambda schema: schema.version)
+
+    def require_active(self, schema: AnnotationSchema) -> AnnotationSchema:
+        """Return the identical registered active schema or fail closed.
+
+        Annotation writes accept a schema object so callers can retain typed
+        declarations, but the object is not authority by itself. Requiring an
+        exact registry match prevents two definitions from reusing one
+        ``schema_id@vN`` provenance stamp, and requiring ``active`` prevents
+        draft/deprecated constructs from producing analytical rows.
+        """
+
+        try:
+            registered = self.get(schema.schema_id, schema.version)
+        except KeyError as exc:
+            raise AnnotationSchemaError(
+                f"annotation schema {schema.qualified_id!r} must be registered before writing"
+            ) from exc
+        if registered != schema:
+            raise AnnotationSchemaError(
+                f"annotation schema {schema.qualified_id!r} does not match its registered definition"
+            )
+        if registered.status != "active":
+            raise AnnotationSchemaError(
+                f"annotation schema {schema.qualified_id!r} is {registered.status!r}, not 'active'"
+            )
+        return registered
 
     def list(self) -> tuple[AnnotationSchema, ...]:
         """Return every registered schema, sorted by ``(schema_id, version)``."""

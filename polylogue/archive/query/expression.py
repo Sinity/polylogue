@@ -104,6 +104,7 @@ Public API
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field, replace
 from difflib import get_close_matches
@@ -883,8 +884,10 @@ class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]
         if matched is None:
             raise ExpressionCompileError(f"invalid field clause: {token}", field=None)
         negated, field_name, raw_value = matched.group(1), matched.group(2), matched.group(3)
+        value_path_field = field_name.lower().startswith("value.")
         if raw_value.startswith('"'):
-            raw_value = _decode_escaped_string(Token("ESCAPED_STRING", raw_value))
+            if not value_path_field:
+                raw_value = _decode_escaped_string(Token("ESCAPED_STRING", raw_value))
         elif raw_value.startswith("("):
             raw_value = raw_value[1:-1]
         return _FieldToken(field=field_name.lower(), raw_value=raw_value, negated=bool(negated))
@@ -962,7 +965,13 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
             field=field_name,
         )
 
-    values = _split_alternation(token.raw_value) if token.raw_value else ()
+    values = (
+        _split_assertion_value_path_alternation(token.raw_value)
+        if is_value_path_field and token.raw_value
+        else _split_alternation(token.raw_value)
+        if token.raw_value
+        else ()
+    )
     if validation_field == "origin":
         known_origins = {o.value for o in Origin}
         for value in values:
@@ -998,22 +1007,41 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     elif is_value_path_field:
         if not values:
             raise ExpressionCompileError(f"field {field_name!r} requires a value", field=field_name)
-        raw_value = values[-1].strip()
-        match = re.fullmatch(r"(>=|<=|=|>|<)?(.+)", raw_value, re.DOTALL)
-        if match is None or not match.group(2).strip():
-            raise ExpressionCompileError(f"field {field_name!r} requires a value", field=field_name)
-        raw_op = match.group(1) or "="
-        op_text = cast(QueryCompareOp, raw_op)
-        value_text = match.group(2).strip()
-        if op_text != "=":
-            try:
-                float(value_text)
-            except ValueError as exc:
-                raise ExpressionCompileError(
-                    f"field {field_name!r} comparison operator {op_text!r} requires a numeric value",
-                    field=field_name,
-                ) from exc
-        value_path_predicate = QueryFieldPredicate(field=field_name, values=(value_text,), op=op_text)
+        parsed_values: list[str] = []
+        parsed_ops: set[QueryCompareOp] = set()
+        for raw_value in values:
+            match = re.fullmatch(r"(>=|<=|=|>|<)?(.+)", raw_value.strip(), re.DOTALL)
+            if match is None or not match.group(2).strip():
+                raise ExpressionCompileError(f"field {field_name!r} requires a value", field=field_name)
+            op_text = cast(QueryCompareOp, match.group(1) or "=")
+            value_text = match.group(2).strip()
+            if op_text != "=":
+                try:
+                    numeric_value = float(value_text)
+                except ValueError as exc:
+                    raise ExpressionCompileError(
+                        f"field {field_name!r} comparison operator {op_text!r} requires a numeric value",
+                        field=field_name,
+                    ) from exc
+                if not math.isfinite(numeric_value):
+                    raise ExpressionCompileError(
+                        f"field {field_name!r} comparison operator {op_text!r} requires a finite numeric value",
+                        field=field_name,
+                    )
+            parsed_ops.add(op_text)
+            parsed_values.append(value_text)
+        if len(parsed_ops) != 1:
+            raise ExpressionCompileError(
+                f"field {field_name!r} alternation must use one comparison operator",
+                field=field_name,
+            )
+        op_text = next(iter(parsed_ops))
+        if op_text != "=" and len(parsed_values) != 1:
+            raise ExpressionCompileError(
+                f"field {field_name!r} numeric comparison accepts one value",
+                field=field_name,
+            )
+        value_path_predicate = QueryFieldPredicate(field=field_name, values=tuple(parsed_values), op=op_text)
         return QueryNotPredicate(value_path_predicate) if token.negated else value_path_predicate
     elif validation_field == "date" and values:
         raw_value = values[-1].strip()
@@ -1217,13 +1245,23 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
             if not predicate.values:
                 raise ExpressionCompileError(f"field {predicate.field!r} requires a value", field=predicate.field)
             if predicate.op != "=":
+                if len(predicate.values) != 1:
+                    raise ExpressionCompileError(
+                        f"field {predicate.field!r} numeric comparison accepts one value",
+                        field=predicate.field,
+                    )
                 try:
-                    float(predicate.values[-1])
+                    numeric_value = float(predicate.values[0])
                 except ValueError as exc:
                     raise ExpressionCompileError(
                         f"field {predicate.field!r} comparison operator {predicate.op!r} requires a numeric value",
                         field=predicate.field,
                     ) from exc
+                if not math.isfinite(numeric_value):
+                    raise ExpressionCompileError(
+                        f"field {predicate.field!r} comparison operator {predicate.op!r} requires a finite numeric value",
+                        field=predicate.field,
+                    )
         return
     if isinstance(predicate, QueryNotPredicate):
         _validate_predicate_context(predicate.child, unit=unit)
@@ -2529,6 +2567,34 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
 def _split_alternation(raw: str) -> tuple[str, ...]:
     """Split ``a|b|c`` into ``("a", "b", "c")``."""
     return tuple(part.strip() for part in raw.split("|") if part.strip())
+
+
+def _split_assertion_value_path_alternation(raw: str) -> tuple[str, ...]:
+    """Split value-path alternatives while preserving JSON string literals."""
+
+    values: list[str] = []
+    start = 0
+    quoted = False
+    escaped = False
+    for index, character in enumerate(raw):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quoted:
+            escaped = True
+            continue
+        if character == '"':
+            quoted = not quoted
+            continue
+        if character == "|" and not quoted:
+            candidate = raw[start:index].strip()
+            if candidate:
+                values.append(candidate)
+            start = index + 1
+    candidate = raw[start:].strip()
+    if candidate:
+        values.append(candidate)
+    return tuple(values)
 
 
 _RELATIVE_DATE_RE = re.compile(r"^\d+[hdwm]$", re.IGNORECASE)
