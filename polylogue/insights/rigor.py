@@ -25,20 +25,12 @@ runner lives in :mod:`polylogue.insights.audit`.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from types import UnionType
 from typing import get_args, get_origin
 
-from polylogue.insights.archive import (
-    ArchiveCoverageInsight,
-    ArchiveDebtInsight,
-    CostRollupInsight,
-    SessionPhaseInsight,
-    SessionTagRollupInsight,
-    SessionWorkEventInsight,
-    UsageTimelineInsight,
-)
+from pydantic import BaseModel
+
 from polylogue.insights.archive_models import ArchiveInsightModel
-from polylogue.insights.tool_usage import TOOL_USAGE_INSIGHT_VERSION, ToolUsageInsight
+from polylogue.insights.tool_usage import TOOL_USAGE_INSIGHT_VERSION
 from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_VERSION,
@@ -89,11 +81,10 @@ class RigorFieldContract(ArchiveInsightModel):
 
 
 class RigorFieldExemption(ArchiveInsightModel):
-    """Explicit justification for a quantitative field whose zero is measured.
+    """Explicit justification for one numeric field whose zero is measured.
 
-    This is deliberately field-level, rather than a product-level note: an
-    exemption is only valid when the public model still exposes that numeric
-    field, and the honesty policy rejects a newly added unclassified field.
+    This is deliberately field-level, rather than a product-level note: a
+    newly exposed numeric field must receive its own declared rationale.
     """
 
     field_path: tuple[str, ...]
@@ -102,6 +93,12 @@ class RigorFieldExemption(ArchiveInsightModel):
 
 def _true_zero_fields(reason: str, *names: str) -> tuple[RigorFieldExemption, ...]:
     return tuple(RigorFieldExemption(field_path=(name,), reason=reason) for name in names)
+
+
+def _true_zero_paths(reason: str, *paths: tuple[str, ...]) -> tuple[RigorFieldExemption, ...]:
+    """Declare exact nested numeric paths whose zeros are meaningful values."""
+
+    return tuple(RigorFieldExemption(field_path=path, reason=reason) for path in paths)
 
 
 class RigorContract(ArchiveInsightModel):
@@ -188,6 +185,61 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             RigorVersionField(name="inference_version", current_version=SESSION_INFERENCE_VERSION),
             RigorVersionField(name="enrichment_version", current_version=SESSION_ENRICHMENT_VERSION),
         ),
+        field_exemptions=(
+            *_true_zero_paths(
+                "Evidence counts, durations, and ratios are materialized archive measurements.",
+                *(
+                    ("evidence", name)
+                    for name in (
+                        "attachment_count",
+                        "compaction_count",
+                        "latency_percentiles_ms",
+                        "message_count",
+                        "output_duration_ms",
+                        "substantive_count",
+                        "thinking_count",
+                        "thinking_duration_ms",
+                        "timestamped_message_count",
+                        "tool_active_duration_ms",
+                        "tool_calls_per_minute",
+                        "tool_categories",
+                        "tool_duration_ms",
+                        "tool_use_count",
+                        "total_cache_read_tokens",
+                        "total_cache_write_tokens",
+                        "total_cost_usd",
+                        "total_credit_cost",
+                        "total_duration_ms",
+                        "total_input_tokens",
+                        "total_output_tokens",
+                        "untimestamped_message_count",
+                        "wall_duration_ms",
+                        "word_count",
+                    )
+                ),
+            ),
+            *_true_zero_paths(
+                "Inference scores and durations are explicit heuristic outputs, never missing-evidence sentinels.",
+                *(
+                    ("inference", name)
+                    for name in (
+                        "engaged_duration_ms",
+                        "engaged_minutes",
+                        "phase_count",
+                        "terminal_state_confidence",
+                        "tool_active_duration_ms",
+                        "tool_active_minutes",
+                        "work_event_count",
+                        "workflow_shape_confidence",
+                    )
+                ),
+            ),
+            *_true_zero_paths(
+                "Enrichment scores are explicit heuristic outputs, never missing-evidence sentinels.",
+                ("enrichment", "confidence"),
+                ("enrichment", "input_band_summary"),
+            ),
+        ),
         notes=(
             "Heuristic-tier inventory (polylogue-b0b): `inference.terminal_state` "
             "(`archive/session/runtime.py::_terminal_state`) now prefers a "
@@ -250,9 +302,21 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
             RigorVersionField(name="inference_version", current_version=SESSION_INFERENCE_VERSION),
         ),
-        field_exemptions=_true_zero_fields(
-            "Event index is an ordinal identity component, not an aggregate claim.",
-            "event_index",
+        field_exemptions=(
+            *_true_zero_fields(
+                "Event index is an ordinal identity component, not an aggregate claim.",
+                "event_index",
+            ),
+            *_true_zero_paths(
+                "Event evidence counts, offsets, and durations are materialized archive measurements.",
+                ("evidence", "duration_ms"),
+                ("evidence", "end_index"),
+                ("evidence", "start_index"),
+            ),
+            *_true_zero_paths(
+                "Event inference confidence is an explicit heuristic output, never a missing-evidence sentinel.",
+                ("inference", "confidence"),
+            ),
         ),
         notes=(
             "Heuristic-tier inventory (#b0b.1): the activity-type classifier "
@@ -304,9 +368,28 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         version_fields=(
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
         ),
-        field_exemptions=_true_zero_fields(
-            "Phase index is an ordinal identity component, not an aggregate claim.",
-            "phase_index",
+        field_exemptions=(
+            *_true_zero_fields(
+                "Phase index is an ordinal identity component, not an aggregate claim.",
+                "phase_index",
+            ),
+            *_true_zero_paths(
+                "Phase evidence counts, offsets, and durations are materialized archive measurements.",
+                *(
+                    ("evidence", name)
+                    for name in (
+                        "duration_ms",
+                        "message_range",
+                        "phase_idle_threshold_ms",
+                        "tool_counts",
+                        "word_count",
+                    )
+                ),
+            ),
+            *_true_zero_paths(
+                "Phase inference confidence is an explicit heuristic output, never a missing-evidence sentinel.",
+                ("inference", "confidence"),
+            ),
         ),
     ),
     RigorContract(
@@ -324,6 +407,27 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         consumer_fields=("thread_id", "root_id", "dominant_repo", "thread"),
         version_fields=(
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
+        ),
+        field_exemptions=(
+            *_true_zero_paths(
+                "Thread counts, depth, and confidence are deterministic rollups over resolved session links.",
+                *(
+                    ("thread", name)
+                    for name in (
+                        "branch_count",
+                        "confidence",
+                        "depth",
+                        "origin_breakdown",
+                        "session_count",
+                        "total_cost_usd",
+                        "total_messages",
+                        "wall_duration_ms",
+                        "work_event_breakdown",
+                    )
+                ),
+                ("thread", "member_evidence", "confidence"),
+                ("thread", "member_evidence", "depth"),
+            ),
         ),
     ),
     RigorContract(
@@ -480,13 +584,41 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "has_coverage_gaps",
         ),
         version_fields=(RigorVersionField(name="materializer_version", current_version=TOOL_USAGE_INSIGHT_VERSION),),
-        field_exemptions=_true_zero_fields(
-            "Tool-usage totals are direct action-view counts; zero means no matching action rows.",
-            "total_call_count",
-            "total_distinct_tools",
-            "providers_with_data",
-            "providers_without_data",
-            "materializer_version",
+        field_exemptions=(
+            *_true_zero_fields(
+                "Tool-usage totals are direct action-view counts; zero means no matching action rows.",
+                "total_call_count",
+                "total_distinct_tools",
+                "providers_with_data",
+                "providers_without_data",
+                "materializer_version",
+            ),
+            *_true_zero_paths(
+                "Per-tool entries are direct action-view counts and coverage totals.",
+                *(
+                    ("entries", name)
+                    for name in (
+                        "affected_path_calls",
+                        "call_count",
+                        "distinct_tool_ids",
+                        "message_count",
+                        "output_text_calls",
+                        "session_count",
+                    )
+                ),
+            ),
+            *_true_zero_paths(
+                "Per-origin coverage values are direct action-view counts.",
+                *(
+                    ("provider_coverage", name)
+                    for name in (
+                        "action_count",
+                        "distinct_action_kind_count",
+                        "distinct_tool_count",
+                        "session_count",
+                    )
+                ),
+            ),
         ),
     ),
     RigorContract(
@@ -510,6 +642,64 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         consumer_fields=("session_id", "source_name", "title", "created_at", "updated_at", "estimate", "provenance"),
         version_fields=(
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
+        ),
+        field_exemptions=(
+            *_true_zero_paths(
+                "Pricing outcome values and confidence are explicit catalog-pricing results; zero confidence means unavailable pricing, not absent output.",
+                *(("estimate", name) for name in ("confidence", "total_usd")),
+                *(
+                    ("estimate", "basis", name)
+                    for name in (
+                        "api_equivalent_usd",
+                        "catalog_priced_usd",
+                        "provider_reported_usd",
+                        "subscription_equivalent_usd",
+                        "tool_surcharge_usd",
+                    )
+                ),
+                *(("estimate", "components", name) for name in ("tokens", "usd")),
+                *(
+                    ("estimate", "usage", name)
+                    for name in (
+                        "cache_read_tokens",
+                        "cache_write_tokens",
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens",
+                    )
+                ),
+                *(
+                    ("estimate", "price", name)
+                    for name in (
+                        "cache_read_usd_per_1m",
+                        "cache_write_usd_per_1m",
+                        "input_usd_per_1m",
+                        "output_usd_per_1m",
+                    )
+                ),
+                ("estimate", "per_model_breakdown", "session_count"),
+                ("estimate", "per_model_breakdown", "total_usd"),
+                *(
+                    ("estimate", "per_model_breakdown", "basis", name)
+                    for name in (
+                        "api_equivalent_usd",
+                        "catalog_priced_usd",
+                        "provider_reported_usd",
+                        "subscription_equivalent_usd",
+                        "tool_surcharge_usd",
+                    )
+                ),
+                *(
+                    ("estimate", "per_model_breakdown", "usage", name)
+                    for name in (
+                        "cache_read_tokens",
+                        "cache_write_tokens",
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens",
+                    )
+                ),
+            ),
         ),
     ),
     RigorContract(
@@ -550,14 +740,67 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
                 evidence_tier="cost-pricing-rollup",
             ),
         ),
-        field_exemptions=_true_zero_fields(
-            "Cost-rollup counts, cost sum, and reason/status breakdowns are direct aggregate measurements; zero is measured.",
-            "session_count",
-            "priced_session_count",
-            "unavailable_session_count",
-            "status_counts",
-            "total_usd",
-            "unavailable_reason_counts",
+        field_exemptions=(
+            *_true_zero_fields(
+                "Cost-rollup counts, cost sum, and reason/status breakdowns are direct aggregate measurements; zero is measured.",
+                "session_count",
+                "priced_session_count",
+                "unavailable_session_count",
+                "status_counts",
+                "total_usd",
+                "unavailable_reason_counts",
+            ),
+            *_true_zero_paths(
+                "Cost-basis values are direct sums of recorded or catalog-priced costs.",
+                *(
+                    ("basis", name)
+                    for name in (
+                        "api_equivalent_usd",
+                        "catalog_priced_usd",
+                        "provider_reported_usd",
+                        "subscription_equivalent_usd",
+                        "tool_surcharge_usd",
+                    )
+                ),
+            ),
+            *_true_zero_paths(
+                "Usage values are direct sums over stored usage rows.",
+                *(
+                    ("usage", name)
+                    for name in (
+                        "cache_read_tokens",
+                        "cache_write_tokens",
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens",
+                    )
+                ),
+            ),
+            *_true_zero_paths(
+                "Per-model breakdown values are direct grouped aggregates.",
+                ("per_model_breakdown", "session_count"),
+                ("per_model_breakdown", "total_usd"),
+                *(
+                    ("per_model_breakdown", "basis", name)
+                    for name in (
+                        "api_equivalent_usd",
+                        "catalog_priced_usd",
+                        "provider_reported_usd",
+                        "subscription_equivalent_usd",
+                        "tool_surcharge_usd",
+                    )
+                ),
+                *(
+                    ("per_model_breakdown", "usage", name)
+                    for name in (
+                        "cache_read_tokens",
+                        "cache_write_tokens",
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens",
+                    )
+                ),
+            ),
         ),
         notes=(
             "provenance.materializer_version is a hardcoded literal 0 (archive.py), a sentinel "
@@ -599,14 +842,29 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "cost_provenance_counts",
         ),
         version_fields=(),
-        field_exemptions=_true_zero_fields(
-            "Usage-timeline counts, token totals, cost totals, and provenance breakdowns are direct aggregate measurements.",
-            "session_count",
-            "event_count",
-            "reasoning_output_tokens",
-            "stored_cost_usd",
-            "subscription_credits",
-            "cost_provenance_counts",
+        field_exemptions=(
+            *_true_zero_fields(
+                "Usage-timeline counts, token totals, cost totals, and provenance breakdowns are direct aggregate measurements.",
+                "session_count",
+                "event_count",
+                "reasoning_output_tokens",
+                "stored_cost_usd",
+                "subscription_credits",
+                "cost_provenance_counts",
+            ),
+            *_true_zero_paths(
+                "Usage values are direct sums over usage-event rows.",
+                *(
+                    ("usage", name)
+                    for name in (
+                        "cache_read_tokens",
+                        "cache_write_tokens",
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens",
+                    )
+                ),
+            ),
         ),
         notes=(
             "provenance.materializer_version is a hardcoded literal 0 (archive.py), the same "
@@ -656,38 +914,56 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
 #: that is in neither set.
 RIGOR_EXEMPT: dict[str, str] = {}
 
-_QUANTITATIVE_INSIGHT_MODELS: dict[str, type[ArchiveInsightModel]] = {
-    "session_work_events": SessionWorkEventInsight,
-    "session_phases": SessionPhaseInsight,
-    "session_tag_rollups": SessionTagRollupInsight,
-    "archive_coverage": ArchiveCoverageInsight,
-    "tool_usage": ToolUsageInsight,
-    "cost_rollups": CostRollupInsight,
-    "usage_timeline": UsageTimelineInsight,
-    "archive_debt": ArchiveDebtInsight,
-}
+_METADATA_FIELD_NAMES = frozenset(
+    {"contract_version", "provenance", "inference_provenance", "enrichment_provenance", "materializer_version"}
+)
 
 
-def _is_numeric_annotation(annotation: object) -> bool:
+def _numeric_paths_for_annotation(
+    annotation: object,
+    path: tuple[str, ...],
+    seen_models: frozenset[type[BaseModel]],
+) -> frozenset[tuple[str, ...]]:
     if annotation in (int, float):
-        return True
+        return frozenset({path})
+
     origin = get_origin(annotation)
     args = get_args(annotation)
-    if origin in (dict,):
-        return len(args) == 2 and _is_numeric_annotation(args[1])
-    if origin in (UnionType,):
-        return any(_is_numeric_annotation(arg) for arg in args)
-    return any(_is_numeric_annotation(arg) for arg in args)
+    if origin is dict:
+        return _numeric_paths_for_annotation(args[1], path, seen_models) if len(args) == 2 else frozenset()
+    if args:
+        return frozenset().union(*(_numeric_paths_for_annotation(arg, path, seen_models) for arg in args))
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        if annotation in seen_models:
+            return frozenset()
+        return frozenset().union(
+            *(
+                _numeric_paths_for_annotation(field.annotation, (*path, field_name), seen_models | {annotation})
+                for field_name, field in annotation.model_fields.items()
+                if field_name not in _METADATA_FIELD_NAMES
+            )
+        )
+    return frozenset()
+
+
+def missing_numeric_item_models() -> tuple[str, ...]:
+    """Return registered insight types that lack an inspectable item model."""
+
+    from polylogue.insights.registry import INSIGHT_REGISTRY
+
+    return tuple(sorted(name for name, insight_type in INSIGHT_REGISTRY.items() if insight_type.item_model is None))
 
 
 def numeric_insight_field_paths() -> frozenset[tuple[str, tuple[str, ...]]]:
-    """Discover direct public quantitative fields in registry insight models."""
+    """Recursively discover public numeric leaves from registered item models."""
+
+    from polylogue.insights.registry import INSIGHT_REGISTRY
 
     return frozenset(
-        (insight_name, (field_name,))
-        for insight_name, model in _QUANTITATIVE_INSIGHT_MODELS.items()
-        for field_name, field in model.model_fields.items()
-        if field_name != "contract_version" and _is_numeric_annotation(field.annotation)
+        (insight_name, field_path)
+        for insight_name, insight_type in INSIGHT_REGISTRY.items()
+        if insight_type.item_model is not None
+        for field_path in _numeric_paths_for_annotation(insight_type.item_model, (), frozenset())
     )
 
 
@@ -728,12 +1004,12 @@ def missing_numeric_field_coverage(
         for contract in (contracts or _RIGOR_MATRIX)
         for field in contract.field_contracts
     }
-    declared.update(
+    exemptions = {
         (contract.insight_name, field.field_path)
         for contract in (contracts or _RIGOR_MATRIX)
         for field in contract.field_exemptions
-    )
-    return tuple(sorted(numeric_insight_field_paths() - declared))
+    }
+    return tuple(sorted(numeric_insight_field_paths() - declared - exemptions))
 
 
 def resolve_payload(obj: object, path: Sequence[str]) -> object | None:
@@ -762,6 +1038,7 @@ __all__ = [
     "RigorVersionField",
     "get_rigor_contract",
     "list_rigor_contracts",
+    "missing_numeric_item_models",
     "missing_numeric_field_coverage",
     "numeric_insight_field_paths",
     "resolve_payload",

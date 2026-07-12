@@ -47,6 +47,12 @@ def _missing_numeric_field_coverage() -> tuple[tuple[str, tuple[str, ...]], ...]
     return missing_numeric_field_coverage()
 
 
+def _missing_numeric_item_models() -> tuple[str, ...]:
+    from polylogue.insights.rigor import missing_numeric_item_models
+
+    return missing_numeric_item_models()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -57,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
 
     uncovered = _uncovered_insight_names()
     missing_fields = _missing_numeric_field_coverage()
+    missing_item_models = _missing_numeric_item_models()
 
     if args.json:
         print(
@@ -66,12 +73,13 @@ def main(argv: list[str] | None = None) -> int:
                     "missing_numeric_field_coverage": [
                         {"insight_name": name, "field_path": list(field_path)} for name, field_path in missing_fields
                     ],
-                    "ok": not uncovered and not missing_fields,
+                    "missing_numeric_item_models": list(missing_item_models),
+                    "ok": not uncovered and not missing_fields and not missing_item_models,
                 },
                 indent=2,
             )
         )
-    elif uncovered or missing_fields:
+    elif uncovered or missing_fields or missing_item_models:
         if uncovered:
             print(f"insight rigor honesty: {len(uncovered)} registered insight(s) uncovered")
             for name in uncovered:
@@ -80,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"insight rigor honesty: {len(missing_fields)} numeric field coverage declaration(s) missing")
             for name, field_path in missing_fields:
                 print(f"  {name}.{'.'.join(field_path)}")
+        if missing_item_models:
+            print(f"insight rigor honesty: {len(missing_item_models)} registered insight item model(s) missing")
+            for name in missing_item_models:
+                print(f"  {name}")
         print("")
         print(
             "Policy violation: every registered insight needs a RigorContract row "
@@ -89,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("insight rigor honesty: every registered insight and public numeric field is contracted or exempt.")
 
-    return 0 if not uncovered and not missing_fields else 1
+    return 0 if not uncovered and not missing_fields and not missing_item_models else 1
 
 
 if __name__ == "__main__":

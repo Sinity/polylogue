@@ -308,6 +308,12 @@ insight-honesty` enforces this statically; the audit runner reports an
 uncovered product's `coverage_status` as `"uncovered"` rather than
 silently omitting it (9e5.28).
 
+The same policy recursively inspects each registered descriptor's item
+model. Every public numeric leaf must have a `RigorFieldContract` or an
+explicitly justified field exemption; a registry descriptor without an item
+model is itself a policy failure. This keeps newly exposed nested quantitative
+fields from bypassing the rigor matrix.
+
 ## Audit CLI
 
 ```bash

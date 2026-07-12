@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
+from polylogue.archive.semantic.pricing import CostBasisPayload
 from polylogue.insights.archive import (
+    CostRollupInsight,
     SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
@@ -35,6 +38,7 @@ from polylogue.insights.rigor import (
     get_rigor_contract,
     list_rigor_contracts,
     missing_numeric_field_coverage,
+    missing_numeric_item_models,
     resolve_payload,
     rigor_contract_names,
 )
@@ -206,6 +210,31 @@ def test_numeric_field_policy_rejects_unjustified_public_field() -> None:
     )
 
     assert missing_numeric_field_coverage(contracts) == (("cost_rollups", ("confidence",)),)
+
+
+def test_numeric_field_policy_discovers_new_registered_nested_numeric_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The policy reads the registry's production item model, not an allowlist.
+
+    Removing the recursive model walk or the descriptor's ``item_model``
+    wiring makes a new public metric bypass its rigor contract.
+    """
+
+    class ExtendedCostBasisPayload(CostBasisPayload):
+        unclassified_metric: int = 0
+
+    class ExtendedCostRollupInsight(CostRollupInsight):
+        basis: ExtendedCostBasisPayload = ExtendedCostBasisPayload()
+
+    original = INSIGHT_REGISTRY["cost_rollups"]
+    monkeypatch.setitem(INSIGHT_REGISTRY, "cost_rollups", replace(original, item_model=ExtendedCostRollupInsight))
+
+    assert missing_numeric_field_coverage() == (("cost_rollups", ("basis", "unclassified_metric")),)
+
+
+def test_every_registered_insight_declares_its_item_model() -> None:
+    """Registry descriptors expose production response models to the policy."""
+
+    assert missing_numeric_item_models() == ()
 
 
 def test_phase_rigor_contract_is_evidence_only() -> None:
