@@ -543,6 +543,7 @@ def archive_messages_payload(
     offset_from: str = "start",
     max_chars_per_message: int | None = None,
     excerpt: bool = False,
+    match_query: str | None = None,
 ) -> MCPMessagesListPayload:
     """Build the generic MCP message-list envelope from an archive session."""
     from polylogue.mcp.payloads import MCPMessagesListPayload
@@ -584,6 +585,7 @@ def archive_messages_payload(
                 archive_message_payload(message, session_id=session.session_id),
                 max_chars=max_chars_per_message,
                 excerpt=excerpt,
+                match_query=match_query,
             )
             for message in page
         ),
@@ -604,11 +606,12 @@ def _bounded_message_payload(
     *,
     max_chars: int | None,
     excerpt: bool,
+    match_query: str | None,
 ) -> MCPMessagePayload:
     """Apply the MCP-only per-message body cap after role/type filtering."""
     if max_chars is None or len(payload.text) <= max_chars:
         return payload
-    text = _excerpt_text(payload.text, max_chars) if excerpt else payload.text[:max_chars]
+    text = _excerpt_text(payload.text, max_chars, match_query=match_query) if excerpt else payload.text[:max_chars]
     # Content blocks duplicate message bodies. Preserve their structural
     # metadata without leaking the uncapped text through a second field.
     blocks = [
@@ -618,12 +621,27 @@ def _bounded_message_payload(
     return payload.model_copy(update={"text": text, "content_blocks": blocks})
 
 
-def _excerpt_text(text: str, max_chars: int) -> str:
+def _excerpt_text(text: str, max_chars: int, *, match_query: str | None = None) -> str:
+    """Return a bounded excerpt, preferring the first requested match span."""
     if max_chars <= 1:
         return text[:max_chars]
     marker = "…[truncated]…"
     if max_chars <= len(marker):
         return text[:max_chars]
+    if match_query:
+        from polylogue.storage.search.query_support import extract_match_terms
+
+        folded = text.casefold()
+        for term in extract_match_terms(match_query):
+            position = folded.find(term.casefold())
+            if position >= 0:
+                retained = max_chars - 2 * len(marker)
+                if retained <= 0:
+                    return text[:max_chars]
+                start = max(0, position - retained // 2)
+                end = min(len(text), start + retained)
+                start = max(0, end - retained)
+                return (marker if start else "") + text[start:end] + (marker if end < len(text) else "")
     retained = max_chars - len(marker)
     head = retained // 2
     return text[:head] + marker + text[-(retained - head) :]

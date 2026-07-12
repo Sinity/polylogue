@@ -12,7 +12,8 @@ from typing import Annotated, Any, TypeAlias
 from pydantic import Field
 
 from polylogue.archive.message.types import validate_message_type_filter
-from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec, split_csv
+from polylogue.core.enums import Origin, enum_values
 
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
 MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]
@@ -27,6 +28,22 @@ _QUERY_PARAM_ALIASES = {
     "has_thinking": "filter_has_thinking",
     "has_paste_evidence": "filter_has_paste",
 }
+
+
+def _validate_origin_filters(params: Mapping[str, object]) -> None:
+    """Reject unknown public origin tokens before query-spec normalization.
+
+    ``Origin.from_string`` deliberately maps unknown parser input to
+    ``unknown-export``. That is appropriate while ingesting imperfect source
+    material, but it turns an MCP typo into a misleading empty archive query.
+    The agent-facing query boundary is closed, so return the same typed query
+    error used for invalid sort and message-type filters instead.
+    """
+    valid_origins = frozenset(enum_values(Origin))
+    for field in ("origin", "exclude_origin"):
+        for value in split_csv(params.get(field)):
+            if value not in valid_origins:
+                raise QuerySpecError(field, value)
 
 
 def normalize_query_params(params: Mapping[str, object]) -> dict[str, object]:
@@ -48,6 +65,7 @@ def build_query_spec(**params: object) -> SessionQuerySpec:
     :meth:`~polylogue.cli.root_request.RootModeRequest.query_spec`.
     """
     normalized = normalize_query_params(params)
+    _validate_origin_filters(normalized)
     if normalized.get("message_type") is not None:
         normalized["message_type"] = validate_message_type_filter(normalized["message_type"]).value
 

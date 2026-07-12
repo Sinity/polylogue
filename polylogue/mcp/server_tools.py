@@ -932,6 +932,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         tail: bool = False,
         max_chars_per_message: MCPCharacterLimit = None,
         excerpt: bool = False,
+        match_query: str | None = None,
     ) -> str:
         """Return a filtered message page.
 
@@ -939,7 +940,8 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         ``tail=True`` or ``offset_from="end"`` to read the filtered tail of a
         large session without first calculating the filtered total. Set
         ``max_chars_per_message`` to cap each returned body; ``excerpt=True``
-        preserves both its head and tail.
+        preserves both its head and tail, or a window around the first term in
+        ``match_query`` when that query occurs in the message.
         """
 
         async def run() -> str:
@@ -973,6 +975,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         "offset_from": normalized_offset_from,
                         "max_chars_per_message": max_chars_per_message,
                         "excerpt": excerpt,
+                        "match_query": match_query,
                     },
                 ):
                     return hooks.json_payload(
@@ -986,6 +989,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                             offset_from=normalized_offset_from,
                             max_chars_per_message=max_chars_per_message,
                             excerpt=excerpt,
+                            match_query=match_query,
                         )
                     )
             except (KeyError, ValueError, sqlite3.OperationalError):

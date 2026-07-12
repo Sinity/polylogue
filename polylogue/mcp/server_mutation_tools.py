@@ -309,11 +309,28 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("bulk_tag_sessions", run, session_ids=tuple(session_ids))
 
     @mcp.tool()
-    async def list_tags(origin: str | None = None) -> str:
+    async def list_tags(
+        origin: str | None = None,
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
+    ) -> str:
+        """List deterministic tag-count pages without expanding a large tag map."""
+
         async def run() -> str:
             poly = hooks.get_polylogue()
             tags = await poly.list_tags(origin=origin)
-            return hooks.json_payload(MCPTagCountsPayload(root=tags))
+            clamped_limit = hooks.clamp_limit(limit)
+            page_offset = max(0, offset)
+            page = dict(sorted(tags.items())[page_offset : page_offset + clamped_limit])
+            with hooks.response_context(
+                "list_tags",
+                {
+                    "origin": origin,
+                    "limit": clamped_limit,
+                    "offset": page_offset,
+                },
+            ):
+                return hooks.json_payload(MCPTagCountsPayload(root=page))
 
         return await hooks.async_safe_call("list_tags", run)
 

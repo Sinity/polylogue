@@ -563,6 +563,14 @@ class TestQueryTools:
         assert error["field"] == "sort"
         assert error["valid_values"] == ["date", "tokens", "messages", "words", "longest", "random"]
 
+    def test_list_sessions_invalid_origin_enumerates_valid_values(self, mcp_server: MCPServerUnderTest) -> None:
+        result = invoke_surface(mcp_server._tool_manager._tools["list_sessions"].fn, origin="codxe-session")
+
+        error = json.loads(result)
+        assert error["code"] == "invalid_query"
+        assert error["field"] == "origin"
+        assert error["valid_values"] == [origin.value for origin in Origin]
+
     @pytest.mark.asyncio
     async def test_search_envelope_affordance_catalog_is_opt_in(
         self, tmp_path: Path, mcp_server: MCPServerUnderTest
@@ -1095,6 +1103,29 @@ class TestGetSessionSummaryTool:
         assert len(message["text"]) <= 40
         assert message["text"].startswith("opening-")
         assert message["text"].endswith("closing")
+        assert all(block.get("text") == "" for block in message["content_blocks"])
+
+    def test_get_messages_excerpt_centers_the_requested_match(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        text = "opening-" + ("before-" * 30) + "needle evidence" + ("after-" * 30) + "closing"
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root, native_id="match-excerpt", text=text)
+
+        with _archive_config(archive_root):
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                session_id=session_id,
+                max_chars_per_message=80,
+                excerpt=True,
+                match_query="needle",
+            )
+
+        message = json.loads(result)["messages"][0]
+        assert len(message["text"]) <= 80
+        assert "needle evidence" in message["text"]
+        assert not message["text"].startswith("opening-")
+        assert not message["text"].endswith("closing")
         assert all(block.get("text") == "" for block in message["content_blocks"])
 
     def test_get_messages_over_budget_returns_replayable_envelope(
@@ -2048,6 +2079,29 @@ class TestMutationTools:
 
         assert json.loads(result) == {"claude-ai": 2}
         mock_poly.list_tags.assert_called_once_with(origin="claude-ai-export")
+
+    @pytest.mark.asyncio
+    async def test_list_tags_over_budget_replays_a_bounded_deterministic_page(
+        self, mcp_server: MCPServerUnderTest
+    ) -> None:
+        tags = {f"tag-{index:03d}-{'x' * 300}": index for index in range(100)}
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_tags = AsyncMock(return_value=tags)
+            mock_get_polylogue.return_value = mock_poly
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["list_tags"].fn,
+                limit=100,
+            )
+            payload = json.loads(raw)
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+
+        assert payload["status"] == "response_budget_exceeded"
+        assert payload["continuation"]["arguments"]["limit"] == 3
+        assert len(json.loads(replay)) == 3
 
     def test_get_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
