@@ -218,12 +218,19 @@ def build_run_projection(
     tool_summaries: Sequence[_ToolSummaryLike],
     subagent_reports: Sequence[_SubagentReportLike],
     session_digest_events: Sequence[_SessionDigestEventLike],
+    is_resume: bool = False,
 ) -> RunProjection:
-    """Project digest evidence into bounded Run/ContextSnapshot/ObservedEvent DTOs."""
+    """Project digest evidence into bounded Run/ContextSnapshot/ObservedEvent DTOs.
+
+    ``is_resume`` marks a genuine continuation/resume session (see
+    ``Session.is_continuation``) — the main run's context-snapshot boundary is
+    then ``resume`` rather than a fresh ``session_start`` (polylogue-aoe5).
+    """
 
     session_evidence = _to_evidence_refs(session_raw_refs)
     main_run_ref = _run_ref(session_id)
-    main_snapshot_ref = _context_snapshot_ref(session_id, "session_start")
+    main_boundary: ContextBoundary = "resume" if is_resume else "session_start"
+    main_snapshot_ref = _context_snapshot_ref(session_id, main_boundary)
     harness = _harness_for_origin(source_origin)
     main_run = ProjectedRun(
         run_ref=main_run_ref,
@@ -246,7 +253,7 @@ def build_run_projection(
         ContextSnapshot(
             snapshot_ref=main_snapshot_ref,
             run_ref=main_run_ref,
-            boundary="session_start",
+            boundary=main_boundary,
             inheritance_mode="unknown",
             segment_refs=(ObjectRef(kind="session", object_id=session_id),),
             evidence_refs=session_evidence,

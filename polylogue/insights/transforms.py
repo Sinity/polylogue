@@ -504,6 +504,7 @@ def compile_session_digest(
         tool_summaries=tool_summaries,
         subagent_reports=subagent_reports,
         session_digest_events=events,
+        is_resume=session.is_continuation,
     )
     role_counts = dict(Counter(_role_value(message) for message in messages))
     normal_read = _normal_read_text(messages)
@@ -602,6 +603,7 @@ def compile_session_run_projection(
         tool_summaries=tool_summaries,
         subagent_reports=subagent_reports,
         session_digest_events=events,
+        is_resume=session.is_continuation,
     )
 
 
