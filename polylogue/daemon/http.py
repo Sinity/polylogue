@@ -3014,12 +3014,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             try:
                 session_id = archive.resolve_session_id(conv_id)
                 summary = archive.read_summary(session_id)
+                envelope = archive.read_session(session_id)
             except KeyError:
                 self._send_error(HTTPStatus.NOT_FOUND, "not_found")
                 return
+            # Prefix-sharing sessions persist a divergent tail but the reader
+            # renders ArchiveStore's composed logical transcript. Query the
+            # canonical blocks/actions relations over those composed message
+            # identities, so evidence describes the same transcript.
+            message_ids_json = json.dumps([message.message_id for message in envelope.messages])
             tool_calls = int(
                 archive._conn.execute(
-                    "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND block_type = 'tool_use'", (session_id,)
+                    "SELECT COUNT(*) FROM blocks WHERE block_type = 'tool_use' "
+                    "AND message_id IN (SELECT value FROM json_each(?))",
+                    (message_ids_json,),
                 ).fetchone()[0]
             )
             outcome_row = archive._conn.execute(
@@ -3035,9 +3043,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                        WHEN is_error = 0 THEN 'ok'
                        ELSE 'unknown'
                      END AS outcome
-                     FROM actions WHERE session_id = ?
+                     FROM actions WHERE message_id IN (SELECT value FROM json_each(?))
                    )""",
-                (session_id,),
+                (message_ids_json,),
             ).fetchone()
             try:
                 lineage_rows = archive._conn.execute(

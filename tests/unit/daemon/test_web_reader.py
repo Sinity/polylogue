@@ -2473,6 +2473,77 @@ class TestCockpitAggregateRoutes:
         assert outcomes == expected_outcomes
         assert cast(dict[str, object], payload["cost"])["total_usd"] == 0.0
 
+    def test_evidence_summary_composes_prefix_sharing_tool_evidence(self, workspace_env: dict[str, Path]) -> None:
+        """The evidence strip and transcript must describe the same composed
+        prefix-sharing session, including inherited tool outcomes."""
+        from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, BranchType, Provider
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        replayed_tool_blocks = [
+            ParsedContentBlock(type=BlockType.TOOL_USE, text="pytest", tool_id="tool-parent"),
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                text="ok",
+                tool_id="tool-parent",
+                tool_result_is_error=0,
+                tool_result_exit_code=0,
+            ),
+        ]
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            parent_id = archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="evidence-parent",
+                    title="Parent evidence",
+                    messages=[
+                        ParsedMessage(provider_message_id="p0", role=Role.USER, text="start"),
+                        ParsedMessage(
+                            provider_message_id="p1",
+                            role=Role.ASSISTANT,
+                            text="ran pytest",
+                            blocks=replayed_tool_blocks,
+                        ),
+                    ],
+                )
+            )
+            archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="evidence-child",
+                    title="Child evidence",
+                    parent_session_provider_id="evidence-parent",
+                    branch_type=BranchType.FORK,
+                    messages=[
+                        ParsedMessage(provider_message_id="c0", role=Role.USER, text="start"),
+                        ParsedMessage(
+                            provider_message_id="c1",
+                            role=Role.ASSISTANT,
+                            text="ran pytest",
+                            blocks=replayed_tool_blocks,
+                        ),
+                        ParsedMessage(provider_message_id="c2", role=Role.USER, text="child tail"),
+                    ],
+                )
+            )
+
+        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
+            conn.execute(
+                "UPDATE blocks SET tool_result_is_error = 0, tool_result_exit_code = 0 "
+                "WHERE session_id = ? AND block_type = 'tool_result'",
+                (parent_id,),
+            )
+            conn.commit()
+
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            payload = cast(
+                dict[str, object], _get_json(base_url, "/api/sessions/codex-session:evidence-child/evidence-summary")
+            )
+
+        assert payload["tool_calls"] == 1
+        assert payload["outcomes"] == {"ok": 1, "failed": 0, "unknown": 0}
+
     def test_message_endpoint_clamps_oversized_pages(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.query.spec import MAX_QUERY_LIMIT
 
