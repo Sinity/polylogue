@@ -1571,21 +1571,39 @@ def judge_assertion_candidates(
     create duplicate review history for the same candidate.
     """
 
-    seen: set[str] = set()
-    results: list[ArchiveAssertionBulkJudgmentResultEnvelope] = []
-    for index, item in enumerate(items):
+    unique_items: dict[str, ArchiveAssertionBulkJudgmentItemEnvelope] = {}
+    ordered_candidate_ids: list[str] = []
+    result_order: list[str | ArchiveAssertionBulkJudgmentResultEnvelope] = []
+    conflicting_duplicates: set[str] = set()
+
+    for item in items:
         try:
             candidate_id = _assertion_id_from_ref(item.candidate_ref)
         except ValueError as exc:
-            results.append(
+            result_order.append(
                 ArchiveAssertionBulkJudgmentResultEnvelope(
                     candidate_ref=item.candidate_ref, outcome="failed", error=str(exc)
                 )
             )
             continue
-        if candidate_id in seen:
+        previous = unique_items.get(candidate_id)
+        if previous is None:
+            unique_items[candidate_id] = item
+            ordered_candidate_ids.append(candidate_id)
+            result_order.append(candidate_id)
+        elif not _same_bulk_judgment_input(previous, item):
+            conflicting_duplicates.add(candidate_id)
+
+    results_by_candidate_id: dict[str, ArchiveAssertionBulkJudgmentResultEnvelope] = {}
+    for index, candidate_id in enumerate(ordered_candidate_ids):
+        item = unique_items[candidate_id]
+        if candidate_id in conflicting_duplicates:
+            results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                candidate_ref=f"assertion:{candidate_id}",
+                outcome="failed",
+                error="conflicting duplicate judgment inputs for candidate",
+            )
             continue
-        seen.add(candidate_id)
         savepoint = f"assertion_judgment_{index}"
         conn.execute(f"SAVEPOINT {savepoint}")
         try:
@@ -1603,20 +1621,46 @@ def judge_assertion_candidates(
             )
         except (TypeError, ValueError) as exc:
             conn.execute(f"ROLLBACK TO {savepoint}")
-            results.append(
-                ArchiveAssertionBulkJudgmentResultEnvelope(
-                    candidate_ref=f"assertion:{candidate_id}", outcome="failed", error=str(exc)
-                )
+            results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                candidate_ref=f"assertion:{candidate_id}", outcome="failed", error=str(exc)
             )
         else:
-            results.append(
-                ArchiveAssertionBulkJudgmentResultEnvelope(
-                    candidate_ref=f"assertion:{candidate_id}", outcome=result.outcome, result=result
-                )
+            results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                candidate_ref=f"assertion:{candidate_id}", outcome=result.outcome, result=result
             )
         finally:
             conn.execute(f"RELEASE {savepoint}")
-    return ArchiveAssertionBulkJudgmentEnvelope(items=tuple(results))
+    return ArchiveAssertionBulkJudgmentEnvelope(
+        items=tuple(
+            entry if isinstance(entry, ArchiveAssertionBulkJudgmentResultEnvelope) else results_by_candidate_id[entry]
+            for entry in result_order
+        )
+    )
+
+
+def _same_bulk_judgment_input(
+    left: ArchiveAssertionBulkJudgmentItemEnvelope,
+    right: ArchiveAssertionBulkJudgmentItemEnvelope,
+) -> bool:
+    """Compare duplicate input after its candidate reference was normalized."""
+
+    return (
+        left.decision,
+        left.reason,
+        left.actor_ref,
+        left.inject,
+        left.replacement_kind,
+        left.replacement_body_text,
+        left.replacement_value,
+    ) == (
+        right.decision,
+        right.reason,
+        right.actor_ref,
+        right.inject,
+        right.replacement_kind,
+        right.replacement_body_text,
+        right.replacement_value,
+    )
 
 
 def _is_exact_judgment_retry(

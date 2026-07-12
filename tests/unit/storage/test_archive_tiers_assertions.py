@@ -1156,7 +1156,7 @@ def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlle
                 ),
                 ArchiveAssertionBulkJudgmentItemEnvelope(candidate_ref="assertion:", decision="accept"),
                 ArchiveAssertionBulkJudgmentItemEnvelope(
-                    candidate_ref=f"assertion:{first.assertion_id}", decision="accept", inject=True
+                    candidate_ref=first.assertion_id, decision="accept", inject=True
                 ),
             ),
             now_ms=1_700_000_001_000,
@@ -1182,9 +1182,11 @@ def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlle
             ),
             now_ms=1_700_000_002_000,
         )
-        assert [item.outcome for item in retry.items] == ["idempotent"]
-        # The duplicate ref is collapsed before execution; it cannot rewrite a prior judgment.
-        assert retry.idempotent_count == 1
+        assert [item.outcome for item in retry.items] == ["failed"]
+        # A changed duplicate input is not silently collapsed into an otherwise
+        # idempotent result: it must not be able to hide a conflicting request.
+        assert retry.failed_count == 1
+        assert "conflicting duplicate" in (retry.items[0].error or "")
         changed_injection = judge_assertion_candidates(
             conn,
             (
