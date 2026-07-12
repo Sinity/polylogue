@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
@@ -138,6 +139,36 @@ class TestRawSessionStorage:
         assert retrieved.blob_size == original.blob_size
         assert retrieved.acquired_at == original.acquired_at
         assert retrieved.file_mtime == original.file_mtime
+
+    async def test_capture_mode_round_trips_aistudio_drive_provenance(self, backend: SQLiteBackend) -> None:
+        """A shared public origin retains its acquisition-time fiber member."""
+        gemini = make_raw_session(
+            raw_id="gemini-export",
+            source_name="gemini",
+            source_path="/tmp/export.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        ).model_copy(update={"capture_mode": Provider.GEMINI})
+        drive = make_raw_session(
+            raw_id="drive-live",
+            source_name="gemini",
+            source_path="/tmp/live-drive.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        ).model_copy(update={"capture_mode": Provider.DRIVE})
+
+        assert await backend.save_raw_session(gemini) is True
+        assert await backend.save_raw_session(drive) is True
+
+        recovered_gemini = await backend.get_raw_session(gemini.raw_id)
+        recovered_drive = await backend.get_raw_session(drive.raw_id)
+
+        assert recovered_gemini is not None
+        assert recovered_drive is not None
+        assert recovered_gemini.capture_mode is Provider.GEMINI
+        assert recovered_drive.capture_mode is Provider.DRIVE
+        assert recovered_gemini.payload_provider is Provider.GEMINI
+        assert recovered_drive.payload_provider is Provider.DRIVE
 
     async def test_get_raw_session_not_found(self, backend: SQLiteBackend) -> None:
         """Retrieving non-existent raw session returns None."""

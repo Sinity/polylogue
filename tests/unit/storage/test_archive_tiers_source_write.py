@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
-from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationStatus
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHistorySidecar,
@@ -59,6 +59,7 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
     raw_id = write_source_raw_session(
         conn,
         origin=Origin.CLAUDE_CODE_SESSION,
+        capture_mode=Provider.CLAUDE_CODE,
         source_path="/tmp/record.jsonl",
         source_index=0,
         native_id="session-1",
@@ -97,6 +98,10 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
             observed_at_ms=1_767_000_000_120,
             session_native_id="session-1",
         ),
+    )
+
+    assert (
+        conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0] == "claude-code"
     )
 
     assert raw_id == expected_raw_id

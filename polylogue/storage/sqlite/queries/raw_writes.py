@@ -23,6 +23,9 @@ async def save_raw_session(
         origin = origin_from_provider(record.payload_provider)
     else:
         origin = origin_from_provider(Provider.from_string(record.source_name or "unknown"))
+    capture_mode = (
+        record.capture_mode or record.payload_provider or Provider.from_string(record.source_name or "unknown")
+    )
     blob_hash_hex = record.blob_hash or record.raw_id
     try:
         blob_hash = bytes.fromhex(blob_hash_hex)
@@ -35,17 +38,18 @@ async def save_raw_session(
     cursor = await conn.execute(
         """
         INSERT OR IGNORE INTO raw_sessions (
-            raw_id, origin, native_id, source_path, source_index, blob_hash,
+            raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
             blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
             validated_at_ms, validation_status, validation_error, validation_drift_count,
             validation_mode, detection_warnings_json, logical_source_key, revision_kind,
             source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
             append_end_offset, acquisition_generation, revision_authority
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.raw_id,
             origin.value,
+            capture_mode.value,
             None,
             record.source_path,
             int(record.source_index or 0),

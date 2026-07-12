@@ -6,15 +6,16 @@ live in index.db and are rebuilt from this tier.
 
 from __future__ import annotations
 
-from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 7
+SOURCE_SCHEMA_VERSION = 8
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
     raw_id                  TEXT PRIMARY KEY,
     origin                  TEXT NOT NULL CHECK ({check("origin", Origin)}),
+    capture_mode            TEXT CHECK ({nullable_check("capture_mode", Provider)}),
     native_id               TEXT,
     source_path             TEXT NOT NULL,
     source_index            INTEGER NOT NULL DEFAULT 0,
