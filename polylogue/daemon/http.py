@@ -3011,10 +3011,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 ).fetchone()[0]
             )
             outcome_row = archive._conn.execute(
-                """SELECT COALESCE(SUM(CASE WHEN is_error = 0 OR exit_code = 0 THEN 1 ELSE 0 END), 0),
-                          COALESCE(SUM(CASE WHEN is_error = 1 OR exit_code <> 0 THEN 1 ELSE 0 END), 0),
-                          COALESCE(SUM(CASE WHEN is_error IS NULL AND exit_code IS NULL THEN 1 ELSE 0 END), 0)
-                   FROM actions WHERE session_id = ?""",
+                """SELECT
+                          COALESCE(SUM(outcome = 'ok'), 0),
+                          COALESCE(SUM(outcome = 'failed'), 0),
+                          COALESCE(SUM(outcome = 'unknown'), 0)
+                   FROM (
+                     SELECT CASE
+                       WHEN is_error = 1 OR exit_code <> 0 THEN 'failed'
+                       WHEN is_error = 0 OR exit_code = 0 THEN 'ok'
+                       ELSE 'unknown'
+                     END AS outcome
+                     FROM actions WHERE session_id = ?
+                   )""",
                 (session_id,),
             ).fetchone()
             try:

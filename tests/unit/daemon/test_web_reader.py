@@ -2432,7 +2432,7 @@ class TestCockpitAggregateRoutes:
 
         with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
             conn.execute(
-                "UPDATE blocks SET tool_result_is_error = 1, tool_result_exit_code = 1 WHERE session_id = ? AND block_type = 'tool_result'",
+                "UPDATE blocks SET tool_result_is_error = 0, tool_result_exit_code = 2 WHERE session_id = ? AND block_type = 'tool_result'",
                 ("codex-session:evidence-summary",),
             )
             conn.commit()
@@ -2445,6 +2445,17 @@ class TestCockpitAggregateRoutes:
         outcomes = cast(dict[str, object], payload["outcomes"])
         assert outcomes == {"ok": 0, "failed": 1, "unknown": 0}
         assert cast(dict[str, object], payload["cost"])["total_usd"] == 0.0
+
+    def test_message_endpoint_clamps_oversized_pages(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.query.spec import MAX_QUERY_LIMIT
+
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/messages?limit=999999&offset=-10")
+            )
+
+        assert payload["limit"] == MAX_QUERY_LIMIT
+        assert payload["offset"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2935,6 +2946,9 @@ class TestReaderInformability:
         assert "Session detail unavailable" in body
         assert "Loading session detail" in body
         assert "loadSessionFromError" in body
+        assert "split('?')[0]" in body
+        assert "function loadMoreSessionMessages()" in body
+        assert "Load more messages" in body
         assert "/api/sessions/" in body
 
     def test_fts_chip_keeps_legacy_tri_state_fallback(self, workspace_env: dict[str, Path]) -> None:

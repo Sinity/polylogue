@@ -179,6 +179,38 @@ _LANDING_FUNCS = [
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_session_retry_preserves_id_and_more_messages_append(tmp_path: Path) -> None:
+    """The bounded reader must retain both retry identity and transcript access."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, ["loadSessionFromError", "loadMoreSessionMessages"])
+    harness = f"""
+{_DOM_HARNESS_PRELUDE}
+var retried = null, renderCalls = 0;
+function loadSession(id) {{ retried = id; }}
+function renderMain() {{ renderCalls += 1; }}
+function routeErrorDetails() {{ return {{route: 'error'}}; }}
+function fetchJSON(route) {{ return Promise.resolve({{messages: [{{id: 'm2'}}], total: 2, limit: 100, offset: 1}}); }}
+var state = {{routeStates: {{sessionDetail: {{route: '/api/sessions/codex-session%3Ac1?shape=summary'}}}}, selected: {{id: 'codex-session:c1', messages: [{{id: 'm1'}}], total: 2}}}};
+{functions_src}
+(async function() {{
+  loadSessionFromError();
+  await loadMoreSessionMessages();
+  console.log(JSON.stringify({{retried: retried, ids: state.selected.messages.map(function(m) {{ return m.id; }}), renders: renderCalls}}));
+}})();
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    result = json.loads(proc.stdout)
+
+    assert result["retried"] == "codex-session:c1"
+    assert result["ids"] == ["m1", "m2"]
+    assert result["renders"] >= 2
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
 def test_landing_view_renders_snapshot_and_verb_cards(tmp_path: Path) -> None:
     """renderLandingView() reads only already-loaded state (status snapshot +
     session list) -- no fetch of its own -- and must render real numbers

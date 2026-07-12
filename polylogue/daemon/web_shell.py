@@ -1036,7 +1036,31 @@ function loadSessionFromError() {
   var route = rs.route || '';
   var prefix = '/api/sessions/';
   if (route.indexOf(prefix) !== 0) return;
-  loadSession(decodeURIComponent(route.slice(prefix.length)), true);
+  loadSession(decodeURIComponent(route.slice(prefix.length).split('?')[0]), true);
+}
+
+async function loadMoreSessionMessages() {
+  var c = state.selected;
+  if (!c || !c.id || c.messagePageLoading || !c.messages || c.messages.length >= Number(c.total || 0)) return;
+  c.messagePageLoading = true;
+  c.messagePageError = null;
+  var offset = c.messages.length;
+  var route = '/api/sessions/' + encodeURIComponent(c.id) + '/messages?limit=100&offset=' + offset;
+  renderMain();
+  try {
+    var payload = await fetchJSON(route, {timeoutMs: 10000});
+    var existing = {};
+    c.messages.forEach(function(message) { existing[message.id] = true; });
+    (payload.messages || []).forEach(function(message) {
+      if (!existing[message.id]) { c.messages.push(message); existing[message.id] = true; }
+    });
+    c.total = payload.total;
+    c.message_page = {limit: payload.limit, offset: payload.offset};
+  } catch(e) {
+    c.messagePageError = routeErrorDetails(e, route);
+  }
+  c.messagePageLoading = false;
+  renderMain();
 }
 
 async function loadSessionRaw(id) {
@@ -2029,7 +2053,16 @@ function renderMain() {
     msgEl.innerHTML = readViewSelector + '<div class="main-empty"><h3>No messages</h3><p>This session has no message content.</p></div>';
     return;
   }
-  msgEl.innerHTML = readViewSelector + renderEvidenceStrip(c) + messageBlocksHtml(c.messages);
+  var pageControl = '';
+  if (c.messagePageError) {
+    pageControl = renderInlineRouteFailure('More messages unavailable', c.messagePageError, 'loadMoreSessionMessages()');
+  } else if (c.messagePageLoading) {
+    pageControl = '<div class="main-empty q-partial"><h3>Loading more messages…</h3></div>';
+  } else if (c.messages.length < Number(c.total || 0)) {
+    pageControl = '<div class="main-empty"><p>' + esc(String(c.messages.length)) + ' of ' + esc(String(c.total))
+      + ' messages loaded.</p><button class="user-action" onclick="loadMoreSessionMessages()">Load more messages</button></div>';
+  }
+  msgEl.innerHTML = readViewSelector + renderEvidenceStrip(c) + messageBlocksHtml(c.messages) + pageControl;
 }
 
 function renderReadViewExecution(c, viewId) {
