@@ -1,3 +1,8 @@
+import { BackfillCoordinator } from "./backfill/coordinator.js";
+import { BACKFILL_ALARM } from "./backfill/models.js";
+import { providerAdapters } from "./backfill/providers.js";
+import { IndexedDbBackfillStore } from "./backfill/storage.js";
+
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
 const ACTIVE_TAB_STATE_MIN_INTERVAL_MS = 4000;
@@ -12,6 +17,29 @@ const recentActiveTabStateChecks = new Map();
 const inFlightPostCommands = new Set();
 const pendingPostCommandAcks = new Map();
 let postPollTimer = 0;
+let backfillCoordinatorPromise = null;
+
+async function extensionInstanceId() {
+  const key = "polylogueExtensionInstanceId";
+  const stored = await chrome.storage.local.get({ [key]: "" });
+  if (stored[key]) return stored[key];
+  const created = globalThis.crypto?.randomUUID?.() || `instance-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  await chrome.storage.local.set({ [key]: created });
+  return created;
+}
+
+async function backfillCoordinator() {
+  if (!backfillCoordinatorPromise) {
+    backfillCoordinatorPromise = extensionInstanceId().then((instanceId) => new BackfillCoordinator({
+      store: new IndexedDbBackfillStore(),
+      adapters: providerAdapters(globalThis.fetch.bind(globalThis)),
+      receiver: (envelope, serialized) => postJson("/v1/browser-captures", envelope, serialized),
+      alarms: chrome.alarms,
+      instanceId,
+    }));
+  }
+  return backfillCoordinatorPromise;
+}
 
 // ---- Capture retry queue --------------------------------------------------
 //
@@ -425,7 +453,7 @@ async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
   return headers;
 }
 
-async function postJson(path, payload) {
+async function postJson(path, payload, serializedBody = null) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
@@ -433,7 +461,7 @@ async function postJson(path, payload) {
     const response = await fetch(`${settings.baseUrl}${path}`, {
       method: "POST",
       headers: await requestHeaders({ hasBody: true, requestId }),
-      body: JSON.stringify(payload)
+      body: serializedBody || JSON.stringify(payload)
     });
     const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
     const body = await response.json().catch(() => ({}));
@@ -895,6 +923,10 @@ chrome.alarms?.onAlarm?.addListener((alarm) => {
   if (alarm?.name === CAPTURE_RETRY_ALARM) {
     void drainCaptureQueue("alarm");
   }
+  if (alarm?.name?.startsWith(`${BACKFILL_ALARM}:`)) {
+    const jobId = alarm.name.slice(BACKFILL_ALARM.length + 1);
+    void backfillCoordinator().then((coordinator) => coordinator.wake(jobId));
+  }
 });
 
 chrome.runtime.onInstalled?.addListener(() => {
@@ -903,6 +935,7 @@ chrome.runtime.onInstalled?.addListener(() => {
 
 chrome.runtime.onStartup?.addListener(() => {
   void refreshCurrentActiveTab("browser_startup");
+  void backfillCoordinator().then((coordinator) => coordinator.wake());
 });
 
 chrome.tabs?.onActivated?.addListener((activeInfo) => {
@@ -924,6 +957,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "polylogue.configureReceiver") {
       const settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
       sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, authConfigured: Boolean(settings.authToken) });
+      return;
+    }
+    if (message.type === "polylogue.backfill.start") {
+      const coordinator = await backfillCoordinator();
+      const job = await coordinator.start({
+        provider: message.provider,
+        cutoff: message.cutoff,
+        policy: message.policy || {},
+        provider_options: message.provider_options || {},
+      });
+      void coordinator.wake(job.id);
+      sendResponse({ ok: true, job });
+      return;
+    }
+    if (message.type === "polylogue.backfill.control") {
+      const coordinator = await backfillCoordinator();
+      sendResponse({ ok: true, job: await coordinator.control(message.job_id, message.action) });
+      return;
+    }
+    if (message.type === "polylogue.backfill.status") {
+      const coordinator = await backfillCoordinator();
+      sendResponse({ ok: true, jobs: await coordinator.listStatus() });
+      return;
+    }
+    if (message.type === "polylogue.backfill.export") {
+      const coordinator = await backfillCoordinator();
+      sendResponse({ ok: true, ledger: await coordinator.exportLedger(message.job_id) });
       return;
     }
     if (message.type === "polylogue.capture") {

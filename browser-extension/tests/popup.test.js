@@ -29,6 +29,19 @@ function installDom() {
       <button id="check-receiver"><span class="button-status"></span></button>
       <button id="debug-toggle"><span class="button-status"></span></button>
       <button id="debug-export"><span class="button-status"></span></button>
+      <select id="backfill-provider"><option value="chatgpt">ChatGPT</option></select>
+      <select id="backfill-job"></select>
+      <input id="backfill-cutoff" />
+      <span id="backfill-status"></span>
+      <span id="backfill-cursor"></span>
+      <span id="backfill-progress"></span>
+      <span id="backfill-rate"></span>
+      <span id="backfill-last"></span>
+      <button id="backfill-start"><span class="button-status"></span></button>
+      <button id="backfill-pause"><span class="button-status"></span></button>
+      <button id="backfill-resume"><span class="button-status"></span></button>
+      <button id="backfill-cancel"><span class="button-status"></span></button>
+      <button id="backfill-export"><span class="button-status"></span></button>
       <span id="mode"></span>
       <span id="fidelity"></span>
       <span id="turns"></span>
@@ -316,6 +329,40 @@ describe("popup capture", () => {
 
     expect(globalThis.document.getElementById("queue-count").textContent).toBe("0");
     expect(globalThis.document.getElementById("queue-log").textContent).toContain("No captures queued for retry.");
+  });
+
+  it("starts and controls a background backfill while rendering rate and progress", async () => {
+    let status = "running";
+    const job = () => ({
+      id: "backfill-1",
+      provider: "chatgpt",
+      status,
+      inventory_cursor: "144",
+      inventory_complete: false,
+      learned_cadence_ms: 30000,
+      cooldown_until_ms: Date.now() + 60000,
+      last_error: "provider_http_429",
+      progress: { total: 462, complete: 144, retry: 1, no_turns: 0, error: 0, operator_action: 0 },
+    });
+    globalThis.chrome.runtime.sendMessage.mockImplementation(async (message) => {
+      if (message.type === "polylogue.backfill.status") return { ok: true, jobs: [job()] };
+      if (message.type === "polylogue.backfill.start") return { ok: true, job: job() };
+      if (message.type === "polylogue.backfill.control") { status = message.action === "pause" ? "paused" : message.action; return { ok: true, job: job() }; }
+      return { ok: true };
+    });
+    document.getElementById("backfill-cutoff").value = "2026-04-23";
+
+    document.getElementById("backfill-start").click();
+    await vi.waitFor(() => expect(document.getElementById("backfill-progress").textContent).toContain("144/462"));
+    expect(document.getElementById("backfill-rate").textContent).toContain("30s");
+    expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: "polylogue.backfill.start",
+      provider: "chatgpt",
+      cutoff: "2026-04-23T00:00:00.000Z",
+    }));
+
+    document.getElementById("backfill-pause").click();
+    await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("paused"));
   });
 
   it("checks receiver health and shows a reachable-but-unauthorized result", async () => {

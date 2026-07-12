@@ -88,5 +88,13 @@ describe("build.mjs full archive emission", () => {
     const summary = JSON.parse(readFileSync(join(outDir, "build-manifest.json"), "utf8"));
     expect(summary.version).toBe("0.9.0");
     expect(summary.firefox_gecko_id).toMatch(/@/);
+    const listing = execFileSync(
+      "python3",
+      ["-c", "import sys,zipfile; print('\\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))", join(outDir, "polylogue-browser-capture-0.9.0-chrome.zip")],
+      { encoding: "utf8" },
+    );
+    expect(listing).toContain("src/backfill/coordinator.js");
+    expect(listing).toContain("src/backfill/providers.js");
+    expect(listing).toContain("src/backfill/storage.js");
   });
 });

@@ -1,7 +1,8 @@
 # Polylogue Browser Capture
 
 Local-first Manifest V3 extension for capturing ChatGPT and Claude.ai
-sessions into Polylogue.
+sessions into Polylogue, including resumable inventory-driven background
+backfills.
 
 ## Install
 
@@ -164,7 +165,11 @@ pages the badge shows grey and no data is sent.
 - **Stale archive**: the receiver spool is newer than the indexed archive. Keep
   the daemon running; live convergence should advance this to **Archived**
   automatically.
-- **No background collection**: the extension only reads the DOM when you are actively on a supported page
+- **Explicit background collection only**: ordinary page capture reads content
+  only on an explicit capture action. A backfill runs in the service worker
+  only after **Start** is pressed with a provider and cutoff; it uses the
+  authenticated provider inventory/API, never activates foreground tabs, and
+  can be paused or cancelled from the popup.
 - **Local only**: content is posted to the configured `127.0.0.1` receiver and never leaves your machine
 - **Privacy diagnostics**: the popup shows capture counts and timestamps, never message content
 
@@ -198,6 +203,33 @@ polylogue browser-capture serve (Python)
     ▼
 polylogued daemon → ingests → FTS index
 ```
+
+## Resumable background backfill
+
+The popup's **Background backfill** panel starts a provider-native inventory
+delta from a user-selected cutoff. Jobs and queue entries live in IndexedDB,
+so MV3 service-worker suspension or a browser restart does not lose the cursor,
+captured artifact, retry deadline, or receiver receipt. `chrome.alarms` wakes
+the next eligible item; expired leases are recovered and only one extension
+instance may own an item at a time.
+
+The scheduler uses concurrency one per provider, a conservative learned
+request cadence, daily and per-wake budgets, `Retry-After`, exponential
+full-jitter backoff, and a circuit breaker. A 403/auth/challenge pauses for
+operator action; repeated 429s or transport failures pause the provider job.
+Native-empty conversations, authorization failures, bounded retry exhaustion,
+receiver outages, and successful durable ACKs remain distinct in the exported
+diagnostic ledger. Receiver-down artifacts remain queued and are retried
+without refetching provider data.
+
+Completion means the loopback receiver atomically wrote the artifact and
+returned both a request id and the exact submitted JSON-byte SHA-256. The
+deduplication identity is provider native id plus content hash. It does **not**
+mean the provider inventory was historically complete: Polylogue honors the
+provider's authentication, inventory visibility, rate limits, challenges, and
+deletion semantics and cannot prove completeness beyond what that authenticated
+inventory exposes. It does not bypass anti-bot controls or scrape records the
+provider does not enumerate.
 
 ## Development
 
