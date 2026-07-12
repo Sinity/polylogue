@@ -15,6 +15,7 @@ from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
@@ -62,6 +63,9 @@ from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_sources
 from polylogue.version import POLYLOGUE_VERSION
 
+if TYPE_CHECKING:
+    from polylogue.daemon.lifecycle import DaemonLifecycle
+
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
@@ -87,6 +91,7 @@ _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 
 # Track the pidfile path for atexit cleanup.
 _pidfile_path: Path | None = None
+_daemon_lifecycle: DaemonLifecycle | None = None
 
 
 def _cleanup_pidfile() -> None:
@@ -382,12 +387,17 @@ async def _periodic_drive_source_catchup() -> None:
 
 async def _periodic_heartbeat() -> None:
     """Log daemon heartbeat with archive stats every 15 minutes."""
+    from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_INTERVAL_SECONDS
+
     while True:
-        await asyncio.sleep(900)  # 15 minutes
+        await asyncio.sleep(DAEMON_HEARTBEAT_INTERVAL_SECONDS)
         db = _active_index_db_path()
         if not db.exists():
             continue
         try:
+            lifecycle = _daemon_lifecycle
+            if lifecycle is not None:
+                await asyncio.to_thread(lifecycle.heartbeat)
             n_sessions, n_messages, noun = await asyncio.to_thread(_heartbeat_counts, db)
             logger.info(
                 "daemon heartbeat: %d %s, %d messages indexed",
@@ -999,7 +1009,7 @@ async def run_daemon_services(
     from polylogue.daemon.status_snapshot import configure_runtime_components
     from polylogue.paths import archive_root
 
-    global _pidfile_path
+    global _daemon_lifecycle, _pidfile_path
     _process_start.started_at_wall()
     archive_root_path = Path(archive_root())
     from polylogue.paths import active_index_db_path
@@ -1082,6 +1092,13 @@ async def run_daemon_services(
     # attempt by an ephemeral instance would still atexit-unlink the live
     # daemon's pidfile.
     _pidfile_path = pidfile
+    from polylogue.daemon.lifecycle import DaemonLifecycle, install_signal_handlers, restore_signal_handlers
+
+    _daemon_lifecycle = await asyncio.to_thread(
+        DaemonLifecycle.start,
+        details={"archive_root": str(archive_root_path)},
+    )
+    previous_signal_handlers = install_signal_handlers(_daemon_lifecycle)
 
     # Ensure all configured source roots exist so health checks don't flag
     # never-yet-used sources (e.g. hooks sidecar dir) as missing.
@@ -1130,6 +1147,7 @@ async def run_daemon_services(
     tasks: list[asyncio.Task[None]] = []
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
+    termination: BaseException | None = None
     try:
         if enable_browser_capture:
             resolved_browser_capture_auth_token = resolve_receiver_auth_token(
@@ -1315,6 +1333,7 @@ async def run_daemon_services(
                     )
                 await asyncio.gather(*maintenance_tasks)
         except BaseException as exc:
+            termination = exc
             if not isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
                 _log_completed_daemon_tasks(tasks + maintenance_tasks)
             raise
@@ -1374,6 +1393,17 @@ async def run_daemon_services(
             except TimeoutError:
                 logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
 
+            lifecycle = _daemon_lifecycle
+            if lifecycle is not None:
+                exit_kind = "clean"
+                if isinstance(termination, SystemExit):
+                    exit_kind = "signal"
+                elif termination is not None and not isinstance(
+                    termination, (KeyboardInterrupt, asyncio.CancelledError)
+                ):
+                    exit_kind = "error"
+                await asyncio.to_thread(lifecycle.stop, exit_kind=exit_kind)
+
             writer_drained = await write_coordinator.shutdown(timeout=5.0)
             pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         finally:
@@ -1386,6 +1416,8 @@ async def run_daemon_services(
             if cleanup_task is not None:
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()
+            restore_signal_handlers(previous_signal_handlers)
+            _daemon_lifecycle = None
 
     logger.info("daemon stopped")
 

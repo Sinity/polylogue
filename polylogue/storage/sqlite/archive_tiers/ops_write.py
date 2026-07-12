@@ -78,6 +78,19 @@ class ArchiveDaemonStageEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveDaemonLifecycle:
+    """Forensic lifecycle record for one daemon process instance."""
+
+    run_id: str
+    started_at_ms: int
+    stopped_at_ms: int | None
+    last_heartbeat_at_ms: int
+    signal: str | None
+    exit_kind: str | None
+    details: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveOtlpSpan:
     """Compact read-back row for one OTLP span."""
 
@@ -464,6 +477,105 @@ def record_daemon_stage_event(
     )
     conn.commit()
     return event_id
+
+
+def record_daemon_lifecycle_start(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    started_at_ms: int,
+    details: dict[str, object] | None = None,
+) -> None:
+    """Create the authoritative lifecycle row for one daemon process."""
+    conn.execute(
+        """
+        INSERT INTO daemon_lifecycle (
+            run_id, started_at_ms, last_heartbeat_at_ms, details_json
+        ) VALUES (?, ?, ?, ?)
+        """,
+        (run_id, started_at_ms, started_at_ms, _json_dumps(details or {})),
+    )
+    conn.commit()
+
+
+def record_daemon_lifecycle_heartbeat(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    heartbeat_at_ms: int,
+) -> None:
+    """Advance a daemon process's durable heartbeat."""
+    conn.execute(
+        """
+        UPDATE daemon_lifecycle
+        SET last_heartbeat_at_ms = ?
+        WHERE run_id = ?
+        """,
+        (heartbeat_at_ms, run_id),
+    )
+    conn.commit()
+
+
+def record_daemon_lifecycle_signal(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    signal_name: str,
+    observed_at_ms: int,
+) -> None:
+    """Persist the terminating signal before control leaves the process."""
+    conn.execute(
+        """
+        UPDATE daemon_lifecycle
+        SET signal = ?, last_heartbeat_at_ms = ?
+        WHERE run_id = ?
+        """,
+        (signal_name, observed_at_ms, run_id),
+    )
+    conn.commit()
+
+
+def record_daemon_lifecycle_stop(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    stopped_at_ms: int,
+    exit_kind: str,
+) -> None:
+    """Mark a daemon lifecycle row stopped without erasing its signal."""
+    conn.execute(
+        """
+        UPDATE daemon_lifecycle
+        SET stopped_at_ms = ?, last_heartbeat_at_ms = ?, exit_kind = ?
+        WHERE run_id = ?
+        """,
+        (stopped_at_ms, stopped_at_ms, exit_kind, run_id),
+    )
+    conn.commit()
+
+
+def latest_daemon_lifecycle(conn: sqlite3.Connection) -> ArchiveDaemonLifecycle | None:
+    """Read the newest daemon lifecycle row, if the ops tier has one."""
+    row = conn.execute(
+        """
+        SELECT run_id, started_at_ms, stopped_at_ms, last_heartbeat_at_ms,
+               signal, exit_kind, details_json
+        FROM daemon_lifecycle
+        ORDER BY started_at_ms DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    return ArchiveDaemonLifecycle(
+        run_id=str(row[0]),
+        started_at_ms=_int_value(row[1]),
+        stopped_at_ms=None if row[2] is None else _int_value(row[2]),
+        last_heartbeat_at_ms=_int_value(row[3]),
+        signal=None if row[4] is None else str(row[4]),
+        exit_kind=None if row[5] is None else str(row[5]),
+        details=_json_loads(row[6] if isinstance(row[6], str) else None),
+    )
 
 
 def read_daemon_stage_event(conn: sqlite3.Connection, event_id: str) -> ArchiveDaemonStageEvent:
@@ -974,12 +1086,14 @@ def _json_loads(raw_json: str | None) -> dict[str, object]:
 
 __all__ = [
     "ArchiveCursorLagSample",
+    "ArchiveDaemonLifecycle",
     "ArchiveDaemonStageEvent",
     "ArchiveEmbeddingCatchupRun",
     "ArchiveOtlpSpan",
     "OpsCompactState",
     "add_convergence_debt",
     "list_cursor_lag_samples",
+    "latest_daemon_lifecycle",
     "list_daemon_stage_events",
     "list_embedding_catchup_runs",
     "list_otlp_spans",
@@ -989,6 +1103,10 @@ __all__ = [
     "read_otlp_span",
     "read_compact_state",
     "record_cursor_lag_sample",
+    "record_daemon_lifecycle_heartbeat",
+    "record_daemon_lifecycle_signal",
+    "record_daemon_lifecycle_start",
+    "record_daemon_lifecycle_stop",
     "record_daemon_stage_event",
     "record_ingest_attempt",
     "upsert_embedding_catchup_run",

@@ -338,6 +338,7 @@ class DaemonStatus(BaseModel):
     """Typed daemon status consumed by CLI, TUI, web, browser extension, MCP."""
 
     daemon_liveness: bool = False
+    daemon_lifecycle: dict[str, object] = Field(default_factory=dict)
     component_state: ComponentState = Field(default_factory=ComponentState)
     source_lag: list[SourceLagItem] = Field(default_factory=list)
     failing_files: list[str] = Field(default_factory=list)
@@ -1681,18 +1682,10 @@ def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:
 
 
 def _check_daemon_liveness() -> bool:
-    """Check whether the daemon process is running via pidfile."""
-    try:
-        from polylogue.paths import archive_root
+    """Return whether the latest durable daemon heartbeat is fresh."""
+    from polylogue.daemon.lifecycle import lifecycle_status
 
-        pidfile = Path(archive_root()) / "daemon.pid"
-        if not pidfile.exists():
-            return False
-        pid = int(pidfile.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except (OSError, ValueError):
-        return False
+    return bool(lifecycle_status().get("running", False))
 
 
 def _daemon_component_readiness(
@@ -2166,6 +2159,9 @@ def build_daemon_status(
         total_sessions=_safe_int(freshness.get("total_sessions", 0)),
     )
 
+    from polylogue.daemon.lifecycle import lifecycle_status
+
+    daemon_lifecycle = lifecycle_status()
     return DaemonStatus(
         raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
@@ -2174,6 +2170,7 @@ def build_daemon_status(
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
         daemon_liveness=_check_daemon_liveness(),
+        daemon_lifecycle=daemon_lifecycle,
         component_state=component_state,
         source_lag=[SourceLagItem(name=s.name, root=str(s.root), exists=s.exists()) for s in watch_sources],
         failing_files=[item.source_path for item in live_cursor.failing_files],
@@ -2257,6 +2254,7 @@ def daemon_status_payload(
             "ok": status.raw_frontier_integrity.overall_status == "healthy",
             "daemon": "polylogued",
             "daemon_liveness": status.daemon_liveness,
+            "daemon_lifecycle": status.daemon_lifecycle,
             "checked_at": status.checked_at,
             "component_state": status.component_state.model_dump(),
             "component_readiness": status.component_readiness,
@@ -2334,8 +2332,13 @@ def _archive_debt_status_summary() -> dict[str, object]:
 def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     """Render daemon component status as plain text lines."""
     lines = ["Polylogue daemon"]
+    lifecycle = payload.get("daemon_lifecycle")
     if payload.get("daemon_liveness"):
-        lines.append("  Status: running")
+        age = lifecycle.get("heartbeat_age_s") if isinstance(lifecycle, dict) else None
+        suffix = f" (heartbeat {age}s ago)" if isinstance(age, int | float) else ""
+        lines.append(f"  Status: running{suffix}")
+    elif isinstance(lifecycle, dict):
+        lines.append(f"  Status: {lifecycle.get('state', 'absent')} heartbeat")
     storage = payload.get("archive_storage")
     if isinstance(storage, dict):
         present = storage.get("present_tiers", [])

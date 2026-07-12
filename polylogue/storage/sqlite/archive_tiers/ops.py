@@ -110,6 +110,19 @@ CREATE TABLE IF NOT EXISTS daemon_events (
 CREATE INDEX IF NOT EXISTS idx_daemon_events_kind ON daemon_events(kind);
 CREATE INDEX IF NOT EXISTS idx_daemon_events_ts ON daemon_events(ts_ms);
 
+CREATE TABLE IF NOT EXISTS daemon_lifecycle (
+    run_id               TEXT PRIMARY KEY,
+    started_at_ms        INTEGER NOT NULL,
+    stopped_at_ms        INTEGER,
+    last_heartbeat_at_ms INTEGER NOT NULL,
+    signal               TEXT,
+    exit_kind            TEXT,
+    details_json         TEXT NOT NULL DEFAULT '{{}}'
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_daemon_lifecycle_latest
+ON daemon_lifecycle(started_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
     run_id              TEXT PRIMARY KEY,
     started_at_ms       INTEGER NOT NULL,
