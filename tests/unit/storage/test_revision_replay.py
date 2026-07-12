@@ -28,7 +28,7 @@ from polylogue.archive.session_revision_membership import (
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
-from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -110,6 +110,25 @@ def _codex_fold_payloads() -> tuple[bytes, bytes]:
         ]
     )
     return baseline, append
+
+
+def _with_fold_attachment(session: ParsedSession) -> ParsedSession:
+    """Exercise attachment persistence without inventing Codex parser behavior."""
+    return session.model_copy(
+        update={
+            "attachments": [
+                ParsedAttachment(
+                    provider_attachment_id="fold-image-1",
+                    message_provider_id="m1",
+                    name="fold-proof.png",
+                    mime_type="image/png",
+                    size_bytes=4,
+                    upload_origin="url",
+                    source_url="https://example.invalid/fold-proof.png",
+                )
+            ]
+        }
+    )
 
 
 def test_replay_selects_newest_full_and_exact_contiguous_suffix_independent_of_order() -> None:
@@ -425,7 +444,7 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline_payload, tail = _codex_fold_payloads()
-        baseline_session = _parse_codex_jsonl(baseline_payload)
+        baseline_session = _with_fold_attachment(_parse_codex_jsonl(baseline_payload))
         append_session = _parse_codex_jsonl(tail)
         folded_payload = baseline_payload + tail
         folded_session = _parse_codex_jsonl(folded_payload)
@@ -511,6 +530,15 @@ def test_real_append_fold_proof_mutations_roll_back(
             ORDER BY b.block_id
             """
         ).fetchall()
+        candidate_matches = archive._conn.execute(
+            """
+            SELECT b.block_id, b.message_id, b.text
+            FROM messages_fts
+            JOIN blocks AS b ON b.rowid = messages_fts.rowid
+            WHERE messages_fts MATCH 'candidate'
+            ORDER BY b.block_id
+            """
+        ).fetchall()
         return {
             "sessions": archive._conn.execute("SELECT content_hash, message_count FROM sessions").fetchall(),
             "messages": archive._conn.execute(
@@ -527,6 +555,7 @@ def test_real_append_fold_proof_mutations_roll_back(
             ).fetchall(),
             "fts_docsize": archive._conn.execute("SELECT id, sz FROM messages_fts_docsize ORDER BY id").fetchall(),
             "fts_needle": fts_matches,
+            "fts_candidate": candidate_matches,
             "head": archive._conn.execute(
                 "SELECT accepted_raw_id, accepted_content_hash, accepted_frontier FROM raw_revision_heads"
             ).fetchall(),
@@ -537,9 +566,11 @@ def test_real_append_fold_proof_mutations_roll_back(
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline_payload, tail = _codex_fold_payloads()
-        baseline_session = _parse_codex_jsonl(baseline_payload)
+        baseline_session = _with_fold_attachment(_parse_codex_jsonl(baseline_payload))
         append_session = _parse_codex_jsonl(tail)
-        folded_session = _parse_codex_jsonl(baseline_payload + tail)
+        candidate_payload = (baseline_payload + tail).replace(b"needle beta", b"candidate X")
+        assert len(candidate_payload) == len(baseline_payload + tail)
+        folded_session = _parse_codex_jsonl(candidate_payload)
         baseline = archive.write_raw_payload(
             provider=Provider.CODEX, payload=baseline_payload, source_path="session.jsonl", acquired_at_ms=1
         )
@@ -570,7 +601,7 @@ def test_real_append_fold_proof_mutations_roll_back(
         )
         chain = archive.raw_revision_replay_plan("codex:session")
         archive.apply_raw_revision_replay(chain, {baseline: baseline_session, append: append_session}, acquired_at_ms=0)
-        folded_payload = baseline_payload + tail
+        folded_payload = candidate_payload
         if mutation in {"baseline", "divergent"}:
             folded_payload = (b"X" if mutation == "baseline" else baseline_payload[:5] + b"X") + folded_payload[
                 1 if mutation == "baseline" else 6 :
@@ -617,7 +648,9 @@ def test_real_append_fold_proof_mutations_roll_back(
         before = state(archive)
         assert before["blocks"]
         assert before["session_events"]
+        assert before["attachments"]
         assert before["fts_needle"]
+        assert not before["fts_candidate"]
         plan = archive.raw_revision_replay_plan("codex:session")
         with pytest.raises(RuntimeError, match="conflicting accepted head"):
             archive.apply_raw_revision_replay(plan, {folded: folded_session}, acquired_at_ms=0)
