@@ -161,6 +161,23 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   hash, so concurrent publishers of identical bytes remain independent.
   Existing v3 tiers migrate additively through
   `004_blob_publication_reservations.sql` after a verified backup manifest.
+- Index schema version 35 adds Polish lexical search-recall folding
+  (polylogue-9jsi). The `messages_fts`, `threads_fts`, and
+  `session_work_events_fts` tokenizers move from `unicode61` to
+  `unicode61 remove_diacritics 2`, which folds ordinary combining-mark
+  diacritics (`ó`->`o`, `ż`->`z`, `ą`->`a`, ...) symmetrically for indexed
+  and `MATCH` query text. Separately, `ł`/`Ł` (Latin L with stroke) has no
+  Unicode decomposition, so neither NFD normalization nor
+  `remove_diacritics` can fold it; the write-side triggers and bulk-insert
+  SQL for all three FTS surfaces now apply an inline `REPLACE`-chain fold
+  (`polylogue/storage/fts/pl_fold.py:pl_fold_sql_expr`) to the indexed
+  `text` column, and `escape_fts5_query` applies the byte-identical Python
+  fold (`pl_fold`) to query text, so `latwo`/`zrobilem` queries find seeded
+  `łatwo`/`zrobiłem` content. The fold is deliberately narrow (`ł`/`Ł`
+  only) and expressed once from `PL_FOLD_TABLE` so write-side and
+  query-side folding cannot drift apart. Existing index tiers must be
+  rebuilt from source evidence (`polylogue ops reset --index && polylogued
+  run`) to pick up the new tokenizer and re-fold already-indexed rows.
 - Index schema version 34 rebuilds the `delegations` view (polylogue-y964,
   polylogue-4c27). The prior view aliased `session_links.src_session_id`
   (canonically the CHILD) as `parent_session_id` and

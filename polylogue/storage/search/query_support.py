@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from polylogue.storage.fts.pl_fold import pl_fold
+
 _FTS5_SPECIAL = re.compile(r"""['":*^(){}\[\]|&!+\-\\;%=$,<>@#`~./?]""")
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 _ASTERISK_ONLY = re.compile(r"^\*+$")
@@ -60,7 +62,16 @@ def normalize_fts5_query(query: str) -> str | None:
 
 
 def escape_fts5_query(query: str) -> str:
-    """Escape a query string for safe use in FTS5 MATCH clauses."""
+    """Escape a query string for safe use in FTS5 MATCH clauses.
+
+    This is the single chokepoint every MATCH builder in the archive routes
+    through (directly or via :func:`normalize_fts5_query`), so it is also
+    the single point where query-side ``pl_fold`` normalization is applied
+    (polylogue-9jsi) -- indexed text is folded the identical way at write
+    time (see ``polylogue/storage/fts/pl_fold.py``), so write/query folding
+    can never drift apart. Applied before quoting so a folded literal
+    (``latwo``) is what actually gets quoted, not the unfolded original.
+    """
 
     def _quoted(value: str) -> str:
         escaped = value.replace('"', '""')
@@ -70,6 +81,7 @@ def escape_fts5_query(query: str) -> str:
         return '""'
 
     query = re.sub(r"[\x00-\x1f\x7f]", "", query.strip())
+    query = pl_fold(query) or ""
     if not query:
         return '""'
     if _ASTERISK_ONLY.match(query):

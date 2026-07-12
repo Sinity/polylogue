@@ -490,7 +490,7 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/pricing.py
-    loc: 782
+    loc: 945
     target: polylogue/archive/semantic/pricing.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -563,7 +563,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/models.py
-    loc: 344
+    loc: 346
     target: polylogue/archive/session/models.py
     owner: archive-session
     reason: archive-domain semantics
@@ -578,7 +578,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/runtime.py
-    loc: 580
+    loc: 584
     target: polylogue/archive/session/runtime.py
     owner: archive-session
     reason: archive-domain semantics
@@ -3014,15 +3014,19 @@ files:
     target: polylogue/storage/fts/freshness.py
     owner: stable
   - path: polylogue/storage/fts/fts_lifecycle.py
-    loc: 1076
+    loc: 1077
     target: polylogue/storage/fts/fts_lifecycle.py
+    owner: stable
+  - path: polylogue/storage/fts/pl_fold.py
+    loc: 101
+    target: polylogue/storage/fts/pl_fold.py
     owner: stable
   - path: polylogue/storage/fts/session_repair.py
     loc: 57
     target: polylogue/storage/fts/session_repair.py
     owner: stable
   - path: polylogue/storage/fts/sql.py
-    loc: 142
+    loc: 150
     target: polylogue/storage/fts/sql.py
     owner: stable
   - path: polylogue/storage/hydrators.py
@@ -3314,7 +3318,7 @@ files:
     target: polylogue/storage/search/query_builders.py
     owner: stable
   - path: polylogue/storage/search/query_support.py
-    loc: 114
+    loc: 126
     target: polylogue/storage/search/query_support.py
     owner: stable
   - path: polylogue/storage/search/runtime.py
@@ -3413,7 +3417,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 1291
+    loc: 1499
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
@@ -3473,7 +3477,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
-    loc: 663
+    loc: 666
     target: polylogue/storage/sqlite/async_sqlite.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite_archive.py
@@ -3485,7 +3489,7 @@ files:
     target: polylogue/storage/sqlite/async_sqlite_raw.py
     owner: stable
   - path: polylogue/storage/sqlite/connection.py
-    loc: 347
+    loc: 350
     target: polylogue/storage/sqlite/connection.py
     owner: stable
   - path: polylogue/storage/sqlite/connection_profile.py
