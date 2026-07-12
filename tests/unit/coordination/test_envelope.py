@@ -401,6 +401,44 @@ def test_coordination_envelope_degrades_without_archive_tables(
     assert payload.context_flow_refs == ()
 
 
+def test_coordination_envelope_signals_archive_evidence_query_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A genuine archive-evidence query failure must not look identical to
+    "no evidence" (polylogue-cpf.4). Before the fix, both cases returned the
+    same five empty tuples with no advisory and no log line.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    _seed_coordination_archive(index)
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+
+    def _boom(*args: object, **kwargs: object) -> bool:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("polylogue.coordination.envelope._archive_tables_present", _boom)
+
+    with caplog.at_level("WARNING"):
+        payload = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), limit=4)
+
+    # Same empty shape a reader would see for "no matching evidence" --
+    # the advisory (and the log line) is what makes the two distinguishable.
+    assert payload.session_trees == ()
+    assert payload.activity_episodes == ()
+    assert payload.subagent_exchanges == ()
+    assert payload.proof_refs == ()
+    assert payload.context_flow_refs == ()
+    assert any("Archive-evidence lookup degraded" in advisory for advisory in payload.advisories)
+    assert any("database is locked" in advisory for advisory in payload.advisories)
+    assert "coordination archive-evidence query failed" in caplog.text
+
+
 def test_coordination_view_projection_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "repo"
     root.mkdir()
