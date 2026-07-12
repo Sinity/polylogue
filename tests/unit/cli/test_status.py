@@ -19,11 +19,13 @@ from polylogue.cli.commands.status import (
     _archive_cli_route_status,
     _archive_facade_route_status,
     _direct_claim_guard,
+    _direct_status_ok,
     _render_raw_replay_backlog,
     _show_daemon_status,
     _show_direct_json,
     _show_direct_status,
     _show_status_json,
+    _status_ok,
     status_command,
 )
 from polylogue.cli.shared.types import AppEnv
@@ -41,6 +43,39 @@ class _CapturingConsole:
 
     def print(self, *args: object, **kwargs: object) -> None:
         self.calls.append(" ".join(str(a) for a in args))
+
+
+def _healthy_raw_frontier_integrity() -> dict[str, Any]:
+    return {
+        "available": True,
+        "overall_status": "healthy",
+        "broken_head_status": "healthy",
+        "broken_head_count": 0,
+        "broken_head_checked_count": 1,
+        "broken_head_samples": [],
+        "broken_head_reason": "",
+        "missing_source_raw_status": "healthy",
+        "missing_source_raw_count": 0,
+        "missing_source_raw_samples": [],
+        "missing_source_raw_reason": "",
+        "cursor_ahead_status": "healthy",
+        "cursor_ahead_count": 0,
+        "cursor_ahead_checked_count": 1,
+        "cursor_head_comparison_count": 1,
+        "cursor_ahead_comparison_count": 0,
+        "cursor_ahead_samples": [],
+        "cursor_authority_gap_count": 0,
+        "cursor_authority_gap_samples": [],
+        "cursor_ahead_reason": "",
+    }
+
+
+def _fresh_status_snapshot() -> dict[str, object]:
+    return {
+        "state": "fresh",
+        "captured_at": "2026-07-12T14:00:00+00:00",
+        "age_s": 0.1,
+    }
 
 
 class _FakeDaemonResponse:
@@ -330,7 +365,8 @@ class TestNoArchiveStatus:
 
         payload = json.loads(_combined_calls(env))
         transforms = payload["component_readiness"]["transforms"]
-        assert payload["ok"] is True
+        assert payload["ok"] is False
+        assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
         assert transforms["state"] == "unknown"
         assert transforms["summary"] == "direct_status_default_skips_exact_archive_readiness"
         assert transforms["caveats"] == ["direct_status_default_skips_exact_archive_readiness"]
@@ -996,6 +1032,146 @@ class TestNoArchiveStatus:
         for entry in claim_guard.values():
             assert entry["signal"]
 
+    def test_direct_status_json_marks_unavailable_raw_frontier_non_green(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A present but unreadable ops cursor authority must not leave top-level status green."""
+
+        env = _make_app_env()
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        with sqlite3.connect(tmp_path / "ops.db") as conn:
+            conn.execute("DROP TABLE ingest_cursor")
+            conn.commit()
+
+        archive_readiness = {
+            "checked": True,
+            "counts": {"session_count": 0},
+            "surfaces": {"search": {"ready": True, "blockers": [], "evidence": {}}},
+        }
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
+            patch(
+                "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+                return_value={"available": True, "total": 0, "affected_total": 0},
+            ),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env, include_archive_readiness=True)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
+        assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
+        assert payload["claim_guard"]["converged"]["value"] is False
+        assert payload["ok"] is False
+
+    def test_direct_status_json_detects_broken_append_head_blocks_converged(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """polylogue-yla8.7 AC: a current accepted append head whose
+        predecessor chain is broken must surface through
+        ``raw_frontier_integrity``, render ``component_readiness`` as
+        ``poisoned``, and block claim-guard ``converged`` in the no-daemon
+        direct SQLite fallback path — not just through the daemon path."""
+        env = _make_app_env()
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+
+        source_path = tmp_path / "session.jsonl"
+        source_path.write_text("{}\n", encoding="utf-8")
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                    source_revision, predecessor_source_revision, predecessor_raw_id,
+                    baseline_raw_id, append_start_offset, append_end_offset,
+                    acquisition_generation, revision_authority
+                ) VALUES (
+                    'raw-append', 'codex-session', 'raw-append', ?, -1, ?,
+                    5, 1, 'codex:session-1', 'append',
+                    'revision-1', 'revision-0', 'raw-missing',
+                    'raw-missing', 10, 15,
+                    1, 'byte_proven'
+                )
+                """,
+                (str(source_path), (1).to_bytes(32, "big")),
+            )
+            conn.commit()
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+                VALUES ('session-1', 'codex-session', 'raw-append', 'session', ?)
+                """,
+                (bytes(32),),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_revision_heads (
+                    logical_source_key, session_id, accepted_raw_id,
+                    accepted_source_revision, accepted_content_hash,
+                    accepted_frontier_kind, accepted_frontier,
+                    acquisition_generation, append_end_offset, decided_at_ms
+                ) VALUES ('codex:session-1', 'codex-session:session-1', 'raw-append',
+                          'revision-1', ?, 'byte', 15, 1, 15, 2)
+                """,
+                (bytes(32),),
+            )
+            conn.commit()
+
+        archive_readiness = {
+            "checked": True,
+            "counts": {"session_count": 1},
+            "surfaces": {"search": {"ready": True, "blockers": [], "evidence": {}}},
+        }
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
+            patch(
+                "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+                return_value={"available": True, "total": 0, "affected_total": 0},
+            ),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env, include_archive_readiness=True)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["ok"] is False
+        integrity = payload["raw_frontier_integrity"]
+        assert integrity["overall_status"] == "violated"
+        assert integrity["broken_head_status"] == "violated"
+        assert integrity["broken_head_count"] == 1
+        assert "missing from source tier" in integrity["broken_head_samples"][0]["reason"]
+        assert integrity["cursor_authority_gap_count"] == 0
+
+        component = payload["component_readiness"]["raw_frontier_integrity"]
+        assert component["state"] == "poisoned"
+        assert component["counts"]["broken_head_count"] == 1
+
+        claim_guard = payload["claim_guard"]
+        assert claim_guard["openable"]["value"] is True
+        assert claim_guard["converged"]["value"] is False
+        assert "broken predecessor chain" in claim_guard["converged"]["reason"]
+
     def test_direct_status_json_claim_guard_reports_missing_tiers_when_not_openable(
         self,
         tmp_path: Path,
@@ -1040,9 +1216,11 @@ class TestNoArchiveStatus:
         }
         component_readiness = {
             "raw_materialization": {"summary": "ready"},
+            "raw_frontier_integrity": {"state": "ready", "summary": "ready"},
             "search": {"state": "ready", "summary": "ready"},
         }
         raw_materialization_readiness = {"available": True, "total": 0, "affected_total": 0}
+        raw_frontier_integrity = {"overall_status": "healthy"}
 
         for unavailable_workload in (
             {"available": False, "reason": "missing_ops_tier"},
@@ -1052,6 +1230,7 @@ class TestNoArchiveStatus:
             guard = _direct_claim_guard(
                 archive_tiers=archive_tiers,
                 raw_materialization_readiness=raw_materialization_readiness,
+                raw_frontier_integrity=raw_frontier_integrity,
                 component_readiness=component_readiness,
                 ingest_workload=unavailable_workload,
             )
@@ -1065,10 +1244,16 @@ class TestNoArchiveStatus:
         idle_guard = _direct_claim_guard(
             archive_tiers=archive_tiers,
             raw_materialization_readiness=raw_materialization_readiness,
+            raw_frontier_integrity=raw_frontier_integrity,
             component_readiness=component_readiness,
             ingest_workload={"available": True, "actively_ingesting": False, "running_count": 0},
         )
         assert idle_guard["perf_measurable"]["value"] is True
+
+    def test_direct_status_requires_raw_frontier_component_presence(self) -> None:
+        assert _direct_status_ok({}) is False
+        assert _direct_status_ok({"raw_frontier_integrity": {"state": "unknown"}}) is False
+        assert _direct_status_ok({"raw_frontier_integrity": {"state": "ready"}}) is True
 
     def test_direct_status_json_blocks_transforms_when_archive_readiness_fails(
         self,
@@ -1370,6 +1555,132 @@ class TestNoArchiveStatus:
 
         assert "FTS: [green]100.0% indexed[/green]" in _combined_calls(env)
 
+    def test_daemon_status_renders_raw_frontier_integrity(self) -> None:
+        env = _make_app_env()
+        unknown = _healthy_raw_frontier_integrity()
+        unknown.update(
+            {
+                "available": False,
+                "overall_status": "unknown",
+                "broken_head_status": "unknown",
+                "missing_source_raw_status": "unknown",
+                "cursor_ahead_status": "unknown",
+                "cursor_ahead_reason": "ops cursor authority unavailable",
+            }
+        )
+
+        _show_daemon_status(
+            env,
+            {
+                "daemon_liveness": True,
+                "status_snapshot": _fresh_status_snapshot(),
+                "raw_frontier_integrity": unknown,
+            },
+        )
+
+        rendered = _combined_calls(env)
+        assert "Raw frontier: [yellow]unknown[/yellow]" in rendered
+        assert "ops cursor authority unavailable" in rendered
+
+    def test_compact_daemon_status_cannot_preserve_stale_green_frontier(self) -> None:
+        env = _make_app_env()
+        violated = _healthy_raw_frontier_integrity()
+        violated.update(
+            {
+                "overall_status": "violated",
+                "broken_head_status": "violated",
+                "broken_head_count": 1,
+                "broken_head_samples": [{"accepted_raw_id": "raw-1"}],
+                "broken_head_reason": "1 active seed is broken",
+            }
+        )
+        _show_status_json(
+            env,
+            {
+                "ok": True,
+                "daemon_liveness": True,
+                "status_snapshot": _fresh_status_snapshot(),
+                "raw_frontier_integrity": violated,
+            },
+        )
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["ok"] is False
+        assert payload["raw_frontier_integrity"]["overall_status"] == "violated"
+        assert "broken_head_samples" not in payload["raw_frontier_integrity"]
+
+    @pytest.mark.parametrize("full", [False, True])
+    def test_daemon_status_json_missing_frontier_is_explicit_unknown(self, full: bool) -> None:
+        env = _make_app_env()
+
+        _show_status_json(env, {"ok": True, "daemon_liveness": True}, full=full)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["ok"] is False
+        assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
+        assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
+
+    def test_status_ok_requires_complete_fresh_frontier_authority(self) -> None:
+        assert _status_ok({"ok": True, "daemon_liveness": True}) is False
+        healthy = _healthy_raw_frontier_integrity()
+        assert _status_ok({"ok": True, "raw_frontier_integrity": healthy}) is True
+        assert (
+            _status_ok(
+                {"ok": True, "raw_frontier_integrity": healthy},
+                require_fresh_snapshot=True,
+            )
+            is False
+        )
+        assert (
+            _status_ok(
+                {
+                    "ok": True,
+                    "status_snapshot": _fresh_status_snapshot(),
+                    "raw_frontier_integrity": healthy,
+                },
+                require_fresh_snapshot=True,
+            )
+            is True
+        )
+        assert (
+            _status_ok(
+                {
+                    "ok": True,
+                    "daemon_liveness": True,
+                    "status_snapshot": {"state": "stale"},
+                    "raw_frontier_integrity": healthy,
+                }
+            )
+            is False
+        )
+
+    def test_daemon_status_text_marks_missing_frontier_non_green(self) -> None:
+        env = _make_app_env()
+
+        _show_daemon_status(env, {"ok": True, "daemon_liveness": True})
+
+        rendered = _combined_calls(env)
+        assert "[bold yellow]Daemon: running; status degraded[/bold yellow]" in rendered
+        assert "Raw frontier: [yellow]unknown[/yellow]" in rendered
+
+    def test_daemon_status_stale_healthy_frontier_becomes_unknown(self) -> None:
+        env = _make_app_env()
+        _show_status_json(
+            env,
+            {
+                "ok": True,
+                "daemon_liveness": True,
+                "status_snapshot": {"state": "stale"},
+                "raw_frontier_integrity": _healthy_raw_frontier_integrity(),
+            },
+            full=True,
+        )
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["ok"] is False
+        assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
+        assert "stale" in payload["raw_frontier_integrity"]["broken_head_reason"]
+
     def test_daemon_status_json_is_compact_by_default(self) -> None:
         env = _make_app_env()
         full_payload = {
@@ -1426,7 +1737,7 @@ class TestNoArchiveStatus:
         for heavy_key in ("live_cursor", "catchup", "convergence", "failing_files", "last_ingestion_batch"):
             assert heavy_key not in payload
 
-    def test_daemon_status_json_full_preserves_raw_payload(self) -> None:
+    def test_daemon_status_json_full_preserves_fields_but_normalizes_missing_authority(self) -> None:
         env = _make_app_env()
         full_payload = {
             "daemon_liveness": True,
@@ -1436,9 +1747,15 @@ class TestNoArchiveStatus:
 
         _show_status_json(env, full_payload, full=True)
 
-        assert json.loads(_combined_calls(env)) == full_payload
+        payload = json.loads(_combined_calls(env))
+        assert payload["daemon_liveness"] is True
+        assert payload["live_cursor"] == full_payload["live_cursor"]
+        assert payload["archive_debt"] == full_payload["archive_debt"]
+        assert payload["ok"] is False
+        assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
+        assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
 
-    def test_status_command_full_json_preserves_daemon_payload(self) -> None:
+    def test_status_command_full_json_preserves_fields_but_normalizes_missing_authority(self) -> None:
         env = _make_app_env()
         full_payload = {
             "daemon_liveness": True,
@@ -1454,7 +1771,13 @@ class TestNoArchiveStatus:
             )
 
         assert result.exit_code == 0
-        assert json.loads(_combined_calls(env)) == full_payload
+        payload = json.loads(_combined_calls(env))
+        assert payload["daemon_liveness"] is True
+        assert payload["live_cursor"] == full_payload["live_cursor"]
+        assert payload["archive_debt"] == full_payload["archive_debt"]
+        assert payload["ok"] is False
+        assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
+        assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
 
     def test_status_command_default_json_compacts_daemon_payload(self) -> None:
         env = _make_app_env()

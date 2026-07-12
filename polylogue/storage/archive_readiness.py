@@ -405,23 +405,16 @@ def _missing_source_raw_session_samples(conn: sqlite3.Connection, *, limit: int 
 
 
 def _readiness_scalar_int(conn: sqlite3.Connection, sql: str) -> int:
-    try:
-        row = conn.execute(sql).fetchone()
-    except sqlite3.Error as exc:
-        # Nested inside missing_source_raw_session_evidence()'s own
-        # try/except: a failure here is swallowed before the outer function
-        # ever sees it, so the caller reports "available": True with a
-        # count of 0 — identical to a genuinely clean archive. Log loudly
-        # so a query failure doesn't masquerade as zero lost evidence
-        # (polylogue-cpf.4).
-        logger.warning("archive readiness scalar query failed: %s", exc, exc_info=True)
-        return 0
+    row = conn.execute(sql).fetchone()
     return int(row[0] or 0) if row is not None else 0
 
 
 def _table_columns(conn: sqlite3.Connection, schema: str, table: str) -> frozenset[str]:
     try:
-        rows = conn.execute(f"PRAGMA {schema}.table_info({table})").fetchall()
+        # ``sessions.session_id`` and other identity columns are generated.
+        # table_info omits generated/hidden columns, which made exact lost-raw
+        # counts pair with empty samples on the canonical archive schema.
+        rows = conn.execute(f"PRAGMA {schema}.table_xinfo({table})").fetchall()
     except sqlite3.Error as exc:
         logger.warning("archive readiness table-columns probe failed for %s.%s: %s", schema, table, exc, exc_info=True)
         return frozenset()

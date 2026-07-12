@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -11,6 +11,7 @@ import pytest
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
+from polylogue.daemon.fts_status import FTSReadiness
 from polylogue.daemon.status import (
     _insight_freshness_info,
     browser_capture_status_payload,
@@ -34,6 +35,31 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.frozen_clock import FrozenClock
 
 
+def _complete_healthy_frontier() -> JSONDocument:
+    return {
+        "available": True,
+        "overall_status": "healthy",
+        "broken_head_status": "healthy",
+        "broken_head_count": 0,
+        "broken_head_checked_count": 1,
+        "broken_head_samples": [],
+        "broken_head_reason": "",
+        "missing_source_raw_status": "healthy",
+        "missing_source_raw_count": 0,
+        "missing_source_raw_samples": [],
+        "missing_source_raw_reason": "",
+        "cursor_ahead_status": "healthy",
+        "cursor_ahead_count": 0,
+        "cursor_ahead_checked_count": 1,
+        "cursor_head_comparison_count": 1,
+        "cursor_ahead_comparison_count": 0,
+        "cursor_ahead_samples": [],
+        "cursor_authority_gap_count": 0,
+        "cursor_authority_gap_samples": [],
+        "cursor_ahead_reason": "",
+    }
+
+
 def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeypatch: pytest.MonkeyPatch) -> None:
     payload: JSONDocument = {"ok": True, "daemon_liveness": True, "checked_at": "cached"}
     refresh_status_snapshot(payload=payload)
@@ -46,6 +72,14 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     result = get_status_snapshot_payload()
 
     assert result["checked_at"] == "cached"
+    assert result["ok"] is False
+    frontier = result["raw_frontier_integrity"]
+    assert isinstance(frontier, dict)
+    assert frontier["overall_status"] == "unknown"
+    readiness = result["component_readiness"]
+    assert isinstance(readiness, dict)
+    frontier_component = cast(dict[str, Any], readiness["raw_frontier_integrity"])
+    assert frontier_component["state"] == "unknown"
     snapshot = result["status_snapshot"]
     assert isinstance(snapshot, dict)
     assert snapshot["state"] == "fresh"
@@ -53,6 +87,49 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     assert isinstance(writer, dict)
     assert "active_actor" in writer
     assert "queued_actors" in writer
+
+
+def test_status_snapshot_stale_healthy_authority_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: JSONDocument = {
+        "ok": True,
+        "daemon_liveness": True,
+        "raw_frontier_integrity": _complete_healthy_frontier(),
+        "component_readiness": {"raw_frontier_integrity": {"component": "raw_frontier_integrity", "state": "ready"}},
+        "claim_guard": {
+            "converged": {
+                "claim": "converged",
+                "value": True,
+                "reason": "ready",
+                "signal": "raw_frontier_integrity",
+            }
+        },
+    }
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 100.0)
+    refresh_status_snapshot(payload=payload)
+
+    fresh = get_status_snapshot_payload()
+    assert fresh["ok"] is True
+    fresh_frontier = cast(dict[str, Any], fresh["raw_frontier_integrity"])
+    fresh_readiness = cast(dict[str, Any], fresh["component_readiness"])
+    fresh_component = cast(dict[str, Any], fresh_readiness["raw_frontier_integrity"])
+    assert fresh_frontier["overall_status"] == "healthy"
+    assert fresh_component["state"] == "ready"
+
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 131.0)
+    stale = get_status_snapshot_payload()
+
+    stale_snapshot = cast(dict[str, Any], stale["status_snapshot"])
+    stale_frontier = cast(dict[str, Any], stale["raw_frontier_integrity"])
+    stale_readiness = cast(dict[str, Any], stale["component_readiness"])
+    stale_component = cast(dict[str, Any], stale_readiness["raw_frontier_integrity"])
+    stale_guard = cast(dict[str, Any], stale["claim_guard"])
+    stale_converged = cast(dict[str, Any], stale_guard["converged"])
+    assert stale_snapshot["state"] == "stale"
+    assert stale["ok"] is False
+    assert stale_frontier["overall_status"] == "unknown"
+    assert stale_component["state"] == "unknown"
+    assert stale_converged["value"] is False
+    assert "stale" in stale_converged["reason"]
 
 
 def test_status_snapshot_minimal_refresh_stays_request_safe(
@@ -72,6 +149,15 @@ def test_status_snapshot_minimal_refresh_stays_request_safe(
     status_snapshot = snapshot.payload["status_snapshot"]
     assert isinstance(status_snapshot, dict)
     assert status_snapshot["state"] == "minimal"
+    assert snapshot.payload["ok"] is False
+    frontier = snapshot.payload["raw_frontier_integrity"]
+    assert isinstance(frontier, dict)
+    assert frontier["overall_status"] == "unknown"
+    readiness = snapshot.payload["component_readiness"]
+    assert isinstance(readiness, dict)
+    frontier_component = readiness["raw_frontier_integrity"]
+    assert isinstance(frontier_component, dict)
+    assert frontier_component["state"] == "unknown"
     assert snapshot.payload["db_path"] == str(db)
 
 
@@ -529,6 +615,19 @@ def test_daemon_status_preserves_lost_source_evidence(monkeypatch: pytest.Monkey
     assert raw_component["state"] == "blocked"
     assert raw_component["summary"] == "source evidence missing"
     assert raw_component["repair_hint"] == "restore exact raw artifact"
+    frontier = cast(dict[str, object], status_payload["raw_frontier_integrity"])
+    assert frontier["missing_source_raw_status"] == "violated"
+    assert frontier["missing_source_raw_count"] == 1
+    assert frontier["missing_source_raw_samples"] == [sample]
+    assert frontier["overall_status"] == "violated"
+    frontier_component = cast(dict[str, Any], status_payload["component_readiness"])["raw_frontier_integrity"]
+    assert frontier_component["state"] == "poisoned"
+    claim_guard = cast(dict[str, dict[str, object]], status_payload["claim_guard"])
+    assert claim_guard["converged"]["value"] is False
+    assert status_payload["ok"] is False
+    rendered = format_daemon_status_lines(status_payload)
+    assert any(line.startswith("Raw frontier integrity: violated") for line in rendered)
+    assert any("indexed session(s) reference raw evidence missing" in line for line in rendered)
 
 
 def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
@@ -1160,6 +1259,183 @@ def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_
     assert claim_guard["converged"]["reason"] == raw_component["summary"]
     assert claim_guard["search_ready"]["value"] is True
     assert claim_guard["perf_measurable"]["value"] is True
+
+
+def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_path: Path) -> None:
+    """polylogue-yla8.7 AC: a current accepted append head whose predecessor
+    chain is broken must surface through ``raw_frontier_integrity``, render
+    ``component_readiness`` as ``poisoned``, and block claim-guard
+    ``converged`` end-to-end through ``build_daemon_status()`` — the same
+    authority gap yla8.6 found only through manual SQL."""
+    for tier in (
+        ArchiveTier.SOURCE,
+        ArchiveTier.INDEX,
+        ArchiveTier.EMBEDDINGS,
+        ArchiveTier.USER,
+        ArchiveTier.OPS,
+    ):
+        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+
+    source_path = tmp_path / "session.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                source_revision, predecessor_source_revision, predecessor_raw_id,
+                baseline_raw_id, append_start_offset, append_end_offset,
+                acquisition_generation, revision_authority
+            ) VALUES (
+                'raw-append', 'codex-session', 'raw-append', ?, -1, ?,
+                5, 1, 'codex:session-1', 'append',
+                'revision-1', 'revision-0', 'raw-missing',
+                'raw-missing', 10, 15,
+                1, 'byte_proven'
+            )
+            """,
+            (str(source_path), (1).to_bytes(32, "big")),
+        )
+        conn.commit()
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('session-1', 'codex-session', 'raw-append', 'session', ?)
+            """,
+            (bytes(32),),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_revision_heads (
+                logical_source_key, session_id, accepted_raw_id,
+                accepted_source_revision, accepted_content_hash,
+                accepted_frontier_kind, accepted_frontier,
+                acquisition_generation, append_end_offset, decided_at_ms
+            ) VALUES ('codex:session-1', 'codex-session:session-1', 'raw-append',
+                      'revision-1', ?, 'byte', 15, 1, 15, 2)
+            """,
+            (bytes(32),),
+        )
+        conn.commit()
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+    ):
+        status = build_daemon_status(sources=())
+
+    integrity = cast(dict[str, object], status.raw_frontier_integrity.model_dump())
+    assert integrity["overall_status"] == "violated"
+    assert integrity["broken_head_status"] == "violated"
+    assert integrity["broken_head_count"] == 1
+    assert integrity["cursor_authority_gap_count"] == 0
+    samples = cast(list[dict[str, object]], integrity["broken_head_samples"])
+    assert "missing from source tier" in str(samples[0]["reason"])
+
+    component = cast(dict[str, object], status.component_readiness["raw_frontier_integrity"])
+    assert component["state"] == "poisoned"
+    counts = cast(dict[str, object], component["counts"])
+    assert counts["broken_head_count"] == 1
+
+    claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
+    assert claim_guard["openable"]["value"] is True
+    assert claim_guard["converged"]["value"] is False
+    assert "broken predecessor chain" in str(claim_guard["converged"]["reason"])
+
+
+def test_daemon_and_direct_status_share_zero_head_unavailable_ops_semantics(tmp_path: Path) -> None:
+    """Both status routes consume the canonical projection, including zero-head unknowns."""
+
+    from polylogue.cli.commands.status import _direct_raw_frontier_integrity
+    from polylogue.daemon.status import RawMaterializationReadiness, _raw_frontier_integrity_info
+
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    readiness = RawMaterializationReadiness(available=True)
+
+    with patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"):
+        daemon_payload = _raw_frontier_integrity_info(readiness).model_dump()
+    direct_payload = _direct_raw_frontier_integrity(tmp_path, readiness.model_dump())
+
+    assert daemon_payload == direct_payload
+    assert daemon_payload["broken_head_status"] == "healthy"
+    assert daemon_payload["cursor_ahead_status"] == "unknown"
+    assert daemon_payload["overall_status"] == "unknown"
+
+
+@pytest.mark.parametrize("overall_status", ["unknown", "violated"])
+def test_daemon_status_payload_marks_unproven_raw_frontier_non_green(
+    overall_status: Literal["unknown", "violated"],
+) -> None:
+    status = status_module.DaemonStatus(
+        daemon_liveness=True,
+        raw_frontier_integrity=status_module.RawFrontierIntegrity(overall_status=overall_status),
+    )
+    with (
+        patch("polylogue.daemon.status.build_daemon_status", return_value=status),
+        patch("polylogue.daemon.status._archive_debt_status_summary", return_value={}),
+        patch("polylogue.daemon.events.get_last_ingestion_batch", return_value=None),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    assert payload["daemon_liveness"] is True
+    frontier = cast(dict[str, object], payload["raw_frontier_integrity"])
+    assert frontier["overall_status"] == overall_status
+    assert payload["ok"] is False
+
+
+def test_daemon_and_direct_claim_guard_share_mixed_frontier_summary(tmp_path: Path) -> None:
+    from polylogue.cli.commands.status import _direct_claim_guard
+
+    integrity = status_module.RawFrontierIntegrity(
+        available=False,
+        overall_status="violated",
+        broken_head_status="violated",
+        broken_head_count=1,
+        broken_head_reason="accepted head metadata drift",
+        missing_source_raw_status="healthy",
+        cursor_ahead_status="unknown",
+        cursor_ahead_reason="ops cursor authority unavailable",
+    )
+    storage = status_module.ArchiveStorageStatus(
+        active_store="archive_file_set",
+        active_db_path=str(tmp_path / "index.db"),
+        archive_root=str(tmp_path),
+        configured_archive_root=str(tmp_path),
+        archive_ready=True,
+        archive_materialization_ready=True,
+        final_shape_ready=True,
+        archive_schema_ready=True,
+        present_tiers=["source", "index", "embeddings", "user", "ops"],
+    )
+    raw_readiness = status_module.RawMaterializationReadiness(available=True)
+    daemon_guard = status_module._daemon_claim_guard(
+        archive_storage=storage,
+        raw_materialization_readiness=raw_readiness,
+        raw_frontier_integrity=integrity,
+        fts_readiness=FTSReadiness(messages_ready=True),
+        live_ingest_attempts=status_module.LiveIngestAttemptSummary(),
+    )
+    direct_guard = _direct_claim_guard(
+        archive_tiers={
+            tier: {"exists": True, "version_status": "ok"} for tier in ("source", "index", "embeddings", "user", "ops")
+        },
+        raw_materialization_readiness=raw_readiness.model_dump(),
+        raw_frontier_integrity=integrity.model_dump(),
+        component_readiness={
+            "raw_materialization": {"state": "ready", "summary": "ready"},
+            "raw_frontier_integrity": {"state": "poisoned", "summary": "raw frontier integrity violated"},
+            "search": {"state": "ready", "summary": "ready"},
+        },
+        ingest_workload={"available": True, "actively_ingesting": False, "running_count": 0},
+    )
+
+    daemon_converged = cast(dict[str, object], daemon_guard["converged"])
+    assert daemon_converged == direct_guard["converged"]
+    assert daemon_converged["reason"] == "accepted head metadata drift; ops cursor authority unavailable"
 
 
 def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> None:

@@ -21,8 +21,12 @@ from typing import Any
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.paths import active_index_db_path
+from polylogue.readiness.capability import (
+    STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S,
+    normalize_raw_frontier_status_payload,
+    unknown_raw_frontier_integrity_projection,
+)
 
-_MAX_FRESH_AGE_S = 30.0
 _SNAPSHOT_LOCK = threading.Lock()
 _REFRESH_LOCK = threading.Lock()
 _RUNTIME_COMPONENT_LOCK = threading.Lock()
@@ -54,10 +58,15 @@ class StatusSnapshot:
 
     def with_metadata(self) -> JSONDocument:
         age_s = max(0.0, time.monotonic() - self.captured_monotonic)
-        payload: dict[str, object] = dict(self.payload)
-        payload.setdefault("component_readiness", _minimal_component_readiness(payload))
+        state = "fresh" if age_s <= STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S else "stale"
+        base_payload: dict[str, object] = dict(self.payload)
+        base_payload.setdefault("component_readiness", _minimal_component_readiness(base_payload))
+        payload: dict[str, object] = normalize_raw_frontier_status_payload(
+            base_payload,
+            snapshot_state=state,
+        )
         payload["status_snapshot"] = {
-            "state": "fresh" if age_s <= _MAX_FRESH_AGE_S else "stale",
+            "state": state,
             "captured_at": self.captured_at,
             "age_s": round(age_s, 3),
             "refresh_error": self.refresh_error,
@@ -128,8 +137,9 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
     browser_capture = dict(browser_capture_status_public_payload(runtime.browser_capture_spool_path))
     browser_capture_enabled = runtime.browser_capture_enabled is True
     browser_capture["active"] = browser_capture_enabled
+    frontier_reason = refresh_error or "rich status snapshot unavailable"
     payload: dict[str, object] = {
-        "ok": True,
+        "ok": False,
         "daemon": "polylogued",
         "daemon_liveness": _check_daemon_liveness(),
         "checked_at": now,
@@ -171,6 +181,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
             "source_family_counts": {},
             "sampled_rows": [],
         },
+        "raw_frontier_integrity": _minimal_raw_frontier_integrity(frontier_reason),
         "embedding_readiness": {},
         "memory": {},
         "health": {},
@@ -190,6 +201,12 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
     }
     payload["component_readiness"] = _minimal_component_readiness(payload)
     return json_document(payload)
+
+
+def _minimal_raw_frontier_integrity(reason: str) -> dict[str, object]:
+    """Return an explicit unknown projection when the rich tier scan has not run."""
+
+    return unknown_raw_frontier_integrity_projection(reason).to_dict()
 
 
 def _daemon_write_coordinator_payload() -> dict[str, object]:
@@ -227,6 +244,12 @@ def _minimal_component_readiness(payload: Mapping[str, object]) -> dict[str, obj
         "archive_storage": _minimal_component("archive_storage", "archive", "unknown", "minimal snapshot"),
         "raw_materialization": _minimal_component(
             "raw_materialization",
+            "archive",
+            "unknown",
+            "minimal snapshot",
+        ),
+        "raw_frontier_integrity": _minimal_component(
+            "raw_frontier_integrity",
             "archive",
             "unknown",
             "minimal snapshot",
@@ -340,7 +363,7 @@ def snapshot_state_for_metrics() -> dict[str, Any]:
     age_s = max(0.0, time.monotonic() - snapshot.captured_monotonic)
     return {
         "age_s": round(age_s, 3),
-        "state": "fresh" if age_s <= _MAX_FRESH_AGE_S else "stale",
+        "state": "fresh" if age_s <= STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S else "stale",
         "refresh_error": snapshot.refresh_error or "",
     }
 

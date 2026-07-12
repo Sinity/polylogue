@@ -24,6 +24,8 @@ def _base_kwargs() -> dict[str, object]:
         "missing_tiers": (),
         "raw_materialization_ready": True,
         "raw_materialization_summary": "ready",
+        "raw_frontier_integrity_ready": True,
+        "raw_frontier_integrity_summary": "ready",
         "search_ready": True,
         "search_summary": "ready",
         "active_writer": False,
@@ -77,6 +79,37 @@ def test_openable_but_not_converged_reports_raw_materialization_reason() -> None
     guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
 
     assert guard["openable"]["value"] is True
+    assert guard["converged"]["value"] is False
+    assert guard["converged"]["reason"] == "raw evidence pending materialization"
+
+
+def test_raw_frontier_integrity_not_ready_blocks_converged_with_reason() -> None:
+    """Bead AC (polylogue-yla8.7): raw materialization can look fully
+    converged while an accepted append head references a deleted predecessor
+    or an ingest cursor sits ahead of accepted material. Converged must not
+    be claimable while that authority gap is open or unproven, and must
+    report the exact frontier-integrity reason string."""
+    kwargs = _base_kwargs()
+    kwargs["raw_frontier_integrity_ready"] = False
+    kwargs["raw_frontier_integrity_summary"] = "1 accepted append head(s) have a broken predecessor chain"
+    guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
+
+    assert guard["openable"]["value"] is True
+    assert guard["converged"]["value"] is False
+    assert guard["converged"]["reason"] == "1 accepted append head(s) have a broken predecessor chain"
+
+
+def test_raw_materialization_not_ready_takes_precedence_over_frontier_integrity() -> None:
+    """When both raw-materialization and frontier-integrity are unready, the
+    reported reason is the raw-materialization one — it is checked first and
+    is the more fundamental convergence gap."""
+    kwargs = _base_kwargs()
+    kwargs["raw_materialization_ready"] = False
+    kwargs["raw_materialization_summary"] = "raw evidence pending materialization"
+    kwargs["raw_frontier_integrity_ready"] = False
+    kwargs["raw_frontier_integrity_summary"] = "1 ingest cursor(s) committed past accepted raw material"
+    guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
+
     assert guard["converged"]["value"] is False
     assert guard["converged"]["reason"] == "raw evidence pending materialization"
 

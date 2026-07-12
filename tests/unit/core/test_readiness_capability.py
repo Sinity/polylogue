@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
 from polylogue.operations.operation_contract import OperationStatus
@@ -19,10 +21,38 @@ from polylogue.readiness import (
     component_from_insight_entry,
     component_from_operation_status,
     component_from_outcome_check,
+    component_from_raw_frontier_integrity,
     component_from_raw_materialization_readiness,
     component_from_transform_registry,
 )
+from polylogue.readiness.capability import normalize_raw_frontier_status_payload
 from polylogue.storage.repair import ArchiveDebtStatus
+from tests.infra.frozen_clock import FrozenClock
+
+
+def _complete_healthy_frontier() -> dict[str, object]:
+    return {
+        "available": True,
+        "overall_status": "healthy",
+        "broken_head_status": "healthy",
+        "broken_head_count": 0,
+        "broken_head_checked_count": 2,
+        "broken_head_samples": [],
+        "broken_head_reason": "",
+        "missing_source_raw_status": "healthy",
+        "missing_source_raw_count": 0,
+        "missing_source_raw_samples": [],
+        "missing_source_raw_reason": "",
+        "cursor_ahead_status": "healthy",
+        "cursor_ahead_count": 0,
+        "cursor_ahead_checked_count": 2,
+        "cursor_head_comparison_count": 2,
+        "cursor_ahead_comparison_count": 0,
+        "cursor_ahead_samples": [],
+        "cursor_authority_gap_count": 0,
+        "cursor_authority_gap_samples": [],
+        "cursor_ahead_reason": "",
+    }
 
 
 def test_capability_readiness_state_matches_issue_vocabulary() -> None:
@@ -96,6 +126,7 @@ def test_archive_convergence_hoists_materialization_progress_counts() -> None:
 
     convergence = report.archive_convergence
 
+    assert convergence["checked"] is True
     assert convergence["converging"] is True
     assert convergence["materialization_ready"] is False
     assert convergence["materialization_progress"] == {
@@ -104,6 +135,17 @@ def test_archive_convergence_hoists_materialization_progress_counts() -> None:
         "archive_session_count": 8,
         "join_gap_count": 3,
     }
+
+
+def test_runtime_only_readiness_does_not_claim_archive_convergence() -> None:
+    report = ReadinessReport()
+
+    convergence = report.archive_convergence
+
+    assert convergence["checked"] is False
+    assert convergence["converging"] is False
+    assert convergence["materialization_ready"] is False
+    assert convergence["raw_frontier_integrity"] == {}
 
 
 def test_outcome_checks_map_to_capability_states() -> None:
@@ -252,6 +294,253 @@ def test_raw_materialization_readiness_maps_lost_source_evidence_to_blocked() ->
     assert component.caveats == ("lost_source_evidence",)
     assert component.repair_hint == "restore exact raw artifact"
     assert component.metadata["lost_source_evidence_samples"] == [sample]
+
+
+def test_raw_frontier_integrity_maps_healthy_to_ready() -> None:
+    component = component_from_raw_frontier_integrity(
+        {
+            "overall_status": "healthy",
+            "broken_head_status": "healthy",
+            "broken_head_count": 0,
+            "broken_head_checked_count": 3,
+            "missing_source_raw_status": "healthy",
+            "missing_source_raw_count": 0,
+            "cursor_ahead_status": "healthy",
+            "cursor_ahead_count": 0,
+            "cursor_ahead_checked_count": 3,
+            "cursor_head_comparison_count": 4,
+            "cursor_ahead_comparison_count": 0,
+            "cursor_authority_gap_count": 0,
+        }
+    )
+
+    assert component.component == "raw_frontier_integrity"
+    assert component.state is CapabilityReadinessState.READY
+    assert component.summary == "ready"
+    assert component.caveats == ()
+    assert component.repair_hint is None
+    assert component.counts["broken_head_checked_count"] == 3
+    assert component.counts["cursor_head_comparison_count"] == 4
+    assert component.counts["cursor_ahead_comparison_count"] == 0
+    assert component.counts["cursor_authority_gap_count"] == 0
+
+
+def test_raw_frontier_integrity_maps_violated_broken_head_to_poisoned_with_caveat() -> None:
+    component = component_from_raw_frontier_integrity(
+        {
+            "overall_status": "violated",
+            "broken_head_status": "violated",
+            "broken_head_count": 1,
+            "broken_head_checked_count": 2,
+            "missing_source_raw_status": "healthy",
+            "missing_source_raw_count": 0,
+            "cursor_ahead_status": "healthy",
+            "cursor_ahead_count": 0,
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.POISONED
+    assert component.summary == "raw frontier integrity violated"
+    assert component.caveats == ("broken_head_status:violated",)
+    assert component.counts["broken_head_count"] == 1
+    assert component.repair_hint == "polylogue ops status --full"
+
+
+def test_raw_frontier_integrity_maps_unavailable_authority_to_unknown_never_ready() -> None:
+    """Bead AC: unavailable authority must never render as ready/healthy."""
+    component = component_from_raw_frontier_integrity(
+        {
+            "overall_status": "unknown",
+            "broken_head_status": "unknown",
+            "broken_head_reason": "index tier is unavailable",
+            "cursor_ahead_status": "unknown",
+            "missing_source_raw_status": "healthy",
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.UNKNOWN
+    assert component.summary == "raw frontier authority unavailable"
+    assert "broken_head_status:unknown" in component.caveats
+    assert "cursor_ahead_status:unknown" in component.caveats
+    assert "missing_source_raw_status" not in "".join(component.caveats)
+
+
+def test_raw_frontier_integrity_maps_known_violation_with_unknown_sibling_to_poisoned() -> None:
+    component = component_from_raw_frontier_integrity(
+        {
+            "available": False,
+            "overall_status": "violated",
+            "broken_head_status": "violated",
+            "broken_head_count": 1,
+            "missing_source_raw_status": "healthy",
+            "cursor_ahead_status": "unknown",
+            "cursor_authority_gap_count": 1,
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.POISONED
+    assert component.counts["cursor_authority_gap_count"] == 1
+    assert component.caveats == ("broken_head_status:violated", "cursor_ahead_status:unknown")
+
+
+def test_raw_frontier_integrity_maps_none_payload_to_unknown() -> None:
+    component = component_from_raw_frontier_integrity(None)
+
+    assert component.state is CapabilityReadinessState.UNKNOWN
+    assert component.counts["broken_head_count"] == 0
+
+
+def test_raw_frontier_status_normalizer_rejects_incomplete_and_contradictory_health() -> None:
+    incomplete = {
+        "available": True,
+        "overall_status": "healthy",
+        "broken_head_status": "healthy",
+        "missing_source_raw_status": "healthy",
+        "cursor_ahead_status": "healthy",
+    }
+    normalized = normalize_raw_frontier_status_payload(
+        {"ok": True, "raw_frontier_integrity": incomplete},
+        snapshot_state="fresh",
+    )
+    assert normalized["ok"] is False
+    assert normalized["raw_frontier_integrity"]["overall_status"] == "unknown"
+
+    contradictory = _complete_healthy_frontier()
+    contradictory["broken_head_count"] = 9
+    normalized = normalize_raw_frontier_status_payload(
+        {"ok": True, "raw_frontier_integrity": contradictory},
+        snapshot_state="fresh",
+    )
+    assert normalized["ok"] is False
+    assert normalized["raw_frontier_integrity"]["overall_status"] == "unknown"
+    assert "contradicts" in normalized["raw_frontier_integrity"]["broken_head_reason"]
+
+
+def test_raw_frontier_status_normalizer_derives_violation_over_unknown_aggregate() -> None:
+    contradictory_aggregate = _complete_healthy_frontier()
+    contradictory_aggregate.update(
+        {
+            "overall_status": "unknown",
+            "broken_head_status": "violated",
+            "broken_head_count": 1,
+            "broken_head_samples": [
+                {"logical_source_key": "codex:one", "accepted_raw_id": "raw-one", "reason": "broken"}
+            ],
+            "broken_head_reason": "1 active seed is broken",
+        }
+    )
+
+    normalized = normalize_raw_frontier_status_payload(
+        {"ok": True, "raw_frontier_integrity": contradictory_aggregate},
+        snapshot_state="fresh",
+    )
+
+    assert normalized["ok"] is False
+    assert normalized["raw_frontier_integrity"]["overall_status"] == "violated"
+    assert normalized["component_readiness"]["raw_frontier_integrity"]["state"] == "poisoned"
+
+
+def test_raw_frontier_status_normalizer_never_promotes_declared_aggregate() -> None:
+    expected_components = {"unknown": "unknown", "violated": "poisoned"}
+    for declared, expected_component in expected_components.items():
+        frontier = _complete_healthy_frontier()
+        frontier["overall_status"] = declared
+
+        normalized = normalize_raw_frontier_status_payload(
+            {"ok": True, "raw_frontier_integrity": frontier},
+            snapshot_state="fresh",
+        )
+
+        assert normalized["ok"] is False
+        assert normalized["raw_frontier_integrity"]["overall_status"] == declared
+        assert normalized["component_readiness"]["raw_frontier_integrity"]["state"] == expected_component
+
+
+def test_raw_frontier_status_normalizer_rejects_impossible_cursor_cardinalities() -> None:
+    malformed_updates = (
+        {"cursor_ahead_comparison_count": 1},
+        {"cursor_ahead_checked_count": 0, "cursor_head_comparison_count": 1},
+    )
+    for updates in malformed_updates:
+        frontier = _complete_healthy_frontier()
+        frontier.update(updates)
+
+        normalized = normalize_raw_frontier_status_payload(
+            {"ok": True, "raw_frontier_integrity": frontier},
+            snapshot_state="fresh",
+        )
+
+        assert normalized["ok"] is False
+        assert normalized["raw_frontier_integrity"]["overall_status"] == "unknown"
+
+
+@pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
+def test_daemon_normalizer_rejects_malformed_or_stale_freshness_provenance(
+    frozen_clock: FrozenClock,
+) -> None:
+    valid_snapshot = {
+        "state": "fresh",
+        "captured_at": frozen_clock.now().isoformat(),
+        "age_s": 0.1,
+        "refresh_error": None,
+    }
+    payload = {
+        "ok": True,
+        "raw_frontier_integrity": _complete_healthy_frontier(),
+        "status_snapshot": valid_snapshot,
+    }
+    assert normalize_raw_frontier_status_payload(payload, require_fresh_snapshot=True)["ok"] is True
+
+    invalid_updates = (
+        {"captured_at": "not-a-timestamp"},
+        {"captured_at": "2026-07-12T14:00:00"},
+        {"captured_at": "2000-01-01T00:00:00+00:00", "age_s": 0.0},
+        {"age_s": 30.001},
+        {"age_s": float("inf")},
+        {"refresh_error": "refresh failed"},
+    )
+    for updates in invalid_updates:
+        snapshot = dict(valid_snapshot)
+        snapshot.update(updates)
+        normalized = normalize_raw_frontier_status_payload(
+            {**payload, "status_snapshot": snapshot},
+            require_fresh_snapshot=True,
+        )
+        assert normalized["ok"] is False
+        assert normalized["raw_frontier_integrity"]["overall_status"] == "unknown"
+
+
+def test_raw_frontier_status_normalizer_never_raises_on_malformed_counts() -> None:
+    malformed = _complete_healthy_frontier()
+    malformed.update(
+        {
+            "overall_status": "violated",
+            "broken_head_status": "violated",
+            "broken_head_count": "not-an-int",
+        }
+    )
+
+    normalized = normalize_raw_frontier_status_payload(
+        {"ok": True, "raw_frontier_integrity": malformed},
+        snapshot_state="stale",
+    )
+
+    assert normalized["ok"] is False
+    assert normalized["raw_frontier_integrity"]["overall_status"] == "unknown"
+    assert normalized["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
+
+
+def test_daemon_normalizer_requires_freshness_but_live_direct_status_does_not() -> None:
+    payload = {"ok": True, "raw_frontier_integrity": _complete_healthy_frontier()}
+
+    daemon = normalize_raw_frontier_status_payload(payload, require_fresh_snapshot=True)
+    direct = normalize_raw_frontier_status_payload(payload, snapshot_state="live")
+
+    assert daemon["ok"] is False
+    assert daemon["raw_frontier_integrity"]["overall_status"] == "unknown"
+    assert "freshness provenance" in daemon["raw_frontier_integrity"]["broken_head_reason"]
+    assert direct["ok"] is True
+    assert direct["raw_frontier_integrity"]["overall_status"] == "healthy"
 
 
 def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:

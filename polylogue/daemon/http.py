@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import hashlib
 import hmac
 import json
 import os
@@ -2043,20 +2044,37 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     @daemon_safe_handler
     def _handle_status(self, params: dict[str, list[str]] | None = None) -> None:
         latest_event_id = get_latest_event_id()
-        etag = f'W/"events-{latest_event_id}"'
+        status = get_status_snapshot_payload()
+        status["last_event_id"] = latest_event_id
+        with contextlib.suppress(Exception):
+            from polylogue.daemon.status import _check_daemon_liveness
+
+            status["daemon_liveness"] = _check_daemon_liveness()
+        snapshot = status.get("status_snapshot")
+        snapshot_state = str(snapshot.get("state") or "missing") if isinstance(snapshot, Mapping) else "missing"
+        snapshot_captured_at = (
+            str(snapshot.get("captured_at") or "missing") if isinstance(snapshot, Mapping) else "missing"
+        )
+        etag_material = json.dumps(
+            [
+                latest_event_id,
+                snapshot_state,
+                snapshot_captured_at,
+                status.get("ok"),
+                status.get("daemon_liveness"),
+                status.get("daemon_write_coordinator"),
+            ],
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        etag_digest = hashlib.sha256(etag_material).hexdigest()[:24]
+        etag = f'W/"status-{etag_digest}"'
         if_none_match = self.headers.get("If-None-Match", "")
         if if_none_match and if_none_match == etag:
             self.send_response(HTTPStatus.NOT_MODIFIED.value)
             self.send_header("ETag", etag)
             self.end_headers()
             return
-        status = get_status_snapshot_payload()
-        if isinstance(status, dict):
-            status["last_event_id"] = latest_event_id
-            with contextlib.suppress(Exception):
-                from polylogue.daemon.status import _check_daemon_liveness
-
-                status["daemon_liveness"] = _check_daemon_liveness()
         self._send_json(HTTPStatus.OK, status, extra_headers={"ETag": etag})
 
     @daemon_safe_handler

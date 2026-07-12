@@ -74,6 +74,8 @@ def derive_claim_guard(
     missing_tiers: Sequence[str] = (),
     raw_materialization_ready: bool,
     raw_materialization_summary: str,
+    raw_frontier_integrity_ready: bool,
+    raw_frontier_integrity_summary: str,
     search_ready: bool,
     search_summary: str,
     active_writer: bool,
@@ -84,9 +86,13 @@ def derive_claim_guard(
     Every argument here is a primitive the caller already derived from a
     canonical readiness surface (``ArchiveStorageStatus.archive_schema_ready``,
     :func:`polylogue.storage.archive_readiness.raw_materialization_ready`, the
-    ``search``/FTS component, and the live-ingest/rebuild-attempt signal) —
-    this function only classifies, it never queries storage itself, so it is
-    cheap to call from both the daemon and direct-fallback status paths.
+    raw-frontier-integrity projection
+    (:func:`polylogue.storage.raw_retention.raw_frontier_integrity_snapshot`,
+    polylogue-yla8.7 — accepted append head chains and ingest cursors proven
+    consistent), the ``search``/FTS component, and the
+    live-ingest/rebuild-attempt signal) — this function only classifies, it
+    never queries storage itself, so it is cheap to call from both the
+    daemon and direct-fallback status paths.
     """
     if archive_schema_ready:
         openable_reason = "all archive tiers present with matching schema version"
@@ -111,10 +117,29 @@ def derive_claim_guard(
             reason=f"not openable: {openable_reason}",
             signal="archive_storage.archive_schema_ready and raw_materialization_readiness",
         )
+    elif not raw_materialization_ready:
+        converged = ClaimGuardEntry(
+            claim="converged",
+            value=False,
+            reason=raw_materialization_summary,
+            signal="raw_materialization_readiness (debt zero or fully classified)",
+        )
+    elif not raw_frontier_integrity_ready:
+        # polylogue-yla8.7: raw materialization can look fully converged while
+        # an accepted append head references a deleted predecessor or an
+        # ingest cursor sits ahead of accepted material — yla8.6 found this
+        # only through manual SQL. Converged must not be claimable while that
+        # authority gap is open or unproven.
+        converged = ClaimGuardEntry(
+            claim="converged",
+            value=False,
+            reason=raw_frontier_integrity_summary,
+            signal="raw_frontier_integrity (accepted append head chains and ingest cursors proven consistent)",
+        )
     else:
         converged = ClaimGuardEntry(
             claim="converged",
-            value=raw_materialization_ready,
+            value=True,
             reason=raw_materialization_summary,
             signal="raw_materialization_readiness (debt zero or fully classified)",
         )
