@@ -1591,7 +1591,17 @@ class LiveBatchProcessor:
                     if len(sessions) == 1:
                         session = sessions[0]
                         logical_source_key = f"{provider.value}:{session.provider_session_id}"
-                        if archive.raw_membership_raw_ids(logical_source_key):
+                        # Receiver artifacts are complete, mutable snapshots of
+                        # one browser-visible session. Their stable path does
+                        # not make successive serialized JSON payloads a
+                        # byte-prefix chain, so use typed membership authority
+                        # from the first observation. Replacement snapshots
+                        # can then advance only through strict parsed-content
+                        # growth while every prior raw blob remains retained.
+                        is_browser_capture_snapshot = (
+                            self._source_name_for(Path(record.source_path)) == "browser-capture"
+                        )
+                        if is_browser_capture_snapshot or archive.raw_membership_raw_ids(logical_source_key):
                             archive.replace_raw_membership_census(
                                 source_raw_id,
                                 sessions,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import sqlite3
@@ -923,6 +924,108 @@ async def test_inbox_browser_capture_json_replacement_uses_full_ingest(tmp_path:
                 (str(path),),
             ).fetchall()
         assert source_indexes == [(0,), (0,)]
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_capture_replacement_advances_membership_head_and_acquires_attachment(tmp_path: Path) -> None:
+    """A mutable receiver snapshot must retain both raws but materialize the newer capture."""
+    from polylogue.api import Polylogue
+
+    root = tmp_path / "browser-capture"
+    root.mkdir()
+    path = root / "capture.json"
+    asset_bytes = b"browser-capture-asset" * 37
+    asset_hash = sha256(asset_bytes).digest()
+
+    def capture(turns: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "polylogue_capture_kind": "browser_llm_session",
+            "schema_version": 1,
+            "capture_id": "chatgpt:browser-replacement",
+            "provenance": {
+                "source_url": "https://chatgpt.com/c/browser-replacement",
+                "captured_at": "2026-07-12T00:00:00+00:00",
+                "adapter_name": "chatgpt-native-v1",
+                "capture_mode": "snapshot",
+            },
+            "session": {
+                "provider": "chatgpt",
+                "provider_session_id": "browser-replacement",
+                "title": "Browser replacement",
+                "updated_at": "2026-07-12T00:00:01+00:00",
+                "turns": turns,
+            },
+        }
+
+    first_turn = {"provider_turn_id": "turn-1", "role": "user", "text": "make an asset", "ordinal": 0}
+    acquired_turn = {
+        "provider_turn_id": "turn-2",
+        "role": "assistant",
+        "text": "asset acquired",
+        "ordinal": 1,
+        "attachments": [
+            {
+                "provider_attachment_id": "asset-1",
+                "message_provider_id": "turn-2",
+                "name": "deliverable.bin",
+                "mime_type": "application/octet-stream",
+                "inline_base64": base64.b64encode(asset_bytes).decode("ascii"),
+            }
+        ],
+    }
+    path.write_text(json.dumps(capture([first_turn])), encoding="utf-8")
+    archive = Polylogue(archive_root=tmp_path / "archive")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+        cursor=CursorStore(archive.backend.db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    try:
+        first = await processor.ingest_files([path], emit_event=False)
+        path.write_text(json.dumps(capture([first_turn, acquired_turn])), encoding="utf-8")
+        replacement = await processor.ingest_files([path], emit_event=False)
+        with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
+            raw_ids = [
+                str(row[0])
+                for row in source_conn.execute(
+                    "SELECT raw_id FROM raw_sessions WHERE source_path = ? ORDER BY acquired_at_ms", (str(path),)
+                )
+            ]
+            decisions = source_conn.execute(
+                """
+                SELECT raw_id, decision FROM raw_session_memberships
+                WHERE logical_source_key = 'chatgpt:browser-replacement'
+                ORDER BY raw_id
+                """
+            ).fetchall()
+        with sqlite3.connect(archive.archive_root / "index.db") as index_conn:
+            accepted_raw_id = index_conn.execute(
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:browser-replacement'"
+            ).fetchone()[0]
+            attachment = index_conn.execute(
+                "SELECT acquisition_status, byte_count, blob_hash FROM attachments WHERE display_name = 'deliverable.bin'"
+            ).fetchone()
+
+        assert first.full_file_count == replacement.full_file_count == 1
+        assert len(raw_ids) == 2
+        assert accepted_raw_id == raw_ids[-1]
+        assert decisions == [(raw_ids[0], "superseded_prefix"), (raw_ids[1], "applied")]
+        assert attachment == ("acquired", len(asset_bytes), asset_hash)
+
+        path.write_text(json.dumps(capture([first_turn])), encoding="utf-8")
+        reverse = await processor.ingest_files([path], emit_event=False)
+        with sqlite3.connect(archive.archive_root / "index.db") as index_conn:
+            assert (
+                index_conn.execute(
+                    "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:browser-replacement'"
+                ).fetchone()[0]
+                == accepted_raw_id
+            )
+        assert reverse.full_file_count == 1
     finally:
         await archive.close()
 
