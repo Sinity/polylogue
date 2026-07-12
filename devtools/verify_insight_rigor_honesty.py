@@ -41,10 +41,10 @@ def _uncovered_insight_names() -> tuple[str, ...]:
     return tuple(sorted(registered - covered))
 
 
-def _missing_nullable_field_contracts() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    from polylogue.insights.rigor import missing_nullable_field_contracts
+def _missing_numeric_field_coverage() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    from polylogue.insights.rigor import missing_numeric_field_coverage
 
-    return missing_nullable_field_contracts()
+    return missing_numeric_field_coverage()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,14 +56,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     uncovered = _uncovered_insight_names()
-    missing_fields = _missing_nullable_field_contracts()
+    missing_fields = _missing_numeric_field_coverage()
 
     if args.json:
         print(
             json.dumps(
                 {
                     "uncovered_insight_names": list(uncovered),
-                    "missing_nullable_field_contracts": [
+                    "missing_numeric_field_coverage": [
                         {"insight_name": name, "field_path": list(field_path)} for name, field_path in missing_fields
                     ],
                     "ok": not uncovered and not missing_fields,
@@ -77,17 +77,17 @@ def main(argv: list[str] | None = None) -> int:
             for name in uncovered:
                 print(f"  {name}")
         if missing_fields:
-            print(f"insight rigor honesty: {len(missing_fields)} nullable field contract(s) missing")
+            print(f"insight rigor honesty: {len(missing_fields)} numeric field coverage declaration(s) missing")
             for name, field_path in missing_fields:
                 print(f"  {name}.{'.'.join(field_path)}")
         print("")
         print(
             "Policy violation: every registered insight needs a RigorContract row "
             "(polylogue/insights/rigor.py _RIGOR_MATRIX) or a justified RIGOR_EXEMPT entry, "
-            "and every known zero-denominator field needs a RigorFieldContract."
+            "and every public numeric field needs a RigorFieldContract or explicit field exemption."
         )
     else:
-        print("insight rigor honesty: every registered insight and nullable field is contracted or exempt.")
+        print("insight rigor honesty: every registered insight and public numeric field is contracted or exempt.")
 
     return 0 if not uncovered and not missing_fields else 1
 

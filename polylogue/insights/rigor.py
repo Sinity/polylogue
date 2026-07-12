@@ -13,8 +13,8 @@ The contract drives:
 - ``polylogue insights audit`` (CLI): per-product rigor profile rollup
   with evidence/inference/fallback marker coverage, stale-version count,
   and confidence distribution.
-- documentation: the rendered matrix lives at
-  ``docs/insights-rigor-matrix.md`` (regenerated from this module).
+- documentation: the human-readable matrix lives at
+  ``docs/insights-rigor-matrix.md`` and is updated alongside this module.
 - consumer self-discovery: future MCP and API surfaces can query the
   matrix instead of reading prose docs.
 
@@ -25,9 +25,20 @@ runner lives in :mod:`polylogue.insights.audit`.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from types import UnionType
+from typing import get_args, get_origin
 
+from polylogue.insights.archive import (
+    ArchiveCoverageInsight,
+    ArchiveDebtInsight,
+    CostRollupInsight,
+    SessionPhaseInsight,
+    SessionTagRollupInsight,
+    SessionWorkEventInsight,
+    UsageTimelineInsight,
+)
 from polylogue.insights.archive_models import ArchiveInsightModel
-from polylogue.insights.tool_usage import TOOL_USAGE_INSIGHT_VERSION
+from polylogue.insights.tool_usage import TOOL_USAGE_INSIGHT_VERSION, ToolUsageInsight
 from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_VERSION,
@@ -77,6 +88,22 @@ class RigorFieldContract(ArchiveInsightModel):
     evidence_tier: str = "sql-aggregate"
 
 
+class RigorFieldExemption(ArchiveInsightModel):
+    """Explicit justification for a quantitative field whose zero is measured.
+
+    This is deliberately field-level, rather than a product-level note: an
+    exemption is only valid when the public model still exposes that numeric
+    field, and the honesty policy rejects a newly added unclassified field.
+    """
+
+    field_path: tuple[str, ...]
+    reason: str
+
+
+def _true_zero_fields(reason: str, *names: str) -> tuple[RigorFieldExemption, ...]:
+    return tuple(RigorFieldExemption(field_path=(name,), reason=reason) for name in names)
+
+
 class RigorContract(ArchiveInsightModel):
     """Per-product rigor contract matrix entry.
 
@@ -107,6 +134,8 @@ class RigorContract(ArchiveInsightModel):
             but any field listed here is a committed promise: it must
             render ``None``, never ``0``/``0.0``, when its declared
             denominator is zero or ungrounded.
+        field_exemptions: explicit field-level reasons that a numeric zero is
+            a real measured value rather than absent evidence.
         notes: optional free-form notes (deprecated fields, transition
             anchors, etc.).
     """
@@ -121,6 +150,7 @@ class RigorContract(ArchiveInsightModel):
     consumer_fields: tuple[str, ...] = ()
     version_fields: tuple[RigorVersionField, ...] = ()
     field_contracts: tuple[RigorFieldContract, ...] = ()
+    field_exemptions: tuple[RigorFieldExemption, ...] = ()
     notes: str = ""
 
 
@@ -220,6 +250,10 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
             RigorVersionField(name="inference_version", current_version=SESSION_INFERENCE_VERSION),
         ),
+        field_exemptions=_true_zero_fields(
+            "Event index is an ordinal identity component, not an aggregate claim.",
+            "event_index",
+        ),
         notes=(
             "Heuristic-tier inventory (#b0b.1): the activity-type classifier "
             "(``inference.heuristic_label`` -- planning/debugging/testing/review/"
@@ -270,6 +304,10 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         version_fields=(
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
         ),
+        field_exemptions=_true_zero_fields(
+            "Phase index is an ordinal identity component, not an aggregate claim.",
+            "phase_index",
+        ),
     ),
     RigorContract(
         insight_name="threads",
@@ -311,6 +349,15 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
         version_fields=(
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
+        ),
+        field_exemptions=_true_zero_fields(
+            "Tag counts and breakdowns are direct aggregate counts; zero means no matching tagged rows.",
+            "session_count",
+            "logical_session_count",
+            "explicit_count",
+            "auto_count",
+            "origin_breakdown",
+            "repo_breakdown",
         ),
     ),
     RigorContract(
@@ -376,6 +423,26 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
                 denominator_field=("session_count",),
             ),
         ),
+        field_exemptions=_true_zero_fields(
+            "Coverage counts, sums, and breakdowns are direct SQL aggregates; zero is a measured empty aggregate.",
+            "session_count",
+            "logical_session_count",
+            "message_count",
+            "user_message_count",
+            "authored_user_message_count",
+            "assistant_message_count",
+            "total_cost_usd",
+            "total_duration_ms",
+            "total_tool_active_duration_ms",
+            "total_wall_duration_ms",
+            "total_words",
+            "tool_use_count",
+            "thinking_count",
+            "total_sessions_with_tools",
+            "total_sessions_with_thinking",
+            "work_event_breakdown",
+            "origin_breakdown",
+        ),
         notes=(
             "provenance.materializer_version is a hardcoded literal 1 for day/week grouping "
             "(archive.py) with no dedicated store_constants entry, and absent entirely for "
@@ -413,6 +480,14 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "has_coverage_gaps",
         ),
         version_fields=(RigorVersionField(name="materializer_version", current_version=TOOL_USAGE_INSIGHT_VERSION),),
+        field_exemptions=_true_zero_fields(
+            "Tool-usage totals are direct action-view counts; zero means no matching action rows.",
+            "total_call_count",
+            "total_distinct_tools",
+            "providers_with_data",
+            "providers_without_data",
+            "materializer_version",
+        ),
     ),
     RigorContract(
         insight_name="session_costs",
@@ -475,6 +550,15 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
                 evidence_tier="cost-pricing-rollup",
             ),
         ),
+        field_exemptions=_true_zero_fields(
+            "Cost-rollup counts, cost sum, and reason/status breakdowns are direct aggregate measurements; zero is measured.",
+            "session_count",
+            "priced_session_count",
+            "unavailable_session_count",
+            "status_counts",
+            "total_usd",
+            "unavailable_reason_counts",
+        ),
         notes=(
             "provenance.materializer_version is a hardcoded literal 0 (archive.py), a sentinel "
             "for 'computed live at query time', not a stored materialized artifact -- not "
@@ -515,6 +599,15 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "cost_provenance_counts",
         ),
         version_fields=(),
+        field_exemptions=_true_zero_fields(
+            "Usage-timeline counts, token totals, cost totals, and provenance breakdowns are direct aggregate measurements.",
+            "session_count",
+            "event_count",
+            "reasoning_output_tokens",
+            "stored_cost_usd",
+            "subscription_credits",
+            "cost_provenance_counts",
+        ),
         notes=(
             "provenance.materializer_version is a hardcoded literal 0 (archive.py), the same "
             "live-aggregation sentinel as cost_rollups -- not declared as a version_field."
@@ -543,6 +636,10 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "detail",
         ),
         version_fields=(),
+        field_exemptions=_true_zero_fields(
+            "Debt issue_count is a direct health-check count; zero means the check found no issues.",
+            "issue_count",
+        ),
         notes=(
             "No materializer/inference/enrichment version field exists on this model at all -- "
             "every row is computed live from current archive tables, not read from a "
@@ -559,20 +656,39 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
 #: that is in neither set.
 RIGOR_EXEMPT: dict[str, str] = {}
 
-# Quantitative fields whose denominators can be absent.  The static honesty
-# gate checks this inventory against the declared contracts so a newly added
-# zero-denominator field cannot silently fall back to a numeric sentinel.
-REQUIRED_NULLABLE_FIELD_CONTRACTS: frozenset[tuple[str, tuple[str, ...]]] = frozenset(
-    {
-        ("archive_coverage", ("avg_messages_per_session",)),
-        ("archive_coverage", ("avg_user_words",)),
-        ("archive_coverage", ("avg_authored_user_words",)),
-        ("archive_coverage", ("avg_assistant_words",)),
-        ("archive_coverage", ("tool_use_percentage",)),
-        ("archive_coverage", ("thinking_percentage",)),
-        ("cost_rollups", ("confidence",)),
-    }
-)
+_QUANTITATIVE_INSIGHT_MODELS: dict[str, type[ArchiveInsightModel]] = {
+    "session_work_events": SessionWorkEventInsight,
+    "session_phases": SessionPhaseInsight,
+    "session_tag_rollups": SessionTagRollupInsight,
+    "archive_coverage": ArchiveCoverageInsight,
+    "tool_usage": ToolUsageInsight,
+    "cost_rollups": CostRollupInsight,
+    "usage_timeline": UsageTimelineInsight,
+    "archive_debt": ArchiveDebtInsight,
+}
+
+
+def _is_numeric_annotation(annotation: object) -> bool:
+    if annotation in (int, float):
+        return True
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin in (dict,):
+        return len(args) == 2 and _is_numeric_annotation(args[1])
+    if origin in (UnionType,):
+        return any(_is_numeric_annotation(arg) for arg in args)
+    return any(_is_numeric_annotation(arg) for arg in args)
+
+
+def numeric_insight_field_paths() -> frozenset[tuple[str, tuple[str, ...]]]:
+    """Discover direct public quantitative fields in registry insight models."""
+
+    return frozenset(
+        (insight_name, (field_name,))
+        for insight_name, model in _QUANTITATIVE_INSIGHT_MODELS.items()
+        for field_name, field in model.model_fields.items()
+        if field_name != "contract_version" and _is_numeric_annotation(field.annotation)
+    )
 
 
 def list_rigor_contracts() -> tuple[RigorContract, ...]:
@@ -602,16 +718,22 @@ def rigor_exemption_reason(insight_name: str) -> str | None:
     return RIGOR_EXEMPT.get(insight_name)
 
 
-def missing_nullable_field_contracts() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Return known zero-denominator fields not protected by a contract."""
+def missing_numeric_field_coverage(
+    contracts: Sequence[RigorContract] | None = None,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return public numeric fields lacking a contract or explicit rationale."""
 
     declared = {
         (contract.insight_name, field.field_path)
-        for contract in _RIGOR_MATRIX
+        for contract in (contracts or _RIGOR_MATRIX)
         for field in contract.field_contracts
-        if field.nullable_when_ungrounded
     }
-    return tuple(sorted(REQUIRED_NULLABLE_FIELD_CONTRACTS - declared))
+    declared.update(
+        (contract.insight_name, field.field_path)
+        for contract in (contracts or _RIGOR_MATRIX)
+        for field in contract.field_exemptions
+    )
+    return tuple(sorted(numeric_insight_field_paths() - declared))
 
 
 def resolve_payload(obj: object, path: Sequence[str]) -> object | None:
@@ -634,13 +756,14 @@ def resolve_payload(obj: object, path: Sequence[str]) -> object | None:
 
 __all__ = [
     "RIGOR_EXEMPT",
-    "REQUIRED_NULLABLE_FIELD_CONTRACTS",
     "RigorContract",
     "RigorFieldContract",
+    "RigorFieldExemption",
     "RigorVersionField",
     "get_rigor_contract",
     "list_rigor_contracts",
-    "missing_nullable_field_contracts",
+    "missing_numeric_field_coverage",
+    "numeric_insight_field_paths",
     "resolve_payload",
     "rigor_contract_names",
     "rigor_exemption_reason",

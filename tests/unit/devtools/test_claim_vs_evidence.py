@@ -17,7 +17,7 @@ def _report_args(
     out_dir: Path | None,
     limit: int,
     sample_limit: int,
-    n_min: int = 30,
+    n_min: int = 1,
     calibration_size: int = 3,
     calibration_seed: int = 7,
     calibration_labels: Path | None = None,
@@ -233,7 +233,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
         "inspected_structured_failures": 4,
         "limit": 4,
-        "n_min": 30,
+        "n_min": 1,
         "time_window": "entire archive (no since/until filter)",
         "sampled_by_origin": [
             {
@@ -301,10 +301,10 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
             "ambiguous_wordless_continuation": 1,
             "ambiguous_prose_no_marker": 1,
             "classified_outcomes": 0,
-            "n_min": 30,
-            "coverage_status": "insufficient_n",
-            "publication_status": "not_supported",
-            "silent_rate_lower_bound": None,
+            "n_min": 1,
+            "coverage_status": "supported",
+            "publication_status": "supported",
+            "silent_rate_lower_bound": 0.0,
             "silent_rate_among_classified": None,
         },
         {
@@ -316,11 +316,11 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
             "ambiguous_wordless_continuation": 0,
             "ambiguous_prose_no_marker": 0,
             "classified_outcomes": 2,
-            "n_min": 30,
-            "coverage_status": "insufficient_n",
-            "publication_status": "not_supported",
-            "silent_rate_lower_bound": None,
-            "silent_rate_among_classified": None,
+            "n_min": 1,
+            "coverage_status": "supported",
+            "publication_status": "supported",
+            "silent_rate_lower_bound": 0.5,
+            "silent_rate_among_classified": 0.5,
         },
     ]
     assert set(report["samples_by_origin_classification"]) == {"claude-code-session", "codex-session"}
@@ -366,9 +366,9 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "ack_marker_recall": 0.5,
     }
     assert summary["proof_report"]["by_handler_class"][0]["name"] == "benign_recovery"
-    assert summary["proof_report"]["by_handler_class"][1]["coverage_status"] == "insufficient_n"
-    assert summary["proof_report"]["by_handler_class"][1]["publication_status"] == "not_supported"
-    assert summary["proof_report"]["by_handler_class"][1]["silent_rate_lower_bound"] is None
+    assert summary["proof_report"]["by_handler_class"][1]["coverage_status"] == "supported"
+    assert summary["proof_report"]["by_handler_class"][1]["publication_status"] == "supported"
+    assert summary["proof_report"]["by_handler_class"][1]["silent_rate_lower_bound"] == 0.5
     assert summary["proof_report"]["time_window"] == "entire archive (no since/until filter)"
     assert summary["proof_report"]["sampled_by_origin"] == [
         {
@@ -409,7 +409,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert "Claim-vs-Evidence" in readme
     assert "- time window: entire archive (no since/until filter)" in readme
     assert "### Handler-Class Split" in readme
-    assert "- consequential: failed 2; silent 1; ambiguous 0; not supported (n < 30)" in readme
+    assert "- consequential: failed 2; silent 1; ambiguous 0; silent lower bound 50.0%" in readme
     assert "- acknowledgments appearing only after the next turn: 1" in readme
     assert "- silent lower bound after next-3 sensitivity: 0.0%" in readme
     assert "### Marker Calibration" in readme
@@ -477,6 +477,46 @@ def test_claim_vs_evidence_refuses_rates_for_cells_below_n_min(tmp_path: Path) -
     assert thin["publication_status"] == "not_supported"
     assert thin["silent_rate_lower_bound"] is None
     assert thin["silent_rate_among_classified"] is None
+    assert report["rates"]["coverage_status"] == "supported"
+
+    at_threshold = build_report(
+        _report_args(
+            archive_root=archive,
+            out_dir=None,
+            limit=4,
+            sample_limit=2,
+            n_min=2,
+        )
+    )
+    by_origin = {str(row["name"]): row for row in at_threshold["by_origin"]}
+    supported = by_origin["claude-code-session"]
+    assert supported["failed_outcomes"] == 2
+    assert supported["coverage_status"] == "supported"
+    assert supported["publication_status"] == "supported"
+    assert supported["silent_rate_lower_bound"] == 0.5
+
+    assert at_threshold["rates"]["coverage_status"] == "supported"
+    assert at_threshold["rates"]["silent_rate_lower_bound"] == 0.25
+
+
+def test_claim_vs_evidence_refuses_aggregate_rates_below_n_min(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    _seed_archive(archive)
+
+    report = build_report(
+        _report_args(
+            archive_root=archive,
+            out_dir=None,
+            limit=4,
+            sample_limit=2,
+            n_min=5,
+        )
+    )
+
+    assert report["rates"]["coverage_status"] == "insufficient_n"
+    assert report["rates"]["publication_status"] == "not_supported"
+    assert report["rates"]["silent_rate_lower_bound"] is None
+    assert report["rates"]["window3_silent_rate_lower_bound"] is None
 
 
 def test_claim_vs_evidence_public_reproduction_handles_unlabeled_sample(tmp_path: Path) -> None:

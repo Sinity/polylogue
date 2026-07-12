@@ -7,8 +7,10 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.archive.semantic.pricing import CostUsagePayload
 from polylogue.insights.archive import (
     ArchiveCoverageInsightQuery,
+    CostRollupInsight,
     SessionProfileInsight,
     SessionProfileInsightQuery,
 )
@@ -538,6 +540,21 @@ class TestRenderInsightItems:
         assert "Session Profiles: 1" in captured.out
         # Should include some field output
         assert "sess-001" in captured.out
+
+    def test_plain_cost_rollup_marks_unpriced_confidence_uncovered(self, capsys: Any) -> None:
+        insight = CostRollupInsight(
+            source_name="claude-code",
+            status_counts={"unavailable": 1},
+            usage=CostUsagePayload(),
+            provenance=ArchiveInsightProvenance(
+                materializer_version=0,
+                materialized_at="2026-01-01T00:00:00Z",
+            ),
+        )
+
+        render_insight_items([insight], get_insight_type("cost_rollups"), json_mode=False)
+
+        assert "confidence=uncovered" in capsys.readouterr().out
 
 
 class TestBuildQuery:

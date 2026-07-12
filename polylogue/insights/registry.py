@@ -632,7 +632,7 @@ register(
             InsightField("api_usd", _nested("basis", "api_equivalent_usd", "0"), group=1),
             InsightField("sub_usd", _nested("basis", "subscription_equivalent_usd", "0"), group=1),
             InsightField("catalog_usd", _nested("basis", "catalog_priced_usd", "0"), group=1),
-            InsightField("confidence", _attr("confidence", "0"), group=1),
+            InsightField("confidence", _attr("confidence", "uncovered"), group=1),
         ),
     )
 )

@@ -246,10 +246,15 @@ API.
 - Readiness: session/priced/unavailable counts, `status_counts`,
   `total_usd`, `basis`, and `usage` are grounded SQL sums/counts.
   `confidence` is the one probabilistic signal — a session-count-weighted
-  average of the same per-row confidence heuristic `session_costs` uses.
+  average of the same per-row confidence heuristic `session_costs` uses. It
+  renders `None` (plain output: `uncovered`) when `priced_session_count` is
+  zero, rather than fabricating a `0.0` confidence.
 - Notes: `provenance.materializer_version` is a hardcoded literal `0`, a
   sentinel for "computed live at query time", not a stored materialized
   artifact — not declared as a version field.
+- Field contract: `confidence` is `derived` from priced-session confidence
+  values with `priced_session_count` as its denominator; an empty denominator
+  is not applicable, not a measured zero.
 - Consumer-facing fields: `source_name`, `model_name`,
   `normalized_model`, `session_count`, `priced_session_count`,
   `unavailable_session_count`, `status_counts`, `total_usd`, `basis`,

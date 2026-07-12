@@ -915,6 +915,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     silent = totals["silent_proceed"]
     failed = totals["failed_outcomes"]
     classified = totals["classified_outcomes"]
+    aggregate_supported = failed >= args.n_min
     window3_silent = window3_totals["silent_proceed"]
     window3_classified = window3_totals["classified_outcomes"]
     calibration_sample = _calibration_sample(
@@ -976,11 +977,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "totals": totals,
         "window3_totals": window3_totals,
         "rates": {
-            "silent_rate_lower_bound": (silent / failed) if failed else 0.0,
-            "silent_rate_among_classified": (silent / classified) if classified else 0.0,
-            "window3_silent_rate_lower_bound": (window3_silent / failed) if failed else 0.0,
+            "coverage_status": "supported" if aggregate_supported else "insufficient_n",
+            "publication_status": "supported" if aggregate_supported else "not_supported",
+            "n_min": args.n_min,
+            "silent_rate_lower_bound": (silent / failed) if aggregate_supported else None,
+            "silent_rate_among_classified": (silent / classified) if aggregate_supported and classified else None,
+            "window3_silent_rate_lower_bound": (window3_silent / failed) if aggregate_supported else None,
             "window3_silent_rate_among_classified": (
-                (window3_silent / window3_classified) if window3_classified else 0.0
+                (window3_silent / window3_classified) if aggregate_supported and window3_classified else None
             ),
             "ack_later_within_3": max(0, window3_totals["acknowledged"] - totals["acknowledged"]),
         },
@@ -1124,8 +1128,8 @@ def _write_public_reproduction(path: Path, report: dict[str, Any]) -> None:
                 f"- acknowledged next turn: {int(classification['acknowledged']):,}",
                 f"- silent-proceed next turn: {int(classification['silent_proceed']):,}",
                 f"- ambiguous next turn: {int(classification['ambiguous']):,}",
-                f"- silent lower bound: {float(classification['silent_rate_lower_bound']):.1%}",
-                f"- next-3 silent lower bound: {float(sensitivity['window3_silent_rate_lower_bound']):.1%}",
+                f"- silent lower bound: {_format_rate_percent(classification['silent_rate_lower_bound'])}",
+                f"- next-3 silent lower bound: {_format_rate_percent(sensitivity['window3_silent_rate_lower_bound'])}",
                 f"- calibration labeled rows: {int(sensitivity['calibration_labeled_rows']):,}",
                 f"- acknowledged-marker precision: {_format_rate_percent(sensitivity['ack_marker_precision'])}",
                 f"- acknowledged-marker recall: {_format_rate_percent(sensitivity['ack_marker_recall'])}",
@@ -1329,11 +1333,11 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         f"- ambiguous: {totals['ambiguous']:,}",
         f"- ambiguous wordless tool continuations: {totals['ambiguous_wordless_continuation']:,}",
         f"- ambiguous prose without markers: {totals['ambiguous_prose_no_marker']:,}",
-        f"- silent lower bound: {rates['silent_rate_lower_bound']:.1%}",
-        f"- silent among classified: {rates['silent_rate_among_classified']:.1%}",
+        f"- silent lower bound: {_format_rate_percent(rates['silent_rate_lower_bound'])}",
+        f"- silent among classified: {_format_rate_percent(rates['silent_rate_among_classified'])}",
         f"- acknowledged within next 3 assistant turns: {window3_totals['acknowledged']:,}",
         f"- acknowledgments appearing only after the next turn: {rates['ack_later_within_3']:,}",
-        f"- silent lower bound after next-3 sensitivity: {rates['window3_silent_rate_lower_bound']:.1%}",
+        f"- silent lower bound after next-3 sensitivity: {_format_rate_percent(rates['window3_silent_rate_lower_bound'])}",
         f"- configured limit: {report['limit']:,}",
         f"- split-cell minimum n: {frame['n_min']:,} (below this, rates are not supported)",
         f"- selection order: {frame['selection_order']}",

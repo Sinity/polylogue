@@ -34,7 +34,7 @@ from polylogue.insights.rigor import (
     RigorFieldContract,
     get_rigor_contract,
     list_rigor_contracts,
-    missing_nullable_field_contracts,
+    missing_numeric_field_coverage,
     resolve_payload,
     rigor_contract_names,
 )
@@ -187,7 +187,25 @@ def test_cost_rollup_confidence_declares_priced_session_denominator() -> None:
             evidence_tier="cost-pricing-rollup",
         ),
     )
-    assert missing_nullable_field_contracts() == ()
+    assert missing_numeric_field_coverage() == ()
+
+
+def test_numeric_field_policy_rejects_unjustified_public_field() -> None:
+    contract = get_rigor_contract("cost_rollups")
+    assert contract is not None
+    missing_confidence = contract.model_copy(
+        update={
+            "field_contracts": (),
+            "field_exemptions": tuple(
+                exemption for exemption in contract.field_exemptions if exemption.field_path != ("confidence",)
+            ),
+        }
+    )
+    contracts = tuple(
+        missing_confidence if item.insight_name == "cost_rollups" else item for item in list_rigor_contracts()
+    )
+
+    assert missing_numeric_field_coverage(contracts) == (("cost_rollups", ("confidence",)),)
 
 
 def test_phase_rigor_contract_is_evidence_only() -> None:
