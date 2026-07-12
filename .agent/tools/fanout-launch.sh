@@ -49,7 +49,7 @@ if [[ "${1:-}" == "resume-headless" ]]; then
   for lane in "${lanes[@]}"; do
     sid=$(python3 -c "import json;print(json.load(open('$MAN')).get('$lane',{}).get('sid',''))")
     wt="/realm/worktrees/$lane"
-    [[ -z "$sid" || ! -d "$wt" ]] && { echo "skip $lane (sid='$sid')"; continue }
+    [[ -z "$sid" || ! -d "$wt" ]] && { echo "skip $lane (sid='$sid')"; continue; }
     rm -f "$OUTPUT_DIR/$lane.exit"
     n=1; while [[ -e "$OUTPUT_DIR/$lane.headless-$n.log" ]]; do n=$((n+1)); done
     hlog="$OUTPUT_DIR/$lane.headless-$n.log"
