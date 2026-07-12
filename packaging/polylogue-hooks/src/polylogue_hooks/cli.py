@@ -1,8 +1,8 @@
 """``polylogue-hook`` console-script entrypoint.
 
 Receives a hook event type as ``argv[1]`` and the event payload on stdin as
-JSON. Emits one enriched JSONL record to the Polylogue hook sidecar directory
-where the daemon watcher picks it up.
+JSON. Atomically publishes one enriched envelope to the Polylogue pending spool
+where the daemon records and acknowledges it.
 
 Mirrors the behaviour of ``contrib/polylogue-hook`` in the main repository so
 that ``pip install polylogue-hooks`` provides the same surface without any
@@ -14,8 +14,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 # Supported event types — kept in sync with docs/hooks.md in the main repo.
 _CLAUDE_CODE_EVENTS = frozenset(
@@ -154,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     record = {
+        "event_id": uuid4().hex,
         "event_type": event_type,
         "session_id": session_id,
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -162,12 +165,35 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     sidecar_dir = _default_sidecar_dir()
-    sidecar_dir.mkdir(parents=True, exist_ok=True)
-    outfile = sidecar_dir / f"{provider}-{session_id}.jsonl"
-    with outfile.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    pending_dir = sidecar_dir / "pending"
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    _atomic_json_write(pending_dir / f"{record['event_id']}.json", record)
 
     return 0
+
+
+def _atomic_json_write(path: Path, record: dict[str, object]) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 if __name__ == "__main__":

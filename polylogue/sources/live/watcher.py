@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
+from polylogue.sources.hooks import drain_hook_event_spool, hook_spool_root, pending_hook_spool_dir
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
 from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
@@ -203,6 +204,12 @@ class LiveWatcher:
     async def run(self) -> None:
         from watchfiles import Change, awatch
 
+        # Hook commands create their first pending envelope lazily.  Ensure the
+        # nested root exists before ``awatch`` snapshots its roots, otherwise a
+        # daemon that starts before the first hook event never sees that file.
+        for source in self._sources:
+            if source.name == "hooks":
+                source.root.mkdir(parents=True, exist_ok=True)
         roots = [s.root for s in self._sources if s.exists()]
         if not roots:
             logger.warning("live.watcher: no source roots exist; nothing to watch")
@@ -227,6 +234,9 @@ class LiveWatcher:
                     if path is None:
                         continue
                     if not self._source_accepts(path):
+                        continue
+                    if self._is_hook_spool_path(path):
+                        await self._drain_hook_spool()
                         continue
                     self._enqueue(path)
         finally:
@@ -280,9 +290,10 @@ class LiveWatcher:
             plan_holder.append(self._plan_catch_up(candidates))
 
         await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
-        if not plan_holder:
-            return
-        plan = plan_holder[0]
+        if plan_holder:
+            plan = plan_holder[0]
+        else:
+            plan = CatchUpPlan(candidates=(), needed=(), skipped_file_count=0, needed_bytes=0)
 
         if plan.needed:
             candidate_by_path = {candidate.path: candidate for candidate in plan.candidates}
@@ -327,12 +338,32 @@ class LiveWatcher:
 
                 await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
             self._schedule_failed_retry_scan()
+        await self._drain_hook_spool()
+
+    async def _drain_hook_spool(self) -> None:
+        """Acknowledge hook envelopes only after their source-tier write commits."""
+
+        result = await self._run_writer_sync(
+            "watcher.hook_spool.drain",
+            drain_hook_event_spool,
+            Path(self._polylogue.archive_root),
+            root=self._hook_spool_root(),
+        )
+        if result.failed:
+            logger.warning(
+                "live.watcher: hook spool drain left %d event(s) pending",
+                result.failed,
+            )
+        elif result.acknowledged:
+            logger.info("live.watcher: acknowledged %d hook spool event(s)", result.acknowledged)
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
         root_set = {root.resolve() for root in roots}
         candidates: list[CandidateSourceFile] = []
         for source in self._sources:
             if not source.exists() or source.root.resolve() not in root_set:
+                continue
+            if source.name == "hooks":
                 continue
             for suffix in source.suffixes:
                 for path in source.root.rglob(f"*{suffix}"):
@@ -842,6 +873,24 @@ class LiveWatcher:
                 continue
         return path.suffix == ".jsonl"
 
+    def _is_hook_spool_path(self, path: Path) -> bool:
+        for source in self._sources:
+            if source.name != "hooks":
+                continue
+            try:
+                return path.resolve().is_relative_to(source.root.resolve())
+            except OSError:
+                return False
+        return False
+
+    def _hook_spool_root(self) -> Path:
+        """Return the root paired with this watcher's hook source."""
+
+        for source in self._sources:
+            if source.name == "hooks":
+                return source.root.parent
+        return hook_spool_root()
+
     def _is_hermes_database(self, path: Path) -> bool:
         resolved = path.resolve()
         for source in self._sources:
@@ -916,7 +965,6 @@ def default_sources() -> tuple[WatchSource, ...]:
         codex_path,
         gemini_cli_path,
         hermes_sessions_path,
-        hooks_sidecar_dir,
     )
 
     return (
@@ -929,7 +977,7 @@ def default_sources() -> tuple[WatchSource, ...]:
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
-        WatchSource(name="hooks", root=hooks_sidecar_dir()),
+        WatchSource(name="hooks", root=pending_hook_spool_dir(), suffixes=(".json",)),
     )
 
 

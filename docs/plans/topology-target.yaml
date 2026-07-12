@@ -706,11 +706,11 @@ files:
     target: polylogue/browser_capture/identity.py
     owner: stable
   - path: polylogue/browser_capture/models.py
-    loc: 394
+    loc: 398
     target: polylogue/browser_capture/models.py
     owner: stable
   - path: polylogue/browser_capture/receiver.py
-    loc: 803
+    loc: 895
     target: polylogue/browser_capture/receiver.py
     owner: stable
   - path: polylogue/browser_capture/route_contracts.py
@@ -718,7 +718,7 @@ files:
     target: polylogue/browser_capture/route_contracts.py
     owner: stable
   - path: polylogue/browser_capture/server.py
-    loc: 426
+    loc: 435
     target: polylogue/browser_capture/server.py
     owner: stable
   - path: polylogue/cli/__init__.py
@@ -1544,7 +1544,7 @@ files:
     owner: kernel
     reason: kernel root rule
   - path: polylogue/hooks/__init__.py
-    loc: 877
+    loc: 889
     target: polylogue/hooks/__init__.py
     owner: stable
   - path: polylogue/insights/__init__.py
@@ -2663,6 +2663,10 @@ files:
     loc: 427
     target: polylogue/sources/emitter.py
     owner: stable
+  - path: polylogue/sources/hooks.py
+    loc: 229
+    target: polylogue/sources/hooks.py
+    owner: stable
   - path: polylogue/sources/import_explain.py
     loc: 731
     target: polylogue/sources/import_explain.py
@@ -2684,7 +2688,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 2215
+    loc: 2225
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2732,7 +2736,7 @@ files:
     target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 981
+    loc: 1018
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
