@@ -66,6 +66,24 @@ def _require_string(value: object, *, context: str) -> str:
     return value
 
 
+def _nfc_string(value: object, *, context: str) -> str:
+    """Return one detached NFC-normalized declaration string."""
+
+    return unicodedata.normalize("NFC", _require_string(value, context=context))
+
+
+def _nfc_string_tuple(value: object, *, context: str) -> tuple[str, ...]:
+    """Snapshot and normalize a declaration sequence, rejecting collisions."""
+
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise AnnotationSchemaError(f"{context} must be a sequence of strings")
+    raw_values = tuple(value)
+    normalized = tuple(_nfc_string(item, context=f"{context} item") for item in raw_values)
+    if len(normalized) != len(set(normalized)):
+        raise AnnotationSchemaError(f"{context} contains duplicate values after NFC normalization")
+    return normalized
+
+
 def _require_bool(value: object, *, context: str) -> bool:
     if not isinstance(value, bool):
         raise AnnotationSchemaError(f"{context} must be a boolean")
@@ -123,6 +141,30 @@ class AnnotationField:
     maximum: int | float | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _nfc_string(self.name, context="annotation field name"))
+        object.__setattr__(
+            self,
+            "value_type",
+            cast(
+                AnnotationFieldType,
+                _nfc_string(self.value_type, context=f"annotation field {self.name!r} value_type"),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "description",
+            _nfc_string(self.description, context=f"annotation field {self.name!r} description"),
+        )
+        object.__setattr__(
+            self,
+            "enum_values",
+            _nfc_string_tuple(self.enum_values, context=f"annotation field {self.name!r} enum_values"),
+        )
+        object.__setattr__(
+            self,
+            "required",
+            _require_bool(self.required, context=f"annotation field {self.name!r} required"),
+        )
         if self.value_type not in _ANNOTATION_FIELD_TYPES:
             raise AnnotationSchemaError(
                 f"annotation field {self.name!r} declares unknown value_type {self.value_type!r}"
@@ -238,6 +280,63 @@ class AnnotationSchema:
     status: AnnotationSchemaStatus = "draft"
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "schema_id", _nfc_string(self.schema_id, context="annotation schema schema_id"))
+        object.__setattr__(
+            self,
+            "title",
+            _nfc_string(self.title, context=f"annotation schema {self.schema_id!r} title"),
+        )
+        object.__setattr__(
+            self,
+            "description",
+            _nfc_string(self.description, context=f"annotation schema {self.schema_id!r} description"),
+        )
+        if self.abstain_field is not None:
+            object.__setattr__(
+                self,
+                "abstain_field",
+                _nfc_string(
+                    self.abstain_field,
+                    context=f"annotation schema {self.schema_id!r} abstain_field",
+                ),
+            )
+        object.__setattr__(
+            self,
+            "evidence_policy",
+            cast(
+                AnnotationEvidencePolicy,
+                _nfc_string(
+                    self.evidence_policy,
+                    context=f"annotation schema {self.schema_id!r} evidence_policy",
+                ),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "status",
+            cast(
+                AnnotationSchemaStatus,
+                _nfc_string(self.status, context=f"annotation schema {self.schema_id!r} status"),
+            ),
+        )
+        raw_fields = cast(object, self.fields)
+        if isinstance(raw_fields, (str, bytes)) or not isinstance(raw_fields, Sequence):
+            raise AnnotationSchemaError(f"schema {self.schema_id!r} fields must be a sequence")
+        fields = tuple(raw_fields)
+        if not all(isinstance(entry, AnnotationField) for entry in fields):
+            raise AnnotationSchemaError(f"schema {self.schema_id!r} fields must contain AnnotationField values")
+        object.__setattr__(self, "fields", cast(tuple[AnnotationField, ...], fields))
+        object.__setattr__(
+            self,
+            "target_ref_kinds",
+            cast(
+                tuple[ObjectRefKind, ...],
+                _nfc_string_tuple(
+                    self.target_ref_kinds,
+                    context=f"schema {self.schema_id!r} target_ref_kinds",
+                ),
+            ),
+        )
         if not _SCHEMA_ID_RE.fullmatch(self.schema_id):
             raise AnnotationSchemaError(f"schema_id {self.schema_id!r} must match {_SCHEMA_ID_RE.pattern!r}")
         if not _is_positive_int(self.version):

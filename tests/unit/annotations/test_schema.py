@@ -51,6 +51,14 @@ class TestAnnotationFieldValidation:
         assert field.validate_value("a") is None
         assert field.validate_value("c") is not None
 
+    def test_enum_declaration_rejects_nfc_normalized_collisions(self) -> None:
+        with pytest.raises(AnnotationSchemaError, match="duplicate values after NFC normalization"):
+            AnnotationField(
+                name="status",
+                value_type="enum",
+                enum_values=("Caf\u00e9", "Cafe\u0301"),
+            )
+
     def test_integer_field_rejects_float_and_bool(self) -> None:
         field = AnnotationField(name="score", value_type="integer")
         assert field.validate_value(3) is None
@@ -130,6 +138,10 @@ class TestAnnotationSchemaConstruction:
     def test_unknown_target_ref_kind_rejected(self) -> None:
         with pytest.raises(AnnotationSchemaError):
             _schema(target_ref_kinds=("not-a-real-kind",))
+
+    def test_duplicate_target_ref_kinds_rejected(self) -> None:
+        with pytest.raises(AnnotationSchemaError, match="duplicate values after NFC normalization"):
+            _schema(target_ref_kinds=("session", "session"))
 
     def test_empty_fields_rejected(self) -> None:
         with pytest.raises(AnnotationSchemaError):
@@ -309,12 +321,83 @@ class TestAnnotationSchemaRegistry:
         registry = AnnotationSchemaRegistry()
         registered = _schema(title="Caf\u00e9", status="active")
         retry = _schema(title="Cafe\u0301", status="active")
-        assert registered != retry
+        assert registered is not retry
+        assert registered == retry
+        assert retry.title == "Caf\u00e9"
         assert registered.canonical_definition_json() == retry.canonical_definition_json()
 
         registry.register(registered)
         assert registry.register(retry) is registered
         assert registry.require_active(retry) is registered
+
+    def test_nfc_enum_authority_has_identical_hot_and_cold_exact_behavior(self) -> None:
+        hot = _schema(
+            title="Cafe\u0301 labels",
+            fields=(
+                AnnotationField(
+                    name="status",
+                    value_type="enum",
+                    description="Cafe\u0301 outcome",
+                    enum_values=("Cafe\u0301", "tea"),
+                ),
+            ),
+            target_ref_kinds=("session",),
+            abstain_field=None,
+        )
+        cold = AnnotationSchema.from_canonical_definition_json(hot.canonical_definition_json())
+
+        assert hot == cold
+        assert hot.title == "Caf\u00e9 labels"
+        assert hot.fields[0].description == "Caf\u00e9 outcome"
+        assert isinstance(hot.fields, tuple)
+        assert isinstance(cold.fields, tuple)
+        assert hot.fields[0].enum_values == cold.fields[0].enum_values == ("Caf\u00e9", "tea")
+        assert isinstance(hot.fields[0].enum_values, tuple)
+        assert isinstance(cold.fields[0].enum_values, tuple)
+        assert hot.target_ref_kinds == cold.target_ref_kinds == ("session",)
+        assert isinstance(hot.target_ref_kinds, tuple)
+        assert isinstance(cold.target_ref_kinds, tuple)
+        assert validate_annotation_value(hot, {"status": "Caf\u00e9"}) == []
+        assert validate_annotation_value(cold, {"status": "Caf\u00e9"}) == []
+        hot_decomposed_errors = validate_annotation_value(hot, {"status": "Cafe\u0301"})
+        assert hot_decomposed_errors
+        assert hot_decomposed_errors == validate_annotation_value(
+            cold,
+            {"status": "Cafe\u0301"},
+        )
+
+    def test_registration_detaches_external_sequence_aliases(self) -> None:
+        enum_values = ["Cafe\u0301", "tea"]
+        field = AnnotationField(
+            name="status",
+            value_type="enum",
+            enum_values=enum_values,  # type: ignore[arg-type]
+        )
+        fields = [field]
+        target_ref_kinds = ["session"]
+        schema = _schema(
+            fields=fields,
+            target_ref_kinds=target_ref_kinds,
+            abstain_field=None,
+            status="active",
+        )
+        registry = AnnotationSchemaRegistry()
+        registered = registry.register(schema)
+        assert registered is schema
+        canonical_before = registered.canonical_definition_json()
+        fingerprint_before = registered.definition_fingerprint
+
+        enum_values[:] = ["mutated"]
+        fields.clear()
+        target_ref_kinds[:] = ["block"]
+
+        assert registered.fields == (field,)
+        assert registered.fields[0].enum_values == ("Caf\u00e9", "tea")
+        assert registered.target_ref_kinds == ("session",)
+        assert registered.canonical_definition_json() == canonical_before
+        assert registered.definition_fingerprint == fingerprint_before
+        assert validate_annotation_value(registered, {"status": "Caf\u00e9"}) == []
+        assert validate_annotation_value(registered, {"status": "mutated"})
 
     def test_reregistering_drifted_schema_raises(self) -> None:
         registry = AnnotationSchemaRegistry()
