@@ -532,6 +532,7 @@ class TestRenderInsightItems:
             provenance=ArchiveInsightProvenance(
                 materializer_version=1,
                 materialized_at="2026-01-01T00:00:00Z",
+                time_confidence="estimated",
             ),
         )
         insight_type = get_insight_type("session_profiles")
@@ -542,6 +543,7 @@ class TestRenderInsightItems:
         assert "Session Profiles: 1" in captured.out
         # Should include some field output
         assert "sess-001" in captured.out
+        assert "time=estimated" in captured.out
 
 
 class TestBuildQuery:
