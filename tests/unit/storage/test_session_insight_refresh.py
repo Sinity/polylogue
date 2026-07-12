@@ -603,6 +603,111 @@ def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path)
     assert per_model[0]["provider_model_name"] == "claude-opus-4-5"
 
 
+def test_stale_provider_usage_self_heals_via_session_insight_rebuild(tmp_path: Path) -> None:
+    """polylogue-f2qv.5: session_model_usage self-heals like session_profile.
+
+    Before this bead, session_model_usage was written once at ingest and never
+    revisited by the insight rebuild path, so a stale/buggy rollup could only
+    be repaired by a full ``ops reset --index``. This seeds a session with a
+    correct rollup, corrupts it to simulate an old materializer, and asserts
+    that (1) the same stale-session selector the daemon's periodic session-
+    insight drain uses (``_schema_archive_session_ids_missing_profiles``) flags
+    the session purely because its provider_usage stamp is stale/missing even
+    though its session_profile is fresh, and (2) running the targeted rebuild
+    (``_archive_insights_execute_ids``, the function the daemon drain calls)
+    re-derives session_model_usage from the still-intact messages table and
+    restamps the materialization version — with zero manual index rebuild.
+    """
+    from polylogue.daemon.convergence_stages import (
+        _archive_insights_execute_ids,
+        _schema_archive_session_ids_missing_profiles,
+    )
+
+    db_path = tmp_path / "provider-usage-self-heal.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(
+                "conv-provider-usage-heal",
+                source_name="claude-code",
+                title="Provider usage self-heal",
+                created_at="2026-05-12T09:00:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-provider-usage-heal:msg-1",
+                    "conv-provider-usage-heal",
+                    text="Run the plan",
+                    model_name="claude-sonnet-4-5",
+                    input_tokens=1_000,
+                    output_tokens=500,
+                    cache_read_tokens=200,
+                    cache_write_tokens=100,
+                ),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        session_id = _sid("conv-provider-usage-heal", "claude-code-session")
+
+        # The real write path already materializes a correct rollup at ingest.
+        before = conn.execute(
+            "SELECT input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert before is not None
+        assert before["input_tokens"] == 1_000
+        assert before["output_tokens"] == 500
+
+        # Simulate staleness: zero the derived tokens (as a pre-fix materializer
+        # bug might have) and downgrade the provider_usage materialization
+        # stamp to a version older than the current one.
+        conn.execute(
+            """
+            UPDATE session_model_usage
+            SET input_tokens = 0, output_tokens = 0, cache_read_tokens = 0, cache_write_tokens = 0
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO insight_materialization (
+                insight_type, session_id, materializer_version, materialized_at_ms, input_row_count
+            ) VALUES ('provider_usage', ?, ?, 0, 0)
+            ON CONFLICT(insight_type, session_id) DO UPDATE SET materializer_version = excluded.materializer_version
+            """,
+            (session_id, SESSION_INSIGHT_MATERIALIZER_VERSION - 1),
+        )
+        conn.commit()
+
+        stale_ids = _schema_archive_session_ids_missing_profiles(conn)
+        assert session_id in stale_ids
+
+        result = _archive_insights_execute_ids(conn, [session_id])
+        assert bool(getattr(result, "success", result))
+
+        after = conn.execute(
+            "SELECT input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert after is not None
+        assert after["input_tokens"] == 1_000
+        assert after["output_tokens"] == 500
+
+        stamp = conn.execute(
+            """
+            SELECT materializer_version FROM insight_materialization
+            WHERE insight_type = 'provider_usage' AND session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        assert stamp is not None
+        assert stamp["materializer_version"] == SESSION_INSIGHT_MATERIALIZER_VERSION
+
+        # Once healed, the selector no longer flags the session.
+        assert session_id not in _schema_archive_session_ids_missing_profiles(conn)
+
+
 def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     db_path = tmp_path / "refresh-block-filter.db"
     with open_connection(db_path) as conn:

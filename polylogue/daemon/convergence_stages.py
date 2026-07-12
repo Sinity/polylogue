@@ -1429,11 +1429,15 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
         LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
         LEFT JOIN insight_materialization AS im
           ON im.session_id = s.session_id AND im.insight_type = 'session_profile'
+        LEFT JOIN insight_materialization AS pu
+          ON pu.session_id = s.session_id AND pu.insight_type = 'provider_usage'
         WHERE s.session_id IN ({placeholders})
           AND (
               sp.session_id IS NULL
               OR sp.materializer_version != ?
               OR im.materializer_version != ?
+              OR pu.session_id IS NULL
+              OR pu.materializer_version != ?
               OR (
                   s.sort_key_ms IS NOT NULL
                   AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(s.sort_key_ms AS REAL) / 1000.0)) > 0.000001
@@ -1446,7 +1450,12 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
           )
         ORDER BY s.session_id
         """,
-        unique_ids + (SESSION_INSIGHT_MATERIALIZER_VERSION, SESSION_INSIGHT_MATERIALIZER_VERSION),
+        unique_ids
+        + (
+            SESSION_INSIGHT_MATERIALIZER_VERSION,
+            SESSION_INSIGHT_MATERIALIZER_VERSION,
+            SESSION_INSIGHT_MATERIALIZER_VERSION,
+        ),
     ).fetchall()
     return [str(row[0]) for row in rows]
 
@@ -1454,16 +1463,25 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
 def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, limit: int | None = None) -> list[str]:
     if not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
+    # The OR chain below also catches provider-usage staleness (polylogue-f2qv.5):
+    # a session whose session_profile is fresh but whose session_model_usage
+    # rollup predates a materializer-version bump (or was never stamped) still
+    # needs a rebuild pass so it self-heals like every other session insight
+    # instead of requiring a manual `ops reset --index`.
     sql = """
         SELECT s.session_id
         FROM sessions AS s
         LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
         LEFT JOIN insight_materialization AS im
           ON im.session_id = s.session_id AND im.insight_type = 'session_profile'
+        LEFT JOIN insight_materialization AS pu
+          ON pu.session_id = s.session_id AND pu.insight_type = 'provider_usage'
         WHERE
           sp.session_id IS NULL
           OR sp.materializer_version != ?
           OR im.materializer_version != ?
+          OR pu.session_id IS NULL
+          OR pu.materializer_version != ?
           OR (
               s.sort_key_ms IS NOT NULL
               AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(s.sort_key_ms AS REAL) / 1000.0)) > 0.000001
@@ -1475,7 +1493,11 @@ def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, li
           )
         ORDER BY s.session_id
     """
-    params: tuple[object, ...] = (SESSION_INSIGHT_MATERIALIZER_VERSION, SESSION_INSIGHT_MATERIALIZER_VERSION)
+    params: tuple[object, ...] = (
+        SESSION_INSIGHT_MATERIALIZER_VERSION,
+        SESSION_INSIGHT_MATERIALIZER_VERSION,
+        SESSION_INSIGHT_MATERIALIZER_VERSION,
+    )
     if limit is not None:
         sql += " LIMIT ?"
         params = params + (max(0, int(limit)),)
