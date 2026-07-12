@@ -505,3 +505,4 @@ Read on demand (paths relative to repo root):
 | Cost/usage model | `docs/cost-model.md` |
 | CLI reference (generated) | `docs/cli-reference.md` |
 | MCP reference | `docs/mcp-reference.md` |
+| Normalized-session material protocol v1 (Sinex-independent wire format) | `docs/material-protocol-v1.md` |
