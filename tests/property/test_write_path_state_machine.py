@@ -13,6 +13,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import aiosqlite
 from hypothesis import HealthCheck, settings
 from hypothesis.stateful import RuleBasedStateMachine, initialize, rule
 
@@ -28,6 +29,8 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     read_archive_session_envelope,
     write_parsed_session_to_archive,
 )
+from polylogue.storage.sqlite.async_sqlite import configure_connection
+from polylogue.storage.sqlite.queries.session_links import resolve_unresolved_links_for_child
 from polylogue.storage.sqlite.schema import _ensure_schema
 
 
@@ -196,6 +199,37 @@ class WritePathStateMachine(RuleBasedStateMachine):
         self._check_invariants()
 
     @rule()
+    def full_replace_with_sibling_variants(self) -> None:
+        """A full replacement must preserve same-position variant ordering."""
+        candidates = sorted(
+            session_id
+            for session_id, model in self._models.items()
+            if model.parent_id is None
+            and session_id not in self._pending_children
+            and not any(other.parent_id == session_id for other in self._models.values())
+        )
+        if not candidates:
+            return
+        session_id = candidates[self._next_text % len(candidates)]
+        model = self._models[session_id]
+        variant_texts = [self._new_text("replace-primary"), self._new_text("replace-variant")]
+        self._write(
+            model.native_id,
+            variant_texts,
+            updated_at=self._fresh_timestamp(),
+            message_id_prefix=f"replace-{model.appended_batches}",
+            variant_batch=True,
+        )
+        model.own_texts = variant_texts
+        model.can_be_parent = False
+        rows = self._conn.execute(
+            "SELECT position, variant_index FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+            (session_id,),
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [(0, 0), (0, 1)]
+        self._check_invariants()
+
+    @rule()
     def stale_replace_attempt(self) -> None:
         session_id = self._choose_session_id()
         model = self._models[session_id]
@@ -338,9 +372,11 @@ class WritePathStateMachine(RuleBasedStateMachine):
             {None, TopologyEdgeStatus.REPAIRED.value, TopologyEdgeStatus.QUARANTINED.value}
         )
 
-        indexed = self._conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
-        indexable = self._conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0]
-        assert indexed == indexable
+        indexed_docids = {row[0] for row in self._conn.execute("SELECT id FROM messages_fts_docsize").fetchall()}
+        indexable_docids = {
+            row[0] for row in self._conn.execute("SELECT rowid FROM blocks WHERE search_text != ''").fetchall()
+        }
+        assert indexed_docids == indexable_docids
 
         for session_id, model in self._models.items():
             pending = self._pending_children.get(session_id)
@@ -443,6 +479,64 @@ def test_repository_get_messages_composes_prefix_sharing_child() -> None:
             return [str(block.text) for message in messages for block in message.blocks if block.text is not None]
 
         assert asyncio.run(read_texts()) == ["parent prompt", "parent reply", "child tail"]
+
+
+def test_session_link_resolver_quarantines_cycle() -> None:
+    """The async resolver quarantines a late link that would close a cycle."""
+    with tempfile.TemporaryDirectory(prefix="polylogue-write-model-", dir="/realm/tmp") as root_text:
+        archive_root = Path(root_text)
+        initialize_active_archive_root(archive_root)
+        db_path = archive_root / "index.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            parent = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="cycle-parent",
+                messages=[ParsedMessage(provider_message_id="parent-0", role=Role.USER, text="parent", position=0)],
+            )
+            child = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="cycle-child",
+                parent_session_provider_id="cycle-parent",
+                branch_type=BranchType.FORK,
+                messages=[ParsedMessage(provider_message_id="child-0", role=Role.USER, text="child", position=0)],
+            )
+            parent_id = write_parsed_session_to_archive(conn, parent, content_hash=session_content_hash(parent))
+            write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
+            conn.execute(
+                """
+                INSERT INTO session_links (
+                    src_session_id, dst_origin, dst_native_id, link_type,
+                    status, method, confidence, evidence_json, observed_at_ms
+                ) VALUES (?, 'claude-code-session', 'cycle-child', 'fork', NULL, 'test', 1.0, '[]', 0)
+                """,
+                (parent_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        async def resolve_cycle() -> int:
+            async with aiosqlite.connect(db_path) as async_conn:
+                await configure_connection(async_conn)
+                resolved = await resolve_unresolved_links_for_child(
+                    async_conn,
+                    src_session_id=parent_id,
+                    resolved_at="2026-01-01T00:00:00Z",
+                )
+                await async_conn.commit()
+            return resolved
+
+        assert asyncio.run(resolve_cycle()) == 0
+        with sqlite3.connect(str(db_path)) as verify_conn:
+            row = verify_conn.execute(
+                "SELECT resolved_dst_session_id, status, evidence_json FROM session_links WHERE src_session_id = ?",
+                (parent_id,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] is None
+        assert row[1] == TopologyEdgeStatus.QUARANTINED.value
+        assert '"reason": "cycle_rejected"' in row[2]
 
 
 TestWritePathStateMachine = WritePathStateMachine.TestCase
