@@ -3890,6 +3890,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             tool_name = str(body["tool_name"])
             session_id_raw = body.get("session_id")
             session_id = None if session_id_raw is None else str(session_id_raw)
+            session_ids_raw = body.get("session_ids", [])
+            if not isinstance(session_ids_raw, list):
+                raise TypeError("session_ids must be a list")
+            session_ids = tuple(str(value) for value in session_ids_raw)
             started_at_ms = int(body["started_at_ms"])
             finished_at_ms = int(body["finished_at_ms"])
             success = body["success"]
@@ -3905,6 +3909,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             or not tool_name
             or len(tool_name) > 256
             or (session_id is not None and len(session_id) > 2048)
+            or len(session_ids) > 256
+            or any(not value or len(value) > 2048 for value in session_ids)
             or not isinstance(success, bool)
             or finished_at_ms < started_at_ms
             or (error_detail is not None and len(error_detail) > 512)
@@ -3919,22 +3925,33 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         ops_db = active_index_db_path().with_name("ops.db")
         with open_daemon_connection(ops_db) as conn:
-            table_exists = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mcp_call_log'"
-            ).fetchone()
-        if table_exists is None:
-            initialize_archive_database(ops_db, ArchiveTier.OPS)
-        with open_daemon_connection(ops_db) as conn:
-            record_mcp_call(
-                conn,
-                call_id=call_id,
-                tool_name=tool_name,
-                session_id=session_id,
-                started_at_ms=started_at_ms,
-                finished_at_ms=finished_at_ms,
-                success=success,
-                error_detail=error_detail,
+            table_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name IN ('mcp_call_log', 'mcp_call_session_refs')
+                    """
+                ).fetchone()[0]
             )
+        if table_count != 2:
+            initialize_archive_database(ops_db, ArchiveTier.OPS)
+        try:
+            with open_daemon_connection(ops_db) as conn:
+                record_mcp_call(
+                    conn,
+                    call_id=call_id,
+                    tool_name=tool_name,
+                    session_id=session_id,
+                    session_ids=session_ids,
+                    started_at_ms=started_at_ms,
+                    finished_at_ms=finished_at_ms,
+                    success=success,
+                    error_detail=error_detail,
+                )
+        except ValueError:
+            self._send_error(HTTPStatus.CONFLICT, "call_id_conflict")
+            return
         self._send_json(HTTPStatus.OK, {"ok": True, "call_id": call_id})
 
     @daemon_safe_handler

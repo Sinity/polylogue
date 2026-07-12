@@ -500,6 +500,15 @@ def test_record_mcp_call_writes_reads_and_filters_by_session(tmp_path: Path) -> 
         finished_at_ms=1_700_002_260,
         success=True,
     )
+    record_mcp_call(
+        conn,
+        call_id="call-4",
+        tool_name="compare_sessions",
+        session_ids=("codex-session:abc", "claude-code-session:def"),
+        started_at_ms=1_700_002_300,
+        finished_at_ms=1_700_002_340,
+        success=True,
+    )
 
     assert call_id == "call-1"
     assert read_mcp_call(conn, "call-1") == ArchiveMcpCallLogEntry(
@@ -524,12 +533,13 @@ def test_record_mcp_call_writes_reads_and_filters_by_session(tmp_path: Path) -> 
     )
 
     by_session = list_mcp_calls(conn, session_id="codex-session:abc")
-    assert [entry.call_id for entry in by_session] == ["call-1"]
+    assert [entry.call_id for entry in by_session] == ["call-4", "call-1"]
 
     by_tool = list_mcp_calls(conn, tool_name="get_resume_brief")
     assert [entry.call_id for entry in by_tool] == ["call-3", "call-1"]
 
-    assert conn.execute("SELECT COUNT(*) FROM mcp_call_log").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM mcp_call_log").fetchone()[0] == 4
+    assert conn.execute("SELECT COUNT(*) FROM mcp_call_session_refs").fetchone()[0] == 4
 
 
 def test_read_mcp_call_missing_id_raises_key_error(tmp_path: Path) -> None:

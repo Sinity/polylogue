@@ -175,6 +175,16 @@ ON mcp_call_log(tool_name, started_at_ms DESC);
 
 CREATE INDEX IF NOT EXISTS idx_ops_mcp_call_log_started
 ON mcp_call_log(started_at_ms);
+
+CREATE TABLE IF NOT EXISTS mcp_call_session_refs (
+    call_id       TEXT NOT NULL REFERENCES mcp_call_log(call_id) ON DELETE CASCADE,
+    session_id    TEXT NOT NULL,
+    relation      TEXT NOT NULL CHECK(relation IN ('primary', 'member')),
+    PRIMARY KEY (call_id, session_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_ops_mcp_call_session_refs_session
+ON mcp_call_session_refs(session_id, call_id);
 """
 
 __all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION"]

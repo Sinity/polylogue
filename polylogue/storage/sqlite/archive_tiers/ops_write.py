@@ -742,12 +742,14 @@ def record_mcp_call(
     finished_at_ms: int,
     success: bool,
     session_id: str | None = None,
+    session_ids: tuple[str, ...] = (),
     error_detail: str | None = None,
     call_id: str | None = None,
 ) -> str:
     """Record one durable MCP tool call-log entry and return its call id.
 
-    ``ops.db`` is the disposable telemetry tier (#7s57): this is a best-effort,
+    ``ops.db`` is the disposable telemetry tier (#7s57): the filesystem outbox
+    retries delivery across daemon/process outages, while this writer remains a
     freeform-additive table (``CREATE TABLE IF NOT EXISTS``, no migration
     chain) recording tool name, session id (when the caller knows one),
     timing, and success/failure per MCP tool invocation, so resume/context
@@ -757,31 +759,64 @@ def record_mcp_call(
     if call_id is None:
         call_id = str(uuid.uuid4())
     duration_ms = max(0, finished_at_ms - started_at_ms)
+    values = (
+        call_id,
+        tool_name,
+        session_id,
+        started_at_ms,
+        finished_at_ms,
+        duration_ms,
+        1 if success else 0,
+        error_detail,
+    )
+    desired_refs: dict[str, str] = {
+        value: "member" for value in dict.fromkeys(session_ids) if value and value != session_id
+    }
+    if session_id is not None:
+        desired_refs[session_id] = "primary"
     with conn:
-        conn.execute(
+        existing = conn.execute(
             """
-            INSERT OR IGNORE INTO mcp_call_log (
-                call_id,
-                tool_name,
-                session_id,
-                started_at_ms,
-                finished_at_ms,
-                duration_ms,
-                success,
-                error_detail
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            SELECT
+                call_id, tool_name, session_id, started_at_ms,
+                finished_at_ms, duration_ms, success, error_detail
+            FROM mcp_call_log
+            WHERE call_id = ?
             """,
-            (
-                call_id,
-                tool_name,
-                session_id,
-                started_at_ms,
-                finished_at_ms,
-                duration_ms,
-                1 if success else 0,
-                error_detail,
-            ),
-        )
+            (call_id,),
+        ).fetchone()
+        if existing is not None and tuple(existing) != values:
+            raise ValueError(f"conflicting MCP call payload for call_id {call_id}")
+        existing_refs = {
+            str(row[0]): str(row[1])
+            for row in conn.execute(
+                "SELECT session_id, relation FROM mcp_call_session_refs WHERE call_id = ?",
+                (call_id,),
+            ).fetchall()
+        }
+        if existing_refs and existing_refs != desired_refs:
+            raise ValueError(f"conflicting MCP call session refs for call_id {call_id}")
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO mcp_call_log (
+                    call_id,
+                    tool_name,
+                    session_id,
+                    started_at_ms,
+                    finished_at_ms,
+                    duration_ms,
+                    success,
+                    error_detail
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+        if not existing_refs:
+            conn.executemany(
+                "INSERT INTO mcp_call_session_refs (call_id, session_id, relation) VALUES (?, ?, ?)",
+                ((call_id, ref, relation) for ref, relation in desired_refs.items()),
+            )
         conn.execute(
             "DELETE FROM mcp_call_log WHERE started_at_ms < ?",
             (finished_at_ms - MCP_CALL_LOG_RETENTION_MS,),
@@ -799,13 +834,17 @@ def list_mcp_calls(
     """Return MCP call-log entries newest-first, optionally filtered."""
     query = """
         SELECT call_id, tool_name, session_id, started_at_ms, finished_at_ms, duration_ms, success, error_detail
-        FROM mcp_call_log
+        FROM mcp_call_log AS calls
     """
     clauses: list[str] = []
     params: list[object] = []
     if session_id is not None:
-        clauses.append("session_id = ?")
-        params.append(session_id)
+        clauses.append(
+            "(calls.session_id = ? OR EXISTS ("
+            "SELECT 1 FROM mcp_call_session_refs AS refs "
+            "WHERE refs.call_id = calls.call_id AND refs.session_id = ?))"
+        )
+        params.extend((session_id, session_id))
     if tool_name is not None:
         clauses.append("tool_name = ?")
         params.append(tool_name)

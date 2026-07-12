@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -585,7 +585,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("neighbor_candidates", run)
+        return await hooks.async_safe_call("neighbor_candidates", run, session_id=id)
 
     @mcp.tool()
     async def stats() -> str:
@@ -885,7 +885,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             except (KeyError, ValueError, sqlite3.OperationalError):
                 return hooks.error_json(f"Session not found: {session_id}", code="not_found")
 
-        return await hooks.async_safe_call("get_messages", run)
+        return await hooks.async_safe_call("get_messages", run, session_id=session_id)
 
     @mcp.tool()
     async def raw_artifacts(
@@ -914,11 +914,12 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 )
             )
 
-        return await hooks.async_safe_call("raw_artifacts", run)
+        return await hooks.async_safe_call("raw_artifacts", run, session_id=session_id)
 
     @mcp.tool()
     def readiness_check() -> str:
         def run() -> str:
+            from polylogue.mcp.call_log import mcp_call_outbox_status
             from polylogue.readiness import get_readiness
 
             report = get_readiness(hooks.get_config())
@@ -928,6 +929,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     include_counts=True,
                     include_detail=True,
                     include_cached=True,
+                    mcp_call_delivery=asdict(mcp_call_outbox_status()),
                 ),
                 exclude_none=True,
             )

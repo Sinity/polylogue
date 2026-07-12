@@ -42,8 +42,18 @@ def build_server(*, role: MCPRole = "read") -> FastMCP:
     hooks = ServerCallbacks(
         json_payload=_json_payload,
         clamp_limit=_clamp_limit,
-        safe_call=lambda fn_name, fn, *, session_id=None: _safe_call(fn_name, fn, session_id=session_id),
-        async_safe_call=lambda fn_name, fn, *, session_id=None: _async_safe_call(fn_name, fn, session_id=session_id),
+        safe_call=lambda fn_name, fn, *, session_id=None, session_ids=(): _safe_call(
+            fn_name,
+            fn,
+            session_id=session_id,
+            session_ids=session_ids,
+        ),
+        async_safe_call=lambda fn_name, fn, *, session_id=None, session_ids=(): _async_safe_call(
+            fn_name,
+            fn,
+            session_id=session_id,
+            session_ids=session_ids,
+        ),
         error_json=lambda message, **extra: _error_json(message, **extra),
         get_config=lambda: _get_config(),
         get_polylogue=lambda: _get_polylogue(),
@@ -72,6 +82,9 @@ def _get_server(services: RuntimeServices | None = None, *, role: MCPRole = "rea
 
 def serve_stdio(services: RuntimeServices | None = None, *, role: MCPRole = "read") -> None:
     """Start MCP server with stdio transport."""
+    from polylogue.mcp.call_log import start_mcp_call_log
+
+    start_mcp_call_log()
     _get_server(services, role=role).run(transport="stdio")
 
 
