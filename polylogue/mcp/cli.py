@@ -12,7 +12,7 @@ from polylogue.mcp.server_support import MCPRole
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
     "--role",
-    type=click.Choice(["read", "write", "admin"]),
+    type=click.Choice(["read", "write", "review", "admin"]),
     default="read",
     show_default=True,
     help="MCP capability role. Read omits mutation and maintenance tools.",

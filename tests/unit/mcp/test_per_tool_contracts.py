@@ -293,6 +293,14 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
         "happy": {"kind": "finding", "title": "t", "content": "c"},
         "invalid_value": {"kind": "bogus", "title": "t", "content": "c"},
     },
+    "judge_assertion_candidate": {
+        "required": {"candidate_ref", "decision"},
+        "happy": {"candidate_ref": "assertion:contract-candidate", "decision": "accept"},
+    },
+    "judge_assertion_candidates": {
+        "required": {"items"},
+        "happy": {"items": [{"candidate_ref": "assertion:contract-candidate", "decision": "accept"}]},
+    },
 }
 
 
@@ -775,6 +783,12 @@ def _arrange_poly_for(poly: Any, tool_name: str) -> None:
                 created_at_ms=1,
                 updated_at_ms=1,
             )
+        )
+    elif tool_name in {"judge_assertion_candidate", "judge_assertion_candidates"}:
+        from polylogue.surfaces.payloads import AssertionBulkJudgmentPayload
+
+        poly.judge_assertion_candidates = AsyncMock(
+            return_value=AssertionBulkJudgmentPayload(items=(), applied_count=0, idempotent_count=0, failed_count=0)
         )
     elif tool_name == "import_annotation_batch":
         poly.resolve_ref = AsyncMock(return_value=MagicMock(resolved=False))

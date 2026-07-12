@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import shlex
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
@@ -1800,32 +1800,35 @@ def review_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: i
 
 
 @mark_candidates_group.command("accept")
-@click.argument("candidate_ref")
+@click.argument("candidate_refs", nargs=-1, required=True)
 @click.option("--reason", default=None)
 @click.option("--actor-ref", default="user:local", show_default=True)
+@click.option("--inject", is_flag=True, help="Authorize context injection for accepted candidates.")
 @click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def accept_mark_candidate_command(
     env: AppEnv,
-    candidate_ref: str,
+    candidate_refs: tuple[str, ...],
     reason: str | None,
     actor_ref: str,
+    inject: bool,
     output_format: str | None,
 ) -> None:
     """Accept a candidate assertion into an active assertion."""
     _emit_candidate_judgment(
         env,
-        candidate_ref=candidate_ref,
+        candidate_refs=candidate_refs,
         decision="accept",
         reason=reason,
         actor_ref=actor_ref,
+        inject=inject,
         output_format=output_format,
     )
 
 
 @mark_candidates_group.command("reject")
-@click.argument("candidate_ref")
+@click.argument("candidate_refs", nargs=-1, required=True)
 @click.option("--reason", required=True)
 @click.option("--actor-ref", default="user:local", show_default=True)
 @click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
@@ -1833,7 +1836,7 @@ def accept_mark_candidate_command(
 @click.pass_obj
 def reject_mark_candidate_command(
     env: AppEnv,
-    candidate_ref: str,
+    candidate_refs: tuple[str, ...],
     reason: str,
     actor_ref: str,
     output_format: str | None,
@@ -1841,7 +1844,7 @@ def reject_mark_candidate_command(
     """Reject a candidate assertion with a durable reason."""
     _emit_candidate_judgment(
         env,
-        candidate_ref=candidate_ref,
+        candidate_refs=candidate_refs,
         decision="reject",
         reason=reason,
         actor_ref=actor_ref,
@@ -1850,7 +1853,7 @@ def reject_mark_candidate_command(
 
 
 @mark_candidates_group.command("defer")
-@click.argument("candidate_ref")
+@click.argument("candidate_refs", nargs=-1, required=True)
 @click.option("--reason", default=None)
 @click.option("--actor-ref", default="user:local", show_default=True)
 @click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
@@ -1858,7 +1861,7 @@ def reject_mark_candidate_command(
 @click.pass_obj
 def defer_mark_candidate_command(
     env: AppEnv,
-    candidate_ref: str,
+    candidate_refs: tuple[str, ...],
     reason: str | None,
     actor_ref: str,
     output_format: str | None,
@@ -1866,7 +1869,7 @@ def defer_mark_candidate_command(
     """Record a durable candidate assertion deferral."""
     _emit_candidate_judgment(
         env,
-        candidate_ref=candidate_ref,
+        candidate_refs=candidate_refs,
         decision="defer",
         reason=reason,
         actor_ref=actor_ref,
@@ -1875,30 +1878,33 @@ def defer_mark_candidate_command(
 
 
 @mark_candidates_group.command("supersede")
-@click.argument("candidate_ref")
+@click.argument("candidate_refs", nargs=-1, required=True)
 @click.option("--kind", "replacement_kind", required=True, help="Kind for the replacement active assertion.")
 @click.option("--body", "replacement_body_text", required=True, help="Body text for the replacement assertion.")
 @click.option("--reason", default=None)
 @click.option("--actor-ref", default="user:local", show_default=True)
+@click.option("--inject", is_flag=True, help="Authorize context injection for promoted replacements.")
 @click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def supersede_mark_candidate_command(
     env: AppEnv,
-    candidate_ref: str,
+    candidate_refs: tuple[str, ...],
     replacement_kind: str,
     replacement_body_text: str,
     reason: str | None,
     actor_ref: str,
+    inject: bool,
     output_format: str | None,
 ) -> None:
     """Supersede a candidate with an explicit active assertion."""
     _emit_candidate_judgment(
         env,
-        candidate_ref=candidate_ref,
+        candidate_refs=candidate_refs,
         decision="supersede",
         reason=reason,
         actor_ref=actor_ref,
+        inject=inject,
         output_format=output_format,
         replacement_kind=replacement_kind,
         replacement_body_text=replacement_body_text,
@@ -1908,29 +1914,42 @@ def supersede_mark_candidate_command(
 def _emit_candidate_judgment(
     env: AppEnv,
     *,
-    candidate_ref: str,
+    candidate_refs: Sequence[str],
     decision: str,
     reason: str | None,
     actor_ref: str,
     output_format: str | None,
     replacement_kind: str | None = None,
     replacement_body_text: str | None = None,
+    inject: bool = False,
 ) -> None:
+    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
+
     payload = run_coroutine_sync(
-        env.polylogue.judge_assertion_candidate(
-            candidate_ref=candidate_ref,
-            decision=decision,
-            reason=reason,
-            actor_ref=actor_ref,
-            replacement_kind=replacement_kind,
-            replacement_body_text=replacement_body_text,
+        env.polylogue.judge_assertion_candidates(
+            items=tuple(
+                ArchiveAssertionBulkJudgmentItemEnvelope(
+                    candidate_ref=candidate_ref,
+                    decision=decision,
+                    reason=reason,
+                    actor_ref=actor_ref,
+                    inject=inject,
+                    replacement_kind=replacement_kind,
+                    replacement_body_text=replacement_body_text,
+                )
+                for candidate_ref in candidate_refs
+            )
         )
     )
     if output_format == "json":
         click.echo(serialize_surface_payload(payload, exclude_none=True))
         return
-    result_ref = payload.judgment.resulting_assertion_ref or "no active assertion"
-    click.echo(f"{decision}: {payload.candidate.assertion_id} -> {result_ref}")
+    for item in payload.items:
+        if item.result is None:
+            click.echo(f"{decision}: {item.candidate_ref} -> failed ({item.error or 'unknown error'})")
+            continue
+        result_ref = item.result.judgment.resulting_assertion_ref or "no active assertion"
+        click.echo(f"{decision}: {item.result.candidate.assertion_id} -> {result_ref} ({item.outcome})")
 
 
 @click.group("analyze", invoke_without_command=True, no_args_is_help=False)

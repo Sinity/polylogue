@@ -10,6 +10,8 @@ from polylogue.cli.query_verbs import mark_candidates_group
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.surfaces.action_affordances import assertion_candidate_review_affordances
 from polylogue.surfaces.payloads import (
+    AssertionBulkJudgmentItemPayload,
+    AssertionBulkJudgmentPayload,
     AssertionCandidateReviewItemPayload,
     AssertionCandidateReviewListPayload,
     AssertionClaimPayload,
@@ -93,7 +95,7 @@ def test_candidates_review_emits_status_and_disabled_action_reasons() -> None:
     env.polylogue.list_assertion_candidate_reviews.assert_awaited_once_with(target_ref=None, limit=50)
 
 
-def test_candidates_accept_emits_judgment_result_payload() -> None:
+def test_candidates_accept_emits_bulk_judgment_payload() -> None:
     judgment = AssertionJudgmentPayload(
         judgment_id="judgment-cli-1",
         candidate_ref="assertion:candidate-cli-1",
@@ -104,7 +106,7 @@ def test_candidates_accept_emits_judgment_result_payload() -> None:
         resulting_assertion_ref="assertion:active-cli-1",
         evidence_refs=("session:cli", "assertion:candidate-cli-1"),
     )
-    payload = AssertionJudgmentResultPayload(
+    result_payload = AssertionJudgmentResultPayload(
         candidate=_claim(status=AssertionStatus.ACCEPTED),
         judgment=judgment,
         resulting_assertion=_claim(status=AssertionStatus.ACTIVE).model_copy(
@@ -115,7 +117,17 @@ def test_candidates_accept_emits_judgment_result_payload() -> None:
             }
         ),
     )
-    env = SimpleNamespace(polylogue=SimpleNamespace(judge_assertion_candidate=AsyncMock(return_value=payload)))
+    payload = AssertionBulkJudgmentPayload(
+        items=(
+            AssertionBulkJudgmentItemPayload(
+                candidate_ref="assertion:candidate-cli-1", outcome="applied", result=result_payload
+            ),
+        ),
+        applied_count=1,
+        idempotent_count=0,
+        failed_count=0,
+    )
+    env = SimpleNamespace(polylogue=SimpleNamespace(judge_assertion_candidates=AsyncMock(return_value=payload)))
 
     result = CliRunner().invoke(
         mark_candidates_group,
@@ -126,13 +138,9 @@ def test_candidates_accept_emits_judgment_result_payload() -> None:
 
     assert result.exit_code == 0
     rendered = json.loads(result.output)
-    assert rendered["judgment"]["decision"] == "accept"
-    assert rendered["resulting_assertion"]["kind"] == "decision"
-    env.polylogue.judge_assertion_candidate.assert_awaited_once_with(
-        candidate_ref="assertion:candidate-cli-1",
-        decision="accept",
-        reason="confirmed",
-        actor_ref="user:local",
-        replacement_kind=None,
-        replacement_body_text=None,
-    )
+    assert rendered["items"][0]["result"]["judgment"]["decision"] == "accept"
+    assert rendered["items"][0]["result"]["resulting_assertion"]["kind"] == "decision"
+    call = env.polylogue.judge_assertion_candidates.await_args.kwargs
+    assert len(call["items"]) == 1
+    assert call["items"][0].candidate_ref == "assertion:candidate-cli-1"
+    assert call["items"][0].inject is False
