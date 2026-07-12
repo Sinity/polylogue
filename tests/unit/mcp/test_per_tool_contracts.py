@@ -29,7 +29,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import jsonschema
 import pytest
@@ -122,6 +122,30 @@ _MCP_MUTATION_OPERATION_SPECS = tuple(
 )
 
 TOOL_MATRIX: dict[str, dict[str, Any]] = {
+    "import_annotation_batch": {
+        "required": {
+            "jsonl",
+            "batch_id",
+            "schema_id",
+            "schema_version",
+            "target_ref",
+            "source_result_ref",
+            "actor_ref",
+            "model_ref",
+            "prompt_ref",
+        },
+        "happy": {
+            "jsonl": '{"row_key":"r1","value":{},"evidence_refs":[]}',
+            "batch_id": "contract-batch",
+            "schema_id": "delegation.discourse",
+            "schema_version": 1,
+            "target_ref": "delegation:contract-target",
+            "source_result_ref": "result-set:contract",
+            "actor_ref": "agent:contract",
+            "model_ref": "agent:model",
+            "prompt_ref": "block:contract:0",
+        },
+    },
     "add_tag": {
         "required": {"session_id", "tag"},
         "happy": {
@@ -724,7 +748,9 @@ def _arrange_poly_for(poly: Any, tool_name: str) -> None:
     poly.list_corrections = AsyncMock(return_value=[])
     poly.clear_corrections = AsyncMock(return_value=0)
     poly.delete_correction = AsyncMock(return_value=False)
-    if tool_name == "add_tag":
+    if tool_name == "import_annotation_batch":
+        poly.resolve_ref = AsyncMock(return_value=MagicMock(resolved=False))
+    elif tool_name == "add_tag":
         poly.add_tag = AsyncMock(return_value=TagMutationResult(outcome="added"))
     elif tool_name == "remove_tag":
         poly.remove_tag = AsyncMock(return_value=TagMutationResult(outcome="removed"))

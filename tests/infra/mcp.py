@@ -23,6 +23,7 @@ EXPECTED_TOOL_NAMES = {
     "blackboard_list",
     "blackboard_post",
     "import_annotation_batch",
+    "join_typed_annotations",
     "list_assertion_claims",
     "neighbor_candidates",
     "stats",

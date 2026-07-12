@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from polylogue.annotations.join import AnnotationGroupDimension
 from polylogue.coordination import build_coordination_envelope
 from polylogue.core.enums import AssertionKind, AssertionStatus, Origin
 from polylogue.core.sources import provider_from_origin
@@ -691,6 +692,35 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
 
 def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+    @mcp.tool()
+    async def join_typed_annotations(
+        schema_id: str,
+        schema_version: int,
+        statuses: list[str],
+        target_kind: str | None = None,
+        group_by: list[str] | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> str:
+        """Join typed annotation labels to exact structural targets."""
+
+        async def run() -> str:
+            try:
+                result = await hooks.get_polylogue().join_typed_annotations(
+                    schema_id=schema_id,
+                    schema_version=schema_version,
+                    statuses=statuses,
+                    target_kind=target_kind,
+                    group_by=() if group_by is None else cast(list[AnnotationGroupDimension], group_by),
+                    limit=limit,
+                    offset=offset,
+                )
+            except ValueError as exc:
+                return hooks.error_json(str(exc), code="invalid_annotation_join")
+            return hooks.json_payload(result)
+
+        return await hooks.async_safe_call("join_typed_annotations", run)
+
     @mcp.tool()
     async def blackboard_list(
         kind: str | None = None,

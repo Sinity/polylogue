@@ -20,8 +20,12 @@ files:
     target: polylogue/annotations/batch.py
     owner: stable
   - path: polylogue/annotations/importer.py
-    loc: 280
+    loc: 342
     target: polylogue/annotations/importer.py
+    owner: stable
+  - path: polylogue/annotations/join.py
+    loc: 354
+    target: polylogue/annotations/join.py
     owner: stable
   - path: polylogue/annotations/schema.py
     loc: 763
@@ -37,7 +41,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 5617
+    loc: 5646
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -759,7 +763,7 @@ files:
     target: polylogue/cli/commands/agents.py
     owner: stable
   - path: polylogue/cli/commands/annotations.py
-    loc: 71
+    loc: 136
     target: polylogue/cli/commands/annotations.py
     owner: stable
   - path: polylogue/cli/commands/auth.py
@@ -1835,7 +1839,7 @@ files:
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 932
+    loc: 933
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
@@ -1851,7 +1855,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 1078
+    loc: 1106
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
