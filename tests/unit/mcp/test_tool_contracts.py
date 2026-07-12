@@ -476,6 +476,61 @@ class TestQueryTools:
         assert parsed["diagnostics"] is None
 
     @pytest.mark.asyncio
+    async def test_search_zero_hit_multi_term_diagnostics_report_filtered_term_counts(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root, provider=Provider.CODEX, native_id="alpha", text="alpha evidence")
+        _seed_archive(archive_root, provider=Provider.CODEX, native_id="beta", text="beta evidence")
+
+        with _archive_config(archive_root):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="alpha beta",
+                origin="codex-session",
+            )
+
+        diagnostics = json.loads(result)["diagnostics"]
+        assert diagnostics["message"].startswith("No session matched all search terms")
+        assert {(reason["detail"], reason["count"]) for reason in diagnostics["reasons"]} == {
+            ("term=alpha", 1),
+            ("term=beta", 1),
+        }
+
+    def test_list_sessions_coalesces_block_hits_and_carries_match_count(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_archive(
+            archive_root,
+            provider=Provider.CODEX,
+            native_id="repeated",
+            text="needle first",
+            extra=(("repeated-2", "needle second"),),
+        )
+        _seed_archive(archive_root, provider=Provider.CODEX, native_id="other", text="needle third")
+
+        with _archive_config(archive_root):
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["list_sessions"].fn,
+                contains="needle",
+                limit=10,
+            )
+
+        payload = json.loads(result)
+        assert [item["id"] for item in payload["items"]].count("codex-session:repeated") == 1
+        counts = {item["id"]: item["match_count"] for item in payload["items"]}
+        assert counts == {"codex-session:repeated": 2, "codex-session:other": 1}
+
+    def test_list_sessions_invalid_sort_enumerates_valid_values(self, mcp_server: MCPServerUnderTest) -> None:
+        result = invoke_surface(mcp_server._tool_manager._tools["list_sessions"].fn, sort="started_at")
+
+        error = json.loads(result)
+        assert error["code"] == "invalid_query"
+        assert error["field"] == "sort"
+        assert error["valid_values"] == ["date", "tokens", "messages", "words", "longest", "random"]
+
+    @pytest.mark.asyncio
     async def test_search_envelope_affordance_catalog_is_opt_in(
         self, tmp_path: Path, mcp_server: MCPServerUnderTest
     ) -> None:

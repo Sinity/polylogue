@@ -11,7 +11,12 @@ from polylogue.archive.query.spec import parse_query_date
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
 from polylogue.surfaces.action_affordances import ActionAffordancePayload
-from polylogue.surfaces.payloads import TargetRefPayload, reader_anchor
+from polylogue.surfaces.payloads import (
+    QueryMissDiagnosticsPayload,
+    QueryMissReasonPayload,
+    TargetRefPayload,
+    reader_anchor,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -22,6 +27,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.mcp.payloads import (
         MCPBlackboardNotePayload,
+        MCPMatchedSessionSummaryPayload,
         MCPMessagePayload,
         MCPMessagesListPayload,
         MCPPaginatedQueryResultPayload,
@@ -161,6 +167,20 @@ def archive_summary_payload(summary: ArchiveSessionSummary) -> MCPSessionSummary
     )
 
 
+def archive_matched_summary_payload(
+    summary: ArchiveSessionSummary,
+    *,
+    match_count: int,
+) -> MCPMatchedSessionSummaryPayload:
+    """Add exact raw-match cardinality to one coalesced session row."""
+    from polylogue.mcp.payloads import MCPMatchedSessionSummaryPayload
+
+    return MCPMatchedSessionSummaryPayload(
+        **archive_summary_payload(summary).model_dump(mode="python"),
+        match_count=match_count,
+    )
+
+
 def blackboard_note_payload(note: BlackboardNote) -> MCPBlackboardNotePayload:
     """Project a decoded blackboard note into its MCP payload shape (#1697)."""
     from polylogue.mcp.payloads import MCPBlackboardNotePayload
@@ -277,11 +297,22 @@ def archive_session_list_payload(
             config=config,
             default_limit=default_limit,
         )
-        summaries = [summary for _hit, summary in pairs]
-        total = offset + len(summaries) + (1 if len(summaries) == limit else 0)
-        next_offset = offset + len(summaries) if len(summaries) == limit else None
+        match_counts: dict[str, int] = {}
+        summaries_by_id: dict[str, ArchiveSessionSummary] = {}
+        for _hit, summary in pairs:
+            summaries_by_id.setdefault(summary.session_id, summary)
+            match_counts[summary.session_id] = match_counts.get(summary.session_id, 0) + 1
+        summaries = tuple(summaries_by_id.values())
+        # ``archive_search_hits`` already received this page's offset.  Do not
+        # apply it a second time after coalescing its raw block hits.
+        page = summaries
+        next_offset = offset + len(page) if len(pairs) == limit else None
+        total = offset + len(page) + (1 if next_offset is not None else 0)
         return MCPPaginatedQueryResultPayload(
-            items=tuple(archive_summary_payload(summary) for summary in summaries),
+            items=tuple(
+                archive_matched_summary_payload(summary, match_count=match_counts[summary.session_id])
+                for summary in page
+            ),
             total=total,
             limit=limit,
             offset=offset,
@@ -290,36 +321,73 @@ def archive_session_list_payload(
     filters = archive_query_filters(spec)
     text_query = _archive_text_query(spec)
     if text_query is None:
-        summaries = archive.list_summaries(
-            limit=limit,
-            offset=offset,
-            sort=_sort_value(spec.sort),
-            reverse=spec.reverse,
-            sample=bool(spec.sample),
-            **filters,
-        )
-        total = archive.count_sessions(**filters)
-    else:
-        summaries = [
-            archive.read_summary(hit.session_id)
-            for hit in archive.search_summaries(
-                text_query,
+        summaries = tuple(
+            archive.list_summaries(
                 limit=limit,
                 offset=offset,
                 sort=_sort_value(spec.sort),
                 reverse=spec.reverse,
+                sample=bool(spec.sample),
                 **filters,
             )
-        ]
-        total = archive.count_search_sessions(text_query, **filters)
-    next_offset = offset + len(summaries) if len(summaries) == limit and offset + limit < total else None
+        )
+        total = archive.count_sessions(**filters)
+        match_counts = {summary.session_id: 1 for summary in summaries}
+        # ``list_summaries`` already applied offset and limit above.
+        page = summaries
+    else:
+        summaries, match_counts = _coalesced_search_summaries(
+            archive,
+            query=text_query,
+            filters=filters,
+            sort=_sort_value(spec.sort),
+            reverse=spec.reverse,
+        )
+        total = len(summaries)
+        page = summaries[offset : offset + limit]
+    next_offset = offset + len(page) if offset + len(page) < total else None
     return MCPPaginatedQueryResultPayload(
-        items=tuple(archive_summary_payload(summary) for summary in summaries),
+        items=tuple(
+            archive_matched_summary_payload(summary, match_count=match_counts[summary.session_id]) for summary in page
+        ),
         total=total,
         limit=limit,
         offset=offset,
         next_offset=next_offset,
     )
+
+
+def _coalesced_search_summaries(
+    archive: ArchiveStore,
+    *,
+    query: str,
+    filters: ArchiveQueryFilters,
+    sort: str | None,
+    reverse: bool,
+) -> tuple[tuple[ArchiveSessionSummary, ...], dict[str, int]]:
+    """Coalesce block-level FTS rows into stable, unique session list rows."""
+    chunk_size = 250
+    raw_offset = 0
+    summaries_by_id: dict[str, ArchiveSessionSummary] = {}
+    match_counts: dict[str, int] = {}
+    while True:
+        hits = archive.search_summaries(
+            query,
+            limit=chunk_size,
+            offset=raw_offset,
+            sort=sort,
+            reverse=reverse,
+            **filters,
+        )
+        if not hits:
+            break
+        for hit in hits:
+            summaries_by_id.setdefault(hit.session_id, archive.read_summary(hit.session_id))
+            match_counts[hit.session_id] = match_counts.get(hit.session_id, 0) + 1
+        raw_offset += len(hits)
+        if len(hits) < chunk_size:
+            break
+    return tuple(summaries_by_id.values()), match_counts
 
 
 def archive_search_payload(
@@ -371,6 +439,7 @@ def archive_search_payload(
         **filters,
     )
     total = archive.count_search_sessions(query, **filters)
+    diagnostics = _search_term_diagnostics(archive, query=query, filters=filters, spec=spec) if not hits else None
     return build_search_envelope(
         tuple(archive_search_hit_payload(hit, archive=archive) for hit in hits),
         total=total,
@@ -380,6 +449,38 @@ def archive_search_payload(
         retrieval_lane=retrieval_lane,
         sort=sort,
         action_affordances=_search_affordances(include_affordances),
+        diagnostics=diagnostics,
+    )
+
+
+def _search_term_diagnostics(
+    archive: ArchiveStore,
+    *,
+    query: str,
+    filters: ArchiveQueryFilters,
+    spec: SessionQuerySpec,
+) -> QueryMissDiagnosticsPayload | None:
+    """Explain AND-style multi-term misses with filtered per-term counts."""
+    from polylogue.storage.search.query_support import extract_match_terms
+
+    terms = extract_match_terms(query)
+    if len(terms) < 2:
+        return None
+    term_counts = {term: archive.count_search_sessions(term, **filters) for term in terms}
+    return QueryMissDiagnosticsPayload(
+        message="No session matched all search terms; per-term counts use the same filters.",
+        filters=tuple(spec.describe()),
+        reasons=tuple(
+            QueryMissReasonPayload(
+                code="search_term_matches",
+                severity="info",
+                summary=f"{term!r} matches {term_counts[term]} session(s).",
+                detail=f"term={term}",
+                count=term_counts[term],
+            )
+            for term in terms
+        ),
+        archive_session_count=archive.count_sessions(**filters),
     )
 
 
