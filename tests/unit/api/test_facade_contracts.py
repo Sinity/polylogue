@@ -2260,7 +2260,6 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         ("finding", "finding-hash-1"),
         ("cohort", "cohort-1"),
         ("analysis", "analysis-1"),
-        ("annotation-batch", "batch-1"),
     ],
 )
 async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance_kinds(
@@ -2268,9 +2267,9 @@ async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance
 ) -> None:
     """polylogue-rxdo.1: refs land ahead of storage; resolution stubs cleanly.
 
-    ``query``/``query-run``/``result-set``/``finding``/``cohort``/``analysis``/
-    ``annotation-batch`` are registered ObjectRefKind values with no backing
-    table yet (polylogue-rxdo.2/.3/.4/.7/.8). resolve_ref must not raise and
+    ``query``/``query-run``/``result-set``/``finding``/``cohort``/``analysis``
+    are registered ObjectRefKind values with no backing table yet
+    (polylogue-rxdo.2/.3/.4/.8). resolve_ref must not raise and
     must not silently pretend to resolve them — it returns a typed pending
     payload carrying reason=substrate-pending so a client can distinguish
     "not implemented yet" from "does not exist".
@@ -2289,6 +2288,59 @@ async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance
         assert payload.payload["kind"] == kind
         assert payload.payload["unit"] == "pending"
         assert any("substrate-pending" in caveat for caveat in payload.caveats)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_reads_persisted_annotation_batch_and_reports_missing(tmp_path: Path) -> None:
+    """Annotation-batch refs resolve through the real user-tier repository."""
+    from polylogue.annotations.batch import AnnotationBatch
+
+    archive = _archive(tmp_path)
+    batch = AnnotationBatch(
+        batch_id="batch-ref-resolution",
+        schema_id="delegation.discourse",
+        schema_version=1,
+        target_ref="delegation:dispatch-ref-resolution",
+        source_result_ref="result-set:ref-resolution",
+        actor_ref="agent:labeler",
+        model_ref="agent:model",
+        prompt_ref="block:prompt-ref-resolution:0",
+        total_count=0,
+        valid_count=0,
+        invalid_count=0,
+        abstained_count=0,
+        metadata={"campaign": "facade-contract"},
+        created_at_ms=123,
+    )
+    try:
+        with ArchiveStore.open_existing(tmp_path) as store:
+            store.save_annotation_batch(batch)
+
+        payload = await archive.resolve_ref(batch.batch_ref)
+        assert payload.resolved is True
+        assert payload.kind == "annotation-batch"
+        assert payload.payload_kind == "annotation-batch"
+        assert payload.payload is not None
+        assert payload.payload["unit"] == "annotation-batch"
+        assert payload.payload["batch_id"] == batch.batch_id
+        assert payload.payload["qualified_schema_id"] == batch.qualified_schema_id
+        assert payload.payload["metadata"] == {"campaign": "facade-contract"}
+        assert payload.object_refs == (
+            batch.batch_ref,
+            batch.target_ref,
+            batch.source_result_ref,
+            batch.actor_ref,
+            batch.model_ref,
+            batch.prompt_ref,
+        )
+
+        missing = await archive.resolve_ref("annotation-batch:missing")
+        assert missing.resolved is False
+        assert missing.kind == "annotation-batch"
+        assert missing.normalized_ref == "annotation-batch:missing"
+        assert missing.payload is None
+        assert missing.caveats == ("annotation batch not found",)
     finally:
         await archive.close()
 

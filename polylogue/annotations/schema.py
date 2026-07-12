@@ -127,7 +127,7 @@ class AnnotationField:
             raise AnnotationSchemaError(
                 f"annotation field {self.name!r} declares unknown value_type {self.value_type!r}"
             )
-        if not _FIELD_NAME_RE.match(self.name):
+        if not _FIELD_NAME_RE.fullmatch(self.name):
             raise AnnotationSchemaError(f"annotation field name {self.name!r} must match {_FIELD_NAME_RE.pattern!r}")
         if self.value_type == "enum" and not self.enum_values:
             raise AnnotationSchemaError(f"annotation field {self.name!r} is type 'enum' but declares no enum_values")
@@ -238,7 +238,7 @@ class AnnotationSchema:
     status: AnnotationSchemaStatus = "draft"
 
     def __post_init__(self) -> None:
-        if not _SCHEMA_ID_RE.match(self.schema_id):
+        if not _SCHEMA_ID_RE.fullmatch(self.schema_id):
             raise AnnotationSchemaError(f"schema_id {self.schema_id!r} must match {_SCHEMA_ID_RE.pattern!r}")
         if not _is_positive_int(self.version):
             raise AnnotationSchemaError(f"schema {self.schema_id!r} version must be >= 1, got {self.version}")
@@ -455,13 +455,18 @@ class AnnotationSchemaRegistry:
         self._schemas: dict[str, AnnotationSchema] = {}
 
     def register(self, schema: AnnotationSchema) -> AnnotationSchema:
-        """Register *schema*. Idempotent for an identical redefinition; raises on drift."""
+        """Register *schema*. Canonical retries return the existing definition."""
 
         existing = self._schemas.get(schema.qualified_id)
-        if existing is not None and existing != schema:
-            raise AnnotationSchemaError(
-                f"annotation schema {schema.qualified_id!r} is already registered with a different definition"
-            )
+        if existing is not None:
+            if (
+                existing.definition_fingerprint != schema.definition_fingerprint
+                or existing.canonical_definition_json() != schema.canonical_definition_json()
+            ):
+                raise AnnotationSchemaError(
+                    f"annotation schema {schema.qualified_id!r} is already registered with a different definition"
+                )
+            return existing
         self._schemas[schema.qualified_id] = schema
         return schema
 
@@ -495,7 +500,10 @@ class AnnotationSchemaRegistry:
             raise AnnotationSchemaError(
                 f"annotation schema {schema.qualified_id!r} must be registered before writing"
             ) from exc
-        if registered != schema:
+        if (
+            registered.definition_fingerprint != schema.definition_fingerprint
+            or registered.canonical_definition_json() != schema.canonical_definition_json()
+        ):
             raise AnnotationSchemaError(
                 f"annotation schema {schema.qualified_id!r} does not match its registered definition"
             )

@@ -35,9 +35,9 @@ ObjectRefKind: TypeAlias = Literal[
     "github-issue",
     "github-pr",
     "github-review",
-    # Analysis-provenance object kinds (polylogue-rxdo epic). Refs land here
-    # first; resolution is stubbed pending=true until the backing storage
-    # tiers exist (polylogue-rxdo.2/.3/.4/.7/.8). Do not append a
+    # Analysis-provenance object kinds (polylogue-rxdo epic). Most refs land
+    # here before their backing storage tiers exist; annotation-batch now
+    # resolves through durable user.db storage (polylogue-rxdo.7.1). Do not append a
     # ``@content-hash`` anchor suffix onto these — that belongs to the
     # separate citation-anchor work (polylogue-bby.11).
     "query",

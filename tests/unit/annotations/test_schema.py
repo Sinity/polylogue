@@ -109,6 +109,8 @@ class TestAnnotationFieldValidation:
             AnnotationField(name="Score", value_type="integer")
         with pytest.raises(AnnotationSchemaError):
             AnnotationField(name="_score", value_type="integer")
+        with pytest.raises(AnnotationSchemaError):
+            AnnotationField(name="score\n", value_type="integer")
 
 
 class TestAnnotationSchemaConstruction:
@@ -140,6 +142,8 @@ class TestAnnotationSchemaConstruction:
     def test_invalid_schema_id_rejected(self) -> None:
         with pytest.raises(AnnotationSchemaError):
             _schema(schema_id="Not Valid")
+        with pytest.raises(AnnotationSchemaError):
+            _schema(schema_id="test.valid\n")
 
     def test_unknown_evidence_policy_rejected_at_runtime(self) -> None:
         with pytest.raises(AnnotationSchemaError, match="unknown evidence_policy"):
@@ -279,9 +283,38 @@ class TestAnnotationSchemaRegistry:
     def test_reregistering_identical_schema_is_idempotent(self) -> None:
         registry = AnnotationSchemaRegistry()
         schema = _schema()
+        retry = _schema()
+        assert retry is not schema
         registry.register(schema)
-        registry.register(schema)  # no raise
+        assert registry.register(retry) is schema
         assert registry.list() == (schema,)
+
+    def test_registry_rejects_numeric_lexical_definition_drift(self) -> None:
+        registry = AnnotationSchemaRegistry()
+        integer_bound = _schema(
+            fields=(AnnotationField(name="score", value_type="number", minimum=0),),
+            abstain_field=None,
+        )
+        float_bound = _schema(
+            fields=(AnnotationField(name="score", value_type="number", minimum=0.0),),
+            abstain_field=None,
+        )
+        assert integer_bound == float_bound
+
+        registry.register(integer_bound)
+        with pytest.raises(AnnotationSchemaError, match="different definition"):
+            registry.register(float_bound)
+
+    def test_registry_accepts_nfc_equivalent_retry_and_returns_existing_definition(self) -> None:
+        registry = AnnotationSchemaRegistry()
+        registered = _schema(title="Caf\u00e9", status="active")
+        retry = _schema(title="Cafe\u0301", status="active")
+        assert registered != retry
+        assert registered.canonical_definition_json() == retry.canonical_definition_json()
+
+        registry.register(registered)
+        assert registry.register(retry) is registered
+        assert registry.require_active(retry) is registered
 
     def test_reregistering_drifted_schema_raises(self) -> None:
         registry = AnnotationSchemaRegistry()

@@ -1882,15 +1882,50 @@ class PublicRefResolutionPayload(SurfacePayloadModel):
         return tuple(normalize_public_ref_text(ref) for ref in value)
 
 
+class AnnotationBatchPayload(SurfacePayloadModel):
+    """Bounded durable provenance returned for an ``annotation-batch:`` ref."""
+
+    unit: Literal["annotation-batch"] = "annotation-batch"
+    batch_id: str
+    batch_ref: str
+    schema_id: str
+    schema_version: int
+    qualified_schema_id: str
+    target_ref: str
+    source_result_ref: str
+    actor_ref: str
+    model_ref: str
+    prompt_ref: str
+    total_count: int
+    valid_count: int
+    invalid_count: int
+    abstained_count: int
+    assertion_refs: tuple[str, ...] = ()
+    validation_failures: tuple[dict[str, Any], ...] = ()
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at_ms: int
+
+    @field_validator("batch_ref", "target_ref", "source_result_ref", "actor_ref", "model_ref", "prompt_ref")
+    @classmethod
+    def _validate_batch_object_ref(cls, value: str) -> str:
+        return normalize_object_ref_text(value)
+
+    @field_validator("assertion_refs")
+    @classmethod
+    def _validate_batch_assertion_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(normalize_object_ref_text(ref) for ref in value)
+
+
 class PendingObjectRefPayload(SurfacePayloadModel):
     """Typed placeholder embedded in ``PublicRefResolutionPayload.payload``.
 
     Some ``ObjectRefKind`` values (the polylogue-rxdo analysis-provenance
     kinds: ``query``, ``query-run``, ``result-set``, ``finding``, ``cohort``,
-    ``analysis``, ``annotation-batch``) are registered before their backing
-    storage tiers exist. ``resolve_ref`` returns this typed payload for them
-    instead of an opaque not-found so clients can distinguish "not yet
-    implemented" from "does not exist".
+    and ``analysis``) are registered before their backing storage tiers exist.
+    ``resolve_ref`` returns this typed payload for them instead of an opaque
+    not-found so clients can distinguish "not yet implemented" from "does not
+    exist". Annotation batches have durable user-tier storage and resolve
+    through :class:`AnnotationBatchPayload`.
     """
 
     unit: Literal["pending"] = "pending"
@@ -3191,6 +3226,7 @@ __all__ = [
     "ProviderPackageCompletenessPayload",
     "ProviderPackageCompletenessRowPayload",
     "ProviderPackageCompletenessTotalsPayload",
+    "AnnotationBatchPayload",
     "PendingObjectRefPayload",
     "PublicRefResolutionPayload",
     "MachineErrorPayload",

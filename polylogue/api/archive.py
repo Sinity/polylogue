@@ -279,7 +279,7 @@ def _unresolved_ref_payload(
 #: ``PendingObjectRefPayload`` (reason=substrate-pending) for these instead of
 #: attempting a lookup against tables that do not exist yet.
 _PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset(
-    {"query", "query-run", "result-set", "finding", "cohort", "analysis", "annotation-batch"}
+    {"query", "query-run", "result-set", "finding", "cohort", "analysis"}
 )
 
 
@@ -2755,6 +2755,8 @@ class PolylogueArchiveMixin:
                 return self._resolve_block_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
             if object_ref.kind == "assertion":
                 return self._resolve_assertion_object_ref(archive_root, ref, normalized_ref, object_ref)
+            if object_ref.kind == "annotation-batch":
+                return self._resolve_annotation_batch_object_ref(archive, ref, normalized_ref, object_ref)
             if object_ref.kind == "delegation":
                 return self._resolve_delegation_object_ref(archive, ref, normalized_ref, object_ref)
             if object_ref.kind in {"run", "observed-event", "context-snapshot"}:
@@ -2974,6 +2976,79 @@ class PolylogueArchiveMixin:
             object_refs=(normalized_ref, payload.target_ref),
             evidence_refs=payload.evidence_refs,
             actions=(_resolution_action("list assertion target", f"polylogue find {payload.target_ref} then read"),),
+        )
+
+    def _resolve_annotation_batch_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+    ) -> PublicRefResolutionPayload:
+        from polylogue.surfaces.payloads import (
+            AnnotationBatchPayload,
+            PublicRefResolutionPayload,
+            model_json_document,
+        )
+
+        batch = archive.get_annotation_batch(object_ref.object_id)
+        if batch is None:
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(
+                    ref,
+                    "annotation batch not found",
+                    normalized_ref=normalized_ref,
+                    kind="annotation-batch",
+                ),
+            )
+        payload = AnnotationBatchPayload(
+            batch_id=batch.batch_id,
+            batch_ref=batch.batch_ref,
+            schema_id=batch.schema_id,
+            schema_version=batch.schema_version,
+            qualified_schema_id=batch.qualified_schema_id,
+            target_ref=batch.target_ref,
+            source_result_ref=batch.source_result_ref,
+            actor_ref=batch.actor_ref,
+            model_ref=batch.model_ref,
+            prompt_ref=batch.prompt_ref,
+            total_count=batch.total_count,
+            valid_count=batch.valid_count,
+            invalid_count=batch.invalid_count,
+            abstained_count=batch.abstained_count,
+            assertion_refs=batch.assertion_refs,
+            validation_failures=batch.validation_failures,
+            metadata=batch.metadata,
+            created_at_ms=batch.created_at_ms,
+        )
+        object_refs = tuple(
+            dict.fromkeys(
+                (
+                    normalized_ref,
+                    payload.target_ref,
+                    payload.source_result_ref,
+                    payload.actor_ref,
+                    payload.model_ref,
+                    payload.prompt_ref,
+                    *payload.assertion_refs,
+                )
+            )
+        )
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="annotation-batch",
+            resolved=True,
+            payload_kind="annotation-batch",
+            payload=model_json_document(payload),
+            title=f"{payload.qualified_schema_id} batch {payload.batch_id}",
+            summary=(
+                f"{payload.valid_count}/{payload.total_count} valid; "
+                f"{payload.invalid_count} invalid; {payload.abstained_count} abstained"
+            ),
+            object_refs=object_refs,
+            actions=(_resolution_action("read annotation target", f"polylogue find {payload.target_ref} then read"),),
         )
 
     def _resolve_delegation_object_ref(

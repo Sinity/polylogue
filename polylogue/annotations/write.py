@@ -22,7 +22,10 @@ surface, which has the archive handle this single-connection helper does not.
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import sqlite3
+import unicodedata
 from collections.abc import Mapping, Sequence
 
 from polylogue.annotations.schema import (
@@ -32,12 +35,12 @@ from polylogue.annotations.schema import (
     validate_annotation_row,
 )
 from polylogue.core.enums import AssertionKind
-from polylogue.core.refs import ObjectRef, normalize_object_ref_text
-from polylogue.storage.sqlite.archive_tiers.user_annotations import (
-    read_annotation_batch,
-    read_durable_annotation_schema,
+from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    ArchiveAssertionEnvelope,
+    read_assertion_envelope,
+    upsert_assertion,
 )
-from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope, upsert_assertion
 
 _SCHEMA_PROVENANCE_KEY = "_schema"
 _BATCH_PROVENANCE_KEY = "_batch"
@@ -54,6 +57,60 @@ class AnnotationValidationError(ValueError):
             self.errors
         )
         super().__init__(message)
+
+
+def _nfc_json_value(value: object) -> object:
+    if isinstance(value, str):
+        return unicodedata.normalize("NFC", value)
+    if isinstance(value, list):
+        return [_nfc_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {unicodedata.normalize("NFC", str(key)): _nfc_json_value(item) for key, item in value.items()}
+    return value
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        _nfc_json_value(value),
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _normalized_annotation_confidence(value: object) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, float) or not math.isfinite(value):
+        raise ValueError("confidence must be a finite float or null")
+    return 0.0 if value == 0.0 else value
+
+
+def _immutable_annotation_inputs(
+    *,
+    scope_ref: str | None,
+    target_ref: str,
+    key: str | None,
+    value: object,
+    body_text: str | None,
+    author_ref: str,
+    author_kind: str,
+    evidence_refs: Sequence[str],
+    confidence: float | None,
+) -> dict[str, object]:
+    return {
+        "author_kind": author_kind,
+        "author_ref": author_ref,
+        "body_text": body_text,
+        "confidence": confidence,
+        "evidence_refs": list(evidence_refs),
+        "key": key,
+        "kind": AssertionKind.ANNOTATION.value,
+        "scope_ref": scope_ref,
+        "target_ref": target_ref,
+        "value": value,
+    }
 
 
 def assertion_id_for_schema_annotation(
@@ -127,9 +184,24 @@ def upsert_annotation_assertion(
         )
 
     normalized_target_ref = normalize_object_ref_text(target_ref)
+    normalized_author_ref = normalize_object_ref_text(author_ref)
+    normalized_evidence_refs = tuple(normalize_public_ref_text(ref) for ref in evidence_refs)
+    try:
+        normalized_confidence = _normalized_annotation_confidence(confidence)
+    except ValueError as exc:
+        raise AnnotationValidationError(
+            schema_id=registered_schema.qualified_id,
+            target_ref=normalized_target_ref,
+            errors=(str(exc),),
+        ) from exc
     normalized_batch_ref: str | None = None
     durable_batch = None
     if batch_ref is not None:
+        from polylogue.storage.sqlite.archive_tiers.user_annotations import (
+            read_annotation_batch,
+            read_durable_annotation_schema,
+        )
+
         batch_errors: list[str] = []
         try:
             normalized_batch_ref = normalize_object_ref_text(batch_ref)
@@ -156,9 +228,10 @@ def upsert_annotation_assertion(
                 f"batch_ref {normalized_batch_ref!r} targets {durable_batch.target_ref!r}, "
                 f"not {normalized_target_ref!r}"
             )
-        if durable_batch is not None and durable_batch.actor_ref != author_ref:
+        if durable_batch is not None and durable_batch.actor_ref != normalized_author_ref:
             batch_errors.append(
-                f"batch_ref {normalized_batch_ref!r} records actor {durable_batch.actor_ref!r}, not {author_ref!r}"
+                f"batch_ref {normalized_batch_ref!r} records actor {durable_batch.actor_ref!r}, "
+                f"not {normalized_author_ref!r}"
             )
         durable_schema = (
             read_durable_annotation_schema(conn, durable_batch.schema_id, durable_batch.schema_version)
@@ -183,7 +256,7 @@ def upsert_annotation_assertion(
     assertion_id = assertion_id_for_schema_annotation(
         schema_qualified_id=registered_schema.qualified_id,
         target_ref=normalized_target_ref,
-        author_ref=author_ref,
+        author_ref=normalized_author_ref,
         row_key=row_key,
         batch_ref=normalized_batch_ref,
     )
@@ -200,6 +273,59 @@ def upsert_annotation_assertion(
     if normalized_batch_ref is not None:
         stamped_value[_BATCH_PROVENANCE_KEY] = normalized_batch_ref
 
+    candidate_inputs = _immutable_annotation_inputs(
+        scope_ref=normalized_batch_ref,
+        target_ref=normalized_target_ref,
+        key=row_key,
+        value=stamped_value,
+        body_text=body_text,
+        author_ref=normalized_author_ref,
+        author_kind=author_kind,
+        evidence_refs=normalized_evidence_refs,
+        confidence=normalized_confidence,
+    )
+    try:
+        _canonical_json_bytes(candidate_inputs)
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise AnnotationValidationError(
+            schema_id=registered_schema.qualified_id,
+            target_ref=normalized_target_ref,
+            errors=("annotation immutable inputs must be finite canonical JSON",),
+        ) from exc
+
+    existing = read_assertion_envelope(conn, assertion_id)
+    if existing is not None:
+        existing_inputs = _immutable_annotation_inputs(
+            scope_ref=existing.scope_ref,
+            target_ref=existing.target_ref,
+            key=existing.key,
+            value=existing.value,
+            body_text=existing.body_text,
+            author_ref=existing.author_ref or "",
+            author_kind=existing.author_kind or "",
+            evidence_refs=existing.evidence_refs,
+            confidence=existing.confidence,
+        )
+        try:
+            drifted_fields = [
+                field
+                for field in candidate_inputs
+                if _canonical_json_bytes(candidate_inputs[field]) != _canonical_json_bytes(existing_inputs[field])
+            ]
+        except (TypeError, ValueError, UnicodeEncodeError) as exc:
+            raise AnnotationValidationError(
+                schema_id=registered_schema.qualified_id,
+                target_ref=normalized_target_ref,
+                errors=(f"assertion_id {assertion_id!r} has non-canonical stored immutable inputs",),
+            ) from exc
+        if drifted_fields:
+            raise AnnotationValidationError(
+                schema_id=registered_schema.qualified_id,
+                target_ref=normalized_target_ref,
+                errors=(f"assertion_id {assertion_id!r} immutable input drift: {sorted(drifted_fields)}",),
+            )
+        return existing
+
     return upsert_assertion(
         conn,
         assertion_id=assertion_id,
@@ -209,10 +335,10 @@ def upsert_annotation_assertion(
         key=row_key,
         value=stamped_value,
         body_text=body_text,
-        author_ref=author_ref,
+        author_ref=normalized_author_ref,
         author_kind=author_kind,
-        evidence_refs=evidence_refs,
-        confidence=confidence,
+        evidence_refs=normalized_evidence_refs,
+        confidence=normalized_confidence,
         now_ms=now_ms,
     )
 

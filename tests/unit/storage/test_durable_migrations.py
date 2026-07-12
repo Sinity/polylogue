@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.annotations.schema import DELEGATION_DISCOURSE_SCHEMA
 from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import BackupProfile, backup_archive
 from polylogue.storage.backup_attestation import (
@@ -136,8 +137,69 @@ def _create_user_v5(path: Path) -> None:
         conn.close()
 
 
-def _table_signature(conn: sqlite3.Connection, table: str) -> tuple[tuple[object, ...], ...]:
-    return tuple(tuple(row) for row in conn.execute(f"PRAGMA table_info({table})"))
+_USER_V6_SCHEMA_OBJECTS = (
+    "annotation_batches",
+    "annotation_schemas",
+    "idx_annotation_batches_schema_target_time",
+    "idx_annotation_batches_source_result_time",
+    "idx_assertions_scope_kind_status",
+)
+
+
+def _user_v6_schema_sql(conn: sqlite3.Connection) -> tuple[tuple[object, ...], ...]:
+    placeholders = ",".join("?" for _ in _USER_V6_SCHEMA_OBJECTS)
+    return tuple(
+        tuple(row)
+        for row in conn.execute(
+            f"""
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_schema
+            WHERE name IN ({placeholders})
+            ORDER BY type, name
+            """,
+            _USER_V6_SCHEMA_OBJECTS,
+        )
+    )
+
+
+def _assert_user_v6_annotation_checks(conn: sqlite3.Connection, *, suffix: str) -> None:
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO annotation_schemas (
+                schema_id, schema_version, definition_json, definition_sha256, registered_at_ms
+            ) VALUES (?, 1, ?, ?, 1)
+            """,
+            (f"check.{suffix}", '{"schema_id":"different","version":1}', "a" * 64),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO annotation_batches (
+                batch_id, schema_id, schema_version, target_ref, source_result_ref,
+                actor_ref, model_ref, prompt_ref, total_count, valid_count,
+                invalid_count, abstained_count, assertion_refs_json,
+                validation_failures_json, metadata_json, created_at_ms
+            ) VALUES (?, 'delegation.discourse', 1, 'delegation:check', 'result-set:check',
+                      'agent:check', 'agent:model', 'block:prompt:0', 2, 1, 0, 0,
+                      '["assertion:one"]', '[]', '{}', 1)
+            """,
+            (f"bad-counts-{suffix}",),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO annotation_batches (
+                batch_id, schema_id, schema_version, target_ref, source_result_ref,
+                actor_ref, model_ref, prompt_ref, total_count, valid_count,
+                invalid_count, abstained_count, assertion_refs_json,
+                validation_failures_json, metadata_json, created_at_ms
+            ) VALUES (?, 'delegation.discourse', 1, 'delegation:check', 'result-set:check',
+                      'agent:check', 'agent:model', 'block:prompt:0', 1, 1, 0, 0,
+                      '[]', '[]', '{}', 1)
+            """,
+            (f"bad-ref-count-{suffix}",),
+        )
 
 
 def _create_source_v1(path: Path) -> None:
@@ -242,13 +304,19 @@ def test_user_tier_v5_annotation_migration_requires_verified_backup_and_matches_
         assert conn.execute("SELECT assertion_id FROM assertions WHERE assertion_id = 'sentinel'").fetchone()
         schema_row = conn.execute(
             """
-            SELECT definition_json, definition_sha256
+            SELECT schema_id, schema_version, definition_json, definition_sha256, registered_at_ms
             FROM annotation_schemas
             WHERE schema_id = 'delegation.discourse' AND schema_version = 1
             """
         ).fetchone()
-        assert schema_row is not None
-        assert len(str(schema_row[1])) == 64
+        expected_seed = (
+            DELEGATION_DISCOURSE_SCHEMA.schema_id,
+            DELEGATION_DISCOURSE_SCHEMA.version,
+            DELEGATION_DISCOURSE_SCHEMA.canonical_definition_json(),
+            DELEGATION_DISCOURSE_SCHEMA.definition_fingerprint,
+            0,
+        )
+        assert schema_row == expected_seed
         assert {str(row[1]) for row in conn.execute("PRAGMA index_list(assertions)")} >= {
             "idx_assertions_scope_kind_status"
         }
@@ -256,11 +324,22 @@ def test_user_tier_v5_annotation_migration_requires_verified_backup_and_matches_
         fresh_db = tmp_path / "fresh-user-v6.db"
         initialize_archive_database(fresh_db, ArchiveTier.USER)
         with sqlite3.connect(fresh_db) as fresh_conn:
-            for table in ("annotation_schemas", "annotation_batches"):
-                assert _table_signature(conn, table) == _table_signature(fresh_conn, table)
+            assert _user_v6_schema_sql(conn) == _user_v6_schema_sql(fresh_conn)
             assert tuple(conn.execute("PRAGMA foreign_key_list(annotation_batches)")) == tuple(
                 fresh_conn.execute("PRAGMA foreign_key_list(annotation_batches)")
             )
+            assert (
+                fresh_conn.execute(
+                    """
+                SELECT schema_id, schema_version, definition_json, definition_sha256, registered_at_ms
+                FROM annotation_schemas
+                WHERE schema_id = 'delegation.discourse' AND schema_version = 1
+                """
+                ).fetchone()
+                == expected_seed
+            )
+            _assert_user_v6_annotation_checks(conn, suffix="migrated")
+            _assert_user_v6_annotation_checks(fresh_conn, suffix="fresh")
     finally:
         conn.close()
 

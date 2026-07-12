@@ -15,7 +15,7 @@ from polylogue.annotations.batch import AnnotationBatch, AnnotationBatchError
 from polylogue.annotations.schema import AnnotationSchema, AnnotationSchemaError
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.json import loads as json_loads
-from polylogue.core.refs import normalize_object_ref_text
+from polylogue.core.refs import ObjectRef, normalize_object_ref_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,17 +132,24 @@ def persist_annotation_schema(
 
 
 def _json_array_text(value: tuple[object, ...]) -> str:
-    return json.dumps(list(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(list(value), allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _json_document_text(value: JSONDocument) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(value, allow_nan=False, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _load_json_value(value: str, *, context: str) -> object:
+    try:
+        return json_loads(value)
+    except ValueError as exc:
+        raise AnnotationBatchError(f"{context} is not valid finite JSON") from exc
 
 
 def _load_string_tuple(value: object, *, context: str) -> tuple[str, ...]:
     if not isinstance(value, str):
         raise AnnotationBatchError(f"{context} is not stored as JSON text")
-    parsed = json_loads(value)
+    parsed = _load_json_value(value, context=context)
     if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
         raise AnnotationBatchError(f"{context} must decode to an array of strings")
     return tuple(cast(list[str], parsed))
@@ -151,16 +158,23 @@ def _load_string_tuple(value: object, *, context: str) -> tuple[str, ...]:
 def _load_document_tuple(value: object, *, context: str) -> tuple[JSONDocument, ...]:
     if not isinstance(value, str):
         raise AnnotationBatchError(f"{context} is not stored as JSON text")
-    parsed = json_loads(value)
+    parsed = _load_json_value(value, context=context)
     if not isinstance(parsed, list):
         raise AnnotationBatchError(f"{context} must decode to an array")
-    return tuple(require_json_document(item, context=context) for item in parsed)
+    try:
+        return tuple(require_json_document(item, context=context) for item in parsed)
+    except TypeError as exc:
+        raise AnnotationBatchError(f"{context} must contain only JSON objects") from exc
 
 
 def _load_document(value: object, *, context: str) -> JSONDocument:
     if not isinstance(value, str):
         raise AnnotationBatchError(f"{context} is not stored as JSON text")
-    return require_json_document(json_loads(value), context=context)
+    parsed = _load_json_value(value, context=context)
+    try:
+        return require_json_document(parsed, context=context)
+    except TypeError as exc:
+        raise AnnotationBatchError(f"{context} must decode to a JSON object") from exc
 
 
 def _batch_from_row(row: sqlite3.Row) -> AnnotationBatch:
@@ -208,13 +222,52 @@ def read_annotation_batch(conn: sqlite3.Connection, batch_id: str) -> Annotation
 def persist_annotation_batch(conn: sqlite3.Connection, batch: AnnotationBatch) -> AnnotationBatch:
     """Persist write-once batch provenance; incompatible id reuse fails closed."""
 
+    candidate_provenance = batch.canonical_provenance_bytes()
+    provenance = batch.provenance_document()
+    provenance_metadata = require_json_document(
+        provenance["metadata"],
+        context="annotation batch provenance metadata",
+    )
+    provenance_failures_value = provenance["validation_failures"]
+    if not isinstance(provenance_failures_value, list):  # pragma: no cover - internal snapshot invariant
+        raise AnnotationBatchError("annotation batch provenance validation_failures must be an array")
+    try:
+        provenance_failures = tuple(
+            require_json_document(item, context="annotation batch provenance validation failure")
+            for item in provenance_failures_value
+        )
+    except TypeError as exc:  # pragma: no cover - internal snapshot invariant
+        raise AnnotationBatchError(
+            "annotation batch provenance validation_failures must contain only JSON objects"
+        ) from exc
     conn.execute("PRAGMA foreign_keys = ON")
     schema = read_durable_annotation_schema(conn, batch.schema_id, batch.schema_version)
     if schema is None:
         raise AnnotationBatchError(f"annotation batch references unknown schema {batch.qualified_schema_id!r}")
+    if not schema.schema.accepts_target_kind(batch.target_ref):
+        raise AnnotationBatchError(
+            f"annotation batch target_ref {batch.target_ref!r} is incompatible with "
+            f"schema target_ref_kinds {list(schema.schema.target_ref_kinds)}"
+        )
+    try:
+        normalized_source_ref = normalize_object_ref_text(batch.source_result_ref)
+        source_ref = ObjectRef.parse(normalized_source_ref)
+    except ValueError as exc:
+        raise AnnotationBatchError("annotation batch source_result_ref must be a valid ObjectRef") from exc
+    if normalized_source_ref != batch.source_result_ref or source_ref.kind != "result-set":
+        raise AnnotationBatchError("annotation batch source_result_ref must use the 'result-set' ObjectRef kind")
+    try:
+        normalized_assertion_refs = tuple(normalize_object_ref_text(ref) for ref in batch.assertion_refs)
+        assertion_ref_kinds = tuple(ObjectRef.parse(ref).kind for ref in normalized_assertion_refs)
+    except ValueError as exc:
+        raise AnnotationBatchError("annotation batch assertion_refs must be valid ObjectRefs") from exc
+    if normalized_assertion_refs != batch.assertion_refs or any(kind != "assertion" for kind in assertion_ref_kinds):
+        raise AnnotationBatchError("annotation batch assertion_refs must use normalized 'assertion' ObjectRefs")
+    if len(set(normalized_assertion_refs)) != len(normalized_assertion_refs):
+        raise AnnotationBatchError("annotation batch assertion_refs must be unique after normalization")
     existing = read_annotation_batch(conn, batch.batch_id)
     if existing is not None:
-        if existing != batch:
+        if existing.canonical_provenance_bytes() != candidate_provenance:
             raise AnnotationBatchError(
                 f"annotation batch {batch.batch_ref!r} already exists with incompatible provenance"
             )
@@ -242,14 +295,16 @@ def persist_annotation_batch(conn: sqlite3.Connection, batch: AnnotationBatch) -
             batch.invalid_count,
             batch.abstained_count,
             _json_array_text(tuple(batch.assertion_refs)),
-            _json_array_text(tuple(batch.validation_failures)),
-            _json_document_text(batch.metadata),
+            _json_array_text(provenance_failures),
+            _json_document_text(provenance_metadata),
             batch.created_at_ms,
         ),
     )
     persisted = read_annotation_batch(conn, batch.batch_id)
     if persisted is None:  # pragma: no cover - INSERT followed by same-connection SELECT
         raise AnnotationBatchError(f"annotation batch {batch.batch_ref!r} was not persisted")
+    if persisted.canonical_provenance_bytes() != candidate_provenance:
+        raise AnnotationBatchError(f"annotation batch {batch.batch_ref!r} changed during durable persistence")
     return persisted
 
 
