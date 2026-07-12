@@ -16,6 +16,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
 MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]
+MCPCharacterLimit: TypeAlias = Annotated[int, Field(ge=1)] | None
 #: Optional non-negative count bound (min_messages/max_messages/min_words).
 #: ``ge=0`` rejects negatives at the MCP boundary, symmetric with the
 #: ``ge=1``/``ge=0`` guards already on limit/offset (#1749).
@@ -109,6 +110,7 @@ class MCPSessionQueryRequest:
     offset: MCPToolOffset = 0
     limit: MCPToolLimit = 10
     cursor: str | None = None
+    include_affordances: bool = False
 
     def build_spec(self, clamp_limit: Callable[[int | object], int]) -> SessionQuerySpec:
         """Build a SessionQuerySpec from this request using the given clamp helper."""
@@ -157,6 +159,12 @@ class MCPSessionQueryRequest:
             cursor=self.cursor,
         )
 
+    def response_arguments(self) -> dict[str, object]:
+        """Return MCP-callable arguments for a bounded replay descriptor."""
+        return {
+            field.name: getattr(self, field.name) for field in fields(self) if getattr(self, field.name) is not None
+        }
+
 
 def session_query_request_signature(
     *,
@@ -179,6 +187,8 @@ def session_query_request_signature(
     parameters: list[inspect.Parameter] = []
     for field in fields(MCPSessionQueryRequest):
         if field.name == "query" and not include_query:
+            continue
+        if field.name == "include_affordances" and not include_query:
             continue
         annotation = type_hints.get(field.name, Any)
         # ``search`` exposes ``query`` as a required parameter to preserve the
@@ -222,6 +232,7 @@ __all__ = [
     "session_query_request_signature",
     "MCPToolLimit",
     "MCPToolOffset",
+    "MCPCharacterLimit",
     "MCPSessionQueryRequest",
     "normalize_query_params",
 ]

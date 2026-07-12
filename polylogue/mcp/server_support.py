@@ -10,7 +10,9 @@ with that blast radius in mind; see docs/test-economics.md.
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, overload
@@ -36,6 +38,18 @@ logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None
 TResult = TypeVar("TResult")
 MCPRole = Literal["read", "write", "admin"]
+MCP_RESPONSE_BUDGET_BYTES = 25_000
+
+
+@dataclass(frozen=True)
+class _ResponseContext:
+    """Replay information attached by a tool while it serializes a response."""
+
+    tool: str
+    arguments: Mapping[str, object]
+
+
+_response_context_var: ContextVar[_ResponseContext | None] = ContextVar("mcp_response_context", default=None)
 
 
 class JSONPayloadSerializer(Protocol):
@@ -48,6 +62,10 @@ class ErrorJSONSerializer(Protocol):
 
 class FencedCodeExtractor(Protocol):
     def __call__(self, text: str, language: str = "") -> list[MCPFencedCodeBlock]: ...
+
+
+class ResponseContextHook(Protocol):
+    def __call__(self, tool: str, arguments: Mapping[str, object]) -> AbstractContextManager[None]: ...
 
 
 class SafeCallHook(Protocol):
@@ -82,6 +100,7 @@ class ServerCallbacks:
     get_config: Callable[[], Config]
     get_polylogue: Callable[[], Polylogue]
     extract_fenced_code: FencedCodeExtractor
+    response_context: ResponseContextHook
     role: MCPRole
 
 
@@ -107,15 +126,92 @@ def _extract_fenced_code(text: str, language: str = "") -> list[MCPFencedCodeBlo
     return results
 
 
+@contextmanager
+def _response_context(tool: str, arguments: Mapping[str, object]) -> Iterator[None]:
+    """Associate one serialized response with its safe, narrower replay call."""
+    token = _response_context_var.set(_ResponseContext(tool=tool, arguments=arguments))
+    try:
+        yield
+    finally:
+        _response_context_var.reset(token)
+
+
+def _compact_metadata(value: object, *, string_limit: int = 512, item_limit: int = 12) -> object:
+    """Keep the budget fallback informative without reproducing its large body."""
+    if isinstance(value, str):
+        return value if len(value) <= string_limit else value[:string_limit] + "…"
+    if isinstance(value, list):
+        return {"returned": len(value)}
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_metadata(item, string_limit=string_limit, item_limit=item_limit)
+            for key, item in list(value.items())[:item_limit]
+        }
+    return value
+
+
+def _narrow_continuation(context: _ResponseContext | None) -> dict[str, object] | None:
+    """Build a direct MCP call descriptor that re-reads the same evidence safely."""
+    if context is None:
+        return None
+    arguments = dict(context.arguments)
+    limit = arguments.get("limit")
+    if isinstance(limit, int) and not isinstance(limit, bool):
+        arguments["limit"] = max(1, min(limit, 3))
+    if context.tool == "get_messages":
+        arguments["max_chars_per_message"] = min(int(arguments.get("max_chars_per_message") or 4096), 4096)
+        arguments["excerpt"] = True
+    return {
+        "tool": context.tool,
+        "arguments": arguments,
+        "reason": "The original response exceeded the MCP response budget; retry this narrower call to read the same evidence.",
+    }
+
+
+def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: bool) -> str:
+    """Return a bounded metadata-only response instead of truncating JSON."""
+    body = payload.model_dump(mode="json", exclude_none=exclude_none)
+    context = _response_context_var.get()
+    continuation = _narrow_continuation(context)
+    envelope = {
+        "ok": True,
+        "status": "response_budget_exceeded",
+        "budget_exceeded": True,
+        "tool": context.tool if context is not None else None,
+        "budget_bytes": MCP_RESPONSE_BUDGET_BYTES,
+        "original_bytes": original_bytes,
+        "payload_type": type(payload).__name__,
+        "metadata": _compact_metadata(body),
+        "continuation": continuation,
+        "next_action": (
+            "Use continuation.tool with continuation.arguments to retrieve the same evidence in a bounded page."
+            if continuation is not None
+            else "Request a narrower page or projection for this response."
+        ),
+    }
+    return json.dumps(envelope, indent=2, ensure_ascii=False, default=str)
+
+
 def _json_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
-    """Serialize a typed MCP payload with canonical JSON formatting."""
+    """Serialize typed MCP output, replacing oversized bodies with a safe envelope."""
     to_json = getattr(payload, "to_json", None)
     if callable(to_json):
         result = to_json(exclude_none=exclude_none)
         if isinstance(result, str):
-            return result
+            original_bytes = len(result.encode("utf-8"))
+            return (
+                result
+                if original_bytes <= MCP_RESPONSE_BUDGET_BYTES
+                else _budget_envelope(payload, original_bytes=original_bytes, exclude_none=exclude_none)
+            )
         raise TypeError(f"{type(payload).__name__}.to_json() returned {type(result).__name__}, expected str")
-    return serialize_surface_payload(payload, exclude_none=exclude_none)
+    result = serialize_surface_payload(payload, exclude_none=exclude_none)
+    original_bytes = len(result.encode("utf-8"))
+    return (
+        result
+        if original_bytes <= MCP_RESPONSE_BUDGET_BYTES
+        else _budget_envelope(payload, original_bytes=original_bytes, exclude_none=exclude_none)
+    )
 
 
 def _clamp_limit(limit: int | object) -> int:
@@ -439,6 +535,7 @@ __all__ = [
     "_get_polylogue",
     "_get_runtime_services",
     "_json_payload",
+    "_response_context",
     "_safe_call",
     "_set_runtime_services",
     "role_allows",

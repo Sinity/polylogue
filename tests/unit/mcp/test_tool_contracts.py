@@ -476,6 +476,27 @@ class TestQueryTools:
         assert parsed["diagnostics"] is None
 
     @pytest.mark.asyncio
+    async def test_search_envelope_affordance_catalog_is_opt_in(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+
+        with _archive_config(archive_root):
+            default = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="hello",
+            )
+            opted_in = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="hello",
+                include_affordances=True,
+            )
+
+        assert json.loads(default)["action_affordances"] == []
+        assert json.loads(opted_in)["action_affordances"]
+
+    @pytest.mark.asyncio
     async def test_search_total_reflects_native_hit_count(self, tmp_path: Path, mcp_server: MCPServerUnderTest) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root, text="semantic planning notes for the refactor")
@@ -810,6 +831,21 @@ class TestGetSessionSummaryTool:
         assert conv["message_count"] == 2
         assert "messages" not in conv
 
+    def test_get_summary_includes_bounded_content_orientation(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive_with_semantic_messages(archive_root)
+
+        with _archive_config(archive_root):
+            result = invoke_surface(mcp_server._tool_manager._tools["get_session_summary"].fn, id=session_id)
+
+        summary = json.loads(result)["content_summary"]
+        assert summary["counts"]["messages"] == 3
+        assert summary["first_authored_user_excerpt"] == "typed human prompt"
+        assert summary["last_authored_user_excerpt"] == "typed human prompt"
+        assert summary["phase_count"] == 0
+
     def test_get_not_found(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
@@ -831,6 +867,44 @@ class TestGetSessionSummaryTool:
             result = invoke_surface(mcp_server._tool_manager._tools["get_messages"].fn, session_id=session_id)
 
         assert json.loads(result)["messages"][0]["text"] == long_text
+
+    def test_get_messages_honors_per_message_character_cap_and_excerpt(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        text = "opening-" + ("middle-" * 20) + "closing"
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root, native_id="excerpt", text=text)
+
+        with _archive_config(archive_root):
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                session_id=session_id,
+                max_chars_per_message=40,
+                excerpt=True,
+            )
+
+        message = json.loads(result)["messages"][0]
+        assert len(message["text"]) <= 40
+        assert message["text"].startswith("opening-")
+        assert message["text"].endswith("closing")
+        assert all(block.get("text") == "" for block in message["content_blocks"])
+
+    def test_get_messages_over_budget_returns_replayable_envelope(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root, native_id="oversized", text="x" * 30_000)
+
+        with _archive_config(archive_root):
+            result = invoke_surface(mcp_server._tool_manager._tools["get_messages"].fn, session_id=session_id)
+
+        envelope = json.loads(result)
+        assert envelope["status"] == "response_budget_exceeded"
+        assert envelope["budget_exceeded"] is True
+        assert envelope["continuation"]["tool"] == "get_messages"
+        assert envelope["continuation"]["arguments"]["session_id"] == session_id
+        assert envelope["continuation"]["arguments"]["max_chars_per_message"] == 4096
+        assert len(result.encode("utf-8")) <= envelope["budget_bytes"]
 
     @pytest.mark.parametrize(
         ("kwargs", "expected_texts"),

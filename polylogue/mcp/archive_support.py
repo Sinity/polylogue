@@ -332,6 +332,7 @@ def archive_search_payload(
     sort: str | None,
     config: Config | None = None,
     archive_root: Path | None = None,
+    include_affordances: bool = False,
 ) -> SearchEnvelope:
     """Build the generic MCP search envelope from archive block search."""
     from polylogue.surfaces.payloads import build_search_envelope
@@ -356,6 +357,7 @@ def archive_search_payload(
             query=query,
             retrieval_lane=resolved_lane,
             sort=sort,
+            action_affordances=_search_affordances(include_affordances),
         )
 
     filters = archive_query_filters(spec)
@@ -376,7 +378,17 @@ def archive_search_payload(
         query=query,
         retrieval_lane=retrieval_lane,
         sort=sort,
+        action_affordances=_search_affordances(include_affordances),
     )
+
+
+def _search_affordances(include_affordances: bool) -> tuple[object, ...]:
+    """Keep the capability catalog out of normal search responses."""
+    if not include_affordances:
+        return ()
+    from polylogue.operations.action_contracts import query_result_action_affordance_payloads
+
+    return tuple(query_result_action_affordance_payloads())
 
 
 def archive_query_unit_payload(
@@ -411,6 +423,8 @@ def archive_messages_payload(
     limit: int,
     offset: int,
     offset_from: str = "start",
+    max_chars_per_message: int | None = None,
+    excerpt: bool = False,
 ) -> MCPMessagesListPayload:
     """Build the generic MCP message-list envelope from an archive session."""
     from polylogue.mcp.payloads import MCPMessagesListPayload
@@ -447,7 +461,14 @@ def archive_messages_payload(
         )
     return MCPMessagesListPayload(
         session_id=session.session_id,
-        messages=tuple(archive_message_payload(message, session_id=session.session_id) for message in page),
+        messages=tuple(
+            _bounded_message_payload(
+                archive_message_payload(message, session_id=session.session_id),
+                max_chars=max_chars_per_message,
+                excerpt=excerpt,
+            )
+            for message in page
+        ),
         total=total,
         limit=limit,
         offset=effective_offset,
@@ -458,6 +479,36 @@ def archive_messages_payload(
         lineage_complete=session.lineage_complete,
         lineage_truncation_reason=session.lineage_truncation_reason,
     )
+
+
+def _bounded_message_payload(
+    payload: MCPMessagePayload,
+    *,
+    max_chars: int | None,
+    excerpt: bool,
+) -> MCPMessagePayload:
+    """Apply the MCP-only per-message body cap after role/type filtering."""
+    if max_chars is None or len(payload.text) <= max_chars:
+        return payload
+    text = _excerpt_text(payload.text, max_chars) if excerpt else payload.text[:max_chars]
+    # Content blocks duplicate message bodies. Preserve their structural
+    # metadata without leaking the uncapped text through a second field.
+    blocks = [
+        {key: ("" if key == "text" and isinstance(value, str) else value) for key, value in block.items()}
+        for block in payload.content_blocks
+    ]
+    return payload.model_copy(update={"text": text, "content_blocks": blocks})
+
+
+def _excerpt_text(text: str, max_chars: int) -> str:
+    if max_chars <= 1:
+        return text[:max_chars]
+    marker = "…[truncated]…"
+    if max_chars <= len(marker):
+        return text[:max_chars]
+    retained = max_chars - len(marker)
+    head = retained // 2
+    return text[:head] + marker + text[-(retained - head) :]
 
 
 def archive_search_hit_payload(hit: ArchiveSessionSearchHit, *, archive: ArchiveStore) -> SessionSearchHitPayload:
