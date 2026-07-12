@@ -38,7 +38,12 @@ describe("first-party provider page transport", () => {
     });
     installWindow("https://chatgpt.com/", fetchImpl);
 
-    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "inventory", params: { offset: 0, limit: 1 }, maxResponseBytes: 4096 });
+    const result = await executeProviderPageRequest({
+      provider: "chatgpt",
+      operation: "inventory",
+      params: { offset: 0, limit: 1, archived: false, starred: false },
+      maxResponseBytes: 4096,
+    });
 
     expect(result).toMatchObject({ ok: true, response: { ok: true, status: 200 } });
     expect(JSON.parse(result.response.body)).toMatchObject({ total: 2, items: [{ id: "conversation-1" }] });
