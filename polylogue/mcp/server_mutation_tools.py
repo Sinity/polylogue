@@ -233,7 +233,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("remove_tag", run)
+        return await hooks.async_safe_call("remove_tag", run, session_id=session_id)
 
     @mcp.tool()
     async def bulk_tag_sessions(session_ids: list[str], tags: list[str]) -> str:
@@ -657,7 +657,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             metadata = await poly.get_metadata(session_id)
             return hooks.json_payload(MCPMetadataPayload.from_document(metadata))  # type: ignore[arg-type]
 
-        return await hooks.async_safe_call("get_metadata", run)
+        return await hooks.async_safe_call("get_metadata", run, session_id=session_id)
 
     @mcp.tool()
     async def set_metadata(session_id: str, key: str, value: str) -> str:
@@ -706,7 +706,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("set_metadata", run)
+        return await hooks.async_safe_call("set_metadata", run, session_id=session_id)
 
     @mcp.tool()
     async def delete_metadata(session_id: str, key: str) -> str:
@@ -747,7 +747,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("delete_metadata", run)
+        return await hooks.async_safe_call("delete_metadata", run, session_id=session_id)
 
     @mcp.tool()
     async def delete_session(session_id: str, confirm: bool = False) -> str:
@@ -769,7 +769,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("delete_session", run)
+        return await hooks.async_safe_call("delete_session", run, session_id=session_id)
 
     # ------------------------------------------------------------------
     # Learning corrections (#1131)
@@ -884,7 +884,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("clear_corrections", run)
+        return await hooks.async_safe_call("clear_corrections", run, session_id=session_id)
 
 
 __all__ = ["register_mutation_tools"]

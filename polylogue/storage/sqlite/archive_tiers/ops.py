@@ -155,6 +155,23 @@ CREATE TABLE IF NOT EXISTS otlp_telemetry (
 
 CREATE INDEX IF NOT EXISTS idx_ops_otlp_telemetry_received
 ON otlp_telemetry(received_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS mcp_call_log (
+    call_id         TEXT PRIMARY KEY,
+    tool_name       TEXT NOT NULL,
+    session_id      TEXT,
+    started_at_ms   INTEGER NOT NULL,
+    finished_at_ms  INTEGER NOT NULL,
+    duration_ms     INTEGER NOT NULL CHECK(duration_ms >= 0),
+    success         INTEGER NOT NULL CHECK(success IN (0, 1)),
+    error_detail    TEXT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_ops_mcp_call_log_session
+ON mcp_call_log(session_id, started_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ops_mcp_call_log_tool
+ON mcp_call_log(tool_name, started_at_ms DESC);
 """
 
 __all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION"]

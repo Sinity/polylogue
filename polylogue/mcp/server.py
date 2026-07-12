@@ -42,8 +42,8 @@ def build_server(*, role: MCPRole = "read") -> FastMCP:
     hooks = ServerCallbacks(
         json_payload=_json_payload,
         clamp_limit=_clamp_limit,
-        safe_call=lambda fn_name, fn: _safe_call(fn_name, fn),
-        async_safe_call=lambda fn_name, fn: _async_safe_call(fn_name, fn),
+        safe_call=lambda fn_name, fn, *, session_id=None: _safe_call(fn_name, fn, session_id=session_id),
+        async_safe_call=lambda fn_name, fn, *, session_id=None: _async_safe_call(fn_name, fn, session_id=session_id),
         error_json=lambda message, **extra: _error_json(message, **extra),
         get_config=lambda: _get_config(),
         get_polylogue=lambda: _get_polylogue(),

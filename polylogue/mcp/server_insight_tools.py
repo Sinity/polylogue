@@ -165,7 +165,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("session_latency_profile", run)
+        return await hooks.async_safe_call("session_latency_profile", run, session_id=session_id)
 
     @mcp.tool()
     async def find_stuck_sessions(since: str | None = None, limit: int = 20) -> str:
@@ -267,7 +267,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("session_profile", run)
+        return await hooks.async_safe_call("session_profile", run, session_id=session_id)
 
     @mcp.tool()
     async def get_resume_brief(session_id: str, related_limit: int = 6) -> str:
@@ -286,7 +286,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json("Session not found", code="not_found", session_id=session_id)
             return hooks.json_payload(brief, exclude_none=False)
 
-        return await hooks.async_safe_call("get_resume_brief", run)
+        return await hooks.async_safe_call("get_resume_brief", run, session_id=session_id)
 
     @mcp.tool()
     async def find_resume_candidates(
@@ -716,7 +716,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("session_tool_timing", run)
+        return await hooks.async_safe_call("session_tool_timing", run, session_id=session_id)
 
     @mcp.tool()
     async def get_postmortem_bundle(
