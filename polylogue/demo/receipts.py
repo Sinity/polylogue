@@ -174,15 +174,23 @@ class CompletionClaimExperimentResult:
                 "denominator": denominator,
                 "unsupported_count": self.unsupported_count,
                 "unsupported_rate": self.unsupported_count / denominator if denominator else None,
+                "unsupported_percent": (100 * self.unsupported_count / denominator) if denominator else None,
                 "neutral_prior_count": self.neutral_prior_count,
                 "neutral_prior_rate": self.neutral_prior_count / denominator if denominator else None,
+                "neutral_prior_percent": (100 * self.neutral_prior_count / denominator) if denominator else None,
                 "contradicted_then_repaired_count": self.contradicted_then_repaired_count,
                 "contradicted_then_repaired_rate": (
                     self.contradicted_then_repaired_count / denominator if denominator else None
                 ),
+                "contradicted_then_repaired_percent": (
+                    100 * self.contradicted_then_repaired_count / denominator if denominator else None
+                ),
                 "contradicted_without_repair_count": self.contradicted_without_repair_count,
                 "contradicted_without_repair_rate": (
                     self.contradicted_without_repair_count / denominator if denominator else None
+                ),
+                "contradicted_without_repair_percent": (
+                    100 * self.contradicted_without_repair_count / denominator if denominator else None
                 ),
             },
             "evidence": [item.to_payload() for item in self.evidence],
@@ -241,19 +249,44 @@ def _archive_cursor(conn: sqlite3.Connection) -> str:
     return f"sha256:{sha256(payload.encode()).hexdigest()}"
 
 
-def _action_rows(conn: sqlite3.Connection, session_id: str, position_clause: str, position: int) -> list[sqlite3.Row]:
+def _action_rows(
+    conn: sqlite3.Connection,
+    session_id: str,
+    position_clause: str,
+    message_position: int,
+    variant_index: int,
+    block_position: int,
+) -> list[sqlite3.Row]:
     return conn.execute(
         f"""
-        SELECT a.*, result_message.position AS result_message_position, result_block.position AS result_block_position
+        SELECT a.*, result_message.position AS result_message_position,
+               result_message.variant_index AS result_message_variant_index,
+               result_block.position AS result_block_position
         FROM actions AS a
         JOIN blocks AS result_block ON result_block.block_id = a.tool_result_block_id
         JOIN messages AS result_message ON result_message.message_id = result_block.message_id
         WHERE a.session_id = ?
           AND (a.exit_code IS NOT NULL OR a.is_error IS NOT NULL)
-          AND result_message.position {position_clause} ?
+          AND (
+              result_message.position {position_clause} ?
+              OR (result_message.position = ? AND result_message.variant_index {position_clause} ?)
+              OR (
+                  result_message.position = ?
+                  AND result_message.variant_index = ?
+                  AND result_block.position {position_clause} ?
+              )
+          )
         ORDER BY result_message.position, result_message.variant_index, result_block.position, a.tool_result_block_id
         """,
-        (session_id, position),
+        (
+            session_id,
+            message_position,
+            message_position,
+            variant_index,
+            message_position,
+            variant_index,
+            block_position,
+        ),
     ).fetchall()
 
 
@@ -262,10 +295,12 @@ def _is_failed_action(row: sqlite3.Row) -> bool:
 
 
 def _is_matching_repair(failed: sqlite3.Row, candidate: sqlite3.Row) -> bool:
+    failed_command = _command_from_row(failed)
     return (
         not _is_failed_action(candidate)
         and str(candidate["tool_name"] or "") == str(failed["tool_name"] or "")
-        and _command_from_row(candidate) == _command_from_row(failed)
+        and bool(failed_command)
+        and _command_from_row(candidate) == failed_command
     )
 
 
@@ -287,7 +322,8 @@ def inspect_completion_claims(
         check_fts_readiness(message_fts_search_readiness_sync(conn), "Run `polylogued run`.")
         candidates_rows = conn.execute(
             """
-            SELECT b.block_id, b.text, m.session_id, m.position, s.origin, m.model_name
+            SELECT b.block_id, b.text, b.position AS block_position, m.session_id,
+                   m.position, m.variant_index, s.origin, m.model_name
             FROM blocks AS b
             JOIN messages AS m ON m.message_id = b.message_id
             JOIN sessions AS s ON s.session_id = m.session_id
@@ -328,7 +364,14 @@ def inspect_completion_claims(
             block_id = str(row["block_id"])
             if block_id not in selected:
                 continue
-            prior = _action_rows(conn, str(row["session_id"]), "<", int(row["position"]))
+            prior = _action_rows(
+                conn,
+                str(row["session_id"]),
+                "<",
+                int(row["position"]),
+                int(row["variant_index"]),
+                int(row["block_position"]),
+            )
             prior_action = prior[-1] if prior else None
             failed = prior_action if prior_action is not None and _is_failed_action(prior_action) else None
             repair = None
@@ -336,7 +379,14 @@ def inspect_completion_claims(
             if prior_action is None:
                 classification = "unsupported_by_structural_tool_evidence"
             elif failed is not None:
-                later = _action_rows(conn, str(row["session_id"]), ">", int(row["position"]))
+                later = _action_rows(
+                    conn,
+                    str(row["session_id"]),
+                    ">",
+                    int(row["position"]),
+                    int(row["variant_index"]),
+                    int(row["block_position"]),
+                )
                 repair = next((candidate for candidate in later if _is_matching_repair(failed, candidate)), None)
                 classification = (
                     "contradicted_then_repaired" if repair is not None else "contradicted_without_recorded_repair"
@@ -580,10 +630,14 @@ def render_demo_receipts(result: DemoReceiptsResult) -> str:
                 "completion-claim experiment:",
                 f"  sample manifest: {experiment.manifest.manifest_id}",
                 f"  denominator: {headline['denominator']}",
-                f"  unsupported by structural evidence: {headline['unsupported_count']}",
-                f"  neutral prior outcome: {headline['neutral_prior_count']}",
-                f"  contradicted then repaired: {headline['contradicted_then_repaired_count']}",
-                f"  contradicted without recorded repair: {headline['contradicted_without_repair_count']}",
+                _headline_line(headline, "unsupported", "unsupported by structural evidence"),
+                _headline_line(headline, "neutral_prior", "neutral prior outcome"),
+                _headline_line(headline, "contradicted_then_repaired", "contradicted then repaired"),
+                _headline_line(
+                    headline,
+                    "contradicted_without_repair",
+                    "contradicted without recorded repair",
+                ),
             ]
         )
     if result.problems:
@@ -603,13 +657,24 @@ def render_completion_claims(result: CompletionClaimExperimentResult) -> str:
             f"sample manifest: {result.manifest.manifest_id}",
             f"evidence fingerprint: {result.evidence_fingerprint}",
             f"denominator: {headline['denominator']}",
-            f"unsupported by structural evidence: {headline['unsupported_count']}",
-            f"neutral prior outcome: {headline['neutral_prior_count']}",
-            f"contradicted then repaired: {headline['contradicted_then_repaired_count']}",
-            f"contradicted without recorded repair: {headline['contradicted_without_repair_count']}",
+            _headline_line(headline, "unsupported", "unsupported by structural evidence"),
+            _headline_line(headline, "neutral_prior", "neutral prior outcome"),
+            _headline_line(headline, "contradicted_then_repaired", "contradicted then repaired"),
+            _headline_line(
+                headline,
+                "contradicted_without_repair",
+                "contradicted without recorded repair",
+            ),
             "",
         ]
     )
+
+
+def _headline_line(headline: dict[str, object], key: str, label: str) -> str:
+    count = int(headline[f"{key}_count"])
+    percent = headline[f"{key}_percent"]
+    rendered_percent = "n/a" if percent is None else f"{float(percent):.1f}%"
+    return f"{label}: {count} ({rendered_percent})"
 
 
 __all__ = [

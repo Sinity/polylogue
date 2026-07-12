@@ -10,7 +10,12 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.demo import inspect_completion_claims, inspect_demo_receipts, seed_demo_archive
+from polylogue.demo import (
+    inspect_completion_claims,
+    inspect_demo_receipts,
+    render_completion_claims,
+    seed_demo_archive,
+)
 from polylogue.scenarios import DEMO_CODEX_RECEIPTS_SESSION_ID
 
 
@@ -50,6 +55,9 @@ async def test_completion_claim_experiment_has_a_stable_manifest_and_structural_
         )
         == result.sample_size
     )
+    assert headline["unsupported_percent"] == 100 * float(headline["unsupported_rate"])
+    assert headline["contradicted_then_repaired_percent"] == 100 * float(headline["contradicted_then_repaired_rate"])
+    assert f"unsupported by structural evidence: {result.unsupported_count} (" in render_completion_claims(result)
 
 
 @pytest.mark.asyncio
@@ -182,6 +190,65 @@ async def test_completion_claim_experiment_uses_tool_result_time_not_tool_use_ti
     (evidence,) = [item for item in result.evidence if item.session_ref == f"session:{DEMO_CODEX_RECEIPTS_SESSION_ID}"]
     assert evidence.classification == "unsupported_by_structural_tool_evidence"
     assert evidence.prior_action_ref is None
+
+
+@pytest.mark.asyncio
+async def test_completion_claim_experiment_orders_same_position_variants(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        claim_position, claim_variant_index = conn.execute(
+            """
+            SELECT m.position, m.variant_index
+            FROM blocks AS b
+            JOIN messages AS m ON m.message_id = b.message_id
+            WHERE b.session_id = ? AND b.block_type = 'text' AND b.text LIKE 'All tests pass.%'
+            """,
+            (DEMO_CODEX_RECEIPTS_SESSION_ID,),
+        ).fetchone()
+        failed_result_message_id = conn.execute(
+            """
+            SELECT message_id
+            FROM blocks
+            WHERE session_id = ? AND block_type = 'tool_result' AND tool_result_is_error = 1
+            LIMIT 1
+            """,
+            (DEMO_CODEX_RECEIPTS_SESSION_ID,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE messages SET position = ?, variant_index = ? WHERE message_id = ?",
+            (claim_position, claim_variant_index + 1, failed_result_message_id),
+        )
+        conn.commit()
+
+    result = inspect_completion_claims(archive_root, sample_size=10)
+    (evidence,) = [item for item in result.evidence if item.session_ref == f"session:{DEMO_CODEX_RECEIPTS_SESSION_ID}"]
+    assert evidence.classification == "unsupported_by_structural_tool_evidence"
+    assert evidence.prior_action_ref is None
+
+
+@pytest.mark.asyncio
+async def test_completion_claim_experiment_requires_command_evidence_for_a_repair(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        updated = conn.execute(
+            """
+            UPDATE blocks
+            SET tool_input = NULL
+            WHERE session_id = ? AND block_type = 'tool_use'
+            """,
+            (DEMO_CODEX_RECEIPTS_SESSION_ID,),
+        ).rowcount
+        conn.commit()
+    assert updated >= 2
+
+    result = inspect_completion_claims(archive_root, sample_size=10)
+    (evidence,) = [item for item in result.evidence if item.session_ref == f"session:{DEMO_CODEX_RECEIPTS_SESSION_ID}"]
+    assert evidence.classification == "contradicted_without_recorded_repair"
+    assert evidence.repair_action_ref is None
 
 
 @pytest.mark.asyncio
