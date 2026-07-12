@@ -15,6 +15,7 @@ from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPErrorPayload,
     MCPReadinessReportPayload,
+    MCPRootPayload,
     MCPTagCountsPayload,
     session_tree_payload,
 )
@@ -97,6 +98,14 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 detail=type(exc).__name__,
             )
         return hooks.json_payload(MCPTagCountsPayload(root=tags))
+
+    @mcp.resource("polylogue://capabilities/action-affordances")
+    def action_affordances_resource() -> str:
+        """Return the shared action catalog once, outside ordinary query responses."""
+        from polylogue.operations.action_contracts import action_affordance_list_payload
+
+        payload = action_affordance_list_payload()
+        return hooks.json_payload(MCPRootPayload(root={"action_affordances": payload.model_dump(mode="json")}))
 
     @mcp.resource("polylogue://messages/{conv_id}")
     async def messages_resource(conv_id: str) -> str:

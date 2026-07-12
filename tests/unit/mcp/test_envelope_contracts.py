@@ -420,6 +420,16 @@ class TestSessionTreeResourceShapeMatchesTool:
             )
 
 
+def test_action_affordance_capability_resource_matches_catalog(read_server: MCPServerUnderTest) -> None:
+    """The opt-in catalog is available once without inflating search results."""
+    from tests.infra.mcp import invoke_surface
+
+    result = invoke_surface(_resource(read_server, "polylogue://capabilities/action-affordances"))
+
+    payload = json.loads(result)
+    assert payload["action_affordances"]
+
+
 class TestResourceErrorEnvelopes:
     """All 8 MCP resources must emit the structured error envelope.
 

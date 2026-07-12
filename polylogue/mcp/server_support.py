@@ -56,6 +56,7 @@ _QUERY_ERROR_VALID_VALUES: dict[str, tuple[str, ...]] = {
     "exclude_action": QUERY_ACTION_TYPES,
     "action_sequence": QUERY_SEQUENCE_ACTION_TYPES,
 }
+_SESSION_ID_ARGUMENT_NAMES: dict[str, str] = {"get_session_summary": "id"}
 
 
 @dataclass(frozen=True)
@@ -153,18 +154,40 @@ def _response_context(tool: str, arguments: Mapping[str, object]) -> Iterator[No
         _response_context_var.reset(token)
 
 
-def _compact_metadata(value: object, *, string_limit: int = 512, item_limit: int = 12) -> object:
+def _compact_metadata(
+    value: object,
+    *,
+    string_limit: int = 512,
+    item_limit: int = 12,
+    depth: int = 0,
+    max_depth: int = 3,
+) -> object:
     """Keep the budget fallback informative without reproducing its large body."""
     if isinstance(value, str):
         return value if len(value) <= string_limit else value[:string_limit] + "…"
     if isinstance(value, list):
         return {"returned": len(value)}
     if isinstance(value, dict):
+        if depth >= max_depth:
+            return {"fields": len(value), "truncated": True}
         return {
-            str(key): _compact_metadata(item, string_limit=string_limit, item_limit=item_limit)
+            str(key): _compact_metadata(
+                item,
+                string_limit=string_limit,
+                item_limit=item_limit,
+                depth=depth + 1,
+                max_depth=max_depth,
+            )
             for key, item in list(value.items())[:item_limit]
         }
     return value
+
+
+def _fallback_response_arguments(fn_name: str, session_id: str | None) -> dict[str, object]:
+    """Return replayable identifiers carried by the safe-call contract."""
+    if session_id is None:
+        return {}
+    return {_SESSION_ID_ARGUMENT_NAMES.get(fn_name, "session_id"): session_id}
 
 
 def _narrow_continuation(context: _ResponseContext | None) -> dict[str, object] | None:
@@ -429,7 +452,8 @@ def _safe_call(
     """
     started_at_ms = _now_ms()
     try:
-        result = fn()
+        with _response_context(fn_name, _fallback_response_arguments(fn_name, session_id)):
+            result = fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
         _record_mcp_call_log(
@@ -495,7 +519,8 @@ async def _async_safe_call(
     """Async counterpart of :func:`_safe_call`. Same isolation and call-log contract."""
     started_at_ms = _now_ms()
     try:
-        result = await fn()
+        with _response_context(fn_name, _fallback_response_arguments(fn_name, session_id)):
+            result = await fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
         _record_mcp_call_log(

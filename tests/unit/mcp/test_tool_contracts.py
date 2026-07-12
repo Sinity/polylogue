@@ -60,6 +60,8 @@ from polylogue.mcp.archive_support import (
     archive_search_payload,
     archive_session_list_payload,
 )
+from polylogue.mcp.payloads import MCPRootPayload
+from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES, _json_payload
 from polylogue.mcp.server_tools import _MCP_READ_TOOL_SPECS
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -540,6 +542,18 @@ class TestQueryTools:
         assert [item["id"] for item in payload["items"]].count("codex-session:repeated") == 1
         counts = {item["id"]: item["match_count"] for item in payload["items"]}
         assert counts == {"codex-session:repeated": 2, "codex-session:other": 1}
+        assert all(item["match_count_is_exact"] is True for item in payload["items"])
+
+    def test_budget_envelope_stays_bounded_for_deep_metadata(self) -> None:
+        nested: object = "x" * 512
+        for _ in range(5):
+            nested = {f"field-{index}": nested for index in range(4)}
+
+        result = _json_payload(MCPRootPayload(root={"nested": nested}))
+
+        payload = json.loads(result)
+        assert payload["status"] == "response_budget_exceeded"
+        assert len(result.encode("utf-8")) <= MCP_RESPONSE_BUDGET_BYTES
 
     def test_list_sessions_invalid_sort_enumerates_valid_values(self, mcp_server: MCPServerUnderTest) -> None:
         result = invoke_surface(mcp_server._tool_manager._tools["list_sessions"].fn, sort="started_at")
@@ -885,6 +899,61 @@ class TestArchiveTools:
         assert payload["source"] == "codex-session"
         assert payload["origin"] == "codex-session"
         assert payload["messages"][0]["blocks"][0]["text"] == "hello from mcp"
+
+    @pytest.mark.asyncio
+    async def test_archive_get_session_over_budget_has_replayable_continuation(
+        self, mcp_server: MCPServerUnderTest
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.write import (
+            ArchiveBlockRow,
+            ArchiveMessageRow,
+            ArchiveSessionEnvelope,
+        )
+
+        session_id = "codex-session:oversized"
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.archive_get_session = AsyncMock(
+                return_value=ArchiveSessionEnvelope(
+                    session_id=session_id,
+                    native_id="oversized",
+                    origin="codex-session",
+                    title="Oversized",
+                    active_leaf_message_id=f"{session_id}:m1",
+                    messages=(
+                        ArchiveMessageRow(
+                            message_id=f"{session_id}:m1",
+                            native_id="m1",
+                            role="user",
+                            position=0,
+                            variant_index=0,
+                            is_active_path=True,
+                            is_active_leaf=True,
+                            blocks=(
+                                ArchiveBlockRow(
+                                    block_id=f"{session_id}:m1:0",
+                                    message_id=f"{session_id}:m1",
+                                    block_type="text",
+                                    text="x" * 30_000,
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            )
+            mock_get_polylogue.return_value = mock_poly
+
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["archive_get_session"].fn,
+                session_id=session_id,
+            )
+
+        payload = json.loads(raw)
+        assert payload["continuation"] == {
+            "tool": "archive_get_session",
+            "arguments": {"session_id": session_id},
+            "reason": "The original response exceeded the MCP response budget; retry this narrower call to read the same evidence.",
+        }
 
 
 class TestGetSessionSummaryTool:

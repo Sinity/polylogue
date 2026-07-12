@@ -198,6 +198,8 @@ def test_archive_list_sessions_stops_after_requested_distinct_page() -> None:
     assert [item.id for item in payload.items] == ["codex-session:first", "codex-session:second"]
     assert payload.total == 3
     assert payload.next_offset == 2
+    assert [item.match_count for item in payload.items] == [1, 249]
+    assert all(item.match_count_is_exact is False for item in payload.items)
     assert archive.search_summaries.call_count == 1
 
 

@@ -190,9 +190,10 @@ class MCPSessionSearchNoResultsPayload(SurfacePayloadModel):
 
 
 class MCPMatchedSessionSummaryPayload(MCPSessionSummaryPayload):
-    """Session-list row carrying how many raw matches it coalesced."""
+    """Session-list row carrying its observed raw-match cardinality."""
 
     match_count: int = Field(default=1, ge=1)
+    match_count_is_exact: bool = True
 
 
 class MCPPaginatedQueryResultPayload(SurfacePayloadModel):

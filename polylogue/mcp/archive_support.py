@@ -171,13 +171,15 @@ def archive_matched_summary_payload(
     summary: ArchiveSessionSummary,
     *,
     match_count: int,
+    match_count_is_exact: bool,
 ) -> MCPMatchedSessionSummaryPayload:
-    """Add exact raw-match cardinality to one coalesced session row."""
+    """Add observed raw-match cardinality to one coalesced session row."""
     from polylogue.mcp.payloads import MCPMatchedSessionSummaryPayload
 
     return MCPMatchedSessionSummaryPayload(
         **archive_summary_payload(summary).model_dump(mode="python"),
         match_count=match_count,
+        match_count_is_exact=match_count_is_exact,
     )
 
 
@@ -310,7 +312,11 @@ def archive_session_list_payload(
         total = offset + len(page) + (1 if next_offset is not None else 0)
         return MCPPaginatedQueryResultPayload(
             items=tuple(
-                archive_matched_summary_payload(summary, match_count=match_counts[summary.session_id])
+                archive_matched_summary_payload(
+                    summary,
+                    match_count=match_counts[summary.session_id],
+                    match_count_is_exact=False,
+                )
                 for summary in page
             ),
             total=total,
@@ -320,6 +326,7 @@ def archive_session_list_payload(
         )
     filters = archive_query_filters(spec)
     text_query = _archive_text_query(spec)
+    match_counts_are_exact = True
     if text_query is None:
         summaries = tuple(
             archive.list_summaries(
@@ -337,7 +344,7 @@ def archive_session_list_payload(
         page = summaries
     else:
         total = archive.count_search_sessions(text_query, **filters)
-        summaries, match_counts = _coalesced_search_summaries(
+        summaries, match_counts, match_counts_are_exact = _coalesced_search_summaries(
             archive,
             query=text_query,
             filters=filters,
@@ -349,7 +356,12 @@ def archive_session_list_payload(
     next_offset = offset + len(page) if offset + len(page) < total else None
     return MCPPaginatedQueryResultPayload(
         items=tuple(
-            archive_matched_summary_payload(summary, match_count=match_counts[summary.session_id]) for summary in page
+            archive_matched_summary_payload(
+                summary,
+                match_count=match_counts[summary.session_id],
+                match_count_is_exact=(True if text_query is None else match_counts_are_exact),
+            )
+            for summary in page
         ),
         total=total,
         limit=limit,
@@ -366,7 +378,7 @@ def _coalesced_search_summaries(
     sort: str | None,
     reverse: bool,
     unique_limit: int,
-) -> tuple[tuple[ArchiveSessionSummary, ...], dict[str, int]]:
+) -> tuple[tuple[ArchiveSessionSummary, ...], dict[str, int], bool]:
     """Coalesce only the raw hits required to construct one session page."""
     chunk_size = 250
     raw_offset = 0
@@ -386,14 +398,12 @@ def _coalesced_search_summaries(
         for hit in hits:
             summaries_by_id.setdefault(hit.session_id, archive.read_summary(hit.session_id))
             match_counts[hit.session_id] = match_counts.get(hit.session_id, 0) + 1
-            if len(summaries_by_id) >= unique_limit:
-                break
-        if len(summaries_by_id) >= unique_limit:
-            break
-        raw_offset += len(hits)
         if len(hits) < chunk_size:
-            break
-    return tuple(summaries_by_id.values()), match_counts
+            return tuple(summaries_by_id.values()), match_counts, True
+        if len(summaries_by_id) >= unique_limit:
+            return tuple(summaries_by_id.values()), match_counts, False
+        raw_offset += len(hits)
+    return tuple(summaries_by_id.values()), match_counts, True
 
 
 def archive_search_payload(
