@@ -53,6 +53,29 @@ def test_parent_helpers_require_parent_context_and_build_request() -> None:
         query_verbs._require_parent_context(click.Context(click.Command("verb")))
 
 
+@pytest.mark.parametrize(
+    ("expression", "message"),
+    [
+        ("max-tokens=0", "expected integer >= 1"),
+        ("include-assertions=maybe", "expected true/false"),
+        ("max-tokens=4,max-tokens=8", "Duplicate --projection key"),
+    ],
+)
+def test_read_projection_expression_rejects_invalid_operator_input(expression: str, message: str) -> None:
+    """The public --projection DSL must reject malformed budget and boolean input."""
+    with pytest.raises(click.UsageError, match=message):
+        query_verbs._parse_read_projection_expression(expression)
+
+
+def test_read_projection_expression_normalizes_public_aliases() -> None:
+    """Projection aliases must reach the typed projection field names."""
+    assert query_verbs._parse_read_projection_expression("tokens:7 redact=excluded assertions=yes") == {
+        "max_tokens": 7,
+        "redact_paths": False,
+        "include_assertions": True,
+    }
+
+
 def test_execute_query_verb_dispatches_typed_request() -> None:
     _, child = _context_pair()
     request = RootModeRequest.from_params({"query": ("alpha",)})

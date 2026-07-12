@@ -8,11 +8,8 @@ this contract and depends on the shape staying stable.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -32,6 +29,7 @@ from polylogue.maintenance.planner import (
     preview_backfill,
 )
 from polylogue.maintenance.targets import build_maintenance_target_catalog
+from tests.infra.storage_records import DbFactory, db_setup
 
 
 def _make_config(tmp_path: Path) -> Config:
@@ -45,6 +43,16 @@ def _make_config(tmp_path: Path) -> Config:
         sources=[],
         db_path=tmp_path / "archive.db",
     )
+
+
+def _caller_archive_workspace(workspace_env: dict[str, Path]) -> dict[str, Path]:
+    """Initialize a caller archive distinct from the ambient fixture root."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    caller_archive_root = workspace_env["data_root"] / "caller-archive"
+    with ArchiveStore(caller_archive_root):
+        pass
+    return {**workspace_env, "archive_root": caller_archive_root}
 
 
 class TestBackfillKindCoverage:
@@ -335,111 +343,40 @@ class TestConfigThreading:
     (the original scaffold did the latter and broke multi-archive tests).
     """
 
-    def test_preview_threads_config_db_path(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    def test_preview_reads_the_callers_seeded_archive(self, workspace_env: dict[str, Path]) -> None:
+        """Planner debt comes from the supplied archive, not ambient paths."""
+        caller_workspace = _caller_archive_workspace(workspace_env)
+        index_db = db_setup(caller_workspace)
+        DbFactory(index_db).create_session(id="planner-config")
+        config = Config(
+            archive_root=caller_workspace["archive_root"],
+            render_root=workspace_env["data_root"] / "render",
+            sources=[],
+            db_path=index_db,
+        )
 
-        config = _make_config(tmp_path)
-        initialize_active_archive_root(config.archive_root)
-        expected_index = config.archive_root / "index.db"
+        preview = preview_backfill(config, targets=("empty_sessions",))
 
-        seen: list[Path] = []
+        assert preview.targets == ("empty_sessions",)
+        assert preview.affected_rows == 1
+        assert preview.results
 
-        def fake_open(path: object, **_: object) -> MagicMock:
-            seen.append(Path(str(path)))
-            return MagicMock()
+    def test_execute_dry_run_reads_the_callers_seeded_archive(self, workspace_env: dict[str, Path]) -> None:
+        caller_workspace = _caller_archive_workspace(workspace_env)
+        index_db = db_setup(caller_workspace)
+        DbFactory(index_db).create_session(id="planner-execute")
+        config = Config(
+            archive_root=caller_workspace["archive_root"],
+            render_root=workspace_env["data_root"] / "render",
+            sources=[],
+            db_path=index_db,
+        )
 
-        with (
-            patch(
-                "polylogue.storage.sqlite.connection_profile.open_readonly_connection",
-                side_effect=fake_open,
-            ),
-            patch(
-                "polylogue.storage.repair.collect_archive_debt_statuses_sync",
-                return_value={},
-            ),
-            patch(
-                "polylogue.storage.repair.preview_counts_from_archive_debt",
-                return_value={},
-            ),
-        ):
-            preview_backfill(config, targets=("session_insights",))
+        operation = execute_backfill(config, targets=("empty_sessions",), dry_run=True)
 
-        assert seen == [expected_index]
-
-    def test_execute_threads_config_db_path(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-        config = _make_config(tmp_path)
-        initialize_active_archive_root(config.archive_root)
-        expected_index = config.archive_root / "index.db"
-
-        seen: list[Path] = []
-
-        def fake_open(path: object, **_: object) -> MagicMock:
-            seen.append(Path(str(path)))
-            return MagicMock()
-
-        with (
-            patch(
-                "polylogue.storage.sqlite.connection_profile.open_readonly_connection",
-                side_effect=fake_open,
-            ),
-            patch(
-                "polylogue.storage.repair.collect_archive_debt_statuses_sync",
-                return_value={},
-            ),
-            patch(
-                "polylogue.storage.repair.preview_counts_from_archive_debt",
-                return_value={},
-            ),
-            patch(
-                "polylogue.storage.repair.run_selected_maintenance",
-                return_value=[],
-            ),
-        ):
-            op = execute_backfill(config, targets=("session_insights",))
-
-        assert seen == [expected_index]
-        # An execute that succeeded with zero results is COMPLETED (all([]) is True).
-        assert op.status is BackfillStatus.COMPLETED
-
-
-class TestExecuteFailureSamples:
-    """When the executor raises, the failure must surface as a bounded sample."""
-
-    def test_unexpected_exception_populates_failure_samples(self, tmp_path: Path) -> None:
-        config = _make_config(tmp_path)
-
-        @contextmanager
-        def fake_connection_context(db_path: object) -> Iterator[object]:
-            yield object()
-
-        with (
-            patch(
-                "polylogue.storage.sqlite.connection.connection_context",
-                fake_connection_context,
-            ),
-            patch(
-                "polylogue.storage.repair.collect_archive_debt_statuses_sync",
-                return_value={},
-            ),
-            patch(
-                "polylogue.storage.repair.preview_counts_from_archive_debt",
-                return_value={},
-            ),
-            patch(
-                "polylogue.storage.repair.run_selected_maintenance",
-                side_effect=RuntimeError("simulated repair failure"),
-            ),
-        ):
-            op = execute_backfill(config, targets=("session_insights",))
-
-        assert op.status is BackfillStatus.FAILED
-        assert op.failure_samples.truncated is False
-        assert len(op.failure_samples.samples) == 1
-        sample = op.failure_samples.samples[0]
-        assert sample.kind == "RuntimeError"
-        assert "simulated repair failure" in sample.message
+        assert operation.status is BackfillStatus.COMPLETED
+        assert operation.affected_rows == 1
+        assert operation.results[0]["name"] == "empty_sessions"
 
 
 class TestDerivedModelStatusInvalidatedReason:

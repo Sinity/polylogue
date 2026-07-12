@@ -18,6 +18,7 @@ from polylogue.config import Config
 from polylogue.core.json import JSONDocument, loads
 from polylogue.daemon.cli import main
 from polylogue.daemon.convergence import ConvergenceStage
+from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -50,6 +51,48 @@ def test_polylogued_version_option_reports_version() -> None:
 
     assert result.exit_code == 0
     assert result.output.startswith("polylogued, version ")
+
+
+def test_polylogued_health_json_runs_against_isolated_workspace(workspace_env: dict[str, Path]) -> None:
+    """Health CLI returns structured output without requiring a live daemon."""
+    result = CliRunner().invoke(main, ["health", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = loads(result.output)
+    assert isinstance(payload, dict)
+    assert "overall_status" in payload
+    assert isinstance(payload["alerts"], list)
+
+
+def test_polylogued_health_error_json_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI health propagates an unhealthy aggregate through its process status."""
+    monkeypatch.setattr(
+        "polylogue.daemon.cli.check_health",
+        lambda *, tiers: DaemonHealth(overall_status=HealthSeverity.ERROR, checked_at="2026-07-13T00:00:00+00:00"),
+    )
+
+    result = CliRunner().invoke(main, ["health", "--format", "json"])
+
+    assert result.exit_code == 1
+    payload = loads(result.output)
+    assert isinstance(payload, dict)
+    assert payload["overall_status"] == "error"
+
+
+def test_polylogued_health_expensive_flag_selects_all_tiers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The expensive convenience flag must request all health tiers."""
+    observed: list[set[HealthTier]] = []
+
+    def _check_health(*, tiers: set[HealthTier]) -> DaemonHealth:
+        observed.append(tiers)
+        return DaemonHealth(overall_status=HealthSeverity.OK, checked_at="2026-07-13T00:00:00+00:00")
+
+    monkeypatch.setattr("polylogue.daemon.cli.check_health", _check_health)
+
+    result = CliRunner().invoke(main, ["health", "--expensive", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert observed == [{HealthTier.FAST, HealthTier.MEDIUM, HealthTier.EXPENSIVE}]
 
 
 @pytest.mark.contract
