@@ -103,7 +103,8 @@ def test_click_bash_completion_protocol_runs_in_a_real_pty(
     )
 
     assert result.exit_code == 0
-    assert "--origin" in grid_to_text(result.grid)
+    completion_rows = result.raw_output.decode("utf-8").replace("\r\n", "\n").splitlines()
+    assert completion_rows == ["plain,--origin", "plain,origin:"]
 
 
 def test_select_uses_fzf_first_ranked_candidate_in_a_real_pty(

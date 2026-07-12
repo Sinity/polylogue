@@ -240,6 +240,8 @@
       ops     Run operational archive and daemon commands.
       `polylogue status` is the root shortcut for `polylogue ops status`; deeper
       maintenance stays under `ops`.
+    Other commands:
+      annotations  Import typed annotation batches.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_narrow_width
@@ -312,188 +314,186 @@
         polylogue --diagnose <args>       # explain parser dec
   isions
   Options:
-    --help-markdown                 Emit the full --help tree
-  (root + every
-                                    subcommand) as Markdown an
-  d exit.
-    -i, --id TEXT                   Session ID (exact or prefi
-  x match)
-    -c, --contains TEXT             FTS term (repeatable = AND
-  )
+    --help-markdown                 Emit the full --help
+                                    tree (root + every
+                                    subcommand) as Markdown
+                                    and exit.
+    -i, --id TEXT                   Session ID (exact or
+                                    prefix match)
+    -c, --contains TEXT             FTS term (repeatable =
+                                    AND)
     --exclude-text TEXT             Exclude FTS term
-    --retrieval-lane LANE           Query lane: dialogue FTS,
-  action text, or
+    --retrieval-lane LANE           Query lane: dialogue
+                                    FTS, action text, or
                                     hybrid
     --lexical                       Force FTS-only search.
-    --semantic                      Treat the query as a simil
-  arity prompt
-                                    (vector-only; requires emb
-  eddings).
-    --origin TEXT                   Include origins (comma = O
-  R)
+    --semantic                      Treat the query as a
+                                    similarity prompt
+                                    (vector-only; requires
+                                    embeddings).
+    --origin TEXT                   Include origins (comma =
+                                    OR)
     --exclude-origin TEXT           Exclude origins
-    -r, --repo TEXT                 Filter by repository name
-  (comma = OR)
-    --project TEXT                  Filter by provider project
-   ref, e.g. ChatGPT
-                                    g-p-<id> (comma = OR)
-    -t, --tag TEXT                  Include tags (comma = OR,
-  supports
-                                    key:value)
+    -r, --repo TEXT                 Filter by repository
+                                    name (comma = OR)
+    --project TEXT                  Filter by provider
+                                    project ref, e.g.
+                                    ChatGPT g-p-<id> (comma
+                                    = OR)
+    -t, --tag TEXT                  Include tags (comma =
+                                    OR, supports key:value)
     --exclude-tag TEXT              Exclude tags
     --title TEXT                    Title contains
-    --referenced-path TEXT          Referenced file path conta
-  ins substring
+    --referenced-path TEXT          Referenced file path
+                                    contains substring
                                     (repeatable = AND)
-    --cwd-prefix TEXT               Filter sessions whose reco
-  rded working
-                                    directory starts with this
-   prefix
-    --action ACTION                 Require semantic action ca
-  tegory (repeatable
-                                    = AND)
-    --exclude-action ACTION         Exclude semantic action ca
-  tegory (repeatable
-                                    = AND)
-    --action-sequence TEXT          Require ordered semantic a
-  ction subsequence
+    --cwd-prefix TEXT               Filter sessions whose
+                                    recorded working
+                                    directory starts with
+                                    this prefix
+    --action ACTION                 Require semantic action
+                                    category (repeatable =
+                                    AND)
+    --exclude-action ACTION         Exclude semantic action
+                                    category (repeatable =
+                                    AND)
+    --action-sequence TEXT          Require ordered semantic
+                                    action subsequence
                                     (comma-separated)
-    --action-text TEXT              Require text within normal
-  ized action
-                                    evidence (repeatable = AND
-  )
-    --tool TEXT                     Require normalized tool na
-  me (repeatable =
+    --action-text TEXT              Require text within
+                                    normalized action
+                                    evidence (repeatable =
                                     AND)
-    --exclude-tool TEXT             Exclude normalized tool na
-  me (repeatable =
-                                    AND)
-    --similar TEXT                  Semantic similarity query
-  (requires
+    --tool TEXT                     Require normalized tool
+                                    name (repeatable = AND)
+    --exclude-tool TEXT             Exclude normalized tool
+                                    name (repeatable = AND)
+    --similar TEXT                  Semantic similarity
+                                    query (requires
                                     embeddings)
-    --has TEXT                      Filter by content: thinkin
-  g (reasoning),
-                                    tools (calls), summary, at
-  tachments
-    --has-tool-use                  Only sessions with tool us
-  e (SQL pushdown)
-    --has-thinking                  Only sessions with thinkin
-  g blocks (SQL
+    --has TEXT                      Filter by content:
+                                    thinking (reasoning),
+                                    tools (calls), summary,
+                                    attachments
+    --has-tool-use                  Only sessions with tool
+                                    use (SQL pushdown)
+    --has-thinking                  Only sessions with
+                                    thinking blocks (SQL
                                     pushdown)
-    --has-paste                     Only sessions with paste e
-  vidence (SQL
-                                    pushdown)
-    --typed-only                    Only sessions without past
-  e evidence (typed
+    --has-paste                     Only sessions with paste
+                                    evidence (SQL pushdown)
+    --typed-only                    Only sessions without
+                                    paste evidence (typed
                                     prose only)
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
-    --since-session TEXT            Show sessions in same cwd
-  after this session
+    --since-session TEXT            Show sessions in same
+                                    cwd after this session
                                     ID
-    --since TEXT                    After date (ISO, 'yesterda
-  y', 'last week')
+    --since TEXT                    After date (ISO,
+                                    'yesterday', 'last
+                                    week')
     --until TEXT                    Before date
     -l, -n, --limit INTEGER         Max results
-    --offset INTEGER                Offset for paginated resul
-  ts
-    --cursor TEXT                   Opaque keyset cursor from
-  a previous
-                                    response's next_cursor. St
-  able across
-                                    archive growth for ranked
-  search (#1268).
-    --latest                        Most recent (= --sort date
-   --limit 1)
+    --offset INTEGER                Offset for paginated
+                                    results
+    --cursor TEXT                   Opaque keyset cursor
+                                    from a previous
+                                    response's next_cursor.
+                                    Stable across archive
+                                    growth for ranked search
+                                    (#1268).
+    --latest                        Most recent (= --sort
+                                    date --limit 1)
     --sort [date|tokens|messages|words|longest|random]
                                     Sort by field
     --reverse                       Reverse sort order
-    --sample INTEGER                Random sample of N session
-  s
-    -o, --output TEXT               Output destinations: brows
-  er, clipboard,
+    --sample INTEGER                Random sample of N
+                                    sessions
+    -o, --output TEXT               Output destinations:
+                                    browser, clipboard,
                                     stdout (comma-separated)
-    --json                          Shortcut for --format json
-  . Disables color
-                                    and progress for pipeable
-  output. (#1689)
+    --json                          Shortcut for --format
+                                    json. Disables color and
+                                    progress for pipeable
+                                    output. (#1689)
     -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|
   plaintext|csv]
-                                    Output format (for --lates
-  t, --stream, or
-                                    verb output). `ndjson` emi
-  ts one JSON
-                                    document per line, streami
-  ng-friendly for
-                                    shell pipelines and LLM to
-  ol-use harnesses.
-    --explain                       Explain query DSL parsing
-  and lowering
-                                    instead of executing the q
-  uery.
-    --stream                        Stream output (low memory)
-  . Requires
+                                    Output format (for
+                                    --latest, --stream, or
+                                    verb output). `ndjson`
+                                    emits one JSON document
+                                    per line, streaming-
+                                    friendly for shell
+                                    pipelines and LLM tool-
+                                    use harnesses.
+    --explain                       Explain query DSL
+                                    parsing and lowering
+                                    instead of executing the
+                                    query.
+    --stream                        Stream output (low
+                                    memory). Requires
                                     --latest or -i ID.
     --set TEXT...                   Set metadata key value
-    --add-tag TEXT                  Add tags (comma-separated)
-    --plain                         Force non-interactive plai
-  n output
+    --add-tag TEXT                  Add tags (comma-
+                                    separated)
+    --plain                         Force non-interactive
+                                    plain output
     -v, --verbose                   Verbose output
-    --diagnose                      Explain CLI parser decisio
-  ns on stderr
-                                    before running. Useful whe
-  n query-first
-                                    dispatch surprises you: sh
-  ows whether tokens
-                                    were routed to a subcomman
-  d, an explicit
-                                    query, or the strict comma
-  nd floor.
-    --version                       Show the version and exit.
-    -h, --help                      Show this message and exit
-  .
+    --diagnose                      Explain CLI parser
+                                    decisions on stderr
+                                    before running. Useful
+                                    when query-first
+                                    dispatch surprises you:
+                                    shows whether tokens
+                                    were routed to a
+                                    subcommand, an explicit
+                                    query, or the strict
+                                    command floor.
+    --version                       Show the version and
+                                    exit.
+    -h, --help                      Show this message and
+                                    exit.
   Commands:
     Search, read, and action workflows:
       find      Search the archive, then optionally run an...
-      read      Read matched sessions (route to view<PATH>
-  on).
+      read      Read matched sessions (route to
+                view<PATH>).
       select    Select one matched session or print candidate
-  identities.
-      mark      Mark selected sessions; review candidates unde
-  r mark candidates.
-      analyze   Analyze matched sessions and named facet famil
-  ies.
+                identities.
+      mark      Mark selected sessions; review candidates
+                under mark candidates.
+      analyze   Analyze matched sessions and named facet
+                families.
       facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
       continue  Compile a successor-agent continuation report.
-      Use `find QUERY then ACTION`; `facets` is the direct arc
-  hive aggregate
-      command.
+      Use `find QUERY then ACTION`; `facets` is the direct
+      archive aggregate command.
     Setup, import, and evidence:
       config    Show resolved Polylogue configuration with...
-      init      Detect chat sources and write a starter polylo
-  gue.toml.
+      init      Detect chat sources and write a starter
+                polylogue.toml.
       hooks     Install and monitor harness capture hooks.
       import    Import sessions from configured sources.
-      demo      Seed and verify the deterministic demo archive
-  .
+      demo      Seed and verify the deterministic demo
+                archive.
       tutorial  Inspect first-run setup state.
-      Use these for first-run setup, hook wiring, source impor
-  t, demo archives,
-      and onboarding checks.
+      Use these for first-run setup, hook wiring, source
+      import, demo archives, and onboarding checks.
     Reader and local UI:
       agents     Inspect agent coordination state.
       dashboard  Launch the terminal dashboard TUI.
-      `agents` exposes JSON-first coordination views for agent
-   loops;
-      `dashboard` launches the terminal TUI.
+      `agents` exposes JSON-first coordination views for
+      agent loops; `dashboard` launches the terminal TUI.
     Operations and maintenance:
       status  Show daemon and archive status.
       ops     Run operational archive and daemon commands.
-      `polylogue status` is the root shortcut for `polylogue o
-  ps status`; deeper
-      maintenance stays under `ops`.
+      `polylogue status` is the root shortcut for `polylogue
+      ops status`; deeper maintenance stays under `ops`.
+    Other commands:
+      annotations  Import typed annotation batches.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_wide_width
@@ -661,5 +661,7 @@
       ops     Run operational archive and daemon commands.
       `polylogue status` is the root shortcut for `polylogue ops status`; deeper
       maintenance stays under `ops`.
+    Other commands:
+      annotations  Import typed annotation batches.
   '''
 # ---
