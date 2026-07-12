@@ -7,6 +7,8 @@ the ~2.5 s archive/storage import cost.
 
 from __future__ import annotations
 
+import sys
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -45,10 +47,42 @@ class AppEnv:
         ui: UI | None = None,
         services: RuntimeServices | None = None,
         plain: bool = True,
+        debug_timing: bool = False,
     ) -> None:
         self._ui = ui
         self._services = services
         self._plain = plain
+        self._debug_timing = debug_timing
+        self._active_timings: dict[str, float] = {}
+        self._timings: dict[str, float] = {}
+
+    @property
+    def debug_timing(self) -> bool:
+        """Whether this invocation should emit its phase timing table."""
+        return self._debug_timing
+
+    def begin_timing(self, phase: str) -> None:
+        """Start a named monotonic timing phase when debugging is enabled."""
+        if self._debug_timing:
+            self._active_timings[phase] = perf_counter()
+
+    def finish_timing(self, phase: str) -> None:
+        """Finish a previously started phase without affecting normal output."""
+        started_at = self._active_timings.pop(phase, None)
+        if started_at is not None:
+            self._timings[phase] = (perf_counter() - started_at) * 1000
+
+    def record_timing(self, phase: str, started_at: float) -> None:
+        """Record an externally scoped monotonic timing phase."""
+        if self._debug_timing:
+            self._timings[phase] = (perf_counter() - started_at) * 1000
+
+    def emit_debug_timings(self) -> None:
+        """Write the opt-in phase table to stderr after command output."""
+        if not self._debug_timing or not self._timings:
+            return
+        rows = "\n".join(f"{phase:<12} {elapsed_ms:8.1f} ms" for phase, elapsed_ms in self._timings.items())
+        sys.stderr.write(f"polylogue timing\n{rows}\n")
 
     @property
     def ui(self) -> UI:

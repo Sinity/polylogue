@@ -9,6 +9,7 @@ The CLI uses a hybrid structure:
 from __future__ import annotations
 
 import os
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 import click
@@ -30,6 +31,9 @@ from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
     from polylogue.ui import UI
+
+
+_CLI_IMPORT_STARTED_AT = perf_counter()
 
 
 class QueryFirstGroup(QueryFirstGroupBase):
@@ -388,8 +392,12 @@ def cli(
         configure_logging(verbose=True)
 
     use_plain = should_use_plain(plain=plain)
-    env = AppEnv(plain=use_plain)
+    debug_timing = os.environ.get("POLYLOGUE_DEBUG_TIMING", "").lower() in {"1", "true", "yes", "on"}
+    env = AppEnv(plain=use_plain, debug_timing=debug_timing)
+    env.record_timing("startup", _CLI_IMPORT_STARTED_AT)
     ctx.obj = env
+    if debug_timing:
+        ctx.call_on_close(env.emit_debug_timings)
 
 
 @click.command("find", hidden=True, context_settings={"help_option_names": ["-h", "--help"]})

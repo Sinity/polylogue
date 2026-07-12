@@ -2953,6 +2953,29 @@ SEARCH_FORMAT_CASES = [
 class TestSearchQueryContracts:
     """Matrix coverage for search filters and output formats."""
 
+    def test_debug_timing_keeps_query_output_on_stdout(
+        self, search_workspace: SearchWorkspace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opt-in timing reports real CLI phases without corrupting JSON output.
+
+        This invokes the production Click root, query compiler, archive open,
+        list execution, and renderer.  Removing any checkpoint around those
+        production dependencies makes the corresponding stderr phase assertion
+        fail while the JSON assertion protects the stdout/stderr contract.
+        """
+        from polylogue.cli import cli
+
+        del search_workspace
+        monkeypatch.setenv("POLYLOGUE_DEBUG_TIMING", "1")
+
+        result = CliRunner().invoke(cli, ["--plain", "find", "origin:chatgpt-export", "-f", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["mode"] == "list"
+        assert "polylogue timing" in result.stderr
+        for phase in ("startup", "import", "config", "compile", "db-open", "execute", "render"):
+            assert phase in result.stderr
+
     def test_structured_only_cli_query_skips_absent_message_fts(self, search_workspace: SearchWorkspace) -> None:
         """A field-only CLI query must keep working when lexical search is unavailable.
 
