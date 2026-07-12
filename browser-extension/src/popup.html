@@ -189,7 +189,7 @@
       button.primary .button-status {
         color: #d8e6f2;
       }
-      input {
+      input, select {
         width: 100%;
         min-height: 40px;
         padding: 8px 10px;
@@ -318,6 +318,33 @@
 
       <section>
         <div class="row"><span class="label">Receiver health</span><span id="receiver-health" class="value">--</span></div>
+      </section>
+
+      <section id="backfill-panel">
+        <div class="section-head">
+          <strong>Background backfill</strong>
+          <span id="backfill-status" class="value">idle</span>
+        </div>
+        <select id="backfill-job" aria-label="Backfill job"><option value="">No jobs yet</option></select>
+        <div class="setting-row">
+          <select id="backfill-provider" aria-label="Backfill provider">
+            <option value="chatgpt">ChatGPT</option>
+            <option value="claude-ai">Claude.ai</option>
+          </select>
+          <input id="backfill-cutoff" type="date" aria-label="Capture conversations updated since">
+        </div>
+        <div class="row"><span class="label">Inventory cursor</span><span id="backfill-cursor" class="value">--</span></div>
+        <div class="row"><span class="label">Progress</span><span id="backfill-progress" class="value">--</span></div>
+        <div class="row"><span class="label">Cadence / cooldown</span><span id="backfill-rate" class="value">--</span></div>
+        <div class="row"><span class="label">Last ACK / error</span><span id="backfill-last" class="value">--</span></div>
+        <div class="controls">
+          <button id="backfill-start" class="primary"><span class="button-label">Start</span><span class="button-status"></span></button>
+          <button id="backfill-pause"><span class="button-label">Pause</span><span class="button-status"></span></button>
+          <button id="backfill-resume"><span class="button-label">Resume</span><span class="button-status"></span></button>
+          <button id="backfill-cancel"><span class="button-label">Cancel</span><span class="button-status"></span></button>
+          <button id="backfill-export"><span class="button-label">Export ledger</span><span class="button-status"></span></button>
+        </div>
+        <p class="log-meta">Runs against the authenticated provider inventory without activating foreground tabs. Provider controls and cooldowns are always honored.</p>
       </section>
 
       <section>

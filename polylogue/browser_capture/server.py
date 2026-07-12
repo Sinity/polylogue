@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import time
@@ -250,12 +251,14 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if length <= 0 or length > MAX_BROWSER_CAPTURE_BODY_BYTES:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_body_size")
             return None
+        raw = self.rfile.read(length)
         try:
-            parsed: object = json.loads(self.rfile.read(length))
+            parsed: object = json.loads(raw)
         except json.JSONDecodeError:
             logger.warning("browser_capture.invalid_json", request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_json")
             return None
+        self._request_content_hash = hashlib.sha256(raw).hexdigest()
         return parsed
 
     def _do_post(self) -> None:
@@ -307,6 +310,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 provider=result.provider,
                 provider_session_id=result.provider_session_id,
                 artifact_ref=result.artifact_ref,
+                content_hash=self._request_content_hash,
                 bytes_written=result.bytes_written,
                 replaced=result.replaced,
             ).model_dump(mode="json"),

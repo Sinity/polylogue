@@ -70,6 +70,10 @@ The filename is deterministic from provider and provider session id, so repeated
 observation of the same web session replaces the same source artifact. Receiver
 responses expose this artifact as an `artifact_ref` relative to the spool root;
 absolute filesystem paths stay inside the receiver process.
+An accepted response also carries `content_hash`, the SHA-256 of the exact
+UTF-8 JSON request bytes. The receiver returns it only after the atomic spool
+write succeeds. Background backfill therefore treats a response as a durable
+ACK only when both `X-Request-ID` and the expected content hash match.
 
 Every receiver response carries `X-Request-ID`. If the extension or a local
 debug probe sends a safe `X-Request-ID` header, the receiver echoes its
@@ -99,6 +103,40 @@ archive-state feedback. Provider adapters should prefer provider-native
 structured page/app payloads where available and use DOM text extraction only
 as a compatibility fallback. The shared envelope carries session, turn,
 attachment, provenance, and provider metadata semantics.
+
+### Background inventory delta
+
+An explicitly started background job uses a ChatGPT or Claude.ai provider
+adapter with four operations: inventory enumeration, native fetch, response
+classification, and normalized capture. IndexedDB stores the inventory cursor,
+queue state, attempts, eligibility deadline, lease owner/expiry, fidelity,
+submitted envelope, and receiver receipt. MV3 alarms resume eligible work after
+service-worker termination; expired leases return to their prior state.
+
+The default provider concurrency is one. Token cadence is conservative and
+learned upward after throttling. `Retry-After` is authoritative, retry delays
+use exponential full jitter, and repeated 429/403/challenge or transport
+failures open a fail-paused circuit. Queue size, captures per wake, and daily
+request count are bounded. Receiver downtime never marks an item complete and
+does not force a second provider fetch: the native-full envelope waits durably
+for an idempotent receiver ACK.
+
+An IndexedDB execution lease serializes inventory and native-fetch requests as
+well as queue ownership. The coordinator atomically reserves provider budget
+before network I/O; request timeouts are shorter than the lease. Pause/cancel
+increments the job generation and transactionally cancels queue entries, so a
+late response cannot restore stale running state. Successful ACK finalization
+atomically updates job, queue, and the provider-native revision ledger. A later
+job skips only an exact trusted `(provider, native id, updated_at)` revision;
+records without a revision are fetched. Stored-envelope bytes, receiver retry
+attempts, and actual IndexedDB quota errors all fail paused rather than growing
+without bound.
+
+This workflow repairs gaps relative to an immutable export/GDPR baseline and a
+user-selected cutoff. It honors provider authentication and controls and cannot
+prove completeness beyond the authenticated inventory returned by the provider.
+It never bypasses anti-bot checks, discovers deleted/ephemeral records absent
+from inventory, or activates an operator foreground tab.
 
 ## Dataflow and boundary
 

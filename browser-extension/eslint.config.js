@@ -19,11 +19,19 @@ export default [
         URLSearchParams: "readonly",
         fetch: "readonly",
         TextEncoder: "readonly",
+        AbortController: "readonly",
+        structuredClone: "readonly",
       },
     },
     rules: {
       "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
       "no-undef": "error",
+    },
+  },
+  {
+    files: ["src/background.js", "src/backfill/**/*.js"],
+    languageOptions: {
+      sourceType: "module",
     },
   },
   {
@@ -40,6 +48,8 @@ export default [
         afterEach: "readonly",
         URL: "readonly",
         URLSearchParams: "readonly",
+        document: "readonly",
+        structuredClone: "readonly",
       },
     },
   },

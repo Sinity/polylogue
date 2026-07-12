@@ -337,6 +337,44 @@ function renderReceiverHealth(health) {
   node.title = health.detail || "";
 }
 
+let selectedBackfillJobId = null;
+
+function renderBackfill(jobs) {
+  const statusNode = document.getElementById("backfill-status");
+  if (!statusNode) return;
+  const list = Array.isArray(jobs) ? [...jobs].sort((left, right) => {
+    const leftActive = ["running", "paused"].includes(left.status) ? 1 : 0;
+    const rightActive = ["running", "paused"].includes(right.status) ? 1 : 0;
+    return rightActive - leftActive || String(right.updated_at || right.created_at || "").localeCompare(String(left.updated_at || left.created_at || ""));
+  }) : [];
+  const job = list.find((candidate) => candidate.id === selectedBackfillJobId) || list[0] || null;
+  const selector = document.getElementById("backfill-job");
+  if (selector) {
+    selector.innerHTML = list.length
+      ? list.map((candidate) => `<option value="${escapeHtml(candidate.id)}">${escapeHtml(`${candidate.provider} · ${candidate.status} · ${candidate.cutoff || "no cutoff"}`)}</option>`).join("")
+      : '<option value="">No jobs yet</option>';
+  }
+  if (!job) {
+    statusNode.textContent = "idle";
+    return;
+  }
+  selectedBackfillJobId = job.id;
+  if (selector) selector.value = job.id;
+  statusNode.textContent = `${job.provider} · ${job.status}`;
+  document.getElementById("backfill-cursor").textContent = job.inventory_complete ? `${job.inventory_cursor} · complete` : job.inventory_cursor || "--";
+  const progress = job.progress || {};
+  document.getElementById("backfill-progress").textContent = `${progress.complete || 0}/${progress.total || 0} · ${progress.retry || 0} retry · ${progress.no_turns || 0} empty · ${(progress.error || 0) + (progress.operator_action || 0)} attention`;
+  const cooldown = job.cooldown_until_ms ? new Date(job.cooldown_until_ms).toLocaleTimeString() : "none";
+  document.getElementById("backfill-rate").textContent = `${Math.round((job.learned_cadence_ms || 0) / 1000)}s · ${cooldown}`;
+  document.getElementById("backfill-last").textContent = job.last_ack?.receiver_request_id || job.last_error || "--";
+}
+
+async function refreshBackfills() {
+  const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.status" });
+  renderBackfill(result?.jobs || []);
+  return result;
+}
+
 function renderDebugLog(items) {
   const debug = document.getElementById("debug-log");
   const safeItems = Array.isArray(items) ? items.slice(0, 24) : [];
@@ -429,6 +467,7 @@ async function render() {
   document.getElementById("state").textContent = explanation.headline;
   document.getElementById("state-detail").textContent = explanation.detail;
   setBadge(badgeKind, badgeText);
+  await refreshBackfills().catch(() => renderBackfill([]));
 }
 
 async function refreshStatus(reason = "popup_manual") {
@@ -540,6 +579,50 @@ document.getElementById("debug-export").addEventListener("click", async () => {
     const link = document.createElement("a");
     link.href = url;
     link.download = `polylogue-browser-capture-debug-${Date.now()}.json`;
+    link.click();
+    globalThis.URL.revokeObjectURL(url);
+  }, { busy: "Exporting", ok: "Exported" });
+});
+
+document.getElementById("backfill-start")?.addEventListener("click", async () => {
+  await withAction("backfill-start", async () => {
+    const provider = document.getElementById("backfill-provider").value;
+    const cutoffValue = document.getElementById("backfill-cutoff").value;
+    if (!cutoffValue) throw new Error("backfill_cutoff_required");
+    const response = await chrome.runtime.sendMessage({
+      type: "polylogue.backfill.start",
+      provider,
+      cutoff: new Date(`${cutoffValue}T00:00:00Z`).toISOString(),
+    });
+    selectedBackfillJobId = response.job.id;
+    await refreshBackfills();
+  }, { busy: "Starting", ok: "Started" });
+});
+
+document.getElementById("backfill-job")?.addEventListener("change", async (event) => {
+  selectedBackfillJobId = event.target.value || null;
+  await refreshBackfills();
+});
+
+for (const action of ["pause", "resume", "cancel"]) {
+  document.getElementById(`backfill-${action}`)?.addEventListener("click", async () => {
+    if (!selectedBackfillJobId) return;
+    await withAction(`backfill-${action}`, async () => {
+      await chrome.runtime.sendMessage({ type: "polylogue.backfill.control", job_id: selectedBackfillJobId, action });
+      await refreshBackfills();
+    }, { busy: `${action}…`, ok: action });
+  });
+}
+
+document.getElementById("backfill-export")?.addEventListener("click", async () => {
+  if (!selectedBackfillJobId) return;
+  await withAction("backfill-export", async () => {
+    const response = await chrome.runtime.sendMessage({ type: "polylogue.backfill.export", job_id: selectedBackfillJobId });
+    const blob = new globalThis.Blob([`${JSON.stringify(response.ledger, null, 2)}\n`], { type: "application/json" });
+    const url = globalThis.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `polylogue-backfill-${selectedBackfillJobId}.json`;
     link.click();
     globalThis.URL.revokeObjectURL(url);
   }, { busy: "Exporting", ok: "Exported" });

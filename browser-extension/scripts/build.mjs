@@ -28,7 +28,7 @@ const REPO_ROOT = resolve(EXT_ROOT, "..");
 const FIREFOX_GECKO_ID = "polylogue-browser-capture@sinity.dev";
 
 function parseArgs(argv) {
-  const args = { version: null, out: join(EXT_ROOT, "dist"), syncOnly: false };
+  const args = { version: null, out: join(EXT_ROOT, "dist"), syncOnly: false, syncSource: true };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--version") {
@@ -37,9 +37,11 @@ function parseArgs(argv) {
       args.out = resolve(argv[++i]);
     } else if (a === "--sync-only") {
       args.syncOnly = true;
+    } else if (a === "--no-source-sync") {
+      args.syncSource = false;
     } else if (a === "--help" || a === "-h") {
       process.stdout.write(
-        "Usage: build.mjs [--version X.Y.Z] [--out DIR] [--sync-only]\n",
+        "Usage: build.mjs [--version X.Y.Z] [--out DIR] [--sync-only] [--no-source-sync]\n",
       );
       process.exit(0);
     } else {
@@ -170,8 +172,10 @@ function main() {
 
   const manifestPath = join(EXT_ROOT, "manifest.json");
   const packagePath = join(EXT_ROOT, "package.json");
-  syncJsonVersion(manifestPath, version);
-  syncJsonVersion(packagePath, version);
+  if (args.syncSource) {
+    syncJsonVersion(manifestPath, version);
+    syncJsonVersion(packagePath, version);
+  }
 
   if (args.syncOnly) {
     process.stdout.write("sync-only mode — skipping archive build\n");
@@ -186,6 +190,8 @@ function main() {
     const chromeDir = join(stageRoot, "chrome");
     mkdirSync(chromeDir);
     copyTree(EXT_ROOT, chromeDir);
+    syncJsonVersion(join(chromeDir, "manifest.json"), version);
+    syncJsonVersion(join(chromeDir, "package.json"), version);
     const chromeArchive = join(args.out, `polylogue-browser-capture-${version}-chrome.zip`);
     if (existsSync(chromeArchive)) rmSync(chromeArchive);
     makeArchive(chromeDir, chromeArchive, "chrome zip");
@@ -194,7 +200,9 @@ function main() {
     const firefoxDir = join(stageRoot, "firefox");
     mkdirSync(firefoxDir);
     copyTree(EXT_ROOT, firefoxDir);
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    syncJsonVersion(join(firefoxDir, "manifest.json"), version);
+    syncJsonVersion(join(firefoxDir, "package.json"), version);
+    const manifest = JSON.parse(readFileSync(join(firefoxDir, "manifest.json"), "utf8"));
     const fxManifest = buildFirefoxManifest(manifest);
     writeFileSync(join(firefoxDir, "manifest.json"), JSON.stringify(fxManifest, null, 2) + "\n");
     const firefoxArchive = join(args.out, `polylogue-browser-capture-${version}-firefox.xpi`);
