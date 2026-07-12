@@ -20,6 +20,7 @@ from typing import Literal, TypeVar
 
 from pydantic import Field, field_validator, model_validator
 
+from polylogue.archive.actions.parsing import tool_result_outcome
 from polylogue.archive.message.models import Message
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.refs import EvidenceRef, ObjectRef
@@ -2303,13 +2304,12 @@ def _tool_status(is_error: int | None, exit_code: int | None) -> Literal["ok", "
 
     Exit code is authoritative when present; otherwise the boolean is_error
     flag decides. NULL on both means unknown — never a fabricated positive
-    inferred from output text (#2482).
+    inferred from output text (#2482). Delegates to
+    :func:`polylogue.archive.actions.parsing.tool_result_outcome`, the
+    canonical implementation (polylogue-b0b), so this precedence rule has a
+    single source of truth instead of two copies that can drift.
     """
-    if exit_code is not None:
-        return "ok" if exit_code == 0 else "failed"
-    if is_error is not None:
-        return "failed" if is_error else "ok"
-    return "unknown"
+    return tool_result_outcome(is_error, exit_code)
 
 
 def _tool_handler_kind(

@@ -477,7 +477,7 @@ _COMMON_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "exit_code": _field_info("exit_code", "Tool/action exit-code predicate.", "exit_code > 0"),
     "followup_class": _field_info(
         "followup_class",
-        "Failed-action next-assistant follow-up class.",
+        "Failed-action next-assistant follow-up class (keyword-heuristic, text-derived).",
         "followup_class:silent_proceed",
     ),
     "is_error": _field_info("is_error", "Tool/action structured error flag.", "is_error:true"),

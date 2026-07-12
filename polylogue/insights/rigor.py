@@ -158,6 +158,42 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             RigorVersionField(name="inference_version", current_version=SESSION_INFERENCE_VERSION),
             RigorVersionField(name="enrichment_version", current_version=SESSION_ENRICHMENT_VERSION),
         ),
+        notes=(
+            "Heuristic-tier inventory (polylogue-b0b): `inference.terminal_state` "
+            "(`archive/session/runtime.py::_terminal_state`) now prefers a "
+            "structural, session-wide `tool_id -> outcome` map "
+            "(`_session_tool_results`) sourced from the keystone "
+            "`blocks.tool_result_is_error`/`tool_result_exit_code` columns "
+            "(index schema v16) over the prior prose `_ERROR_MARKERS` keyword "
+            "scan for the mid-session error-action signal. The lookup is "
+            "session-wide (mirroring `_pending_tool_blocks` and "
+            "`insights/transforms.py::_extract_events`) rather than routed "
+            "through the per-message `Action`/`ToolCall` pairing, because "
+            "Claude/Codex-style transcripts near-always place a `tool_use` in "
+            "one message and its `tool_result` in a later message -- "
+            "per-message pairing alone would miss the common case. That "
+            "structural signal is origin-gated, not universal "
+            "(polylogue-9e5.3 audit): `tool_result_is_error` is well-populated "
+            "only for claude-code-session (44.8%) and claude-ai-export (100% "
+            "of a small volume), 0% for chatgpt-export/hermes-session/"
+            "aistudio-drive; `tool_result_exit_code` is populated only for "
+            "codex-session, and just 14.2% of even that. For origins/results "
+            "with no structural coverage the code falls back to the tagged "
+            "text scan rather than reporting a false negative. Every branch "
+            "of `_terminal_state` now returns an `evidence_class` key in "
+            "`inference.terminal_state_evidence` -- `raw_evidence` (tool-pairing "
+            "counts, the structural action signal, the provider-emitted "
+            "session-event status field, or message role) or `text_derived` "
+            "(the last-message `_ERROR_MARKERS` scan and its `clean_finish` "
+            "complement, and the structural-fallback text scan above). "
+            "Consumers needing only grounded rows should filter on "
+            "`inference.terminal_state_evidence.evidence_class == 'raw_evidence'`. "
+            "`session_work_events`' sibling classifier's 50.5% (coin-flip) "
+            "accuracy finding (9e5.9, noted below) is the reason this scan was "
+            "not simply deleted: not measured as reliable, but not proven "
+            "unreliable enough to remove entirely while the last-resort "
+            "fallback path still has explicit provenance."
+        ),
     ),
     RigorContract(
         insight_name="session_work_events",
