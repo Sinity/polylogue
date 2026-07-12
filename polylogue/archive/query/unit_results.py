@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
@@ -207,6 +209,111 @@ class TerminalExecutionContext:
 TerminalExecutor = Callable[[TerminalExecutionContext], QueryUnitResultEnvelope]
 
 
+_AGGREGATE_ROW_FIELDS: dict[str, dict[str, str]] = {
+    "message": {"role": "role", "type": "message_type", "session.origin": "origin"},
+    "action": {
+        "tool": "tool_name",
+        "action": "semantic_type",
+        "type": "semantic_type",
+        "is_error": "is_error",
+        "exit_code": "exit_code",
+        "followup_class": "followup_class",
+        "session.origin": "origin",
+    },
+    "block": {"type": "block_type", "tool": "tool_name", "action": "semantic_type", "session.origin": "origin"},
+    "file": {"path": "path", "session.origin": "origin"},
+    "delegation": {
+        "basis": "instruction_tool_use_block_id",
+        "mapping_state": "mapping_state",
+        "result_status": "result_status",
+        "requested_model": "requested_model",
+        "dispatch_model": "dispatch_turn_model",
+        "child_model": "child_session_dominant_model",
+        "session.origin": "parent_origin",
+    },
+}
+_MISSING_GROUP_KEY = "[missing]"
+
+
+def _aggregate_group_fields(group_by: str | None) -> tuple[str, ...]:
+    return () if group_by is None else tuple(group_by.split(","))
+
+
+def _aggregate_value(unit: str, field: str, row: Any) -> str | None:
+    attribute = _AGGREGATE_ROW_FIELDS.get(unit, {}).get(field)
+    if attribute is None:
+        supported = ", ".join(sorted(_AGGREGATE_ROW_FIELDS.get(unit, {})))
+        raise ExpressionCompileError(
+            f"pipeline `group by {field}` cannot stream {unit} rows; supported fields: {supported}", field=field
+        )
+    value = getattr(row, attribute)
+    if field == "basis":
+        return "action" if value is not None else "edge"
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def _all_aggregate_rows(ctx: TerminalExecutionContext) -> list[Any]:
+    method_name = ctx.descriptor.sql_query_method
+    if method_name is None:
+        raise ValueError(f"Query unit {ctx.source.unit!r} is not wired to a SQL executor")
+    query_method = cast(Any, getattr(ctx.archive, method_name))
+    rows: list[Any] = []
+    page_size = 1000
+    offset = 0
+    while True:
+        page = cast(
+            Sequence[Any],
+            query_method(
+                ctx.source.predicate,
+                limit=page_size,
+                offset=offset,
+                session_filters=ctx.session_filters,
+            ),
+        )
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        offset += len(page)
+
+
+def _aggregate_pipeline_payload(
+    pipeline: QueryUnitPipeline,
+    *,
+    group_fields: tuple[str, ...],
+    denominator: int,
+    missing_counts: Counter[str],
+    unknown_counts: Counter[str],
+    groups: Sequence[tuple[tuple[str, ...], int]],
+) -> dict[str, object]:
+    payload = pipeline.to_payload()
+    if len(group_fields) <= 1:
+        return payload
+    result = cast(dict[str, object], payload.setdefault("result", {}))
+    result.update(
+        {
+            "group_by": group_fields[0] if len(group_fields) == 1 else list(group_fields),
+            "aggregate": ["count", "proportion"],
+            "denominator": {"kind": "all_matching_rows", "n": denominator},
+            "n": denominator,
+            "missing_counts": {field: missing_counts[field] for field in group_fields},
+            "unknown_counts": {field: unknown_counts[field] for field in group_fields},
+            "groups": [
+                {
+                    "group": values[0] if len(group_fields) == 1 else dict(zip(group_fields, values, strict=True)),
+                    "count": count,
+                    "proportion": count / denominator if denominator else 0.0,
+                }
+                for values, count in groups
+            ],
+        }
+    )
+    return payload
+
+
 def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnvelope:
     """Terminal ``count`` action: emit the aggregate group rollup page."""
 
@@ -219,24 +326,80 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
     aggregate_sort_direction: Literal["asc", "desc"] = (
         pipeline.sort.direction if aggregate_sort is not None and pipeline.sort is not None else "desc"
     )
-    aggregate_rows = ctx.archive.query_unit_counts(
-        pipeline.source_unit,
-        pipeline.predicate,
-        group_by=pipeline.group_by,
-        sort=aggregate_sort,
-        sort_direction=aggregate_sort_direction,
-        limit=ctx.fetch_limit,
-        offset=ctx.offset,
-        session_filters=ctx.session_filters,
+    group_fields = _aggregate_group_fields(pipeline.group_by)
+    if len(group_fields) <= 1:
+        aggregate_rows = ctx.archive.query_unit_counts(
+            pipeline.source_unit,
+            pipeline.predicate,
+            group_by=pipeline.group_by,
+            sort=aggregate_sort,
+            sort_direction=aggregate_sort_direction,
+            limit=ctx.fetch_limit,
+            offset=ctx.offset,
+            session_filters=ctx.session_filters,
+        )
+        return build_query_unit_aggregate_envelope(
+            tuple(QueryUnitAggregateRowPayload.from_row(row) for row in aggregate_rows[: ctx.limit]),
+            unit=ctx.source.unit,
+            query=ctx.query,
+            limit=ctx.limit,
+            offset=ctx.caller_offset,
+            has_next=len(aggregate_rows) > ctx.limit,
+            pipeline=pipeline.to_payload(),
+            pipeline_stages=_pipeline_stage_payloads(pipeline),
+        )
+    rows = _all_aggregate_rows(ctx)
+    missing_counts: Counter[str] = Counter()
+    unknown_counts: Counter[str] = Counter()
+    counts: Counter[tuple[str, ...]] = Counter()
+    for row in rows:
+        values: list[str] = []
+        for field in group_fields:
+            value = _aggregate_value(ctx.source.unit, field, row)
+            if value is None:
+                missing_counts[field] += 1
+                value = _MISSING_GROUP_KEY
+            elif value.lower() == "unknown":
+                unknown_counts[field] += 1
+            values.append(value)
+        counts[tuple(values)] += 1
+    if not group_fields:
+        counts[()] = len(rows)
+    ordered_groups = list(counts.items())
+    if aggregate_sort == "key":
+        ordered_groups.sort(key=lambda item: item[0], reverse=aggregate_sort_direction == "desc")
+    else:
+        ordered_groups.sort(key=lambda item: (item[1], item[0]), reverse=aggregate_sort_direction == "desc")
+    page_groups = ordered_groups[ctx.offset : ctx.offset + ctx.fetch_limit]
+    group_by = pipeline.group_by
+    aggregate_payload_rows = tuple(
+        QueryUnitAggregateRowPayload(
+            unit=ctx.source.unit,
+            group_by=group_by,
+            group_key=(
+                values[0]
+                if len(group_fields) == 1
+                else json.dumps(dict(zip(group_fields, values, strict=True)), sort_keys=True, separators=(",", ":"))
+            ),
+            count=count,
+        )
+        for values, count in page_groups[: ctx.limit]
     )
     return build_query_unit_aggregate_envelope(
-        tuple(QueryUnitAggregateRowPayload.from_row(row) for row in aggregate_rows[: ctx.limit]),
+        aggregate_payload_rows,
         unit=ctx.source.unit,
         query=ctx.query,
         limit=ctx.limit,
         offset=ctx.caller_offset,
-        has_next=len(aggregate_rows) > ctx.limit,
-        pipeline=pipeline.to_payload(),
+        has_next=len(page_groups) > ctx.limit,
+        pipeline=_aggregate_pipeline_payload(
+            pipeline,
+            group_fields=group_fields,
+            denominator=len(rows),
+            missing_counts=missing_counts,
+            unknown_counts=unknown_counts,
+            groups=page_groups[: ctx.limit],
+        ),
         pipeline_stages=_pipeline_stage_payloads(pipeline),
     )
 

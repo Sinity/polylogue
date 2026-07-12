@@ -332,7 +332,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 3264
+    loc: 3270
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -437,7 +437,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/unit_results.py
-    loc: 381
+    loc: 543
     target: polylogue/archive/query/unit_results.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -730,11 +730,11 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 2298
+    loc: 2321
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 470
+    loc: 481
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -754,7 +754,7 @@ files:
     target: polylogue/cli/commands/__init__.py
     owner: stable
   - path: polylogue/cli/commands/agents.py
-    loc: 124
+    loc: 139
     target: polylogue/cli/commands/agents.py
     owner: stable
   - path: polylogue/cli/commands/annotations.py
@@ -810,7 +810,7 @@ files:
     target: polylogue/cli/commands/hooks.py
     owner: stable
   - path: polylogue/cli/commands/import_command.py
-    loc: 333
+    loc: 336
     target: polylogue/cli/commands/import_command.py
     owner: stable
   - path: polylogue/cli/commands/init.py
@@ -870,7 +870,7 @@ files:
     target: polylogue/cli/parser_diagnostics.py
     owner: stable
   - path: polylogue/cli/query.py
-    loc: 124
+    loc: 127
     target: polylogue/cli/query.py
     owner: stable
   - path: polylogue/cli/query_actions.py
@@ -1076,7 +1076,7 @@ files:
     target: polylogue/cli/shared/schema_rendering_results.py
     owner: stable
   - path: polylogue/cli/shared/types.py
-    loc: 91
+    loc: 125
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
@@ -1350,7 +1350,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 4290
+    loc: 4353
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/lineage_startup.py
@@ -1580,6 +1580,10 @@ files:
     loc: 163
     target: polylogue/insights/authored_payloads.py
     owner: stable
+  - path: polylogue/insights/cohorts.py
+    loc: 245
+    target: polylogue/insights/cohorts.py
+    owner: stable
   - path: polylogue/insights/confidence.py
     loc: 137
     target: polylogue/insights/confidence.py
@@ -1595,6 +1599,10 @@ files:
   - path: polylogue/insights/export_bundles.py
     loc: 333
     target: polylogue/insights/export_bundles.py
+    owner: stable
+  - path: polylogue/insights/fable_packet.py
+    loc: 204
+    target: polylogue/insights/fable_packet.py
     owner: stable
   - path: polylogue/insights/fallback.py
     loc: 72

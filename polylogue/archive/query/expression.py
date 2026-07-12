@@ -378,10 +378,12 @@ class QueryUnitOffsetStage:
 class QueryUnitGroupStage:
     """Aggregate grouping stage in a terminal query-unit pipeline."""
 
-    field: str
+    fields: tuple[str, ...]
 
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "group", "field": self.field}
+        if len(self.fields) == 1:
+            return {"kind": "group", "field": self.fields[0]}
+        return {"kind": "group", "fields": list(self.fields)}
 
 
 @dataclass(frozen=True)
@@ -1903,12 +1905,14 @@ def _parse_group_stage(stage: str) -> str | None:
     normalized = " ".join(stage.split()).lower()
     if not normalized.startswith("group by "):
         return None
-    field = normalized.removeprefix("group by ").strip()
-    if not field:
+    raw_fields = normalized.removeprefix("group by ").strip()
+    if not raw_fields:
         raise ExpressionCompileError("pipeline `group by` requires a field", field="group")
-    if field in {"origin", "repo"}:
-        return f"session.{field}"
-    return field
+    fields = tuple(part.strip() for part in raw_fields.split(","))
+    if any(not field for field in fields):
+        raise ExpressionCompileError("pipeline `group by` requires a field after every comma", field="group")
+    normalized_fields = tuple(f"session.{field}" if field in {"origin", "repo"} else field for field in fields)
+    return ",".join(normalized_fields)
 
 
 def _parse_count_stage(stage: str) -> bool:
@@ -2018,13 +2022,15 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
             raise ExpressionCompileError("pipeline `group by` must appear before `limit` and `offset`", field="group")
         _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage="group by")
         _ensure_aggregate_lowerer_supported(source.unit, stage="group by")
-        _validate_aggregate_group_field(source.unit, group_by)
+        group_fields = tuple(group_by.split(","))
+        for group_field in group_fields:
+            _validate_aggregate_group_field(source.unit, group_field)
         return replace(
             source,
             group_by=group_by,
             pipeline_stages=(
                 *source.pipeline_stages,
-                QueryUnitGroupStage(group_by),
+                QueryUnitGroupStage(group_fields),
             ),
         )
     if _parse_count_stage(stage):
