@@ -44,6 +44,39 @@ class _CapturingConsole:
         self.calls.append(" ".join(str(a) for a in args))
 
 
+def _healthy_raw_frontier_integrity() -> dict[str, Any]:
+    return {
+        "available": True,
+        "overall_status": "healthy",
+        "broken_head_status": "healthy",
+        "broken_head_count": 0,
+        "broken_head_checked_count": 1,
+        "broken_head_samples": [],
+        "broken_head_reason": "",
+        "missing_source_raw_status": "healthy",
+        "missing_source_raw_count": 0,
+        "missing_source_raw_samples": [],
+        "missing_source_raw_reason": "",
+        "cursor_ahead_status": "healthy",
+        "cursor_ahead_count": 0,
+        "cursor_ahead_checked_count": 1,
+        "cursor_head_comparison_count": 1,
+        "cursor_ahead_comparison_count": 0,
+        "cursor_ahead_samples": [],
+        "cursor_authority_gap_count": 0,
+        "cursor_authority_gap_samples": [],
+        "cursor_ahead_reason": "",
+    }
+
+
+def _fresh_status_snapshot() -> dict[str, object]:
+    return {
+        "state": "fresh",
+        "captured_at": "2026-07-12T14:00:00+00:00",
+        "age_s": 0.1,
+    }
+
+
 class _FakeDaemonResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
@@ -1518,17 +1551,24 @@ class TestNoArchiveStatus:
 
     def test_daemon_status_renders_raw_frontier_integrity(self) -> None:
         env = _make_app_env()
+        unknown = _healthy_raw_frontier_integrity()
+        unknown.update(
+            {
+                "available": False,
+                "overall_status": "unknown",
+                "broken_head_status": "unknown",
+                "missing_source_raw_status": "unknown",
+                "cursor_ahead_status": "unknown",
+                "cursor_ahead_reason": "ops cursor authority unavailable",
+            }
+        )
 
         _show_daemon_status(
             env,
             {
                 "daemon_liveness": True,
-                "raw_frontier_integrity": {
-                    "overall_status": "unknown",
-                    "broken_head_reason": "",
-                    "missing_source_raw_reason": "",
-                    "cursor_ahead_reason": "ops cursor authority unavailable",
-                },
+                "status_snapshot": _fresh_status_snapshot(),
+                "raw_frontier_integrity": unknown,
             },
         )
 
@@ -1538,16 +1578,23 @@ class TestNoArchiveStatus:
 
     def test_compact_daemon_status_cannot_preserve_stale_green_frontier(self) -> None:
         env = _make_app_env()
+        violated = _healthy_raw_frontier_integrity()
+        violated.update(
+            {
+                "overall_status": "violated",
+                "broken_head_status": "violated",
+                "broken_head_count": 1,
+                "broken_head_samples": [{"accepted_raw_id": "raw-1"}],
+                "broken_head_reason": "1 active seed is broken",
+            }
+        )
         _show_status_json(
             env,
             {
                 "ok": True,
                 "daemon_liveness": True,
-                "raw_frontier_integrity": {
-                    "overall_status": "violated",
-                    "broken_head_status": "violated",
-                    "broken_head_samples": [{"accepted_raw_id": "raw-1"}],
-                },
+                "status_snapshot": _fresh_status_snapshot(),
+                "raw_frontier_integrity": violated,
             },
         )
 
@@ -1569,14 +1616,26 @@ class TestNoArchiveStatus:
 
     def test_status_ok_requires_complete_fresh_frontier_authority(self) -> None:
         assert _status_ok({"ok": True, "daemon_liveness": True}) is False
-        healthy = {
-            "available": True,
-            "overall_status": "healthy",
-            "broken_head_status": "healthy",
-            "missing_source_raw_status": "healthy",
-            "cursor_ahead_status": "healthy",
-        }
+        healthy = _healthy_raw_frontier_integrity()
         assert _status_ok({"ok": True, "raw_frontier_integrity": healthy}) is True
+        assert (
+            _status_ok(
+                {"ok": True, "raw_frontier_integrity": healthy},
+                require_fresh_snapshot=True,
+            )
+            is False
+        )
+        assert (
+            _status_ok(
+                {
+                    "ok": True,
+                    "status_snapshot": _fresh_status_snapshot(),
+                    "raw_frontier_integrity": healthy,
+                },
+                require_fresh_snapshot=True,
+            )
+            is True
+        )
         assert (
             _status_ok(
                 {
@@ -1606,13 +1665,7 @@ class TestNoArchiveStatus:
                 "ok": True,
                 "daemon_liveness": True,
                 "status_snapshot": {"state": "stale"},
-                "raw_frontier_integrity": {
-                    "available": True,
-                    "overall_status": "healthy",
-                    "broken_head_status": "healthy",
-                    "missing_source_raw_status": "healthy",
-                    "cursor_ahead_status": "healthy",
-                },
+                "raw_frontier_integrity": _healthy_raw_frontier_integrity(),
             },
             full=True,
         )

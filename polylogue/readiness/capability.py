@@ -282,18 +282,130 @@ def component_from_raw_frontier_integrity(payload: Mapping[str, Any] | None) -> 
         state=state,
         summary=summary,
         counts={
-            "broken_head_count": int(data.get("broken_head_count") or 0),
-            "broken_head_checked_count": int(data.get("broken_head_checked_count") or 0),
-            "missing_source_raw_count": int(data.get("missing_source_raw_count") or 0),
-            "cursor_ahead_count": int(data.get("cursor_ahead_count") or 0),
-            "cursor_ahead_checked_count": int(data.get("cursor_ahead_checked_count") or 0),
-            "cursor_head_comparison_count": int(data.get("cursor_head_comparison_count") or 0),
-            "cursor_ahead_comparison_count": int(data.get("cursor_ahead_comparison_count") or 0),
-            "cursor_authority_gap_count": int(data.get("cursor_authority_gap_count") or 0),
+            "broken_head_count": _raw_frontier_count(data.get("broken_head_count")),
+            "broken_head_checked_count": _raw_frontier_count(data.get("broken_head_checked_count")),
+            "missing_source_raw_count": _raw_frontier_count(data.get("missing_source_raw_count")),
+            "cursor_ahead_count": _raw_frontier_count(data.get("cursor_ahead_count")),
+            "cursor_ahead_checked_count": _raw_frontier_count(data.get("cursor_ahead_checked_count")),
+            "cursor_head_comparison_count": _raw_frontier_count(data.get("cursor_head_comparison_count")),
+            "cursor_ahead_comparison_count": _raw_frontier_count(data.get("cursor_ahead_comparison_count")),
+            "cursor_authority_gap_count": _raw_frontier_count(data.get("cursor_authority_gap_count")),
         },
         caveats=tuple(caveats),
         repair_hint=None if state == CapabilityReadinessState.READY else "polylogue ops status --full",
     )
+
+
+def _raw_frontier_count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+_RAW_FRONTIER_DETAIL_STATUS_KEYS = (
+    "broken_head_status",
+    "missing_source_raw_status",
+    "cursor_ahead_status",
+)
+_RAW_FRONTIER_COUNT_KEYS = (
+    "broken_head_count",
+    "broken_head_checked_count",
+    "missing_source_raw_count",
+    "cursor_ahead_count",
+    "cursor_ahead_checked_count",
+    "cursor_head_comparison_count",
+    "cursor_ahead_comparison_count",
+    "cursor_authority_gap_count",
+)
+_RAW_FRONTIER_SAMPLE_COUNT_KEYS = (
+    ("broken_head_samples", "broken_head_count"),
+    ("missing_source_raw_samples", "missing_source_raw_count"),
+    ("cursor_ahead_samples", "cursor_ahead_count"),
+    ("cursor_authority_gap_samples", "cursor_authority_gap_count"),
+)
+_RAW_FRONTIER_REASON_KEYS = (
+    "broken_head_reason",
+    "missing_source_raw_reason",
+    "cursor_ahead_reason",
+)
+_RAW_FRONTIER_MAX_SAMPLE_COUNT = 10
+
+
+def _validate_raw_frontier_projection(
+    payload: Mapping[str, Any],
+    *,
+    required_keys: set[str],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate and aggregate one complete canonical frontier projection."""
+
+    missing = required_keys.difference(payload)
+    if missing:
+        return None, f"missing field(s): {', '.join(sorted(missing))}"
+    if not isinstance(payload.get("available"), bool):
+        return None, "available must be boolean"
+    allowed_statuses = {"healthy", "unknown", "violated"}
+    if payload.get("overall_status") not in allowed_statuses:
+        return None, "overall_status is invalid"
+    detail_statuses: list[str] = []
+    for key in _RAW_FRONTIER_DETAIL_STATUS_KEYS:
+        value = payload.get(key)
+        if value not in allowed_statuses:
+            return None, f"{key} is invalid"
+        detail_statuses.append(str(value))
+    for key in _RAW_FRONTIER_COUNT_KEYS:
+        value = payload.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None, f"{key} must be a nonnegative integer"
+    for sample_key, count_key in _RAW_FRONTIER_SAMPLE_COUNT_KEYS:
+        samples = payload.get(sample_key)
+        if not isinstance(samples, list) or any(not isinstance(sample, Mapping) for sample in samples):
+            return None, f"{sample_key} must be a list of mappings"
+        if len(samples) > _RAW_FRONTIER_MAX_SAMPLE_COUNT:
+            return None, f"{sample_key} exceeds the bounded status sample limit"
+        if len(samples) > _raw_frontier_count(payload.get(count_key)):
+            return None, f"{sample_key} exceeds {count_key}"
+    for key in _RAW_FRONTIER_REASON_KEYS:
+        if not isinstance(payload.get(key), str):
+            return None, f"{key} must be a string"
+
+    broken_status, missing_status, cursor_status = detail_statuses
+    broken_count = _raw_frontier_count(payload.get("broken_head_count"))
+    missing_count = _raw_frontier_count(payload.get("missing_source_raw_count"))
+    cursor_count = _raw_frontier_count(payload.get("cursor_ahead_count"))
+    cursor_gap_count = _raw_frontier_count(payload.get("cursor_authority_gap_count"))
+    if (broken_status == "healthy" and broken_count != 0) or (broken_status == "violated" and broken_count == 0):
+        return None, "broken_head_status contradicts broken_head_count"
+    if (missing_status == "healthy" and missing_count != 0) or (missing_status == "violated" and missing_count == 0):
+        return None, "missing_source_raw_status contradicts missing_source_raw_count"
+    if cursor_status == "healthy" and (cursor_count != 0 or cursor_gap_count != 0):
+        return None, "cursor_ahead_status contradicts cursor counts"
+    if cursor_status == "violated" and cursor_count == 0:
+        return None, "cursor_ahead_status contradicts cursor_ahead_count"
+    if cursor_status == "unknown" and cursor_count != 0:
+        return None, "unknown cursor authority cannot claim an exact ahead count"
+
+    broken_checked = _raw_frontier_count(payload.get("broken_head_checked_count"))
+    cursor_checked = _raw_frontier_count(payload.get("cursor_ahead_checked_count"))
+    cursor_comparisons = _raw_frontier_count(payload.get("cursor_head_comparison_count"))
+    ahead_comparisons = _raw_frontier_count(payload.get("cursor_ahead_comparison_count"))
+    if broken_count > broken_checked:
+        return None, "broken_head_count exceeds checked seeds"
+    if cursor_count > cursor_checked or cursor_checked > cursor_comparisons:
+        return None, "cursor row counts exceed comparable authority"
+    if cursor_count > ahead_comparisons or ahead_comparisons > cursor_comparisons:
+        return None, "cursor/head comparison counts are inconsistent"
+
+    if "violated" in detail_statuses:
+        derived_overall = "violated"
+    elif "unknown" in detail_statuses:
+        derived_overall = "unknown"
+    else:
+        derived_overall = "healthy"
+    expected_available = "unknown" not in detail_statuses
+    if payload.get("available") is not expected_available:
+        return None, "available contradicts detail authority states"
+
+    normalized = dict(payload)
+    normalized["overall_status"] = derived_overall
+    return normalized, None
 
 
 def raw_frontier_integrity_is_proven_healthy(payload: object) -> bool:
@@ -301,12 +413,27 @@ def raw_frontier_integrity_is_proven_healthy(payload: object) -> bool:
 
     if not isinstance(payload, Mapping):
         return False
+    from polylogue.storage.raw_retention import unknown_raw_frontier_integrity_projection
+
+    template = unknown_raw_frontier_integrity_projection("validation template").to_dict()
+    normalized, error = _validate_raw_frontier_projection(payload, required_keys=set(template))
+    return error is None and normalized is not None and normalized.get("overall_status") == "healthy"
+
+
+def status_snapshot_has_fresh_provenance(payload: Mapping[str, Any]) -> bool:
+    """Return whether a daemon payload carries a complete fresh-cache marker."""
+
+    snapshot = payload.get("status_snapshot")
+    if not isinstance(snapshot, Mapping) or snapshot.get("state") != "fresh":
+        return False
+    captured_at = snapshot.get("captured_at")
+    age_s = snapshot.get("age_s")
     return (
-        payload.get("available") is True
-        and payload.get("overall_status") == "healthy"
-        and payload.get("broken_head_status") == "healthy"
-        and payload.get("missing_source_raw_status") == "healthy"
-        and payload.get("cursor_ahead_status") == "healthy"
+        isinstance(captured_at, str)
+        and bool(captured_at)
+        and isinstance(age_s, int | float)
+        and not isinstance(age_s, bool)
+        and age_s >= 0
     )
 
 
@@ -314,6 +441,7 @@ def normalize_raw_frontier_status_payload(
     payload: Mapping[str, Any],
     *,
     snapshot_state: str | None = None,
+    require_fresh_snapshot: bool = False,
 ) -> dict[str, Any]:
     """Fail closed at cached/presentation boundaries lacking fresh authority.
 
@@ -337,35 +465,50 @@ def normalize_raw_frontier_status_payload(
 
     raw_frontier = payload.get("raw_frontier_integrity")
     frontier = dict(raw_frontier) if isinstance(raw_frontier, Mapping) else None
-    overall = str(frontier.get("overall_status") or "") if frontier is not None else ""
-    stale_or_minimal = bool(snapshot_state and snapshot_state != "fresh")
+    template = unknown_raw_frontier_integrity_projection("validation template").to_dict()
+    validated_frontier: dict[str, Any] | None = None
+    validation_error: str | None = None
+    if frontier is not None:
+        validated_frontier, validation_error = _validate_raw_frontier_projection(
+            frontier,
+            required_keys=set(template),
+        )
+    trusted_snapshot = snapshot_state in {"fresh", "live"}
+    stale_or_minimal = snapshot_state is not None and not trusted_snapshot
 
     reason: str | None = None
     if frontier is None:
         reason = "status payload omitted a valid raw frontier integrity projection"
-    elif overall not in {"healthy", "unknown", "violated"}:
-        reason = "status payload contains a malformed raw frontier integrity projection"
-    elif stale_or_minimal and overall != "violated":
+    elif validation_error is not None:
+        reason = f"status payload contains a malformed raw frontier integrity projection: {validation_error}"
+    elif (
+        require_fresh_snapshot
+        and not status_snapshot_has_fresh_provenance(payload)
+        and validated_frontier is not None
+        and validated_frontier["overall_status"] != "violated"
+    ):
+        reason = "daemon status payload omitted freshness provenance"
+    elif stale_or_minimal and validated_frontier is not None and validated_frontier["overall_status"] != "violated":
         reason = f"status snapshot is {snapshot_state}; fresh raw frontier authority is unavailable"
-    elif overall == "healthy" and not raw_frontier_integrity_is_proven_healthy(frontier):
-        reason = "status payload contains an incomplete healthy raw frontier integrity projection"
 
     if reason is not None:
         frontier = unknown_raw_frontier_integrity_projection(reason).to_dict()
-    elif frontier is not None and overall == "unknown":
+    else:
+        assert validated_frontier is not None
+        frontier = validated_frontier
+    overall = str(frontier.get("overall_status") or "unknown")
+    if reason is None and overall == "unknown":
         explicit_unknown = unknown_raw_frontier_integrity_projection(raw_frontier_integrity_summary(frontier)).to_dict()
         explicit_unknown.update(frontier)
         explicit_unknown["available"] = False
         explicit_unknown["overall_status"] = "unknown"
         frontier = explicit_unknown
-    elif frontier is not None and overall == "violated":
+    elif reason is None and overall == "violated":
         explicit_violation = unknown_raw_frontier_integrity_projection(
             raw_frontier_integrity_summary(frontier)
         ).to_dict()
         explicit_violation.update(frontier)
         explicit_violation["overall_status"] = "violated"
-        if stale_or_minimal:
-            explicit_violation["available"] = False
         frontier = explicit_violation
 
     assert frontier is not None
@@ -671,4 +814,5 @@ __all__ = [
     "component_from_transform_registry",
     "normalize_raw_frontier_status_payload",
     "raw_frontier_integrity_is_proven_healthy",
+    "status_snapshot_has_fresh_provenance",
 ]

@@ -35,6 +35,31 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.frozen_clock import FrozenClock
 
 
+def _complete_healthy_frontier() -> JSONDocument:
+    return {
+        "available": True,
+        "overall_status": "healthy",
+        "broken_head_status": "healthy",
+        "broken_head_count": 0,
+        "broken_head_checked_count": 1,
+        "broken_head_samples": [],
+        "broken_head_reason": "",
+        "missing_source_raw_status": "healthy",
+        "missing_source_raw_count": 0,
+        "missing_source_raw_samples": [],
+        "missing_source_raw_reason": "",
+        "cursor_ahead_status": "healthy",
+        "cursor_ahead_count": 0,
+        "cursor_ahead_checked_count": 1,
+        "cursor_head_comparison_count": 1,
+        "cursor_ahead_comparison_count": 0,
+        "cursor_ahead_samples": [],
+        "cursor_authority_gap_count": 0,
+        "cursor_authority_gap_samples": [],
+        "cursor_ahead_reason": "",
+    }
+
+
 def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeypatch: pytest.MonkeyPatch) -> None:
     payload: JSONDocument = {"ok": True, "daemon_liveness": True, "checked_at": "cached"}
     refresh_status_snapshot(payload=payload)
@@ -68,13 +93,7 @@ def test_status_snapshot_stale_healthy_authority_fails_closed(monkeypatch: pytes
     payload: JSONDocument = {
         "ok": True,
         "daemon_liveness": True,
-        "raw_frontier_integrity": {
-            "available": True,
-            "overall_status": "healthy",
-            "broken_head_status": "healthy",
-            "missing_source_raw_status": "healthy",
-            "cursor_ahead_status": "healthy",
-        },
+        "raw_frontier_integrity": _complete_healthy_frontier(),
         "component_readiness": {"raw_frontier_integrity": {"component": "raw_frontier_integrity", "state": "ready"}},
         "claim_guard": {
             "converged": {
