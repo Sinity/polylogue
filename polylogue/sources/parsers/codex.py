@@ -191,6 +191,7 @@ def _token_usage(record: dict[str, object]) -> dict[str, int]:
     """
     usage = _dict_record(record.get("usage")) or _dict_record(record.get("tokens")) or record
     input_with_cached = _int_value(usage.get("input_tokens") or usage.get("inputTokenCount"))
+    explicit_uncached_input = _optional_int_field(usage, "uncached_input_tokens", "uncachedInputTokens")
     cache_read_tokens = _int_value(
         usage.get("cache_read_tokens")
         or usage.get("cache_read_input_tokens")
@@ -198,7 +199,11 @@ def _token_usage(record: dict[str, object]) -> dict[str, int]:
         or usage.get("cached_tokens")
     )
     return {
-        "input_tokens": max(input_with_cached - cache_read_tokens, 0),
+        "input_tokens": (
+            explicit_uncached_input
+            if explicit_uncached_input is not None
+            else max(input_with_cached - cache_read_tokens, 0)
+        ),
         "output_tokens": _int_value(usage.get("output_tokens") or usage.get("outputTokenCount")),
         "cache_read_tokens": cache_read_tokens,
         "cache_write_tokens": _int_value(

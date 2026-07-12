@@ -8,9 +8,9 @@ the DB-backed rates match the in-memory estimates exactly.
 Design constraints:
 - The in-memory PRICING dict is the authoritative source.  This seeder
   populates the DB FROM it; rates are never duplicated by hand here.
-- The catalog_id is a deterministic slug so re-seeding is idempotent.
-- INSERT … ON CONFLICT DO NOTHING on both tables: re-running after a
-  schema-version bump (wipe-and-reinit) or daemon restart is safe.
+- A changed catalog hash creates a versioned catalog row, so existing usage
+  records retain the rates under which they were priced.
+- Re-seeding an unchanged catalog is idempotent.
 
 Writer module: index.
 """
@@ -29,7 +29,7 @@ def _catalog_id() -> str:
 
 
 def _catalog_hash() -> str:
-    """Stable hash of the current PRICING dict for change-detection."""
+    """Stable identity of the current PRICING dict."""
     from polylogue.archive.semantic.pricing import PRICING
 
     parts: list[str] = []
@@ -55,19 +55,67 @@ def _effective_at_ms() -> int | None:
         return None
 
 
+def _catalog_id_for_hash(conn: sqlite3.Connection, catalog_hash: str) -> str:
+    """Return the persisted version identity for the current catalog hash."""
+    from polylogue.archive.semantic.pricing import CATALOG_PROVENANCE
+
+    effective_at = _effective_at_ms()
+    matching = conn.execute(
+        """
+        SELECT catalog_id
+        FROM price_catalogs
+        WHERE catalog_hash = ?
+          AND source_name = ?
+          AND effective_at_ms IS ?
+        ORDER BY catalog_id
+        LIMIT 1
+        """,
+        (catalog_hash, CATALOG_PROVENANCE, effective_at),
+    ).fetchone()
+    if matching is not None:
+        return str(matching[0])
+
+    base_catalog_id = _catalog_id()
+    existing_base = conn.execute(
+        "SELECT catalog_hash FROM price_catalogs WHERE catalog_id = ?",
+        (base_catalog_id,),
+    ).fetchone()
+    if existing_base is None:
+        return base_catalog_id
+    return f"{base_catalog_id}-{catalog_hash}"
+
+
+def active_price_catalog_id(conn: sqlite3.Connection) -> str | None:
+    """Find the persisted catalog whose hash matches the active PRICING dict."""
+    from polylogue.archive.semantic.pricing import CATALOG_PROVENANCE
+
+    row = conn.execute(
+        """
+        SELECT catalog_id
+        FROM price_catalogs
+        WHERE catalog_hash = ?
+          AND source_name = ?
+          AND effective_at_ms IS ?
+        ORDER BY catalog_id
+        LIMIT 1
+        """,
+        (_catalog_hash(), CATALOG_PROVENANCE, _effective_at_ms()),
+    ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
 def seed_price_catalog(conn: sqlite3.Connection) -> str:
     """Seed price_catalogs + model_prices from the curated PRICING dict.
 
-    Idempotent: uses INSERT … ON CONFLICT DO NOTHING so calling this at
-    every archive-init or daemon-start has no effect when the catalog row
-    already exists.
+    A changed hash gets a new catalog ID and its own immutable price rows;
+    an unchanged hash reuses its existing catalog ID.
 
     Returns the catalog_id that was (or already was) seeded.
     """
     from polylogue.archive.semantic.pricing import CATALOG_PROVENANCE, PRICING
 
-    catalog_id = _catalog_id()
     catalog_hash = _catalog_hash()
+    catalog_id = _catalog_id_for_hash(conn, catalog_hash)
     effective_at = _effective_at_ms()
     loaded_at = int(time.time() * 1000)
 
@@ -106,5 +154,6 @@ def seed_price_catalog(conn: sqlite3.Connection) -> str:
 
 
 __all__ = [
+    "active_price_catalog_id",
     "seed_price_catalog",
 ]

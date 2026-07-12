@@ -3381,9 +3381,11 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     if not token_rows:
         return
 
-    # Look up the active catalog_id once so FK can be set when we have a price.
-    catalog_row = conn.execute("SELECT catalog_id FROM price_catalogs LIMIT 1").fetchone()
-    active_catalog_id: str | None = str(catalog_row[0]) if catalog_row is not None else None
+    # Seed or reuse the revision matching the current content hash before
+    # pricing, so an existing archive receives catalog corrections too.
+    from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
+
+    active_catalog_id = seed_price_catalog(conn)
     priced_at_ms = int(time.time() * 1000)
 
     for row in token_rows:
@@ -3396,7 +3398,8 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
 
         # Compute cost_usd from the curated catalog when a price entry exists.
         # estimate_cost() reads the in-memory PRICING dict so the result always
-        # matches the DB-backed model_prices rows seeded from the same source.
+        # matches the DB-backed model_prices rows selected by the same catalog
+        # hash as the active in-memory source.
         normalized = _normalize_model(model_name)
         billable = sum_input + sum_output + sum_cache_read + sum_cache_write
         if normalized in PRICING and billable > 0:

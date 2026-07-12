@@ -12,6 +12,7 @@ Verifies that:
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,11 @@ from polylogue.archive.semantic.pricing import (
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.pricing_seed import _catalog_id
+from polylogue.storage.sqlite.archive_tiers.pricing_seed import (
+    _catalog_hash,
+    _catalog_id,
+    active_price_catalog_id,
+)
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
 
@@ -129,6 +134,61 @@ class TestPriceCatalogSeed:
         price_count = conn.execute("SELECT COUNT(*) FROM model_prices").fetchone()[0]
         assert catalog_count == 1
         assert price_count == len(PRICING)
+        conn.close()
+
+    def test_seed_versions_changed_pricing_and_writer_uses_new_catalog(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A catalog correction preserves old evidence and prices new usage by hash."""
+        conn = _make_archive(tmp_path)
+        original_catalog_id = _catalog_id()
+        model_name = "gpt-4o-mini"
+        original_pricing = PRICING[model_name]
+        monkeypatch.setitem(
+            PRICING,
+            model_name,
+            replace(original_pricing, input_usd_per_1m=original_pricing.input_usd_per_1m + 1.0),
+        )
+
+        with conn:
+            write_parsed_session_to_archive(
+                conn,
+                _session(
+                    provider_session_id="revised-pricing",
+                    messages=[_msg(provider_message_id="m1", model_name=model_name, input_tokens=100)],
+                ),
+            )
+
+        revised_catalog_id = active_price_catalog_id(conn)
+        assert revised_catalog_id is not None
+        assert revised_catalog_id != original_catalog_id
+        assert conn.execute("SELECT COUNT(*) FROM price_catalogs").fetchone()[0] == 2
+        assert (
+            conn.execute(
+                "SELECT catalog_hash FROM price_catalogs WHERE catalog_id = ?", (revised_catalog_id,)
+            ).fetchone()[0]
+            == _catalog_hash()
+        )
+        assert (
+            conn.execute(
+                "SELECT input_cost_per_million FROM model_prices WHERE catalog_id = ? AND model_name = ?",
+                (original_catalog_id, model_name),
+            ).fetchone()[0]
+            == original_pricing.input_usd_per_1m
+        )
+        assert (
+            conn.execute(
+                "SELECT input_cost_per_million FROM model_prices WHERE catalog_id = ? AND model_name = ?",
+                (revised_catalog_id, model_name),
+            ).fetchone()[0]
+            == PRICING[model_name].input_usd_per_1m
+        )
+        assert (
+            conn.execute(
+                "SELECT priced_with FROM session_model_usage WHERE session_id = 'claude-code-session:revised-pricing'"
+            ).fetchone()[0]
+            == revised_catalog_id
+        )
         conn.close()
 
 

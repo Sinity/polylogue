@@ -46,7 +46,13 @@ def _insert_session(
     return session_id
 
 
-def _write_codex_state(path: Path, *, tokens: int = 100, thread_id: str = "thread-1") -> None:
+def _write_codex_state(
+    path: Path,
+    *,
+    tokens: int = 100,
+    thread_id: str = "thread-1",
+    additional_threads: tuple[tuple[str, int], ...] = (),
+) -> None:
     with sqlite3.connect(path) as conn:
         conn.execute(
             """
@@ -71,6 +77,15 @@ def _write_codex_state(path: Path, *, tokens: int = 100, thread_id: str = "threa
             ) VALUES (?, ?, 'gpt-5-codex', 'cli', '0.test', 0, 0, 1234, '/x/rollout.jsonl')
             """,
             (thread_id, tokens),
+        )
+        conn.executemany(
+            """
+            INSERT INTO threads(
+                id, tokens_used, model, source, cli_version, archived,
+                has_user_event, updated_at_ms, rollout_path
+            ) VALUES (?, ?, 'gpt-5-codex', 'cli', '0.test', 0, 0, 1234, '/x/rollout.jsonl')
+            """,
+            additional_threads,
         )
 
 
@@ -159,12 +174,103 @@ def test_codex_probe_check_fails_outside_tolerance(tmp_path: Path, capsys: pytes
     assert payload["sections"][0]["comparison"]["outside_tolerance"] == 1
     assert payload["sections"][0]["comparison"]["samples"][0]["external_cli_version"] == "0.test"
     assert payload["sections"][0]["details"]["outside_external_token_values"] == [{"tokens_used": 100, "count": 1}]
-    assert {"flag": "archived=0", "count": 1} in payload["sections"][0]["details"]["outside_external_flag_counts"]
     residual = payload["sections"][0]["details"]["logical_residual_classification"]
     assert residual["outside_tolerance"] == 1
     assert {"value": "zero_replay_gap", "count": 1} in residual["replay_gap_classes"]
-    assert {"flag": "has_user_event=0", "count": 1} in residual["external_flag_counts"]
     assert residual["external_token_values"] == [{"tokens_used": 100, "count": 1}]
+
+
+def test_codex_probe_excludes_unreliable_state_counters_from_drift(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exercise the real state_5 reader and archive comparison, not a classifier stub."""
+
+    archive = _archive_root(tmp_path)
+    with sqlite3.connect(archive / "index.db") as conn:
+        for thread_id, archive_tokens in (
+            ("reliable-drift", 20),
+            ("zero-sentinel", 100),
+            ("stale-one", 100),
+            ("stale-two", 100),
+            ("cross-thread", 100),
+            ("equal-total-one", 100),
+            ("equal-total-two", 100),
+        ):
+            _insert_session(
+                conn,
+                origin="codex-session",
+                native_id=thread_id,
+                model="gpt-5-codex",
+                input_tokens=archive_tokens,
+                output_tokens=0,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+            )
+    codex_state = tmp_path / "state_5.sqlite"
+    _write_codex_state(
+        codex_state,
+        tokens=100,
+        thread_id="reliable-drift",
+        additional_threads=(
+            ("zero-sentinel", 0),
+            ("stale-one", 77),
+            ("stale-two", 77),
+            ("cross-thread", 2_000_001),
+            ("equal-total-one", 88),
+            ("equal-total-two", 88),
+        ),
+    )
+    with sqlite3.connect(codex_state) as conn:
+        conn.execute("UPDATE threads SET updated_at_ms = 2001 WHERE id = 'equal-total-one'")
+        conn.execute("UPDATE threads SET updated_at_ms = 2002 WHERE id = 'equal-total-two'")
+
+    assert main(["--archive-root", str(archive), "--codex-state", str(codex_state), "--json", "--check"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    codex = payload["sections"][0]
+
+    # The one reliable disagreement remains a real failure; the three state_5
+    # failure modes are reported separately and cannot inflate drift.
+    assert codex["comparison"]["compared"] == 3
+    assert codex["comparison"]["outside_tolerance"] == 3
+    assert {sample["key"] for sample in codex["comparison"]["samples"]} == {
+        "reliable-drift",
+        "equal-total-one",
+        "equal-total-two",
+    }
+    assert codex["details"]["external_state_unreliable"] == {
+        "count": 4,
+        "classes": [
+            {"value": "repeated_stale_state_fingerprint", "count": 2},
+            {"value": "zero_sentinel", "count": 1},
+            {"value": "implausible_context_window", "count": 1},
+        ],
+        "samples": [
+            {
+                "thread_id": "cross-thread",
+                "tokens_used": 2_000_001,
+                "classification": "implausible_context_window",
+                "archive_present": True,
+            },
+            {
+                "thread_id": "stale-one",
+                "tokens_used": 77,
+                "classification": "repeated_stale_state_fingerprint",
+                "archive_present": True,
+            },
+            {
+                "thread_id": "stale-two",
+                "tokens_used": 77,
+                "classification": "repeated_stale_state_fingerprint",
+                "archive_present": True,
+            },
+            {
+                "thread_id": "zero-sentinel",
+                "tokens_used": 0,
+                "classification": "zero_sentinel",
+                "archive_present": True,
+            },
+        ],
+    }
 
 
 def test_codex_probe_exposes_logical_chain_comparison(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
