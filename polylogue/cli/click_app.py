@@ -381,8 +381,11 @@ def cli(
         ctx.params["plain"] = plain
         ctx.params["output_format"] = output_format
 
-    # Set up logging early so all output goes to stderr
-    configure_logging(verbose=verbose)
+    # Keep the ordinary command path on the stdlib-backed logger.  The
+    # structlog setup is deliberately expensive and this callback also runs
+    # for nested command help, where no diagnostic logging is emitted.
+    if verbose:
+        configure_logging(verbose=True)
 
     use_plain = should_use_plain(plain=plain)
     env = AppEnv(plain=use_plain)

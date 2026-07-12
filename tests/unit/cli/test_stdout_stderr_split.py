@@ -199,3 +199,44 @@ class TestChannelSeparation:
         r = _run("--help")
         assert TRACEBACK_SENTINEL not in r.stdout
         assert TRACEBACK_SENTINEL not in r.stderr
+
+    def test_agents_help_does_not_load_coordination_substrate(self) -> None:
+        """Nested help stays on the lazy registration path, not live evidence collection."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; from click.testing import CliRunner; "
+                    "from polylogue.cli.click_app import cli; "
+                    "result = CliRunner().invoke(cli, ['agents', '--help']); "
+                    "assert result.exit_code == 0, result.output; "
+                    "assert 'polylogue.coordination' not in sys.modules"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_import_help_does_not_load_import_parser_stack(self) -> None:
+        """Import help exposes options without importing parsers or wire payloads."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; from click.testing import CliRunner; "
+                    "from polylogue.cli.click_app import cli; "
+                    "result = CliRunner().invoke(cli, ['import', '--help']); "
+                    "assert result.exit_code == 0, result.output; "
+                    "assert 'polylogue.sources.import_explain' not in sys.modules; "
+                    "assert 'polylogue.surfaces.payloads' not in sys.modules"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
