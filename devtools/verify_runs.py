@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -395,6 +396,27 @@ def checkout_hash(root: Path) -> str:
     return hashlib.sha1(str(root).encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
 
 
+DEFAULT_PYTEST_BASETEMP_ROOT = Path("/realm/tmp/polylogue-pytest")
+_CLOUD_PYTEST_BASETEMP_ROOT = Path("/tmp/polylogue-pytest")
+
+
+def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
+    """Keep cloud pytest defaults from escaping a workstation scratch volume.
+
+    ``.claude/settings.json`` supplies ``/tmp/polylogue-pytest`` for cloud
+    sandboxes.  Agent subprocesses can inherit that setting while running in a
+    local linked worktree, where it would fill the host tmpfs instead of the
+    mounted ``/realm/tmp`` scratch volume.  Preserve explicit custom roots and
+    retain the cloud setting when the workstation scratch mount is absent.
+    """
+
+    normalized = dict(env)
+    configured = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+    if configured == str(_CLOUD_PYTEST_BASETEMP_ROOT) and DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir():
+        normalized["POLYLOGUE_PYTEST_BASETEMP_ROOT"] = str(DEFAULT_PYTEST_BASETEMP_ROOT)
+    return normalized
+
+
 def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Path:
     configured = env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
     if configured:
@@ -402,7 +424,7 @@ def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Pat
     elif env.get("POLYLOGUE_PYTEST_TMPFS") == "1" and Path("/dev/shm").is_dir():
         scratch_root = Path("/dev/shm")
     else:
-        scratch_root = Path("/realm/tmp/polylogue-pytest")
+        scratch_root = DEFAULT_PYTEST_BASETEMP_ROOT
     return scratch_root / f"pytest-polylogue-{checkout_hash(root)}-{run_id}"
 
 

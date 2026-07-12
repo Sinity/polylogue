@@ -66,6 +66,7 @@ from devtools.verify_runs import (
     env_for_pytest_step,
     latest_event_from_paths,
     merge_worker_events,
+    normalize_pytest_basetemp_env,
     utc_now,
 )
 
@@ -1437,7 +1438,7 @@ def _run(
 
 
 def _subprocess_env() -> dict[str, str]:
-    env = os.environ.copy()
+    env = normalize_pytest_basetemp_env(os.environ)
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
