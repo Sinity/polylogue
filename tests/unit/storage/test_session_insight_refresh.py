@@ -9,6 +9,7 @@ import aiosqlite
 import pytest
 
 import polylogue.storage.insights.session.rebuild as rebuild_mod
+from polylogue.daemon import cli as daemon_cli
 from polylogue.storage.insights.session.aggregates import refresh_async_provider_day_aggregates
 from polylogue.storage.insights.session.rebuild import (
     _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
@@ -603,27 +604,23 @@ def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path)
     assert per_model[0]["provider_model_name"] == "claude-opus-4-5"
 
 
-def test_stale_provider_usage_self_heals_via_session_insight_rebuild(tmp_path: Path) -> None:
+def test_stale_provider_usage_self_heals_via_session_insight_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """polylogue-f2qv.5: session_model_usage self-heals like session_profile.
 
     Before this bead, session_model_usage was written once at ingest and never
     revisited by the insight rebuild path, so a stale/buggy rollup could only
     be repaired by a full ``ops reset --index``. This seeds a session with a
     correct rollup, corrupts it to simulate an old materializer, and asserts
-    that (1) the same stale-session selector the daemon's periodic session-
-    insight drain uses (``_schema_archive_session_ids_missing_profiles``) flags
-    the session purely because its provider_usage stamp is stale/missing even
-    though its session_profile is fresh, and (2) running the targeted rebuild
-    (``_archive_insights_execute_ids``, the function the daemon drain calls)
-    re-derives session_model_usage from the still-intact messages table and
-    restamps the materialization version — with zero manual index rebuild.
+    that the daemon's periodic session-insight drain flags the session purely
+    because its provider_usage stamp is stale/missing even though its
+    session_profile is fresh, then re-derives session_model_usage from the
+    still-intact messages table and restamps the materialization version — with
+    zero manual index rebuild.
     """
-    from polylogue.daemon.convergence_stages import (
-        _archive_insights_execute_ids,
-        _schema_archive_session_ids_missing_profiles,
-    )
-
-    db_path = tmp_path / "provider-usage-self-heal.db"
+    db_path = _current_index_db(tmp_path, "provider-usage-self-heal")
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db_path)
     with open_connection(db_path) as conn:
         store_records(
             session=make_session(
@@ -680,11 +677,10 @@ def test_stale_provider_usage_self_heals_via_session_insight_rebuild(tmp_path: P
         )
         conn.commit()
 
-        stale_ids = _schema_archive_session_ids_missing_profiles(conn)
-        assert session_id in stale_ids
-
-        result = _archive_insights_execute_ids(conn, [session_id])
-        assert bool(getattr(result, "success", result))
+        # Exercise the periodic daemon entry point rather than calling its
+        # selector and executor directly. Removing provider_usage from either
+        # convergence seam makes this return zero and leaves the corrupt rollup.
+        assert daemon_cli._drain_session_insights_once() == 1
 
         after = conn.execute(
             "SELECT input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
@@ -704,8 +700,8 @@ def test_stale_provider_usage_self_heals_via_session_insight_rebuild(tmp_path: P
         assert stamp is not None
         assert stamp["materializer_version"] == SESSION_INSIGHT_MATERIALIZER_VERSION
 
-        # Once healed, the selector no longer flags the session.
-        assert session_id not in _schema_archive_session_ids_missing_profiles(conn)
+        # Once healed, the same bounded periodic pass finds no more work.
+        assert daemon_cli._drain_session_insights_once() == 0
 
 
 def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
