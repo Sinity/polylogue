@@ -142,8 +142,9 @@ gh workflow run homebrew-bump.yml --ref master -f version=X.Y.Z
 ```
 
 The recovery workflows check out the named tag and reject version mismatches.
-The container lane additionally pulls each published image and checks that its
-`polylogue --version` output contains the tag's complete source revision.
+The container lane additionally pulls each published image, checks the concise
+`polylogue --version` prefix, and compares `VERSION_INFO.commit` to the tag's
+complete source revision.
 
 For local container or formula experiments before their artifacts exist, build
 from the checkout:
