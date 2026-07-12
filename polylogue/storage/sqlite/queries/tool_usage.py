@@ -181,20 +181,7 @@ async def get_tool_usage_provider_coverage_rows(
 def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
     if provider_or_origin is None:
         return None
-    known_origin = {
-        "claude-code-session",
-        "codex-session",
-        "gemini-cli-session",
-        "hermes-session",
-        "antigravity-session",
-        "chatgpt-export",
-        "claude-ai-export",
-        "aistudio-drive",
-        "unknown-export",
-    }
-    if provider_or_origin in known_origin:
-        return provider_or_origin
-    return origin_from_provider(Provider.from_string(provider_or_origin)).value
+    return origin_from_provider(provider_or_origin).value
 
 
 def _provider_for_origin(origin: str) -> Provider:
