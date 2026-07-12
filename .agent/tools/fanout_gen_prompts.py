@@ -133,9 +133,11 @@ LANES: dict[str, dict] = {
         "model": "gpt-5.6-sol",
         "goal": (
             "Execute the next sequenced phase of the provider->origin "
-            "retirement per 9e5.8's plan (read the bead notes FIRST — the "
-            "plan is the deliverable of the in-progress work; coordinator "
-            "confirms claim state before launch). GEMINI+DRIVE collapse to "
+            "retirement per 9e5.8's plan (read the bead notes FIRST). If the "
+            "plan in the bead is incomplete or ambiguous about the phase you "
+            "would execute, STOP and report — planning the vocabulary "
+            "semantics is coordinator/operator work, not lane work. "
+            "GEMINI+DRIVE collapse to "
             "AISTUDIO_DRIVE is non-injective — use the Source-family "
             "disambiguator (#2737, 4rrv). STRICT no-drive-by rule: touch "
             "only the files the phase names."
