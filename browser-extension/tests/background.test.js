@@ -170,6 +170,31 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState.last_capture.receiver_request_id).toBe("receiver-request-1");
   });
 
+  it("stamps capture posts with the stable service-worker instance instead of caller attribution", async () => {
+    globalThis.fetch = vi.fn(async (url, options) => {
+      fetchCalls.push({ url, options });
+      return responseJson({ ok: true, provider: "chatgpt", provider_session_id: "conv-123" });
+    });
+
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: {
+        provenance: { extension_instance_id: "untrusted-content-script" },
+        session: { provider: "chatgpt", provider_session_id: "conv-123" },
+      },
+    });
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-124" } },
+    });
+
+    const first = JSON.parse(fetchCalls[0].options.body);
+    const second = JSON.parse(fetchCalls[1].options.body);
+    expect(first.provenance.extension_instance_id).not.toBe("untrusted-content-script");
+    expect(first.provenance.extension_instance_id).toBe(second.provenance.extension_instance_id);
+    expect(stored.polylogueExtensionInstanceId).toBe(first.provenance.extension_instance_id);
+  });
+
   it("keeps receiver request id on error state", async () => {
     globalThis.fetch = vi.fn(async () =>
       responseJson({ error: "unauthorized" }, { ok: false, status: 401, requestId: "reject-42" }),

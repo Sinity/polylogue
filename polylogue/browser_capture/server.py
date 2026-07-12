@@ -302,6 +302,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             artifact_ref=result.artifact_ref,
             bytes_written=result.bytes_written,
             replaced=result.replaced,
+            deduplicated=result.deduplicated,
+            capture_instance_id=result.capture_instance_id,
         )
         self._send_json(
             HTTPStatus.ACCEPTED,
@@ -311,8 +313,11 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 provider_session_id=result.provider_session_id,
                 artifact_ref=result.artifact_ref,
                 content_hash=self._request_content_hash,
+                dedup_content_hash=result.dedup_content_hash,
                 bytes_written=result.bytes_written,
                 replaced=result.replaced,
+                deduplicated=result.deduplicated,
+                capture_instance_id=result.capture_instance_id,
             ).model_dump(mode="json"),
         )
 

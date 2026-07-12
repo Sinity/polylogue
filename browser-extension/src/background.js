@@ -32,6 +32,19 @@ async function extensionInstanceId() {
   return created;
 }
 
+async function withExtensionInstanceAttribution(envelope) {
+  const instanceId = await extensionInstanceId();
+  return {
+    ...envelope,
+    provenance: {
+      ...(envelope?.provenance || {}),
+      // The service worker owns this persistent identity. Do not trust an
+      // independently reloadable content script to choose the attribution.
+      extension_instance_id: instanceId,
+    },
+  };
+}
+
 async function backfillCoordinator() {
   if (!backfillCoordinatorPromise) {
     backfillCoordinatorPromise = extensionInstanceId().then((instanceId) => new BackfillCoordinator({
@@ -263,9 +276,10 @@ async function drainCaptureQueue(trigger = "alarm") {
       remaining.push(entry);
       continue;
     }
-    const summary = envelopeSessionSummary(entry.envelope);
+    const envelope = await withExtensionInstanceAttribution(entry.envelope);
+    const summary = envelopeSessionSummary(envelope);
     try {
-      const result = await postJson("/v1/browser-captures", entry.envelope);
+      const result = await postJson("/v1/browser-captures", envelope);
       drained += 1;
       await updateSessionLedger({
         provider: summary.provider || result.provider,
@@ -277,6 +291,8 @@ async function drainCaptureQueue(trigger = "alarm") {
           attachment_count: summary.attachmentCount,
           receiver_request_id: result.receiver_request_id || null,
           artifact_ref: result.artifact_ref || null,
+          extension_instance_id: result.capture_instance_id || null,
+          deduplicated: Boolean(result.deduplicated),
           last_error: null,
         },
       });
@@ -301,6 +317,8 @@ async function drainCaptureQueue(trigger = "alarm") {
         asset_acquisition: summary.assetAcquisition,
         turn_count: summary.turnCount,
         attachment_count: summary.attachmentCount,
+        extension_instance_id: result.capture_instance_id || null,
+        deduplicated: Boolean(result.deduplicated),
         last_receiver_request_id: result.receiver_request_id || null,
       });
     } catch (error) {
@@ -1147,13 +1165,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.capture") {
-      const summary = envelopeSessionSummary(message.envelope);
+      const envelope = await withExtensionInstanceAttribution(message.envelope);
+      const summary = envelopeSessionSummary(envelope);
       let result;
       try {
-        result = await postJson("/v1/browser-captures", message.envelope);
+        result = await postJson("/v1/browser-captures", envelope);
       } catch (error) {
         if (isRetryableCaptureError(error)) {
-          await enqueueCaptureForRetry({ envelope: message.envelope, reason: message.reason, error });
+          await enqueueCaptureForRetry({ envelope, reason: message.reason, error });
           await setState({
             online: false,
             captured: false,
@@ -1182,6 +1201,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           attachment_count: summary.attachmentCount,
           receiver_request_id: result.receiver_request_id || null,
           artifact_ref: result.artifact_ref || null,
+          extension_instance_id: result.capture_instance_id || null,
+          deduplicated: Boolean(result.deduplicated),
           last_error: null,
         },
       });
@@ -1204,6 +1225,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         asset_acquisition: summary.assetAcquisition,
         turn_count: summary.turnCount,
         attachment_count: summary.attachmentCount,
+        extension_instance_id: result.capture_instance_id || null,
+        deduplicated: Boolean(result.deduplicated),
         last_receiver_request_id: result.receiver_request_id || null
       });
       // Receiver just proved reachable — flush anything queued from earlier

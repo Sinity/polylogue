@@ -93,6 +93,7 @@ class BrowserCaptureProvenance(BaseModel):
     page_title: str | None = None
     captured_at: str
     extension_id: str | None = None
+    extension_instance_id: str | None = Field(default=None, min_length=1, max_length=128)
     browser_profile: str | None = None
     adapter_name: str
     adapter_version: str | None = None
@@ -235,8 +236,11 @@ class BrowserCaptureAcceptedPayload(BaseModel):
     provider_session_id: str
     artifact_ref: str
     content_hash: str
+    dedup_content_hash: str
     bytes_written: int
     replaced: bool
+    deduplicated: bool
+    capture_instance_id: str | None = None
 
 
 class BrowserCaptureErrorPayload(BaseModel):

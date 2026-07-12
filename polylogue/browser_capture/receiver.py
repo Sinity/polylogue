@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
 import re
@@ -9,7 +11,8 @@ import secrets
 import sqlite3
 import tempfile
 import threading
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -155,6 +158,9 @@ class BrowserCaptureWriteResult:
     artifact_ref: str
     bytes_written: int
     replaced: bool
+    deduplicated: bool
+    dedup_content_hash: str
+    capture_instance_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +210,24 @@ def capture_response_id(provider: str, provider_session_id: str, capture_id: str
     while value.startswith(f"{prefix}{prefix}"):
         value = value[len(prefix) :]
     return value if value.startswith(prefix) else f"{prefix}{value}"
+
+
+def capture_dedup_content_hash(envelope: BrowserCaptureEnvelope) -> str:
+    """Hash capture content independently from observation-specific provenance.
+
+    A browser extension instance and its capture timestamp identify *who saw*
+    a snapshot, not a different provider session revision. Keeping them out of
+    this hash lets two concurrently running instances converge on one spool
+    artifact while the receiver can still echo each poster's attribution.
+    """
+    payload = {
+        "polylogue_capture_kind": envelope.polylogue_capture_kind,
+        "schema_version": envelope.schema_version,
+        "session": envelope.session.model_dump(mode="json", exclude_none=True),
+        "provider_meta": envelope.provider_meta,
+        "raw_provider_payload": envelope.raw_provider_payload,
+    }
+    return hashlib.sha256(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
 
 
 def _timestamp_ms(value: object) -> int | None:
@@ -419,6 +443,19 @@ class SpoolQuotaExceededError(RuntimeError):
 _SPOOL_WRITE_LOCK = threading.Lock()
 
 
+@contextmanager
+def _spool_file_lock(spool_root: Path) -> Iterator[None]:
+    """Serialize writers from distinct receiver processes sharing a spool."""
+    spool_root.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(spool_root / ".polylogue-browser-capture.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
 @dataclass(frozen=True, slots=True)
 class SpoolUsage:
     file_count: int
@@ -473,27 +510,57 @@ def write_capture_envelope(
     concurrent requests cannot all pass the check before any one write
     lands.
     """
-    target = capture_artifact_path(envelope, spool_path)
-    with _SPOOL_WRITE_LOCK:
+    root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
+    target = capture_artifact_path(envelope, root)
+    dedup_content_hash = capture_dedup_content_hash(envelope)
+    with _SPOOL_WRITE_LOCK, _spool_file_lock(root):
         replaced = target.exists()
-        if not replaced:
-            root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
+        if replaced:
+            try:
+                existing = BrowserCaptureEnvelope.model_validate(orjson.loads(target.read_bytes()))
+            except (OSError, orjson.JSONDecodeError, ValueError):
+                existing = None
+            if existing is not None and capture_dedup_content_hash(existing) == dedup_content_hash:
+                return BrowserCaptureWriteResult(
+                    provider=envelope.provider.value,
+                    provider_session_id=envelope.provider_session_id,
+                    path=target,
+                    artifact_ref=capture_artifact_ref(envelope, root),
+                    bytes_written=target.stat().st_size,
+                    replaced=True,
+                    deduplicated=True,
+                    dedup_content_hash=dedup_content_hash,
+                    capture_instance_id=envelope.provenance.extension_instance_id,
+                )
+        else:
             _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=SPOOL_MAX_BYTES)
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = envelope.model_dump(mode="json", exclude_none=True)
         raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
-        with tempfile.NamedTemporaryFile("wb", dir=target.parent, prefix=f".{target.name}.", delete=False) as handle:
-            temp_path = Path(handle.name)
-            handle.write(raw)
-            handle.write(b"\n")
-        temp_path.replace(target)
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "wb", dir=target.parent, prefix=f".{target.name}.", delete=False
+            ) as handle:
+                temp_path = Path(handle.name)
+                handle.write(raw)
+                handle.write(b"\n")
+            temp_path.replace(target)
+        except BaseException:
+            if temp_path is not None:
+                with suppress(FileNotFoundError):
+                    temp_path.unlink()
+            raise
     return BrowserCaptureWriteResult(
         provider=envelope.provider.value,
         provider_session_id=envelope.provider_session_id,
         path=target,
-        artifact_ref=capture_artifact_ref(envelope, spool_path),
+        artifact_ref=capture_artifact_ref(envelope, root),
         bytes_written=target.stat().st_size,
         replaced=replaced,
+        deduplicated=False,
+        dedup_content_hash=dedup_content_hash,
+        capture_instance_id=envelope.provenance.extension_instance_id,
     )
 
 
