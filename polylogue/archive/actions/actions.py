@@ -86,6 +86,15 @@ class Action:
     output_text: str | None
     search_text: str
     raw: Mapping[str, object]
+    #: Structural pass/fail from the paired tool_result's keystone columns
+    #: (``tool_result_is_error``/``tool_result_exit_code``, see
+    #: :func:`polylogue.archive.actions.parsing.tool_result_outcome`).
+    #: ``True``/``False`` is a genuinely structural verdict; ``None`` means
+    #: the origin never populated either column for this result -- not a
+    #: negative claim, since most origins are structurally uncovered here
+    #: (polylogue-9e5.3 audit). Consumers must not text-scan ``output_text``
+    #: to recover a verdict this field reports as ``None``.
+    tool_success: bool | None = None
 
     @property
     def normalized_tool_name(self) -> str:
@@ -157,6 +166,7 @@ def _build_action_from_message_fields(
             output_text=output_text,
         ),
         raw=call.raw,
+        tool_success=call.success,
     )
 
 
