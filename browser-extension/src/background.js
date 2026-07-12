@@ -1,6 +1,7 @@
 import { BackfillCoordinator } from "./backfill/coordinator.js";
 import { BACKFILL_ALARM, PROVIDER_REQUEST_TIMEOUT_MS } from "./backfill/models.js";
 import { providerAdapters } from "./backfill/providers.js";
+import { executeProviderPageRequest } from "./backfill/page_transport.js";
 import { IndexedDbBackfillStore } from "./backfill/storage.js";
 
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
@@ -90,14 +91,14 @@ function injectionPlanForUrl(url) {
     const parsed = new URL(url || "");
     if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
       return [
-        { files: ["src/content/chatgpt_bridge.js", "src/content/provider_backfill_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/chatgpt.js", "src/content/provider_backfill_content.js"] },
+        { files: ["src/content/chatgpt_bridge.js"], world: "MAIN" },
+        { files: ["src/common.js", "src/content/chatgpt.js"] },
       ];
     }
     if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
       return [
-        { files: ["src/content/claude_bridge.js", "src/content/provider_backfill_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/claude.js", "src/content/provider_backfill_content.js"] },
+        { files: ["src/content/claude_bridge.js"], world: "MAIN" },
+        { files: ["src/common.js", "src/content/claude.js"] },
       ];
     }
     if (
@@ -633,15 +634,22 @@ async function waitForProviderTab(tabId, provider) {
 async function providerTab(provider) {
   const tabs = await chrome.tabs.query({});
   const existing = tabs.find((tab) => providerForUrl(tab.url || tab.pendingUrl) === provider);
-  if (existing) return existing;
+  if (existing) return { tab: existing, owned: false, cleanupAlarm: null };
   const url = provider === "chatgpt" ? "https://chatgpt.com/" : "https://claude.ai/";
   const created = await chrome.tabs.create({ url, active: false });
   if (!created?.id) throw new Error("backfill_provider_tab_create_failed");
-  const ready = created.status === "complete" ? created : await waitForProviderTab(created.id, provider);
-  await chrome.alarms.create(`${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:${provider}:${ready.id}`, {
+  const cleanupAlarm = `${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:${provider}:${created.id}`;
+  await chrome.alarms.create(cleanupAlarm, {
     when: Date.now() + BACKFILL_TRANSPORT_TAB_TTL_MS,
   });
-  return ready;
+  try {
+    const ready = created.status === "complete" ? created : await waitForProviderTab(created.id, provider);
+    return { tab: ready, owned: true, cleanupAlarm };
+  } catch (error) {
+    await chrome.tabs.remove(created.id).catch(() => undefined);
+    await chrome.alarms.clear(cleanupAlarm);
+    throw error;
+  }
 }
 
 function pageContextResponse(response) {
@@ -650,6 +658,7 @@ function pageContextResponse(response) {
     ok: Boolean(response?.ok),
     status: Number(response?.status || 0),
     polyloguePageContext: true,
+    polylogueAuthReason: response?.authReason || null,
     headers: { get: (name) => {
       const normalized = name.toLowerCase();
       if (normalized === "content-type") return response?.contentType || "";
@@ -663,17 +672,32 @@ function pageContextResponse(response) {
 async function providerPageFetch(url, options = {}) {
   if (options.method && options.method !== "GET") throw new Error("backfill_provider_method_not_allowed");
   const request = providerRequestFromUrl(url);
-  const tab = await providerTab(request.provider);
-  await ensureCaptureScripts(tab);
-  const result = await withTimeout(
-    chrome.tabs.sendMessage(tab.id, { type: "polylogue.backfill.pageRequest", ...request }),
-    BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
-    "backfill_page_request",
-  );
+  request.maxResponseBytes = 32 * 1024 * 1024;
+  const transport = await providerTab(request.provider);
+  let result;
+  try {
+    const executions = await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId: transport.tab.id },
+        world: "MAIN",
+        func: executeProviderPageRequest,
+        args: [request],
+      }),
+      BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
+      "backfill_page_request",
+    );
+    result = executions?.[0]?.result;
+  } catch (error) {
+    if (transport.owned) {
+      await chrome.tabs.remove(transport.tab.id).catch(() => undefined);
+      if (transport.cleanupAlarm) await chrome.alarms.clear(transport.cleanupAlarm);
+    }
+    throw error;
+  }
   if (!result?.ok) {
     const error = String(result?.error || "backfill_page_request_failed");
     if (error.includes("auth_context") || error.includes("selected_organization")) {
-      return pageContextResponse({ ok: false, status: 401, contentType: "application/json", body: JSON.stringify({ error }) });
+      return pageContextResponse({ ok: false, status: 401, contentType: "application/json", authReason: error, body: JSON.stringify({ error }) });
     }
     throw new Error(error);
   }

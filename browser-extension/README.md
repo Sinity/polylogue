@@ -220,6 +220,9 @@ the UI. The broker accepts only fixed inventory and native-conversation
 operations, bounds time and response bytes, and never persists or logs
 credential values. Missing or stale page auth context pauses for operator
 action instead of accepting a plausible-looking empty inventory.
+Claude jobs pin the selected organization at inventory start. If the UI
+selection changes, the job pauses with a `selected_organization_stale` reason;
+cancel that job and start a new one rather than using Resume across accounts.
 
 The scheduler uses concurrency one per provider, a conservative learned
 request cadence, daily and per-wake budgets, `Retry-After`, exponential

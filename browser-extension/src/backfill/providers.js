@@ -109,7 +109,7 @@ export class ChatGptBackfillAdapter {
     this.provider = "chatgpt";
   }
   configure() {}
-  requestCost() { return 1; }
+  requestCost() { return 2; }
   async enumerate(cursor = "0", cutoff = null) {
     const offset = Number.parseInt(cursor || "0", 10) || 0;
     const response = await providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversations?offset=${offset}&limit=28&order=updated&is_archived=false&is_starred=false`);

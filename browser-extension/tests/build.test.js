@@ -24,6 +24,7 @@ const PACKAGE_PATH = join(EXT_ROOT, "package.json");
 
 const ORIGINAL_MANIFEST = readFileSync(MANIFEST_PATH, "utf8");
 const ORIGINAL_PACKAGE = readFileSync(PACKAGE_PATH, "utf8");
+const { Headers, Response } = globalThis;
 
 function restore() {
   writeFileSync(MANIFEST_PATH, ORIGINAL_MANIFEST);
@@ -99,8 +100,7 @@ describe("build.mjs full archive emission", () => {
     expect(listing).toContain("src/backfill/coordinator.js");
     expect(listing).toContain("src/backfill/providers.js");
     expect(listing).toContain("src/backfill/storage.js");
-    expect(listing).toContain("src/content/provider_backfill_bridge.js");
-    expect(listing).toContain("src/content/provider_backfill_content.js");
+    expect(listing).toContain("src/backfill/page_transport.js");
   });
 
   it("executes the packaged service worker fixture without foreground tab activation", async () => {
@@ -116,19 +116,37 @@ describe("build.mjs full archive emission", () => {
     let messageListener;
     let alarmListener;
     let stored = { receiverBaseUrl: "http://127.0.0.1:8765", receiverAuthToken: "token" };
-    const pageResponses = [];
+    const pageRequests = [];
+    const pageFetchCalls = [];
+    const pageToken = "packaged-page-token";
+    const pageAccount = "packaged-page-account";
+    const pageWindow = {
+      location: new URL("https://chatgpt.com/"),
+      localStorage: { getItem: () => null },
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      fetch: vi.fn(async (input, options = {}) => {
+        const url = new URL(input);
+        pageFetchCalls.push({ url, options });
+        if (url.pathname === "/api/auth/session") {
+          return new Response(JSON.stringify({ accessToken: pageToken, account: { id: pageAccount } }), { headers: { "Content-Type": "application/json" } });
+        }
+        const headers = new Headers(options.headers);
+        if (headers.get("Authorization") !== `Bearer ${pageToken}` || headers.get("ChatGPT-Account-Id") !== pageAccount) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { "Content-Type": "application/json" } });
+        }
+        if (url.pathname === "/backend-api/conversations") {
+          return new Response(JSON.stringify({ items: [{ id: "fixture-1", update_time: 1780000000 }], total: 1 }), { headers: { "Content-Type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ id: "fixture-1", mapping: { one: { message: { id: "m1", author: { role: "user" }, content: { parts: ["fixture"] } } } } }), { headers: { "Content-Type": "application/json" } });
+      }),
+    };
     const tabs = {
       create: vi.fn(async ({ url, active }) => ({ id: 77, url, active, status: "complete" })),
       update: vi.fn(),
       remove: vi.fn(),
       query: vi.fn(async () => []),
-      sendMessage: vi.fn(async (_tabId, message) => {
-        pageResponses.push(message);
-        const body = message.operation === "inventory"
-          ? { items: [{ id: "fixture-1", update_time: 1780000000 }], total: 1 }
-          : { id: "fixture-1", mapping: { one: { message: { id: "m1", author: { role: "user" }, content: { parts: ["fixture"] } } } } };
-        return { ok: true, response: { ok: true, status: 200, contentType: "application/json", body: JSON.stringify(body) } };
-      }),
+      sendMessage: vi.fn(),
     };
     globalThis.indexedDB = indexedDB;
     globalThis.chrome = {
@@ -141,7 +159,16 @@ describe("build.mjs full archive emission", () => {
         onStartup: { addListener: vi.fn() },
         onMessage: { addListener: vi.fn((listener) => { messageListener = listener; }) },
       },
-      scripting: { executeScript: vi.fn() },
+      scripting: { executeScript: vi.fn(async (details) => {
+        pageRequests.push(details.args[0]);
+        const previousWindow = globalThis.window;
+        globalThis.window = pageWindow;
+        try {
+          return [{ result: await details.func(...details.args) }];
+        } finally {
+          globalThis.window = previousWindow;
+        }
+      }) },
       storage: { local: {
         get: vi.fn(async (defaults) => ({ ...defaults, ...stored })),
         set: vi.fn(async (patch) => { stored = { ...stored, ...patch }; }),
@@ -160,12 +187,16 @@ describe("build.mjs full archive emission", () => {
     await import(/* @vite-ignore */ packagedWorkerUrl);
     const send = (message) => new Promise((resolve) => messageListener(message, {}, resolve));
     const started = await send({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", policy: { baseCadenceMs: 0 } });
-    await vi.waitFor(() => expect(pageResponses.some((message) => message.operation === "inventory")).toBe(true));
+    await vi.waitFor(() => expect(pageRequests.some((message) => message.operation === "inventory")).toBe(true));
     alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
     await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).includes("/v1/browser-captures"))).toBe(true));
     expect(tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false });
     expect(tabs.update).not.toHaveBeenCalled();
-    expect(pageResponses.map((message) => message.operation)).toEqual(["inventory", "conversation"]);
+    expect(pageRequests.map((message) => message.operation)).toEqual(["inventory", "conversation"]);
+    expect(pageFetchCalls.filter((call) => call.url.pathname === "/api/auth/session")).toHaveLength(2);
+    expect(JSON.stringify(pageRequests)).not.toContain(pageToken);
+    expect(JSON.stringify(pageRequests)).not.toContain(pageAccount);
+    expect(tabs.sendMessage).not.toHaveBeenCalled();
     expect(fetchCalls.every((call) => String(call.url).includes("127.0.0.1"))).toBe(true);
     rmSync(smokeRoot, { recursive: true, force: true });
   });

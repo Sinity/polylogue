@@ -52,7 +52,14 @@ function installChromeMock() {
       },
     },
     scripting: {
-      executeScript: vi.fn(async () => undefined),
+      executeScript: vi.fn(async (details) => {
+        if (!details.func) return undefined;
+        const request = details.args[0];
+        const body = request.operation === "inventory"
+          ? { items: [{ id: "backfill-1", update_time: 1780000000 }], total: 1 }
+          : { id: "backfill-1", mapping: {} };
+        return [{ result: { ok: true, response: { ok: true, status: 200, contentType: "application/json", body: JSON.stringify(body) } } }];
+      }),
     },
     storage: {
       local: {
@@ -202,34 +209,32 @@ describe("background receiver diagnostics", () => {
     });
 
     expect(started.ok).toBe(true);
-    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, expect.objectContaining({
-      type: "polylogue.backfill.pageRequest",
-      provider: "chatgpt",
-      operation: "inventory",
+    await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: 42 },
+      world: "MAIN",
+      func: expect.any(Function),
+      args: [expect.objectContaining({ provider: "chatgpt", operation: "inventory" })],
     })));
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
-    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
-      target: { tabId: 42 },
-      world: "MAIN",
-    }));
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
   it("preserves page-bridge Retry-After through the adapter and coordinator", async () => {
-    globalThis.chrome.tabs.sendMessage = vi.fn(async (_tabId, message) => {
-      if (message.type === "polylogue.backfill.pageRequest") {
-        return { ok: true, response: {
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      if (details.func) {
+        return [{ result: { ok: true, response: {
           ok: false,
           status: 429,
           contentType: "application/json",
           retryAfter: "60",
           body: JSON.stringify({ detail: "slow down" }),
-        } };
+        } } }];
       }
-      return { ok: true };
+      return undefined;
     });
 
-    const started = await sendRuntimeMessage({
+    await sendRuntimeMessage({
       type: "polylogue.backfill.start",
       provider: "chatgpt",
       cutoff: "2026-01-01T00:00:00Z",
@@ -240,7 +245,47 @@ describe("background receiver diagnostics", () => {
       expect(status.cooldown_reason).toBe("provider_rate_limited");
     });
 
-    expect(status.cooldown_until_ms).toBe(Date.parse(started.job.created_at) + 60000);
+    expect(status.cooldown_until_ms).toBe(Date.parse(status.updated_at) + 60000);
+    expect(status.inventory_complete).toBe(false);
+  });
+
+  it("schedules cleanup before waiting and removes an inactive tab when readiness fails", async () => {
+    tabs = [];
+    globalThis.chrome.tabs.create = vi.fn(async ({ url, active }) => ({ id: 99, url, active, status: "loading" }));
+    globalThis.chrome.tabs.get = vi.fn(async () => { throw new Error("synthetic_tab_load_failure"); });
+
+    const started = await sendRuntimeMessage({
+      type: "polylogue.backfill.start",
+      provider: "chatgpt",
+      cutoff: "2026-01-01T00:00:00Z",
+    });
+    expect(started.ok, started.error).toBe(true);
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.remove).toHaveBeenCalledWith(99));
+
+    expect(globalThis.chrome.alarms.create).toHaveBeenCalledWith(
+      "polylogueBackfillTransportCleanup:chatgpt:99",
+      expect.objectContaining({ when: expect.any(Number) }),
+    );
+    expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith("polylogueBackfillTransportCleanup:chatgpt:99");
+  });
+
+  it("surfaces a stale Claude UI selection as a cancel-and-restart reason", async () => {
+    tabs = [{ id: 52, url: "https://claude.ai/new", title: "Claude" }];
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => details.func
+      ? [{ result: { ok: false, error: "backfill_bridge_selected_organization_stale" } }]
+      : undefined);
+
+    const started = await sendRuntimeMessage({
+      type: "polylogue.backfill.start",
+      provider: "claude-ai",
+      cutoff: "2026-01-01T00:00:00Z",
+    });
+    expect(started.ok).toBe(true);
+    let status;
+    await vi.waitFor(async () => {
+      status = (await sendRuntimeMessage({ type: "polylogue.backfill.status" })).jobs[0];
+      expect(status.cooldown_reason).toBe("backfill_bridge_selected_organization_stale");
+    });
     expect(status.inventory_complete).toBe(false);
   });
 
@@ -298,12 +343,12 @@ describe("background receiver diagnostics", () => {
 
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
       target: { tabId: 42 },
-      files: ["src/content/chatgpt_bridge.js", "src/content/provider_backfill_bridge.js"],
+      files: ["src/content/chatgpt_bridge.js"],
       world: "MAIN",
     });
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
       target: { tabId: 42 },
-      files: ["src/common.js", "src/content/chatgpt.js", "src/content/provider_backfill_content.js"],
+      files: ["src/common.js", "src/content/chatgpt.js"],
     });
     expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
       type: "polylogue.capturePage",
@@ -326,7 +371,7 @@ describe("background receiver diagnostics", () => {
     expect(response).toEqual({ ok: true });
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
       target: { tabId: 42 },
-      files: ["src/content/chatgpt_bridge.js", "src/content/provider_backfill_bridge.js"],
+      files: ["src/content/chatgpt_bridge.js"],
       world: "MAIN",
     });
     expect(stored.polylogueCaptureLog[0].ok).toBe(false);

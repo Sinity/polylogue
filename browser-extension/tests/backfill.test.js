@@ -342,7 +342,7 @@ describe("background backfill coordinator", () => {
     expect(byteHarness.receiver).not.toHaveBeenCalled();
   });
 
-  it("persists Claude organization identity across restart and hard-reserves its request budget", async () => {
+  it("pins Claude organization identity across restart and hard-reserves its request budget", async () => {
     let now = 1000;
     const store = new MemoryBackfillStore();
     const alarms = { create: vi.fn(async () => undefined) };
@@ -410,12 +410,16 @@ describe("provider adapter contracts", () => {
     });
   });
 
-  it("keeps an unproven 200-empty inventory paused and resumable in the coordinator", async () => {
+  it.each([
+    ["memory storage", () => new MemoryBackfillStore()],
+    ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],
+  ])("keeps an unproven 200-empty inventory paused, then captures once with %s", async (_label, makeStore) => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response({ items: [], total: 0 }))
-      .mockResolvedValueOnce(Object.assign(response({ items: [], total: 0 }), { polyloguePageContext: true }));
+      .mockResolvedValueOnce(Object.assign(response({ items: [{ id: "one", update_time: 1780000000 }], total: 1 }), { polyloguePageContext: true }))
+      .mockResolvedValueOnce(Object.assign(response(chatGptNative("one")), { polyloguePageContext: true }));
     const adapter = new ChatGptBackfillAdapter(fetchImpl, { requirePageContext: true });
-    const h = harness({ adapter });
+    const h = harness({ adapter, store: makeStore() });
     const job = await startJob(h);
 
     await h.coordinator.wake(job.id);
@@ -428,8 +432,9 @@ describe("provider adapter contracts", () => {
     h.advance(h.policy.baseCadenceMs);
     await h.coordinator.wake(job.id);
     status = await h.coordinator.status(job.id);
-    expect(status).toMatchObject({ status: "complete", inventory_complete: true });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(status).toMatchObject({ status: "complete", inventory_complete: true, progress: { complete: 1 } });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(h.receiver).toHaveBeenCalledTimes(1);
   });
 
   it("stops descending inventory pagination when a page crosses the cutoff", async () => {

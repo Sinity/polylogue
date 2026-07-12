@@ -122,6 +122,11 @@ inventory and native-conversation operations are allowed. Timeouts,
 response-size limits, auth/challenge classification, and response-shape drift
 fail closed; HTTP 200 without proven page context is not accepted as an empty
 inventory.
+Claude jobs pin their initial UI-selected organization so a later account
+switch cannot mix one organization's inventory with another organization's
+native conversations. A `selected_organization_stale` pause requires cancelling
+the old job and starting a new one; Resume is appropriate only after restoring
+the original selection.
 
 The default provider concurrency is one. Token cadence is conservative and
 learned upward after throttling. `Retry-After` is authoritative, retry delays
