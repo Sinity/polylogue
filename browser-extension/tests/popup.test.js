@@ -11,6 +11,9 @@ function installDom() {
   const dom = new JSDOM(`<!doctype html>
     <body>
       <span id="badge"></span>
+      <span id="operator-state"></span>
+      <span id="fidelity-flag" hidden></span>
+      <span id="open-tab-count"></span>
       <span id="state"></span>
       <span id="receiver-request"></span>
       <span id="updated"></span>
@@ -53,6 +56,8 @@ function installDom() {
       <span id="log-count"></span>
       <span id="debug-count"></span>
       <div id="log"></div>
+      <div id="timeline"></div>
+      <div id="open-tabs"></div>
       <div id="debug-panel" hidden><div id="debug-log"></div></div>
     </body>`);
   globalThis.window = dom.window;
@@ -108,6 +113,7 @@ async function loadPopup(storagePatch = {}) {
   vi.resetModules();
   installDom();
   installChromeMock(storagePatch);
+  await import("../src/operator_status.js");
   await import("../src/popup.js");
   await vi.waitFor(() => expect(globalThis.document.getElementById("page").textContent).toContain("ChatGPT"));
 }
@@ -148,7 +154,7 @@ describe("popup capture", () => {
     }));
   });
 
-  it("renders stale archive state with operator-facing explanation", async () => {
+  it("renders stale archive state as catching up", async () => {
     await loadPopup({
       polylogueState: {
         online: true,
@@ -160,6 +166,7 @@ describe("popup capture", () => {
 
     expect(globalThis.document.getElementById("badge").textContent).toBe("stale");
     expect(globalThis.document.getElementById("archive").textContent).toBe("Stale");
+    expect(globalThis.document.getElementById("operator-state").textContent).toBe("Catching up");
     expect(globalThis.document.getElementById("state-detail").textContent).toContain("daemon has not caught up");
   });
 
@@ -205,6 +212,49 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("badge").textContent).toBe("missing");
     expect(globalThis.document.getElementById("archive").textContent).toBe("Not archived");
     expect(globalThis.document.getElementById("state").textContent).toContain("No capture exists");
+  });
+
+  it("renders mission-control status, open tabs, and the active decision timeline", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: false,
+        provider: "chatgpt",
+        provider_session_id: "test-conversation",
+        archive_state: { state: "missing" },
+        updated_at: new Date().toISOString(),
+      },
+      polylogueSessionLedger: {
+        "chatgpt:test-conversation": { archive_state: { state: "missing" } },
+      },
+      polylogueConversationTimeline: {
+        "chatgpt:test-conversation": [
+          { at: new Date().toISOString(), event: "held_with_reason", reason: "auto_capture_missing", detail: "background_capture_throttled" },
+          { at: new Date().toISOString(), event: "detected_new", detail: "archive_state_missing" },
+        ],
+      },
+    });
+
+    expect(document.getElementById("operator-state").textContent).toBe("Not saved");
+    expect(document.getElementById("open-tab-count").textContent).toBe("1");
+    expect(document.getElementById("open-tabs").textContent).toContain("Not saved");
+    expect(document.getElementById("timeline").textContent).toContain("Held");
+    expect(document.getElementById("timeline").textContent).toContain("background_capture_throttled");
+  });
+
+  it("marks DOM-derived captures as partial fidelity in the operator vocabulary", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: true,
+        capture_mode: "dom_degraded",
+        archive_state: { state: "archived" },
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(document.getElementById("operator-state").textContent).toBe("Safe");
+    expect(document.getElementById("fidelity-flag").hidden).toBe(false);
   });
 
   it("renders supported pages without a conversation id without implying capture happened", async () => {
@@ -280,7 +330,7 @@ describe("popup capture", () => {
     });
 
     expect(globalThis.document.getElementById("fidelity").textContent).toBe("Native");
-    expect(globalThis.document.getElementById("turns").textContent).toBe("12");
+    expect(globalThis.document.getElementById("turns").textContent).toBe("12 captured / 12 visible");
     expect(globalThis.document.getElementById("assets").textContent).toBe("2 acquired · 1 failed");
     expect(globalThis.document.getElementById("asset-failures").textContent).toContain("file-abc: timeout");
   });

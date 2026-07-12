@@ -330,7 +330,7 @@ describe("background receiver diagnostics", () => {
     expect(status.inventory_complete).toBe(false);
   });
 
-  it("refreshes active conversation archive state on tab activation without capturing page content", async () => {
+  it("captures an automatically detected missing conversation and records the decision timeline", async () => {
     expect(activatedListener).toBeTypeOf("function");
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-123", title: "ChatGPT" }];
     globalThis.fetch = vi.fn(async (url, options) => {
@@ -353,10 +353,16 @@ describe("background receiver diagnostics", () => {
 
     await vi.waitFor(() => expect(stored.polylogueState?.active_page_state).toBe("conversation"));
     expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/archive-state?provider=chatgpt&provider_session_id=conv-123");
-    expect(stored.polylogueState.archive_state.state).toBe("missing");
-    expect(stored.polylogueState.last_receiver_request_id).toBe("archive-state-1");
-    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
-    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    expect(stored.polylogueState.captured).toBe(true);
+    expect(stored.polylogueState.last_receiver_request_id).toBe("capture-request-1");
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled();
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      type: "polylogue.capturePage",
+      reason: "auto_capture_missing",
+    });
+    const timeline = stored.polylogueConversationTimeline["chatgpt:conv-123"];
+    expect(timeline.map((entry) => entry.event)).toEqual(["captured", "detected_new"]);
+    expect(timeline[0].reason).toBe("auto_capture_missing");
   });
 
   it("refreshes receiver status for supported pages without a conversation id", async () => {

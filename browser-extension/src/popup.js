@@ -1,6 +1,7 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const AUTO_REFRESH_MS = 8000;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
+const { operatorStatusForState } = globalThis.PolylogueOperatorStatus;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -237,6 +238,74 @@ function stateExplanation(state) {
   };
 }
 
+function conversationKey(provider, providerSessionId) {
+  return provider && providerSessionId ? `${provider}:${providerSessionId}` : null;
+}
+
+function timelineLabel(entry) {
+  const labels = {
+    captured: "Captured",
+    detected_new: "New conversation detected",
+    held_with_reason: "Held",
+    first_seen: "First seen",
+  };
+  return labels[entry?.event] || entry?.event || "Observed";
+}
+
+function renderTimeline(items) {
+  const node = document.getElementById("timeline");
+  if (!node) return;
+  const events = Array.isArray(items) ? items.slice(0, 8) : [];
+  if (!events.length) {
+    node.innerHTML = '<div class="log-meta">No decisions recorded for this conversation yet.</div>';
+    return;
+  }
+  node.innerHTML = events.map((entry) => {
+    const detail = [entry.reason, entry.detail].filter(Boolean).join(" · ");
+    return `<div class="log-item"><div class="log-time">${escapeHtml(relativeAge(entry.at))}</div><div><div class="log-title">${escapeHtml(timelineLabel(entry))}</div><div class="log-meta">${escapeHtml(detail)}</div></div></div>`;
+  }).join("");
+}
+
+function tabState(tab, ledger) {
+  const provider = providerFromUrl(tab?.url || tab?.pendingUrl || "");
+  const sessionId = (() => {
+    try {
+      const url = new URL(tab?.url || tab?.pendingUrl || "");
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (provider === "chatgpt") return parts[parts.indexOf("c") + 1] || null;
+      if (provider === "claude-ai") return parts[0] === "chat" ? parts[1] || null : null;
+      if (provider === "grok") return parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok") || null;
+    } catch {
+      return null;
+    }
+    return null;
+  })();
+  return { provider, sessionId, ledger: ledger[conversationKey(provider, sessionId)] || {} };
+}
+
+function renderOpenTabs(tabs, ledger, activeTabId) {
+  const node = document.getElementById("open-tabs");
+  if (!node) return;
+  const supported = (Array.isArray(tabs) ? tabs : []).map((tab) => ({ tab, ...tabState(tab, ledger) }))
+    .filter(({ provider }) => provider !== "unknown");
+  document.getElementById("open-tab-count").textContent = String(supported.length);
+  if (!supported.length) {
+    node.innerHTML = '<div class="log-meta">No supported conversation tabs are open.</div>';
+    return;
+  }
+  node.innerHTML = supported.map(({ tab, provider, sessionId, ledger: item }) => {
+    const status = operatorStatusForState({
+      online: true,
+      captured: item.archive_state?.state === "archived" || Boolean(item.receiver_request_id),
+      archive_state: item.archive_state,
+      capture_mode: item.capture_mode,
+    });
+    const active = tab.id === activeTabId ? " active" : "";
+    const title = tab.title || sessionId || "Untitled conversation";
+    return `<div class="tab-item${active}"><div>${providerLogo(provider)} <strong>${escapeHtml(title)}</strong></div><span class="state-chip ${escapeHtml(status.tone)}">${escapeHtml(status.label)}</span></div>`;
+  }).join("");
+}
+
 function renderLog(items) {
   const log = document.getElementById("log");
   const safeItems = Array.isArray(items) ? items.slice(0, 8) : [];
@@ -434,6 +503,8 @@ async function render() {
     polylogueDebugLog: [],
     polylogueCaptureQueue: { entries: [], dropped_count: 0 },
     polylogueState: null,
+    polylogueSessionLedger: {},
+    polylogueConversationTimeline: {},
     receiverAuthToken: "",
     receiverBaseUrl: DEFAULT_RECEIVER
   });
@@ -444,9 +515,11 @@ async function render() {
   document.getElementById("receiver-token").value = stored.receiverAuthToken || "";
   document.getElementById("receiver").textContent = stored.receiverBaseUrl;
   const tab = await activeTab();
+  const openTabs = await chrome.tabs.query({});
   const currentProvider = providerFromUrl(tab?.url || "");
   document.getElementById("page").innerHTML = `${providerLogo(currentProvider)} <span>${escapeHtml(hostLabel(tab?.url || ""))}</span>`;
   const state = stored.polylogueState;
+  const status = operatorStatusForState(state || {});
   const requestNode = document.getElementById("receiver-request");
   const modeNode = document.getElementById("mode");
   const turnsNode = document.getElementById("turns");
@@ -456,9 +529,11 @@ async function render() {
   document.getElementById("fidelity").textContent = fidelityLabel(state?.capture_mode);
   renderAssetAcquisition(state?.asset_acquisition);
   const lastSession = state?.last_capture || {};
-  const turnCount = state?.archive_state?.indexed_message_count ?? state?.turn_count ?? lastSession.turn_count ?? "--";
-  const attachmentCount = state?.archive_state?.attachment_count ?? state?.attachment_count ?? lastSession.attachment_count ?? null;
-  turnsNode.textContent = attachmentCount === null ? String(turnCount) : `${turnCount} / ${attachmentCount} files`;
+  const capturedCount = state?.archive_state?.indexed_message_count ?? state?.turn_count ?? lastSession.turn_count ?? null;
+  const visibleCount = state?.turn_count ?? lastSession.turn_count ?? null;
+  turnsNode.textContent = capturedCount === null && visibleCount === null
+    ? "--"
+    : `${capturedCount ?? "--"} captured / ${visibleCount ?? "--"} visible`;
   updatedNode.textContent = state?.updated_at ? `${relativeAge(state.updated_at)} ago` : "--";
 
   const explanation = stateExplanation(state);
@@ -467,6 +542,17 @@ async function render() {
   document.getElementById("state").textContent = explanation.headline;
   document.getElementById("state-detail").textContent = explanation.detail;
   setBadge(badgeKind, badgeText);
+  const operatorState = document.getElementById("operator-state");
+  if (operatorState) {
+    operatorState.textContent = status.label;
+    operatorState.className = `state-chip ${status.tone}`;
+  }
+  const fidelityFlag = document.getElementById("fidelity-flag");
+  if (fidelityFlag) fidelityFlag.hidden = !status.partialFidelity;
+  const activeProvider = state?.provider || providerFromUrl(tab?.url || "");
+  const activeSessionId = state?.provider_session_id || tabState(tab, stored.polylogueSessionLedger || {}).sessionId;
+  renderTimeline(stored.polylogueConversationTimeline?.[conversationKey(activeProvider, activeSessionId)] || []);
+  renderOpenTabs(openTabs, stored.polylogueSessionLedger || {}, tab?.id);
   await refreshBackfills().catch(() => renderBackfill([]));
 }
 
