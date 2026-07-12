@@ -9,7 +9,8 @@ name: Container
 #                           corresponding -distroless variants
 #   - pull_request        → builds both variants on amd64 only as a smoke
 #                           test; does not push
-#   - workflow_dispatch   → manual build; `push=true` opt-in
+#   - workflow_dispatch   → manual build; `push=true` opt-in. Set
+#                           `release_tag` to replay an already-created tag.
 #
 # The release pipeline (release.yml) used to carry an inlined publish-container
 # job. That job has been removed in favour of this dedicated workflow so the
@@ -29,6 +30,10 @@ on:
       - polylogue/**
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "Existing vX.Y.Z tag to build and publish (empty = selected workflow ref)"
+        required: false
+        default: ""
       push:
         description: "Push images to ghcr.io (default: false)"
         required: false
@@ -57,6 +62,32 @@ jobs:
         target: [runtime, distroless]
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve source identity
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          if [[ -z "${tag}" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if [[ -n "${tag}" ]]; then
+            if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release_tag must be vX.Y.Z, got '${tag}'"
+              exit 1
+            fi
+            version="$(python -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
+            if [[ "${version}" != "${tag#v}" ]]; then
+              echo "::error::${tag} does not match pyproject.toml version ${version}"
+              exit 1
+            fi
+          fi
+          echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
 
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
@@ -97,7 +128,10 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=tag
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}},value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
+            type=raw,value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '' }}
             type=sha,prefix=master-,format=short,enable=${{ github.ref == 'refs/heads/master' }}
 
       - name: Build${{ steps.decide.outputs.push == 'true' && ' and push' || '' }}
@@ -110,7 +144,12 @@ jobs:
           push: ${{ steps.decide.outputs.push }}
           load: ${{ steps.decide.outputs.push != 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.revision }}
+          build-args: |
+            POLYLOGUE_BUILD_COMMIT=${{ steps.source.outputs.revision }}
+            POLYLOGUE_BUILD_DIRTY=False
           # Attestations produce a manifest list even on single-platform builds,
           # which the classic docker image store cannot import via --load. Only
           # emit them on push paths (master / tag / opt-in workflow_dispatch),
@@ -120,6 +159,23 @@ jobs:
           sbom: ${{ steps.decide.outputs.push == 'true' }}
           cache-from: type=gha,scope=container-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=container-${{ matrix.target }}
+
+      - name: Smoke published release image and revision
+        if: steps.decide.outputs.push == 'true' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '')
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/polylogue:${{ inputs.release_tag || github.ref_name }}${{ matrix.target == 'distroless' && '-distroless' || '' }}
+          EXPECTED_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${IMAGE}"
+          docker pull --platform linux/amd64 "${IMAGE}"
+          if [[ "${{ matrix.target }}" == "runtime" ]]; then
+            version="$(docker run --rm --entrypoint polylogue "${IMAGE}" --version)"
+          else
+            version="$(docker run --rm --entrypoint /usr/local/bin/polylogue "${IMAGE}" --version)"
+          fi
+          printf '%s\n' "${version}"
+          grep -F -- "${EXPECTED_REVISION}" <<<"${version}"
 
       - name: Smoke test (amd64 image, --version)
         if: steps.decide.outputs.push != 'true'

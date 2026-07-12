@@ -10,8 +10,9 @@ name: Release
 # The OCI image is built and published by `.github/workflows/container.yml`,
 # which fans out across slim + distroless variants and linux/amd64 + linux/arm64.
 #
-# A manual `workflow_dispatch` path exists to dry-run the build/smoke
-# pipeline against any ref without publishing.
+# A manual `workflow_dispatch` path can replay an already-created tag. This is
+# intentionally a release-artifact recovery path, not a way to publish the
+# current default branch under an older version number.
 #
 # PyPI Trusted Publishing must be configured once in the project on
 # pypi.org under "Publishing" → "Add a new pending publisher" with:
@@ -25,8 +26,12 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "Existing vX.Y.Z tag whose exact source should be built (required to publish)"
+        required: false
+        default: ""
       publish:
-        description: "Publish to PyPI and GHCR (false = dry-run build/smoke only)"
+        description: "Publish to PyPI (false = dry-run build/smoke only)"
         required: false
         default: "false"
 
@@ -46,6 +51,33 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Manual recovery must package the immutable tag, not the workflow
+          # branch that happens to contain this recovery machinery.
+          ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
+      - name: Verify release source identity
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          if [[ -z "${tag}" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if [[ -n "${tag}" ]]; then
+            if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release_tag must be vX.Y.Z, got '${tag}'"
+              exit 1
+            fi
+            version="$(python -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
+            if [[ "${version}" != "${tag#v}" ]]; then
+              echo "::error::${tag} does not match pyproject.toml version ${version}"
+              exit 1
+            fi
+          fi
+          echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
       - uses: astral-sh/setup-uv@v8.3.0
         with:
           python-version: "3.13"
@@ -289,7 +321,7 @@ jobs:
   publish-pypi:
     name: publish-pypi
     needs: [build, installed-smoke, installed-smoke-mcp, installed-smoke-hooks, sbom]
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && inputs.release_tag != '')
     timeout-minutes: 15
     runs-on: ubuntu-latest
     environment:
@@ -333,7 +365,7 @@ jobs:
     # environment=pypi-mcp before the first tagged release reaches this job.
     name: publish-pypi-mcp
     needs: [build, installed-smoke-mcp, sbom]
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && inputs.release_tag != '')
     timeout-minutes: 15
     runs-on: ubuntu-latest
     environment:
@@ -372,7 +404,7 @@ jobs:
     # environment=pypi-hooks before the first tagged release reaches this job.
     name: publish-pypi-hooks
     needs: [build, installed-smoke-hooks, sbom]
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && inputs.release_tag != '')
     timeout-minutes: 15
     runs-on: ubuntu-latest
     environment:
