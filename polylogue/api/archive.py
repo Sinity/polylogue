@@ -31,7 +31,7 @@ from polylogue.context.compiler import (
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider
 from polylogue.core.json import JSONDocument
-from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
+from polylogue.core.refs import EvidenceRef, ObjectRef, parse_delegation_edge_object_id, parse_public_ref
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
@@ -2755,6 +2755,8 @@ class PolylogueArchiveMixin:
                 return self._resolve_block_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
             if object_ref.kind == "assertion":
                 return self._resolve_assertion_object_ref(archive_root, ref, normalized_ref, object_ref)
+            if object_ref.kind == "delegation":
+                return self._resolve_delegation_object_ref(archive, ref, normalized_ref, object_ref)
             if object_ref.kind in {"run", "observed-event", "context-snapshot"}:
                 return self._resolve_runtime_object_ref(archive, ref, normalized_ref, object_ref)
             if object_ref.kind in _PENDING_OBJECT_REF_KINDS:
@@ -2972,6 +2974,77 @@ class PolylogueArchiveMixin:
             object_refs=(normalized_ref, payload.target_ref),
             evidence_refs=payload.evidence_refs,
             actions=(_resolution_action("list assertion target", f"polylogue find {payload.target_ref} then read"),),
+        )
+
+    def _resolve_delegation_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+    ) -> PublicRefResolutionPayload:
+        """Resolve a ``delegation:`` ref against the polylogue-y964 `delegations`
+        view. Two id shapes share one lookup: action-observed refs carry an
+        ``instruction_tool_use_block_id`` verbatim; edge-only refs carry the
+        deterministic ``edge:<parent>::<child>`` relation identity (no
+        parent-side dispatch action exists to key off for edge_only/
+        quarantined attempts). Missing, ambiguous, edge_only, and quarantined
+        states are returned as typed payloads, never silently guessed."""
+
+        from polylogue.surfaces.payloads import (
+            DELEGATION_STATE_CAVEATS,
+            DelegationAttemptPayload,
+            PublicRefResolutionPayload,
+            model_json_document,
+        )
+
+        edge_identity = parse_delegation_edge_object_id(object_ref.object_id)
+        if edge_identity is not None:
+            parent_session_id, child_session_id = edge_identity
+            row = archive.get_delegation_attempt(parent_session_id=parent_session_id, child_session_id=child_session_id)
+        else:
+            row = archive.get_delegation_attempt(instruction_tool_use_block_id=object_ref.object_id)
+
+        if row is None:
+            return PublicRefResolutionPayload(
+                ref=ref,
+                normalized_ref=normalized_ref,
+                kind="delegation",
+                resolved=False,
+                payload_kind="missing",
+                caveats=("delegation attempt not found for this identity",),
+            )
+
+        payload = DelegationAttemptPayload.from_row(row)
+        object_refs = [f"session:{payload.parent_session_id}"]
+        if payload.child_session_id is not None:
+            object_refs.append(f"session:{payload.child_session_id}")
+        evidence_refs: list[str] = []
+        if payload.instruction_tool_use_block_id is not None:
+            evidence_refs.append(f"block:{payload.instruction_tool_use_block_id}")
+        elif payload.instruction_message_id is not None:
+            evidence_refs.append(f"message:{payload.instruction_message_id}")
+        if payload.artifact_block_id is not None:
+            evidence_refs.append(f"block:{payload.artifact_block_id}")
+        caveats: tuple[str, ...] = ()
+        state_caveat = DELEGATION_STATE_CAVEATS.get(payload.mapping_state)
+        if state_caveat is not None:
+            caveats = (state_caveat,)
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="delegation",
+            resolved=True,
+            payload_kind="delegation-attempt",
+            payload=model_json_document(payload),
+            title=f"delegation attempt ({payload.mapping_state})",
+            summary=payload.instruction_payload,
+            object_refs=tuple(object_refs),
+            evidence_refs=tuple(evidence_refs),
+            caveats=caveats,
+            actions=(
+                _resolution_action("read parent session", f"polylogue find id:{payload.parent_session_id} then read"),
+            ),
         )
 
     def _resolve_runtime_object_ref(

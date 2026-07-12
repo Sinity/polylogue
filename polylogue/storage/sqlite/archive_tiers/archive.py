@@ -407,6 +407,102 @@ def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
     )
 
 
+DelegationMappingState = Literal["resolved", "unresolved", "ambiguous", "edge_only", "quarantined"]
+DelegationResultStatus = Literal["ok", "error", "unknown"]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDelegationQueryRow:
+    """Terminal query projection over one `delegations` view row
+    (polylogue-y964). ``mapping_state`` is the view's own vocabulary --
+    resolved/unresolved/ambiguous/edge_only/quarantined -- never
+    reinterpreted here. Action-observed rows (resolved/unresolved/ambiguous)
+    always carry ``instruction_tool_use_block_id``; edge-only rows
+    (edge_only/quarantined) never fabricate one."""
+
+    parent_session_id: str
+    child_session_id: str | None
+    mapping_state: DelegationMappingState
+    link_confidence: float | None
+    link_method: str | None
+    inheritance: str | None
+    branch_point_message_id: str | None
+    instruction_message_id: str | None
+    instruction_tool_use_block_id: str | None
+    instruction_payload: str | None
+    dispatch_turn_model: str | None
+    requested_model: str | None
+    artifact_block_id: str | None
+    artifact_text: str | None
+    result_is_error: int | None
+    result_exit_code: int | None
+    result_status: DelegationResultStatus
+    parent_origin: str
+    parent_session_dominant_model: str | None
+    parent_session_dominant_model_family: str | None
+    parent_terminal_state: str | None
+    child_session_dominant_model: str | None
+    child_session_dominant_model_family: str | None
+    child_cost_usd: float | None
+    child_cost_is_estimated: int | None
+    child_tokens: int | None
+    child_wall_ms: int | None
+    child_terminal_state: str | None
+
+
+def _archive_delegation_query_row(row: sqlite3.Row) -> ArchiveDelegationQueryRow:
+    return ArchiveDelegationQueryRow(
+        parent_session_id=str(row["parent_session_id"]),
+        child_session_id=str(row["child_session_id"]) if row["child_session_id"] is not None else None,
+        mapping_state=cast(DelegationMappingState, str(row["mapping_state"])),
+        link_confidence=float(row["link_confidence"]) if row["link_confidence"] is not None else None,
+        link_method=str(row["link_method"]) if row["link_method"] is not None else None,
+        inheritance=str(row["inheritance"]) if row["inheritance"] is not None else None,
+        branch_point_message_id=(
+            str(row["branch_point_message_id"]) if row["branch_point_message_id"] is not None else None
+        ),
+        instruction_message_id=(
+            str(row["instruction_message_id"]) if row["instruction_message_id"] is not None else None
+        ),
+        instruction_tool_use_block_id=(
+            str(row["instruction_tool_use_block_id"]) if row["instruction_tool_use_block_id"] is not None else None
+        ),
+        instruction_payload=str(row["instruction_payload"]) if row["instruction_payload"] is not None else None,
+        dispatch_turn_model=str(row["dispatch_turn_model"]) if row["dispatch_turn_model"] is not None else None,
+        requested_model=str(row["requested_model"]) if row["requested_model"] is not None else None,
+        artifact_block_id=str(row["artifact_block_id"]) if row["artifact_block_id"] is not None else None,
+        artifact_text=str(row["artifact_text"]) if row["artifact_text"] is not None else None,
+        result_is_error=int(row["result_is_error"]) if row["result_is_error"] is not None else None,
+        result_exit_code=int(row["result_exit_code"]) if row["result_exit_code"] is not None else None,
+        result_status=cast(DelegationResultStatus, str(row["result_status"])),
+        parent_origin=str(row["parent_origin"]),
+        parent_session_dominant_model=(
+            str(row["parent_session_dominant_model"]) if row["parent_session_dominant_model"] is not None else None
+        ),
+        parent_session_dominant_model_family=(
+            str(row["parent_session_dominant_model_family"])
+            if row["parent_session_dominant_model_family"] is not None
+            else None
+        ),
+        parent_terminal_state=(str(row["parent_terminal_state"]) if row["parent_terminal_state"] is not None else None),
+        child_session_dominant_model=(
+            str(row["child_session_dominant_model"]) if row["child_session_dominant_model"] is not None else None
+        ),
+        child_session_dominant_model_family=(
+            str(row["child_session_dominant_model_family"])
+            if row["child_session_dominant_model_family"] is not None
+            else None
+        ),
+        child_cost_usd=float(row["child_cost_usd"]) if row["child_cost_usd"] is not None else None,
+        child_cost_is_estimated=(
+            int(row["child_cost_is_estimated"]) if row["child_cost_is_estimated"] is not None else None
+        ),
+        child_tokens=int(row["child_tokens"]) if row["child_tokens"] is not None else None,
+        child_wall_ms=int(row["child_wall_ms"]) if row["child_wall_ms"] is not None else None,
+        child_terminal_state=str(row["child_terminal_state"]) if row["child_terminal_state"] is not None else None,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ArchiveFileQueryRow:
     """Terminal query projection over affected file-path evidence."""
@@ -6973,6 +7069,45 @@ class ArchiveStore:
             [*normalized_session_ids, normalized_limit, normalized_offset],
         ).fetchall()
         return [_archive_action_query_row(row) for row in rows]
+
+    def get_delegation_attempt(
+        self,
+        *,
+        instruction_tool_use_block_id: str | None = None,
+        parent_session_id: str | None = None,
+        child_session_id: str | None = None,
+    ) -> ArchiveDelegationQueryRow | None:
+        """Resolve one `delegations` row (polylogue-y964) by its ref identity.
+
+        Action-observed identity (resolved/unresolved/ambiguous): pass only
+        ``instruction_tool_use_block_id``. Edge-only identity (edge_only/
+        quarantined -- no parent-side dispatch action to key off): pass both
+        ``parent_session_id`` and ``child_session_id``; only rows with no
+        instruction (the edge-only mapping states) are eligible so this path
+        never shadows an action-observed row for the same pair.
+        """
+
+        if instruction_tool_use_block_id is not None:
+            row = self._conn.execute(
+                "SELECT * FROM delegations WHERE instruction_tool_use_block_id = ? LIMIT 1",
+                (instruction_tool_use_block_id,),
+            ).fetchone()
+        elif parent_session_id is not None and child_session_id is not None:
+            row = self._conn.execute(
+                """
+                SELECT * FROM delegations
+                WHERE parent_session_id = ? AND child_session_id = ?
+                  AND mapping_state IN ('edge_only', 'quarantined')
+                LIMIT 1
+                """,
+                (parent_session_id, child_session_id),
+            ).fetchone()
+        else:
+            raise ValueError(
+                "get_delegation_attempt requires either instruction_tool_use_block_id or both "
+                "parent_session_id and child_session_id"
+            )
+        return None if row is None else _archive_delegation_query_row(row)
 
     def query_files(
         self,

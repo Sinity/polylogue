@@ -80,6 +80,7 @@ if TYPE_CHECKING:
         ArchiveAssertionQueryRow,
         ArchiveBlockQueryRow,
         ArchiveContextSnapshotQueryRow,
+        ArchiveDelegationQueryRow,
         ArchiveFileQueryRow,
         ArchiveMessageQueryRow,
         ArchiveObservedEventQueryRow,
@@ -1788,6 +1789,116 @@ class PendingObjectRefPayload(SurfacePayloadModel):
     unit: Literal["pending"] = "pending"
     kind: str
     reason: Literal["substrate-pending"] = "substrate-pending"
+
+
+_DELEGATION_TEXT_BOUND = 2000
+
+
+def _bounded_delegation_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if len(value) <= _DELEGATION_TEXT_BOUND:
+        return value
+    return value[:_DELEGATION_TEXT_BOUND] + "…[truncated]"
+
+
+DelegationMappingState: TypeAlias = Literal["resolved", "unresolved", "ambiguous", "edge_only", "quarantined"]
+DelegationResultStatus: TypeAlias = Literal["ok", "error", "unknown"]
+
+
+class DelegationAttemptPayload(SurfacePayloadModel):
+    """Bounded read payload for one delegation attempt (polylogue-y964
+    `delegations` view, polylogue-lph4 ObjectRef normalization).
+
+    ``mapping_state`` mirrors the view's own vocabulary exactly --
+    resolved/unresolved/ambiguous/edge_only/quarantined -- never
+    reinterpreted here. Action-observed rows (resolved/unresolved/ambiguous)
+    always carry a non-null ``instruction_tool_use_block_id``; edge-only rows
+    (edge_only/quarantined) never fabricate one. Instruction/artifact text is
+    length-bounded (never full-session content) to keep this a citable
+    evidence pointer, not a transcript dump.
+    """
+
+    unit: Literal["delegation-attempt"] = "delegation-attempt"
+    parent_session_id: str
+    child_session_id: str | None = None
+    mapping_state: DelegationMappingState
+    link_confidence: float | None = None
+    link_method: str | None = None
+    inheritance: str | None = None
+    branch_point_message_id: str | None = None
+    instruction_message_id: str | None = None
+    instruction_tool_use_block_id: str | None = None
+    instruction_payload: str | None = None
+    dispatch_turn_model: str | None = None
+    requested_model: str | None = None
+    artifact_block_id: str | None = None
+    artifact_text: str | None = None
+    result_is_error: bool | None = None
+    result_exit_code: int | None = None
+    result_status: DelegationResultStatus
+    parent_origin: str
+    parent_session_dominant_model: str | None = None
+    parent_session_dominant_model_family: str | None = None
+    parent_terminal_state: str | None = None
+    child_session_dominant_model: str | None = None
+    child_session_dominant_model_family: str | None = None
+    child_cost_usd: float | None = None
+    child_cost_is_estimated: bool | None = None
+    child_tokens: int | None = None
+    child_wall_ms: int | None = None
+    child_terminal_state: str | None = None
+
+    @classmethod
+    def from_row(cls, row: ArchiveDelegationQueryRow) -> DelegationAttemptPayload:
+        return cls(
+            parent_session_id=row.parent_session_id,
+            child_session_id=row.child_session_id,
+            mapping_state=row.mapping_state,
+            link_confidence=row.link_confidence,
+            link_method=row.link_method,
+            inheritance=row.inheritance,
+            branch_point_message_id=row.branch_point_message_id,
+            instruction_message_id=row.instruction_message_id,
+            instruction_tool_use_block_id=row.instruction_tool_use_block_id,
+            instruction_payload=_bounded_delegation_text(row.instruction_payload),
+            dispatch_turn_model=row.dispatch_turn_model,
+            requested_model=row.requested_model,
+            artifact_block_id=row.artifact_block_id,
+            artifact_text=_bounded_delegation_text(row.artifact_text),
+            result_is_error=None if row.result_is_error is None else bool(row.result_is_error),
+            result_exit_code=row.result_exit_code,
+            result_status=row.result_status,
+            parent_origin=row.parent_origin,
+            parent_session_dominant_model=row.parent_session_dominant_model,
+            parent_session_dominant_model_family=row.parent_session_dominant_model_family,
+            parent_terminal_state=row.parent_terminal_state,
+            child_session_dominant_model=row.child_session_dominant_model,
+            child_session_dominant_model_family=row.child_session_dominant_model_family,
+            child_cost_usd=row.child_cost_usd,
+            child_cost_is_estimated=None if row.child_cost_is_estimated is None else bool(row.child_cost_is_estimated),
+            child_tokens=row.child_tokens,
+            child_wall_ms=row.child_wall_ms,
+            child_terminal_state=row.child_terminal_state,
+        )
+
+
+#: Caveats surfaced for delegation attempt states that structurally cannot
+#: (or must not) claim a fully resolved child -- keeps `resolve_ref` honest
+#: about what each `mapping_state` does and does not know (polylogue-y964
+#: vocabulary, polylogue-lph4 ObjectRef surface).
+DELEGATION_STATE_CAVEATS: dict[str, str] = {
+    "unresolved": "dispatch action observed but no child session resolved yet (mapping_state=unresolved)",
+    "ambiguous": (
+        "dispatch and resolved-child counts disagree for this parent; the real instruction is known but the "
+        "child cannot be attributed without guessing (mapping_state=ambiguous)"
+    ),
+    "edge_only": (
+        "resolved child session with no discoverable parent-side dispatch action "
+        "(mapping_state=edge_only) -- instruction is never fabricated"
+    ),
+    "quarantined": "session link quarantined as a lineage cycle-break (mapping_state=quarantined)",
+}
 
 
 class SessionReadViewEnvelope(SurfacePayloadModel):
