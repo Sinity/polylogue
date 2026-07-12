@@ -294,11 +294,17 @@ def _is_failed_action(row: sqlite3.Row) -> bool:
     return int(row["is_error"] or 0) == 1 or int(row["exit_code"] or 0) != 0
 
 
+def _optional_bool(value: object) -> bool | None:
+    return None if value is None else bool(value)
+
+
 def _is_matching_repair(failed: sqlite3.Row, candidate: sqlite3.Row) -> bool:
     failed_command = _command_from_row(failed)
+    failed_tool_name = str(failed["tool_name"] or "")
     return (
         not _is_failed_action(candidate)
-        and str(candidate["tool_name"] or "") == str(failed["tool_name"] or "")
+        and bool(failed_tool_name)
+        and str(candidate["tool_name"] or "") == failed_tool_name
         and bool(failed_command)
         and _command_from_row(candidate) == failed_command
     )
@@ -400,14 +406,14 @@ def inspect_completion_claims(
                     prior_action_ref=(
                         f"block:{prior_action['tool_result_block_id']}" if prior_action is not None else None
                     ),
-                    prior_is_error=(bool(prior_action["is_error"]) if prior_action is not None else None),
+                    prior_is_error=(_optional_bool(prior_action["is_error"]) if prior_action is not None else None),
                     prior_exit_code=(
                         int(prior_action["exit_code"])
                         if prior_action is not None and prior_action["exit_code"] is not None
                         else None
                     ),
                     repair_action_ref=f"block:{repair['tool_result_block_id']}" if repair is not None else None,
-                    repair_is_error=(bool(repair["is_error"]) if repair is not None else None),
+                    repair_is_error=(_optional_bool(repair["is_error"]) if repair is not None else None),
                     repair_exit_code=(
                         int(repair["exit_code"]) if repair is not None and repair["exit_code"] is not None else None
                     ),

@@ -113,6 +113,32 @@ async def test_completion_claim_experiment_keeps_is_error_only_outcomes(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_completion_claim_experiment_preserves_unknown_is_error_values(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        updated = conn.execute(
+            """
+            UPDATE blocks
+            SET tool_result_is_error = NULL
+            WHERE session_id = ?
+              AND block_type = 'tool_result'
+              AND tool_result_exit_code IS NOT NULL
+            """,
+            (DEMO_CODEX_RECEIPTS_SESSION_ID,),
+        ).rowcount
+        conn.commit()
+    assert updated >= 2
+
+    result = inspect_completion_claims(archive_root, sample_size=10)
+    (evidence,) = [item for item in result.evidence if item.session_ref == f"session:{DEMO_CODEX_RECEIPTS_SESSION_ID}"]
+    assert evidence.classification == "contradicted_then_repaired"
+    assert evidence.prior_is_error is None
+    assert evidence.repair_is_error is None
+
+
+@pytest.mark.asyncio
 async def test_completion_claim_experiment_excludes_runtime_protocol_material(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     await seed_demo_archive(archive_root, force=True, with_overlays=False)
@@ -238,6 +264,29 @@ async def test_completion_claim_experiment_requires_command_evidence_for_a_repai
             """
             UPDATE blocks
             SET tool_input = NULL
+            WHERE session_id = ? AND block_type = 'tool_use'
+            """,
+            (DEMO_CODEX_RECEIPTS_SESSION_ID,),
+        ).rowcount
+        conn.commit()
+    assert updated >= 2
+
+    result = inspect_completion_claims(archive_root, sample_size=10)
+    (evidence,) = [item for item in result.evidence if item.session_ref == f"session:{DEMO_CODEX_RECEIPTS_SESSION_ID}"]
+    assert evidence.classification == "contradicted_without_recorded_repair"
+    assert evidence.repair_action_ref is None
+
+
+@pytest.mark.asyncio
+async def test_completion_claim_experiment_requires_tool_identity_for_a_repair(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        updated = conn.execute(
+            """
+            UPDATE blocks
+            SET tool_name = NULL
             WHERE session_id = ? AND block_type = 'tool_use'
             """,
             (DEMO_CODEX_RECEIPTS_SESSION_ID,),
