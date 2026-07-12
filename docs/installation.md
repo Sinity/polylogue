@@ -101,17 +101,21 @@ polylogued --help
 polylogue-mcp --help
 ```
 
-For containers, prefer the immutable release tag and confirm the full runtime
-revision printed by `--version` matches the tag target before deploying:
+For containers, use `--version` for the concise human build identity and query
+the packaged runtime's `VERSION_INFO.commit` for the full revision before
+deploying:
 
 ```bash
 podman pull ghcr.io/sinity/polylogue:X.Y.Z
 podman run --rm --entrypoint polylogue ghcr.io/sinity/polylogue:X.Y.Z --version
+podman run --rm --entrypoint python ghcr.io/sinity/polylogue:X.Y.Z \
+  -I -c 'from polylogue.version import VERSION_INFO; print(VERSION_INFO.commit)'
 git ls-remote https://github.com/Sinity/polylogue refs/tags/vX.Y.Z
 ```
 
 The published workflow performs this smoke for both slim and distroless images;
-its package embeds the complete source revision rather than a short SHA.
+it requires the concise version to match the source prefix and the machine-
+readable runtime field to equal the complete source revision.
 
 For Homebrew, install only after the release-triggered tap PR has merged:
 

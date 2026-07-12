@@ -53,10 +53,29 @@ jobs:
         with:
           # Recovery builds the extension sources that belong to the release,
           # not whatever code later reached the default branch.
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
       - name: Record packaged source revision
         id: source
-        run: echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          if [[ -z "${tag}" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if [[ -n "${tag}" ]]; then
+            if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release_tag must be vX.Y.Z, got '${tag}'"
+              exit 1
+            fi
+            tag_revision="$(git rev-parse "refs/tags/${tag}^{commit}")"
+            if [[ "$(git rev-parse HEAD)" != "${tag_revision}" ]]; then
+              echo "::error::checked-out source does not match ${tag} target"
+              exit 1
+            fi
+          fi
+          echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -108,19 +127,29 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           from pathlib import Path
 
           dist = Path("dist")
           version = os.environ["VERSION"]
-          artifacts = sorted(
-              [*dist.glob("polylogue-browser-capture-*-chrome.zip"), *dist.glob("polylogue-browser-capture-*-firefox.xpi")]
-          )
-          if len(artifacts) != 2:
-              raise SystemExit(f"expected one Chrome zip and one Firefox xpi, found: {artifacts}")
+          revision = os.environ["SOURCE_REVISION"]
+          chrome = sorted(dist.glob("polylogue-browser-capture-*-chrome.zip"))
+          firefox = sorted(dist.glob("polylogue-browser-capture-*-firefox.xpi"))
+          if len(chrome) != 1 or len(firefox) != 1:
+              raise SystemExit(f"expected one Chrome zip and one Firefox xpi, found chrome={chrome}, firefox={firefox}")
+          artifacts = [chrome[0], firefox[0]]
+          expected_names = {
+              f"polylogue-browser-capture-{version}-chrome.zip",
+              f"polylogue-browser-capture-{version}-firefox.xpi",
+          }
+          if {path.name for path in artifacts} != expected_names:
+              raise SystemExit(f"artifact names do not match version {version}: {artifacts}")
+          if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+              raise SystemExit(f"source revision is not a full immutable SHA: {revision!r}")
           payload = {
               "schema_version": 1,
               "version": version,
-              "source_revision": os.environ["SOURCE_REVISION"],
+              "source_revision": revision,
               "firefox_gecko_id": json.loads((dist / "build-manifest.json").read_text())["firefox_gecko_id"],
               "artifacts": [
                   {

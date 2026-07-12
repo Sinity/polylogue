@@ -54,7 +54,7 @@ jobs:
         with:
           # Manual recovery must package the immutable tag, not the workflow
           # branch that happens to contain this recovery machinery.
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           fetch-depth: 0
       - name: Verify release source identity
         id: source
@@ -74,6 +74,11 @@ jobs:
             version="$(python -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
             if [[ "${version}" != "${tag#v}" ]]; then
               echo "::error::${tag} does not match pyproject.toml version ${version}"
+              exit 1
+            fi
+            tag_revision="$(git rev-parse "refs/tags/${tag}^{commit}")"
+            if [[ "$(git rev-parse HEAD)" != "${tag_revision}" ]]; then
+              echo "::error::checked-out source does not match ${tag} target"
               exit 1
             fi
           fi
