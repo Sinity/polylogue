@@ -450,8 +450,10 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
 
 def test_canonical_model_family_maps_known_models() -> None:
     """1vpm.1: the enabling primitive for the delegations view's model
-    identity -- reuses the catalog's own source_name, so it never drifts
-    from the catalog's actual model coverage."""
+    identity. polylogue-4c27: family is derived by pure model-name pattern
+    matching (`semantic_model_vendor`), NOT by reusing the pricing catalog's
+    own routing-provenance tag -- see the divergence tests below for why
+    that distinction is load-bearing."""
     assert canonical_model_family("claude-opus-4-8") == "anthropic"
     assert canonical_model_family("gpt-4o") == "openai"
 
@@ -463,3 +465,90 @@ def test_canonical_model_family_returns_none_for_unknown_model() -> None:
 def test_canonical_model_family_returns_none_for_empty_or_none() -> None:
     assert canonical_model_family(None) is None
     assert canonical_model_family("") is None
+
+
+def test_canonical_model_family_does_not_leak_pricing_catalog_routing_tag() -> None:
+    """polylogue-4c27 regression: the vendored LiteLLM catalog's bare-name
+    entries carry `litellm_provider` routing tags (e.g.
+    "vertex_ai-anthropic_models", "bedrock_converse", "openrouter") that are
+    catalog/routing provenance, not vendor identity -- multiple provider
+    routes to the SAME vendor collide on a bare model name and only one wins
+    the catalog dict. `claude-fable-5` is a real vendored catalog entry whose
+    bare-key winner is `bedrock_converse`/`vertex_ai-anthropic_models`
+    depending on dict insertion order -- neither is "the family". The
+    pre-fix `canonical_model_family` returned that raw routing tag; the
+    fixed version must return the true semantic vendor regardless of which
+    catalog row happens to win."""
+    from polylogue.archive.semantic.pricing import PRICING, pricing_catalog_source
+
+    # The catalog's own provenance tag is confirmed messy/non-vendor for this
+    # model -- if this assertion ever starts failing because the vendored
+    # catalog changed shape, that's fine; the point is canonical_model_family
+    # must not track it either way.
+    assert PRICING["claude-fable-5"].source_name != "anthropic"
+    assert pricing_catalog_source("claude-fable-5") != "anthropic"
+    assert canonical_model_family("claude-fable-5") == "anthropic"
+
+
+def test_semantic_model_vendor_and_pricing_catalog_source_can_diverge() -> None:
+    """A marketplace/routed model name and its pricing-catalog provenance
+    are genuinely different axes -- the same vendor model routed through a
+    marketplace (openrouter) still has vendor=anthropic even though its
+    pricing-catalog source is the marketplace/routing layer, not the
+    vendor."""
+    from polylogue.archive.semantic.pricing import pricing_catalog_source, semantic_model_vendor
+
+    marketplace_routed = "openrouter/anthropic/claude-3.5-sonnet"
+    assert semantic_model_vendor(marketplace_routed) == "anthropic"
+    assert pricing_catalog_source(marketplace_routed) != "anthropic"
+
+
+def test_resolve_model_identity_keeps_axes_distinct_across_fixtures() -> None:
+    """polylogue-4c27 AC: known Fable, Opus, GPT, Gemini, marketplace, and
+    unknown fixtures keep vendor, model line, exact model, pricing source,
+    and attribution source distinct fields (not aliases of each other)."""
+    from polylogue.archive.semantic.pricing import resolve_model_identity
+
+    fable = resolve_model_identity("claude-fable-5", attribution_source="dispatch_turn")
+    assert fable.vendor == "anthropic"
+    assert fable.model_line == "fable"
+    assert fable.normalized_model == "claude-fable-5"
+    assert fable.pricing_source is not None and fable.pricing_source != fable.vendor
+    assert fable.attribution_source == "dispatch_turn"
+
+    opus = resolve_model_identity("claude-opus-4-8", attribution_source="child_observed")
+    assert opus.vendor == "anthropic"
+    assert opus.model_line == "opus"
+    assert opus.attribution_source == "child_observed"
+
+    gpt = resolve_model_identity("gpt-4o", attribution_source="requested")
+    assert gpt.vendor == "openai"
+    assert gpt.model_line == "gpt-4"
+    assert gpt.attribution_source == "requested"
+
+    gemini = resolve_model_identity("gemini-2.5-pro", attribution_source="session_dominant_fallback")
+    assert gemini.vendor == "google"
+    assert gemini.model_line == "gemini-2.5"
+    assert gemini.attribution_source == "session_dominant_fallback"
+
+    marketplace = resolve_model_identity("openrouter/anthropic/claude-3.5-sonnet", attribution_source="requested")
+    assert marketplace.vendor == "anthropic"
+    assert marketplace.pricing_source != marketplace.vendor
+
+    unknown = resolve_model_identity("some-totally-unknown-model-xyz", attribution_source="dispatch_turn")
+    assert unknown.vendor is None
+    assert unknown.model_line is None
+    assert unknown.pricing_source is None
+    assert unknown.confidence == "unknown"
+    assert unknown.attribution_source == "dispatch_turn"
+
+    unsupported = resolve_model_identity(None, attribution_source="requested")
+    assert unsupported.raw_model_name is None
+    assert unsupported.vendor is None
+    assert unsupported.confidence == "unknown"
+    assert unsupported.attribution_source == "requested"
+
+    # None of the fixtures collapse vendor onto attribution_source or onto
+    # each other's model line by accident.
+    lines = {fixture.model_line for fixture in (fable, opus, gpt, gemini) if fixture.model_line}
+    assert len(lines) == 4
