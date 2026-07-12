@@ -39,7 +39,7 @@ piping:
 
 ```bash
 polylogue --origin claude-code-session find 'origin:claude-code-session' then read --all --format ndjson | jq '.title'
-polylogue --since "last month" find 'since:last month' then read --all --format ndjson | wc -l
+polylogue --since "last month" find 'since:"last month"' then read --all --format ndjson | wc -l
 ```
 
 ## Export Formats
