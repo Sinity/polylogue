@@ -1,4 +1,29 @@
-"""Failure follow-up classification for action query surfaces."""
+"""Failure follow-up classification for action query surfaces.
+
+polylogue-b0b heuristic-tier inventory: ``ACKNOWLEDGMENT_MARKERS`` (and the
+classifiers below that consume it) determine whether the *next* assistant
+turn after a structurally confirmed action failure (``is_error:true`` --
+already 100% structural, see ``tool_result_is_error``/``tool_result_exit_code``)
+explicitly acknowledges that failure, versus silently proceeding. There is
+no structural equivalent to convert to: "did the assistant say something
+acknowledging this" is inherently a judgment about prose content, not a
+fact recoverable from provider-emitted columns. This stays LABEL/
+heuristic-tier (evidence class ``text_derived``), not CONVERT -- the caveat
+is that ``silent_proceed`` is only as good as this keyword list's recall,
+and it undercounts acknowledgments phrased without any of the listed
+markers.
+
+Two independent consumers apply this same marker list: the live
+``followup_class`` SQL CASE expression in
+``polylogue/storage/sqlite/archive_tiers/archive.py``
+(``_ACTION_FOLLOWUP_RELATION_SQL``, the public query-surface path) and
+``devtools/claim_vs_evidence.py``'s ``devtools claim-vs-evidence`` analysis
+command (which calls :func:`classify_failed_followup_evidence` directly).
+The SQL path reimplements the same short-follow-up/marker-match precedence
+in SQL rather than calling this module, so a change to one does not
+automatically apply to the other -- keep them in sync by hand if the
+classification rule changes.
+"""
 
 from __future__ import annotations
 
