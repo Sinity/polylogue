@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 
-from pydantic import RootModel
+from pydantic import Field, RootModel
 from typing_extensions import TypedDict
 
 from polylogue.context.compiler import ContextImage
@@ -100,6 +100,7 @@ class MCPErrorPayload(SurfacePayloadModel):
     # enum value is exposed so clients can render the same actionable
     # operator message ``polylogue ops embed status`` does.
     readiness_status: str | None = None
+    valid_values: tuple[str, ...] = ()
     is_error: Literal[True] = True
 
 
@@ -188,10 +189,16 @@ class MCPSessionSearchNoResultsPayload(SurfacePayloadModel):
     diagnostics: MCPQueryMissDiagnosticsPayload
 
 
+class MCPMatchedSessionSummaryPayload(MCPSessionSummaryPayload):
+    """Session-list row carrying how many raw matches it coalesced."""
+
+    match_count: int = Field(default=1, ge=1)
+
+
 class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
     """Paginated query result envelope for list_sessions."""
 
-    items: tuple[MCPSessionSummaryPayload, ...]
+    items: tuple[MCPMatchedSessionSummaryPayload, ...]
     total: int
     limit: int
     offset: int
@@ -440,7 +447,12 @@ def session_query_result_payload(
 ) -> MCPPaginatedQueryResultPayload:
     next_offset = offset + len(sessions) if len(sessions) == limit and offset + limit < total else None
     return MCPPaginatedQueryResultPayload(
-        items=tuple(MCPSessionSummaryPayload.from_session(conv) for conv in sessions),
+        items=tuple(
+            MCPMatchedSessionSummaryPayload(
+                **MCPSessionSummaryPayload.from_session(conv).model_dump(mode="python"),
+            )
+            for conv in sessions
+        ),
         total=total,
         limit=limit,
         offset=offset,

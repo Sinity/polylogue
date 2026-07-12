@@ -19,7 +19,14 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
 
-from polylogue.archive.query.spec import clamp_query_limit
+from polylogue.archive.query.spec import (
+    QUERY_ACTION_TYPES,
+    QUERY_RETRIEVAL_LANES,
+    QUERY_SEQUENCE_ACTION_TYPES,
+    QuerySpecError,
+    clamp_query_limit,
+)
+from polylogue.core.enums import MessageType, Origin, enum_values
 from polylogue.errors import (
     EmbeddingRetrievalNotReadyError,
     PolylogueError,
@@ -39,6 +46,16 @@ _runtime_services: RuntimeServices | None = None
 TResult = TypeVar("TResult")
 MCPRole = Literal["read", "write", "admin"]
 MCP_RESPONSE_BUDGET_BYTES = 25_000
+_QUERY_ERROR_VALID_VALUES: dict[str, tuple[str, ...]] = {
+    "sort": ("date", "tokens", "messages", "words", "longest", "random"),
+    "origin": enum_values(Origin),
+    "exclude_origin": enum_values(Origin),
+    "message_type": enum_values(MessageType),
+    "retrieval_lane": QUERY_RETRIEVAL_LANES,
+    "action": QUERY_ACTION_TYPES,
+    "exclude_action": QUERY_ACTION_TYPES,
+    "action_sequence": QUERY_SEQUENCE_ACTION_TYPES,
+}
 
 
 @dataclass(frozen=True)
@@ -247,7 +264,19 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
       deliberately not included so the surface cannot leak credentials, file
       paths, or other internal state.
     """
-    if isinstance(exc, SchemaVersionMismatchError):
+    if isinstance(exc, QuerySpecError):
+        valid_values = _QUERY_ERROR_VALID_VALUES.get(exc.field, ())
+        valid_hint = f" Valid values: {', '.join(valid_values)}." if valid_values else ""
+        payload = MCPErrorPayload(
+            message=f"invalid {exc.field}: {exc.value}.{valid_hint}",
+            code="invalid_query",
+            error="invalid_query",
+            detail=type(exc).__name__,
+            field=exc.field,
+            tool=fn_name,
+            valid_values=valid_values,
+        )
+    elif isinstance(exc, SchemaVersionMismatchError):
         payload = MCPErrorPayload(
             message=str(exc),
             code="schema_version_mismatch",
