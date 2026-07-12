@@ -479,7 +479,9 @@ def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
 
     def tear_terminal(locked: Any, *, items: list[Any]) -> None:
         del items
-        repair_module._write_receipt_all(locked.descriptor, b'{"schema":')
+        # A complete JSON prefix without its newline must remain distinguishable
+        # from the eventual applied record after recovery seals the torn line.
+        repair_module._write_receipt_all(locked.descriptor, b"{}")
         repair_module.os.fsync(locked.descriptor)
         raise RuntimeError("injected torn terminal")
 
@@ -498,7 +500,7 @@ def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
     def tear_recovery(locked: Any, *, items: list[Any]) -> None:
         del items
         if locked.torn_terminals and not locked.receipt_terminated:
-            repair_module._write_receipt_all(locked.descriptor, b"\n")
+            repair_module._write_receipt_all(locked.descriptor, b"\xff\n")
         repair_module._write_receipt_all(locked.descriptor, b'{"state":')
         repair_module.os.fsync(locked.descriptor)
         raise RuntimeError("injected torn recovery terminal")
@@ -523,8 +525,8 @@ def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
     )
     lines = receipt.read_bytes().splitlines()
     assert len(lines) == 4
-    assert lines[1] == b'{"schema":'
-    assert lines[2] == b'{"state":'
+    assert lines[1] == b"{}\xff"
+    assert lines[2] == b'{"state":\xff'
     recovered = json.loads(lines[3])
     assert recovered["state"] == "applied"
     assert recovered["torn_terminals"] == [

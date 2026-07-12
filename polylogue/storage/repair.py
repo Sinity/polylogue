@@ -726,6 +726,18 @@ def _finish_untyped_raw_repair_receipt(
     *,
     items: list[UntypedAcceptedRawRepairItem],
 ) -> None:
+    opened = os.fstat(receipt.descriptor)
+    named = receipt.path.stat(follow_symlinks=False)
+    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+        raise RuntimeError("operator repair receipt path changed before terminal append")
+    os.lseek(receipt.descriptor, 0, os.SEEK_END)
+    preserved_torn_terminals = list(receipt.torn_terminals)
+    if preserved_torn_terminals and not receipt.receipt_terminated:
+        # Make even a complete-JSON prefix permanently distinguishable from a
+        # terminal record after the newline is appended. The exact sealed bytes
+        # remain in the append-only receipt and are bound into the terminal.
+        _write_receipt_all(receipt.descriptor, b"\xff\n")
+        preserved_torn_terminals[-1] += b"\xff"
     terminal = {
         "schema": _UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
         "state": "applied",
@@ -734,18 +746,11 @@ def _finish_untyped_raw_repair_receipt(
         "repaired_raw_ids": list(receipt.repair_intent_raw_ids),
         "proven_raw_ids": [item.raw_id for item in items],
     }
-    if receipt.torn_terminals:
+    if preserved_torn_terminals:
         terminal["torn_terminals"] = [
             {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()}
-            for fragment in receipt.torn_terminals
+            for fragment in preserved_torn_terminals
         ]
-    opened = os.fstat(receipt.descriptor)
-    named = receipt.path.stat(follow_symlinks=False)
-    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
-        raise RuntimeError("operator repair receipt path changed before terminal append")
-    os.lseek(receipt.descriptor, 0, os.SEEK_END)
-    if receipt.torn_terminals and not receipt.receipt_terminated:
-        _write_receipt_all(receipt.descriptor, b"\n")
     _write_receipt_all(
         receipt.descriptor, (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode()
     )
