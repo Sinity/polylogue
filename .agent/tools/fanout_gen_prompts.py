@@ -130,7 +130,6 @@ LANES: dict[str, dict] = {
     },
     "polylogue-provider-origin": {
         "beads": ["9e5.8"],
-        "model": "gpt-5.6-sol",
         "goal": (
             "Execute the next sequenced phase of the provider->origin "
             "retirement per 9e5.8's plan (read the bead notes FIRST). If the "
