@@ -1485,6 +1485,11 @@ def judge_assertion_candidate(
     normalized_replacement_value = (
         None if replacement_value is None else _normalize_assertion_value(replacement_value).as_json_value()
     )
+    if normalized_decision != "supersede" and any(
+        value is not None
+        for value in (normalized_replacement_kind, replacement_body_text, normalized_replacement_value)
+    ):
+        raise ValueError("replacement fields are only valid for a supersede judgment")
     candidate_id = _assertion_id_from_ref(candidate_ref)
     candidate = read_assertion_envelope(conn, candidate_id)
     if candidate is None:

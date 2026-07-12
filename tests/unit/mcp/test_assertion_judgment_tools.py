@@ -51,3 +51,20 @@ def test_mcp_supersede_preserves_operator_replacement_fields() -> None:
     assert item.replacement_kind == "decision"
     assert item.replacement_body_text == "Operator correction"
     assert item.replacement_value == {"source": "review"}
+
+
+def test_mcp_bulk_judgment_rejects_non_boolean_injection() -> None:
+    """String JSON values must not obtain reviewer injection authorization."""
+
+    poly = MagicMock()
+    poly.judge_assertion_candidates = AsyncMock()
+    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
+        server = cast(MCPServerUnderTest, build_server(role="review"))
+        tool = server._tool_manager._tools["judge_assertion_candidates"]
+        result = invoke_surface(
+            tool.fn,
+            items=[{"candidate_ref": "assertion:candidate-1", "decision": "accept", "inject": "false"}],
+        )
+
+    assert json.loads(result)["code"] == "invalid_assertion_judgment"
+    poly.judge_assertion_candidates.assert_not_awaited()

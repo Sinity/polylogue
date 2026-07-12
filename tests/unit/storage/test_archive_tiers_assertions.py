@@ -1161,6 +1161,29 @@ def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path:
         conn.close()
 
 
+def test_candidate_accept_rejects_supersede_replacement_fields(tmp_path: Path) -> None:
+    """Only supersede may alter a candidate's promoted content."""
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_session_digest(_recovery_candidate_session())
+        candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
+
+        with pytest.raises(ValueError, match="only valid for a supersede"):
+            judge_assertion_candidate(
+                conn,
+                candidate_ref=f"assertion:{candidate.assertion_id}",
+                decision="accept",
+                replacement_body_text="Unexpected replacement",
+            )
+
+        refreshed = read_assertion_envelope(conn, candidate.assertion_id)
+        assert refreshed is not None and refreshed.status is AssertionStatus.CANDIDATE
+        assert read_assertion_envelope(conn, assertion_id_for_promoted_candidate(candidate.assertion_id)) is None
+    finally:
+        conn.close()
+
+
 def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlled(tmp_path: Path) -> None:
     """The real user-tier batch writer retains valid judgments around failures."""
 

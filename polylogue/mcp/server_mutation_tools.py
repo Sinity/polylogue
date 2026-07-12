@@ -1245,6 +1245,9 @@ def register_assertion_review_tools(mcp: FastMCP, hooks: ServerCallbacks) -> Non
             decision = item.get("decision")
             if not isinstance(candidate_ref, str) or not isinstance(decision, str):
                 raise ValueError("each judgment requires string candidate_ref and decision")
+            inject = item.get("inject", False)
+            if type(inject) is not bool:
+                raise ValueError("each judgment requires boolean inject")
             reason = item.get("reason")
             replacement_kind = item.get("replacement_kind")
             replacement_body_text = item.get("replacement_body_text")
@@ -1252,7 +1255,7 @@ def register_assertion_review_tools(mcp: FastMCP, hooks: ServerCallbacks) -> Non
                 candidate_ref=candidate_ref,
                 decision=decision,
                 reason=reason if isinstance(reason, str) else None,
-                inject=bool(item.get("inject", False)),
+                inject=inject,
                 actor_ref=actor_ref,
                 replacement_kind=replacement_kind if isinstance(replacement_kind, str) else None,
                 replacement_body_text=replacement_body_text if isinstance(replacement_body_text, str) else None,
