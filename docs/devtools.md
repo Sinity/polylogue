@@ -45,6 +45,7 @@ They are not a proof ledger or end-user archive workflow.
 
 | Command | Role |
 | --- | --- |
+| `devtools lab census provider-vocabulary` | Enumerate function/method parameters, dataclass/Pydantic/TypedDict fields, dict/set string-literal keys, and CLI-flag/HTTP-route literals literally named provider/providers outside sources/schemas/pipeline/browser_capture, replacing the manual rg census that two adversarial falsification rounds proved misses the identifier-vocabulary leak axis. --check only fails on allowlist rot (stale entries or a vacuous zero-site scan), not on the large expected backlog of unallowlisted retirement candidates -- rerun after each later step in the plan to watch that backlog trend toward zero. |
 | `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
 | `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
 | `devtools lab policy demo-packet-registry` | Enforce the 212 portfolio contract (polylogue-212.7): every demo prompt in .agent/demos/registry.json must have a packet directory carrying PROMPT.md, finding.yaml (five-part provenance stanza), report.md (fixed section order), evidence.ndjson, queries.ndjson, checks.json, and run.log. Catches a missing or malformed packet before it silently drops out of the demo shelf. |
@@ -122,6 +123,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools lab census provider-vocabulary` | AST-level census of provider/origin vocabulary leak sites (polylogue-9e5.8 Step 0). |
 | `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools lab lanes` | Run named validation lanes. |
 | `devtools lab policy demo-packet-registry` | Verify every registered 212 demo has a conforming Demo Finding Packet. |

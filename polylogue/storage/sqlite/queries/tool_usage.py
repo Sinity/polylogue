@@ -13,8 +13,8 @@ from __future__ import annotations
 import aiosqlite
 from typing_extensions import TypedDict
 
-from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin, Provider
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
 
 __all__ = [
@@ -198,14 +198,12 @@ def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
 
 
 def _provider_for_origin(origin: str) -> Provider:
-    return {
-        "claude-code-session": Provider.CLAUDE_CODE,
-        "codex-session": Provider.CODEX,
-        "gemini-cli-session": Provider.GEMINI_CLI,
-        "hermes-session": Provider.HERMES,
-        "antigravity-session": Provider.ANTIGRAVITY,
-        "chatgpt-export": Provider.CHATGPT,
-        "claude-ai-export": Provider.CLAUDE_AI,
-        "aistudio-drive": Provider.GEMINI,
-        "unknown-export": Provider.UNKNOWN,
-    }.get(origin, Provider.UNKNOWN)
+    """Return the canonical provider-wire ``Provider`` for an origin token.
+
+    Delegates to the single source of truth in ``core/sources.py`` instead
+    of a hand-copied dict -- see ``archive/query/archive_execution.py``'s
+    ``_provider_for_origin`` docstring for the full rationale
+    (polylogue-9e5.8): three independent hand-copies of this table had
+    already silently drifted (all missing a ``grok-export`` entry).
+    """
+    return provider_from_origin(Origin.from_string(origin))

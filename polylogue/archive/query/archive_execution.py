@@ -19,8 +19,8 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import MaterialOrigin, Provider
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import MaterialOrigin, Origin, Provider
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.types import SessionId
 
@@ -42,21 +42,25 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
 
 
-_ORIGIN_TO_PROVIDER = {
-    "claude-code-session": Provider.CLAUDE_CODE,
-    "codex-session": Provider.CODEX,
-    "gemini-cli-session": Provider.GEMINI_CLI,
-    "hermes-session": Provider.HERMES,
-    "antigravity-session": Provider.ANTIGRAVITY,
-    "chatgpt-export": Provider.CHATGPT,
-    "claude-ai-export": Provider.CLAUDE_AI,
-    "aistudio-drive": Provider.GEMINI,
-    "unknown-export": Provider.UNKNOWN,
-}
-
-
 def _provider_for_origin(origin: str) -> Provider:
-    return _ORIGIN_TO_PROVIDER.get(origin, Provider.UNKNOWN)
+    """Return the canonical provider-wire ``Provider`` for an origin token.
+
+    Delegates to :func:`polylogue.core.sources.provider_from_origin`, the
+    single source of truth for this reverse mapping, instead of a hand-copied
+    dict. Three independent hand-copies of this exact table used to live in
+    this module, ``storage/sqlite/archive_tiers/archive.py``, and
+    ``storage/sqlite/queries/tool_usage.py`` -- none delegating to the
+    canonical one in ``core/sources.py`` -- and had already silently drifted
+    (all three were missing a ``grok-export`` entry, falling back to
+    ``Provider.UNKNOWN`` instead of ``Provider.GROK``). Delegating fixes that
+    drift and makes future drift structurally impossible (polylogue-9e5.8).
+    ``Origin.AISTUDIO_DRIVE`` still canonically resolves to ``Provider.GEMINI``
+    here -- that collapse is a deliberate, documented, non-injective design
+    choice (see ``core/sources.py``'s ``_ORIGIN_TO_PROVIDER`` comment), not a
+    bug this delegation fixes; un-collapsing it needs a Source-family
+    disambiguator (polylogue-9e5.8 Step 5), not a narrow fix here.
+    """
+    return provider_from_origin(Origin.from_string(origin))
 
 
 def _session_seed_scored(

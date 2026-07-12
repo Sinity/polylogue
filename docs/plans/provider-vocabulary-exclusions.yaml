@@ -1,0 +1,99 @@
+# Pre-approved false-positive sites for `devtools lab census provider-vocabulary`
+# (polylogue-9e5.8). Each entry documents WHY a literal "provider"/"providers"
+# identifier or CLI-flag/route token at this exact site is ordinary-English or
+# vendor-billing terminology, not an archive-origin identity leak. Keyed by
+# (path, category, identifier, occurrence-within-file) rather than line number,
+# so unrelated edits elsewhere in the file don't require re-numbering. New
+# provider/providers sites outside these classes are real retirement
+# candidates for polylogue-9e5.8's Step 2/3 -- they show up as "unallowlisted"
+# in the census report, which is expected and not itself a failure.
+#
+# These entries transcribe polylogue-9e5.8's own design-field "explicit
+# exclusions" list (Axis-2 exclusion classes #2, #3, #4) into a machine-checked
+# form. Class #1 (VectorProvider/SearchProvider/etc.) and class #5
+# (daemon/web_shell.py cosmetic CSS/JS) need no entries here: #1 never matches
+# because the scanner requires the identifier to be *exactly* "provider"/
+# "providers", not a compound name; #5's tokens live inside larger CSS/JS
+# string blobs the CLI-flag/route regexes don't match standalone.
+
+entries:
+- path: polylogue/cost/plans.py
+  category: field
+  identifier: provider
+  occurrence: 0
+  reason: >
+    SubscriptionPlan.provider is a free-text LiteLLM billing-catalog vendor
+    label ("anthropic"), not one of the 10 Origin tokens -- ordinary-English
+    "provider" (subscription vendor), out of scope (polylogue-9e5.8 Axis-2
+    exclusion #2).
+
+- path: polylogue/storage/usage.py
+  category: field
+  identifier: provider
+  occurrence: 0
+  reason: >
+    ProviderUsageCoverage.provider is part of the declared provider-usage
+    telemetry coverage matrix -- vendor-billing-scoped accounting
+    terminology ("as the LLM provider's API reported it"), permanently
+    exempt, not a retirement candidate (polylogue-9e5.8 Axis-2 exclusion #3).
+
+- path: polylogue/storage/usage.py
+  category: field
+  identifier: provider
+  occurrence: 1
+  reason: >
+    OriginUsageReport.provider is the same billing-vendor-scoped accounting
+    field on the usage-report side of the same module (polylogue-9e5.8
+    Axis-2 exclusion #3).
+
+- path: polylogue/storage/usage.py
+  category: key
+  identifier: provider
+  occurrence: 0
+  reason: >
+    ProviderUsageCoverage.to_dict()'s "provider" key mirrors the exempt
+    billing-vendor field above (polylogue-9e5.8 Axis-2 exclusion #3).
+
+- path: polylogue/storage/usage.py
+  category: key
+  identifier: provider
+  occurrence: 1
+  reason: >
+    OriginUsageReport.to_dict()'s "provider" key mirrors the exempt
+    billing-vendor field above (polylogue-9e5.8 Axis-2 exclusion #3).
+
+- path: polylogue/daemon/http.py
+  category: literal
+  identifier: /api/provider-usage
+  occurrence: 0
+  reason: >
+    The /api/provider-usage HTTP route is genuinely vendor-billing-scoped
+    ("provider-reported usage"); permanently exempt -- do not rename to
+    /api/origin-usage (polylogue-9e5.8 Axis-2 exclusion #3).
+
+- path: polylogue/daemon/route_contracts.py
+  category: literal
+  identifier: /api/provider-usage
+  occurrence: 0
+  reason: >
+    Route contract for the exempt /api/provider-usage billing endpoint above
+    (polylogue-9e5.8 Axis-2 exclusion #3).
+
+- path: polylogue/daemon/browser_capture.py
+  category: literal
+  identifier: --provider
+  occurrence: 0
+  reason: >
+    The `browser-capture post --provider` CLI option identifies which
+    website an outbound reply posts to (BrowserPostProvider) -- wire-boundary
+    -adjacent, Tier-A-like, not a retirement candidate now (polylogue-9e5.8
+    Axis-2 exclusion #4).
+
+- path: polylogue/daemon/browser_capture.py
+  category: param
+  identifier: provider
+  occurrence: 0
+  reason: >
+    post_command(provider: str, ...) is the click callback parameter bound
+    to the --provider option excluded immediately above; same command, same
+    rationale (polylogue-9e5.8 Axis-2 exclusion #4).
