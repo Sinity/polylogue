@@ -2950,6 +2950,10 @@ class TestReaderInformability:
         assert "function loadMoreSessionMessages()" in body
         assert "Load more messages" in body
         assert "/api/sessions/" in body
+        assert "Overview readiness is" in body
+        assert "data-overview-snapshot-state" in body
+        assert "Evidence summary unavailable" in body
+        assert "function retryEvidenceSummary(id)" in body
 
     def test_fts_chip_keeps_legacy_tri_state_fallback(self, workspace_env: dict[str, Path]) -> None:
         """``renderFtsChip`` must still distinguish ok / partial /

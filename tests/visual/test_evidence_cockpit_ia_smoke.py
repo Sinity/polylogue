@@ -252,14 +252,51 @@ console.log(JSON.stringify({{html: renderLandingView()}}));
     assert "setActiveView(&#39;remember&#39;)" in html or "setActiveView('remember')" in html
 
 
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_landing_view_labels_stale_overview_truthfully(tmp_path: Path) -> None:
+    """A stale overview cannot look current: the shell must expose the
+    aggregate snapshot state, age, and refresh failure returned by its
+    production overview contract."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, _LANDING_FUNCS)
+    harness = f"""
+{_DOM_HARNESS_PRELUDE}
+var state = {{
+  overview: {{
+    totals: {{sessions: 42, messages: 1337}},
+    readiness: {{}}, recent: [],
+    status_snapshot: {{state: 'stale', age_s: 91.2, refresh_error: 'daemon busy'}}
+  }},
+  routeStates: {{}}
+}};
+{functions_src}
+console.log(JSON.stringify({{html: renderLandingView()}}));
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    html = json.loads(proc.stdout)["html"]
+
+    assert 'data-overview-snapshot-state="stale"' in html
+    assert "Overview readiness is stale" in html
+    assert "91s old" in html
+    assert "daemon busy" in html
+
+
 _EVIDENCE_STRIP_FUNCS = [
     "esc",
     "escAttr",
     "escJsAttr",
+    "fallbackCommand",
+    "debugDisclosure",
+    "renderInlineRouteFailure",
     "formatUsd",
     "evidenceStripToolCounts",
     "renderTopologyBranchChip",
     "renderEvidenceStrip",
+    "retryEvidenceSummary",
 ]
 
 
@@ -336,6 +373,43 @@ console.log(JSON.stringify({{html: renderEvidenceStrip({{id: 's1'}})}}));
 
     assert "no work events" in html
     assert "q-missing" in html
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+@pytest.mark.parametrize("status", ["401", "409", "503"])
+def test_evidence_strip_surfaces_failed_aggregate_and_retries(tmp_path: Path, status: str) -> None:
+    """A failed evidence aggregate must retain its HTTP problem details and
+    offer a retry that evicts the production cache entry before reloading."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, _EVIDENCE_STRIP_FUNCS)
+    harness = f"""
+{_DOM_HARNESS_PRELUDE}
+var requested = null, renders = 0;
+function loadEvidenceSummary(id) {{ requested = id; }}
+function renderMain() {{ renders += 1; }}
+var state = {{
+  evidenceSummaries: {{'s1': {{error: true, details: {{route: '/api/sessions/s1/evidence-summary', status: '{status}', error: 'archive unavailable'}}}}}},
+  selected: {{id: 's1'}}, insightsPanels: {{}}, costPanels: {{}}, lineage: {{}}
+}};
+{functions_src}
+var html = renderEvidenceStrip({{id: 's1'}});
+retryEvidenceSummary('s1');
+console.log(JSON.stringify({{html: html, requested: requested, cacheMiss: state.evidenceSummaries.s1 === undefined, renders: renders}}));
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    result = json.loads(proc.stdout)
+
+    assert "Evidence summary unavailable" in result["html"]
+    assert "/api/sessions/s1/evidence-summary" in result["html"]
+    assert status in result["html"]
+    assert "retryEvidenceSummary(&#39;s1&#39;)" in result["html"]
+    assert result["requested"] == "s1"
+    assert result["cacheMiss"] is True
+    assert result["renders"] == 1
 
 
 _NAV_FUNCS = ["esc", "escAttr", "escJsAttr", "syncVerbNavButtons", "setActiveView"]

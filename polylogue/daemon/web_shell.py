@@ -1699,10 +1699,20 @@ function renderLandingView() {
   var totals = overview.totals || {};
   var readiness = overview.readiness || {};
   var recent = overview.recent || [];
+  var snapshot = overview.status_snapshot || {};
   var html = '<div class="landing">';
   html += '<div class="landing-hero"><h1>Keep the receipts for AI work.</h1>'
     + '<p>Search every archived session, analyze usage and cost, audit claims against structural '
     + 'evidence, and remember reviewed judgment across Claude, Codex, ChatGPT, Gemini, and more.</p></div>';
+  if (snapshot.state && snapshot.state !== 'fresh') {
+    var snapshotBits = [];
+    var snapshotAge = Number(snapshot.age_s);
+    if (Number.isFinite(snapshotAge)) snapshotBits.push(Math.round(snapshotAge) + 's old');
+    if (snapshot.refresh_error) snapshotBits.push(snapshot.refresh_error);
+    html += '<div class="main-empty q-' + escAttr(snapshot.state === 'stale' ? 'stale' : 'partial') + '" data-overview-snapshot-state="'
+      + escAttr(snapshot.state) + '"><h3>Overview readiness is ' + esc(snapshot.state) + '</h3><p>'
+      + esc(snapshotBits.join(' · ') || 'Freshness is unavailable; totals may not reflect current daemon state.') + '</p></div>';
+  }
   html += '<div class="stat-row">'
     + statTile('Sessions', totals.sessions != null ? Number(totals.sessions).toLocaleString() : null)
     + statTile('Messages', totals.messages != null ? Number(totals.messages).toLocaleString() : null)
@@ -2259,7 +2269,13 @@ function renderEvidenceStrip(c) {
     if (typeof loadEvidenceSummary === 'function') loadEvidenceSummary(c.id);
     return '<div class="evidence-strip muted">Loading evidence summary…</div>';
   }
-  if (data && data.error) return ''; // the Evidence/Insights tabs already surface this failure with retry.
+  if (data && data.error) {
+    return renderInlineRouteFailure(
+      'Evidence summary unavailable',
+      data.details,
+      "retryEvidenceSummary('" + escJsAttr(c.id) + "')"
+    );
+  }
   var counts = data.outcomes || {};
   var chips = [];
   if (data.tool_calls != null) {
@@ -2287,6 +2303,14 @@ async function loadEvidenceSummary(id) {
   try { state.evidenceSummaries[id] = await fetchJSON(route, {timeoutMs: 5000}); }
   catch(e) { state.evidenceSummaries[id] = {error: true, details: routeErrorDetails(e, route)}; }
   if (state.selected && state.selected.id === id) renderMain();
+}
+
+function retryEvidenceSummary(id) {
+  delete state.evidenceSummaries[id];
+  if (state.selected && state.selected.id === id) {
+    loadEvidenceSummary(id);
+    renderMain();
+  }
 }
 
 // --- Topology branch chip + parent-chain stack (#1203) ----------------
