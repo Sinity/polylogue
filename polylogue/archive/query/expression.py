@@ -42,6 +42,8 @@ and explicit Boolean session predicates:
     blocks where type:code AND text:timeout
     messages where time >= 2026-01-01T00:00:00+00:00
     sessions where repo:polylogue | messages where role:assistant | group by role | count | sort by count desc
+    assertions where kind:annotation AND value.score:>=4
+    exists assertion(value.status:approved)
 
 Unit-scoped ``messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots where ...`` predicates are executable
 in two shared paths: ``compile_expression`` keeps the compatibility session
@@ -56,6 +58,20 @@ instead of discarding pipeline stages while lowering to a session selector.
 They also support ``time >= VALUE``, ``time <= VALUE``, and
 ``time between A and B`` predicates over the same row timestamp used by
 ``sort by time``.
+
+The ``assertion`` unit additionally supports typed JSON-path predicates over
+``value.<dotted.path>`` (polylogue-rxdo.7), since the plain ``value`` field is
+a substring match over the whole JSON blob and cannot express label
+analytics: ``value.score:>=4``, ``value.rubric.confidence:<0.5``, and plain
+equality ``value.status:approved``; combine multiple paths the same way any
+other field predicate combines, with ``AND``/``OR``
+(``value.score:>=4 AND value.status:approved``). Comparison operators (``>``,
+``>=``, ``<``, ``<=``) require a numeric right-hand side and compare the
+extracted scalar as a number; ``=`` (the default when no operator is given)
+compares the raw extracted scalar, so string/boolean/integer labels still
+match by value. The path is restricted to dotted identifier segments (no
+SQLite JSON-path wildcards or array indexing) and is only accepted for the
+``assertion`` unit -- other units reject ``value.*`` fields as unknown.
 
 Unknown fields and unsupported structured forms fail loudly. The Lark grammar
 in this module is the query grammar. Compact field/text clauses and explicit
@@ -898,14 +914,39 @@ def _canonical_session_alias(field_name: str) -> str:
     return "id" if field_name == "session" else field_name
 
 
+_VALUE_PATH_PREFIX = "value."
+_VALUE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_assertion_value_path_field(field_name: str) -> bool:
+    """Return whether *field_name* is a dynamic ``value.<path>`` assertion field.
+
+    These are not enumerable in the closed structural-field registries
+    (:data:`_ASSERTION_STRUCTURAL_FIELDS` etc.) because the path is caller-
+    chosen JSON-object navigation below the assertion ``value`` column
+    (polylogue-rxdo.7 typed value predicates). Every dotted segment must be a
+    plain identifier -- no SQLite JSON-path wildcards/array indexing -- so the
+    shape stays unambiguous before it reaches SQL lowering.
+    """
+
+    if not field_name.startswith(_VALUE_PATH_PREFIX):
+        return False
+    suffix = field_name[len(_VALUE_PATH_PREFIX) :]
+    if not suffix:
+        return False
+    return all(_VALUE_PATH_SEGMENT_RE.match(segment) for segment in suffix.split("."))
+
+
 def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     field_name = token.field
     session_field = _scoped_session_field(field_name)
     validation_field = session_field or field_name
+    is_value_path_field = session_field is None and _is_assertion_value_path_field(field_name)
     if (
         session_field is None
         and field_name not in EXPRESSION_FIELD_REGISTRY
         and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS
+        and not is_value_path_field
     ):
         raise ExpressionCompileError(
             _unknown_query_field_message(field_name, include_structural=True),
@@ -914,6 +955,7 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     if (
         validation_field not in _BOOLEAN_SUPPORTED_FIELDS
         and validation_field not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS
+        and not is_value_path_field
     ):
         raise ExpressionCompileError(
             f"field {field_name!r} is not supported inside Boolean SQL predicates yet",
@@ -953,6 +995,26 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
         values = (match.group(2),)
         count_predicate = QueryFieldPredicate(field=field_name, values=values, op=op_text)
         return QueryNotPredicate(count_predicate) if token.negated else count_predicate
+    elif is_value_path_field:
+        if not values:
+            raise ExpressionCompileError(f"field {field_name!r} requires a value", field=field_name)
+        raw_value = values[-1].strip()
+        match = re.fullmatch(r"(>=|<=|=|>|<)?(.+)", raw_value, re.DOTALL)
+        if match is None or not match.group(2).strip():
+            raise ExpressionCompileError(f"field {field_name!r} requires a value", field=field_name)
+        raw_op = match.group(1) or "="
+        op_text = cast(QueryCompareOp, raw_op)
+        value_text = match.group(2).strip()
+        if op_text != "=":
+            try:
+                float(value_text)
+            except ValueError as exc:
+                raise ExpressionCompileError(
+                    f"field {field_name!r} comparison operator {op_text!r} requires a numeric value",
+                    field=field_name,
+                ) from exc
+        value_path_predicate = QueryFieldPredicate(field=field_name, values=(value_text,), op=op_text)
+        return QueryNotPredicate(value_path_predicate) if token.negated else value_path_predicate
     elif validation_field == "date" and values:
         raw_value = values[-1].strip()
         match = re.fullmatch(r"(>=|<=|>|<)?(.+)", raw_value)
@@ -1063,7 +1125,8 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
             supported = set(query_unit_field_names(unit))
             supported_field = predicate.field
             validation_field = session_field or predicate.field
-        if supported_field not in supported:
+        value_path_field = unit == "assertion" and _is_assertion_value_path_field(supported_field)
+        if supported_field not in supported and not value_path_field:
             raise ExpressionCompileError(
                 f"field {predicate.field!r} is not supported for {unit} predicates",
                 field=predicate.field,
@@ -1150,6 +1213,17 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                 raise ExpressionCompileError(
                     f"field {validation_field!r} requires a numeric value", field=validation_field
                 ) from exc
+        if value_path_field:
+            if not predicate.values:
+                raise ExpressionCompileError(f"field {predicate.field!r} requires a value", field=predicate.field)
+            if predicate.op != "=":
+                try:
+                    float(predicate.values[-1])
+                except ValueError as exc:
+                    raise ExpressionCompileError(
+                        f"field {predicate.field!r} comparison operator {predicate.op!r} requires a numeric value",
+                        field=predicate.field,
+                    ) from exc
         return
     if isinstance(predicate, QueryNotPredicate):
         _validate_predicate_context(predicate.child, unit=unit)
