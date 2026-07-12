@@ -14,6 +14,9 @@ from polylogue.archive.raw_materialization import (
     source_path_native_id_candidates,
 )
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.logging import get_logger
+
+logger = get_logger(__name__)
 
 ACTIVE_REBUILD_STALE_AFTER_S = 180.0
 """Maximum heartbeat/start age for a rebuild-index row to count as active."""
@@ -39,7 +42,8 @@ def active_rebuild_index_attempts(ops_db: Path) -> list[dict[str, object]]:
                 """,
                 (cutoff_ms,),
             ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("active rebuild-index attempts query failed for %s: %s", ops_db, exc, exc_info=True)
         return []
     return [
         {
@@ -403,7 +407,14 @@ def _missing_source_raw_session_samples(conn: sqlite3.Connection, *, limit: int 
 def _readiness_scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     try:
         row = conn.execute(sql).fetchone()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        # Nested inside missing_source_raw_session_evidence()'s own
+        # try/except: a failure here is swallowed before the outer function
+        # ever sees it, so the caller reports "available": True with a
+        # count of 0 — identical to a genuinely clean archive. Log loudly
+        # so a query failure doesn't masquerade as zero lost evidence
+        # (polylogue-cpf.4).
+        logger.warning("archive readiness scalar query failed: %s", exc, exc_info=True)
         return 0
     return int(row[0] or 0) if row is not None else 0
 
@@ -411,7 +422,8 @@ def _readiness_scalar_int(conn: sqlite3.Connection, sql: str) -> int:
 def _table_columns(conn: sqlite3.Connection, schema: str, table: str) -> frozenset[str]:
     try:
         rows = conn.execute(f"PRAGMA {schema}.table_info({table})").fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("archive readiness table-columns probe failed for %s.%s: %s", schema, table, exc, exc_info=True)
         return frozenset()
     return frozenset(str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in rows)
 
