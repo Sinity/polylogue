@@ -722,6 +722,52 @@ class TestReaderSearchState:
         assert "peers" in payload
         assert "resource_episodes" in payload
 
+    def test_agent_coordination_cache_is_ttl_bounded_and_fresh_bypassable(self, workspace_env: dict[str, Path]) -> None:
+        """The live HTTP route caches only a bounded fresh response.
+
+        The test uses the production ``DaemonAPIHandler`` and an actual
+        loopback server; the envelope producer is only counted so the cache
+        contract is observable.  Removing the cache read/write or the
+        ``fresh=1`` bypass causes the call-count and response-header
+        assertions to fail.
+        """
+        calls: list[tuple[str, int]] = []
+
+        class FakePayload:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
+                return {"view": "status", "build": len(calls)}
+
+        def fake_build(*, view: str, limit: int) -> FakePayload:
+            calls.append((view, limit))
+            return FakePayload()
+
+        def get_response(url: str) -> tuple[dict[str, object], str, str]:
+            with urlopen(url) as response:
+                body = cast(dict[str, object], json.loads(response.read()))
+                return (
+                    body,
+                    response.headers["X-Polylogue-Coordination-Cache"],
+                    response.headers["X-Polylogue-Coordination-Freshness"],
+                )
+
+        with patch("polylogue.coordination.build_coordination_envelope", side_effect=fake_build):
+            with _running_server(workspace_env) as (_, base_url):
+                first, first_state, first_freshness = get_response(
+                    f"{base_url}/api/agents/coordination?view=status&limit=3"
+                )
+                second, second_state, second_freshness = get_response(
+                    f"{base_url}/api/agents/coordination?view=status&limit=3"
+                )
+                bypassed, bypassed_state, _ = get_response(
+                    f"{base_url}/api/agents/coordination?view=status&limit=3&fresh=1"
+                )
+
+        assert first == second == {"view": "status", "build": 1}
+        assert bypassed == {"view": "status", "build": 2}
+        assert calls == [("status", 3), ("status", 3)]
+        assert (first_state, second_state, bypassed_state) == ("miss", "hit", "bypass")
+        assert first_freshness == second_freshness == "ttl=2s; fresh=1 bypasses"
+
     def test_raw_tab_uses_bounded_provenance_preview_not_broad_raw_fetch(self, workspace_env: dict[str, Path]) -> None:
         """The shell must not fetch the broad /raw route when opening Raw.
 
