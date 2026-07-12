@@ -116,9 +116,9 @@ async function loadBackground() {
   expect(messageListener).toBeTypeOf("function");
 }
 
-async function sendRuntimeMessage(message) {
+async function sendRuntimeMessage(message, sender = {}) {
   let response;
-  const keepAlive = messageListener(message, {}, (payload) => {
+  const keepAlive = messageListener(message, sender, (payload) => {
     response = payload;
   });
   await vi.waitFor(() => expect(response).toBeDefined());
@@ -336,6 +336,24 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState.provider_session_id).toBe("conv-active");
   });
 
+  it("does not let a delayed prior conversation overwrite same-tab navigation", async () => {
+    tabs = [{ id: 1, url: "https://chatgpt.com/c/conv-a", title: "A", active: true }];
+    let resolveA;
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).includes("conv-a")) return new Promise((resolve) => { resolveA = resolve; });
+      return responseJson({ provider: "chatgpt", provider_session_id: "conv-b", state: "archived", captured: true });
+    });
+
+    updatedListener(1, { status: "complete" }, { id: 1, url: "https://chatgpt.com/c/conv-a", title: "A" });
+    tabs[0] = { id: 1, url: "https://chatgpt.com/c/conv-b", title: "B", active: true };
+    updatedListener(1, { url: "https://chatgpt.com/c/conv-b" }, tabs[0]);
+
+    await vi.waitFor(() => expect(stored.polylogueState?.provider_session_id).toBe("conv-b"));
+    resolveA(responseJson({ provider: "chatgpt", provider_session_id: "conv-a", state: "archived", captured: true }));
+    await vi.waitFor(() => expect(stored.polylogueSessionLedger["chatgpt:conv-a"]?.archive_state?.state).toBe("archived"));
+    expect(stored.polylogueState.provider_session_id).toBe("conv-b");
+  });
+
   it("does not capture existing provider tabs on extension update", async () => {
     expect(installedListener).toBeTypeOf("function");
     globalThis.fetch = vi.fn(async () => responseJson({ ok: true, active: true }));
@@ -475,6 +493,7 @@ describe("background receiver diagnostics", () => {
     activatedListener({ tabId: 42 });
 
     await vi.waitFor(() => expect(stored.polylogueState?.active_page_state).toBe("conversation"));
+    await vi.waitFor(() => expect(stored.polylogueState?.captured).toBe(true));
     expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/archive-state?provider=chatgpt&provider_session_id=conv-123");
     expect(stored.polylogueState.captured).toBe(true);
     expect(stored.polylogueState.last_receiver_request_id).toBe("capture-request-1");
@@ -633,7 +652,15 @@ describe("capture retry queue", () => {
       },
     };
 
-    const response = await sendRuntimeMessage({ type: "polylogue.capture", envelope, reason: "content_script_capture" });
+    tabs = [
+      { id: 1, url: "https://chatgpt.com/c/conv-active", active: true },
+      { id: 2, url: "https://chatgpt.com/c/conv-9", active: false },
+    ];
+    stored.polylogueState = { online: true, provider: "chatgpt", provider_session_id: "conv-active", archive_state: { state: "archived" } };
+    const response = await sendRuntimeMessage(
+      { type: "polylogue.capture", envelope, reason: "content_script_capture" },
+      { tab: tabs[1] },
+    );
 
     expect(response).toEqual({ ok: false, queued: true, error: "Failed to fetch", receiver_request_id: null });
     expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
@@ -660,9 +687,10 @@ describe("capture retry queue", () => {
     expect(callCount).toBe(2);
     expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith("polylogueCaptureRetry");
     expect(stored.polylogueCaptureLog[0].reason).toBe("capture_retry_drained");
-    expect(stored.polylogueState.captured).toBe(true);
-    expect(stored.polylogueState.provider_session_id).toBe("conv-9");
-    expect(stored.polylogueState.archive_state).toEqual({ state: "spooled_only" });
+    expect(stored.polylogueState.captured).toBeUndefined();
+    expect(stored.polylogueState.provider_session_id).toBe("conv-active");
+    expect(stored.polylogueState.archive_state).toEqual({ state: "archived" });
+    expect(stored.polylogueSessionLedger["chatgpt:conv-9"].archive_state).toEqual({ state: "spooled_only" });
     expect(stored.polylogueConversationTimeline["chatgpt:conv-9"][0]).toMatchObject({
       event: "captured",
       reason: "capture_retry_drained",

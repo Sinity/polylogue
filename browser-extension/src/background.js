@@ -238,11 +238,13 @@ function isRetryableCaptureError(error) {
   return true;
 }
 
-async function enqueueCaptureForRetry({ envelope, reason, error }) {
+async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
   const entry = {
     id: buildReceiverRequestId(),
     envelope,
     reason: reason || "content_script_capture",
+    tab_id: tab?.id || null,
+    tab_url: tab?.url || tab?.pendingUrl || null,
     enqueued_at: new Date().toISOString(),
     attempts: 0,
     next_attempt_at: new Date(Date.now() + retryDelayForAttempt(0)).toISOString(),
@@ -301,6 +303,7 @@ async function drainCaptureQueue(trigger = "alarm") {
     try {
       const result = await postJson("/v1/browser-captures", envelope);
       drained += 1;
+      const archiveState = { state: result.state || "spooled_only" };
       await updateSessionLedger({
         provider: summary.provider || result.provider,
         providerSessionId: summary.providerSessionId || result.provider_session_id,
@@ -313,6 +316,7 @@ async function drainCaptureQueue(trigger = "alarm") {
           artifact_ref: result.artifact_ref || null,
           extension_instance_id: result.capture_instance_id || null,
           deduplicated: Boolean(result.deduplicated),
+          archive_state: archiveState,
           last_error: null,
         },
       });
@@ -327,7 +331,6 @@ async function drainCaptureQueue(trigger = "alarm") {
         queued_id: entry.id,
         attempts: entry.attempts,
       });
-      const archiveState = { state: result.state || "spooled_only" };
       await appendConversationTimeline({
         provider: summary.provider || result.provider,
         providerSessionId: summary.providerSessionId || result.provider_session_id,
@@ -335,7 +338,7 @@ async function drainCaptureQueue(trigger = "alarm") {
         reason: "capture_retry_drained",
         detail: archiveState.state,
       });
-      await setState({
+      if (entry.tab_id) await setStateForTab(entry.tab_id, {
         online: true,
         captured: true,
         last_capture: result,
@@ -533,8 +536,21 @@ async function setState(state) {
 async function setStateForTab(tabId, state) {
   if (!tabId || !chrome.tabs?.query) return setState(state);
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!activeTab || activeTab.id === tabId) return setState(state);
-  return null;
+  if (!activeTab || activeTab.id !== tabId) return null;
+  const expectedProvider = state.provider || null;
+  const expectedSessionId = state.provider_session_id || null;
+  const activeProvider = archiveProviderForUrl(activeTab.url || activeTab.pendingUrl || "");
+  const activeSessionId = conversationIdForUrl(activeTab.url || activeTab.pendingUrl || "");
+  if (
+    expectedProvider
+    && expectedSessionId
+    && activeSessionId
+    && (
+      activeProvider !== expectedProvider
+      || activeSessionId !== expectedSessionId
+    )
+  ) return null;
+  return setState(state);
 }
 
 function buildReceiverRequestId() {
@@ -835,6 +851,8 @@ async function captureTab(tab, reason = "background") {
       const envelopeSession = resultWithTimeout.envelope?.session || {};
       const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
       const providerSessionId = resultWithTimeout.captureResult?.provider_session_id || envelopeSession.provider_session_id;
+      const pageProvider = archiveProviderForUrl(tab.url || tab.pendingUrl || "") || provider;
+      const pageSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "") || providerSessionId;
       await updateSessionLedger({
         provider,
         providerSessionId,
@@ -855,8 +873,8 @@ async function captureTab(tab, reason = "background") {
       await appendCaptureLog({
         ok: true,
         reason,
-        provider,
-        provider_session_id: providerSessionId,
+        provider: pageProvider,
+        provider_session_id: pageSessionId,
         tab_id: tab.id,
         archive_state: resultWithTimeout.archiveState?.state || null,
         receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
@@ -869,8 +887,8 @@ async function captureTab(tab, reason = "background") {
         passive_reason: reason,
         last_capture: resultWithTimeout.captureResult || resultWithTimeout,
         archive_state: resultWithTimeout.archiveState || null,
-        provider,
-        provider_session_id: providerSessionId,
+        provider: pageProvider,
+        provider_session_id: pageSessionId,
         capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
         asset_acquisition: envelopeSession.provider_meta?.asset_acquisition || null,
         turn_count: Array.isArray(envelopeSession.turns) ? envelopeSession.turns.length : null,
@@ -1305,7 +1323,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         result = await postJson("/v1/browser-captures", envelope);
       } catch (error) {
         if (isRetryableCaptureError(error)) {
-          await enqueueCaptureForRetry({ envelope, reason: message.reason, error });
+          await enqueueCaptureForRetry({ envelope, reason: message.reason, error, tab: sender.tab });
           await appendConversationTimeline({
             provider: summary.provider,
             providerSessionId: summary.providerSessionId,
