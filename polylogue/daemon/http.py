@@ -3029,8 +3029,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                           COALESCE(SUM(outcome = 'unknown'), 0)
                    FROM (
                      SELECT CASE
-                       WHEN is_error = 1 OR exit_code <> 0 THEN 'failed'
-                       WHEN is_error = 0 OR exit_code = 0 THEN 'ok'
+                       WHEN exit_code IS NOT NULL AND exit_code <> 0 THEN 'failed'
+                       WHEN exit_code = 0 THEN 'ok'
+                       WHEN is_error = 1 THEN 'failed'
+                       WHEN is_error = 0 THEN 'ok'
                        ELSE 'unknown'
                      END AS outcome
                      FROM actions WHERE session_id = ?

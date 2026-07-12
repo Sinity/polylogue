@@ -2414,7 +2414,20 @@ class TestCockpitAggregateRoutes:
         assert len(cast(list[object], payload["recent"])) <= 6
         assert cast(dict[str, object], payload["readiness"])
 
-    def test_evidence_summary_matches_structural_tool_relations(self, workspace_env: dict[str, Path]) -> None:
+    @pytest.mark.parametrize(
+        ("is_error", "exit_code", "expected_outcomes"),
+        [
+            (0, 2, {"ok": 0, "failed": 1, "unknown": 0}),
+            (1, 0, {"ok": 1, "failed": 0, "unknown": 0}),
+        ],
+    )
+    def test_evidence_summary_matches_structural_tool_relations(
+        self,
+        workspace_env: dict[str, Path],
+        is_error: int,
+        exit_code: int,
+        expected_outcomes: dict[str, int],
+    ) -> None:
         from polylogue.archive.message.roles import Role
         from polylogue.core.enums import BlockType, Provider
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
@@ -2446,8 +2459,8 @@ class TestCockpitAggregateRoutes:
 
         with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
             conn.execute(
-                "UPDATE blocks SET tool_result_is_error = 0, tool_result_exit_code = 2 WHERE session_id = ? AND block_type = 'tool_result'",
-                ("codex-session:evidence-summary",),
+                "UPDATE blocks SET tool_result_is_error = ?, tool_result_exit_code = ? WHERE session_id = ? AND block_type = 'tool_result'",
+                (is_error, exit_code, "codex-session:evidence-summary"),
             )
             conn.commit()
 
@@ -2457,7 +2470,7 @@ class TestCockpitAggregateRoutes:
 
         assert payload["tool_calls"] == 1
         outcomes = cast(dict[str, object], payload["outcomes"])
-        assert outcomes == {"ok": 0, "failed": 1, "unknown": 0}
+        assert outcomes == expected_outcomes
         assert cast(dict[str, object], payload["cost"])["total_usd"] == 0.0
 
     def test_message_endpoint_clamps_oversized_pages(self, workspace_env: dict[str, Path]) -> None:
