@@ -39,8 +39,9 @@ areas:
     notes: >
       The parser-based HTML sanitizer is defense-in-depth atop Jinja2 autoescape. The
       web-shell suite executes the shipped escaping helpers through Node when
-      available and checks every known JS-string and innerHTML sink, so this is
-      dedicated regression coverage rather than snapshot-only coverage.
+      available and checks the identified JS-string and innerHTML regression
+      paths, so this is dedicated regression coverage rather than snapshot-only
+      coverage.
 
   file_permissions:
     description: File permission controls on token store and data files
