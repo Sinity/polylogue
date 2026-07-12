@@ -155,7 +155,8 @@ def lifecycle_status(*, now_ms: int | None = None) -> dict[str, object]:
     try:
         conn = open_readonly_connection(ops_db_path)
     except Exception:
-        return {"state": "absent", "heartbeat_age_s": None, "running": False}
+        logger.warning("daemon status lifecycle database open failed", exc_info=True)
+        return {"state": "unknown", "heartbeat_age_s": None, "running": False}
     try:
         row = latest_daemon_lifecycle(conn)
     except Exception:
