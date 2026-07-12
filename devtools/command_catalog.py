@@ -399,6 +399,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace index-fast-forward",
+        "workspace",
+        "Clone-first index.db v32-to-v35 fast-forward with receipts and atomic rollback.",
+        "devtools.index_fast_forward",
+        use_when=(
+            "Upgrade a quiesced v32 derived index without raw replay: reflink an inactive generation, "
+            "apply exact canonical schema/FTS deltas, validate the clone, then separately activate or roll back."
+        ),
+        examples=(
+            "devtools workspace index-fast-forward plan --source /path/to/index.db",
+            "devtools workspace index-fast-forward clone-upgrade --source /path/to/index.db --receipt /path/to/receipt.json",
+            "devtools workspace index-fast-forward activate --receipt /path/to/receipt.json --restart",
+            "devtools workspace index-fast-forward rollback --receipt /path/to/receipt.json --restart",
+        ),
+    ),
+    CommandSpec(
         "workspace worktree-gc",
         "workspace",
         "Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees.",
