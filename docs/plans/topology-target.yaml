@@ -799,7 +799,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 2428
+    loc: 2569
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/ops.py
@@ -1255,7 +1255,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 1841
+    loc: 1845
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1295,7 +1295,7 @@ files:
     target: polylogue/daemon/cursor_lag_status.py
     owner: stable
   - path: polylogue/daemon/embedding_backlog.py
-    loc: 317
+    loc: 401
     target: polylogue/daemon/embedding_backlog.py
     owner: stable
   - path: polylogue/daemon/embedding_readiness.py
@@ -2970,7 +2970,7 @@ files:
     target: polylogue/storage/derived/insights.py
     owner: stable
   - path: polylogue/storage/embeddings/__init__.py
-    loc: 25
+    loc: 35
     target: polylogue/storage/embeddings/__init__.py
     owner: stable
   - path: polylogue/storage/embeddings/embedding_stats.py
@@ -2992,6 +2992,10 @@ files:
   - path: polylogue/storage/embeddings/progress.py
     loc: 250
     target: polylogue/storage/embeddings/progress.py
+    owner: stable
+  - path: polylogue/storage/embeddings/reconcile.py
+    loc: 485
+    target: polylogue/storage/embeddings/reconcile.py
     owner: stable
   - path: polylogue/storage/embeddings/sql.py
     loc: 102
