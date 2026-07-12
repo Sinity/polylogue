@@ -17,8 +17,8 @@ function operatorStatusForState(state = {}) {
   let status;
   if (archiveState === "failed" || state.error) status = OPERATOR_STATUS.failed;
   else if (["spooled_only", "ingest_pending", "stale"].includes(archiveState)) status = OPERATOR_STATUS.catching_up;
-  else if (archiveState === "archived" || state.captured) status = OPERATOR_STATUS.safe;
   else if (archiveState === "missing") status = OPERATOR_STATUS.not_saved;
+  else if (archiveState === "archived" || state.captured) status = OPERATOR_STATUS.safe;
   else status = OPERATOR_STATUS.needs_attention;
 
   return {

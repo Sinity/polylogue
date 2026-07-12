@@ -26,6 +26,13 @@ const pendingPostCommandAcks = new Map();
 let postPollTimer = 0;
 let backfillCoordinatorPromise = null;
 let extensionInstanceIdPromise = null;
+let storageMutationQueue = Promise.resolve();
+
+function serializeStorageMutation(mutation) {
+  const result = storageMutationQueue.then(mutation, mutation);
+  storageMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
 
 function extensionInstanceId() {
   if (!extensionInstanceIdPromise) {
@@ -450,51 +457,55 @@ async function appendDebugLog(entry) {
 
 async function updateSessionLedger({ provider, providerSessionId, patch }) {
   if (!provider || !providerSessionId) return null;
-  const stored = await chrome.storage.local.get({ polylogueSessionLedger: {} });
-  const ledger =
-    stored.polylogueSessionLedger && typeof stored.polylogueSessionLedger === "object"
-      ? stored.polylogueSessionLedger
-      : {};
-  const key = sessionKey(provider, providerSessionId);
-  const next = {
-    ...(ledger[key] || {}),
-    provider,
-    provider_session_id: providerSessionId,
-    updated_at: new Date().toISOString(),
-    ...patch,
-  };
-  await chrome.storage.local.set({ polylogueSessionLedger: { ...ledger, [key]: next } });
-  return next;
+  return serializeStorageMutation(async () => {
+    const stored = await chrome.storage.local.get({ polylogueSessionLedger: {} });
+    const ledger =
+      stored.polylogueSessionLedger && typeof stored.polylogueSessionLedger === "object"
+        ? stored.polylogueSessionLedger
+        : {};
+    const key = sessionKey(provider, providerSessionId);
+    const next = {
+      ...(ledger[key] || {}),
+      provider,
+      provider_session_id: providerSessionId,
+      updated_at: new Date().toISOString(),
+      ...patch,
+    };
+    await chrome.storage.local.set({ polylogueSessionLedger: { ...ledger, [key]: next } });
+    return next;
+  });
 }
 
 async function appendConversationTimeline({ provider, providerSessionId, event, reason = null, detail = null, tabId = null, onlyIfEmpty = false }) {
   if (!provider || !providerSessionId) return null;
-  const stored = await chrome.storage.local.get({ [CONVERSATION_TIMELINE_KEY]: {} });
-  const timelines = stored[CONVERSATION_TIMELINE_KEY] && typeof stored[CONVERSATION_TIMELINE_KEY] === "object"
-    ? stored[CONVERSATION_TIMELINE_KEY]
-    : {};
-  const key = sessionKey(provider, providerSessionId);
-  if (onlyIfEmpty && Array.isArray(timelines[key]) && timelines[key].length) return null;
-  const entry = {
-    at: new Date().toISOString(),
-    event,
-    reason,
-    detail,
-    tab_id: tabId,
-  };
-  const next = {
-    ...timelines,
-    [key]: [entry, ...(Array.isArray(timelines[key]) ? timelines[key] : [])].slice(0, CONVERSATION_TIMELINE_EVENT_LIMIT),
-  };
-  const keys = Object.keys(next);
-  if (keys.length > CONVERSATION_TIMELINE_CONVERSATION_LIMIT) {
-    keys
-      .sort((left, right) => Date.parse(next[left]?.[0]?.at || "") - Date.parse(next[right]?.[0]?.at || ""))
-      .slice(0, keys.length - CONVERSATION_TIMELINE_CONVERSATION_LIMIT)
-      .forEach((oldKey) => delete next[oldKey]);
-  }
-  await chrome.storage.local.set({ [CONVERSATION_TIMELINE_KEY]: next });
-  return entry;
+  return serializeStorageMutation(async () => {
+    const stored = await chrome.storage.local.get({ [CONVERSATION_TIMELINE_KEY]: {} });
+    const timelines = stored[CONVERSATION_TIMELINE_KEY] && typeof stored[CONVERSATION_TIMELINE_KEY] === "object"
+      ? stored[CONVERSATION_TIMELINE_KEY]
+      : {};
+    const key = sessionKey(provider, providerSessionId);
+    if (onlyIfEmpty && Array.isArray(timelines[key]) && timelines[key].length) return null;
+    const entry = {
+      at: new Date().toISOString(),
+      event,
+      reason,
+      detail,
+      tab_id: tabId,
+    };
+    const next = {
+      ...timelines,
+      [key]: [entry, ...(Array.isArray(timelines[key]) ? timelines[key] : [])].slice(0, CONVERSATION_TIMELINE_EVENT_LIMIT),
+    };
+    const keys = Object.keys(next);
+    if (keys.length > CONVERSATION_TIMELINE_CONVERSATION_LIMIT) {
+      keys
+        .sort((left, right) => Date.parse(next[left]?.[0]?.at || "") - Date.parse(next[right]?.[0]?.at || ""))
+        .slice(0, keys.length - CONVERSATION_TIMELINE_CONVERSATION_LIMIT)
+        .forEach((oldKey) => delete next[oldKey]);
+    }
+    await chrome.storage.local.set({ [CONVERSATION_TIMELINE_KEY]: next });
+    return entry;
+  });
 }
 
 function badgeForState(state) {
@@ -505,6 +516,7 @@ function badgeForState(state) {
   const archiveState = state.archive_state?.state;
   if (archiveState === "failed" || state.error) return { text: "err", color: "#ad2f2f" };
   if (archiveState === "spooled_only" || archiveState === "ingest_pending") return { text: "…", color: "#9a5b00" };
+  if (archiveState === "missing") return { text: "on", color: "#325d8f" };
   if (archiveState === "archived" || state.captured) return { text: "ok", color: "#14764e" };
   if (state.capture_mode === "dom_degraded") return { text: "dom", color: "#8a5a00" };
   return { text: "on", color: "#325d8f" };
@@ -816,8 +828,6 @@ async function captureTab(tab, reason = "background") {
       const envelopeSession = resultWithTimeout.envelope?.session || {};
       const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
       const providerSessionId = resultWithTimeout.captureResult?.provider_session_id || envelopeSession.provider_session_id;
-      const timelineProvider = archiveProviderForUrl(tab.url || tab.pendingUrl || "") || provider;
-      const timelineSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "") || providerSessionId;
       await updateSessionLedger({
         provider,
         providerSessionId,
@@ -843,14 +853,6 @@ async function captureTab(tab, reason = "background") {
         tab_id: tab.id,
         archive_state: resultWithTimeout.archiveState?.state || null,
         receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
-      });
-      await appendConversationTimeline({
-        provider: timelineProvider,
-        providerSessionId: timelineSessionId,
-        event: "captured",
-        reason,
-        detail: resultWithTimeout.archiveState?.state || "capture_accepted",
-        tabId: tab.id,
       });
       await setState({
         online: true,
@@ -1029,6 +1031,16 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
         active_tab_id: tab?.id || null,
         passive_reason: reason,
         last_receiver_request_id: state.receiver_request_id || null,
+      });
+      await updateSessionLedger({
+        provider,
+        providerSessionId,
+        patch: {
+          archive_state: state,
+          tab_id: tab?.id || null,
+          tab_url: url || null,
+          last_error: null,
+        },
       });
       if (state.state === "missing") {
         await appendConversationTimeline({
@@ -1413,14 +1425,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.status") {
-      const status = await getJson("/v1/status");
-      await setState({
-        online: true,
-        captured: false,
-        status,
-        last_receiver_request_id: status.receiver_request_id || null
-      });
-      sendResponse(status);
+      await refreshCurrentActiveTab(message.reason || "status");
+      const stored = await chrome.storage.local.get({ polylogueState: null });
+      const state = stored.polylogueState || {};
+      if (!state.online) {
+        sendResponse({
+          ok: false,
+          error: state.error || "receiver_unavailable",
+          receiver_request_id: state.last_receiver_request_id || null,
+        });
+        return;
+      }
+      sendResponse(state.archive_state || state.status || state);
       return;
     }
     if (message.type === "polylogue.captureSupportedTabs") {

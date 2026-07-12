@@ -241,6 +241,26 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState.last_receiver_request_id).toBe("reject-42");
   });
 
+  it("refreshes the active conversation instead of discarding its archive identity", async () => {
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-status", title: "ChatGPT" }];
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "chatgpt",
+      provider_session_id: "conv-status",
+      state: "spooled_only",
+      captured: false,
+    }));
+
+    const response = await sendRuntimeMessage({ type: "polylogue.status", reason: "popup_open" });
+
+    expect(response.state).toBe("spooled_only");
+    expect(stored.polylogueState).toMatchObject({
+      provider: "chatgpt",
+      provider_session_id: "conv-status",
+      archive_state: { state: "spooled_only" },
+    });
+    expect(stored.polylogueSessionLedger["chatgpt:conv-status"].archive_state.state).toBe("spooled_only");
+  });
+
   it("does not capture existing provider tabs on extension update", async () => {
     expect(installedListener).toBeTypeOf("function");
     globalThis.fetch = vi.fn(async () => responseJson({ ok: true, active: true }));
@@ -389,8 +409,22 @@ describe("background receiver diagnostics", () => {
       reason: "auto_capture_missing",
     });
     const timeline = stored.polylogueConversationTimeline["chatgpt:conv-123"];
-    expect(timeline.map((entry) => entry.event)).toEqual(["captured", "detected_new", "first_seen"]);
-    expect(timeline[0].reason).toBe("auto_capture_missing");
+    expect(timeline.map((entry) => entry.event)).toEqual(["detected_new", "first_seen"]);
+  });
+
+  it("serializes concurrent captures without losing either ledger or timeline entry", async () => {
+    globalThis.fetch = vi.fn(async (_url, options) => {
+      const session = JSON.parse(options.body).session;
+      return responseJson({ provider: session.provider, provider_session_id: session.provider_session_id });
+    });
+
+    await Promise.all(["conv-a", "conv-b"].map((providerSessionId) => sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: providerSessionId } },
+    })));
+
+    expect(Object.keys(stored.polylogueSessionLedger).sort()).toEqual(["chatgpt:conv-a", "chatgpt:conv-b"]);
+    expect(Object.keys(stored.polylogueConversationTimeline).sort()).toEqual(["chatgpt:conv-a", "chatgpt:conv-b"]);
   });
 
   it("records a held decision when automatic capture is throttled", async () => {

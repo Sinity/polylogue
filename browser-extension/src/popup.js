@@ -196,6 +196,14 @@ function stateExplanation(state) {
       detail: "The daemon has not acquired the spool artifact into source.db yet.",
     };
   }
+  if (archiveState === "missing") {
+    return {
+      badge: ["warn", "missing"],
+      archive: "Not archived",
+      headline: "No capture exists for this conversation yet.",
+      detail: "Use Capture page for the active conversation. The extension checks archive state automatically when tabs activate or finish loading.",
+    };
+  }
   if (archiveState === "archived" || state.captured) {
     return {
       badge: ["ok", "captured"],
@@ -204,14 +212,6 @@ function stateExplanation(state) {
         ? `Last capture: ${state.last_capture.provider} / ${state.last_capture.provider_session_id}`
         : "The latest capture is visible in the archive.",
       detail: "Archive evidence includes receiver spool, source raw row, indexed session, and indexed messages.",
-    };
-  }
-  if (archiveState === "missing") {
-    return {
-      badge: ["warn", "missing"],
-      archive: "Not archived",
-      headline: "No capture exists for this conversation yet.",
-      detail: "Use Capture page for the active conversation. The extension checks archive state automatically when tabs activate or finish loading.",
     };
   }
   if (state.capture_mode === "dom_degraded") {
@@ -529,8 +529,8 @@ async function render() {
   document.getElementById("fidelity").textContent = fidelityLabel(state?.capture_mode);
   renderAssetAcquisition(state?.asset_acquisition);
   const lastSession = state?.last_capture || {};
-  const capturedCount = state?.archive_state?.indexed_message_count ?? state?.turn_count ?? lastSession.turn_count ?? null;
-  const visibleCount = state?.turn_count ?? lastSession.turn_count ?? null;
+  const capturedCount = state?.turn_count ?? lastSession.turn_count ?? null;
+  const visibleCount = state?.archive_state?.indexed_message_count ?? null;
   turnsNode.textContent = capturedCount === null && visibleCount === null
     ? "--"
     : `${capturedCount ?? "--"} captured / ${visibleCount ?? "--"} visible`;

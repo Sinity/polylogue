@@ -268,6 +268,7 @@ describe("popup capture", () => {
     expect(operatorStatusForState({ online: true, archive_state: { state: "archived" } }).label).toBe("Safe");
     expect(operatorStatusForState({ online: true, archive_state: { state: "failed" } }).label).toBe("Failed");
     expect(operatorStatusForState({ online: true, captured: true, archive_state: { state: "spooled_only" } }).label).toBe("Catching up");
+    expect(operatorStatusForState({ online: true, captured: true, archive_state: { state: "missing" } }).label).toBe("Not saved");
     expect(operatorStatusForState({ online: true }).label).toBe("Needs attention");
     expect(operatorStatusForState({ online: true, capture_mode: "dom_degraded" }).partialFidelity).toBe(true);
   });
@@ -284,6 +285,20 @@ describe("popup capture", () => {
 
     expect(document.getElementById("operator-state").textContent).toBe("Catching up");
     expect(document.getElementById("archive").textContent).toBe("Ingest pending");
+  });
+
+  it("labels envelope turns as captured and indexed messages as visible", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        captured: true,
+        turn_count: 12,
+        archive_state: { state: "archived", indexed_message_count: 5 },
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    expect(document.getElementById("turns").textContent).toBe("12 captured / 5 visible");
   });
 
   it("renders supported pages without a conversation id without implying capture happened", async () => {
@@ -359,7 +374,7 @@ describe("popup capture", () => {
     });
 
     expect(globalThis.document.getElementById("fidelity").textContent).toBe("Native");
-    expect(globalThis.document.getElementById("turns").textContent).toBe("12 captured / 12 visible");
+    expect(globalThis.document.getElementById("turns").textContent).toBe("12 captured / -- visible");
     expect(globalThis.document.getElementById("assets").textContent).toBe("2 acquired · 1 failed");
     expect(globalThis.document.getElementById("asset-failures").textContent).toContain("file-abc: timeout");
   });
