@@ -7,6 +7,7 @@ does not overfit to parser-specific idiosyncrasies.
 
 Origins covered
 ---------------
+* beads-issue           — Provider.BEADS
 * chatgpt-export        — Provider.CHATGPT
 * claude-ai-export      — Provider.CLAUDE_AI
 * claude-code-session   — Provider.CLAUDE_CODE
@@ -65,6 +66,8 @@ from polylogue.sources.parsers.antigravity import (
     parse_markdown_export,
 )
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.beads import looks_like as beads_looks_like
+from polylogue.sources.parsers.beads import parse_issue_timeline
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import looks_like_ai as claude_ai_looks_like
@@ -496,7 +499,46 @@ def _ag_looks_like(payload: Any) -> bool:
     return bool(summary.cascade_id)
 
 
+def _beads_issue_payload() -> list[JSONDocument]:
+    return [
+        {
+            "id": "int-1",
+            "kind": "field_change",
+            "created_at": "2026-07-08T20:14:35Z",
+            "actor": "Sinity",
+            "issue_id": "polylogue-beads-origin-reg-1",
+            "extra": {"field": "status", "old_value": "open", "new_value": "in_progress"},
+        },
+        {
+            "id": "int-2",
+            "kind": "field_change",
+            "created_at": "2026-07-08T20:14:36Z",
+            "actor": "Sinity",
+            "issue_id": "polylogue-beads-origin-reg-1",
+            "extra": {"field": "status", "old_value": "in_progress", "new_value": "closed"},
+        },
+    ]
+
+
 ORIGIN_FIXTURES: list[OriginFixture] = [
+    OriginFixture(
+        label="beads-issue",
+        provider=Provider.BEADS,
+        session_id="polylogue-beads-origin-reg-1",
+        min_messages=2,
+        expected_origin=Origin.BEADS_ISSUE,
+        looks_like_fn=lambda payload: all(beads_looks_like(record) for record in payload),
+        payload=_beads_issue_payload(),
+        parse_fn=parse_issue_timeline,
+        expected_title="Beads issue polylogue-beads-origin-reg-1",
+        has_tool_use=False,
+        has_thinking=False,
+        has_paste=False,
+        has_attachment=False,
+        has_working_dir=False,
+        has_git_branch=False,
+        has_git_repo=False,
+    ),
     # ------------------------------------------------------------------
     # chatgpt-export
     # ------------------------------------------------------------------

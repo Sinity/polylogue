@@ -459,6 +459,7 @@ def _parse_plan_sessions(
                 plan.provider,
                 counted_stream(),
                 fallback_id,
+                source_path=context.raw_record.source_path,
             )
             if valid_record_count == 0:
                 raise ValueError(f"no valid JSON records in {stream_name}")

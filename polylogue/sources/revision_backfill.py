@@ -270,6 +270,7 @@ def _parse_one(provider: Provider, payload: bytes, source_path: str) -> list[Par
             provider,
             _iter_json_stream(BytesIO(payload), source_name),
             fallback_id,
+            source_path=source_path,
         )
     return parse_payload(
         provider,

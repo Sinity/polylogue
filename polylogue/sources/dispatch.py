@@ -16,7 +16,7 @@ from polylogue.core.payload_coercion import optional_string
 from polylogue.logging import get_logger
 
 from .decoders import _decode_json_bytes, _iter_json_stream
-from .parsers import antigravity, browser_capture, chatgpt, claude, codex, drive, hermes_state, local_agent
+from .parsers import antigravity, beads, browser_capture, chatgpt, claude, codex, drive, hermes_state, local_agent
 from .parsers.base import ParsedSession, extract_messages_from_list
 
 if TYPE_CHECKING:
@@ -25,8 +25,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 BUNDLE_PROVIDERS = frozenset({Provider.CHATGPT, Provider.CLAUDE_AI})
-GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE})
-STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX})
+GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE, Provider.BEADS})
+STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.BEADS})
 DRIVE_LIKE_PROVIDERS = frozenset({Provider.GEMINI, Provider.DRIVE})
 _MAX_PARSE_DEPTH = 10
 _NO_LOOKAHEAD = object()
@@ -138,6 +138,8 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
         return Provider.ANTIGRAVITY
     if antigravity.looks_like_brain_metadata(record, None):
         return Provider.ANTIGRAVITY
+    if beads.looks_like(record):
+        return Provider.BEADS
     # Specific type-level checks first (Codex, Claude Code use Pydantic
     # validation), then weaker dict-key checks (ChatGPT, Claude AI, Gemini).
     if codex.looks_like([dict(record)]):
@@ -161,6 +163,8 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
     if first_record is not None:
         if browser_capture.looks_like(first_record):
             return _detect_provider_from_record(first_record)
+        if beads.looks_like(first_record):
+            return Provider.BEADS
         if is_json_document(first_record.get("mapping")):
             return Provider.CHATGPT
         if isinstance(first_record.get("chat_messages"), list):
@@ -342,12 +346,15 @@ def _grouped_records_spec(
     provider: Provider,
     payload: PayloadRecord | PayloadSequence,
     fallback_id: str,
+    *,
+    source_path: str | None = None,
 ) -> LoweredPayloadSpec:
     return LoweredPayloadSpec(
         provider=provider,
         fallback_id=fallback_id,
         mode="grouped_records",
         payload=payload,
+        source_path=source_path,
     )
 
 
@@ -670,6 +677,16 @@ def _lower_payload_specs(
         return _lower_bundle_payload(runtime_provider, shaped_payload, fallback_id)
     if runtime_provider in {Provider.CLAUDE_CODE, Provider.CODEX}:
         return _lower_grouped_payload(runtime_provider, shaped_payload, fallback_id)
+    if runtime_provider is Provider.BEADS:
+        payloads = _payload_sequence(shaped_payload)
+        if payloads is not None and all(
+            (record := _payload_record(item)) is not None and beads.looks_like(record) for item in payloads
+        ):
+            return [_grouped_records_spec(runtime_provider, payloads, fallback_id, source_path=source_path)]
+        record = _single_document_record(shaped_payload)
+        if record is not None and beads.looks_like(record):
+            return [_grouped_records_spec(runtime_provider, [record], fallback_id, source_path=source_path)]
+        return []
     if runtime_provider is Provider.GEMINI_CLI:
         record = _single_document_record(shaped_payload)
         if record is not None and local_agent.looks_like_gemini_cli(record):
@@ -760,6 +777,10 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         payloads = _payload_sequence(spec.payload)
         return [codex.parse(payloads, spec.fallback_id)] if payloads is not None else []
 
+    if spec.provider is Provider.BEADS:
+        payloads = _payload_sequence(spec.payload)
+        return beads.parse(payloads, spec.fallback_id, source_path=spec.source_path) if payloads is not None else []
+
     if spec.mode == "local_agent_document":
         record = _payload_record(spec.payload)
         if record is None:
@@ -824,6 +845,8 @@ def parse_stream_payload(
     provider: str | Provider,
     payloads: Iterable[object],
     fallback_id: str,
+    *,
+    source_path: str | None = None,
 ) -> list[ParsedSession]:
     """Parse a grouped record stream."""
     runtime_provider = Provider.from_string(provider)
@@ -831,6 +854,8 @@ def parse_stream_payload(
         return merge_parsed_session_chunks(_claude_code_stream_sessions(payloads, fallback_id))
     if runtime_provider is Provider.CODEX:
         return [codex.parse_stream(payloads, fallback_id)]
+    if runtime_provider is Provider.BEADS:
+        return beads.parse(payloads, fallback_id, source_path=source_path)
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 
 
