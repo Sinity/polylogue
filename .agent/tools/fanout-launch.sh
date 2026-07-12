@@ -31,6 +31,15 @@ if [[ "${1:-}" == "--status" ]]; then
   exec bash "$LAUNCHER" --status --output-dir "$OUTPUT_DIR"
 fi
 
+# --tails [n] [--tails-all] [lane...]: colored per-lane log tails with
+# run/idle timings (running lanes by default; DONE lanes show last.md).
+if [[ "${1:-}" == "--tails" || "${1:-}" == "tails" ]]; then
+  shift
+  # --output-dir must precede positional lane names: the launcher's flag
+  # parser stops at the first non-flag argument.
+  exec bash "$LAUNCHER" --output-dir "$OUTPUT_DIR" --tails "$@"
+fi
+
 # resume-headless <lane...|--all>: relaunch lanes HEADLESS on codex-lean
 # (lean MCP profile, hooks disabled) resuming their persisted sessions from
 # .agent/scratch/fanout-sessions.json. Survives kitty/desktop death; use
@@ -58,6 +67,38 @@ if [[ "${1:-}" == "resume-headless" ]]; then
     contq=$(printf '%q' "$cont")
     nohup zsh -c "cd $wt && printf '%s' $contq | ${scope[*]} $HOME/.local/bin/codex-lean exec resume $sid --model ${FANOUT_MODEL:-gpt-5.6-terra} -c 'model_reasoning_effort=\"${FANOUT_EFFORT:-high}\"' -c 'features.hooks=false' --output-last-message $OUTPUT_DIR/$lane.last.md - ; ec=\$?; echo \$ec > $OUTPUT_DIR/$lane.exit" >"$hlog" 2>&1 &
     echo "headless-resumed $lane (sid $sid) log=$hlog pid=$!"
+    sleep "${FANOUT_STAGGER:-8}"
+  done
+  exit 0
+fi
+
+# review <lane...|--all>: relaunch finished lanes HEADLESS on codex-lean into
+# an ADVERSARIAL SELF-REVIEW fixpoint loop — hostile re-review of their own
+# branch diff + beads AC, fix/verify/commit/push every finding, repeat until
+# a full iteration finds nothing new. Use after lanes report "done": an open
+# PR is a checkpoint, not completion.
+if [[ "${1:-}" == "review" ]]; then
+  shift
+  MAN="$REPO_ROOT/.agent/scratch/fanout-sessions.json"
+  lanes=()
+  if [[ "${1:-}" == "--all" ]]; then
+    lanes=($(python3 -c "import json;print('\n'.join(json.load(open('$MAN'))))"))
+  else
+    lanes=("$@")
+  fi
+  mkdir -p "$OUTPUT_DIR"
+  cont='Coordinator directive: adversarial self-review fixpoint loop. Your PR being open does NOT mean you are done. Each iteration: (1) git fetch origin and review your full branch diff (git diff origin/master...HEAD) as a hostile reviewer — hunt vacuous tests, unwired runtime paths, missed or quietly-dropped acceptance criteria, edge cases, contract violations, dishonest claims in the PR body; (2) re-read each of your beads (bd show <id> --json) including notes and AC — beads are fast now, use them freely; (3) check your PR for new review comments (gh pr view --comments) and address substantive ones; (4) for EVERY finding: fix, verify with focused devtools tests, commit, push; (5) append an iteration summary to the PR (gh pr comment): findings, fixes, what survived scrutiny. REPEAT until one full iteration yields ZERO new findings, then post a final honest per-AC matrix comment (satisfied / deferred-to-bead / misframed) and stop. Do not merge. Do not close beads. Known infra, not yours to fix: GitHub Actions currently fails ALL jobs at init with no steps (account billing) — ignore that pattern. Keep pytest temp under /realm/tmp, never host /tmp (small tmpfs).'
+  contq=$(printf '%q' "$cont")
+  for lane in "${lanes[@]}"; do
+    sid=$(python3 -c "import json;print(json.load(open('$MAN')).get('$lane',{}).get('sid',''))")
+    wt="/realm/worktrees/$lane"
+    [[ -z "$sid" || ! -d "$wt" ]] && { echo "skip $lane (sid='$sid')"; continue; }
+    rm -f "$OUTPUT_DIR/$lane.exit"
+    n=1; while [[ -e "$OUTPUT_DIR/$lane.review-$n.log" ]]; do n=$((n+1)); done
+    hlog="$OUTPUT_DIR/$lane.review-$n.log"
+    scope=(); command -v sinnix-scope >/dev/null && scope=(sinnix-scope background --)
+    nohup zsh -c "cd $wt && printf '%s' $contq | ${scope[*]} $HOME/.local/bin/codex-lean exec resume $sid --model ${FANOUT_MODEL:-gpt-5.6-terra} -c 'model_reasoning_effort=\"${FANOUT_EFFORT:-high}\"' -c 'features.hooks=false' --output-last-message $OUTPUT_DIR/$lane.last.md - ; ec=\$?; echo \$ec > $OUTPUT_DIR/$lane.exit" >"$hlog" 2>&1 &
+    echo "review-loop $lane (sid $sid) log=$hlog pid=$!"
     sleep "${FANOUT_STAGGER:-8}"
   done
   exit 0
