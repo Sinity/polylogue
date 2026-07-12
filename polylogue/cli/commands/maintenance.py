@@ -2331,11 +2331,17 @@ def _render_embedding_orphan_reconcile_plain(report: EmbeddingOrphanReconcileRep
             f"{report.skipped_recent_status_rows:,} status row(s) "
             f"(within {report.quiet_window_ms // 1000}s)"
         )
-    action = "would remove" if report.dry_run else "removed"
-    click.echo(
-        f"Result:        {action} {report.removed_message_rows:,} message row(s), "
-        f"{report.removed_vector_rows:,} vector row(s), {report.removed_status_rows:,} status row(s)"
-    )
+    if report.dry_run:
+        click.echo(
+            f"Would remove:  {report.candidate_message_meta_rows:,} meta row(s), "
+            f"{report.candidate_vector_rows:,} vector row(s), "
+            f"{report.candidate_status_rows:,} status row(s)"
+        )
+    else:
+        click.echo(
+            f"Removed:       {report.removed_message_rows:,} meta row(s), "
+            f"{report.removed_vector_rows:,} vector row(s), {report.removed_status_rows:,} status row(s)"
+        )
     if report.sessions_recounted:
         click.echo(f"Recounted:     {report.sessions_recounted:,} session(s) message_count_embedded")
     click.echo(f"More pending:  {report.more_pending}")

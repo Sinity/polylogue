@@ -846,6 +846,14 @@ def test_embedding_orphan_reconcile_cli_dry_run_keeps_rows(
     cli_runner: CliRunner,
 ) -> None:
     _seed_orphan_embedding_row(cli_workspace["archive_root"])
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
+            ) VALUES ('codex-session:absent', 'codex-session', 0, 1700000000000, 0, NULL)
+            """
+        )
 
     result = cli_runner.invoke(
         cli,
@@ -859,7 +867,40 @@ def test_embedding_orphan_reconcile_cli_dry_run_keeps_rows(
     assert payload["mutates"] is False
     assert payload["dry_run"] is True
     assert payload["orphan_message_rows"] == 1
+    assert payload["candidate_message_rows"] == 1
+    assert payload["candidate_message_meta_rows"] == 1
+    assert payload["candidate_vector_rows"] == 1
+    assert payload["candidate_status_rows"] == 1
     assert payload["removed_message_rows"] == 0
+    assert payload["removed_vector_rows"] == 0
+    assert payload["removed_status_rows"] == 0
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+
+
+def test_embedding_orphan_reconcile_cli_plain_dry_run_reports_would_remove_counts(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    _seed_orphan_embedding_row(cli_workspace["archive_root"])
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
+            ) VALUES ('codex-session:absent', 'codex-session', 0, 1700000000000, 0, NULL)
+            """
+        )
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "embedding-orphan-reconcile"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Would remove:  1 meta row(s), 1 vector row(s), 1 status row(s)" in result.output
+    assert "Removed:" not in result.output
     with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
 

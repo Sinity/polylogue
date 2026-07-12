@@ -799,7 +799,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 2569
+    loc: 2575
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/ops.py
@@ -2994,7 +2994,7 @@ files:
     target: polylogue/storage/embeddings/progress.py
     owner: stable
   - path: polylogue/storage/embeddings/reconcile.py
-    loc: 485
+    loc: 505
     target: polylogue/storage/embeddings/reconcile.py
     owner: stable
   - path: polylogue/storage/embeddings/sql.py

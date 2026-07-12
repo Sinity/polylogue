@@ -99,6 +99,10 @@ class EmbeddingOrphanReconcileReport:
     orphan_status_rows: int
     skipped_recent_message_rows: int
     skipped_recent_status_rows: int
+    candidate_message_rows: int
+    candidate_message_meta_rows: int
+    candidate_vector_rows: int
+    candidate_status_rows: int
     removed_message_rows: int
     removed_vector_rows: int
     removed_status_rows: int
@@ -128,6 +132,10 @@ class EmbeddingOrphanReconcileReport:
             "orphan_status_rows": self.orphan_status_rows,
             "skipped_recent_message_rows": self.skipped_recent_message_rows,
             "skipped_recent_status_rows": self.skipped_recent_status_rows,
+            "candidate_message_rows": self.candidate_message_rows,
+            "candidate_message_meta_rows": self.candidate_message_meta_rows,
+            "candidate_vector_rows": self.candidate_vector_rows,
+            "candidate_status_rows": self.candidate_status_rows,
             "removed_message_rows": self.removed_message_rows,
             "removed_vector_rows": self.removed_vector_rows,
             "removed_status_rows": self.removed_status_rows,
@@ -209,6 +217,10 @@ def reconcile_embedding_orphans(
             orphan_status_rows=0,
             skipped_recent_message_rows=0,
             skipped_recent_status_rows=0,
+            candidate_message_rows=0,
+            candidate_message_meta_rows=0,
+            candidate_vector_rows=0,
+            candidate_status_rows=0,
             removed_message_rows=0,
             removed_vector_rows=0,
             removed_status_rows=0,
@@ -274,6 +286,10 @@ def reconcile_embedding_orphans(
 
         status_budget = None if max_count is None else max(0, max_count - len(limited_message))
         limited_status = status_candidates if status_budget is None else status_candidates[:status_budget]
+        candidate_message_rows = len(limited_message)
+        candidate_message_meta_rows = sum(int(row["has_meta"]) for row in limited_message)
+        candidate_vector_rows = sum(int(row["has_vector"]) for row in limited_message)
+        candidate_status_rows = len(limited_status)
 
         removed_message_rows = 0
         removed_vector_rows = 0
@@ -380,6 +396,10 @@ def reconcile_embedding_orphans(
             orphan_status_rows=orphan_status_rows,
             skipped_recent_message_rows=skipped_recent_message,
             skipped_recent_status_rows=skipped_recent_status,
+            candidate_message_rows=candidate_message_rows,
+            candidate_message_meta_rows=candidate_message_meta_rows,
+            candidate_vector_rows=candidate_vector_rows,
+            candidate_status_rows=candidate_status_rows,
             removed_message_rows=removed_message_rows,
             removed_vector_rows=removed_vector_rows,
             removed_status_rows=removed_status_rows,
