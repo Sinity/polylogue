@@ -929,10 +929,10 @@ polylogue 'text:css {session_id claude-code}: refactor'
 
 `blocks.search_text` — the generated column FTS5 indexes — concatenates a
 **fixed subset** of block fields, not the whole block. Anything outside that
-subset is invisible to the `dialogue`/`actions`/`hybrid` lanes, `--contains`,
-`contains:`, and bare-text queries, even though the underlying data is stored
-and readable through other surfaces (`read`, `select`, direct block/action
-reads). The live definition lives in
+subset is invisible to the ranked `dialogue`/`actions`/`hybrid` lanes,
+`--contains`, `contains:`, and bare-text queries, even though the underlying
+data is stored and readable through other surfaces (`read`, `select`, direct
+block/action reads). The live definition lives in
 `polylogue/storage/sqlite/archive_tiers/index.py` (`blocks.search_text
 GENERATED ALWAYS AS (...)`); this table is drift-checked against that
 expression by
@@ -945,13 +945,24 @@ expression by
 | `tool_input.$.command` | Yes | Shell/exec command lines (`Bash`, `exec_command`-style tools). |
 | `tool_input.$.file_path` | Yes | Primary path argument for file-oriented tools. |
 | `tool_input.$.path` | Yes | Alternate path key used by some tools (`Grep`, `Glob`). |
-| `tool_input.$.content` — file bodies a **`Write`** tool call authored | **No** | The full text an agent wrote into a new/overwritten file is excluded from `search_text`. A distinctive string that only appears inside a Write body returns zero FTS hits, with no diagnostic pointing at this boundary. |
-| `tool_input.$.old_string` / `$.new_string` — **`Edit`** tool bodies | **No** | Same gap as Write: edited code is excluded unless it also happens to appear in prose, a `tool_result` echo, or one of the four indexed keys above. |
+| `tool_input.$.content` — file bodies a **`Write`** tool call authored | **No** | The full text an agent wrote into a new/overwritten file is excluded from `search_text`. A distinctive string that only appears inside a Write body returns zero FTS hits. |
+| `tool_input.$.old_string` / `tool_input.$.new_string` — **`Edit`** tool bodies | **No** | Same gap as Write: edited code is excluded unless it also happens to appear in prose, a `tool_result` echo, or one of the four indexed keys above. |
 | Any other `tool_input` key (`pattern`, `description`, `url`, ...) | **No** | Only the four `json_extract` paths above are concatenated into `search_text`; every other key is excluded regardless of tool. |
 
-**Workaround:** when you know an agent wrote or edited a specific string into
-a file body, query `tool_input` directly with a JSON-aware SQL probe against
-`index.db` instead of FTS:
+**Dedicated action-evidence lane:** when you know an agent wrote or edited a
+specific string into a file body, use the query DSL's action `text` predicate.
+It searches the action's raw `tool_input` JSON (as well as normalized action
+fields and output), so it covers `Write`'s `content` and `Edit`'s
+`old_string`/`new_string` without putting those bodies in FTS:
+
+```bash
+polylogue 'actions where tool:write AND text:"needle"'
+polylogue 'sessions where exists action(tool:edit AND text:"needle")'
+```
+
+This is an unindexed `LIKE` filter, not FTS; constrain it by action, path,
+session scope, or time on large archives. For direct `index.db` inspection,
+the equivalent JSON-aware SQL probe is:
 
 ```sql
 SELECT block_id, session_id, tool_name,
@@ -965,13 +976,11 @@ WHERE tool_name IN ('Write', 'Edit')
   );
 ```
 
-This is a full unindexed scan (`LIKE`, no FTS acceleration) — bound it with a
-`session_id =` filter or a `messages` time join on large archives. There is no
-query-DSL field for this today; extending `search_text` itself to cover
-`$.content` was considered and deliberately deferred (see polylogue-013x)
-because Write bodies can be large enough to meaningfully bloat the FTS index,
-and that tradeoff needs a size probe against a live archive plus a derived-tier
-index rebuild before it is decided, not a silent schema bump.
+Extending `search_text` itself to cover `$.content` was considered and
+deliberately deferred (see polylogue-013x) because Write bodies can be large
+enough to meaningfully bloat the FTS index, and that tradeoff needs a size
+probe against a live archive plus a derived-tier index rebuild before it is
+decided, not a silent schema bump.
 
 ## Output Formats
 
@@ -1053,7 +1062,7 @@ When a query returns no results:
 5. Run `polylogue ops doctor` for schema and index integrity
 6. If using `--similar`, ensure embeddings are built (check `polylogue ops embed status --detail` for embedding readiness/coverage)
 7. If you know an agent wrote or edited a specific string into a file (a
-   `Write`/`Edit` tool body), FTS will not find it — this is a documented
-   coverage boundary, not a bug. See
-   [Searchable Content Coverage](#searchable-content-coverage) for the exact
-   boundary and a raw-SQL workaround.
+   `Write`/`Edit` tool body), FTS will not find it. Use the action-evidence
+   query path documented in
+   [Searchable Content Coverage](#searchable-content-coverage), such as
+   `actions where tool:write AND text:"needle"`.
