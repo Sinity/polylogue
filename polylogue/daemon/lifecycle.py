@@ -107,19 +107,27 @@ class DaemonLifecycle:
         except Exception:
             logger.exception("daemon: could not persist terminating signal %s", signal_name)
 
-    def stop(self, *, exit_kind: str) -> None:
+    def stop(self, *, exit_kind: str, bounded: bool = False) -> None:
         """Mark the lifecycle row cleanly stopped exactly once."""
         if self.stopped:
             return
         if self.received_signal_name is not None:
             exit_kind = "signal"
-        _write_lifecycle(
-            self.ops_db_path,
-            record_daemon_lifecycle_stop,
-            run_id=self.run_id,
-            stopped_at_ms=_now_ms(),
-            exit_kind=exit_kind,
-        )
+        writer = _write_existing_lifecycle if bounded else _write_lifecycle
+        try:
+            writer(
+                self.ops_db_path,
+                record_daemon_lifecycle_stop,
+                run_id=self.run_id,
+                stopped_at_ms=_now_ms(),
+                exit_kind=exit_kind,
+            )
+        except Exception:
+            # A signal row may already be durable. Do not let a contended
+            # best-effort stop marker re-enter through atexit and delay exit.
+            if bounded:
+                self.stopped = True
+            raise
         self.stopped = True
 
 

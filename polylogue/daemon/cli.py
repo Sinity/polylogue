@@ -1377,7 +1377,11 @@ async def run_daemon_services(
             for _ in range(cleanup_cancel_requests):
                 cleanup_task.uncancel()
         try:
-            if lifecycle_events_enabled:
+            lifecycle = _daemon_lifecycle
+            signal_termination = (lifecycle is not None and lifecycle.received_signal_name is not None) or isinstance(
+                termination, SystemExit
+            )
+            if lifecycle_events_enabled and not signal_termination:
                 await _emit_daemon_lifecycle_event(
                     "shutdown_started",
                     archive_root_path=archive_root_path,
@@ -1426,16 +1430,23 @@ async def run_daemon_services(
             except TimeoutError:
                 logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
 
-            lifecycle = _daemon_lifecycle
             if lifecycle is not None:
                 exit_kind = "clean"
-                if lifecycle.received_signal_name is not None or isinstance(termination, SystemExit):
+                if signal_termination:
                     exit_kind = "signal"
                 elif termination is not None and not isinstance(
                     termination, (KeyboardInterrupt, asyncio.CancelledError)
                 ):
                     exit_kind = "error"
-                await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind=exit_kind)
+                try:
+                    await write_coordinator.run_sync(
+                        "daemon.lifecycle.stop",
+                        lifecycle.stop,
+                        exit_kind=exit_kind,
+                        bounded=signal_termination,
+                    )
+                except Exception:
+                    logger.warning("daemon: could not persist final lifecycle stop", exc_info=True)
 
             writer_drained = await write_coordinator.shutdown(timeout=5.0)
             pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)

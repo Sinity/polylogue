@@ -3014,6 +3014,13 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
     def fail_background_work(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("schema-blocked daemon must not start DB background work")
 
+    lifecycle_tick_started = False
+
+    async def lifecycle_heartbeat() -> None:
+        nonlocal lifecycle_tick_started
+        lifecycle_tick_started = True
+        await asyncio.Event().wait()
+
     server = FakeServer()
     critical = HealthAlert(
         check_name="schema_version",
@@ -3026,7 +3033,7 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
         patch.object(daemon_cli, "_check_schema_version_fast", return_value=critical),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_heartbeat", side_effect=fail_background_work),
-        patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", lambda: asyncio.Event().wait()),
+        patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", lifecycle_heartbeat),
         patch.object(daemon_cli, "_periodic_convergence_check", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_health_check", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),
@@ -3050,3 +3057,4 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
 
     assert server.shutdown_called is False
     assert server.close_called is True
+    assert lifecycle_tick_started is True

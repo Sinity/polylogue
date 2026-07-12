@@ -281,6 +281,43 @@ def test_sigterm_read_only_daemon_records_forensics(
     assert "Current thread" in log_text
 
 
+def test_sigterm_with_locked_ops_exits_without_normal_sqlite_wait(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A contended OPS tier cannot hold a signalled daemon for the normal 30 seconds."""
+    archive_root = workspace_env["archive_root"]
+    api_port = _free_local_port()
+    daemon = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from polylogue.daemon.cli import main; main()",
+            "run",
+            "--no-watch",
+            "--no-source-catchup",
+            "--no-browser-capture",
+            "--api-port",
+            str(api_port),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=os.environ.copy(),
+    )
+    lock = sqlite3.connect(archive_root / "ops.db")
+    try:
+        _wait_for_lifecycle_start(daemon, archive_root / "ops.db")
+        lock.execute("BEGIN EXCLUSIVE")
+        started = time.monotonic()
+        daemon.send_signal(signal.SIGTERM)
+        assert daemon.wait(timeout=12) == 128 + signal.SIGTERM
+        assert time.monotonic() - started < 8.0
+    finally:
+        lock.rollback()
+        lock.close()
+        if daemon.poll() is None:
+            _cleanup_process(daemon)
+
+
 def _daemon_debug(proc: subprocess.Popen[bytes], *, db: Path, corpus_root: Path) -> str:
     if proc.poll() is None:
         _cleanup_process(proc)
