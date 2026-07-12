@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 
 _UNKNOWN = "unknown"
@@ -27,7 +27,7 @@ class CohortCandidate:
     """
 
     object_ref: str
-    dimensions: Mapping[str, str | None] = ()
+    dimensions: Mapping[str, str | None] = field(default_factory=dict)
     template_key: str | None = None
     exclusion_reason: str | None = None
 
