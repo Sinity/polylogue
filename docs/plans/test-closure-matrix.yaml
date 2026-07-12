@@ -325,7 +325,6 @@ rows:
       - devtools/pages_templates.py
       - devtools/pages_style.py
       - devtools/render_pages.py
-      - polylogue/publication/
     representative_tests:
       - tests/unit/site/test_renderer_behavior.py
     gate: required
