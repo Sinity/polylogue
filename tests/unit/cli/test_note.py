@@ -135,6 +135,19 @@ def test_terminal_note_rejects_non_session_refs(cli_workspace: dict[str, Path]) 
     assert "--ref must be a session" in result.output
 
 
+def test_terminal_note_reports_a_missing_session_anchor_without_a_traceback(cli_workspace: dict[str, Path]) -> None:
+    """A real root invocation turns storage lookup failure into CLI feedback."""
+
+    result = CliRunner().invoke(
+        cli,
+        ["--plain", "note", "not an anchor", "--ref", "session:missing"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 1
+    assert "session ref not found: missing" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_terminal_note_is_visible_to_the_real_pending_candidate_reader(cli_workspace: dict[str, Path]) -> None:
     payload = _capture(cli_workspace, ["candidate stays pending"])
 

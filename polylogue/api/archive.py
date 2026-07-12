@@ -1206,7 +1206,11 @@ def _archive_capture_assertion_candidate(
             parsed = ObjectRef.parse(ref)
             if parsed.kind != "session":
                 raise ValueError("--ref must be a session:<id> ref or 'last'")
-            resolved_refs.append(f"session:{archive.resolve_session_id(parsed.object_id)}")
+            try:
+                session_id = archive.resolve_session_id(parsed.object_id)
+            except KeyError:
+                raise ValueError(f"session ref not found: {parsed.object_id}") from None
+            resolved_refs.append(f"session:{session_id}")
 
         normalized_scope_refs = [parse_public_ref(ref).format() for ref in scope_refs]
         target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
