@@ -30,6 +30,7 @@ import socket
 import sqlite3
 import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from http.server import HTTPServer
 from pathlib import Path
@@ -767,6 +768,50 @@ class TestReaderSearchState:
         assert calls == [("status", 3), ("status", 3)]
         assert (first_state, second_state, bypassed_state) == ("miss", "hit", "bypass")
         assert first_freshness == second_freshness == "ttl=2s; fresh=1 bypasses"
+
+    def test_agent_coordination_cache_coalesces_concurrent_builds(self, workspace_env: dict[str, Path]) -> None:
+        """Concurrent cold reads share one envelope build instead of stampeding it.
+
+        Two real loopback clients request the same missing cache key.  The
+        producer blocks long enough for the second request to enter the daemon;
+        removing the in-flight condition allows a second producer call and
+        fails the assertion below.
+        """
+        calls: list[tuple[str, int]] = []
+        first_build_started = threading.Event()
+        second_build_started = threading.Event()
+        release_first_build = threading.Event()
+
+        class FakePayload:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
+                return {"view": "status", "build": len(calls)}
+
+        def fake_build(*, view: str, limit: int) -> FakePayload:
+            calls.append((view, limit))
+            if len(calls) == 1:
+                first_build_started.set()
+                assert release_first_build.wait(timeout=2.0)
+            else:
+                second_build_started.set()
+            return FakePayload()
+
+        def get_response(url: str) -> dict[str, object]:
+            with urlopen(url) as response:
+                return cast(dict[str, object], json.loads(response.read()))
+
+        with patch("polylogue.coordination.build_coordination_envelope", side_effect=fake_build):
+            with _running_server(workspace_env) as (_, base_url):
+                url = f"{base_url}/api/agents/coordination?view=status&limit=3"
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    first = executor.submit(get_response, url)
+                    assert first_build_started.wait(timeout=2.0)
+                    second = executor.submit(get_response, url)
+                    assert not second_build_started.wait(timeout=0.2)
+                    release_first_build.set()
+                    assert first.result(timeout=2.0) == {"view": "status", "build": 1}
+                    assert second.result(timeout=2.0) == {"view": "status", "build": 1}
+
+        assert calls == [("status", 3)]
 
     def test_raw_tab_uses_bounded_provenance_preview_not_broad_raw_fetch(self, workspace_env: dict[str, Path]) -> None:
         """The shell must not fetch the broad /raw route when opening Raw.

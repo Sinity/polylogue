@@ -1818,23 +1818,37 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         server = cast(Any, self.server)
         started_at = monotonic()
         entry: _CoordinationCacheEntry | None = None
+        cache_owner = False
         if not fresh:
             with server.coordination_cache_lock:
-                candidate = server.coordination_cache.get(cache_key)
-                if candidate is not None and candidate.expires_at > started_at:
-                    entry = candidate
-                elif candidate is not None:
-                    del server.coordination_cache[cache_key]
+                while True:
+                    candidate = server.coordination_cache.get(cache_key)
+                    if candidate is not None and candidate.expires_at > monotonic():
+                        entry = candidate
+                        break
+                    if candidate is not None:
+                        del server.coordination_cache[cache_key]
+                    if cache_key not in server.coordination_cache_building:
+                        server.coordination_cache_building.add(cache_key)
+                        cache_owner = True
+                        break
+                    server.coordination_cache_condition.wait()
         if entry is None:
-            payload = model_json_document(
-                build_coordination_envelope(view=cast(Any, view), limit=bounded_limit), exclude_none=True
-            )
-            if not fresh:
-                with server.coordination_cache_lock:
-                    server.coordination_cache[cache_key] = _CoordinationCacheEntry(
-                        payload=payload,
-                        expires_at=monotonic() + _COORDINATION_CACHE_TTL_S,
-                    )
+            try:
+                payload = model_json_document(
+                    build_coordination_envelope(view=cast(Any, view), limit=bounded_limit), exclude_none=True
+                )
+                if cache_owner:
+                    with server.coordination_cache_lock:
+                        server.coordination_cache[cache_key] = _CoordinationCacheEntry(
+                            payload=payload,
+                            expires_at=monotonic() + _COORDINATION_CACHE_TTL_S,
+                        )
+            finally:
+                if cache_owner:
+                    with server.coordination_cache_lock:
+                        server.coordination_cache_building.discard(cache_key)
+                        server.coordination_cache_condition.notify_all()
             cache_state = "bypass" if fresh else "miss"
         else:
             payload = entry.payload
@@ -4276,6 +4290,8 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         )
         self.coordination_cache: dict[tuple[str, int], _CoordinationCacheEntry] = {}
         self.coordination_cache_lock = threading.Lock()
+        self.coordination_cache_condition = threading.Condition(self.coordination_cache_lock)
+        self.coordination_cache_building: set[tuple[str, int]] = set()
 
     def server_close(self) -> None:
         # cancel_futures=True drops any still-queued (not yet started) work
