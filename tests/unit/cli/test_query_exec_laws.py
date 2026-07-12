@@ -2973,7 +2973,7 @@ class TestSearchQueryContracts:
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["mode"] == "list"
         assert "polylogue timing" in result.stderr
-        for phase in ("startup", "import", "config", "compile", "db-open", "execute", "render"):
+        for phase in ("cli-callback", "archive-query-import", "config", "compile", "db-open", "execute", "render"):
             assert phase in result.stderr
 
     def test_structured_only_cli_query_skips_absent_message_fts(self, search_workspace: SearchWorkspace) -> None:

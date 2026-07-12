@@ -112,7 +112,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
     import_started_at = perf_counter()
     from polylogue.cli.archive_query import execute_archive_query
 
-    env.record_timing("import", import_started_at)
+    env.record_timing("archive-query-import", import_started_at)
     execute_archive_query(env, request)
 
 

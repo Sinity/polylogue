@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from polylogue.ui import UI
 
 
-_CLI_IMPORT_STARTED_AT = perf_counter()
+_CLI_CALLBACK_STARTED_AT = perf_counter()
 
 
 class QueryFirstGroup(QueryFirstGroupBase):
@@ -394,7 +394,7 @@ def cli(
     use_plain = should_use_plain(plain=plain)
     debug_timing = os.environ.get("POLYLOGUE_DEBUG_TIMING", "").lower() in {"1", "true", "yes", "on"}
     env = AppEnv(plain=use_plain, debug_timing=debug_timing)
-    env.record_timing("startup", _CLI_IMPORT_STARTED_AT)
+    env.record_timing("cli-callback", _CLI_CALLBACK_STARTED_AT)
     ctx.obj = env
     if debug_timing:
         ctx.call_on_close(env.emit_debug_timings)
