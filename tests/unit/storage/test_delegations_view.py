@@ -11,20 +11,25 @@ session-dominant-fallback columns rather than one "orchestrator model"."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 from polylogue.archive.topology.edge import TopologyEdgeRecord, TopologyEdgeStatus
 from polylogue.core.enums import LinkType as TopologyEdgeType
 from polylogue.core.enums import Origin
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.queries.session_links import (
     resolve_session_links_for_session,
     upsert_session_links,
 )
+from polylogue.surfaces.payloads import DelegationCardPayload, QueryUnitAggregateRowPayload
 from polylogue.types import SessionId
 
 _HASH = b"x" * 32
@@ -408,7 +413,6 @@ def test_delegation_ambiguous_when_dispatch_and_child_counts_mismatch(tmp_path: 
         dst_native_id="parent",
         parent_session_id=parent_id,
     )
-
     rows = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchall()
     assert len(rows) == 2
     for row in rows:
@@ -592,3 +596,217 @@ def test_delegation_direction_matches_real_link_resolver(tmp_path: Path) -> None
     assert row["parent_session_id"] == parent_id
     assert row["child_session_id"] == child_id
     assert row["mapping_state"] == "resolved"
+
+
+def test_delegation_query_unit_and_card_use_real_attempt_relation(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    parent_id = _insert_session(conn, native_id="parent")
+    child_id = _insert_session(conn, native_id="child")
+    context_message_ids: list[str] = []
+    for position in range(4):
+        message_id = _insert_message(
+            conn,
+            session_id=parent_id,
+            native_id=f"context-{position}",
+            position=position,
+        )
+        context_message_ids.append(message_id)
+        conn.execute(
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
+            (message_id, parent_id, f"bounded context {position}"),
+        )
+    dispatch_message_id = _insert_message(
+        conn,
+        session_id=parent_id,
+        native_id="dispatch",
+        position=4,
+        model_name="claude-opus-4-8",
+    )
+    instruction = "review the complete subsystem " + "carefully " * 40
+    _insert_dispatch_action(
+        conn,
+        message_id=dispatch_message_id,
+        session_id=parent_id,
+        position=0,
+        tool_id="task-1",
+        tool_input=json.dumps({"prompt": instruction, "model": "haiku"}),
+        result_text="three bounded findings",
+    )
+    followup_message_ids: list[str] = []
+    for position in range(5, 9):
+        message_id = _insert_message(
+            conn,
+            session_id=parent_id,
+            native_id=f"followup-{position}",
+            position=position,
+        )
+        followup_message_ids.append(message_id)
+        conn.execute(
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
+            (message_id, parent_id, f"parent followup {position}"),
+        )
+    child_message_id = _insert_message(conn, session_id=child_id, native_id="child-result", position=0)
+    conn.execute(
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
+        (child_message_id, child_id, "actual child findings"),
+    )
+    _insert_session_link(
+        conn,
+        child_session_id=child_id,
+        dst_origin="claude-code-session",
+        dst_native_id="parent",
+        parent_session_id=parent_id,
+    )
+    conn.execute(
+        """
+        INSERT INTO session_runs (
+            run_ref, session_id, position, native_session_id,
+            provider_origin, harness, role, status, confidence, title,
+            evidence_refs_json
+        ) VALUES (?, ?, 0, ?, 'claude-code-session', 'claude-code',
+                  'subagent', 'completed', 'raw', ?, ?)
+        """,
+        (
+            f"run:{parent_id}:subagent:task-1",
+            parent_id,
+            child_id,
+            instruction,
+            json.dumps([f"block:{dispatch_message_id}:0"]),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        envelope = query_unit_envelope(
+            archive,
+            query_unit_request(
+                expression="delegations where mapping_state:resolved AND instruction:subsystem",
+                limit=10,
+            ),
+        )
+        assert envelope.unit == "delegation"
+        [item] = envelope.items
+        payload = item.model_dump(mode="json")
+        assert payload["mapping_state"] == "resolved"
+        assert payload["parent_session_id"] == parent_id
+        assert payload["child_session_id"] == child_id
+        assert payload["instruction_preview"] == instruction[:240]
+        assert payload["instruction_sha256"] == hashlib.sha256(instruction.encode()).hexdigest()
+        assert payload["instruction_truncated"] is True
+        assert "instruction_payload" not in payload
+        assert "child_cost_usd" not in payload
+
+        counts = query_unit_envelope(
+            archive,
+            query_unit_request(
+                expression="delegations where instruction:subsystem | group by mapping_state | count",
+                limit=10,
+            ),
+        )
+        aggregate_rows = [row for row in counts.items if isinstance(row, QueryUnitAggregateRowPayload)]
+        assert len(aggregate_rows) == len(counts.items)
+        assert [(row.group_key, row.count) for row in aggregate_rows] == [("resolved", 1)]
+
+        card = archive.get_delegation_card(instruction_tool_use_block_id=f"{dispatch_message_id}:0")
+        assert card is not None
+        assert card.instruction == instruction
+        assert card.parent_session_title == "session parent"
+        assert card.child_session_title == "session child"
+        assert card.run_ref == f"run:{parent_id}:subagent:task-1"
+        assert card.run_title == instruction
+        assert card.dispatch_result == "three bounded findings"
+        assert card.dispatch_result_truncated is False
+        assert card.child_excerpt == "actual child findings"
+        assert card.child_excerpt_truncated is False
+        assert [row.message_id for row in card.parent_context] == context_message_ids[1:]
+        assert card.parent_context_truncated is True
+        assert [row.message_id for row in card.parent_followup] == followup_message_ids[:3]
+        assert card.parent_followup_truncated is True
+        assert card.parent_followup[0].text == "parent followup 5"
+        assert f"message:{context_message_ids[1]}" in card.evidence_refs
+        assert f"message:{followup_message_ids[0]}" in card.evidence_refs
+        assert f"message:{child_message_id}" in card.evidence_refs
+        surface_card = DelegationCardPayload.from_card(card)
+        assert surface_card.parent_context[0].message_ref == f"message:{context_message_ids[1]}"
+        assert surface_card.parent_context_truncated is True
+        assert surface_card.parent_followup[0].message_ref == f"message:{followup_message_ids[0]}"
+        assert surface_card.parent_followup_truncated is True
+
+
+def test_delegation_query_unit_keeps_edge_only_attempts_honest(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    parent_id = _insert_session(conn, native_id="edge-parent")
+    child_id = _insert_session(conn, native_id="edge-child")
+    _insert_session_link(
+        conn,
+        child_session_id=child_id,
+        dst_origin="claude-code-session",
+        dst_native_id="edge-parent",
+        parent_session_id=parent_id,
+    )
+    conn.commit()
+    conn.close()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        envelope = query_unit_envelope(
+            archive,
+            query_unit_request(expression="delegations where mapping_state:edge_only", limit=10),
+        )
+        [item] = envelope.items
+        payload = item.model_dump(mode="json")
+        assert payload["parent_session_id"] == parent_id
+        assert payload["child_session_id"] == child_id
+        assert payload["evidence_basis"] == "edge"
+        assert payload["instruction_preview"] is None
+        assert payload["instruction_sha256"] is None
+        assert payload["instruction_tool_use_block_id"] is None
+        assert payload["result_status"] == "unknown"
+
+
+def test_delegation_instruction_filter_matches_preview_extraction(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    parent_id = _insert_session(conn, native_id="instruction-parent")
+    payloads = (
+        ("empty", "{}"),
+        ("fallback", json.dumps({"prompt": "", "description": "review fallback"})),
+        ("numeric", json.dumps({"prompt": 7, "description": "review numeric fallback"})),
+    )
+    for position, (native_id, payload) in enumerate(payloads):
+        message_id = _insert_message(
+            conn,
+            session_id=parent_id,
+            native_id=native_id,
+            position=position,
+        )
+        _insert_dispatch_action(
+            conn,
+            message_id=message_id,
+            session_id=parent_id,
+            position=0,
+            tool_id=f"task-{native_id}",
+            tool_input=payload,
+            result_text=None,
+        )
+    conn.commit()
+    conn.close()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        envelope = query_unit_envelope(
+            archive,
+            query_unit_request(expression="delegations where instruction:review", limit=10),
+        )
+        previews = {item.model_dump(mode="json")["instruction_preview"] for item in envelope.items}
+        assert previews == {"review fallback", "review numeric fallback"}
+
+        empty = query_unit_envelope(
+            archive,
+            query_unit_request(expression="delegations where parent:instruction-parent", limit=10),
+        )
+        empty_payload = next(
+            item.model_dump(mode="json")
+            for item in empty.items
+            if item.model_dump(mode="json").get("instruction_tool_use_block_id") == f"{parent_id}:empty:0"
+        )
+        assert empty_payload["instruction_preview"] is None
+        assert empty_payload["instruction_sha256"] is None

@@ -63,6 +63,7 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONValue, require_json_value
+from polylogue.core.refs import delegation_edge_object_id
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.insights.affordance_usage import (
     clean_patterns as _clean_affordance_patterns,
@@ -451,6 +452,39 @@ class ArchiveDelegationQueryRow:
     child_terminal_state: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveDelegationContextRow:
+    """One bounded message excerpt surrounding a delegation dispatch."""
+
+    message_id: str
+    role: str
+    text: str
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDelegationCard:
+    """Explicit bounded evidence card for one delegation attempt."""
+
+    attempt: ArchiveDelegationQueryRow
+    delegation_ref: str
+    parent_session_title: str | None
+    child_session_title: str | None
+    run_ref: str | None
+    run_title: str | None
+    instruction: str | None
+    parent_context: tuple[ArchiveDelegationContextRow, ...]
+    parent_context_truncated: bool
+    dispatch_result: str | None
+    dispatch_result_truncated: bool
+    child_excerpt: str | None
+    child_excerpt_truncated: bool
+    parent_followup: tuple[ArchiveDelegationContextRow, ...]
+    parent_followup_truncated: bool
+    annotation_refs: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+
+
 def _archive_delegation_query_row(row: sqlite3.Row) -> ArchiveDelegationQueryRow:
     return ArchiveDelegationQueryRow(
         parent_session_id=str(row["parent_session_id"]),
@@ -502,6 +536,81 @@ def _archive_delegation_query_row(row: sqlite3.Row) -> ArchiveDelegationQueryRow
         child_wall_ms=int(row["child_wall_ms"]) if row["child_wall_ms"] is not None else None,
         child_terminal_state=str(row["child_terminal_state"]) if row["child_terminal_state"] is not None else None,
     )
+
+
+def _delegation_instruction(payload: str | None) -> str | None:
+    if payload is None:
+        return None
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return payload
+    if isinstance(decoded, dict):
+        for key in ("prompt", "description", "instruction", "task"):
+            value = decoded.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+    return None
+
+
+def _bounded_delegation_card_text(value: str | None, *, limit: int) -> tuple[str | None, bool]:
+    if value is None:
+        return None, False
+    if len(value) <= limit:
+        return value, False
+    return value[:limit], True
+
+
+def _delegation_message_window(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    anchor_position: int,
+    before: bool,
+    limit: int = 3,
+    text_limit: int = 1000,
+) -> tuple[tuple[ArchiveDelegationContextRow, ...], bool]:
+    operator = "<" if before else ">"
+    direction = "DESC" if before else "ASC"
+    rows = conn.execute(
+        f"""
+        SELECT
+            m.message_id,
+            m.role,
+            COALESCE((
+                SELECT group_concat(ordered.search_text, char(10))
+                FROM (
+                    SELECT b.search_text
+                    FROM blocks b
+                    WHERE b.message_id = m.message_id
+                      AND b.search_text IS NOT NULL
+                    ORDER BY b.position, b.block_id
+                ) AS ordered
+            ), '') AS text
+        FROM messages m
+        WHERE m.session_id = ? AND m.position {operator} ?
+        ORDER BY m.position {direction}, m.message_id {direction}
+        LIMIT ?
+        """,
+        (session_id, anchor_position, limit + 1),
+    ).fetchall()
+    window_truncated = len(rows) > limit
+    rows = rows[:limit]
+    if before:
+        rows = list(reversed(rows))
+    projected: list[ArchiveDelegationContextRow] = []
+    for row in rows:
+        text, text_truncated = _bounded_delegation_card_text(str(row["text"] or ""), limit=text_limit)
+        projected.append(
+            ArchiveDelegationContextRow(
+                message_id=str(row["message_id"]),
+                role=str(row["role"]),
+                text=text or "",
+                truncated=text_truncated,
+            )
+        )
+    return tuple(projected), window_truncated
 
 
 @dataclass(frozen=True, slots=True)
@@ -772,6 +881,14 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
             "tool": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.tool_name'), ''), 'unknown')",
             "handler": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.handler_kind'), ''), 'unknown')",
             "status": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.status'), ''), 'unknown')",
+        },
+        "delegation": {
+            "basis": (f"CASE WHEN {row_alias}.instruction_tool_use_block_id IS NULL THEN 'edge' ELSE 'action' END"),
+            "mapping_state": f"COALESCE(NULLIF({row_alias}.mapping_state, ''), 'unknown')",
+            "result_status": f"COALESCE(NULLIF({row_alias}.result_status, ''), 'unknown')",
+            "requested_model": f"COALESCE(NULLIF({row_alias}.requested_model, ''), 'unknown')",
+            "dispatch_model": f"COALESCE(NULLIF({row_alias}.dispatch_turn_model, ''), 'unknown')",
+            "child_model": f"COALESCE(NULLIF({row_alias}.child_session_dominant_model, ''), 'unknown')",
         },
     }
     try:
@@ -6824,6 +6941,7 @@ class ArchiveStore:
             "file": "f",
             "assertion": "a",
             "observed-event": "e",
+            "delegation": "d",
         }.get(unit)
         if row_alias is None:
             raise ValueError(f"Query unit {unit!r} is not wired to SQL aggregate counts")
@@ -6863,6 +6981,7 @@ class ArchiveStore:
             "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
             "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
             "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
+            "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
         }
         from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
         order_clause = _query_unit_aggregate_order(sort, sort_direction)
@@ -7109,6 +7228,251 @@ class ArchiveStore:
                 "parent_session_id and child_session_id"
             )
         return None if row is None else _archive_delegation_query_row(row)
+
+    def get_delegation_card(
+        self,
+        *,
+        instruction_tool_use_block_id: str | None = None,
+        parent_session_id: str | None = None,
+        child_session_id: str | None = None,
+    ) -> ArchiveDelegationCard | None:
+        """Return the explicit bounded evidence card for one delegation."""
+
+        attempt = self.get_delegation_attempt(
+            instruction_tool_use_block_id=instruction_tool_use_block_id,
+            parent_session_id=parent_session_id,
+            child_session_id=child_session_id,
+        )
+        if attempt is None:
+            return None
+        if attempt.instruction_tool_use_block_id is not None:
+            delegation_ref = f"delegation:{attempt.instruction_tool_use_block_id}"
+        else:
+            if attempt.child_session_id is None:
+                raise ValueError("edge-only delegation card requires a child session id")
+            delegation_ref = "delegation:" + delegation_edge_object_id(
+                attempt.parent_session_id, attempt.child_session_id
+            )
+
+        title_row = self._conn.execute(
+            """
+            SELECT p.title AS parent_title, c.title AS child_title
+            FROM sessions p
+            LEFT JOIN sessions c ON c.session_id = ?
+            WHERE p.session_id = ?
+            """,
+            (attempt.child_session_id, attempt.parent_session_id),
+        ).fetchone()
+        parent_title = (
+            str(title_row["parent_title"]) if title_row is not None and title_row["parent_title"] is not None else None
+        )
+        child_title = (
+            str(title_row["child_title"]) if title_row is not None and title_row["child_title"] is not None else None
+        )
+
+        run_ref: str | None = None
+        run_title: str | None = None
+        if _run_projection_table_exists(self._conn, "session_runs"):
+            run_evidence_refs = tuple(
+                f"block:{value}"
+                for value in (attempt.instruction_tool_use_block_id, attempt.artifact_block_id)
+                if value is not None
+            )
+            evidence_clause = ""
+            evidence_params: list[object] = []
+            if run_evidence_refs:
+                placeholders = ", ".join("?" for _ in run_evidence_refs)
+                evidence_clause = (
+                    " OR EXISTS (SELECT 1 FROM json_each(session_runs.evidence_refs_json) "
+                    f"AS evidence WHERE evidence.value IN ({placeholders}))"
+                )
+                evidence_params.extend(run_evidence_refs)
+            run_row = self._conn.execute(
+                f"""
+                SELECT run_ref, title
+                FROM session_runs
+                WHERE session_id = ? AND role = 'subagent'
+                  AND (
+                    (? IS NOT NULL AND native_session_id = ?)
+                    {evidence_clause}
+                  )
+                ORDER BY position, run_ref
+                LIMIT 1
+                """,
+                (
+                    attempt.parent_session_id,
+                    attempt.child_session_id,
+                    attempt.child_session_id,
+                    *evidence_params,
+                ),
+            ).fetchone()
+            if run_row is not None:
+                run_ref = str(run_row["run_ref"])
+                if run_row["title"]:
+                    run_title = str(run_row["title"])
+
+        instruction_position: int | None = None
+        if attempt.instruction_message_id is not None:
+            position_row = self._conn.execute(
+                "SELECT position FROM messages WHERE message_id = ?",
+                (attempt.instruction_message_id,),
+            ).fetchone()
+            if position_row is not None:
+                instruction_position = int(position_row["position"])
+
+        artifact_position: int | None = None
+        if attempt.artifact_block_id is not None:
+            artifact_row = self._conn.execute(
+                """
+                SELECT m.position
+                FROM blocks b
+                JOIN messages m ON m.message_id = b.message_id
+                WHERE b.block_id = ?
+                """,
+                (attempt.artifact_block_id,),
+            ).fetchone()
+            if artifact_row is not None:
+                artifact_position = int(artifact_row["position"])
+
+        if instruction_position is not None:
+            parent_context, parent_context_truncated = _delegation_message_window(
+                self._conn,
+                session_id=attempt.parent_session_id,
+                anchor_position=instruction_position,
+                before=True,
+            )
+        else:
+            parent_context, parent_context_truncated = (), False
+        followup_anchor = artifact_position if artifact_position is not None else instruction_position
+        if followup_anchor is not None:
+            parent_followup, parent_followup_truncated = _delegation_message_window(
+                self._conn,
+                session_id=attempt.parent_session_id,
+                anchor_position=followup_anchor,
+                before=False,
+            )
+        else:
+            parent_followup, parent_followup_truncated = (), False
+
+        dispatch_result, dispatch_result_truncated = _bounded_delegation_card_text(
+            attempt.artifact_text,
+            limit=4000,
+        )
+        child_excerpt_source: str | None = None
+        child_excerpt_message_id: str | None = None
+        if attempt.child_session_id is not None:
+            child_row = self._conn.execute(
+                """
+                SELECT
+                    m.message_id,
+                    COALESCE((
+                        SELECT group_concat(ordered.search_text, char(10))
+                        FROM (
+                            SELECT b.search_text
+                            FROM blocks b
+                            WHERE b.message_id = m.message_id
+                              AND b.search_text IS NOT NULL
+                            ORDER BY b.position, b.block_id
+                        ) AS ordered
+                    ), '') AS text
+                FROM messages m
+                WHERE m.session_id = ? AND m.role = 'assistant'
+                ORDER BY m.position DESC, m.message_id DESC
+                LIMIT 1
+                """,
+                (attempt.child_session_id,),
+            ).fetchone()
+            if child_row is not None:
+                child_excerpt_source = str(child_row["text"] or "")
+                child_excerpt_message_id = str(child_row["message_id"])
+        child_excerpt, child_excerpt_truncated = _bounded_delegation_card_text(
+            child_excerpt_source,
+            limit=4000,
+        )
+
+        annotation_refs: tuple[str, ...] = ()
+        if self.user_db_path.exists():
+            self._attach_user_tier_if_present()
+            assertion_rows = self._conn.execute(
+                """
+                SELECT assertion_id
+                FROM user_tier.assertions
+                WHERE target_ref = ?
+                ORDER BY updated_at_ms DESC, assertion_id
+                LIMIT 20
+                """,
+                (delegation_ref,),
+            ).fetchall()
+            annotation_refs = tuple(f"assertion:{row['assertion_id']}" for row in assertion_rows)
+
+        evidence_refs: list[str] = []
+        if attempt.instruction_tool_use_block_id is not None:
+            evidence_refs.append(f"block:{attempt.instruction_tool_use_block_id}")
+        elif attempt.instruction_message_id is not None:
+            evidence_refs.append(f"message:{attempt.instruction_message_id}")
+        if attempt.artifact_block_id is not None:
+            evidence_refs.append(f"block:{attempt.artifact_block_id}")
+        if child_excerpt_message_id is not None:
+            evidence_refs.append(f"message:{child_excerpt_message_id}")
+        evidence_refs.extend(f"message:{row.message_id}" for row in parent_context)
+        evidence_refs.extend(f"message:{row.message_id}" for row in parent_followup)
+
+        return ArchiveDelegationCard(
+            attempt=attempt,
+            delegation_ref=delegation_ref,
+            parent_session_title=parent_title,
+            child_session_title=child_title,
+            run_ref=run_ref,
+            run_title=run_title,
+            instruction=_delegation_instruction(attempt.instruction_payload),
+            parent_context=parent_context,
+            parent_context_truncated=parent_context_truncated,
+            dispatch_result=dispatch_result,
+            dispatch_result_truncated=dispatch_result_truncated,
+            child_excerpt=child_excerpt,
+            child_excerpt_truncated=child_excerpt_truncated,
+            parent_followup=parent_followup,
+            parent_followup_truncated=parent_followup_truncated,
+            annotation_refs=annotation_refs,
+            evidence_refs=tuple(dict.fromkeys(evidence_refs)),
+        )
+
+    def query_delegations(
+        self,
+        predicate: QueryPredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+        sort: None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[ArchiveDelegationQueryRow]:
+        """Return delegation attempts without inferring child utility or success."""
+
+        if sort is not None:
+            raise ValueError("delegation rows do not expose an honest time sort")
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        clause, params = _structural_predicate_clause("delegation", "d", predicate, session_alias="s")
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        rows = self._conn.execute(
+            f"""
+            SELECT d.*
+            FROM delegations d
+            JOIN sessions s ON s.session_id = d.parent_session_id
+            WHERE {clause}
+            {session_clause}
+            ORDER BY d.parent_session_id {order_direction},
+                     COALESCE(d.instruction_tool_use_block_id, d.child_session_id) {order_direction}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, *session_params, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [_archive_delegation_query_row(row) for row in rows]
 
     def query_files(
         self,
@@ -9282,6 +9646,72 @@ def _run_field_predicate_clause(run_alias: str, predicate: QueryFieldPredicate) 
     raise ValueError(f"unsupported run predicate field: {field}")
 
 
+def _delegation_instruction_sql_expression(delegation_alias: str) -> str:
+    payload = f"{delegation_alias}.instruction_payload"
+    candidates = ", ".join(
+        f"NULLIF(CASE WHEN json_type({payload}, '$.{key}') = 'text' THEN json_extract({payload}, '$.{key}') END, '')"
+        for key in ("prompt", "description", "instruction", "task")
+    )
+    return (
+        f"CASE WHEN NOT json_valid({payload}) THEN COALESCE({payload}, '') "
+        f"WHEN json_type({payload}) = 'object' THEN COALESCE({candidates}, '') "
+        "ELSE '' END"
+    )
+
+
+def _delegation_field_predicate_clause(
+    delegation_alias: str, predicate: QueryFieldPredicate
+) -> tuple[str, list[object]]:
+    field = predicate.bound_field_name(context="lowering delegation predicates")
+    if field in {"mapping_state", "result_status", "inheritance", "link_method"}:
+        return _in_or_equals_clause(f"{delegation_alias}.{field}", predicate.values, lower=True)
+    if field == "basis":
+        normalized = {value.strip().lower() for value in predicate.values if value.strip()}
+        clauses: list[str] = []
+        if "action" in normalized:
+            clauses.append(f"{delegation_alias}.instruction_tool_use_block_id IS NOT NULL")
+        if "edge" in normalized:
+            clauses.append(f"{delegation_alias}.instruction_tool_use_block_id IS NULL")
+        return ("(" + " OR ".join(clauses) + ")" if clauses else "0=1"), []
+    if field in {"parent", "child"}:
+        column = "parent_session_id" if field == "parent" else "child_session_id"
+        return _like_clause(f"COALESCE({delegation_alias}.{column}, '')", predicate.values)
+    if field == "instruction":
+        instruction_expr = _delegation_instruction_sql_expression(delegation_alias)
+        return _like_clause(instruction_expr, predicate.values)
+    if field == "requested_model":
+        return _like_clause(f"COALESCE({delegation_alias}.requested_model, '')", predicate.values)
+    if field == "dispatch_model":
+        return _like_clause(f"COALESCE({delegation_alias}.dispatch_turn_model, '')", predicate.values)
+    if field == "child_model":
+        return _like_clause(f"COALESCE({delegation_alias}.child_session_dominant_model, '')", predicate.values)
+    if field == "is_error":
+        normalized = {value.strip().lower() for value in predicate.values if value.strip()}
+        truthy = normalized & {"1", "true", "yes", "y", "error", "failed", "failure"}
+        falsy = normalized & {"0", "false", "no", "n", "ok", "passed"}
+        clauses = []
+        if truthy:
+            clauses.append(f"{delegation_alias}.result_is_error = 1")
+        if falsy:
+            clauses.append(f"{delegation_alias}.result_is_error = 0")
+        return ("(" + " OR ".join(clauses) + ")" if clauses else "0=1"), []
+    if field == "exit_code":
+        return _numeric_predicate_clause(f"{delegation_alias}.result_exit_code", predicate)
+    if field == "text":
+        return _like_clause(
+            f"""
+            COALESCE({delegation_alias}.parent_session_id, '') || ' ' ||
+            COALESCE({delegation_alias}.child_session_id, '') || ' ' ||
+            COALESCE({delegation_alias}.instruction_payload, '') || ' ' ||
+            COALESCE({delegation_alias}.artifact_text, '') || ' ' ||
+            COALESCE({delegation_alias}.dispatch_turn_model, '') || ' ' ||
+            COALESCE({delegation_alias}.requested_model, '')
+            """.strip(),
+            predicate.values,
+        )
+    raise ValueError(f"unsupported delegation predicate field: {field}")
+
+
 def _observed_event_field_predicate_clause(
     event_alias: str, predicate: QueryFieldPredicate
 ) -> tuple[str, list[object]]:
@@ -9371,6 +9801,8 @@ def _structural_predicate_clause(
             return _observed_event_field_predicate_clause(row_alias, predicate)
         if unit == "context-snapshot":
             return _context_snapshot_field_predicate_clause(row_alias, predicate)
+        if unit == "delegation":
+            return _delegation_field_predicate_clause(row_alias, predicate)
     if isinstance(predicate, QueryNotPredicate):
         clause, params = _structural_predicate_clause(unit, row_alias, predicate.child, session_alias=session_alias)
         return (f"NOT ({clause})" if clause else "", params)
@@ -9531,6 +9963,25 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
             )
             """.strip(),
             [*relation_params, *params],
+        )
+    if predicate.unit == "delegation":
+        row_alias = "exists_delegations"
+        child_clause, params = _structural_predicate_clause(
+            predicate.unit,
+            row_alias,
+            predicate.child,
+            session_alias=table_alias,
+        )
+        return (
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM delegations {row_alias}
+                WHERE {row_alias}.parent_session_id = {table_alias}.session_id
+                  AND {child_clause}
+            )
+            """.strip(),
+            params,
         )
     raise ValueError(f"unsupported structural query unit: {predicate.unit}")
 

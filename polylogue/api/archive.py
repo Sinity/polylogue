@@ -2993,7 +2993,7 @@ class PolylogueArchiveMixin:
 
         from polylogue.surfaces.payloads import (
             DELEGATION_STATE_CAVEATS,
-            DelegationAttemptPayload,
+            DelegationCardPayload,
             PublicRefResolutionPayload,
             model_json_document,
         )
@@ -3001,11 +3001,11 @@ class PolylogueArchiveMixin:
         edge_identity = parse_delegation_edge_object_id(object_ref.object_id)
         if edge_identity is not None:
             parent_session_id, child_session_id = edge_identity
-            row = archive.get_delegation_attempt(parent_session_id=parent_session_id, child_session_id=child_session_id)
+            card = archive.get_delegation_card(parent_session_id=parent_session_id, child_session_id=child_session_id)
         else:
-            row = archive.get_delegation_attempt(instruction_tool_use_block_id=object_ref.object_id)
+            card = archive.get_delegation_card(instruction_tool_use_block_id=object_ref.object_id)
 
-        if row is None:
+        if card is None:
             return PublicRefResolutionPayload(
                 ref=ref,
                 normalized_ref=normalized_ref,
@@ -3015,19 +3015,15 @@ class PolylogueArchiveMixin:
                 caveats=("delegation attempt not found for this identity",),
             )
 
-        payload = DelegationAttemptPayload.from_row(row)
-        object_refs = [f"session:{payload.parent_session_id}"]
-        if payload.child_session_id is not None:
-            object_refs.append(f"session:{payload.child_session_id}")
-        evidence_refs: list[str] = []
-        if payload.instruction_tool_use_block_id is not None:
-            evidence_refs.append(f"block:{payload.instruction_tool_use_block_id}")
-        elif payload.instruction_message_id is not None:
-            evidence_refs.append(f"message:{payload.instruction_message_id}")
-        if payload.artifact_block_id is not None:
-            evidence_refs.append(f"block:{payload.artifact_block_id}")
+        payload = DelegationCardPayload.from_card(card)
+        attempt = payload.attempt
+        object_refs = [f"session:{attempt.parent_session_id}"]
+        if attempt.child_session_id is not None:
+            object_refs.append(f"session:{attempt.child_session_id}")
+        if payload.run_ref is not None:
+            object_refs.append(payload.run_ref)
         caveats: tuple[str, ...] = ()
-        state_caveat = DELEGATION_STATE_CAVEATS.get(payload.mapping_state)
+        state_caveat = DELEGATION_STATE_CAVEATS.get(attempt.mapping_state)
         if state_caveat is not None:
             caveats = (state_caveat,)
         return PublicRefResolutionPayload(
@@ -3035,15 +3031,15 @@ class PolylogueArchiveMixin:
             normalized_ref=normalized_ref,
             kind="delegation",
             resolved=True,
-            payload_kind="delegation-attempt",
+            payload_kind="delegation-card",
             payload=model_json_document(payload),
-            title=f"delegation attempt ({payload.mapping_state})",
-            summary=payload.instruction_payload,
+            title=f"delegation attempt ({attempt.mapping_state})",
+            summary=(payload.instruction or "")[:240] or None,
             object_refs=tuple(object_refs),
-            evidence_refs=tuple(evidence_refs),
+            evidence_refs=payload.evidence_refs,
             caveats=caveats,
             actions=(
-                _resolution_action("read parent session", f"polylogue find id:{payload.parent_session_id} then read"),
+                _resolution_action("read parent session", f"polylogue find id:{attempt.parent_session_id} then read"),
             ),
         )
 

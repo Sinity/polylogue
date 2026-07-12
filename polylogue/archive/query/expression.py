@@ -45,11 +45,11 @@ and explicit Boolean session predicates:
     assertions where kind:annotation AND value.score:>=4
     exists assertion(value.status:approved)
 
-Unit-scoped ``messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots where ...`` predicates are executable
+Unit-scoped ``messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots/delegations where ...`` predicates are executable
 in two shared paths: ``compile_expression`` keeps the compatibility session
 selector behavior by lowering them to correlated ``exists <unit>(...)``
 predicates, while terminal query-unit surfaces preserve the selected unit and
-return raw message/action/block/assertion/file/observed-event/context-snapshot rows from the same predicate semantics.
+return raw message/action/block/assertion/file/observed-event/context-snapshot/delegation rows from the same predicate semantics.
 SQL-backed terminal units also support exact ``group by FIELD | count``
 aggregate pipelines for the closed aggregate fields declared in this module,
 plus aggregate ``sort by count|key [asc|desc]`` before ``limit``/``offset``.
@@ -1982,6 +1982,12 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
                 )
             if source.group_by is not None:
                 raise ExpressionCompileError("pipeline `sort by time` must appear before `group by`", field="sort")
+            descriptor = query_unit_descriptor(source.unit)
+            if descriptor is None or not descriptor.time_sort_supported:
+                raise ExpressionCompileError(
+                    f"pipeline `sort by time` is not supported for {source.unit} rows",
+                    field="sort",
+                )
             _ensure_sql_row_pipeline_lowerer(source.unit, stage="sort by time")
         elif source.aggregate != "count":
             raise ExpressionCompileError(

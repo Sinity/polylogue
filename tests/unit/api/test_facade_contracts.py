@@ -2410,16 +2410,43 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
 
         assert payload.resolved is True
         assert payload.kind == "delegation"
-        assert payload.payload_kind == "delegation-attempt"
+        assert payload.payload_kind == "delegation-card"
         assert payload.payload is not None
-        assert payload.payload["mapping_state"] == "resolved"
-        assert payload.payload["parent_session_id"] == parent_session_id
-        assert payload.payload["child_session_id"] == child_session_id
-        assert payload.payload["instruction_tool_use_block_id"] == instruction_block_id
-        assert payload.payload["dispatch_turn_model"] == "claude-opus-4-8"
+        attempt = payload.payload["attempt"]
+        assert attempt["mapping_state"] == "resolved"
+        assert attempt["parent_session_id"] == parent_session_id
+        assert attempt["child_session_id"] == child_session_id
+        assert attempt["instruction_tool_use_block_id"] == instruction_block_id
+        assert attempt["dispatch_turn_model"] == "claude-opus-4-8"
+        assert payload.payload["instruction"] == "audit the thing"
+        assert payload.payload["instruction_truncated"] is False
         assert payload.object_refs == (f"session:{parent_session_id}", f"session:{child_session_id}")
         assert f"block:{instruction_block_id}" in payload.evidence_refs
         assert payload.caveats == ()
+    finally:
+        await archive.close()
+
+
+async def test_query_units_returns_bounded_delegation_rows(tmp_path: Path) -> None:
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="delegation-query-api-v1", with_dispatch=True)
+            )
+
+        envelope = await archive.query_units(
+            "delegations where mapping_state:unresolved AND instruction:audit",
+            limit=10,
+        )
+        assert envelope.unit == "delegation"
+        [item] = envelope.items
+        payload = item.model_dump(mode="json")
+        assert payload["parent_session_id"] == parent_session_id
+        assert payload["mapping_state"] == "unresolved"
+        assert payload["instruction_preview"] == "audit the thing"
+        assert payload["instruction_truncated"] is False
+        assert "instruction_payload" not in payload
     finally:
         await archive.close()
 
@@ -2449,13 +2476,14 @@ async def test_resolve_ref_returns_edge_only_delegation_attempt_payload(tmp_path
         payload = await archive.resolve_ref(edge_ref)
 
         assert payload.resolved is True
-        assert payload.payload_kind == "delegation-attempt"
+        assert payload.payload_kind == "delegation-card"
         assert payload.payload is not None
-        assert payload.payload["mapping_state"] == "edge_only"
-        assert payload.payload["parent_session_id"] == parent_session_id
-        assert payload.payload["child_session_id"] == child_session_id
-        assert payload.payload["instruction_tool_use_block_id"] is None
-        assert payload.payload["instruction_payload"] is None
+        attempt = payload.payload["attempt"]
+        assert attempt["mapping_state"] == "edge_only"
+        assert attempt["parent_session_id"] == parent_session_id
+        assert attempt["child_session_id"] == child_session_id
+        assert attempt["instruction_tool_use_block_id"] is None
+        assert payload.payload["instruction"] is None
         assert any("edge_only" in caveat for caveat in payload.caveats)
     finally:
         await archive.close()
@@ -2511,9 +2539,10 @@ async def test_resolve_ref_returns_ambiguous_delegation_attempt_payload(tmp_path
 
         assert payload.resolved is True
         assert payload.payload is not None
-        assert payload.payload["mapping_state"] == "ambiguous"
-        assert payload.payload["child_session_id"] is None
-        assert payload.payload["instruction_tool_use_block_id"] == instruction_block_id
+        attempt = payload.payload["attempt"]
+        assert attempt["mapping_state"] == "ambiguous"
+        assert attempt["child_session_id"] is None
+        assert attempt["instruction_tool_use_block_id"] == instruction_block_id
         assert any("ambiguous" in caveat for caveat in payload.caveats)
     finally:
         await archive.close()

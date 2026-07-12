@@ -3171,6 +3171,110 @@ class TestSearchQueryContracts:
             {"group_key": item["group_key"], "count": item["count"]} for item in payload["items"]
         ]
 
+    def test_delegation_unit_source_renders_bounded_rows(self, search_workspace: SearchWorkspace) -> None:
+        from polylogue.cli import cli
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = search_workspace["archive_root"] / "index.db"
+        instruction = "review CLI delegation evidence " + "carefully " * 40
+        parent_builder = (
+            SessionBuilder(index_db, "delegation-cli-parent")
+            .provider("codex")
+            .title("delegation parent session")
+            .add_message(
+                "dispatch",
+                role="assistant",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_id": "task-cli",
+                        "tool_name": "Task",
+                        "semantic_type": "subagent",
+                        "tool_input": {"prompt": instruction, "model": "mini"},
+                    },
+                    {"type": "tool_result", "tool_id": "task-cli", "text": "child report"},
+                ],
+            )
+        )
+        parent_id = parent_builder.native_session_id()
+        parent_builder.save()
+        child_builder = (
+            SessionBuilder(index_db, "delegation-cli-child")
+            .provider("codex")
+            .title("delegation child session")
+            .add_message("child-result", role="assistant", text="child report")
+        )
+        child_id = child_builder.native_session_id()
+        child_builder.save()
+        with sqlite3.connect(index_db) as conn:
+            conn.execute(
+                "UPDATE blocks SET semantic_type = 'subagent' WHERE tool_id = 'task-cli' AND block_type = 'tool_use'"
+            )
+            conn.execute(
+                """
+                INSERT INTO session_links (
+                    src_session_id, dst_origin, dst_native_id, link_type,
+                    resolved_dst_session_id, inheritance, method, observed_at_ms
+                ) VALUES (?, 'codex-session', ?, 'subagent', ?, 'spawned-fresh', 'test', 1)
+                """,
+                (child_id, "ext-delegation-cli-parent", parent_id),
+            )
+            delegation_blocks = conn.execute(
+                "SELECT block_type, tool_name, tool_id, semantic_type FROM blocks WHERE session_id = ?",
+                (parent_id,),
+            ).fetchall()
+            assert delegation_blocks, "delegation fixture wrote no blocks"
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM actions WHERE session_id = ? AND semantic_type = 'subagent'",
+                    (parent_id,),
+                ).fetchone()[0]
+                == 1
+            ), [tuple(row) for row in delegation_blocks]
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM delegations WHERE parent_session_id = ?",
+                    (parent_id,),
+                ).fetchone()[0]
+                == 1
+            )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "--format",
+                "json",
+                "delegations",
+                "where",
+                "mapping_state:resolved",
+                "AND",
+                "instruction:evidence",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["unit"] == "delegation"
+        [item] = payload["items"]
+        assert item["parent_session_id"] == parent_id
+        assert item["child_session_id"] == child_id
+        assert item["instruction_preview"] == instruction[:240]
+        assert item["instruction_truncated"] is True
+        assert "instruction_payload" not in item
+
+        read_result = CliRunner().invoke(
+            cli,
+            ["--plain", "read", item["delegation_ref"], "--format", "json"],
+        )
+        assert read_result.exit_code == 0, read_result.output
+        card = json.loads(read_result.output)
+        assert card["payload_kind"] == "delegation-card"
+        assert card["summary"] == instruction[:240]
+        assert card["payload"]["instruction"] == instruction
+        assert card["payload"]["attempt"]["parent_session_id"] == parent_id
+        assert card["payload"]["attempt"]["child_session_id"] == child_id
+
     def test_run_unit_source_renders_plain_rows(self, search_workspace: SearchWorkspace) -> None:
         """Run terminal rows render through the CLI instead of failing after query execution."""
         from polylogue.cli import cli

@@ -14,6 +14,7 @@ QueryUnitName = Literal[
     "run",
     "observed-event",
     "context-snapshot",
+    "delegation",
 ]
 QueryUnitLowererKind = Literal["sql", "runtime_transform"]
 
@@ -32,6 +33,7 @@ class QueryUnitDescriptor:
     sql_query_method: str | None = None
     runtime_query_method: str | None = None
     cli_plain_renderer: str | None = None
+    time_sort_supported: bool = True
     aggregate_group_fields: tuple[str, ...] = ()
     fields: tuple[StructuralQueryFieldInfo, ...] = ()
     description: str = ""
@@ -411,10 +413,27 @@ _RUN_STRUCTURAL_FIELDS = {
     "transcript",
     "transcript_ref",
 }
+_DELEGATION_STRUCTURAL_FIELDS = {
+    "basis",
+    "child",
+    "child_model",
+    "dispatch_model",
+    "exit_code",
+    "inheritance",
+    "instruction",
+    "is_error",
+    "link_method",
+    "mapping_state",
+    "parent",
+    "requested_model",
+    "result_status",
+    "text",
+}
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_ASSERTION_STRUCTURAL_FIELDS)
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_OBSERVED_EVENT_STRUCTURAL_FIELDS)
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS)
 _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_RUN_STRUCTURAL_FIELDS)
+_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS.update(_DELEGATION_STRUCTURAL_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -614,6 +633,25 @@ _RUN_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     ),
 }
 
+_DELEGATION_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
+    "basis": _field_info("basis", "Delegation evidence basis (action or edge).", "basis:action"),
+    "child": _field_info("child", "Resolved child session id substring.", "child:codex-session:"),
+    "child_model": _field_info("child_model", "Observed child dominant model.", "child_model:gpt-5"),
+    "dispatch_model": _field_info("dispatch_model", "Model that authored the dispatch turn.", "dispatch_model:opus"),
+    "exit_code": _field_info("exit_code", "Provider-reported dispatch result exit code.", "exit_code:0"),
+    "inheritance": _field_info("inheritance", "Resolved lineage inheritance mode.", "inheritance:spawned-fresh"),
+    "instruction": _field_info("instruction", "Exact recorded dispatch input substring.", "instruction:review"),
+    "is_error": _field_info("is_error", "Provider-reported dispatch error state.", "is_error:true"),
+    "link_method": _field_info("link_method", "Child-link resolution method.", "link_method:provider_parent"),
+    "mapping_state": _field_info("mapping_state", "Attempt mapping state.", "mapping_state:resolved"),
+    "parent": _field_info("parent", "Parent session id substring.", "parent:claude-code-session:"),
+    "requested_model": _field_info("requested_model", "Explicit requested routing model.", "requested_model:haiku"),
+    "result_status": _field_info(
+        "result_status", "Structural dispatch result status (ok/error/unknown).", "result_status:error"
+    ),
+    "text": _field_info("text", "Instruction, artifact, routing, or session-ref substring.", "text:review"),
+}
+
 _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "action": "session.action:file_edit",
     "assistant_messages": "session.assistant_messages:>=2",
@@ -689,6 +727,11 @@ def _run_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
     return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
 
 
+def _delegation_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
+    infos = [_DELEGATION_STRUCTURAL_FIELD_INFO[name] for name in sorted(_DELEGATION_STRUCTURAL_FIELDS)]
+    return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
+
+
 STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     "action": StructuralQueryUnitInfo(
         description="Match sessions with at least one action row satisfying the child predicate.",
@@ -729,6 +772,11 @@ STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
         description="Match or return materialized context snapshots satisfying the child predicate.",
         fields=_context_snapshot_field_infos(),
         example="context-snapshots where boundary:session_start",
+    ),
+    "delegation": StructuralQueryUnitInfo(
+        description="Match or return delegation attempts without inferring child utility or success.",
+        fields=_delegation_field_infos(),
+        example="delegations where mapping_state:resolved AND instruction:review",
     ),
 }
 
@@ -864,6 +912,30 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         description=_unit_info("context-snapshot").description,
         example=_unit_info("context-snapshot").example,
         terminal_example="context-snapshots where boundary:session_start",
+    ),
+    QueryUnitDescriptor(
+        "delegation",
+        "delegation",
+        "delegations",
+        exists_supported=True,
+        payload_model="DelegationQueryRowPayload",
+        sql_query_method="query_delegations",
+        cli_plain_renderer="delegation",
+        time_sort_supported=False,
+        aggregate_group_fields=(
+            "basis",
+            "mapping_state",
+            "result_status",
+            "requested_model",
+            "dispatch_model",
+            "child_model",
+            "session.origin",
+            "session.repo",
+        ),
+        fields=_unit_info("delegation").fields,
+        description=_unit_info("delegation").description,
+        example=_unit_info("delegation").example,
+        terminal_example="delegations where mapping_state:resolved AND instruction:review",
     ),
 )
 _QUERY_UNIT_BY_UNIT: dict[QueryUnitName, QueryUnitDescriptor] = {
@@ -1193,7 +1265,7 @@ def terminal_query_pipeline_stage_infos(source: str) -> tuple[QueryPipelineStage
     if descriptor is None or not descriptor.terminal_supported:
         return ()
     stages: list[QueryPipelineStageInfo] = []
-    if descriptor.lowerer_kind == "sql":
+    if descriptor.lowerer_kind == "sql" and descriptor.time_sort_supported:
         stages.append(
             QueryPipelineStageInfo(
                 value="sort by time",
@@ -1334,6 +1406,7 @@ __all__ = [
     "_ASSERTION_STRUCTURAL_FIELDS",
     "_BLOCK_STRUCTURAL_FIELDS",
     "_CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS",
+    "_DELEGATION_STRUCTURAL_FIELDS",
     "_MESSAGE_STRUCTURAL_FIELDS",
     "_OBSERVED_EVENT_STRUCTURAL_FIELDS",
     "_RUN_STRUCTURAL_FIELDS",

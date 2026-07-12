@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -17,7 +18,7 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.assertions import AssertionContextTrustClass
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
-from polylogue.core.refs import normalize_object_ref_text, normalize_public_ref_text
+from polylogue.core.refs import delegation_edge_object_id, normalize_object_ref_text, normalize_public_ref_text
 from polylogue.surfaces.action_affordances import (
     ActionAffordancePayload,
     CandidateReviewDecision,
@@ -80,6 +81,7 @@ if TYPE_CHECKING:
         ArchiveAssertionQueryRow,
         ArchiveBlockQueryRow,
         ArchiveContextSnapshotQueryRow,
+        ArchiveDelegationCard,
         ArchiveDelegationQueryRow,
         ArchiveFileQueryRow,
         ArchiveMessageQueryRow,
@@ -1262,6 +1264,7 @@ QueryUnitKind: TypeAlias = Literal[
     "run",
     "observed-event",
     "context-snapshot",
+    "delegation",
 ]
 """Terminal query source unit exposed by query-unit envelopes."""
 
@@ -1339,6 +1342,110 @@ class ActionQueryRowPayload(SurfacePayloadModel):
             exit_code=row.exit_code,
             followup_class=row.followup_class,
             followup_message_ref=row.followup_message_ref,
+        )
+
+
+def _delegation_instruction_text(payload: str | None) -> str | None:
+    if payload is None:
+        return None
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return payload
+    if isinstance(decoded, dict):
+        for key in ("prompt", "description", "instruction", "task"):
+            value = decoded.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+    return None
+
+
+def _delegation_ref(row: ArchiveDelegationQueryRow) -> str:
+    if row.instruction_tool_use_block_id is not None:
+        return f"delegation:{row.instruction_tool_use_block_id}"
+    if row.child_session_id is None:
+        raise ValueError("edge-only delegation rows require a child session id")
+    return f"delegation:{delegation_edge_object_id(row.parent_session_id, row.child_session_id)}"
+
+
+def _delegation_preview(value: str | None, *, limit: int = 240) -> tuple[str | None, str | None, bool]:
+    if value is None:
+        return None, None, False
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    if len(value) <= limit:
+        return value, digest, False
+    return value[:limit], digest, True
+
+
+class DelegationQueryRowPayload(SurfacePayloadModel):
+    """Bounded terminal-query row for one delegation attempt."""
+
+    unit: Literal["delegation"] = "delegation"
+    delegation_ref: str
+    parent_session_id: str
+    child_session_id: str | None = None
+    parent_origin: str
+    mapping_state: DelegationMappingState
+    evidence_basis: Literal["action", "edge"]
+    instruction_message_id: str | None = None
+    instruction_tool_use_block_id: str | None = None
+    instruction_preview: str | None = None
+    instruction_sha256: str | None = None
+    instruction_truncated: bool = False
+    artifact_block_id: str | None = None
+    artifact_preview: str | None = None
+    artifact_sha256: str | None = None
+    artifact_truncated: bool = False
+    dispatch_turn_model: str | None = None
+    requested_model: str | None = None
+    child_session_dominant_model: str | None = None
+    result_is_error: bool | None = None
+    result_exit_code: int | None = None
+    result_status: DelegationResultStatus
+    link_confidence: float | None = None
+    link_method: str | None = None
+    inheritance: str | None = None
+    evidence_refs: tuple[str, ...] = ()
+
+    @classmethod
+    def from_row(cls, row: ArchiveDelegationQueryRow) -> DelegationQueryRowPayload:
+        instruction = _delegation_instruction_text(row.instruction_payload)
+        instruction_preview, instruction_sha256, instruction_truncated = _delegation_preview(instruction)
+        artifact_preview, artifact_sha256, artifact_truncated = _delegation_preview(row.artifact_text)
+        evidence_refs: list[str] = []
+        if row.instruction_tool_use_block_id is not None:
+            evidence_refs.append(f"block:{row.instruction_tool_use_block_id}")
+        elif row.instruction_message_id is not None:
+            evidence_refs.append(f"message:{row.instruction_message_id}")
+        if row.artifact_block_id is not None:
+            evidence_refs.append(f"block:{row.artifact_block_id}")
+        return cls(
+            delegation_ref=_delegation_ref(row),
+            parent_session_id=row.parent_session_id,
+            child_session_id=row.child_session_id,
+            parent_origin=row.parent_origin,
+            mapping_state=row.mapping_state,
+            evidence_basis="action" if row.instruction_tool_use_block_id is not None else "edge",
+            instruction_message_id=row.instruction_message_id,
+            instruction_tool_use_block_id=row.instruction_tool_use_block_id,
+            instruction_preview=instruction_preview,
+            instruction_sha256=instruction_sha256,
+            instruction_truncated=instruction_truncated,
+            artifact_block_id=row.artifact_block_id,
+            artifact_preview=artifact_preview,
+            artifact_sha256=artifact_sha256,
+            artifact_truncated=artifact_truncated,
+            dispatch_turn_model=row.dispatch_turn_model,
+            requested_model=row.requested_model,
+            child_session_dominant_model=row.child_session_dominant_model,
+            result_is_error=None if row.result_is_error is None else bool(row.result_is_error),
+            result_exit_code=row.result_exit_code,
+            result_status=row.result_status,
+            link_confidence=row.link_confidence,
+            link_method=row.link_method,
+            inheritance=row.inheritance,
+            evidence_refs=tuple(evidence_refs),
         )
 
 
@@ -1883,6 +1990,80 @@ class DelegationAttemptPayload(SurfacePayloadModel):
         )
 
 
+class DelegationContextRowPayload(SurfacePayloadModel):
+    """One bounded parent-context or follow-up message excerpt."""
+
+    message_id: str
+    message_ref: str
+    role: str
+    text: str
+    truncated: bool
+
+
+class DelegationCardPayload(SurfacePayloadModel):
+    """Explicit delegation evidence card; instruction is complete, windows are bounded."""
+
+    unit: Literal["delegation-card"] = "delegation-card"
+    delegation_ref: str
+    attempt: DelegationAttemptPayload
+    parent_session_title: str | None = None
+    child_session_title: str | None = None
+    run_ref: str | None = None
+    run_title: str | None = None
+    instruction: str | None = None
+    instruction_truncated: Literal[False] = False
+    parent_context: tuple[DelegationContextRowPayload, ...] = ()
+    parent_context_truncated: bool = False
+    dispatch_result: str | None = None
+    dispatch_result_truncated: bool = False
+    child_excerpt: str | None = None
+    child_excerpt_truncated: bool = False
+    parent_followup: tuple[DelegationContextRowPayload, ...] = ()
+    parent_followup_truncated: bool = False
+    annotation_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+
+    @classmethod
+    def from_card(cls, card: ArchiveDelegationCard) -> DelegationCardPayload:
+        return cls(
+            delegation_ref=card.delegation_ref,
+            attempt=DelegationAttemptPayload.from_row(card.attempt),
+            parent_session_title=card.parent_session_title,
+            child_session_title=card.child_session_title,
+            run_ref=card.run_ref,
+            run_title=card.run_title,
+            instruction=card.instruction,
+            parent_context=tuple(
+                DelegationContextRowPayload(
+                    message_id=row.message_id,
+                    message_ref=f"message:{row.message_id}",
+                    role=row.role,
+                    text=row.text,
+                    truncated=row.truncated,
+                )
+                for row in card.parent_context
+            ),
+            parent_context_truncated=card.parent_context_truncated,
+            dispatch_result=card.dispatch_result,
+            dispatch_result_truncated=card.dispatch_result_truncated,
+            child_excerpt=card.child_excerpt,
+            child_excerpt_truncated=card.child_excerpt_truncated,
+            parent_followup=tuple(
+                DelegationContextRowPayload(
+                    message_id=row.message_id,
+                    message_ref=f"message:{row.message_id}",
+                    role=row.role,
+                    text=row.text,
+                    truncated=row.truncated,
+                )
+                for row in card.parent_followup
+            ),
+            parent_followup_truncated=card.parent_followup_truncated,
+            annotation_refs=card.annotation_refs,
+            evidence_refs=card.evidence_refs,
+        )
+
+
 #: Caveats surfaced for delegation attempt states that structurally cannot
 #: (or must not) claim a fully resolved child -- keeps `resolve_ref` honest
 #: about what each `mapping_state` does and does not know (polylogue-y964
@@ -2106,6 +2287,7 @@ QueryUnitRowPayload: TypeAlias = (
     | RunQueryRowPayload
     | ObservedEventQueryRowPayload
     | ContextSnapshotQueryRowPayload
+    | DelegationQueryRowPayload
 )
 """Union of terminal row payloads returned by explicit unit-source queries."""
 
@@ -3021,6 +3203,10 @@ __all__ = [
     "MetadataMutationResult",
     "DeleteSessionOutcome",
     "DeleteSessionResult",
+    "DelegationAttemptPayload",
+    "DelegationCardPayload",
+    "DelegationContextRowPayload",
+    "DelegationQueryRowPayload",
     "MutationResultPayload",
     "QueryErrorPayload",
     "QueryUnitAggregateEnvelope",
