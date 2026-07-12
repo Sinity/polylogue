@@ -10,6 +10,8 @@ from polylogue.core.sources import (
     Source,
     lab_of_origin,
     origin_from_provider,
+    origin_provider_fiber,
+    provider_from_origin,
     provider_to_source,
     source_for_family,
     source_to_provider,
@@ -238,3 +240,72 @@ def test_lab_derivation_agrees_with_source_attribution() -> None:
     for provider in Provider:
         derived = lab_of_origin(origin_from_provider(provider))
         assert derived == provider_to_source(provider).originating_lab
+
+
+# ---------------------------------------------------------------------------
+# Origin -> Provider fiber + family_hint disambiguator (polylogue-4rrv,
+# polylogue-9e5.8 Step 5)
+# ---------------------------------------------------------------------------
+
+
+def test_origin_provider_fiber_is_total_and_singleton_for_most_origins() -> None:
+    """Every Origin has a non-empty fiber, and every Origin except
+    AISTUDIO_DRIVE has exactly one member (lossless round-trip)."""
+    for origin in Origin:
+        fiber = origin_provider_fiber(origin)
+        assert fiber, f"Origin {origin!r} has an empty provider fiber"
+        if origin is not Origin.AISTUDIO_DRIVE:
+            assert len(fiber) == 1, f"Origin {origin!r} unexpectedly has a multi-member fiber: {fiber}"
+            assert fiber[0] is provider_from_origin(origin)
+
+
+def test_aistudio_drive_fiber_has_exactly_gemini_and_drive() -> None:
+    """AISTUDIO_DRIVE is the sole multi-member fiber: {GEMINI, DRIVE}."""
+    assert set(origin_provider_fiber(Origin.AISTUDIO_DRIVE)) == {Provider.GEMINI, Provider.DRIVE}
+
+
+def test_provider_from_origin_default_is_canonical_gemini() -> None:
+    """Without a hint, AISTUDIO_DRIVE still resolves to the documented
+    canonical choice (Provider.GEMINI) -- unchanged default behavior."""
+    assert provider_from_origin(Origin.AISTUDIO_DRIVE) is Provider.GEMINI
+
+
+def test_provider_from_origin_family_hint_recovers_drive() -> None:
+    """A caller that independently knows the session came from the live
+    Google-Drive acquisition path (Source.family == "drive-takeout") can
+    recover Provider.DRIVE instead of the canonical Provider.GEMINI default."""
+    assert provider_from_origin(Origin.AISTUDIO_DRIVE, family_hint="drive-takeout") is Provider.DRIVE
+    assert provider_from_origin(Origin.AISTUDIO_DRIVE, family_hint=Provider.DRIVE) is Provider.DRIVE
+    assert provider_from_origin(Origin.AISTUDIO_DRIVE, family_hint="drive") is Provider.DRIVE
+
+
+def test_provider_from_origin_family_hint_confirms_gemini() -> None:
+    """A hint naming the Gemini export family explicitly still resolves to
+    Provider.GEMINI (same as the default, but via the disambiguator path)."""
+    assert provider_from_origin(Origin.AISTUDIO_DRIVE, family_hint="gemini-export") is Provider.GEMINI
+    assert provider_from_origin(Origin.AISTUDIO_DRIVE, family_hint=Provider.GEMINI) is Provider.GEMINI
+    assert provider_from_origin(Origin.AISTUDIO_DRIVE, family_hint="gemini") is Provider.GEMINI
+
+
+def test_provider_from_origin_hint_outside_fiber_is_ignored() -> None:
+    """A hint that resolves to a real Provider, but one that does not belong
+    to the target origin's fiber, is ignored -- falls back to canonical,
+    does not raise and does not silently return the wrong provider."""
+    assert provider_from_origin(Origin.AISTUDIO_DRIVE, family_hint=Provider.CODEX) is Provider.GEMINI
+    assert provider_from_origin(Origin.AISTUDIO_DRIVE, family_hint="codex-session") is Provider.GEMINI
+
+
+def test_provider_from_origin_unresolvable_hint_is_ignored() -> None:
+    """A hint that names neither a known Source family nor a provider-wire
+    token falls back to canonical rather than raising."""
+    assert provider_from_origin(Origin.AISTUDIO_DRIVE, family_hint="not-a-real-family") is Provider.GEMINI
+
+
+def test_provider_from_origin_hint_is_irrelevant_for_unambiguous_origins() -> None:
+    """A hint has nothing to disambiguate for a singleton fiber: the
+    canonical (and only) provider is returned regardless of the hint,
+    matching the origin's sole fiber member."""
+    assert provider_from_origin(Origin.CODEX_SESSION, family_hint="codex-session") is Provider.CODEX
+    # An irrelevant/mismatched hint is still ignored for a singleton fiber --
+    # it can never select a provider outside that fiber.
+    assert provider_from_origin(Origin.CODEX_SESSION, family_hint=Provider.GEMINI) is Provider.CODEX

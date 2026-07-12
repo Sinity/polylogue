@@ -43,6 +43,7 @@ __all__ = [
     "SourceFamily",
     "lab_of_origin",
     "origin_from_provider",
+    "origin_provider_fiber",
     "provider_from_origin",
     "provider_to_source",
     "source_for_family",
@@ -296,15 +297,91 @@ _ORIGIN_TO_PROVIDER: Final[dict[Origin, Provider]] = {
 }
 
 
-def provider_from_origin(origin: Origin) -> Provider:
+def _build_origin_provider_fiber() -> dict[Origin, tuple[Provider, ...]]:
+    """Group every ``Provider`` by the ``Origin`` it collapses onto.
+
+    Built from :data:`_PROVIDER_TO_ORIGIN` (the total, authoritative forward
+    map) rather than re-declared by hand, so a newly added ``Provider`` can
+    never silently omit itself from its origin's fiber the way the three
+    independently hand-copied ``_provider_for_origin`` dicts drifted before
+    polylogue-9e5.8 Step 1 deduplicated them.
+    """
+
+    fiber: dict[Origin, list[Provider]] = {}
+    for provider in Provider:
+        fiber.setdefault(_PROVIDER_TO_ORIGIN[provider], []).append(provider)
+    return {origin: tuple(providers) for origin, providers in fiber.items()}
+
+
+_ORIGIN_PROVIDER_FIBER: Final[dict[Origin, tuple[Provider, ...]]] = _build_origin_provider_fiber()
+
+
+def origin_provider_fiber(origin: Origin) -> tuple[Provider, ...]:
+    """Return every ``Provider`` that collapses onto ``origin``.
+
+    Most origins have exactly one member and round-trip losslessly through
+    :func:`provider_from_origin`. ``Origin.AISTUDIO_DRIVE`` is the sole
+    multi-member fiber today: ``(Provider.GEMINI, Provider.DRIVE)`` --
+    Gemini/AI-Studio export bundles and Google-Drive-live-acquired AI-Studio
+    captures are the same public source-origin but different provider-wire
+    acquisition mechanisms (see ``docs/provider-origin-identity.md``'s
+    "Capture mode" row). Use this to test whether an origin is ambiguous
+    before trusting :func:`provider_from_origin`'s canonical fallback, or to
+    validate that a ``family_hint`` actually belongs to the fiber it claims
+    to disambiguate.
+    """
+
+    return _ORIGIN_PROVIDER_FIBER.get(origin, ())
+
+
+def _resolve_family_hint(hint: Provider | SourceFamily) -> Provider | None:
+    """Resolve a disambiguating hint to a ``Provider``, or ``None`` if it
+    does not name a recognized provider or source family."""
+
+    if isinstance(hint, Provider):
+        return hint
+    family_provider = _FAMILY_TO_PROVIDER.get(hint)
+    if family_provider is not None:
+        return family_provider
+    try:
+        return Provider.from_string(hint)
+    except ValueError:
+        return None
+
+
+def provider_from_origin(origin: Origin, *, family_hint: Provider | SourceFamily | None = None) -> Provider:
     """Return the canonical provider-wire ``Provider`` for an archive ``Origin``.
 
     Total over ``Origin``. Inverse of :func:`origin_from_provider` with a
     canonical choice for the non-injective ``Origin.AISTUDIO_DRIVE``
     (``Provider.GEMINI``). New code should consume ``Origin`` directly; this
     exists only for boundaries that still speak provider tokens.
+
+    ``family_hint`` disambiguates origins whose :func:`origin_provider_fiber`
+    has more than one member -- today only ``Origin.AISTUDIO_DRIVE``
+    (``{Provider.GEMINI, Provider.DRIVE}``). Pass a ``Source.family`` token
+    (e.g. ``"drive-takeout"``), a provider-wire string, or a ``Provider``
+    value that the caller already knows independently of the stored
+    ``Origin`` -- typically an explicit filter parameter or other
+    acquisition-time context -- to recover the correct fiber member instead
+    of the canonical default.
+
+    A hint that fails to resolve, or resolves to a ``Provider`` outside
+    ``origin``'s fiber, is ignored (falls back to the canonical choice)
+    rather than raising: disambiguation here is advisory, not authoritative.
+    No current storage tier persists the acquisition-time provider once a
+    session is written -- ``sessions``/``raw_sessions`` only carry the
+    already-collapsed ``origin`` column (polylogue-9e5.8 Step 5 investigation;
+    see polylogue-4rrv for the follow-up durable-field bead) -- so this
+    parameter only helps call sites that already have independent knowledge
+    of which fiber member applies, not ones trying to recover it from a
+    previously-persisted session alone.
     """
 
+    if family_hint is not None:
+        resolved = _resolve_family_hint(family_hint)
+        if resolved is not None and resolved in _ORIGIN_PROVIDER_FIBER.get(origin, ()):
+            return resolved
     return _ORIGIN_TO_PROVIDER[origin]
 
 
