@@ -122,6 +122,24 @@ def compute_credit_cost(
     return rate.credits_for(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
 
 
+def credits_to_usd(credit_cost: float, *, tier: str = "pro") -> float:
+    """Convert a subscription credit cost to a subscription-equivalent USD figure.
+
+    The conversion is ``monthly_fee_usd / credit_pool`` for the named tier
+    (default ``pro``, the cheapest/most conservative tier). This is a single
+    shared conversion so every surface reporting a subscription-equivalent
+    dollar figure (session cost, provider-usage ledger, ...) draws from the
+    same tier assumption instead of re-deriving the ratio ad hoc (#f2qv.3 /
+    #5hf). Non-authoritative: see docs/cost-model.md caveats.
+    """
+    if credit_cost <= 0:
+        return 0.0
+    plan = SUBSCRIPTION_TIERS.get(tier)
+    if plan is None or plan.credit_pool <= 0:
+        return 0.0
+    return credit_cost / plan.credit_pool * plan.monthly_fee_usd
+
+
 @dataclass(frozen=True, slots=True)
 class SubscriptionCostEstimate:
     model: str | None
@@ -147,5 +165,6 @@ __all__ = [
     "SubscriptionCostEstimate",
     "SubscriptionTier",
     "compute_credit_cost",
+    "credits_to_usd",
     "get_credit_rate",
 ]

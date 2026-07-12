@@ -22,6 +22,12 @@ from polylogue.archive.semantic.pricing import (
     _normalize_model,
     estimate_cost,
 )
+from polylogue.archive.semantic.subscription_pricing import (
+    SUBSCRIPTION_CATALOG_EFFECTIVE_DATE,
+    SUBSCRIPTION_CATALOG_PROVENANCE,
+    compute_credit_cost,
+    credits_to_usd,
+)
 from polylogue.core.enums import Origin, Provider
 
 UsageReportDetail = Literal["headline", "full"]
@@ -319,7 +325,17 @@ class OriginUsageReport:
 
 @dataclass(frozen=True, slots=True)
 class PricingLaneReport:
-    """Fast repricing headline for one ``session_model_usage`` provenance lane."""
+    """Fast repricing headline for one ``session_model_usage`` provenance lane.
+
+    Carries two independent cost bases (polylogue-f2qv.3 / polylogue-5hf):
+    ``catalog_api_equivalent_usd`` is what the lane's usage would cost at
+    API list price, and ``subscription_credit_usd`` is what it would cost
+    against the curated Claude Code subscription credit model (cache reads
+    free, output billed at 5x input). They are never conflated into one
+    number; see docs/cost-model.md for the subscription-tier assumption and
+    non-authoritative caveats. ``subscription_credit_usd`` is 0.0 for lanes/
+    models without a declared credit rate (e.g. non-Claude models).
+    """
 
     provenance: str
     row_count: int = 0
@@ -329,6 +345,7 @@ class PricingLaneReport:
     usage: UsageCounters = field(default_factory=UsageCounters)
     stored_cost_usd: float = 0.0
     catalog_api_equivalent_usd: float = 0.0
+    subscription_credit_usd: float = 0.0
     caveats: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -341,6 +358,7 @@ class PricingLaneReport:
             "usage": self.usage.to_dict(),
             "stored_cost_usd": round(self.stored_cost_usd, 6),
             "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
+            "subscription_credit_usd": round(self.subscription_credit_usd, 6),
             "caveats": list(self.caveats),
         }
 
@@ -354,6 +372,7 @@ class _PricingLaneAccumulator:
     usage: UsageCounters = field(default_factory=UsageCounters)
     stored_cost_usd: float = 0.0
     catalog_api_equivalent_usd: float = 0.0
+    subscription_credit_usd: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,6 +395,16 @@ class ProviderUsageReport:
     stored_provider_priced_usd: float = 0.0
     catalog_api_equivalent_usd: float = 0.0
     logical_catalog_api_equivalent_usd: float = 0.0
+    # Dual cost view (polylogue-f2qv.3 / polylogue-5hf): subscription_credit_usd
+    # is the API-equivalent usage priced against the curated Claude Code
+    # subscription credit model instead of API list price (cache reads free,
+    # output at 5x input); it is always <= the API-equivalent figure for the
+    # same usage and is 0.0 for models without a declared credit rate. The two
+    # bases are reported separately and never summed into one number.
+    subscription_credit_catalog_provenance: str = SUBSCRIPTION_CATALOG_PROVENANCE
+    subscription_credit_catalog_effective_date: str = SUBSCRIPTION_CATALOG_EFFECTIVE_DATE
+    subscription_credit_usd: float = 0.0
+    logical_subscription_credit_usd: float = 0.0
     caveats: tuple[str, ...] = ()
     coverage_matrix: tuple[ProviderUsageCoverage, ...] = _PROVIDER_USAGE_COVERAGE
 
@@ -397,6 +426,10 @@ class ProviderUsageReport:
             "stored_provider_priced_usd": round(self.stored_provider_priced_usd, 6),
             "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
             "logical_catalog_api_equivalent_usd": round(self.logical_catalog_api_equivalent_usd, 6),
+            "subscription_credit_catalog_provenance": self.subscription_credit_catalog_provenance,
+            "subscription_credit_catalog_effective_date": self.subscription_credit_catalog_effective_date,
+            "subscription_credit_usd": round(self.subscription_credit_usd, 6),
+            "logical_subscription_credit_usd": round(self.logical_subscription_credit_usd, 6),
             "origins": [origin.to_dict() for origin in self.origins],
             "caveats": list(self.caveats),
         }
@@ -592,6 +625,12 @@ def provider_usage_report_from_connection(
     if origin is not None and not reports:
         caveats.append(f"no sessions found for origin {origin!r}")
         caveats.append(f"no raw rows found for origin {origin!r}")
+    if pricing_lanes and any(lane.subscription_credit_usd > 0 for lane in pricing_lanes):
+        caveats.append(
+            "subscription_credit_usd assumes the Claude Code Pro tier's credit rate "
+            "(cache reads free, output at 5x input) and is 0.0 for models without a "
+            "declared credit rate; it is not vendor-authoritative billing"
+        )
     return ProviderUsageReport(
         archive_root=str(archive_root),
         origins=tuple(reports),
@@ -603,6 +642,8 @@ def provider_usage_report_from_connection(
         stored_provider_priced_usd=sum(lane.stored_cost_usd for lane in pricing_lanes if lane.provenance == "priced"),
         catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in pricing_lanes),
         logical_catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in logical_pricing_lanes),
+        subscription_credit_usd=sum(lane.subscription_credit_usd for lane in pricing_lanes),
+        logical_subscription_credit_usd=sum(lane.subscription_credit_usd for lane in logical_pricing_lanes),
         caveats=tuple(caveats),
     )
 
@@ -1324,6 +1365,23 @@ def _pricing_lane_reports(
         if usage.cached_input_tokens and catalog_cost == 0.0 and provenance != "priced":
             caveats_by_provenance[provenance].add("unpriced_cache_read_or_missing_price")
         bucket.catalog_api_equivalent_usd += catalog_cost
+        # Dual cost view (polylogue-f2qv.3 / polylogue-5hf): compute the
+        # subscription-credit basis alongside the API-equivalent one, from the
+        # same row usage, independent of whether catalog_cost above reused the
+        # stored cost_usd. compute_credit_cost returns 0 for models without a
+        # declared credit rate (e.g. non-Claude models), so subscription_credit
+        # naturally stays 0.0 there rather than fabricating a number.
+        if model_name:
+            normalized_for_credit = _normalize_model(model_name)
+            credit_cost = compute_credit_cost(
+                normalized_for_credit,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cached_input_tokens,
+                usage.cache_write_tokens,
+            )
+            if credit_cost > 0:
+                bucket.subscription_credit_usd += credits_to_usd(credit_cost)
 
     result: list[PricingLaneReport] = []
     for provenance, bucket in sorted(
@@ -1340,6 +1398,7 @@ def _pricing_lane_reports(
                 usage=bucket.usage,
                 stored_cost_usd=round(bucket.stored_cost_usd, 6),
                 catalog_api_equivalent_usd=round(bucket.catalog_api_equivalent_usd, 6),
+                subscription_credit_usd=round(bucket.subscription_credit_usd, 6),
                 caveats=tuple(sorted(caveats_by_provenance.get(provenance, ()))),
             )
         )

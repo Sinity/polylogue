@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 32
+INDEX_SCHEMA_VERSION = 33
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -877,7 +877,7 @@ CREATE TABLE IF NOT EXISTS session_tags (
 CREATE TABLE IF NOT EXISTS insight_materialization (
     insight_type                 TEXT NOT NULL CHECK(insight_type IN (
                                     'session_profile', 'work_events', 'phases', 'latency', 'thread',
-                                    'runs', 'observed_events', 'context_snapshots')),
+                                    'runs', 'observed_events', 'context_snapshots', 'provider_usage')),
     session_id                   TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     materializer_version         INTEGER NOT NULL,
     materialized_at_ms           INTEGER NOT NULL,

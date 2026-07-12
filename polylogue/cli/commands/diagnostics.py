@@ -303,12 +303,21 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
         env.ui.console.print(
             f"  catalog API-equivalent cost: ${float(getattr(report, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
         )
+        env.ui.console.print(
+            "  catalog subscription-credit cost (Claude Code Pro tier, non-authoritative): "
+            f"${float(getattr(report, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
+        )
         logical_catalog_api_equivalent_usd = getattr(report, "logical_catalog_api_equivalent_usd", None)
         if logical_catalog_api_equivalent_usd is not None:
             env.ui.console.print(
                 "  catalog API-equivalent cost "
                 f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
                 f"${float(logical_catalog_api_equivalent_usd or 0.0):,.2f}"
+            )
+            env.ui.console.print(
+                "  catalog subscription-credit cost "
+                f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
+                f"${float(getattr(report, 'logical_subscription_credit_usd', 0.0) or 0.0):,.2f}"
             )
         for lane in pricing_lanes:
             env.ui.console.print(
@@ -318,7 +327,8 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
                 f"matched={getattr(lane, 'matched_model_row_count', 0)} "
                 f"unmatched={getattr(lane, 'unmatched_model_row_count', 0)} "
                 f"stored=${float(getattr(lane, 'stored_cost_usd', 0.0) or 0.0):,.2f} "
-                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
+                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f} "
+                f"subscription_credit=${float(getattr(lane, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
             )
         logical_pricing_lanes = tuple(getattr(report, "logical_pricing_lanes", ()))
         for lane in logical_pricing_lanes:
@@ -328,7 +338,8 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
                 f"rows={getattr(lane, 'row_count', 0)} "
                 f"matched={getattr(lane, 'matched_model_row_count', 0)} "
                 f"unmatched={getattr(lane, 'unmatched_model_row_count', 0)} "
-                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
+                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f} "
+                f"subscription_credit=${float(getattr(lane, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
             )
     if not origins:
         env.ui.console.print("  No sessions matched.")

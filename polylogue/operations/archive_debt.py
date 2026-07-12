@@ -906,8 +906,12 @@ def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
                 summary=f"{session_count} {origin} session(s) have model rows but no projected token usage",
                 details=(
                     f"{model_row_count} session_model_usage row(s) across {model_count} model(s) contain only zero "
-                    "token counters. Rebuild the index with current provider-usage materialization, then inspect "
-                    "`polylogue analyze usage` for missing-model, zero-token, or partial-telemetry caveats."
+                    "token counters. A daemon convergence pass now self-heals this (polylogue-f2qv.5: "
+                    "session_model_usage carries an insight_materialization('provider_usage') stamp and is "
+                    "re-derived from session_provider_usage_events/messages whenever a session's insights are "
+                    "rebuilt) — if it persists after a daemon run, rebuild the index with current provider-usage "
+                    "materialization, then inspect `polylogue analyze usage` for missing-model, zero-token, or "
+                    "partial-telemetry caveats."
                 ),
                 source_family=origin,
                 evidence_refs=(f"archive-tier:{index_db}", "table:session_model_usage"),

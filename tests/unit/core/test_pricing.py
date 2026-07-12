@@ -162,6 +162,80 @@ def test_missing_price_is_unavailable_not_zero_precision() -> None:
     assert estimate.unavailable_reason == "no_price"
 
 
+def test_tokencost_is_not_a_dependency_or_import_anywhere() -> None:
+    """polylogue-f2qv.4: LiteLLM is the single pricing source; tokencost must
+    stay gone from both the dependency manifest and every source file, not
+    just the pricing module. A future accidental re-add (e.g. a helper
+    reaching for a familiar package name) would silently reintroduce a
+    second, drifting price table.
+    """
+
+    repo_root = Path(__file__).resolve().parents[3]
+    pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "tokencost" not in pyproject_text.lower()
+
+    offenders: list[str] = []
+    for path in (repo_root / "polylogue").rglob("*.py"):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if "tokencost" in text.lower():
+            offenders.append(str(path.relative_to(repo_root)))
+    assert offenders == [], f"tokencost reference(s) found: {offenders}"
+
+
+def test_no_second_hardcoded_price_table_besides_the_curated_catalog_layer() -> None:
+    """polylogue-f2qv.4: exactly one $/token pricing dict feeds every lookup.
+
+    ``PRICING`` is built from ``_load_litellm_catalog()`` (the vendored
+    LiteLLM map) overlaid with ``_CURATED_PRICING`` (hand-verified overrides
+    for the same catalog, not an independent source) — both merge into the
+    single dict every resolution path reads. This pins that composition so a
+    future change can't quietly add a second, parallel price map that drifts
+    from the vendored catalog.
+    """
+    from polylogue.archive.semantic import pricing as pricing_module
+
+    expected = {**pricing_module._load_litellm_catalog(), **pricing_module._CURATED_PRICING}
+    assert expected == pricing_module.PRICING
+    # The curated overrides are a layer on the same catalog, not a second
+    # source: every curated key must also resolve (by construction) through
+    # the one public resolver used everywhere else in the codebase.
+    for key in pricing_module._CURATED_PRICING:
+        assert _normalize_model(key) in pricing_module.PRICING
+
+
+def test_live_archive_shaped_models_resolve_or_are_labelled_unknown() -> None:
+    """polylogue-f2qv.4: every model id shape seen in the live archive either
+    resolves to a LiteLLM-backed rate via the single resolver, or is labelled
+    ``unavailable``/``no_price`` — never silently priced from a second table
+    or fabricated as zero-cost-and-priced.
+    """
+    from polylogue.archive.semantic.pricing import PRICING
+
+    known_shapes = (
+        "claude-sonnet-4-5",
+        "anthropic/claude-sonnet-4-5-20250929",
+        "claude-opus-4-8-20260101",
+        "openai/gpt-4o-2024-08-06",
+        "gpt-4o-mini",
+    )
+    for model in known_shapes:
+        normalized = _normalize_model(model)
+        assert normalized in PRICING, f"{model!r} (normalized {normalized!r}) should resolve"
+
+    message = make_msg(
+        id="m-unknown",
+        role="assistant",
+        provider="chatgpt",
+        model_name="totally-unheard-of-model-xyz",
+        input_tokens=10,
+        output_tokens=5,
+    )
+    estimate = estimate_message_cost(message, source_name="chatgpt")
+    assert estimate.status == "unavailable"
+    assert estimate.unavailable_reason == "no_price"
+    assert estimate.total_usd == 0.0
+
+
 def test_model_normalization_accepts_provider_prefixes_and_version_suffixes() -> None:
     assert _normalize_model("openai/gpt-4o-2024-08-06") == "gpt-4o"
     assert _normalize_model("anthropic/claude-sonnet-4-5-20250929") == "claude-sonnet-4-5"

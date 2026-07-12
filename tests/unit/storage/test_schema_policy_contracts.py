@@ -252,6 +252,31 @@ def test_unknown_older_schema_version_is_rejected(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_every_prior_index_schema_version_is_rejected_not_silently_reopened(tmp_path: Path) -> None:
+    """polylogue-f2qv.5 regression: every already-deployed archive right now
+    is stamped at ``SCHEMA_VERSION - 1`` (the immediately prior version).
+    ``CREATE TABLE IF NOT EXISTS`` is a no-op against an already-existing
+    table, so a DDL edit alone (e.g. widening a CHECK constraint) does
+    *not* retroactively apply to those archives — only the version bump
+    forces them through ``version_mismatch`` rejection and the documented
+    fresh-first rebuild (``polylogue ops reset --index && polylogued run``)
+    instead of being silently reopened with stale DDL that a subsequent
+    write could violate (see commit that added
+    ``insight_materialization.insight_type = 'provider_usage'``: it bumped
+    ``INDEX_SCHEMA_VERSION`` specifically so this scenario is caught here,
+    not as a runtime CHECK-constraint failure deep in convergence).
+    """
+    db_path = _planted_db(tmp_path, planted_version=SCHEMA_VERSION - 1)
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(SchemaVersionMismatchError) as excinfo:
+            _ensure_schema(conn)
+        assert excinfo.value.current_version == SCHEMA_VERSION - 1
+        assert excinfo.value.expected_version == SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
 def test_version_mismatch_message_distinguishes_newer_and_older() -> None:
     """docs/internals.md § Schema Versioning Model: the rejection
     diagnostic must be specific enough that the operator can act on

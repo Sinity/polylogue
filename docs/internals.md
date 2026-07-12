@@ -161,6 +161,18 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   hash, so concurrent publishers of identical bytes remain independent.
   Existing v3 tiers migrate additively through
   `004_blob_publication_reservations.sql` after a verified backup manifest.
+- Index schema version 33 adds `'provider_usage'` to the
+  `insight_materialization.insight_type` CHECK constraint (polylogue-f2qv.5),
+  so `session_model_usage` can carry a materializer-version stamp and
+  self-heal through the same session-insight rebuild path as
+  `session_profile`/`latency`/etc instead of requiring a manual
+  `ops reset --index` after a provider-usage materializer fix. Existing index
+  tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`) — a `CREATE TABLE IF NOT
+  EXISTS` on an already-existing table does not retroactively widen its CHECK
+  constraint, so the version bump (not just the DDL edit) is what forces
+  existing archives through the fresh-first rebuild path rather than hitting a
+  CHECK-constraint violation the first time a session's insights are rebuilt.
 - Index schema version 30 makes `session_events` the lossless generic relation
   for every parsed non-message event. It retains open event types and structured
   payloads in original positions while policy and usage tables remain typed

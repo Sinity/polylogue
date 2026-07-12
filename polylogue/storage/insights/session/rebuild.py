@@ -1007,6 +1007,33 @@ async def build_large_session_insight_record_bundle_async(
     )
 
 
+def _refresh_provider_usage_rollup(conn: sqlite3.Connection, session_id: str) -> int:
+    """Re-derive ``session_model_usage`` for one session from persisted evidence.
+
+    session_model_usage (the provider token/cost rollup) was historically
+    written once at ingest and never revisited by the insight rebuild path
+    (polylogue-f2qv.5), so a materializer fix or a zero-token bug left stale
+    rows behind until an operator ran a full ``ops reset --index``. Both
+    aggregation steps below are self-contained given only ``conn`` and
+    ``session_id`` — they read ``session_provider_usage_events`` and
+    ``messages``, which are already persisted archive tables independent of
+    any in-flight ``ParsedSession`` — so calling them here re-derives the
+    rollup the same way ingest does, without needing the original parse.
+    """
+    from polylogue.storage.sqlite.archive_tiers.write import (
+        _aggregate_message_tokens_into_model_usage,
+        _aggregate_provider_usage_into_model_usage,
+    )
+
+    _aggregate_provider_usage_into_model_usage(conn, session_id)
+    _aggregate_message_tokens_into_model_usage(conn, session_id)
+    row = conn.execute(
+        "SELECT COUNT(*) FROM session_model_usage WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsightRecordBundle) -> None:
     """Stamp insight_materialization for one rebuilt session bundle.
 
@@ -1025,6 +1052,12 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
     source_updated_at_ms = _epoch_ms_or_none(profile.source_updated_at)
     source_sort_key_ms = int(profile.source_sort_key * 1000) if profile.source_sort_key is not None else None
     input_high_water_mark_ms = _epoch_ms_or_none(profile.input_high_water_mark)
+    # polylogue-f2qv.5: re-derive session_model_usage every time a session's
+    # insights are rebuilt (missing-profile backfill, stale-version repair, or
+    # hot-source convergence) so provider-usage rollups self-heal the same way
+    # session_profile/latency/phases already do, instead of staying frozen at
+    # whatever the original ingest wrote.
+    provider_usage_row_count = _refresh_provider_usage_rollup(conn, session_id)
     for insight_type, materializer_version, input_row_count in (
         ("session_profile", profile.materializer_version, profile.input_row_count),
         ("latency", profile.materializer_version, bundle.latency_profile_record.input_row_count),
@@ -1034,6 +1067,7 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
         ("observed_events", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.observed_event_records)),
         ("context_snapshots", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.context_snapshot_records)),
         ("thread", SESSION_INSIGHT_MATERIALIZER_VERSION, 1),
+        ("provider_usage", SESSION_INSIGHT_MATERIALIZER_VERSION, provider_usage_row_count),
     ):
         apply_insight_materialization(
             conn,
