@@ -95,3 +95,4 @@ def test_judge_accept_all_of_kind_applies_the_real_queue_filters() -> None:
     assert json.loads(invocation.output)["applied_count"] == 0
     items = polylogue.judge_assertion_candidates.await_args.kwargs["items"]
     assert [item.candidate_ref for item in items] == ["assertion:candidate-judge-1"]
+    polylogue.list_assertion_candidates.assert_awaited_once_with(kinds=(AssertionKind.FINDING,), limit=50)

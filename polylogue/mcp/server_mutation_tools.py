@@ -1204,6 +1204,9 @@ def register_assertion_review_tools(mcp: FastMCP, hooks: ServerCallbacks) -> Non
         reason: str | None = None,
         inject: bool = False,
         actor_ref: str = "user:local",
+        replacement_kind: str | None = None,
+        replacement_body_text: str | None = None,
+        replacement_value: object | None = None,
     ) -> str:
         """Judge one candidate; caller text is provenance, not authorization."""
 
@@ -1218,6 +1221,9 @@ def register_assertion_review_tools(mcp: FastMCP, hooks: ServerCallbacks) -> Non
                         reason=reason,
                         inject=inject,
                         actor_ref=actor_ref,
+                        replacement_kind=replacement_kind,
+                        replacement_body_text=replacement_body_text,
+                        replacement_value=replacement_value,
                     ),
                 )
             )
@@ -1240,12 +1246,17 @@ def register_assertion_review_tools(mcp: FastMCP, hooks: ServerCallbacks) -> Non
             if not isinstance(candidate_ref, str) or not isinstance(decision, str):
                 raise ValueError("each judgment requires string candidate_ref and decision")
             reason = item.get("reason")
+            replacement_kind = item.get("replacement_kind")
+            replacement_body_text = item.get("replacement_body_text")
             return ArchiveAssertionBulkJudgmentItemEnvelope(
                 candidate_ref=candidate_ref,
                 decision=decision,
                 reason=reason if isinstance(reason, str) else None,
                 inject=bool(item.get("inject", False)),
                 actor_ref=actor_ref,
+                replacement_kind=replacement_kind if isinstance(replacement_kind, str) else None,
+                replacement_body_text=replacement_body_text if isinstance(replacement_body_text, str) else None,
+                replacement_value=item.get("replacement_value"),
             )
 
         async def run() -> str:

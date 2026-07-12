@@ -201,7 +201,8 @@ def judge_command(
         )
         return
 
-    claims = run_coroutine_sync(env.polylogue.list_assertion_candidates(limit=50))
+    kinds = None if kind_filter is None else (AssertionKind.from_string(kind_filter),)
+    claims = run_coroutine_sync(env.polylogue.list_assertion_candidates(kinds=kinds, limit=50))
     claims = _filter_candidates(claims, kind_filter=kind_filter, since=since)
     if accept_all_of_kind:
         bulk_payload = _judge(
