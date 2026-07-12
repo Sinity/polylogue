@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -48,13 +49,25 @@ class HookSpoolDrainResult:
 def pending_hook_spool_dir(root: Path | None = None) -> Path:
     """Return the directory that hook commands append to atomically."""
 
-    return (root or hooks_sidecar_dir()) / _PENDING_DIRNAME
+    return (root or hook_spool_root()) / _PENDING_DIRNAME
 
 
 def acknowledged_hook_spool_dir(root: Path | None = None) -> Path:
     """Return the receipt directory for source-tier-acknowledged events."""
 
-    return (root or hooks_sidecar_dir()) / _ACKNOWLEDGED_DIRNAME
+    return (root or hook_spool_root()) / _ACKNOWLEDGED_DIRNAME
+
+
+def hook_spool_root() -> Path:
+    """Resolve the hook spool root shared by producer and daemon.
+
+    ``POLYLOGUE_HOOK_SIDECAR_DIR`` predates the durable spool and remains the
+    documented operator override.  Applying it here, rather than only in the
+    command-hook entrypoint, keeps the daemon on the same receipt path.
+    """
+
+    override = os.environ.get("POLYLOGUE_HOOK_SIDECAR_DIR", "").strip()
+    return Path(override).expanduser() if override else hooks_sidecar_dir()
 
 
 def enqueue_hook_event(
@@ -111,7 +124,7 @@ def drain_hook_event_spool(
             record = _read_record(path)
             _persist_record(archive_root, path, record)
             _acknowledge(path, root=root)
-        except (HookSpoolRecordError, OSError, ValueError):
+        except (HookSpoolRecordError, OSError, sqlite3.Error, ValueError):
             failed += 1
             logger.warning("hook spool event remains pending: %s", path, exc_info=True)
         else:
@@ -202,6 +215,7 @@ def _acknowledge(path: Path, *, root: Path | None) -> None:
     acknowledged = acknowledged_hook_spool_dir(root)
     acknowledged.mkdir(parents=True, exist_ok=True)
     os.replace(path, acknowledged / path.name)
+    _fsync_directory(acknowledged)
 
 
 def _atomic_json_write(path: Path, payload: dict[str, object]) -> None:
@@ -214,9 +228,20 @@ def _atomic_json_write(path: Path, payload: dict[str, object]) -> None:
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
     except BaseException:
         temporary_path.unlink(missing_ok=True)
         raise
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist an atomic rename's directory entry before returning success."""
+
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 __all__ = [
@@ -225,5 +250,6 @@ __all__ = [
     "acknowledged_hook_spool_dir",
     "drain_hook_event_spool",
     "enqueue_hook_event",
+    "hook_spool_root",
     "pending_hook_spool_dir",
 ]

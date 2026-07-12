@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
+import watchfiles
+from watchfiles import Change
 
 from polylogue.sources.hooks import (
     acknowledged_hook_spool_dir,
     drain_hook_event_spool,
     enqueue_hook_event,
+    hook_spool_root,
     pending_hook_spool_dir,
 )
+from polylogue.sources.live import LiveWatcher, WatchSource
+from polylogue.sources.live.cursor import CursorStore
 
 
 @pytest.mark.parametrize(
@@ -100,3 +108,104 @@ def test_hook_spool_replay_is_idempotent_after_interrupted_acknowledgement(tmp_p
 
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (1,)
+
+
+@pytest.mark.asyncio
+async def test_live_watcher_drains_the_configured_hook_spool_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented producer override reaches the daemon's real drain path."""
+
+    spool_root = tmp_path / "configured-hooks"
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    monkeypatch.setenv("POLYLOGUE_HOOK_SIDECAR_DIR", str(spool_root))
+    event_path = enqueue_hook_event(
+        event_id="configured-root-event",
+        provider="claude-code",
+        event_type="SessionStart",
+        session_id="session-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"cwd": "/workspace"},
+    )
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=archive_root, backend=None)),
+        (WatchSource(name="hooks", root=pending_hook_spool_dir(), suffixes=(".json",)),),
+        cursor=CursorStore(archive_root / "ops.db"),
+    )
+
+    await watcher._catch_up([pending_hook_spool_dir()])
+
+    assert hook_spool_root() == spool_root
+    assert event_path.exists() is False
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
+
+
+@pytest.mark.asyncio
+async def test_live_watcher_observes_a_spool_created_after_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A daemon started before the first hook still drains the later envelope."""
+
+    spool_root = tmp_path / "hooks"
+    pending = pending_hook_spool_dir(spool_root)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=archive_root, backend=None)),
+        (WatchSource(name="hooks", root=pending, suffixes=(".json",)),),
+        cursor=CursorStore(archive_root / "ops.db"),
+    )
+
+    async def emit_first_hook(*roots: Path, **_kwargs: object) -> AsyncIterator[set[tuple[Change, str]]]:
+        assert roots == (pending,)
+        event_path = enqueue_hook_event(
+            event_id="first-after-startup",
+            provider="codex",
+            event_type="SessionStart",
+            session_id="session-1",
+            timestamp="2026-07-12T10:00:00Z",
+            payload={"cwd": "/workspace"},
+            root=spool_root,
+        )
+        yield {(Change.added, str(event_path))}
+        watcher.stop()
+
+    monkeypatch.setattr(watchfiles, "awatch", emit_first_hook)
+
+    await watcher.run()
+
+    assert (acknowledged_hook_spool_dir(spool_root) / "first-after-startup.json").exists()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
+
+
+def test_hook_spool_retains_sqlite_failures_for_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SQLite receiver faults leave the real envelope pending for a future drain."""
+
+    spool_root = tmp_path / "hooks"
+    event_path = enqueue_hook_event(
+        event_id="sqlite-retry",
+        provider="codex",
+        event_type="PostToolUse",
+        session_id="session-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"tool_name": "exec"},
+        root=spool_root,
+    )
+
+    def fail_persistence(*_args: object, **_kwargs: object) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("polylogue.sources.hooks._persist_record", fail_persistence)
+    result = drain_hook_event_spool(tmp_path / "archive", root=spool_root)
+
+    assert result.acknowledged == 0
+    assert result.failed == 1
+    assert event_path.exists()

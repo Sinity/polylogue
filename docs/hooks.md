@@ -11,12 +11,14 @@ data coverage for events that are not recorded in post-hoc session JSONL.
 1. The AI agent invokes `polylogue-hook <event-type>` on each hook event,
    passing the event payload on stdin as JSON.
 2. `polylogue-hook` validates the event, enriches it with metadata (provider,
-   timestamp, session_id), and writes a structured JSONL record to the Polylogue
-   hook sidecar directory.
-3. The Polylogue daemon watcher picks up the sidecar file and ingests it through
-   the standard archive/blob/artifact pipeline.
-4. Hook events are classified as `ArtifactKind.HOOK_EVENT` and linked to the
-   parent session via `link_group_key`.
+   timestamp, session_id), and atomically writes one immutable envelope to the
+   hook spool's `pending/` directory.
+3. The daemon watches that directory, persists the envelope in
+   `source.db.raw_hook_events`, and moves it to `acknowledged/` only after the
+   source-tier transaction commits. Failed writes remain pending for retry.
+4. The hook command also retains its legacy per-session JSONL journal for local
+   compatibility; the daemon's durable capture route consumes the spool
+   envelopes rather than that journal.
 
 ## Supported Events
 
@@ -86,13 +88,17 @@ agent on stdin. The wrapper fields (`event_type`, `session_id`, `timestamp`,
 
 ```
 ~/.local/share/polylogue/hooks/         # Default (XDG_DATA_HOME/polylogue/hooks)
-├── claude-code-<session-id>.jsonl      # Claude Code events for one session
-├── codex-<session-id>.jsonl            # Codex events for one session
-└── ...
+├── pending/
+│   └── <event-id>.json                 # Atomic producer envelopes
+├── acknowledged/
+│   └── <event-id>.json                 # Source-tier receipt after commit
+├── claude-code-<session-id>.jsonl      # Legacy Claude journal
+└── codex-<session-id>.jsonl            # Legacy Codex journal
 ```
 
-The sidecar directory is watched by the Polylogue daemon. Hook files are
-ingested and linked to the parent session automatically.
+The daemon creates and watches the pending spool directory on startup, so the
+first hook event after a cold start is captured automatically. The documented
+spool-root override applies to both the producer and daemon.
 
 ## Configuration
 
@@ -108,7 +114,7 @@ sidecar_dir = "/home/user/.local/share/polylogue/hooks"
 
 | Variable | Description |
 |----------|-------------|
-| `POLYLOGUE_HOOK_SIDECAR_DIR` | Override default sidecar directory (in the hook script) |
+| `POLYLOGUE_HOOK_SIDECAR_DIR` | Override the shared producer/daemon spool root |
 | `POLYLOGUE_HOOK_PROVIDER` | Force provider detection to `claude-code` or `codex` |
 
 ### PolylogueConfig Properties
