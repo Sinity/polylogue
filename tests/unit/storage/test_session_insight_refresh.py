@@ -646,6 +646,12 @@ def test_stale_provider_usage_self_heals_via_session_insight_rebuild(
         )
         session_id = _sid("conv-provider-usage-heal", "claude-code-session")
 
+        # Establish a fully fresh session-insight bundle first. The later
+        # daemon drain must therefore select this session solely because the
+        # provider-usage stamp becomes stale, not through the unrelated
+        # missing-session-profile branch.
+        rebuild_session_insights_sync(conn, session_ids=[session_id])
+
         # The real write path already materializes a correct rollup at ingest.
         before = conn.execute(
             "SELECT input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
