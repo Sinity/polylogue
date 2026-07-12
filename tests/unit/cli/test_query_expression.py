@@ -1104,6 +1104,78 @@ class TestBooleanQueryExpression:
             ),
         )
 
+    def test_assertion_value_path_equality_predicate(self) -> None:
+        source = parse_unit_source_expression("assertions where value.status:approved")
+
+        assert source is not None
+        assert source.unit == "assertion"
+        assert source.predicate == QueryFieldPredicate(field="value.status", values=("approved",), op="=")
+
+    def test_assertion_value_path_comparison_predicate(self) -> None:
+        source = parse_unit_source_expression("assertions where value.score:>=4")
+
+        assert source is not None
+        assert source.predicate == QueryFieldPredicate(field="value.score", values=("4",), op=">=")
+
+    def test_assertion_value_path_nested_predicate(self) -> None:
+        source = parse_unit_source_expression("assertions where value.rubric.confidence:<0.5")
+
+        assert source is not None
+        assert source.predicate == QueryFieldPredicate(field="value.rubric.confidence", values=("0.5",), op="<")
+
+    def test_assertion_value_path_negation(self) -> None:
+        source = parse_unit_source_expression("assertions where NOT value.score:>=4")
+
+        assert source is not None
+        assert source.predicate == QueryNotPredicate(QueryFieldPredicate(field="value.score", values=("4",), op=">="))
+
+    def test_assertion_value_path_boolean_combination(self) -> None:
+        source = parse_unit_source_expression("assertions where kind:annotation AND value.score:>=4")
+
+        assert source is not None
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="kind", values=("annotation",)),
+                QueryFieldPredicate(field="value.score", values=("4",), op=">="),
+            ),
+        )
+
+    def test_exists_assertion_value_path_predicate(self) -> None:
+        ast = parse_expression_ast("exists assertion(value.score:>=4 AND kind:annotation)")
+
+        assert ast.boolean_predicate == QueryExistsPredicate(
+            unit="assertion",
+            child=QueryBoolPredicate(
+                op="and",
+                children=(
+                    QueryFieldPredicate(field="value.score", values=("4",), op=">="),
+                    QueryFieldPredicate(field="kind", values=("annotation",)),
+                ),
+            ),
+        )
+
+    def test_assertion_value_path_non_numeric_comparator_rejected(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="numeric value"):
+            parse_unit_source_expression("assertions where value.score:>=not-a-number")
+
+    def test_assertion_value_path_rejected_for_non_assertion_unit(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="not supported"):
+            parse_unit_source_expression("messages where value.score:>=4")
+
+    def test_assertion_value_path_rejected_for_empty_path(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="unknown query field"):
+            parse_unit_source_expression("assertions where value.:4")
+
+    def test_assertion_value_path_requires_a_value(self) -> None:
+        # An empty value never matches FIELD_CLAUSE's non-empty value
+        # requirement, so this is a grammar-level parse failure (same as any
+        # other empty-valued field clause) rather than a value-path-specific
+        # message -- documented here so the empty-path shape has a pinned
+        # regression rather than relying on incidental grammar behavior.
+        with pytest.raises(ExpressionCompileError):
+            compile_expression("exists assertion(value.score:)")
+
     def test_parse_observed_event_source_expression_preserves_terminal_unit(self) -> None:
         source = parse_unit_source_expression(
             "observed-events where session.repo:polylogue AND delivery_state:acted_on AND text:#2100"

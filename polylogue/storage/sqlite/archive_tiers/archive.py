@@ -9164,6 +9164,8 @@ def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFiel
         return _like_clause(f"{assertion_alias}.body_text", predicate.values)
     if field == "value":
         return _like_clause(f"{assertion_alias}.value_json", predicate.values)
+    if field.startswith("value.") and len(field) > len("value."):
+        return _assertion_value_path_predicate_clause(assertion_alias, field[len("value.") :], predicate)
     if field == "evidence":
         return _like_clause(f"{assertion_alias}.evidence_refs_json", predicate.values)
     if field == "context":
@@ -9171,6 +9173,56 @@ def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFiel
         clause, params = _like_clause(f"COALESCE({assertion_alias}.context_policy_json, ?)", predicate.values)
         return clause, [default_context_json, *params]
     raise ValueError(f"unsupported assertion predicate field: {field}")
+
+
+def _assertion_value_path_predicate_clause(
+    assertion_alias: str, path: str, predicate: QueryFieldPredicate
+) -> tuple[str, list[object]]:
+    """Build a typed JSON-path predicate clause over ``assertions.value_json``.
+
+    ``path`` is a dot-separated JSON-object path below the assertion value
+    root (``value.score`` lowers to ``json_extract(value_json, '$.score')``).
+    The DSL layer (``_is_assertion_value_path_field``) only accepts plain
+    identifier segments, so ``path`` cannot carry SQLite JSON-path
+    metacharacters; it is still passed as a bound parameter rather than
+    interpolated, so this holds even if that upstream guarantee ever weakens.
+    Comparison operators (``>``, ``>=``, ``<``, ``<=``) require a numeric
+    right-hand side and cast the extracted scalar to REAL; ``=`` compares the
+    raw extracted scalar so string/boolean/integer labels still match by
+    value (``value.status:approved``).
+    """
+
+    if not predicate.values:
+        return "", []
+    json_path = f"$.{path}"
+    extract_expr = f"json_extract({assertion_alias}.value_json, ?)"
+    raw_value = predicate.values[-1]
+    if predicate.op == "=":
+        return f"{extract_expr} = ?", [json_path, _coerce_assertion_value_path_literal(raw_value)]
+    op_sql = {">": ">", ">=": ">=", "<": "<", "<=": "<="}[predicate.op]
+    return f"CAST({extract_expr} AS REAL) {op_sql} ?", [json_path, float(raw_value)]
+
+
+def _coerce_assertion_value_path_literal(text: str) -> object:
+    """Coerce DSL literal text to the scalar type ``json_extract`` would return for it."""
+
+    stripped = text.strip()
+    lowered = stripped.lower()
+    if lowered == "true":
+        return 1
+    if lowered == "false":
+        return 0
+    if lowered == "null":
+        return None
+    try:
+        return int(stripped)
+    except ValueError:
+        pass
+    try:
+        return float(stripped)
+    except ValueError:
+        pass
+    return stripped
 
 
 def _run_field_predicate_clause(run_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
