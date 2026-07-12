@@ -11,9 +11,13 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Literal
 
-from polylogue.insights.cohorts import CohortManifest
+from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate
+from polylogue.core.refs import delegation_edge_object_id
+from polylogue.insights.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveDelegationQueryRow, ArchiveStore
 
 PacketStatus = Literal["complete", "not_supported"]
 
@@ -194,10 +198,109 @@ def compile_private_fable_packet(
     )
 
 
+def _delegation_ref(row: ArchiveDelegationQueryRow) -> str:
+    instruction_block_id = row.instruction_tool_use_block_id
+    if instruction_block_id is not None:
+        return f"delegation:{instruction_block_id}"
+    if row.child_session_id is None:
+        raise ValueError("edge-only delegation rows require a child session id")
+    return f"delegation:{delegation_edge_object_id(row.parent_session_id, row.child_session_id)}"
+
+
+def regenerate_private_fable_packet(
+    archive: ArchiveStore,
+    *,
+    seed: str,
+    requested_size: int,
+    schema_id: str = "delegation.discourse",
+    schema_version: int = 1,
+    exact_template_cap: int = 1,
+) -> FableDelegationPacket:
+    """Cold-regenerate a private packet from canonical archive evidence.
+
+    This is intentionally a read-only composition of the canonical delegation
+    relation and the durable annotation substrate. Missing schema, batches, or
+    active labels flows into the compiler's explicit ``not_supported`` result.
+    """
+
+    all_rows = archive.query_delegations(QueryBoolPredicate("and", ()), limit=100_000)
+    packet_rows = tuple(
+        DelegationPacketRow(
+            delegation_ref=_delegation_ref(row),
+            evidence_basis="action" if row.instruction_tool_use_block_id is not None else "edge",
+            mapping_state=row.mapping_state,
+            instruction_sha256=(
+                sha256(row.instruction_payload.encode("utf-8")).hexdigest()
+                if row.instruction_payload is not None
+                else None
+            ),
+        )
+        for row in all_rows
+    )
+    cursor = f"index:{archive.index_db_path.stat().st_mtime_ns}"
+    manifest = compile_cohort_manifest(
+        CohortSpec(
+            population_query="delegations where basis:action",
+            archive_cursor=cursor,
+            seed=seed,
+            requested_size=requested_size,
+            strata=("origin", "dispatch_model"),
+            exact_template_cap=exact_template_cap,
+        ),
+        tuple(
+            CohortCandidate(
+                object_ref=_delegation_ref(row),
+                dimensions={"origin": row.parent_origin, "dispatch_model": row.dispatch_turn_model},
+                template_key=(
+                    sha256(row.instruction_payload.encode("utf-8")).hexdigest() if row.instruction_payload else None
+                ),
+                exclusion_reason=None if row.instruction_tool_use_block_id is not None else "edge_only",
+            )
+            for row in all_rows
+        ),
+    )
+    try:
+        schema = archive.get_annotation_schema(schema_id, schema_version)
+    except KeyError:
+        schema = None
+    assertions = archive.query_assertions(QueryFieldPredicate(field="kind", values=("annotation",)), limit=100_000)
+    labels: list[DelegationPacketLabel] = []
+    qualified_schema_id = f"{schema_id}@v{schema_version}"
+    for assertion in assertions:
+        value = assertion.value
+        if assertion.status != "active" or not isinstance(value, dict) or value.get("_schema") != qualified_schema_id:
+            continue
+        batch_id = assertion.scope_ref.removeprefix("annotation-batch:") if assertion.scope_ref else "unbatched"
+        for field, field_value in value.items():
+            if field.startswith("_") or field in {"applicable", "confidence", "abstain"}:
+                continue
+            labels.append(
+                DelegationPacketLabel(
+                    delegation_ref=assertion.target_ref,
+                    field=field,
+                    value=field_value if isinstance(field_value, str) else None,
+                    batch_id=batch_id,
+                    accepted=True,
+                    applicable=value.get("applicable") if isinstance(value.get("applicable"), bool) else None,
+                    confidence=float(value["confidence"])
+                    if isinstance(value.get("confidence"), (int, float))
+                    else None,
+                    evidence_refs=assertion.evidence_refs,
+                )
+            )
+    return compile_private_fable_packet(
+        manifest=manifest,
+        rows=packet_rows,
+        annotation_schema_id=schema.qualified_id if schema is not None else None,
+        labels=labels,
+    )
+
+
 __all__ = [
     "DelegationPacketLabel",
     "DelegationPacketRow",
     "DescriptiveDistribution",
     "FableDelegationPacket",
     "compile_private_fable_packet",
+    "regenerate_private_fable_packet",
 ]
