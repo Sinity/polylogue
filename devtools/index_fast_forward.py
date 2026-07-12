@@ -682,11 +682,17 @@ def fast_forward_clone(
         )
         if not bool(final_validation["ready"]):
             raise RuntimeError("clone invariants failed after user_version advance")
+        with sqlite3.connect(db_path, timeout=120.0) as conn:
+            final_checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        stable_identity = file_identity(db_path)
+        if final_checkpoint is None or int(final_checkpoint[0]) != 0 or stable_identity.wal_size_bytes != 0:
+            raise RuntimeError("clone WAL did not stabilize after final validation")
+        final_validation["final_checkpoint"] = list(final_checkpoint)
         receipt.update(
             {
                 "status": "clone_ready",
                 "completed_at_ms": _now_ms(),
-                "clone_identity_after": asdict(file_identity(db_path)),
+                "clone_identity_after": asdict(stable_identity),
                 "validation": final_validation,
             }
         )

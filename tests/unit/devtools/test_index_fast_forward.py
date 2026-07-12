@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
 from typing import cast
 
@@ -362,6 +363,8 @@ def test_activation_reuses_receipt_proof_and_rejects_identity_drift(
     clone = Path(str(receipt["clone_path"]))
     from devtools import index_fast_forward as fast_forward_module
 
+    assert receipt["clone_identity_after"] == asdict(fast_forward_module.file_identity(clone))
+    assert cast(list[int], cast(dict[str, object], receipt["validation"])["final_checkpoint"])[0] == 0
     monkeypatch.setattr(
         fast_forward_module,
         "validate_clone",
