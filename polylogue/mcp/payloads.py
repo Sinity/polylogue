@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from polylogue.readiness import ReadinessCheck, ReadinessReport
     from polylogue.storage.runtime import RawSessionRecord
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
 
 MCPAssertionClaimPayload = AssertionClaimPayload
@@ -123,6 +124,46 @@ class MCPBlackboardNoteListPayload(SurfacePayloadModel):
 
     items: tuple[MCPBlackboardNotePayload, ...]
     total: int
+
+
+class MCPContextDeliveryPayload(SurfacePayloadModel):
+    """One immutable context-delivery receipt returned to its recipient."""
+
+    snapshot_ref: str
+    recipient_ref: str
+    run_ref: str | None = None
+    boundary: str
+    inheritance_mode: str
+    context_image_sha256: str
+    context_image: ContextImage
+    segment_refs: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+    assertion_refs: tuple[str, ...]
+    omissions: tuple[dict[str, object], ...]
+    caveats: tuple[str, ...]
+    metadata: dict[str, str]
+    delivered_by_ref: str
+    delivered_at_ms: int
+
+    @classmethod
+    def from_envelope(cls, envelope: ArchiveContextDeliveryEnvelope) -> MCPContextDeliveryPayload:
+        return cls(
+            snapshot_ref=envelope.snapshot_ref,
+            recipient_ref=envelope.recipient_ref,
+            run_ref=envelope.run_ref,
+            boundary=envelope.boundary,
+            inheritance_mode=envelope.inheritance_mode,
+            context_image_sha256=envelope.context_image_sha256,
+            context_image=envelope.context_image,
+            segment_refs=envelope.segment_refs,
+            evidence_refs=envelope.evidence_refs,
+            assertion_refs=envelope.assertion_refs,
+            omissions=envelope.omissions,
+            caveats=envelope.caveats,
+            metadata=envelope.metadata,
+            delivered_by_ref=envelope.delivered_by_ref,
+            delivered_at_ms=envelope.delivered_at_ms,
+        )
 
 
 class MCPFencedCodeBlock(TypedDict):
@@ -927,6 +968,7 @@ def _readiness_components(
 
 __all__ = [
     "MCPArchiveStatsPayload",
+    "MCPContextDeliveryPayload",
     "MCPContextImagePayload",
     "MCPSessionDetailPayload",
     "MCPSessionNeighborCandidateListPayload",

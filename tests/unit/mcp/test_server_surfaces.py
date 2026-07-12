@@ -1082,6 +1082,65 @@ class TestArchiveGenericToolSurfaces:
         assert called_spec.max_tokens == 1000
 
     @pytest.mark.asyncio
+    async def test_get_context_delivery_reads_recipient_scoped_facade_receipt(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
+        from polylogue.core.refs import EvidenceRef
+        from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+
+        image = ContextImage(
+            spec=ContextSpec(seed_refs=("session:session-1",), read_views=()),
+            segments=(
+                ContextSegment(
+                    segment_id="read-view:session-1:messages",
+                    kind="read_view",
+                    title="Delivered context",
+                    markdown="exact bytes",
+                    evidence_refs=(EvidenceRef(session_id="session-1"),),
+                    token_estimate=2,
+                ),
+            ),
+            evidence_refs=(EvidenceRef(session_id="session-1"),),
+            token_estimate=2,
+        )
+        receipt = ArchiveContextDeliveryEnvelope(
+            snapshot_ref="context-snapshot:session-1:explicit-recall",
+            recipient_ref="agent:hermes-main",
+            run_ref=None,
+            boundary="explicit-recall",
+            inheritance_mode="explicit",
+            context_image_sha256="a" * 64,
+            context_image=image,
+            segment_refs=("read-view:session-1:messages",),
+            evidence_refs=("session-1",),
+            assertion_refs=(),
+            omissions=(),
+            caveats=("quoted evidence",),
+            metadata={"context_image_sha256": "a" * 64},
+            delivered_by_ref="user:local",
+            delivered_at_ms=123,
+        )
+        mock_poly = make_polylogue_mock()
+        mock_poly.get_context_delivery = AsyncMock(return_value=receipt)
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_context_delivery"].fn,
+                snapshot_ref=receipt.snapshot_ref,
+                recipient_ref=receipt.recipient_ref,
+            )
+
+        payload = json.loads(result)
+        assert payload["snapshot_ref"] == receipt.snapshot_ref
+        assert payload["context_image_sha256"] == receipt.context_image_sha256
+        assert payload["context_image"]["segments"][0]["markdown"] == "exact bytes"
+        mock_poly.get_context_delivery.assert_awaited_once_with(
+            receipt.snapshot_ref,
+            recipient_ref=receipt.recipient_ref,
+        )
+
+    @pytest.mark.asyncio
     async def test_list_assertion_claims_reads_shared_facade_claims(
         self: object, mcp_server: MCPServerUnderTest
     ) -> None:
