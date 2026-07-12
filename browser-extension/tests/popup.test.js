@@ -243,6 +243,39 @@ describe("popup capture", () => {
     expect(document.getElementById("timeline").textContent).toContain("background_capture_throttled");
   });
 
+  it("binds the active card and timeline to the current tab instead of stale global state", async () => {
+    await loadPopup({
+      polylogueState: {
+        online: true,
+        provider: "chatgpt",
+        provider_session_id: "previous-conversation",
+        captured: true,
+        archive_state: { state: "archived" },
+        updated_at: new Date().toISOString(),
+      },
+      polylogueSessionLedger: {
+        "chatgpt:test-conversation": {
+          archive_state: { state: "spooled_only" },
+          receiver_request_id: "pending-active",
+        },
+      },
+      polylogueConversationTimeline: {
+        "chatgpt:previous-conversation": [
+          { at: new Date().toISOString(), event: "captured", detail: "old capture" },
+        ],
+        "chatgpt:test-conversation": [
+          { at: new Date().toISOString(), event: "held_with_reason", detail: "active pending" },
+        ],
+      },
+    });
+
+    expect(document.getElementById("operator-state").textContent).toBe("Catching up");
+    expect(document.getElementById("archive").textContent).toBe("Spooled");
+    expect(document.getElementById("timeline").textContent).toContain("active pending");
+    expect(document.getElementById("timeline").textContent).not.toContain("old capture");
+    expect(document.getElementById("open-tabs").textContent).toContain("Catching up");
+  });
+
   it("marks DOM-derived captures as partial fidelity in the operator vocabulary", async () => {
     await loadPopup({
       polylogueState: {

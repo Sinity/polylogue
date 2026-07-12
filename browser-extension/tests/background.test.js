@@ -223,6 +223,27 @@ describe("background receiver diagnostics", () => {
       reason: "content_script_capture",
       detail: "spooled_only",
     });
+    expect(stored.polylogueSessionLedger["chatgpt:conv-manual"].archive_state).toEqual({ state: "spooled_only" });
+  });
+
+  it("records an inactive direct capture as catching up in its ledger", async () => {
+    tabs = [
+      { id: 1, url: "https://chatgpt.com/c/conv-active", active: true },
+      { id: 2, url: "https://chatgpt.com/c/conv-inactive", active: false },
+    ];
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "chatgpt",
+      provider_session_id: "conv-inactive",
+      state: "spooled_only",
+    }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-inactive", turns: [] } },
+    }, { tab: tabs[1] });
+
+    expect(stored.polylogueSessionLedger["chatgpt:conv-inactive"].archive_state).toEqual({ state: "spooled_only" });
+    expect(stored.polylogueState).toBeUndefined();
   });
 
   it("keeps receiver request id on error state", async () => {
@@ -496,6 +517,14 @@ describe("background receiver diagnostics", () => {
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-123", title: "ChatGPT" }];
     globalThis.fetch = vi.fn(async (url, options) => {
       fetchCalls.push({ url, options });
+      if (String(url).endsWith("/v1/browser-captures")) {
+        return responseJson({
+          provider: "chatgpt",
+          provider_session_id: "conv-123",
+          state: "spooled_only",
+          receiver_request_id: "capture-request-1",
+        }, { requestId: "capture-request-1" });
+      }
       return responseJson(
         {
           provider: "chatgpt",
@@ -508,6 +537,24 @@ describe("background receiver diagnostics", () => {
         },
         { requestId: "archive-state-1" },
       );
+    });
+    globalThis.chrome.tabs.sendMessage = vi.fn(async (tabId, message) => {
+      if (message.type !== "polylogue.capturePage") return null;
+      const envelope = {
+        session: {
+          provider: "chatgpt",
+          provider_session_id: "conv-123",
+          turns: [{ role: "user" }],
+        },
+      };
+      const captureResult = await new Promise((resolve) => {
+        messageListener(
+          { type: "polylogue.capture", envelope, reason: message.reason },
+          { tab: { id: tabId, url: "https://chatgpt.com/c/conv-123" } },
+          resolve,
+        );
+      });
+      return { ok: true, envelope, captureResult, archiveState: { state: "spooled_only" } };
     });
 
     activatedListener({ tabId: 42 });
@@ -522,8 +569,10 @@ describe("background receiver diagnostics", () => {
       type: "polylogue.capturePage",
       reason: "auto_capture_missing",
     });
+    expect(fetchCalls.map((call) => call.url)).toContain("http://127.0.0.1:8875/v1/browser-captures");
     const timeline = stored.polylogueConversationTimeline["chatgpt:conv-123"];
-    expect(timeline.map((entry) => entry.event)).toEqual(["detected_new", "first_seen"]);
+    expect(timeline.map((entry) => entry.event)).toEqual(["captured", "detected_new", "first_seen"]);
+    expect(timeline[0]).toMatchObject({ reason: "auto_capture_missing", detail: "spooled_only" });
   });
 
   it("serializes concurrent captures without losing either ledger or timeline entry", async () => {

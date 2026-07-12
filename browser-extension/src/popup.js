@@ -283,6 +283,31 @@ function tabState(tab, ledger) {
   return { provider, sessionId, ledger: ledger[conversationKey(provider, sessionId)] || {} };
 }
 
+function activeConversationState(tab, globalState, ledger) {
+  const context = tabState(tab, ledger);
+  if (!globalState?.provider || !globalState?.provider_session_id) return globalState || {};
+  if (!context.provider || !context.sessionId) return globalState || {};
+  if (
+    globalState?.provider === context.provider
+    && globalState?.provider_session_id === context.sessionId
+  ) return globalState;
+
+  const item = context.ledger;
+  return {
+    online: globalState?.online ?? true,
+    provider: context.provider,
+    provider_session_id: context.sessionId,
+    active_page_state: "conversation",
+    archive_state: item.archive_state || null,
+    capture_mode: item.capture_mode || null,
+    asset_acquisition: item.asset_acquisition || null,
+    turn_count: item.turn_count ?? null,
+    attachment_count: item.attachment_count ?? null,
+    last_receiver_request_id: item.receiver_request_id || null,
+    updated_at: item.updated_at || null,
+  };
+}
+
 function renderOpenTabs(tabs, ledger, activeTabId) {
   const node = document.getElementById("open-tabs");
   if (!node) return;
@@ -527,7 +552,7 @@ async function render() {
   const openTabs = await chrome.tabs.query({});
   const currentProvider = providerFromUrl(tab?.url || "");
   document.getElementById("page").innerHTML = `${providerLogo(currentProvider)} <span>${escapeHtml(hostLabel(tab?.url || ""))}</span>`;
-  const state = stored.polylogueState;
+  const state = activeConversationState(tab, stored.polylogueState, stored.polylogueSessionLedger || {});
   const status = operatorStatusForState(state || {});
   const requestNode = document.getElementById("receiver-request");
   const modeNode = document.getElementById("mode");

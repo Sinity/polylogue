@@ -1352,6 +1352,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         throw error;
       }
+      const archiveState = { state: result.state || "spooled_only" };
       await updateSessionLedger({
         provider: summary.provider || result.provider,
         providerSessionId: summary.providerSessionId || result.provider_session_id,
@@ -1364,6 +1365,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           artifact_ref: result.artifact_ref || null,
           extension_instance_id: result.capture_instance_id || null,
           deduplicated: Boolean(result.deduplicated),
+          archive_state: archiveState,
           last_error: null,
         },
       });
@@ -1376,7 +1378,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         receiver_request_id: result.receiver_request_id || null,
         artifact_ref: result.artifact_ref || null,
       });
-      const archiveState = { state: result.state || "spooled_only" };
       await appendConversationTimeline({
         provider: summary.provider || result.provider,
         providerSessionId: summary.providerSessionId || result.provider_session_id,
