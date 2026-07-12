@@ -193,6 +193,8 @@ def test_codex_probe_excludes_unreliable_state_counters_from_drift(
             ("stale-one", 100),
             ("stale-two", 100),
             ("cross-thread", 100),
+            ("equal-total-one", 100),
+            ("equal-total-two", 100),
         ):
             _insert_session(
                 conn,
@@ -214,8 +216,13 @@ def test_codex_probe_excludes_unreliable_state_counters_from_drift(
             ("stale-one", 77),
             ("stale-two", 77),
             ("cross-thread", 2_000_001),
+            ("equal-total-one", 88),
+            ("equal-total-two", 88),
         ),
     )
+    with sqlite3.connect(codex_state) as conn:
+        conn.execute("UPDATE threads SET updated_at_ms = 2001 WHERE id = 'equal-total-one'")
+        conn.execute("UPDATE threads SET updated_at_ms = 2002 WHERE id = 'equal-total-two'")
 
     assert main(["--archive-root", str(archive), "--codex-state", str(codex_state), "--json", "--check"]) == 1
     payload = json.loads(capsys.readouterr().out)
@@ -223,13 +230,17 @@ def test_codex_probe_excludes_unreliable_state_counters_from_drift(
 
     # The one reliable disagreement remains a real failure; the three state_5
     # failure modes are reported separately and cannot inflate drift.
-    assert codex["comparison"]["compared"] == 1
-    assert codex["comparison"]["outside_tolerance"] == 1
-    assert codex["comparison"]["samples"][0]["key"] == "reliable-drift"
+    assert codex["comparison"]["compared"] == 3
+    assert codex["comparison"]["outside_tolerance"] == 3
+    assert {sample["key"] for sample in codex["comparison"]["samples"]} == {
+        "reliable-drift",
+        "equal-total-one",
+        "equal-total-two",
+    }
     assert codex["details"]["external_state_unreliable"] == {
         "count": 4,
         "classes": [
-            {"value": "repeated_cross_thread_value", "count": 2},
+            {"value": "repeated_stale_state_fingerprint", "count": 2},
             {"value": "zero_sentinel", "count": 1},
             {"value": "implausible_context_window", "count": 1},
         ],
@@ -243,13 +254,13 @@ def test_codex_probe_excludes_unreliable_state_counters_from_drift(
             {
                 "thread_id": "stale-one",
                 "tokens_used": 77,
-                "classification": "repeated_cross_thread_value",
+                "classification": "repeated_stale_state_fingerprint",
                 "archive_present": True,
             },
             {
                 "thread_id": "stale-two",
                 "tokens_used": 77,
-                "classification": "repeated_cross_thread_value",
+                "classification": "repeated_stale_state_fingerprint",
                 "archive_present": True,
             },
             {

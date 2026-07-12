@@ -143,12 +143,19 @@ def _codex_external_state_unreliable(
     """Classify ``state_5`` counters that cannot support a token comparison.
 
     ``threads.tokens_used`` is external runtime state, not archived evidence.
-    Exact zeroes are sentinels, repeated values across threads are stale
+    Exact zeroes are sentinels, repeated complete state fingerprints are stale
     defaults, and values over any known Codex context window are inherited or
     cumulative counters. None can establish archive accounting drift.
     """
 
-    token_counts = Counter(_coerce_int(item["tokens_used"]) for item in external.values())
+    def stale_fingerprint(item: dict[str, object]) -> tuple[int, object, str] | None:
+        updated_at_ms = item.get("updated_at_ms")
+        rollout_path = item.get("rollout_path")
+        if updated_at_ms is None or not isinstance(rollout_path, str) or not rollout_path:
+            return None
+        return (_coerce_int(item["tokens_used"]), updated_at_ms, rollout_path)
+
+    fingerprints = Counter(fingerprint for item in external.values() if (fingerprint := stale_fingerprint(item)))
     unreliable: dict[str, str] = {}
     for thread_id, item in external.items():
         tokens_used = _coerce_int(item["tokens_used"])
@@ -156,8 +163,8 @@ def _codex_external_state_unreliable(
             unreliable[thread_id] = "zero_sentinel"
         elif tokens_used > _MAX_PLAUSIBLE_CODEX_THREAD_TOKENS:
             unreliable[thread_id] = "implausible_context_window"
-        elif token_counts[tokens_used] > 1:
-            unreliable[thread_id] = "repeated_cross_thread_value"
+        elif (fingerprint := stale_fingerprint(item)) is not None and fingerprints[fingerprint] > 1:
+            unreliable[thread_id] = "repeated_stale_state_fingerprint"
     return unreliable
 
 
