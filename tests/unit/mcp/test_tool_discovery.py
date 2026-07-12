@@ -30,6 +30,10 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "query_units": {"expression": "messages where text:hello", "limit": 1},
     "resolve_ref": {"ref": f"session:{_SYNTHETIC_CONV_ID}"},
     "compile_context": {"seed_ref": f"session:{_SYNTHETIC_CONV_ID}", "read_views": "messages"},
+    "get_context_delivery": {
+        "snapshot_ref": "context-snapshot:test:conv-discovery-nonexistent:explicit-recall",
+        "recipient_ref": "agent:discovery",
+    },
     "blackboard_list": {},
     "get_session_summary": {"id": _SYNTHETIC_CONV_ID},
     "get_messages": {"session_id": _SYNTHETIC_CONV_ID, "limit": 1},

@@ -91,6 +91,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "list_workspaces": ("envelope", frozenset({"items", "total"})),
     # ------- single record -------
     "get_session_summary": "single_object",
+    "get_context_delivery": "single_object",
     "compile_context": "single_object",
     "archive_get_session": "single_object",
     "get_metadata": "single_object",
