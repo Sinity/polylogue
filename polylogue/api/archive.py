@@ -3002,26 +3002,7 @@ class PolylogueArchiveMixin:
                     kind="annotation-batch",
                 ),
             )
-        payload = AnnotationBatchPayload(
-            batch_id=batch.batch_id,
-            batch_ref=batch.batch_ref,
-            schema_id=batch.schema_id,
-            schema_version=batch.schema_version,
-            qualified_schema_id=batch.qualified_schema_id,
-            target_ref=batch.target_ref,
-            source_result_ref=batch.source_result_ref,
-            actor_ref=batch.actor_ref,
-            model_ref=batch.model_ref,
-            prompt_ref=batch.prompt_ref,
-            total_count=batch.total_count,
-            valid_count=batch.valid_count,
-            invalid_count=batch.invalid_count,
-            abstained_count=batch.abstained_count,
-            assertion_refs=batch.assertion_refs,
-            validation_failures=batch.validation_failures,
-            metadata=batch.metadata,
-            created_at_ms=batch.created_at_ms,
-        )
+        payload = AnnotationBatchPayload.from_batch(batch)
         object_refs = tuple(
             dict.fromkeys(
                 (
@@ -3031,7 +3012,6 @@ class PolylogueArchiveMixin:
                     payload.actor_ref,
                     payload.model_ref,
                     payload.prompt_ref,
-                    *payload.assertion_refs,
                 )
             )
         )
@@ -3048,6 +3028,7 @@ class PolylogueArchiveMixin:
                 f"{payload.invalid_count} invalid; {payload.abstained_count} abstained"
             ),
             object_refs=object_refs,
+            caveats=payload.truncation_caveats(),
             actions=(_resolution_action("read annotation target", f"polylogue find {payload.target_ref} then read"),),
         )
 
