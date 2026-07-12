@@ -60,6 +60,35 @@ def test_current_index_schema_has_a_complete_delta_declaration() -> None:
     assert report["missing_versions"] == ()
 
 
+def test_plan_orders_declarations_before_validating_contiguity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Registry order cannot silently downgrade a complete clone-safe plan."""
+    monkeypatch.setattr(lifecycle, "INDEX_DELTA_DECLARATIONS", tuple(reversed(lifecycle.INDEX_DELTA_DECLARATIONS)))
+
+    plan = lifecycle.index_fast_forward_plan(32, INDEX_SCHEMA_VERSION)
+
+    assert plan is not None
+    assert tuple(declaration.version for declaration in plan.declarations) == (33, 34, 35)
+
+
+def test_nonsemantic_delta_without_operations_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A declared class cannot advance an index version without executable SQL."""
+    empty_declaration = IndexDeltaDeclaration(
+        version=36,
+        classes=(DerivedDeltaClass.INDEX_ONLY,),
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "INDEX_DELTA_DECLARATIONS",
+        (*lifecycle.INDEX_DELTA_DECLARATIONS, empty_declaration),
+    )
+
+    report = lifecycle.index_delta_declaration_report(36)
+
+    assert report["ok"] is False
+    assert report["invalid_versions"] == (36,)
+    assert lifecycle.index_fast_forward_plan(32, 36) is None
+
+
 def test_schema_policy_rejects_an_index_bump_without_a_delta_declaration(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

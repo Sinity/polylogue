@@ -69,7 +69,11 @@ class IndexFastForwardPlan:
 
     @property
     def eligible_for_sql_fast_forward(self) -> bool:
-        return bool(self.declarations) and not self.requires_semantic_reparse
+        return (
+            bool(self.declarations)
+            and not self.requires_semantic_reparse
+            and all(declaration.operations for declaration in self.declarations)
+        )
 
     @property
     def canonical_objects(self) -> tuple[tuple[str, str], ...]:
@@ -169,7 +173,9 @@ def index_delta_declaration_report(current_version: int) -> IndexDeltaDeclaratio
     invalid = tuple(
         declaration.version
         for declaration in INDEX_DELTA_DECLARATIONS
-        if declaration.version > current_version or not declaration.classes
+        if declaration.version > current_version
+        or not declaration.classes
+        or (not declaration.requires_semantic_reparse and not declaration.operations)
     )
     return {
         "compatibility_floor": INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR,
@@ -186,9 +192,14 @@ def index_fast_forward_plan(source_version: int, target_version: int) -> IndexFa
     if source_version < INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR or source_version >= target_version:
         return None
     declarations = tuple(
-        declaration
-        for declaration in INDEX_DELTA_DECLARATIONS
-        if source_version < declaration.version <= target_version
+        sorted(
+            (
+                declaration
+                for declaration in INDEX_DELTA_DECLARATIONS
+                if source_version < declaration.version <= target_version
+            ),
+            key=lambda declaration: declaration.version,
+        )
     )
     if tuple(declaration.version for declaration in declarations) != tuple(
         range(source_version + 1, target_version + 1)
