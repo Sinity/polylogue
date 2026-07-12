@@ -288,6 +288,15 @@ def test_fast_forward_failure_keeps_user_version_and_source_counts(tmp_path: Pat
 
 def test_generation_activation_and_rollback_only_swap_symlink(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
+    sibling_paths: dict[str, Path] = {}
+    for filename in ("source.db", "user.db", "embeddings.db", "ops.db"):
+        sibling = archive_root / filename
+        sibling.parent.mkdir(parents=True, exist_ok=True)
+        sibling.write_bytes(filename.encode())
+        sibling_paths[filename] = sibling
+    blob = archive_root / "blob"
+    blob.mkdir()
+    sibling_paths["blob"] = blob
     active_dir = archive_root / ".index-generations" / "gen-v32"
     active_dir.mkdir(parents=True)
     active_db = active_dir / "index.db"
@@ -306,6 +315,10 @@ def test_generation_activation_and_rollback_only_swap_symlink(tmp_path: Path) ->
     )
 
     clone = Path(str(receipt["clone_path"]))
+    for filename, sibling in sibling_paths.items():
+        generation_sibling = clone.parent / filename
+        assert generation_sibling.is_symlink()
+        assert generation_sibling.resolve() == sibling.resolve()
     assert active_link.resolve() == active_db.resolve()
     assert _sha256(active_db) == active_hash
     activate_generation(receipt_path)
