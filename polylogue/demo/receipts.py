@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
+from polylogue.errors import DatabaseError
 from polylogue.insights.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.scenarios import (
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
@@ -115,7 +116,11 @@ class CompletionClaimEvidence:
     origin: str
     classification: str
     prior_action_ref: str | None
+    prior_is_error: bool | None
+    prior_exit_code: int | None
     repair_action_ref: str | None
+    repair_is_error: bool | None
+    repair_exit_code: int | None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -124,7 +129,11 @@ class CompletionClaimEvidence:
             "origin": self.origin,
             "classification": self.classification,
             "prior_action_ref": self.prior_action_ref,
+            "prior_is_error": self.prior_is_error,
+            "prior_exit_code": self.prior_exit_code,
             "repair_action_ref": self.repair_action_ref,
+            "repair_is_error": self.repair_is_error,
+            "repair_exit_code": self.repair_exit_code,
         }
 
 
@@ -137,6 +146,7 @@ class CompletionClaimExperimentResult:
     evidence: tuple[CompletionClaimEvidence, ...]
     unsupported_count: int
     contradicted_then_repaired_count: int
+    evidence_fingerprint: str
 
     @property
     def sample_size(self) -> int:
@@ -157,6 +167,7 @@ class CompletionClaimExperimentResult:
                 ),
             },
             "manifest": self.manifest.to_payload(),
+            "evidence_fingerprint": self.evidence_fingerprint,
             "headline": {
                 "denominator": denominator,
                 "unsupported_count": self.unsupported_count,
@@ -229,7 +240,7 @@ def _action_rows(conn: sqlite3.Connection, session_id: str, position_clause: str
         FROM actions AS a
         JOIN messages AS m ON m.message_id = a.message_id
         WHERE a.session_id = ?
-          AND a.exit_code IS NOT NULL
+          AND (a.exit_code IS NOT NULL OR a.is_error IS NOT NULL)
           AND m.position {position_clause} ?
         ORDER BY m.position, a.tool_result_block_id
         """,
@@ -262,6 +273,9 @@ def inspect_completion_claims(
     """
 
     with _connect(archive_root / "index.db") as conn:
+        from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
+
+        check_fts_readiness(message_fts_search_readiness_sync(conn), "Run `polylogued run`.")
         candidates_rows = conn.execute(
             """
             SELECT b.block_id, b.text, m.session_id, m.position, s.origin, m.model_name
@@ -270,6 +284,7 @@ def inspect_completion_claims(
             JOIN sessions AS s ON s.session_id = m.session_id
             WHERE b.block_type = 'text'
               AND m.role = 'assistant'
+              AND m.material_origin = 'assistant_authored'
               AND b.rowid IN (
                   SELECT rowid
                   FROM messages_fts
@@ -308,7 +323,7 @@ def inspect_completion_claims(
             prior_action = prior[-1] if prior else None
             failed = prior_action if prior_action is not None and _is_failed_action(prior_action) else None
             repair = None
-            classification = "supported_at_claim_time"
+            classification = "prior_outcome_recorded"
             if prior_action is None:
                 classification = "unsupported_by_structural_tool_evidence"
             elif failed is not None:
@@ -326,17 +341,29 @@ def inspect_completion_claims(
                     prior_action_ref=(
                         f"block:{prior_action['tool_result_block_id']}" if prior_action is not None else None
                     ),
+                    prior_is_error=(bool(prior_action["is_error"]) if prior_action is not None else None),
+                    prior_exit_code=(
+                        int(prior_action["exit_code"])
+                        if prior_action is not None and prior_action["exit_code"] is not None
+                        else None
+                    ),
                     repair_action_ref=f"block:{repair['tool_result_block_id']}" if repair is not None else None,
+                    repair_is_error=(bool(repair["is_error"]) if repair is not None else None),
+                    repair_exit_code=(
+                        int(repair["exit_code"]) if repair is not None and repair["exit_code"] is not None else None
+                    ),
                 )
             )
     unsupported_count = sum(item.classification == "unsupported_by_structural_tool_evidence" for item in evidence)
     repaired_count = sum(item.classification == "contradicted_then_repaired" for item in evidence)
+    fingerprint_payload = json.dumps([item.to_payload() for item in evidence], sort_keys=True, separators=(",", ":"))
     return CompletionClaimExperimentResult(
         archive_root=archive_root,
         manifest=manifest,
         evidence=tuple(evidence),
         unsupported_count=unsupported_count,
         contradicted_then_repaired_count=repaired_count,
+        evidence_fingerprint=f"sha256:{sha256(fingerprint_payload.encode()).hexdigest()}",
     )
 
 
@@ -451,6 +478,12 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
     except (OSError, sqlite3.Error) as exc:
         problems.append(f"source evidence unreadable: {exc}")
 
+    completion_claims: CompletionClaimExperimentResult | None = None
+    try:
+        completion_claims = inspect_completion_claims(archive_root)
+    except (DatabaseError, OSError, sqlite3.Error) as exc:
+        problems.append(f"completion-claim evidence unreadable: {exc}")
+
     verdict = "contradicted_at_claim_time_then_repaired" if not problems else "invalid_demo_evidence"
     return DemoReceiptsResult(
         archive_root=archive_root,
@@ -466,7 +499,7 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
         anti_grep_failed_actions=anti_grep_failed_actions,
         raw_id=raw_id,
         raw_blob_sha256=raw_blob_sha256,
-        completion_claims=inspect_completion_claims(archive_root),
+        completion_claims=completion_claims,
         problems=tuple(problems),
     )
 

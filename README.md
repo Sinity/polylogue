@@ -40,6 +40,21 @@ nix develop -c polylogue demo receipts
 
 It creates a throwaway private-data-free archive, imports provider-shaped artifacts through the normal parser and storage path, and compares an assistant success claim with a structurally failed test receipt, a later successful repair, and a prose-only anti-grep control. The result is a bounded contract proof: it demonstrates how Polylogue reasons from evidence, not how often real agents make this mistake.
 
+For an operator-owned archive, pass its path explicitly (the command never needs
+to export a live archive root):
+
+```bash
+polylogue demo receipts --root /path/to/archive --no-seed --format json
+```
+
+The JSON adds a deterministic, origin-stratified completion-claim manifest and
+an aggregate denominator for claims unsupported by typed tool outcomes and
+claims contradicted then repaired. It only considers assistant-authored text
+matching the declared high-specificity phrases; it rejects stale or missing FTS
+instead of publishing a partial denominator. The output remains local because
+its evidence refs identify private archive material; the public demo proves the
+method and contract, not a live-archive prevalence number.
+
 Run the broader tour to inspect lineage, aggregate failures, and archive facets, and to write a human report plus machine-readable receipts:
 
 ```bash
