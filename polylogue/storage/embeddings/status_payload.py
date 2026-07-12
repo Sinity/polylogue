@@ -8,6 +8,7 @@ and render in their own dialect.
 from __future__ import annotations
 
 import json
+import shlex
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -319,7 +320,7 @@ def _active_failure_details(
                 "resolution_action": None if row[12] is None else str(row[12]),
                 "supported_actions": ["acknowledge", "requeue", "supersede"],
                 "resolution_command": (
-                    f"polylogue ops embed resolve-failure {str(row[0])} --action acknowledge|requeue|supersede --yes"
+                    f"polylogue ops embed resolve-failure {shlex.quote(str(row[0]))} --action ACTION --yes"
                 ),
             }
         )

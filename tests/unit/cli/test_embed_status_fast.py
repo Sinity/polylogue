@@ -284,8 +284,7 @@ def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Pat
             "resolution_action": None,
             "supported_actions": ["acknowledge", "requeue", "supersede"],
             "resolution_command": (
-                "polylogue ops embed resolve-failure embedding-failure:terminal "
-                "--action acknowledge|requeue|supersede --yes"
+                "polylogue ops embed resolve-failure embedding-failure:terminal --action ACTION --yes"
             ),
         }
     ]
@@ -293,6 +292,84 @@ def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Pat
     assert "embedding-failure:terminal: terminal" in text
     assert "refs: codex-session:pending:m1" in text
     assert "resolve: polylogue ops embed resolve-failure embedding-failure:terminal" in text
+
+
+def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path) -> None:
+    """The operator command must mutate the failure ledger and retry status.
+
+    Anti-vacuity: replacing the Click command with output-only formatting, or
+    removing its call to ``resolve_embedding_failure``, leaves the terminal row
+    active and the session excluded from a future embedding pass.
+    """
+    db_anchor = tmp_path / "custom.sqlite"
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    embeddings_db = index_db.with_name("embeddings.db")
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE embedding_failures (
+                failure_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                message_refs_json TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                error_class TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                retryable INTEGER NOT NULL,
+                lifecycle_state TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                resolved_at_ms INTEGER,
+                resolution_action TEXT,
+                resolution_note TEXT,
+                superseded_by TEXT
+            );
+            INSERT INTO embedding_status VALUES (
+                'codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400'
+            );
+            INSERT INTO embedding_failures VALUES (
+                'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
+                '["codex-session:pending:m1"]', 'voyage', 'voyage-4', 'provider_http_400',
+                'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
+                NULL, NULL, NULL, NULL
+            );
+            """
+        )
+
+    runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
+    result = runner.invoke(
+        embed_command,
+        [
+            "resolve-failure",
+            "embedding-failure:terminal",
+            "--action",
+            "requeue",
+            "--yes",
+            "--format",
+            "json",
+        ],
+        obj=_env(db_anchor),
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert _payload(result.output) == {
+        "failure_id": "embedding-failure:terminal",
+        "lifecycle_state": "resolved",
+        "resolution_action": "requeue",
+        "resolution_note": None,
+        "session_id": "codex-session:pending",
+        "superseded_by": None,
+    }
+    with sqlite3.connect(embeddings_db) as conn:
+        assert conn.execute(
+            "SELECT lifecycle_state FROM embedding_failures WHERE failure_id = 'embedding-failure:terminal'"
+        ).fetchone() == ("resolved",)
+        assert conn.execute(
+            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = 'codex-session:pending'"
+        ).fetchone() == (1, None)
 
 
 def test_status_json_detail_does_not_derive_coverage_from_analyzed_prose_estimate(tmp_path: Path) -> None:
