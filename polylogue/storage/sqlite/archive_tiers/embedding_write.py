@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 from polylogue.core.enums import Origin
 from polylogue.storage.search_providers.sqlite_vec_support import _serialize_f32
@@ -243,11 +243,14 @@ def resolve_embedding_failure(
     """Explicitly acknowledge, supersede, or requeue an active failure."""
 
     now_ms = int(time.time() * 1000) if resolved_at_ms is None else resolved_at_ms
-    state: EmbeddingFailureState = {
-        "acknowledge": "acknowledged",
-        "supersede": "superseded",
-        "requeue": "resolved",
-    }[action]
+    state = cast(
+        EmbeddingFailureState,
+        {
+            "acknowledge": "acknowledged",
+            "supersede": "superseded",
+            "requeue": "resolved",
+        }[action],
+    )
     with conn:
         row = conn.execute(
             "SELECT session_id FROM embedding_failures WHERE failure_id = ? AND lifecycle_state IN ('retryable', 'terminal')",
@@ -339,10 +342,10 @@ def _failure_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveEmbedding
         error_class=str(row[6]),
         error_message=str(row[7]),
         retryable=bool(row[8]),
-        lifecycle_state=str(row[9]),
-        created_at_ms=int(row[10]),
-        updated_at_ms=int(row[11]),
-        resolved_at_ms=None if row[12] is None else int(row[12]),
+        lifecycle_state=cast(EmbeddingFailureState, str(row[9])),
+        created_at_ms=int(str(row[10])),
+        updated_at_ms=int(str(row[11])),
+        resolved_at_ms=None if row[12] is None else int(str(row[12])),
         resolution_action=None if row[13] is None else str(row[13]),
         resolution_note=None if row[14] is None else str(row[14]),
         superseded_by=None if row[15] is None else str(row[15]),
