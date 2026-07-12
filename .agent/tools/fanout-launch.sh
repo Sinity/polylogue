@@ -22,6 +22,7 @@ CANONICAL="/realm/project/sinnix/dots/_ai/skills/agent-orchestration/scripts/lau
 DEPLOYED="$HOME/.claude/skills/agent-orchestration/scripts/launch_agent_tabs.sh"
 LAUNCHER="$CANONICAL"
 [[ -x "$LAUNCHER" ]] || LAUNCHER="$DEPLOYED"
+[[ -x "$LAUNCHER" ]] || { echo "fanout-launch: no launcher at $CANONICAL or $DEPLOYED" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 PROMPT_DIR="$REPO_ROOT/.agent/scratch/fanout-prompts"

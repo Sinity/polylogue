@@ -509,7 +509,10 @@ def load_beads() -> dict[str, dict]:
             d = json.loads(line)
         except json.JSONDecodeError:
             continue
-        out[d["id"].removeprefix("polylogue-")] = d
+        bead_id = d.get("id")
+        if not isinstance(bead_id, str):
+            continue
+        out[bead_id.removeprefix("polylogue-")] = d
     return out
 
 
@@ -564,7 +567,12 @@ def main() -> int:
     for e in errors:
         print(f"ERROR {e}")
     if not args.check:
-        print(f"\nwrote {len(LANES)} prompts to {OUT}")
+        if errors:
+            print(
+                f"\nwrote {len(LANES)} prompts to {OUT} — {len(errors)} error(s) above; roster needs fixing before launch"
+            )
+        else:
+            print(f"\nwrote {len(LANES)} prompts to {OUT}")
         sol = [name for name, s in LANES.items() if s.get("model") == "gpt-5.6-sol"]
         if sol:
             print(f"SOL lanes (launch separately with FANOUT_MODEL=gpt-5.6-sol): {', '.join(sol)}")
