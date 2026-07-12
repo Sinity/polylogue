@@ -947,6 +947,45 @@ def test_embedding_orphan_reconcile_cli_apply_removes_rows(
         assert status[1] == 1
 
 
+def test_embedding_orphan_reconcile_cli_apply_is_bounded_by_default(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    session_id, _message_id = _seed_orphan_embedding_row(cli_workspace["archive_root"])
+    embeddings_db = cli_workspace["archive_root"] / "embeddings.db"
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.executemany(
+            """
+            INSERT INTO message_embeddings_meta (
+                message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
+            ) VALUES (?, 'voyage-4', 1024, ?, 1700000000000, 0)
+            """,
+            [(f"{session_id}:zz-orphan-{position:03d}", b"z" * 32) for position in range(500)],
+        )
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "embedding-orphan-reconcile",
+            "--yes",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["candidate_message_rows"] == 500
+    assert payload["removed_message_rows"] == 500
+    assert payload["more_pending"] is True
+    with sqlite3.connect(embeddings_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+
+
 def test_embedding_orphan_reconcile_cli_apply_requires_exclusive_offline_lease(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,

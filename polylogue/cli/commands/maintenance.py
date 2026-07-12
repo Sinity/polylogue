@@ -45,6 +45,7 @@ from polylogue.storage.blob_publication import (
     inspect_blob_publication_receipts,
 )
 from polylogue.storage.embeddings.reconcile import (
+    DEFAULT_MAX_COUNT,
     DEFAULT_QUIET_WINDOW_MS,
     EmbeddingOrphanReconcileReport,
     reconcile_embedding_orphans,
@@ -2280,7 +2281,7 @@ def embedding_orphan_reconcile_command(
                     index_db,
                     embeddings_db,
                     dry_run=False,
-                    max_count=max_count,
+                    max_count=DEFAULT_MAX_COUNT if max_count is None else max_count,
                     sample_size=sample_limit,
                     quiet_window_ms=quiet_window_seconds * 1000,
                     mutation_authority="offline-exclusive",
