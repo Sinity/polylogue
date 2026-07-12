@@ -572,6 +572,18 @@ class TestQueryTools:
         assert error["valid_values"] == [origin.value for origin in Origin]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("query", "field"), [("origin:codxe-session", "origin"), ("action:bogus", "action")])
+    async def test_search_dsl_invalid_closed_values_enumerate_valid_values(
+        self, mcp_server: MCPServerUnderTest, query: str, field: str
+    ) -> None:
+        result = await invoke_surface_async(mcp_server._tool_manager._tools["search"].fn, query=query)
+
+        error = json.loads(result)
+        assert error["code"] == "invalid_query"
+        assert error["field"] == field
+        assert error["valid_values"]
+
+    @pytest.mark.asyncio
     async def test_search_envelope_affordance_catalog_is_opt_in(
         self, tmp_path: Path, mcp_server: MCPServerUnderTest
     ) -> None:

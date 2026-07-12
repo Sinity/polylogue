@@ -308,15 +308,19 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
       deliberately not included so the surface cannot leak credentials, file
       paths, or other internal state.
     """
-    if isinstance(exc, QuerySpecError):
-        valid_values = _QUERY_ERROR_VALID_VALUES.get(exc.field, ())
+    from polylogue.archive.query.expression import ExpressionCompileError
+
+    if isinstance(exc, QuerySpecError | ExpressionCompileError):
+        field = exc.field
+        valid_values = _QUERY_ERROR_VALID_VALUES.get(field, ()) if field is not None else ()
         valid_hint = f" Valid values: {', '.join(valid_values)}." if valid_values else ""
+        value = exc.value if isinstance(exc, QuerySpecError) else str(exc)
         payload = MCPErrorPayload(
-            message=f"invalid {exc.field}: {exc.value}.{valid_hint}",
+            message=f"invalid {field}: {value}.{valid_hint}",
             code="invalid_query",
             error="invalid_query",
             detail=type(exc).__name__,
-            field=exc.field,
+            field=field,
             tool=fn_name,
             valid_values=valid_values,
         )
