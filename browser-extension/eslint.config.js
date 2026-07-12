@@ -19,6 +19,7 @@ export default [
         URLSearchParams: "readonly",
         fetch: "readonly",
         TextEncoder: "readonly",
+        AbortController: "readonly",
         structuredClone: "readonly",
       },
     },

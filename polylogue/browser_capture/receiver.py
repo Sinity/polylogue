@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -154,7 +153,6 @@ class BrowserCaptureWriteResult:
     provider_session_id: str
     path: Path
     artifact_ref: str
-    content_hash: str
     bytes_written: int
     replaced: bool
 
@@ -483,7 +481,6 @@ def write_capture_envelope(
             _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=SPOOL_MAX_BYTES)
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = envelope.model_dump(mode="json", exclude_none=True)
-        canonical = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
         raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
         with tempfile.NamedTemporaryFile("wb", dir=target.parent, prefix=f".{target.name}.", delete=False) as handle:
             temp_path = Path(handle.name)
@@ -495,7 +492,6 @@ def write_capture_envelope(
         provider_session_id=envelope.provider_session_id,
         path=target,
         artifact_ref=capture_artifact_ref(envelope, spool_path),
-        content_hash=hashlib.sha256(canonical).hexdigest(),
         bytes_written=target.stat().st_size,
         replaced=replaced,
     )

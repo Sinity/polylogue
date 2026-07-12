@@ -29,6 +29,16 @@ function isoTimestamp(value) {
 
 const REQUEST_OPTIONS = Object.freeze({ credentials: "include", cache: "no-store" });
 
+async function providerRequest(fetchImpl, url) {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort("provider_request_timeout"), PROVIDER_REQUEST_TIMEOUT_MS);
+  try {
+    return await fetchImpl(url, { ...REQUEST_OPTIONS, signal: controller.signal });
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
+}
+
 function chatGptText(content) {
   if (Array.isArray(content?.parts)) {
     const parts = content.parts.flatMap((part) => {
@@ -98,7 +108,7 @@ export class ChatGptBackfillAdapter {
   requestCost() { return 1; }
   async enumerate(cursor = "0", cutoff = null) {
     const offset = Number.parseInt(cursor || "0", 10) || 0;
-    const response = await this.fetchImpl(`https://chatgpt.com/backend-api/conversations?offset=${offset}&limit=100&order=updated`, REQUEST_OPTIONS);
+    const response = await providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversations?offset=${offset}&limit=100&order=updated`);
     if (!response.ok) return { response, classification: responseClass(response), items: [], next_cursor: cursor, done: false, request_count: 1 };
     const body = await jsonResponse(response, "chatgpt_inventory");
     const items = requireArray(body.items, "chatgpt_inventory.items").map((item, index) => ({
@@ -110,7 +120,7 @@ export class ChatGptBackfillAdapter {
     const nextOffset = offset + requireArray(body.items, "chatgpt_inventory.items").length;
     return { response, classification: "success", items, next_cursor: String(nextOffset), done: nextOffset >= total, request_count: 1 };
   }
-  async fetchNative(nativeId) { return this.fetchImpl(`https://chatgpt.com/backend-api/conversation/${encodeURIComponent(nativeId)}`, REQUEST_OPTIONS); }
+  async fetchNative(nativeId) { return providerRequest(this.fetchImpl, `https://chatgpt.com/backend-api/conversation/${encodeURIComponent(nativeId)}`); }
   classifyResponse(response) { return responseClass(response); }
   async normalizeCapture(response, item, attribution) {
     const body = await jsonResponse(response, "chatgpt_conversation");
@@ -151,7 +161,7 @@ export class ClaudeBackfillAdapter {
   }
   async organization() {
     if (this.organizationId) return { id: this.organizationId, request_count: 0 };
-    const response = await this.fetchImpl("https://claude.ai/api/organizations", REQUEST_OPTIONS);
+    const response = await providerRequest(this.fetchImpl, "https://claude.ai/api/organizations");
     if (!response.ok) return { response, classification: responseClass(response), request_count: 1 };
     const organizations = requireArray(await response.json(), "claude_organizations");
     this.organizationId = requireString(organizations[0]?.uuid, "claude_organizations[0].uuid");
@@ -161,7 +171,7 @@ export class ClaudeBackfillAdapter {
     const organization = await this.organization();
     if (!organization.id) return { ...organization, items: [], next_cursor: cursor, done: false };
     const offset = Number.parseInt(cursor || "0", 10) || 0;
-    const response = await this.fetchImpl(`https://claude.ai/api/organizations/${encodeURIComponent(organization.id)}/chat_conversations?limit=100&offset=${offset}`, REQUEST_OPTIONS);
+    const response = await providerRequest(this.fetchImpl, `https://claude.ai/api/organizations/${encodeURIComponent(organization.id)}/chat_conversations?limit=100&offset=${offset}`);
     const requestCount = organization.request_count + 1;
     if (!response.ok) return { response, classification: responseClass(response), items: [], next_cursor: cursor, done: false, request_count: requestCount, provider_options: { claudeOrganizationId: organization.id } };
     const body = await response.json();
@@ -176,7 +186,16 @@ export class ClaudeBackfillAdapter {
   async fetchNative(nativeId) {
     const organization = await this.organization();
     if (!organization.id) return organization.response;
-    return this.fetchImpl(`https://claude.ai/api/organizations/${encodeURIComponent(organization.id)}/chat_conversations/${encodeURIComponent(nativeId)}`, REQUEST_OPTIONS);
+    const query = new URLSearchParams({
+      tree: "True",
+      rendering_mode: "messages",
+      render_all_tools: "true",
+      consistency: "strong",
+    });
+    return providerRequest(
+      this.fetchImpl,
+      `https://claude.ai/api/organizations/${encodeURIComponent(organization.id)}/chat_conversations/${encodeURIComponent(nativeId)}?${query}`,
+    );
   }
   classifyResponse(response) { return responseClass(response); }
   async normalizeCapture(response, item, attribution) {
@@ -208,3 +227,4 @@ export function providerAdapters(fetchImpl = globalThis.fetch, options = {}) {
     "claude-ai": new ClaudeBackfillAdapter(fetchImpl, options.claudeOrganizationId || null),
   };
 }
+import { PROVIDER_REQUEST_TIMEOUT_MS } from "./models.js";

@@ -1,19 +1,23 @@
 export const BACKFILL_ALARM = "polylogueBackfillWake";
 export const BACKFILL_DB_NAME = "polylogue-browser-backfill";
-export const BACKFILL_DB_VERSION = 1;
+export const BACKFILL_DB_VERSION = 2;
+export const PROVIDER_REQUEST_TIMEOUT_MS = 60000;
 
 export const DEFAULT_BACKFILL_POLICY = Object.freeze({
   maxQueueSize: 10000,
   maxCapturesPerWake: 5,
   maxDailyRequests: 250,
-  leaseMs: 120000,
+  leaseMs: 180000,
+  providerRequestTimeoutMs: PROVIDER_REQUEST_TIMEOUT_MS,
   baseCadenceMs: 15000,
   maxCadenceMs: 15 * 60 * 1000,
   maxTransportAttempts: 5,
+  maxReceiverAttempts: 20,
+  maxStoredBytes: 100 * 1024 * 1024,
   breakerThreshold: 2,
 });
 
-export const TERMINAL_QUEUE_STATES = new Set(["complete", "no_turns", "auth_required", "failed", "cancelled"]);
+export const TERMINAL_QUEUE_STATES = new Set(["complete", "unchanged", "no_turns", "auth_required", "failed", "cancelled"]);
 
 export function backfillAlarmName(jobId) {
   return `${BACKFILL_ALARM}:${jobId}`;

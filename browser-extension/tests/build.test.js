@@ -4,13 +4,16 @@
 // emission so a future change to the build pipeline cannot silently break
 // the release artifact shape.
 
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { indexedDB } from "fake-indexeddb";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EXT_ROOT = resolve(__dirname, "..");
@@ -81,7 +84,7 @@ describe("build.mjs full archive emission", () => {
   });
 
   it("emits chrome zip + firefox xpi with build-manifest.json", () => {
-    execFileSync("node", [BUILD, "--version", "0.9.0", "--out", outDir], { stdio: "pipe" });
+    execFileSync("node", [BUILD, "--version", "0.9.0", "--out", outDir, "--no-source-sync"], { stdio: "pipe" });
     expect(existsSync(join(outDir, "build-manifest.json"))).toBe(true);
     expect(existsSync(join(outDir, "polylogue-browser-capture-0.9.0-chrome.zip"))).toBe(true);
     expect(existsSync(join(outDir, "polylogue-browser-capture-0.9.0-firefox.xpi"))).toBe(true);
@@ -96,5 +99,62 @@ describe("build.mjs full archive emission", () => {
     expect(listing).toContain("src/backfill/coordinator.js");
     expect(listing).toContain("src/backfill/providers.js");
     expect(listing).toContain("src/backfill/storage.js");
+  });
+
+  it("executes the packaged service worker fixture without foreground tab activation", async () => {
+    const smokeRoot = join(EXT_ROOT, ".cache", `packaged-smoke-${Date.now()}`);
+    mkdirSync(smokeRoot, { recursive: true });
+    const sourceHashBefore = createHash("sha256").update(readFileSync(MANIFEST_PATH)).update(readFileSync(PACKAGE_PATH)).digest("hex");
+    execFileSync("node", [BUILD, "--version", "0.9.0", "--out", smokeRoot, "--no-source-sync"], { stdio: "pipe" });
+    const sourceHashAfter = createHash("sha256").update(readFileSync(MANIFEST_PATH)).update(readFileSync(PACKAGE_PATH)).digest("hex");
+    expect(sourceHashAfter).toBe(sourceHashBefore);
+    const archive = join(smokeRoot, "polylogue-browser-capture-0.9.0-chrome.zip");
+    const unpacked = join(smokeRoot, "unpacked");
+    execFileSync("python3", ["-c", "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", archive, unpacked]);
+    let messageListener;
+    let alarmListener;
+    let stored = { receiverBaseUrl: "http://127.0.0.1:8765", receiverAuthToken: "token" };
+    const tabs = { create: vi.fn(), update: vi.fn(), sendMessage: vi.fn(), query: vi.fn(async () => []) };
+    globalThis.indexedDB = indexedDB;
+    globalThis.chrome = {
+      action: { setBadgeText: vi.fn(), setBadgeBackgroundColor: vi.fn() },
+      alarms: { create: vi.fn(), clear: vi.fn(), onAlarm: { addListener: vi.fn((listener) => { alarmListener = listener; }) } },
+      runtime: {
+        id: "packaged-extension",
+        getManifest: () => ({ version: "0.9.0" }),
+        onInstalled: { addListener: vi.fn() },
+        onStartup: { addListener: vi.fn() },
+        onMessage: { addListener: vi.fn((listener) => { messageListener = listener; }) },
+      },
+      scripting: { executeScript: vi.fn() },
+      storage: { local: {
+        get: vi.fn(async (defaults) => ({ ...defaults, ...stored })),
+        set: vi.fn(async (patch) => { stored = { ...stored, ...patch }; }),
+      } },
+      tabs: { ...tabs, get: vi.fn(), onActivated: { addListener: vi.fn() }, onUpdated: { addListener: vi.fn() } },
+    };
+    const fetchCalls = [];
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      let body;
+      if (String(url).includes("/backend-api/conversations?")) body = { items: [{ id: "fixture-1", update_time: 1780000000 }], total: 1 };
+      else if (String(url).includes("/backend-api/conversation/fixture-1")) body = { id: "fixture-1", mapping: { one: { message: { id: "m1", author: { role: "user" }, content: { parts: ["fixture"] } } } } };
+      else {
+        const contentHash = createHash("sha256").update(options.body, "utf8").digest("hex");
+        body = { ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: contentHash };
+      }
+      return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-ack" : null }, json: async () => body };
+    });
+    const packagedWorkerUrl = `${pathToFileURL(join(unpacked, "src", "background.js")).href}?smoke=${Date.now()}`;
+    await import(/* @vite-ignore */ packagedWorkerUrl);
+    const send = (message) => new Promise((resolve) => messageListener(message, {}, resolve));
+    const started = await send({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", policy: { baseCadenceMs: 0 } });
+    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).includes("/backend-api/conversations?"))).toBe(true));
+    alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
+    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).includes("/v1/browser-captures"))).toBe(true));
+    expect(tabs.create).not.toHaveBeenCalled();
+    expect(tabs.update).not.toHaveBeenCalled();
+    expect(tabs.sendMessage).not.toHaveBeenCalled();
+    rmSync(smokeRoot, { recursive: true, force: true });
   });
 });

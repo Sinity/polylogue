@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 
+import { indexedDB } from "fake-indexeddb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BackfillCoordinator } from "../src/backfill/coordinator.js";
 import { backfillAlarmName, serializedContentHash, serializedJson } from "../src/backfill/models.js";
 import { ChatGptBackfillAdapter, ClaudeBackfillAdapter } from "../src/backfill/providers.js";
-import { MemoryBackfillStore, progressBuckets } from "../src/backfill/storage.js";
+import { IndexedDbBackfillStore, MemoryBackfillStore, progressBuckets } from "../src/backfill/storage.js";
 
 function response(body, { status = 200, retryAfter = null } = {}) {
   return {
@@ -224,6 +225,79 @@ describe("background backfill coordinator", () => {
     await expect(startJob(h)).rejects.toThrow("backfill_job_already_active:chatgpt");
   });
 
+  it("serializes concurrent wakes and request reservation in real IndexedDB", async () => {
+    const databaseName = `polylogue-test-${globalThis.crypto.randomUUID()}`;
+    const store = new IndexedDbBackfillStore(indexedDB, databaseName);
+    let releaseInventory;
+    const inventoryGate = new Promise((resolve) => { releaseInventory = resolve; });
+    const adapter = new FixtureAdapter(["one"]);
+    adapter.enumerate = vi.fn(async () => {
+      await inventoryGate;
+      return { classification: "success", items: [{ native_id: "one", updated_at: "2026-07-01T00:00:00Z" }], next_cursor: "1", done: true, request_count: 1 };
+    });
+    const coordinator = new BackfillCoordinator({ store, adapters: { chatgpt: adapter }, receiver: vi.fn(), alarms: { create: vi.fn() }, clock: () => 1000, random: () => 0, instanceId: "idb-instance" });
+    const job = await coordinator.start({ provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+    const wakes = [coordinator.wake(job.id), coordinator.wake(job.id)];
+    await vi.waitFor(() => expect(adapter.enumerate).toHaveBeenCalledTimes(1));
+    releaseInventory();
+    await Promise.all(wakes);
+    expect(adapter.enumerate).toHaveBeenCalledTimes(1);
+    expect((await coordinator.status(job.id)).daily_requests).toBe(1);
+    indexedDB.deleteDatabase(databaseName);
+  });
+
+  it("invalidates an in-flight fetch on cancel without resurrecting queue state", async () => {
+    const adapter = new FixtureAdapter(["one"]);
+    let releaseFetch;
+    const fetchGate = new Promise((resolve) => { releaseFetch = resolve; });
+    adapter.fetchNative = vi.fn(async () => fetchGate);
+    const h = harness({ adapter });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    const wake = h.coordinator.wake(job.id);
+    await vi.waitFor(() => expect(adapter.fetchNative).toHaveBeenCalledTimes(1));
+    await h.coordinator.control(job.id, "cancel");
+    releaseFetch(response(chatGptNative("one")));
+    await wake;
+    expect((await h.coordinator.status(job.id)).status).toBe("cancelled");
+    expect((await h.store.listQueue(job.id))[0].state).toBe("cancelled");
+    expect(h.receiver).not.toHaveBeenCalled();
+  });
+
+  it("skips an unchanged native revision in a later job", async () => {
+    const adapter = new FixtureAdapter(["one"]);
+    const h = harness({ adapter });
+    const first = await startJob(h);
+    await enumerateThenAdvance(h, first);
+    await h.coordinator.wake(first.id);
+    expect(h.receiver).toHaveBeenCalledTimes(1);
+    h.advance(1000);
+    const second = await startJob(h);
+    await enumerateThenAdvance(h, second);
+    await h.coordinator.wake(second.id);
+    expect((await h.store.listQueue(second.id))[0].state).toBe("unchanged");
+    expect(adapter.fetchCalls).toEqual(["one"]);
+    expect(h.receiver).toHaveBeenCalledTimes(1);
+  });
+
+  it("fail-pauses receiver retries and stored envelope bytes at configured bounds", async () => {
+    const receiverDown = vi.fn(async () => { throw new Error("receiver_down"); });
+    const receiverHarness = harness({ adapter: new FixtureAdapter(["one"]), receiver: receiverDown, policy: { maxReceiverAttempts: 1 } });
+    const receiverJob = await startJob(receiverHarness);
+    await enumerateThenAdvance(receiverHarness, receiverJob);
+    await receiverHarness.coordinator.wake(receiverJob.id);
+    expect((await receiverHarness.coordinator.status(receiverJob.id)).cooldown_reason).toBe("receiver_retry_budget_exhausted");
+    expect((await receiverHarness.store.listQueue(receiverJob.id))[0].state).toBe("captured_waiting_receiver");
+
+    const byteHarness = harness({ adapter: new FixtureAdapter(["one"]), policy: { maxStoredBytes: 64 } });
+    const byteJob = await startJob(byteHarness);
+    await enumerateThenAdvance(byteHarness, byteJob);
+    await byteHarness.coordinator.wake(byteJob.id);
+    expect((await byteHarness.coordinator.status(byteJob.id)).cooldown_reason).toBe("storage_budget_exhausted");
+    expect((await byteHarness.store.listQueue(byteJob.id))[0].last_response_class).toBe("storage_budget_exhausted");
+    expect(byteHarness.receiver).not.toHaveBeenCalled();
+  });
+
   it("persists Claude organization identity across restart and hard-reserves its request budget", async () => {
     let now = 1000;
     const store = new MemoryBackfillStore();
@@ -291,6 +365,9 @@ describe("provider adapter contracts", () => {
     expect(capture.session.turns[0].role).toBe("assistant");
     expect(capture.session.turns[0].parent_turn_id).toBe("parent");
     expect(capture.session.turns[0].provider_meta.model).toBe("claude-opus");
+    expect(fetchImpl.mock.calls[2][0]).toContain("tree=True");
+    expect(fetchImpl.mock.calls[2][0]).toContain("render_all_tools=true");
+    expect(fetchImpl.mock.calls[2][0]).toContain("consistency=strong");
 
     await expect(adapter.normalizeCapture(response({ messages: [] }), inventory.items[0], {})).rejects.toThrow("provider_contract_drift:claude_conversation.chat_messages_must_be_array");
   });
