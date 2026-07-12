@@ -346,6 +346,11 @@ def _dev_loop_payload() -> JSONDocument:
 
 def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
     return (
+        _StaticPostRoute(
+            "/api/telemetry/mcp-calls",
+            ("api", "telemetry", "mcp-calls"),
+            "_handle_mcp_call_log",
+        ),
         _StaticPostRoute("/api/reset", ("api", "reset"), "_handle_reset"),
         _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
         _StaticPostRoute("/api/maintenance/plan", ("api", "maintenance", "plan"), "_handle_maintenance_plan"),
@@ -1665,6 +1670,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return
             handler = cast(Callable[..., None], getattr(self, authenticated_route.handler_name))
             mutating_actor = {
+                "_handle_mcp_call_log": "http.telemetry.mcp-call",
                 "_handle_reset": "http.reset",
                 "_handle_ingest": "http.ingest",
                 "_handle_maintenance_run": "http.maintenance.run",
@@ -3870,6 +3876,66 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
     # Handlers: ingest
     # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_mcp_call_log(self) -> None:
+        """Persist one MCP call event through the daemon's writer gate."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0 or content_length > 16_384:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        try:
+            body = json.loads(self.rfile.read(content_length))
+            call_id = str(body["call_id"])
+            tool_name = str(body["tool_name"])
+            session_id_raw = body.get("session_id")
+            session_id = None if session_id_raw is None else str(session_id_raw)
+            started_at_ms = int(body["started_at_ms"])
+            finished_at_ms = int(body["finished_at_ms"])
+            success = body["success"]
+            error_detail_raw = body.get("error_detail")
+            error_detail = None if error_detail_raw is None else str(error_detail_raw)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if (
+            not isinstance(body, dict)
+            or not call_id
+            or len(call_id) > 128
+            or not tool_name
+            or len(tool_name) > 256
+            or (session_id is not None and len(session_id) > 2048)
+            or not isinstance(success, bool)
+            or finished_at_ms < started_at_ms
+            or (error_detail is not None and len(error_detail) > 512)
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        from polylogue.paths import active_index_db_path
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call
+        from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+        ops_db = active_index_db_path().with_name("ops.db")
+        with open_daemon_connection(ops_db) as conn:
+            table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mcp_call_log'"
+            ).fetchone()
+        if table_exists is None:
+            initialize_archive_database(ops_db, ArchiveTier.OPS)
+        with open_daemon_connection(ops_db) as conn:
+            record_mcp_call(
+                conn,
+                call_id=call_id,
+                tool_name=tool_name,
+                session_id=session_id,
+                started_at_ms=started_at_ms,
+                finished_at_ms=finished_at_ms,
+                success=success,
+                error_detail=error_detail,
+            )
+        self._send_json(HTTPStatus.OK, {"ok": True, "call_id": call_id})
 
     @daemon_safe_handler
     def _handle_otlp_post(self, path: list[str]) -> None:

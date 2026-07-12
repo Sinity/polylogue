@@ -156,6 +156,11 @@ def initialize_archive_database(
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         expected_version = archive_tier_spec(tier).version
         if current_version == expected_version:
+            # ops.db is disposable and evolves through idempotent additive DDL
+            # without version bumps. Re-apply it so existing same-version
+            # archives receive newly introduced tables and indexes.
+            if tier is ArchiveTier.OPS:
+                initialize_archive_tier(conn, tier)
             return
         if (
             current_version != 0

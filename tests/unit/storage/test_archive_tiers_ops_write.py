@@ -3,27 +3,33 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import Origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     ArchiveCursorLagSample,
     ArchiveDaemonStageEvent,
     ArchiveEmbeddingCatchupRun,
+    ArchiveMcpCallLogEntry,
     ArchiveOtlpSpan,
     OpsCompactState,
     add_convergence_debt,
     list_cursor_lag_samples,
     list_daemon_stage_events,
     list_embedding_catchup_runs,
+    list_mcp_calls,
     list_otlp_spans,
     read_compact_state,
     read_cursor_lag_sample,
     read_daemon_stage_event,
     read_embedding_catchup_run,
+    read_mcp_call,
     read_otlp_span,
     record_cursor_lag_sample,
     record_daemon_stage_event,
     record_ingest_attempt,
+    record_mcp_call,
     upsert_embedding_catchup_run,
     upsert_ingest_cursor,
     upsert_otlp_span,
@@ -460,3 +466,73 @@ def test_upsert_otlp_span_refreshes_and_lists_by_trace(tmp_path: Path) -> None:
     assert spans[0].started_at_ms == 1_700_001_150
     assert spans[1].span_id == "span-b"
     assert spans[1].started_at_ms == 1_700_001_050
+
+
+def test_record_mcp_call_writes_reads_and_filters_by_session(tmp_path: Path) -> None:
+    """polylogue-7s57: durable MCP call-log round trip, queryable by session id."""
+    conn = _connect(tmp_path / "ops.db")
+
+    call_id = record_mcp_call(
+        conn,
+        call_id="call-1",
+        tool_name="get_resume_brief",
+        session_id="codex-session:abc",
+        started_at_ms=1_700_002_000,
+        finished_at_ms=1_700_002_040,
+        success=True,
+    )
+    record_mcp_call(
+        conn,
+        call_id="call-2",
+        tool_name="compose_context_preamble",
+        session_id=None,
+        started_at_ms=1_700_002_100,
+        finished_at_ms=1_700_002_130,
+        success=False,
+        error_detail="RuntimeError",
+    )
+    record_mcp_call(
+        conn,
+        call_id="call-3",
+        tool_name="get_resume_brief",
+        session_id="claude-code-session:def",
+        started_at_ms=1_700_002_200,
+        finished_at_ms=1_700_002_260,
+        success=True,
+    )
+
+    assert call_id == "call-1"
+    assert read_mcp_call(conn, "call-1") == ArchiveMcpCallLogEntry(
+        call_id="call-1",
+        tool_name="get_resume_brief",
+        session_id="codex-session:abc",
+        started_at_ms=1_700_002_000,
+        finished_at_ms=1_700_002_040,
+        duration_ms=40,
+        success=True,
+        error_detail=None,
+    )
+    assert read_mcp_call(conn, "call-2") == ArchiveMcpCallLogEntry(
+        call_id="call-2",
+        tool_name="compose_context_preamble",
+        session_id=None,
+        started_at_ms=1_700_002_100,
+        finished_at_ms=1_700_002_130,
+        duration_ms=30,
+        success=False,
+        error_detail="RuntimeError",
+    )
+
+    by_session = list_mcp_calls(conn, session_id="codex-session:abc")
+    assert [entry.call_id for entry in by_session] == ["call-1"]
+
+    by_tool = list_mcp_calls(conn, tool_name="get_resume_brief")
+    assert [entry.call_id for entry in by_tool] == ["call-3", "call-1"]
+
+    assert conn.execute("SELECT COUNT(*) FROM mcp_call_log").fetchone()[0] == 3
+
+
+def test_read_mcp_call_missing_id_raises_key_error(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "ops.db")
+    with pytest.raises(KeyError):
+        read_mcp_call(conn, "does-not-exist")

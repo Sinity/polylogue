@@ -9,8 +9,10 @@ with that blast radius in mind; see docs/test-economics.md.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
@@ -48,12 +50,22 @@ class FencedCodeExtractor(Protocol):
     def __call__(self, text: str, language: str = "") -> list[MCPFencedCodeBlock]: ...
 
 
+class SafeCallHook(Protocol):
+    def __call__(self, fn_name: str, fn: Callable[[], str], *, session_id: str | None = None) -> str: ...
+
+
+class AsyncSafeCallHook(Protocol):
+    def __call__(
+        self, fn_name: str, fn: Callable[[], Awaitable[str]], *, session_id: str | None = None
+    ) -> Awaitable[str]: ...
+
+
 @dataclass(frozen=True)
 class ServerCallbacks:
     json_payload: JSONPayloadSerializer
     clamp_limit: Callable[[int | object], int]
-    safe_call: Callable[[str, Callable[[], str]], str]
-    async_safe_call: Callable[[str, Callable[[], Awaitable[str]]], Awaitable[str]]
+    safe_call: SafeCallHook
+    async_safe_call: AsyncSafeCallHook
     error_json: ErrorJSONSerializer
     get_config: Callable[[], Config]
     get_polylogue: Callable[[], Polylogue]
@@ -166,19 +178,78 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     return _json_payload(payload, exclude_none=True)
 
 
-@overload
-def _safe_call(fn_name: str, fn: Callable[[], str]) -> str: ...
+def _now_ms() -> int:
+    """Return the current wall-clock time in epoch milliseconds."""
+    return int(datetime.now(UTC).timestamp() * 1000)
+
+
+def _record_mcp_call_log(
+    fn_name: str,
+    session_id: str | None,
+    started_at_ms: int,
+    finished_at_ms: int,
+    *,
+    success: bool,
+    error_detail: str | None,
+) -> None:
+    """Best-effort MCP call-log enqueue (polylogue-7s57).
+
+    Persists tool name, session id (when the caller knows one), timing, and
+    success/failure to the daemon without touching SQLite or waiting on I/O in
+    the MCP response path. The daemon's write coordinator owns persistence to
+    the disposable ``ops.db`` tier. Queue/config failures never alter the tool
+    response.
+    """
+    try:
+        from polylogue.config import load_polylogue_config
+        from polylogue.mcp.call_log import enqueue_mcp_call_log
+
+        enqueue_mcp_call_log(
+            load_polylogue_config(),
+            tool_name=fn_name,
+            session_id=session_id,
+            started_at_ms=started_at_ms,
+            finished_at_ms=finished_at_ms,
+            success=success,
+            error_detail=error_detail,
+        )
+    except Exception:
+        logger.debug("MCP call-log enqueue failed for %s", fn_name, exc_info=True)
+
+
+def _mcp_error_detail(result: object) -> str | None:
+    """Return the canonical error code when a tool returned MCPErrorPayload."""
+    if not isinstance(result, str):
+        return None
+    try:
+        payload = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("ok") is not False or payload.get("status") != "error":
+        return None
+    error = payload.get("error")
+    message = payload.get("message")
+    if not isinstance(error, str) or not isinstance(message, str):
+        return None
+    code = payload.get("code")
+    return str(code) if isinstance(code, (int, str)) else error
 
 
 @overload
-def _safe_call(fn_name: str, fn: Callable[[], None]) -> str | None: ...
+def _safe_call(fn_name: str, fn: Callable[[], str], *, session_id: str | None = None) -> str: ...
 
 
 @overload
-def _safe_call(fn_name: str, fn: Callable[[], TResult]) -> TResult | str: ...
+def _safe_call(fn_name: str, fn: Callable[[], None], *, session_id: str | None = None) -> str | None: ...
 
 
-def _safe_call(fn_name: str, fn: Callable[[], TResult]) -> TResult | str:
+@overload
+def _safe_call(fn_name: str, fn: Callable[[], TResult], *, session_id: str | None = None) -> TResult | str: ...
+
+
+def _safe_call(fn_name: str, fn: Callable[[], TResult], *, session_id: str | None = None) -> TResult | str:
     """Call ``fn()`` and return its result, or a typed error JSON on failure.
 
     Errors are logged server-side and translated through
@@ -187,33 +258,71 @@ def _safe_call(fn_name: str, fn: Callable[[], TResult]) -> TResult | str:
     loop and disable every other registered tool (#1621). The translated
     payload exposes only the exception class name — never the raw message,
     arguments, or traceback — so error surfaces remain free of secrets.
+
+    Every call is also durably logged to the ``ops.db`` MCP call-log table
+    (polylogue-7s57), best-effort, keyed by ``fn_name`` and the optional
+    ``session_id`` the caller passes when the tool is session-scoped.
     """
+    started_at_ms = _now_ms()
     try:
-        return fn()
+        result = fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
+        _record_mcp_call_log(
+            fn_name, session_id, started_at_ms, _now_ms(), success=False, error_detail=type(exc).__name__
+        )
         return _exception_to_error_json(fn_name, exc)
+    error_detail = _mcp_error_detail(result)
+    _record_mcp_call_log(
+        fn_name,
+        session_id,
+        started_at_ms,
+        _now_ms(),
+        success=error_detail is None,
+        error_detail=error_detail,
+    )
+    return result
 
 
 @overload
-async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[str]]) -> str: ...
+async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[str]], *, session_id: str | None = None) -> str: ...
 
 
 @overload
-async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[None]]) -> str | None: ...
+async def _async_safe_call(
+    fn_name: str, fn: Callable[[], Awaitable[None]], *, session_id: str | None = None
+) -> str | None: ...
 
 
 @overload
-async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -> TResult | str: ...
+async def _async_safe_call(
+    fn_name: str, fn: Callable[[], Awaitable[TResult]], *, session_id: str | None = None
+) -> TResult | str: ...
 
 
-async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -> TResult | str:
-    """Async counterpart of :func:`_safe_call`. Same isolation contract."""
+async def _async_safe_call(
+    fn_name: str, fn: Callable[[], Awaitable[TResult]], *, session_id: str | None = None
+) -> TResult | str:
+    """Async counterpart of :func:`_safe_call`. Same isolation and call-log contract."""
+    started_at_ms = _now_ms()
     try:
-        return await fn()
+        result = await fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
+        _record_mcp_call_log(
+            fn_name, session_id, started_at_ms, _now_ms(), success=False, error_detail=type(exc).__name__
+        )
         return _exception_to_error_json(fn_name, exc)
+    error_detail = _mcp_error_detail(result)
+    _record_mcp_call_log(
+        fn_name,
+        session_id,
+        started_at_ms,
+        _now_ms(),
+        success=error_detail is None,
+        error_detail=error_detail,
+    )
+    return result
 
 
 def _error_json(message: str, **extra: object) -> str:

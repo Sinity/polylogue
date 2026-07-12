@@ -92,8 +92,11 @@ delivery receipts without overloading epistemic assertions.
 
 Ingest cursors (`ingest_cursor`), ingest attempts (`ingest_attempts`),
 convergence debt (`convergence_debt`), cursor-lag samples, daemon stage/event
-logs, embedding catch-up runs, and OTLP spans/telemetry. Safe to discard; the
-daemon repopulates it.
+logs, embedding catch-up runs, OTLP spans/telemetry, and the MCP call log
+(`mcp_call_log`, #7s57 — tool name, session id when known, timing, and
+success/failure per MCP tool invocation, best-effort written from
+`mcp/server_support.py`). Safe to discard; the daemon/MCP server repopulate
+it.
 
 ## Schema/data-model ownership matrix (#2246)
 

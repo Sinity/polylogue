@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 from polylogue.core.enums import Origin
 
+MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
+
 
 @dataclass(frozen=True, slots=True)
 class OpsCompactState:
@@ -89,6 +91,20 @@ class ArchiveOtlpSpan:
     ended_at_ms: int | None
     attributes_json: str
     events_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveMcpCallLogEntry:
+    """Compact read-back row for one durable MCP tool call-log entry."""
+
+    call_id: str
+    tool_name: str
+    session_id: str | None
+    started_at_ms: int
+    finished_at_ms: int
+    duration_ms: int
+    success: bool
+    error_detail: str | None
 
 
 def upsert_ingest_cursor(
@@ -716,6 +732,116 @@ def read_otlp_span(conn: sqlite3.Connection, trace_id: str, span_id: str) -> Arc
     if row is None:
         raise KeyError((trace_id, span_id))
     return ArchiveOtlpSpan(*row)
+
+
+def record_mcp_call(
+    conn: sqlite3.Connection,
+    *,
+    tool_name: str,
+    started_at_ms: int,
+    finished_at_ms: int,
+    success: bool,
+    session_id: str | None = None,
+    error_detail: str | None = None,
+    call_id: str | None = None,
+) -> str:
+    """Record one durable MCP tool call-log entry and return its call id.
+
+    ``ops.db`` is the disposable telemetry tier (#7s57): this is a best-effort,
+    freeform-additive table (``CREATE TABLE IF NOT EXISTS``, no migration
+    chain) recording tool name, session id (when the caller knows one),
+    timing, and success/failure per MCP tool invocation, so resume/context
+    tool efficacy (``get_resume_brief``, ``compose_context_preamble``, ...)
+    can be reconstructed per session.
+    """
+    if call_id is None:
+        call_id = str(uuid.uuid4())
+    duration_ms = max(0, finished_at_ms - started_at_ms)
+    with conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO mcp_call_log (
+                call_id,
+                tool_name,
+                session_id,
+                started_at_ms,
+                finished_at_ms,
+                duration_ms,
+                success,
+                error_detail
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                call_id,
+                tool_name,
+                session_id,
+                started_at_ms,
+                finished_at_ms,
+                duration_ms,
+                1 if success else 0,
+                error_detail,
+            ),
+        )
+        conn.execute(
+            "DELETE FROM mcp_call_log WHERE started_at_ms < ?",
+            (finished_at_ms - MCP_CALL_LOG_RETENTION_MS,),
+        )
+    return call_id
+
+
+def list_mcp_calls(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str | None = None,
+    tool_name: str | None = None,
+    limit: int = 100,
+) -> tuple[ArchiveMcpCallLogEntry, ...]:
+    """Return MCP call-log entries newest-first, optionally filtered."""
+    query = """
+        SELECT call_id, tool_name, session_id, started_at_ms, finished_at_ms, duration_ms, success, error_detail
+        FROM mcp_call_log
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if session_id is not None:
+        clauses.append("session_id = ?")
+        params.append(session_id)
+    if tool_name is not None:
+        clauses.append("tool_name = ?")
+        params.append(tool_name)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY started_at_ms DESC, call_id DESC LIMIT ?"
+    params.append(limit)
+    return tuple(_mcp_call_log_entry_from_row(row) for row in conn.execute(query, tuple(params)).fetchall())
+
+
+def read_mcp_call(conn: sqlite3.Connection, call_id: str) -> ArchiveMcpCallLogEntry:
+    """Read one MCP call-log entry by id."""
+    row = conn.execute(
+        """
+        SELECT call_id, tool_name, session_id, started_at_ms, finished_at_ms, duration_ms, success, error_detail
+        FROM mcp_call_log
+        WHERE call_id = ?
+        """,
+        (call_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(call_id)
+    return _mcp_call_log_entry_from_row(row)
+
+
+def _mcp_call_log_entry_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveMcpCallLogEntry:
+    return ArchiveMcpCallLogEntry(
+        call_id=str(row[0]),
+        tool_name=str(row[1]),
+        session_id=None if row[2] is None else str(row[2]),
+        started_at_ms=_int_value(row[3]),
+        finished_at_ms=_int_value(row[4]),
+        duration_ms=_int_value(row[5]),
+        success=bool(row[6]),
+        error_detail=None if row[7] is None else str(row[7]),
+    )
 
 
 def read_compact_state(conn: sqlite3.Connection) -> OpsCompactState:

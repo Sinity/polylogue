@@ -557,7 +557,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json(f"archive session not found: {session_id}", code="not_found")
             return hooks.json_payload(MCPArchiveSessionPayload.from_session(session))
 
-        return await hooks.async_safe_call("archive_get_session", run)
+        return await hooks.async_safe_call("archive_get_session", run, session_id=session_id)
 
     @mcp.tool()
     async def neighbor_candidates(
@@ -770,7 +770,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             except (KeyError, ValueError, sqlite3.OperationalError):
                 return hooks.error_json(f"Session not found: {id}", code="not_found")
 
-        return await hooks.async_safe_call("get_session_summary", run)
+        return await hooks.async_safe_call("get_session_summary", run, session_id=id)
 
     @mcp.tool()
     async def get_session_tree(session_id: str) -> str:
@@ -779,7 +779,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             tree = await poly.get_session_tree(session_id)
             return hooks.json_payload(session_tree_payload(tree))
 
-        return await hooks.async_safe_call("get_session_tree", run)
+        return await hooks.async_safe_call("get_session_tree", run, session_id=session_id)
 
     @mcp.tool()
     async def get_session_topology(session_id: str) -> str:
@@ -800,7 +800,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 )
             return hooks.json_payload(session_topology_payload(topology, session_id=str(topology.target_id)))
 
-        return await hooks.async_safe_call("get_session_topology", run)
+        return await hooks.async_safe_call("get_session_topology", run, session_id=session_id)
 
     @mcp.tool()
     async def get_logical_session(session_id: str) -> str:
@@ -816,7 +816,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 )
             return hooks.json_payload(logical_session_payload(logical_session))
 
-        return await hooks.async_safe_call("get_logical_session", run)
+        return await hooks.async_safe_call("get_logical_session", run, session_id=session_id)
 
     @mcp.tool()
     async def get_stats_by(group_by: Literal["origin", "day", "month", "year"] = "origin") -> str:
