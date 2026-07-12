@@ -10511,17 +10511,18 @@ def _month_bucket_end_ms(bucket: str) -> int:
 
 
 def _provider_for_origin(origin: str) -> Provider:
-    return {
-        "claude-code-session": Provider.CLAUDE_CODE,
-        "codex-session": Provider.CODEX,
-        "gemini-cli-session": Provider.GEMINI_CLI,
-        "hermes-session": Provider.HERMES,
-        "antigravity-session": Provider.ANTIGRAVITY,
-        "chatgpt-export": Provider.CHATGPT,
-        "claude-ai-export": Provider.CLAUDE_AI,
-        "aistudio-drive": Provider.GEMINI,
-        "unknown-export": Provider.UNKNOWN,
-    }.get(origin, Provider.UNKNOWN)
+    """Return the canonical provider-wire ``Provider`` for an origin token.
+
+    Delegates to the already-imported :func:`provider_from_origin` (the
+    single source of truth in ``core/sources.py``) instead of a hand-copied
+    dict -- this module, ``archive/query/archive_execution.py``, and
+    ``storage/sqlite/queries/tool_usage.py`` used to each hand-roll the same
+    table independently and had already silently drifted (all three were
+    missing a ``grok-export`` entry). See ``archive_execution.py``'s
+    ``_provider_for_origin`` docstring for the full rationale
+    (polylogue-9e5.8).
+    """
+    return provider_from_origin(Origin.from_string(origin))
 
 
 __all__ = ["ArchiveFileQueryRow", "ArchiveStore", "ArchiveSessionSearchHit", "ArchiveSessionSummary"]

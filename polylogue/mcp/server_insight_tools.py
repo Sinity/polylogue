@@ -11,8 +11,6 @@ import inspect
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
-from polylogue.core.enums import Origin
-from polylogue.core.sources import provider_from_origin
 from polylogue.insights.archive import (
     SessionLatencyProfileInsightQuery,
 )
@@ -23,7 +21,7 @@ from polylogue.insights.registry import (
     insight_items_payload,
     project_origin_payload,
 )
-from polylogue.mcp.insight_tool_contracts import InsightListToolSpec
+from polylogue.mcp.insight_tool_contracts import InsightListToolSpec, _origin_to_provider_token
 from polylogue.mcp.payloads import MCPRootPayload
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
@@ -46,12 +44,6 @@ def _object_int(value: object) -> int:
     if value is None:
         return 0
     return int(str(value))
-
-
-def _origin_to_provider_token(value: str | None) -> str | None:
-    if value is None or value == "":
-        return None
-    return provider_from_origin(Origin(value)).value
 
 
 def _project_origin_payload(value: object) -> object:

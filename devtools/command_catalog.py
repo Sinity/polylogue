@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 CommandMain = Callable[[list[str] | None], int]
 CONTROL_PLANE = "devtools"
 VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
+    "lab census provider-vocabulary",
     "lab graph",
     "lab lanes",
     "lab policy demo-packet-registry",
@@ -258,6 +259,27 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools lab provider completeness --json",
             "devtools lab provider completeness --origin codex-session --json",
             "devtools lab provider completeness --check",
+        ),
+    ),
+    CommandSpec(
+        "lab census provider-vocabulary",
+        "verification lab",
+        "AST-level census of provider/origin vocabulary leak sites (polylogue-9e5.8 Step 0).",
+        "devtools.census_provider_vocabulary",
+        use_when=(
+            "Enumerate function/method parameters, dataclass/Pydantic/TypedDict fields, "
+            "dict/set string-literal keys, and CLI-flag/HTTP-route literals literally named "
+            "provider/providers outside sources/schemas/pipeline/browser_capture, replacing "
+            "the manual rg census that two adversarial falsification rounds proved misses the "
+            "identifier-vocabulary leak axis. --check only fails on allowlist rot (stale "
+            "entries or a vacuous zero-site scan), not on the large expected backlog of "
+            "unallowlisted retirement candidates -- rerun after each later step in the plan to "
+            "watch that backlog trend toward zero."
+        ),
+        examples=(
+            "devtools lab census provider-vocabulary",
+            "devtools lab census provider-vocabulary --json",
+            "devtools lab census provider-vocabulary --check",
         ),
     ),
     CommandSpec(
