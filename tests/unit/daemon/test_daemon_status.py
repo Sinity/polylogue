@@ -935,6 +935,30 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
     assert "  insights: 1 failed, 0 retry due" in lines
 
 
+def test_daemon_status_payload_exposes_claim_guard_block(tmp_path: Path) -> None:
+    """polylogue-avg AC: `polylogue ops status --json` (served via
+    `daemon_status_payload`) exposes a claim-guard block with all four
+    claim states, each carrying a documented signal."""
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    claim_guard = cast(dict[str, dict[str, object]], payload["claim_guard"])
+    assert set(claim_guard) == {"openable", "converged", "search_ready", "perf_measurable"}
+    for entry in claim_guard.values():
+        assert set(entry) == {"claim", "value", "reason", "signal"}
+        assert isinstance(entry["value"], bool)
+        assert entry["signal"]
+    # No archive tiers exist under tmp_path — nothing is honestly claimable.
+    assert claim_guard["openable"]["value"] is False
+    assert claim_guard["converged"]["value"] is False
+
+
 def test_archive_storage_info_uses_configured_archive_root(tmp_path: Path) -> None:
     default_root = tmp_path / "default"
     active_root = tmp_path / "active"
@@ -1051,6 +1075,63 @@ def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_de
     assert storage_component["caveats"] == ["materialization_pending"]
     raw_component = cast(dict[str, object], status.component_readiness["raw_materialization"])
     assert raw_component["state"] == "stale"
+
+
+def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_path: Path) -> None:
+    """polylogue-avg: an archive with matching schema but open raw-materialization
+    debt is openable but must not claim convergence, with the exact
+    raw-materialization reason surfaced (not a generic failure message)."""
+    storage = status_module.ArchiveStorageStatus(
+        active_store="archive_file_set",
+        active_db_path=str(tmp_path / "index.db"),
+        archive_root=str(tmp_path),
+        configured_archive_root=str(tmp_path),
+        archive_ready=True,
+        archive_materialization_ready=True,
+        final_shape_ready=True,
+        archive_schema_ready=True,
+        present_tiers=["source", "index", "embeddings", "user", "ops"],
+    )
+    raw_readiness = status_module.RawMaterializationReadiness(
+        available=True,
+        total=1,
+        warning=1,
+        actionable=1,
+        affected_total=4,
+        affected_actionable=4,
+    )
+
+    with (
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._archive_storage_info", return_value=storage),
+        patch("polylogue.daemon.status._raw_materialization_readiness_info", return_value=raw_readiness),
+        patch("polylogue.daemon.status._db_size_info", return_value={}),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={"messages_ready": True}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+        patch("polylogue.daemon.status._live_cursor_summary_info", return_value=status_module.LiveCursorSummary()),
+        patch(
+            "polylogue.daemon.status._live_ingest_attempt_summary_info",
+            return_value=status_module.LiveIngestAttemptSummary(),
+        ),
+        patch(
+            "polylogue.daemon.status.convergence_debt_summary_info",
+            return_value=status_module.ConvergenceDebtSummary(),
+        ),
+        patch("polylogue.daemon.status.cursor_lag_summary_info", return_value=status_module.CursorLagSummary()),
+        patch("polylogue.daemon.status.catchup_status_info", return_value=status_module.CatchupStatus()),
+        patch("polylogue.daemon.status._raw_failure_info", return_value={}),
+        patch("polylogue.daemon.status.embedding_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+    ):
+        status = build_daemon_status(sources=(), browser_capture_enabled=False)
+
+    claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
+    assert claim_guard["openable"]["value"] is True
+    assert claim_guard["converged"]["value"] is False
+    raw_component = cast(dict[str, object], status.component_readiness["raw_materialization"])
+    assert claim_guard["converged"]["reason"] == raw_component["summary"]
+    assert claim_guard["search_ready"]["value"] is True
+    assert claim_guard["perf_measurable"]["value"] is True
 
 
 def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> None:

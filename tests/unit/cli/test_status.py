@@ -18,6 +18,7 @@ from polylogue.cli.commands.status import (
     _FULL_TIMEOUT_S,
     _archive_cli_route_status,
     _archive_facade_route_status,
+    _direct_claim_guard,
     _render_raw_replay_backlog,
     _show_daemon_status,
     _show_direct_json,
@@ -947,6 +948,127 @@ class TestNoArchiveStatus:
         assert components["embeddings"]["state"] == "missing"
         assert components["assertions"]["state"] == "missing"
         assert components["transforms"]["state"] == "missing"
+
+    def test_direct_status_json_exposes_claim_guard_when_fully_openable(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """polylogue-avg AC: `polylogue ops status --json` exposes a claim-guard
+        block with all four claim states, each derived from its documented
+        signal, in the no-daemon direct SQLite fallback path too."""
+        env = _make_app_env()
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+
+        archive_readiness = {
+            "checked": True,
+            "counts": {"session_count": 0},
+            "surfaces": {
+                "search": {"ready": True, "blockers": [], "evidence": {}},
+            },
+        }
+        monkeypatch_target = "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot"
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
+            patch(
+                monkeypatch_target,
+                return_value={"available": True, "total": 0, "affected_total": 0},
+            ),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env, include_archive_readiness=True)
+
+        payload = json.loads(_combined_calls(env))
+        claim_guard = payload["claim_guard"]
+        assert set(claim_guard) == {"openable", "converged", "search_ready", "perf_measurable"}
+        assert claim_guard["openable"]["value"] is True
+        assert claim_guard["converged"]["value"] is True
+        assert claim_guard["search_ready"]["value"] is True
+        assert claim_guard["perf_measurable"]["value"] is True
+        for entry in claim_guard.values():
+            assert entry["signal"]
+
+    def test_direct_status_json_claim_guard_reports_missing_tiers_when_not_openable(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """An archive missing tiers cannot be claimed openable, and therefore
+        cannot be claimed converged either — even when raw-materialization
+        debt itself looks clean."""
+        env = _make_app_env()
+        db_anchor = tmp_path / "index.db"
+        initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+                return_value={"available": True, "total": 0, "affected_total": 0},
+            ),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        claim_guard = payload["claim_guard"]
+        assert claim_guard["openable"]["value"] is False
+        missing_reason = claim_guard["openable"]["reason"]
+        assert "source" in missing_reason
+        assert "user" in missing_reason
+        assert claim_guard["converged"]["value"] is False
+        assert "not openable" in claim_guard["converged"]["reason"]
+
+    def test_direct_claim_guard_treats_unavailable_workload_as_not_perf_measurable(self) -> None:
+        """Regression: an unreadable/missing ops-workload tier cannot establish
+        the *absence* of a concurrent writer. Before the fix, `available:
+        False` fell through to `running_count = 0` / `active_writer = False`,
+        silently reporting `perf_measurable=True` ("no concurrent archive
+        write/rebuild detected") for an archive whose workload state is
+        actually unknown — exactly the silent-unknown-treated-as-success
+        pattern the claim-guard vocabulary exists to prevent."""
+        archive_tiers = {
+            tier: {"exists": True, "version_status": "ok"} for tier in ("source", "index", "embeddings", "user", "ops")
+        }
+        component_readiness = {
+            "raw_materialization": {"summary": "ready"},
+            "search": {"state": "ready", "summary": "ready"},
+        }
+        raw_materialization_readiness = {"available": True, "total": 0, "affected_total": 0}
+
+        for unavailable_workload in (
+            {"available": False, "reason": "missing_ops_tier"},
+            {"available": False, "reason": "missing_ingest_attempts"},
+            {},
+        ):
+            guard = _direct_claim_guard(
+                archive_tiers=archive_tiers,
+                raw_materialization_readiness=raw_materialization_readiness,
+                component_readiness=component_readiness,
+                ingest_workload=unavailable_workload,
+            )
+            assert guard["perf_measurable"]["value"] is False, unavailable_workload
+            assert "unavailable" in guard["perf_measurable"]["reason"]
+            # The rest of the block is unaffected by the unreadable workload tier.
+            assert guard["openable"]["value"] is True
+            assert guard["converged"]["value"] is True
+
+        # A genuinely idle, readable workload still reports perf_measurable=True.
+        idle_guard = _direct_claim_guard(
+            archive_tiers=archive_tiers,
+            raw_materialization_readiness=raw_materialization_readiness,
+            component_readiness=component_readiness,
+            ingest_workload={"available": True, "actively_ingesting": False, "running_count": 0},
+        )
+        assert idle_guard["perf_measurable"]["value"] is True
 
     def test_direct_status_json_blocks_transforms_when_archive_readiness_fails(
         self,

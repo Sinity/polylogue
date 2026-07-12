@@ -14,6 +14,8 @@ from urllib.request import Request, urlopen
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.readiness.claim_guard import derive_claim_guard
+from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
 from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1440,6 +1442,10 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     if isinstance(component_readiness, dict):
         payload["component_readiness"] = component_readiness
 
+    claim_guard = status.get("claim_guard")
+    if isinstance(claim_guard, dict):
+        payload["claim_guard"] = claim_guard
+
     archive_tiers = status.get("archive_tiers")
     if isinstance(archive_tiers, dict):
         payload["archive_tiers"] = archive_tiers
@@ -1649,6 +1655,8 @@ def _show_direct_json(
         archive_readiness=archive_readiness,
         raw_materialization_readiness=raw_materialization_readiness,
     )
+    archive_tiers = _archive_tier_status(active_root)
+    ingest_workload = _ops_workload_status(active_root, now_ms=int(time.time() * 1000))
     payload: dict[str, Any] = {
         "ok": _direct_status_ok(component_readiness),
         "daemon_liveness": False,
@@ -1659,9 +1667,9 @@ def _show_direct_json(
         "active_db_path": None,
         "config_exists": config_path.exists(),
         "config_path": str(config_path),
-        "archive_tiers": _archive_tier_status(active_root),
+        "archive_tiers": archive_tiers,
         "sqlite_maintenance": _sqlite_maintenance_status(active_root),
-        "ingest_workload": _ops_workload_status(active_root, now_ms=int(time.time() * 1000)),
+        "ingest_workload": ingest_workload,
         "raw_replay_backlog": _raw_replay_backlog_status(active_root),
         "archive_readiness": archive_readiness,
         "archive_facade_routes": _archive_facade_route_status(),
@@ -1669,6 +1677,12 @@ def _show_direct_json(
         "archive_runtime_paths": _archive_runtime_path_status(),
         "raw_materialization_readiness": raw_materialization_readiness,
         "component_readiness": component_readiness,
+        "claim_guard": _direct_claim_guard(
+            archive_tiers=archive_tiers,
+            raw_materialization_readiness=raw_materialization_readiness,
+            component_readiness=component_readiness,
+            ingest_workload=ingest_workload,
+        ),
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
@@ -1764,6 +1778,51 @@ def _direct_component_readiness(
     except Exception:
         pass
     return components
+
+
+def _direct_claim_guard(
+    *,
+    archive_tiers: dict[str, dict[str, Any]],
+    raw_materialization_readiness: dict[str, Any],
+    component_readiness: dict[str, Any],
+    ingest_workload: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive the claim-guard block for the no-daemon direct SQLite fallback."""
+    missing_tiers = [tier for tier, info in archive_tiers.items() if not info.get("exists")]
+    schema_mismatches = [
+        tier for tier, info in archive_tiers.items() if info.get("exists") and info.get("version_status") != "ok"
+    ]
+    archive_schema_ready = not missing_tiers and not schema_mismatches
+
+    raw_component = component_readiness.get("raw_materialization")
+    raw_summary = str(raw_component.get("summary", "")) if isinstance(raw_component, dict) else ""
+
+    search_component = component_readiness.get("search")
+    search_ready = isinstance(search_component, dict) and search_component.get("state") == "ready"
+    search_summary = str(search_component.get("summary", "")) if isinstance(search_component, dict) else "unknown"
+
+    if not ingest_workload.get("available"):
+        # An unreadable/missing ops-workload tier cannot establish the
+        # *absence* of a concurrent writer — treat it as blocking the
+        # perf-measurable claim, not as a clean "no writer" signal.
+        active_writer = True
+        active_writer_summary = "ingest workload inspection unavailable; cannot rule out a concurrent archive writer"
+    else:
+        running_count = int(ingest_workload.get("running_count") or 0)
+        active_writer = bool(ingest_workload.get("actively_ingesting")) or running_count > 0
+        active_writer_summary = f"{running_count} live ingest attempt(s) running" if running_count else ""
+
+    return derive_claim_guard(
+        archive_schema_ready=archive_schema_ready,
+        schema_mismatches=schema_mismatches,
+        missing_tiers=missing_tiers,
+        raw_materialization_ready=_raw_materialization_ready_bool(raw_materialization_readiness),
+        raw_materialization_summary=raw_summary,
+        search_ready=bool(search_ready),
+        search_summary=search_summary,
+        active_writer=active_writer,
+        active_writer_summary=active_writer_summary,
+    ).to_dict()
 
 
 def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
