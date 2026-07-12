@@ -69,6 +69,29 @@ def test_render_outputs_rejects_duplicate_document_registration(
         )
 
 
+def test_render_outputs_rejects_nonexistent_document_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docs_root = tmp_path / "docs"
+    docs_root.mkdir()
+    readme_path = tmp_path / "README.md"
+    readme_path.write_text(
+        "<!-- BEGIN GENERATED: docs-surface -->\nold\n<!-- END GENERATED: docs-surface -->\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        render_docs_surface,
+        "DOCS_REFERENCE_ENTRIES",
+        (DocsEntry("Missing", "docs/missing.md", "Does not exist.", "guide"),),
+    )
+
+    with pytest.raises(ValueError, match="nonexistent documentation entries: docs/missing.md"):
+        render_docs_surface.render_outputs(
+            readme_path=readme_path,
+            docs_readme_path=docs_root / "README.md",
+        )
+
+
 def test_replace_marked_section_swaps_generated_block() -> None:
     source = "\n".join(
         [
