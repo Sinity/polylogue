@@ -671,9 +671,13 @@ def render_completion_claims(result: CompletionClaimExperimentResult) -> str:
 
 
 def _headline_line(headline: dict[str, object], key: str, label: str) -> str:
-    count = int(headline[f"{key}_count"])
+    count = headline[f"{key}_count"]
     percent = headline[f"{key}_percent"]
-    rendered_percent = "n/a" if percent is None else f"{float(percent):.1f}%"
+    if not isinstance(count, int):
+        raise TypeError(f"headline {key!r} count must be an integer")
+    if percent is not None and not isinstance(percent, (int, float)):
+        raise TypeError(f"headline {key!r} percent must be numeric or null")
+    rendered_percent = "n/a" if percent is None else f"{percent:.1f}%"
     return f"{label}: {count} ({rendered_percent})"
 
 
