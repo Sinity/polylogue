@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import AsyncIterator
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -12,6 +14,7 @@ import pytest
 import watchfiles
 from watchfiles import Change
 
+from polylogue.hooks import hook_main
 from polylogue.sources.hooks import (
     acknowledged_hook_spool_dir,
     drain_hook_event_spool,
@@ -209,3 +212,33 @@ def test_hook_spool_retains_sqlite_failures_for_retry(
     assert result.acknowledged == 0
     assert result.failed == 1
     assert event_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("provider", "session_id"),
+    [("claude-code", "claude-session"), ("codex", "codex-session")],
+)
+def test_hook_entrypoint_spools_and_materializes_configured_runtime_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    session_id: str,
+) -> None:
+    """The installed hook command reaches the durable source-tier receipt path."""
+
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_HOOK_SIDECAR_DIR", str(spool_root))
+    monkeypatch.setattr("sys.stdin", StringIO(f'{{"session_id":"{session_id}","tool_name":"exec"}}'))
+
+    assert hook_main(["PostToolUse", "--provider", provider]) == 0
+
+    pending = list(pending_hook_spool_dir(spool_root).glob("*.json"))
+    assert len(pending) == 1
+    record = json.loads(pending[0].read_text(encoding="utf-8"))
+    assert record["provider"] == provider
+    assert record["session_id"] == session_id
+    assert record["event_type"] == "PostToolUse"
+    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == (session_id,)

@@ -3,8 +3,8 @@
 # Hook Integration
 
 Polylogue integrates with AI coding agents (Claude Code, Codex) via their hook
-systems to capture session lifecycle data at creation time. This provides 100%
-data coverage for events that are not recorded in post-hoc session JSONL.
+systems to capture configured lifecycle data at creation time. It supplements
+post-hoc session JSONL with events that are otherwise unavailable there.
 
 ## How It Works
 
