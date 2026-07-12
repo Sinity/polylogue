@@ -172,6 +172,19 @@ def _assert_user_v6_annotation_checks(conn: sqlite3.Connection, *, suffix: str) 
             """,
             (f"check.{suffix}", '{"schema_id":"different","version":1}', "a" * 64),
         )
+    for missing_key_definition in (
+        '{"version":1}',
+        '{"schema_id":"check.missing"}',
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO annotation_schemas (
+                    schema_id, schema_version, definition_json, definition_sha256, registered_at_ms
+                ) VALUES ('check.missing', 1, ?, ?, 1)
+                """,
+                (missing_key_definition, "b" * 64),
+            )
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             """

@@ -142,7 +142,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   Batch labels remain assertion rows linked through an
   `annotation-batch:<id>` `scope_ref`. Existing v5 tiers migrate additively
   only after an authenticated verified-backup receipt; fresh user tiers create
-  the same canonical tables and registered delegation-discourse v1 schema.
+  the same canonical tables and registered `delegation.discourse@v1` schema.
 - User schema version 5 adds `context_deliveries`, an immutable receipt ledger
   for the exact context image delivered to an agent, including recipient,
   actor, run/boundary, included refs, omissions, caveats, and image digest.

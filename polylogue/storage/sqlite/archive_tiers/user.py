@@ -51,8 +51,8 @@ CREATE TABLE IF NOT EXISTS annotation_schemas (
     definition_json    TEXT NOT NULL CHECK(
         json_valid(definition_json)
         AND json_type(definition_json) = 'object'
-        AND json_extract(definition_json, '$.schema_id') = schema_id
-        AND json_extract(definition_json, '$.version') = schema_version
+        AND json_extract(definition_json, '$.schema_id') IS schema_id
+        AND json_extract(definition_json, '$.version') IS schema_version
     ),
     definition_sha256  TEXT NOT NULL CHECK(
         length(definition_sha256) = 64
