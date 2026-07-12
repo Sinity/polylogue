@@ -82,6 +82,9 @@ def test_infer_schema_builds_schema_from_source_tier_raw(workspace_env: dict[str
     assert result.manifest is None
     assert len(result.corpus_specs) == 1
     assert len(result.corpus_scenarios) == 1
+    assert result.corpus_specs[0].provider == "chatgpt"
+    assert result.corpus_scenarios[0].provider == "chatgpt"
+    assert result.corpus_scenarios[0].package_version == result.corpus_specs[0].package_version
 
 
 def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: dict[str, Path]) -> None:
@@ -90,6 +93,7 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
 
     assert inferred.generation.success
     assert inferred.manifest is not None
+    assert inferred.manifest_path is not None and inferred.manifest_path.exists()
     cluster_id = inferred.manifest.clusters[0].cluster_id
     promoted = promote_schema_cluster(
         SchemaPromoteRequest(
@@ -109,6 +113,7 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
     scenarios = list_inferred_corpus_scenarios()
     comparison = compare_schema_versions(SchemaCompareRequest(provider="chatgpt", from_version="v2", to_version="v3"))
     selected = list_schemas(SchemaListRequest(provider="chatgpt"))
+    listing = list_schemas(SchemaListRequest())
 
     assert comparison.diff.version_a == "v2"
     assert comparison.diff.version_b == "v3"
@@ -116,7 +121,9 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
     assert selected.selected.versions == ["v1", "v2", "v3"]
     assert {spec.provider for spec in specs} == {"chatgpt"}
     assert specs[0].package_version == "v2"
+    assert specs[0].profile.family_ids == (cluster_id,)
     assert {scenario.provider for scenario in scenarios} >= {"chatgpt", "codex"}
+    assert {snapshot.provider for snapshot in listing.providers} >= {"chatgpt", "codex"}
 
 
 def test_infer_schema_normalizes_operator_privacy_configuration(workspace_env: dict[str, Path]) -> None:
