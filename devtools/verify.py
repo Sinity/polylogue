@@ -1486,6 +1486,7 @@ def build_verify_steps(
                 ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),
                 ("verify test-clock-hygiene", _devtools_cmd("verify test-clock-hygiene")),
                 ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
+                ("verify degrade-loudly", _devtools_cmd("verify degrade-loudly")),
             ]
         )
 
