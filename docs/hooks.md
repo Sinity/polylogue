@@ -16,9 +16,9 @@ post-hoc session JSONL with events that are otherwise unavailable there.
 3. The daemon watches that directory, persists the envelope in
    `source.db.raw_hook_events`, and moves it to `acknowledged/` only after the
    source-tier transaction commits. Failed writes remain pending for retry.
-4. The hook command also retains its legacy per-session JSONL journal for local
-   compatibility; the daemon's durable capture route consumes the spool
-   envelopes rather than that journal.
+4. The bundled main-package command also retains its legacy per-session JSONL
+   journal for local compatibility; all forms use spool envelopes for the
+   daemon's durable capture route.
 
 ## Supported Events
 
@@ -136,9 +136,10 @@ sidecar_dir = "/home/user/.local/share/polylogue/hooks"
 
 The `polylogue-hooks` package is the recommended path for environments where
 you do not want the full polylogue runtime closure (for example, inside the AI
-coding agent's own Python environment). The script behaviour is identical
-across all three forms and the version is kept in sync with the main package
-via release-please (#1309).
+coding agent's own Python environment). Each form atomically writes the same
+pending envelope; the Polylogue daemon performs the source-tier receipt and
+acknowledgement. The version is kept in sync with the main package via
+release-please (#1309).
 
 The main `polylogue` distribution also installs the `polylogue-hook` entry
 point. Once either distribution is installed, wire the recommended starter set

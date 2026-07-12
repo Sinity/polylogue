@@ -3,8 +3,8 @@
 #
 # Invoked by Claude Code or Codex hook systems on session lifecycle events.
 # Receives the event type as the first argument and the event payload on stdin
-# as JSON. Writes enriched hook event records to the Polylogue sidecar directory
-# where the daemon watcher picks them up for ingestion.
+# as JSON. Atomically writes one envelope to the Polylogue pending spool where
+# the daemon persists and acknowledges it.
 #
 # Usage:
 #   polylogue-hook <event-type> [--provider claude-code|codex]
@@ -141,9 +141,32 @@ record = {
     "payload": payload,
 }
 
-# Write to sidecar file (one JSONL file per provider+session)
-os.makedirs(sidecar_dir, exist_ok=True)
-outfile = os.path.join(sidecar_dir, f"{provider}-{session_id}.jsonl")
-with open(outfile, "a") as f:
-    f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+# Atomically publish one durable pending envelope. The daemon moves it to
+# acknowledged/ only after the source-tier receipt commits.
+import tempfile
+import uuid
+
+record["event_id"] = uuid.uuid4().hex
+pending_dir = os.path.join(sidecar_dir, "pending")
+os.makedirs(pending_dir, exist_ok=True)
+outfile = os.path.join(pending_dir, f"{record['event_id']}.json")
+descriptor, temporary = tempfile.mkstemp(prefix=f".{record['event_id']}.", dir=pending_dir)
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, outfile)
+    directory = os.open(pending_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
 PYEOF

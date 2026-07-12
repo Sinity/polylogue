@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from io import StringIO
 from pathlib import Path
@@ -242,3 +245,40 @@ def test_hook_entrypoint_spools_and_materializes_configured_runtime_events(
     assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == (session_id,)
+
+
+@pytest.mark.parametrize(
+    ("command", "extra_env"),
+    [
+        (
+            (sys.executable, "-m", "polylogue_hooks.cli", "PostToolUse", "--provider", "claude-code"),
+            {"PYTHONPATH": str(Path("packaging/polylogue-hooks/src").resolve())},
+        ),
+        ((str(Path("contrib/polylogue-hook").resolve()), "PostToolUse", "--provider", "codex"), {}),
+    ],
+)
+def test_published_hook_adapters_spool_then_materialize(
+    tmp_path: Path,
+    command: tuple[str, ...],
+    extra_env: dict[str, str],
+) -> None:
+    """Both documented non-bundled executables reach the durable receipt path."""
+
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    environment = os.environ | extra_env | {"POLYLOGUE_HOOK_SIDECAR_DIR": str(spool_root), "TMPDIR": "/realm/tmp"}
+    result = subprocess.run(
+        command,
+        input='{"session_id":"external-session","tool_name":"exec"}',
+        text=True,
+        env=environment,
+        check=False,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    pending = list(pending_hook_spool_dir(spool_root).glob("*.json"))
+    assert len(pending) == 1
+    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("external-session",)
