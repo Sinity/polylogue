@@ -170,23 +170,25 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState.last_capture.receiver_request_id).toBe("receiver-request-1");
   });
 
-  it("stamps capture posts with the stable service-worker instance instead of caller attribution", async () => {
+  it("coalesces concurrent capture attribution into one stable service-worker instance", async () => {
     globalThis.fetch = vi.fn(async (url, options) => {
       fetchCalls.push({ url, options });
       return responseJson({ ok: true, provider: "chatgpt", provider_session_id: "conv-123" });
     });
 
-    await sendRuntimeMessage({
-      type: "polylogue.capture",
-      envelope: {
-        provenance: { extension_instance_id: "untrusted-content-script" },
-        session: { provider: "chatgpt", provider_session_id: "conv-123" },
-      },
-    });
-    await sendRuntimeMessage({
-      type: "polylogue.capture",
-      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-124" } },
-    });
+    await Promise.all([
+      sendRuntimeMessage({
+        type: "polylogue.capture",
+        envelope: {
+          provenance: { extension_instance_id: "untrusted-content-script" },
+          session: { provider: "chatgpt", provider_session_id: "conv-123" },
+        },
+      }),
+      sendRuntimeMessage({
+        type: "polylogue.capture",
+        envelope: { session: { provider: "chatgpt", provider_session_id: "conv-124" } },
+      }),
+    ]);
 
     const first = JSON.parse(fetchCalls[0].options.body);
     const second = JSON.parse(fetchCalls[1].options.body);

@@ -22,14 +22,24 @@ const inFlightPostCommands = new Set();
 const pendingPostCommandAcks = new Map();
 let postPollTimer = 0;
 let backfillCoordinatorPromise = null;
+let extensionInstanceIdPromise = null;
 
-async function extensionInstanceId() {
-  const key = "polylogueExtensionInstanceId";
-  const stored = await chrome.storage.local.get({ [key]: "" });
-  if (stored[key]) return stored[key];
-  const created = globalThis.crypto?.randomUUID?.() || `instance-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  await chrome.storage.local.set({ [key]: created });
-  return created;
+function extensionInstanceId() {
+  if (!extensionInstanceIdPromise) {
+    const key = "polylogueExtensionInstanceId";
+    const candidate = (async () => {
+      const stored = await chrome.storage.local.get({ [key]: "" });
+      if (stored[key]) return stored[key];
+      const created = globalThis.crypto?.randomUUID?.() || `instance-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      await chrome.storage.local.set({ [key]: created });
+      return created;
+    })();
+    extensionInstanceIdPromise = candidate;
+    void candidate.catch(() => {
+      if (extensionInstanceIdPromise === candidate) extensionInstanceIdPromise = null;
+    });
+  }
+  return extensionInstanceIdPromise;
 }
 
 async function withExtensionInstanceAttribution(envelope) {

@@ -975,6 +975,12 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
             }
         ],
     }
+    divergent_turn = {
+        "provider_turn_id": "turn-divergent",
+        "role": "assistant",
+        "text": "older divergent snapshot",
+        "ordinal": 1,
+    }
     path.write_text(json.dumps(capture([first_turn])), encoding="utf-8")
     archive = Polylogue(archive_root=tmp_path / "archive")
     processor = LiveBatchProcessor(
@@ -999,7 +1005,6 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
                 """
                 SELECT raw_id, decision FROM raw_session_memberships
                 WHERE logical_source_key = 'chatgpt:browser-replacement'
-                ORDER BY raw_id
                 """
             ).fetchall()
         with sqlite3.connect(archive.archive_root / "index.db") as index_conn:
@@ -1012,8 +1017,9 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
 
         assert first.full_file_count == replacement.full_file_count == 1
         assert len(raw_ids) == 2
-        assert accepted_raw_id == raw_ids[-1]
-        assert decisions == [(raw_ids[0], "superseded_prefix"), (raw_ids[1], "applied")]
+        assert accepted_raw_id in raw_ids
+        assert {decision for _raw_id, decision in decisions} == {"superseded_prefix", "applied"}
+        assert dict(decisions)[accepted_raw_id] == "applied"
         assert attachment == ("acquired", len(asset_bytes), asset_hash)
 
         path.write_text(json.dumps(capture([first_turn])), encoding="utf-8")
@@ -1026,6 +1032,36 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
                 == accepted_raw_id
             )
         assert reverse.full_file_count == 1
+
+        with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
+            raw_ids_before_divergence = {
+                str(row[0])
+                for row in source_conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path = ?", (str(path),))
+            }
+        path.write_text(json.dumps(capture([first_turn, divergent_turn])), encoding="utf-8")
+        divergent = await processor.ingest_files([path], emit_event=False)
+        with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
+            raw_ids_after_divergence = {
+                str(row[0])
+                for row in source_conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path = ?", (str(path),))
+            }
+            divergent_raw_id = (raw_ids_after_divergence - raw_ids_before_divergence).pop()
+            divergent_decision = source_conn.execute(
+                """
+                SELECT decision FROM raw_session_memberships
+                WHERE raw_id = ? AND logical_source_key = 'chatgpt:browser-replacement'
+                """,
+                (divergent_raw_id,),
+            ).fetchone()[0]
+        with sqlite3.connect(archive.archive_root / "index.db") as index_conn:
+            assert (
+                index_conn.execute(
+                    "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:browser-replacement'"
+                ).fetchone()[0]
+                == accepted_raw_id
+            )
+        assert divergent.full_file_count == 1
+        assert divergent_decision == "ambiguous"
     finally:
         await archive.close()
 
