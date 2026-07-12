@@ -197,6 +197,34 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueExtensionInstanceId).toBe(first.provenance.extension_instance_id);
   });
 
+  it("records a direct manual capture as pending timeline evidence", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "chatgpt",
+      provider_session_id: "conv-manual",
+      state: "spooled_only",
+      artifact_ref: "chatgpt/conv-manual.json",
+    }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      reason: "content_script_capture",
+      envelope: {
+        session: {
+          provider: "chatgpt",
+          provider_session_id: "conv-manual",
+          turns: [{ role: "user" }],
+        },
+      },
+    });
+
+    expect(stored.polylogueState.archive_state).toEqual({ state: "spooled_only" });
+    expect(stored.polylogueConversationTimeline["chatgpt:conv-manual"][0]).toMatchObject({
+      event: "captured",
+      reason: "content_script_capture",
+      detail: "spooled_only",
+    });
+  });
+
   it("keeps receiver request id on error state", async () => {
     globalThis.fetch = vi.fn(async () =>
       responseJson({ error: "unauthorized" }, { ok: false, status: 401, requestId: "reject-42" }),

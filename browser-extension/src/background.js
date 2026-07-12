@@ -494,9 +494,9 @@ function badgeForState(state) {
   }
   if (!state.online) return { text: "off", color: "#9b2c2c" };
   const archiveState = state.archive_state?.state;
-  if (archiveState === "archived" || state.captured) return { text: "ok", color: "#14764e" };
   if (archiveState === "failed" || state.error) return { text: "err", color: "#ad2f2f" };
   if (archiveState === "spooled_only" || archiveState === "ingest_pending") return { text: "…", color: "#9a5b00" };
+  if (archiveState === "archived" || state.captured) return { text: "ok", color: "#14764e" };
   if (state.capture_mode === "dom_degraded") return { text: "dom", color: "#8a5a00" };
   return { text: "on", color: "#325d8f" };
 }
@@ -1235,7 +1235,7 @@ chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
   })();
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "polylogue.configureReceiver") {
       const settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
@@ -1320,10 +1320,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         receiver_request_id: result.receiver_request_id || null,
         artifact_ref: result.artifact_ref || null,
       });
+      const archiveState = result.state ? { state: result.state } : null;
+      await appendConversationTimeline({
+        provider: summary.provider || result.provider,
+        providerSessionId: summary.providerSessionId || result.provider_session_id,
+        event: "captured",
+        reason: message.reason || "content_script_capture",
+        detail: result.state || "capture_accepted",
+        tabId: sender.tab?.id || null,
+      });
       await setState({
         online: true,
         captured: true,
         last_capture: result,
+        archive_state: archiveState,
         provider: summary.provider || result.provider,
         provider_session_id: summary.providerSessionId || result.provider_session_id,
         capture_mode: summary.captureMode,

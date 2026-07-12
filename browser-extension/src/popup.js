@@ -172,16 +172,6 @@ function stateExplanation(state) {
       detail: state.archive_state?.latest_failure || state.error || "Open the debug log and match the request id in the receiver log.",
     };
   }
-  if (archiveState === "archived" || state.captured) {
-    return {
-      badge: ["ok", "captured"],
-      archive: "Archived",
-      headline: state.last_capture
-        ? `Last capture: ${state.last_capture.provider} / ${state.last_capture.provider_session_id}`
-        : "The latest capture is visible in the archive.",
-      detail: "Archive evidence includes receiver spool, source raw row, indexed session, and indexed messages.",
-    };
-  }
   if (archiveState === "stale") {
     return {
       badge: ["warn", "stale"],
@@ -204,6 +194,16 @@ function stateExplanation(state) {
       archive: "Spooled",
       headline: "Receiver wrote the capture artifact.",
       detail: "The daemon has not acquired the spool artifact into source.db yet.",
+    };
+  }
+  if (archiveState === "archived" || state.captured) {
+    return {
+      badge: ["ok", "captured"],
+      archive: "Archived",
+      headline: state.last_capture
+        ? `Last capture: ${state.last_capture.provider} / ${state.last_capture.provider_session_id}`
+        : "The latest capture is visible in the archive.",
+      detail: "Archive evidence includes receiver spool, source raw row, indexed session, and indexed messages.",
     };
   }
   if (archiveState === "missing") {
