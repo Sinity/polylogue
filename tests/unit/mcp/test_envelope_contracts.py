@@ -63,6 +63,8 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "get_messages": ("envelope", frozenset({"messages", "total"})),
     "list_read_view_profiles": ("envelope", frozenset({"read_views", "total"})),
     "list_assertion_claims": ("envelope", frozenset({"items", "total", "limit"})),
+    "list_assertion_candidates": ("envelope", frozenset({"items", "total", "limit"})),
+    "list_assertion_candidate_reviews": ("envelope", frozenset({"items", "total", "limit"})),
     "join_typed_annotations": (
         "envelope",
         frozenset({"rows", "groups", "selected_annotation_count", "joined_count"}),
@@ -137,6 +139,8 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "set_metadata": "operation_result",
     "delete_metadata": "operation_result",
     "delete_session": "operation_result",
+    "judge_assertion_candidate": ("envelope", frozenset({"items", "applied_count", "failed_count"})),
+    "judge_assertion_candidates": ("envelope", frozenset({"items", "applied_count", "failed_count"})),
     # ------- learning corrections (#1131) -------
     "record_correction": "operation_result",
     "list_corrections": ("envelope", frozenset({"corrections", "total"})),

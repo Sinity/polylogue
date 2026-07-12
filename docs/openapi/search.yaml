@@ -1532,6 +1532,7 @@ components:
       - prompt_eval
       - transform_candidate
       - pathology
+      - finding
       title: AssertionKind
       type: string
     AssertionQueryRowPayload:

@@ -188,6 +188,7 @@ Commands:
 
   Other commands:
     annotations  Import typed annotation batches.
+    judge        Interactively triage candidate assertions.
 ```
 
 ## Analyze Verb
