@@ -905,6 +905,13 @@ def _archive_embedding_status_payload(
         if include_detail and has_messages:
             candidate_prose_messages, candidate_prose_messages_exact = _candidate_prose_message_count(conn)
             messages_ref = archive_embeddable_messages_relation(conn, alias="m")
+            status_join = f"LEFT JOIN {status_table} e ON e.session_id = m.session_id" if has_status else ""
+            blocked_session_clause = (
+                "AND NOT (e.session_id IS NOT NULL AND COALESCE(e.needs_reindex, 0) = 0 "
+                "AND e.error_message IS NOT NULL)"
+                if has_status
+                else ""
+            )
             total_messages = _scalar_int_with_timeout(
                 conn,
                 f"SELECT COUNT(*) FROM {messages_ref}",
@@ -918,14 +925,7 @@ def _archive_embedding_status_payload(
             elif has_meta:
                 meta_join = "ON em.message_id = m.message_id"
                 meta_missing_column = "em.message_id"
-                status_join = f"LEFT JOIN {status_table} e ON e.session_id = m.session_id" if has_status else ""
                 status_reindex_clause = "OR COALESCE(e.needs_reindex, 0) = 1" if has_status else ""
-                blocked_session_clause = (
-                    "AND NOT (e.session_id IS NOT NULL AND COALESCE(e.needs_reindex, 0) = 0 "
-                    "AND e.error_message IS NOT NULL)"
-                    if has_status
-                    else ""
-                )
                 exact_pending_messages = _scalar_int_with_timeout(
                     conn,
                     f"""
