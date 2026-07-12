@@ -17,12 +17,13 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.readiness.capability import (
     normalize_raw_frontier_status_payload,
     raw_frontier_integrity_is_proven_healthy,
+    raw_frontier_integrity_projection,
+    raw_frontier_integrity_summary,
     status_snapshot_has_fresh_provenance,
 )
 from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
 from polylogue.storage.insights.session.status import session_insight_status_sync
-from polylogue.storage.raw_retention import raw_frontier_integrity_projection, raw_frontier_integrity_summary
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -1774,6 +1775,8 @@ def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
         "assertions",
     }
     required_known_components = {"raw_frontier_integrity"}
+    if any(not isinstance(component_readiness.get(component), dict) for component in required_known_components):
+        return False
     for component, readiness in component_readiness.items():
         if not isinstance(readiness, dict):
             continue

@@ -10,13 +10,17 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.operations.operation_contract import OperationStatus
 from polylogue.storage.repair import ArchiveDebtStatus
+
+if TYPE_CHECKING:
+    from polylogue.storage.raw_retention import RawFrontierIntegrityProjection
 
 
 class CapabilityReadinessState(str, Enum):
@@ -300,6 +304,41 @@ def _raw_frontier_count(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
+def raw_frontier_integrity_projection(
+    archive_root: Path,
+    raw_materialization_readiness: Mapping[str, object],
+    *,
+    sample_limit: int = 10,
+) -> RawFrontierIntegrityProjection:
+    """Product-layer facade for the canonical split-tier projection."""
+
+    from polylogue.storage.raw_retention import raw_frontier_integrity_projection as storage_projection
+
+    return storage_projection(
+        archive_root,
+        raw_materialization_readiness,
+        sample_limit=sample_limit,
+    )
+
+
+def raw_frontier_integrity_summary(
+    integrity: Mapping[str, object] | RawFrontierIntegrityProjection,
+) -> str:
+    """Product-layer facade for the canonical operator/claim summary."""
+
+    from polylogue.storage.raw_retention import raw_frontier_integrity_summary as storage_summary
+
+    return storage_summary(integrity)
+
+
+def unknown_raw_frontier_integrity_projection(reason: str) -> RawFrontierIntegrityProjection:
+    """Product-layer facade for a complete explicit-unknown projection."""
+
+    from polylogue.storage.raw_retention import unknown_raw_frontier_integrity_projection as storage_unknown
+
+    return storage_unknown(reason)
+
+
 _RAW_FRONTIER_DETAIL_STATUS_KEYS = (
     "broken_head_status",
     "missing_source_raw_status",
@@ -413,8 +452,6 @@ def raw_frontier_integrity_is_proven_healthy(payload: object) -> bool:
 
     if not isinstance(payload, Mapping):
         return False
-    from polylogue.storage.raw_retention import unknown_raw_frontier_integrity_projection
-
     template = unknown_raw_frontier_integrity_projection("validation template").to_dict()
     normalized, error = _validate_raw_frontier_projection(payload, required_keys=set(template))
     return error is None and normalized is not None and normalized.get("overall_status") == "healthy"
@@ -452,11 +489,6 @@ def normalize_raw_frontier_status_payload(
     The raw-frontier component and converged claim are replaced from the same
     normalized mapping so adapters cannot drift.
     """
-
-    from polylogue.storage.raw_retention import (
-        raw_frontier_integrity_summary,
-        unknown_raw_frontier_integrity_projection,
-    )
 
     normalized: dict[str, Any] = dict(payload)
     if snapshot_state is None:
@@ -813,6 +845,9 @@ __all__ = [
     "component_from_raw_materialization_readiness",
     "component_from_transform_registry",
     "normalize_raw_frontier_status_payload",
+    "raw_frontier_integrity_projection",
     "raw_frontier_integrity_is_proven_healthy",
+    "raw_frontier_integrity_summary",
     "status_snapshot_has_fresh_provenance",
+    "unknown_raw_frontier_integrity_projection",
 ]

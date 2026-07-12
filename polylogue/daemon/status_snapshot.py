@@ -21,8 +21,10 @@ from typing import Any
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.paths import active_index_db_path
-from polylogue.readiness.capability import normalize_raw_frontier_status_payload
-from polylogue.storage.raw_retention import unknown_raw_frontier_integrity_projection
+from polylogue.readiness.capability import (
+    normalize_raw_frontier_status_payload,
+    unknown_raw_frontier_integrity_projection,
+)
 
 _MAX_FRESH_AGE_S = 30.0
 _SNAPSHOT_LOCK = threading.Lock()

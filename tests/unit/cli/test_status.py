@@ -19,6 +19,7 @@ from polylogue.cli.commands.status import (
     _archive_cli_route_status,
     _archive_facade_route_status,
     _direct_claim_guard,
+    _direct_status_ok,
     _render_raw_replay_backlog,
     _show_daemon_status,
     _show_direct_json,
@@ -1248,6 +1249,11 @@ class TestNoArchiveStatus:
             ingest_workload={"available": True, "actively_ingesting": False, "running_count": 0},
         )
         assert idle_guard["perf_measurable"]["value"] is True
+
+    def test_direct_status_requires_raw_frontier_component_presence(self) -> None:
+        assert _direct_status_ok({}) is False
+        assert _direct_status_ok({"raw_frontier_integrity": {"state": "unknown"}}) is False
+        assert _direct_status_ok({"raw_frontier_integrity": {"state": "ready"}}) is True
 
     def test_direct_status_json_blocks_transforms_when_archive_readiness_fails(
         self,
