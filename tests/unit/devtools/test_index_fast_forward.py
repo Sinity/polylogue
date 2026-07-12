@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -335,6 +336,47 @@ def test_receipt_hash_tamper_blocks_activation(tmp_path: Path) -> None:
     receipt_path.write_text(json.dumps(payload))
 
     with pytest.raises(RuntimeError, match="receipt hash mismatch"):
+        activate_generation(receipt_path)
+    assert active_link.resolve() == active_db.resolve()
+
+
+def test_activation_reuses_receipt_proof_and_rejects_identity_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    active_dir = archive_root / ".index-generations" / "gen-v32"
+    active_dir.mkdir(parents=True)
+    active_db = active_dir / "index.db"
+    _seed_v32_fixture(active_db)
+    active_link = archive_root / "index.db"
+    active_link.symlink_to(active_db)
+    receipt_path = archive_root / "recovery" / "v35.json"
+    receipt = create_and_fast_forward_generation(
+        active_link,
+        receipt_path,
+        max_io_full_avg10=1000,
+        max_memory_full_avg10=1000,
+        batch_rows=1,
+    )
+    clone = Path(str(receipt["clone_path"]))
+    from devtools import index_fast_forward as fast_forward_module
+
+    monkeypatch.setattr(
+        fast_forward_module,
+        "validate_clone",
+        lambda *args, **kwargs: pytest.fail("activation must reuse the receipt proof"),
+    )
+    activate_generation(receipt_path)
+    assert active_link.resolve() == clone.resolve()
+    rollback_generation(receipt_path)
+
+    os.utime(clone, ns=(clone.stat().st_atime_ns, clone.stat().st_mtime_ns + 1))
+    payload = json.loads(receipt_path.read_text())
+    payload["status"] = "clone_ready"
+    payload["receipt_payload_sha256"] = fast_forward_module._receipt_hash(payload)
+    receipt_path.write_text(json.dumps(payload))
+    with pytest.raises(RuntimeError, match="clone file identity changed"):
         activate_generation(receipt_path)
     assert active_link.resolve() == active_db.resolve()
 

@@ -819,6 +819,36 @@ def _swap_active_symlink(source_link: Path, target: Path, *, label: str) -> None
     _fsync_directory(source_link.parent)
 
 
+def _require_unchanged_identity(path: Path, expected: object, *, label: str) -> dict[str, object]:
+    expected_identity = cast(dict[str, object], expected)
+    actual_identity = cast(dict[str, object], asdict(file_identity(path)))
+    if actual_identity != expected_identity:
+        raise RuntimeError(f"{label} file identity changed since clone proof")
+    return actual_identity
+
+
+def _quick_check_only(db_path: Path) -> list[str]:
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=120.0) as conn:
+        conn.execute("PRAGMA query_only = ON")
+        return [str(row[0]) for row in conn.execute("PRAGMA quick_check").fetchall()]
+
+
+def _runtime_version_sanity(db_path: Path) -> dict[str, object]:
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=120.0) as conn:
+        conn.execute("PRAGMA query_only = ON")
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        schema_probe = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE (type='table' AND name='messages_fts') "
+            "OR (type='view' AND name='delegations')"
+        ).fetchone()
+    return {
+        "ready": version == FAST_FORWARD_TO_VERSION and int(schema_probe[0]) == 2,
+        "user_version": version,
+        "required_objects": int(schema_probe[0]),
+    }
+
+
 def _restart_and_verify_or_rollback(
     receipt: dict[str, object],
     receipt_path: Path,
@@ -826,7 +856,6 @@ def _restart_and_verify_or_rollback(
     service: str,
     source_link: Path,
     rollback_target: Path,
-    expected_counts: dict[str, int],
 ) -> None:
     try:
         subprocess.run(["systemctl", "--user", "restart", service], check=True)
@@ -834,12 +863,7 @@ def _restart_and_verify_or_rollback(
         while time.monotonic() < deadline and not _service_active(service):
             time.sleep(0.5)
         state = _service_state(service)
-        validation = validate_clone(
-            source_link,
-            expected_counts=expected_counts,
-            expected_version=FAST_FORWARD_TO_VERSION,
-            run_quick_check=False,
-        )
+        validation = _runtime_version_sanity(source_link)
         if not _service_active(service) or not bool(validation["ready"]):
             raise RuntimeError(f"post-restart contract failed: service={state}, ready={validation['ready']}")
         receipt.update(
@@ -883,15 +907,26 @@ def activate_generation(receipt_path: Path, *, service: str | None = None, resta
     clone = Path(str(receipt["clone_path"])).resolve(strict=True)
     if source_link.resolve(strict=True) != source_target.resolve(strict=True):
         raise RuntimeError("active generation changed since clone proof")
-    expected_counts = cast(dict[str, int], receipt["structural_counts_before"])
-    validation = validate_clone(
-        clone,
-        expected_counts=expected_counts,
-        expected_version=FAST_FORWARD_TO_VERSION,
-        run_quick_check=True,
+    source_identity = _require_unchanged_identity(
+        source_link,
+        receipt["source_identity"],
+        label="source",
     )
-    if not bool(validation["ready"]):
-        raise RuntimeError("clone is no longer ready for activation")
+    clone_identity = _require_unchanged_identity(
+        clone,
+        receipt["clone_identity_after"],
+        label="clone",
+    )
+    quick_check = _quick_check_only(clone)
+    if quick_check != ["ok"]:
+        raise RuntimeError("clone quick_check failed before activation")
+    validation: dict[str, object] = {
+        "ready": True,
+        "quick_check": quick_check,
+        "source_identity": source_identity,
+        "clone_identity": clone_identity,
+        "receipt_validation_reused": True,
+    }
     _swap_active_symlink(source_link, clone, label="v35")
     receipt.update(
         {
@@ -909,7 +944,6 @@ def activate_generation(receipt_path: Path, *, service: str | None = None, resta
             service=service,
             source_link=source_link,
             rollback_target=source_target,
-            expected_counts=expected_counts,
         )
     return receipt
 
