@@ -232,6 +232,7 @@ _AGGREGATE_ROW_FIELDS: dict[str, dict[str, str]] = {
         "session.origin": "parent_origin",
     },
 }
+_MISSING_GROUP_KEY = "[missing]"
 
 
 def _aggregate_group_fields(group_by: str | None) -> tuple[str, ...]:
@@ -357,7 +358,7 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
             value = _aggregate_value(ctx.source.unit, field, row)
             if value is None:
                 missing_counts[field] += 1
-                value = "unknown"
+                value = _MISSING_GROUP_KEY
             elif value.lower() == "unknown":
                 unknown_counts[field] += 1
             values.append(value)
@@ -397,7 +398,7 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
             denominator=len(rows),
             missing_counts=missing_counts,
             unknown_counts=unknown_counts,
-            groups=ordered_groups,
+            groups=page_groups[: ctx.limit],
         ),
         pipeline_stages=_pipeline_stage_payloads(pipeline),
     )
