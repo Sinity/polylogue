@@ -445,6 +445,30 @@ def test_raw_materialization_snapshot_classifies_dangling_index_raw_link_as_lost
     assert counts["raw_id_join_gap"] == 0
 
 
+def test_lost_source_evidence_samples_include_generated_session_identity(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('missing', 'codex-session', 'raw-missing', 'missing raw', ?)
+            """,
+            (bytes(32),),
+        )
+        conn.commit()
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+
+    assert snapshot["lost_source_evidence_count"] == 1
+    samples = cast(list[dict[str, object]], snapshot["lost_source_evidence_samples"])
+    assert samples[0]["session_id"] == "codex-session:missing"
+    assert samples[0]["missing_raw_id"] == "raw-missing"
+
+
 def test_raw_materialization_snapshot_classifies_source_path_aliases(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"

@@ -105,6 +105,36 @@ def test_run_health_core_contract(
     assert convergence["raw_frontier_integrity"] == report.raw_frontier_integrity
 
 
+def test_raw_frontier_readiness_check_errors_on_missing_source_evidence(tmp_path: Path) -> None:
+    from polylogue.readiness import VerifyStatus, _raw_frontier_integrity_check
+    from polylogue.storage.raw_retention import raw_frontier_integrity_projection
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS):
+        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+    sample = {
+        "session_id": "codex-session:missing",
+        "missing_raw_id": "raw-missing",
+        "evidence_status": "lost_source_evidence",
+    }
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        {
+            "available": True,
+            "lost_source_evidence_count": 1,
+            "lost_source_evidence_samples": [sample],
+        },
+    )
+
+    check = _raw_frontier_integrity_check(projection)
+    assert projection.missing_source_raw_status == "violated"
+    assert projection.missing_source_raw_samples == (sample,)
+    assert check.status is VerifyStatus.ERROR
+    assert check.count == 1
+    assert check.breakdown["missing_source_raw_count"] == 1
+
+
 @pytest.mark.parametrize(
     ("embedded_sessions", "embedded_messages", "pending_sessions", "expected_status", "expected_text"),
     [

@@ -101,7 +101,13 @@ class ReadinessReport(OutcomeReport):
 
     @property
     def archive_convergence(self) -> dict[str, object]:
+        archive_state_checked = bool(
+            self.raw_materialization_readiness or self.raw_frontier_integrity or self.active_rebuild_index_attempts
+        )
         materialization_ready = raw_materialization_ready(self.raw_materialization_readiness)
+        frontier_ready = (
+            not self.raw_frontier_integrity or self.raw_frontier_integrity.get("overall_status") == "healthy"
+        )
         materialization_progress = {
             "raw_artifact_count": _payload_int(self.raw_materialization_readiness.get("raw_artifact_count")),
             "materialized_raw_artifact_count": _payload_int(
@@ -111,11 +117,9 @@ class ReadinessReport(OutcomeReport):
             "join_gap_count": _payload_int(self.raw_materialization_readiness.get("join_gap_count")),
         }
         return {
-            "converging": (
-                bool(self.active_rebuild_index_attempts)
-                or not materialization_ready
-                or self.raw_frontier_integrity.get("overall_status") != "healthy"
-            ),
+            "checked": archive_state_checked,
+            "converging": archive_state_checked
+            and (bool(self.active_rebuild_index_attempts) or not materialization_ready or not frontier_ready),
             "materialization_ready": materialization_ready,
             "materialization_progress": materialization_progress,
             "active_rebuild_index_attempts": self.active_rebuild_index_attempts,
@@ -600,12 +604,20 @@ def _raw_frontier_integrity_check(projection: RawFrontierIntegrityProjection) ->
         "broken_head_count": projection.broken_head_count,
         "missing_source_raw_count": projection.missing_source_raw_count,
         "cursor_ahead_count": projection.cursor_ahead_count,
+        "cursor_head_comparison_count": projection.cursor_head_comparison_count,
+        "cursor_ahead_comparison_count": projection.cursor_ahead_comparison_count,
         "cursor_authority_gap_count": projection.cursor_authority_gap_count,
     }
+    issue_count = (
+        projection.broken_head_count
+        + projection.missing_source_raw_count
+        + projection.cursor_ahead_count
+        + projection.cursor_authority_gap_count
+    )
     return ReadinessCheck(
         "raw_frontier_integrity",
         status,
-        count=sum(breakdown.values()),
+        count=issue_count,
         summary=summary,
         breakdown=breakdown,
     )

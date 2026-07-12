@@ -330,7 +330,8 @@ class TestNoArchiveStatus:
 
         payload = json.loads(_combined_calls(env))
         transforms = payload["component_readiness"]["transforms"]
-        assert payload["ok"] is True
+        assert payload["ok"] is False
+        assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
         assert transforms["state"] == "unknown"
         assert transforms["summary"] == "direct_status_default_skips_exact_archive_readiness"
         assert transforms["caveats"] == ["direct_status_default_skips_exact_archive_readiness"]
@@ -996,6 +997,48 @@ class TestNoArchiveStatus:
         for entry in claim_guard.values():
             assert entry["signal"]
 
+    def test_direct_status_json_marks_unavailable_raw_frontier_non_green(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A present but unreadable ops cursor authority must not leave top-level status green."""
+
+        env = _make_app_env()
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        with sqlite3.connect(tmp_path / "ops.db") as conn:
+            conn.execute("DROP TABLE ingest_cursor")
+            conn.commit()
+
+        archive_readiness = {
+            "checked": True,
+            "counts": {"session_count": 0},
+            "surfaces": {"search": {"ready": True, "blockers": [], "evidence": {}}},
+        }
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
+            patch(
+                "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+                return_value={"available": True, "total": 0, "affected_total": 0},
+            ),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env, include_archive_readiness=True)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
+        assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
+        assert payload["claim_guard"]["converged"]["value"] is False
+        assert payload["ok"] is False
+
     def test_direct_status_json_detects_broken_append_head_blocks_converged(
         self,
         tmp_path: Path,
@@ -1077,6 +1120,7 @@ class TestNoArchiveStatus:
             _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
+        assert payload["ok"] is False
         integrity = payload["raw_frontier_integrity"]
         assert integrity["overall_status"] == "violated"
         assert integrity["broken_head_status"] == "violated"
@@ -1470,6 +1514,46 @@ class TestNoArchiveStatus:
         )
 
         assert "FTS: [green]100.0% indexed[/green]" in _combined_calls(env)
+
+    def test_daemon_status_renders_raw_frontier_integrity(self) -> None:
+        env = _make_app_env()
+
+        _show_daemon_status(
+            env,
+            {
+                "daemon_liveness": True,
+                "raw_frontier_integrity": {
+                    "overall_status": "unknown",
+                    "broken_head_reason": "",
+                    "missing_source_raw_reason": "",
+                    "cursor_ahead_reason": "ops cursor authority unavailable",
+                },
+            },
+        )
+
+        rendered = _combined_calls(env)
+        assert "Raw frontier: [yellow]unknown[/yellow]" in rendered
+        assert "ops cursor authority unavailable" in rendered
+
+    def test_compact_daemon_status_cannot_preserve_stale_green_frontier(self) -> None:
+        env = _make_app_env()
+        _show_status_json(
+            env,
+            {
+                "ok": True,
+                "daemon_liveness": True,
+                "raw_frontier_integrity": {
+                    "overall_status": "violated",
+                    "broken_head_status": "violated",
+                    "broken_head_samples": [{"accepted_raw_id": "raw-1"}],
+                },
+            },
+        )
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["ok"] is False
+        assert payload["raw_frontier_integrity"]["overall_status"] == "violated"
+        assert "broken_head_samples" not in payload["raw_frontier_integrity"]
 
     def test_daemon_status_json_is_compact_by_default(self) -> None:
         env = _make_app_env()

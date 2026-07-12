@@ -97,6 +97,7 @@ def test_archive_convergence_hoists_materialization_progress_counts() -> None:
 
     convergence = report.archive_convergence
 
+    assert convergence["checked"] is True
     assert convergence["converging"] is True
     assert convergence["materialization_ready"] is False
     assert convergence["materialization_progress"] == {
@@ -105,6 +106,17 @@ def test_archive_convergence_hoists_materialization_progress_counts() -> None:
         "archive_session_count": 8,
         "join_gap_count": 3,
     }
+
+
+def test_runtime_only_readiness_does_not_claim_archive_convergence() -> None:
+    report = ReadinessReport()
+
+    convergence = report.archive_convergence
+
+    assert convergence["checked"] is False
+    assert convergence["converging"] is False
+    assert convergence["materialization_ready"] is False
+    assert convergence["raw_frontier_integrity"] == {}
 
 
 def test_outcome_checks_map_to_capability_states() -> None:
@@ -267,6 +279,8 @@ def test_raw_frontier_integrity_maps_healthy_to_ready() -> None:
             "cursor_ahead_status": "healthy",
             "cursor_ahead_count": 0,
             "cursor_ahead_checked_count": 3,
+            "cursor_head_comparison_count": 4,
+            "cursor_ahead_comparison_count": 0,
             "cursor_authority_gap_count": 0,
         }
     )
@@ -277,6 +291,8 @@ def test_raw_frontier_integrity_maps_healthy_to_ready() -> None:
     assert component.caveats == ()
     assert component.repair_hint is None
     assert component.counts["broken_head_checked_count"] == 3
+    assert component.counts["cursor_head_comparison_count"] == 4
+    assert component.counts["cursor_ahead_comparison_count"] == 0
     assert component.counts["cursor_authority_gap_count"] == 0
 
 

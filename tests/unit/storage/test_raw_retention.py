@@ -11,6 +11,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_retention import (
     RawRetentionAuthority,
@@ -20,6 +21,7 @@ from polylogue.storage.raw_retention import (
     protected_active_raw_revision_ids,
     raw_frontier_integrity_projection,
     raw_frontier_integrity_snapshot,
+    raw_frontier_integrity_summary,
     superseded_raw_snapshot_candidates,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1197,7 +1199,7 @@ def test_raw_frontier_integrity_snapshot_detects_corrupt_chain_invariants(
         session_raw_id="raw-append",
         accepted_raw_id="raw-append",
         accepted_revision="revision-1",
-        generation=1,
+        generation=2 if mutation == "generation" else 1,
         frontier=15,
         append_end_offset=15,
     )
@@ -1210,6 +1212,140 @@ def test_raw_frontier_integrity_snapshot_detects_corrupt_chain_invariants(
     assert snapshot.broken_head_count == 1
     assert len(snapshot.broken_head_samples) == 1
     assert error_match in snapshot.broken_head_samples[0].reason
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_match"),
+    [
+        ("revision", "revision disagrees"),
+        ("generation", "generation disagrees"),
+        ("frontier", "frontier disagrees"),
+        ("append_end", "append end disagrees"),
+    ],
+)
+def test_raw_frontier_integrity_snapshot_detects_index_head_metadata_drift(
+    tmp_path: Path,
+    mutation: str,
+    error_match: str,
+) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "session.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-baseline",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-0",
+            generation=0,
+            blob_size=10,
+        )
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-append",
+            source_path=source_path,
+            acquired_at_ms=2,
+            kind="append",
+            source_revision="revision-1",
+            generation=1,
+            blob_size=5,
+            predecessor_raw_id="raw-baseline",
+            predecessor_revision="revision-0",
+            baseline_raw_id="raw-baseline",
+            append_start_offset=10,
+            append_end_offset=15,
+        )
+        conn.commit()
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-append",
+        accepted_raw_id="raw-append",
+        accepted_revision="revision-1",
+        generation=1,
+        frontier=15,
+        append_end_offset=15,
+    )
+    with sqlite3.connect(index_db) as conn:
+        if mutation == "revision":
+            conn.execute("UPDATE raw_revision_heads SET accepted_source_revision = 'wrong'")
+        elif mutation == "generation":
+            conn.execute("UPDATE raw_revision_heads SET acquisition_generation = 2")
+        elif mutation == "frontier":
+            conn.execute("UPDATE raw_revision_heads SET accepted_frontier = 14")
+        elif mutation == "append_end":
+            conn.execute("UPDATE raw_revision_heads SET append_end_offset = 14")
+        else:
+            raise AssertionError(mutation)
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=15)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.broken_head_status == "violated"
+    assert snapshot.broken_head_count == 1
+    assert len(snapshot.broken_head_samples) == 1
+    assert error_match in snapshot.broken_head_samples[0].reason
+    assert snapshot.overall_status == "violated"
+
+
+def test_raw_frontier_integrity_projection_composes_real_missing_session_raw_authority(tmp_path: Path) -> None:
+    """The sessions.raw_id seed reaches the canonical projection through its production census."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    with sqlite3.connect(index_db) as conn:
+        conn.executemany(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES (?, 'codex-session', ?, 'lost', ?)
+            """,
+            [
+                ("lost-session-a", "raw-missing-a", bytes(32)),
+                ("lost-session-b", "raw-missing-b", bytes(32)),
+            ],
+        )
+        conn.commit()
+
+    readiness = raw_materialization_readiness_snapshot(tmp_path)
+    projection = raw_frontier_integrity_projection(tmp_path, readiness, sample_limit=1)
+
+    assert readiness["available"] is True
+    assert readiness["lost_source_evidence_count"] == 2
+    assert projection.missing_source_raw_status == "violated"
+    assert projection.missing_source_raw_count == 2
+    assert len(projection.missing_source_raw_samples) == 1
+    sample = projection.missing_source_raw_samples[0]
+    assert sample["session_id"] == "codex-session:lost-session-a"
+    assert sample["missing_raw_id"] == "raw-missing-a"
+    assert sample["evidence_status"] == "lost_source_evidence"
+    assert projection.broken_head_status == "healthy"
+    assert projection.cursor_ahead_status == "healthy"
+    assert projection.overall_status == "violated"
+    assert projection.available is True
+    assert projection.summary == "2 indexed session(s) reference raw evidence missing from source tier"
+
+
+def test_raw_frontier_integrity_summary_preserves_mixed_violation_and_unknown_reasons() -> None:
+    summary = raw_frontier_integrity_summary(
+        {
+            "overall_status": "violated",
+            "broken_head_reason": "1 accepted head is corrupt",
+            "missing_source_raw_reason": "",
+            "cursor_ahead_reason": "ops cursor authority is unavailable",
+        }
+    )
+
+    assert summary == "1 accepted head is corrupt; ops cursor authority is unavailable"
 
 
 def test_raw_frontier_integrity_snapshot_detects_cursor_ahead_of_accepted_material(tmp_path: Path) -> None:
@@ -1268,12 +1404,152 @@ def test_raw_frontier_integrity_snapshot_detects_cursor_ahead_of_accepted_materi
     assert snapshot.cursor_ahead_status == "violated"
     assert snapshot.cursor_ahead_count == 1
     assert snapshot.cursor_ahead_checked_count == 1
+    assert snapshot.cursor_head_comparison_count == 1
+    assert snapshot.cursor_ahead_comparison_count == 1
     assert len(snapshot.cursor_ahead_samples) == 1
     sample = snapshot.cursor_ahead_samples[0]
     assert sample.source_path == str(source_path)
     assert sample.cursor_byte_offset == 30
     assert sample.accepted_frontier == 15
+    assert sample.affected_head_count == 1
     assert snapshot.overall_status == "violated"
+
+
+def test_raw_frontier_integrity_counts_one_cursor_across_multiple_byte_head_comparisons(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "shared.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-one",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-one",
+            generation=0,
+            blob_size=10,
+        )
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-two",
+            source_path=source_path,
+            acquired_at_ms=2,
+            kind="full",
+            source_revision="revision-two",
+            generation=0,
+            blob_size=20,
+        )
+        conn.execute("UPDATE raw_sessions SET logical_source_key = 'codex:session-2' WHERE raw_id = 'raw-two'")
+        conn.commit()
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-one",
+        accepted_raw_id="raw-one",
+        accepted_revision="revision-one",
+        generation=0,
+        frontier=10,
+        append_end_offset=None,
+    )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('session-2', 'codex-session', 'raw-two', 'session two', ?)
+            """,
+            (bytes(32),),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_revision_heads (
+                logical_source_key, session_id, accepted_raw_id,
+                accepted_source_revision, accepted_content_hash,
+                accepted_frontier_kind, accepted_frontier,
+                acquisition_generation, append_end_offset, decided_at_ms
+            ) VALUES ('codex:session-2', 'codex-session:session-2', 'raw-two',
+                      'revision-two', ?, 'byte', 20, 0, NULL, 2)
+            """,
+            (bytes(32),),
+        )
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=30)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(
+            conn,
+            index_db_path=index_db,
+            ops_db_path=ops_db,
+            sample_limit=1,
+        )
+
+    assert snapshot.cursor_ahead_status == "violated"
+    assert snapshot.cursor_ahead_count == 1
+    assert snapshot.cursor_ahead_checked_count == 1
+    assert snapshot.cursor_head_comparison_count == 2
+    assert snapshot.cursor_ahead_comparison_count == 2
+    assert len(snapshot.cursor_ahead_samples) == 1
+    assert snapshot.cursor_ahead_samples[0].source_path == str(source_path)
+    assert snapshot.cursor_ahead_samples[0].accepted_frontier == 10
+    assert snapshot.cursor_ahead_samples[0].affected_head_count == 2
+    assert "1 ingest cursor row(s)" in snapshot.cursor_ahead_reason
+    assert "2 cursor/head comparison(s)" in snapshot.cursor_ahead_reason
+
+
+def test_raw_frontier_integrity_semantic_membership_cursor_is_intentionally_not_compared(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "membership-export.json"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-semantic",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="semantic-revision",
+            generation=0,
+            blob_size=10,
+        )
+        conn.commit()
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-semantic",
+        accepted_raw_id="raw-semantic",
+        accepted_revision="semantic-revision",
+        generation=0,
+        frontier=10,
+        append_end_offset=None,
+    )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            UPDATE raw_revision_heads
+            SET accepted_frontier_kind = 'semantic', accepted_frontier = 1, append_end_offset = NULL
+            """
+        )
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=100)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.broken_head_status == "healthy"
+    assert snapshot.cursor_ahead_status == "healthy"
+    assert snapshot.cursor_ahead_count == 0
+    assert snapshot.cursor_ahead_checked_count == 0
+    assert snapshot.cursor_head_comparison_count == 0
+    assert snapshot.cursor_ahead_comparison_count == 0
+    assert snapshot.cursor_authority_gap_count == 0
+    assert snapshot.cursor_ahead_samples == ()
+    assert snapshot.overall_status == "healthy"
 
 
 def test_raw_frontier_integrity_snapshot_cursor_at_exact_accepted_frontier_is_healthy(tmp_path: Path) -> None:
@@ -1319,6 +1595,8 @@ def test_raw_frontier_integrity_snapshot_cursor_at_exact_accepted_frontier_is_he
     assert snapshot.cursor_ahead_status == "healthy"
     assert snapshot.cursor_ahead_count == 0
     assert snapshot.cursor_ahead_checked_count == 1
+    assert snapshot.cursor_head_comparison_count == 1
+    assert snapshot.cursor_ahead_comparison_count == 0
 
 
 def test_raw_frontier_integrity_snapshot_reads_ops_with_zero_accepted_heads(tmp_path: Path) -> None:

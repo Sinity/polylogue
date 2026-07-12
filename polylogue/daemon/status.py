@@ -62,7 +62,7 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
-from polylogue.storage.raw_retention import raw_frontier_integrity_projection
+from polylogue.storage.raw_retention import raw_frontier_integrity_projection, raw_frontier_integrity_summary
 from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -201,6 +201,8 @@ class RawFrontierIntegrity(BaseModel):
     cursor_ahead_status: Literal["healthy", "unknown", "violated"] = "unknown"
     cursor_ahead_count: int = 0
     cursor_ahead_checked_count: int = 0
+    cursor_head_comparison_count: int = 0
+    cursor_ahead_comparison_count: int = 0
     cursor_ahead_samples: list[dict[str, object]] = Field(default_factory=list)
     cursor_authority_gap_count: int = 0
     cursor_authority_gap_samples: list[dict[str, object]] = Field(default_factory=list)
@@ -1726,21 +1728,6 @@ def _daemon_component_readiness(
     return components
 
 
-def _raw_frontier_integrity_summary(integrity: RawFrontierIntegrity) -> str:
-    if integrity.overall_status == "healthy":
-        return "ready"
-    reasons = [
-        reason
-        for reason in (
-            integrity.broken_head_reason,
-            integrity.missing_source_raw_reason,
-            integrity.cursor_ahead_reason,
-        )
-        if reason
-    ]
-    return "; ".join(reasons) if reasons else "raw frontier integrity unavailable"
-
-
 def _daemon_claim_guard(
     *,
     archive_storage: ArchiveStorageStatus,
@@ -1766,7 +1753,7 @@ def _daemon_claim_guard(
         raw_materialization_ready=raw_materialization_ready(raw_materialization_readiness),
         raw_materialization_summary=raw_component.summary,
         raw_frontier_integrity_ready=raw_frontier_integrity.overall_status == "healthy",
-        raw_frontier_integrity_summary=_raw_frontier_integrity_summary(raw_frontier_integrity),
+        raw_frontier_integrity_summary=raw_frontier_integrity_summary(raw_frontier_integrity.model_dump()),
         search_ready=fts_readiness.messages_ready,
         search_summary=fts_component.summary,
         active_writer=active_writer,
@@ -2266,7 +2253,7 @@ def daemon_status_payload(
 
     return json_document(
         {
-            "ok": True,
+            "ok": status.raw_frontier_integrity.overall_status == "healthy",
             "daemon": "polylogued",
             "daemon_liveness": status.daemon_liveness,
             "checked_at": status.checked_at,
@@ -2561,6 +2548,12 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     f"{_safe_int(materialization.get('warning'))} warning, "
                     f"{_safe_int(materialization.get('blocked'))} blocked"
                 )
+    frontier = payload.get("raw_frontier_integrity")
+    if isinstance(frontier, dict):
+        overall = str(frontier.get("overall_status") or "unknown")
+        summary = raw_frontier_integrity_summary(frontier)
+        detail = "" if summary == "ready" else f": {summary}"
+        lines.append(f"Raw frontier integrity: {overall}{detail}")
     backlog = payload.get("raw_replay_backlog")
     if isinstance(backlog, dict) and backlog.get("available"):
         candidates = _safe_int(backlog.get("candidate_count"))
@@ -2596,8 +2589,8 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):
-        overall = health.get("overall_status", "unknown")
-        lines.append(f"Health: {overall} ({health.get('alert_count', 0)} alerts)")
+        health_overall = str(health.get("overall_status", "unknown"))
+        lines.append(f"Health: {health_overall} ({health.get('alert_count', 0)} alerts)")
     # Raw failure summary
     raw_parse = _safe_int(payload.get("raw_parse_failures"))
     raw_val = _safe_int(payload.get("raw_validation_failures"))

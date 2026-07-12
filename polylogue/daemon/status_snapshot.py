@@ -128,8 +128,9 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
     browser_capture = dict(browser_capture_status_public_payload(runtime.browser_capture_spool_path))
     browser_capture_enabled = runtime.browser_capture_enabled is True
     browser_capture["active"] = browser_capture_enabled
+    frontier_reason = refresh_error or "rich status snapshot unavailable"
     payload: dict[str, object] = {
-        "ok": True,
+        "ok": False,
         "daemon": "polylogued",
         "daemon_liveness": _check_daemon_liveness(),
         "checked_at": now,
@@ -171,6 +172,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
             "source_family_counts": {},
             "sampled_rows": [],
         },
+        "raw_frontier_integrity": _minimal_raw_frontier_integrity(frontier_reason),
         "embedding_readiness": {},
         "memory": {},
         "health": {},
@@ -190,6 +192,33 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
     }
     payload["component_readiness"] = _minimal_component_readiness(payload)
     return json_document(payload)
+
+
+def _minimal_raw_frontier_integrity(reason: str) -> dict[str, object]:
+    """Return an explicit unknown projection when the rich tier scan has not run."""
+
+    return {
+        "available": False,
+        "overall_status": "unknown",
+        "broken_head_status": "unknown",
+        "broken_head_count": 0,
+        "broken_head_checked_count": 0,
+        "broken_head_samples": [],
+        "broken_head_reason": reason,
+        "missing_source_raw_status": "unknown",
+        "missing_source_raw_count": 0,
+        "missing_source_raw_samples": [],
+        "missing_source_raw_reason": reason,
+        "cursor_ahead_status": "unknown",
+        "cursor_ahead_count": 0,
+        "cursor_ahead_checked_count": 0,
+        "cursor_head_comparison_count": 0,
+        "cursor_ahead_comparison_count": 0,
+        "cursor_ahead_samples": [],
+        "cursor_authority_gap_count": 0,
+        "cursor_authority_gap_samples": [],
+        "cursor_ahead_reason": reason,
+    }
 
 
 def _daemon_write_coordinator_payload() -> dict[str, object]:
@@ -227,6 +256,12 @@ def _minimal_component_readiness(payload: Mapping[str, object]) -> dict[str, obj
         "archive_storage": _minimal_component("archive_storage", "archive", "unknown", "minimal snapshot"),
         "raw_materialization": _minimal_component(
             "raw_materialization",
+            "archive",
+            "unknown",
+            "minimal snapshot",
+        ),
+        "raw_frontier_integrity": _minimal_component(
+            "raw_frontier_integrity",
             "archive",
             "unknown",
             "minimal snapshot",

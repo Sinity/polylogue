@@ -17,7 +17,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
 from polylogue.storage.insights.session.status import session_insight_status_sync
-from polylogue.storage.raw_retention import raw_frontier_integrity_projection
+from polylogue.storage.raw_retention import raw_frontier_integrity_projection, raw_frontier_integrity_summary
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -1376,6 +1376,10 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
         fts_color = "green" if fts.get("messages_ready") else "yellow"
         env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
 
+    raw_frontier = status.get("raw_frontier_integrity")
+    if isinstance(raw_frontier, dict):
+        _render_raw_frontier_integrity(env, raw_frontier)
+
     # Sizes
     db_bytes = status.get("db_size_bytes", 0)
     disk_free = status.get("disk_free_bytes", 0)
@@ -1413,7 +1417,7 @@ def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False
 def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Return the operator-facing status JSON without debug-heavy subtrees."""
     payload: dict[str, Any] = {
-        "ok": status.get("ok", bool(status.get("daemon_liveness"))),
+        "ok": _status_ok(status),
         "source": source,
         "daemon_liveness": bool(status.get("daemon_liveness", False)),
         "full_status_command": "polylogue ops status --json --full",
@@ -1508,6 +1512,24 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
         payload["diagnostic"] = status["diagnostic"]
 
     return payload
+
+
+def _status_ok(status: dict[str, Any]) -> bool:
+    """Preserve existing status health while requiring proven raw authority."""
+
+    ok = bool(status.get("ok", status.get("daemon_liveness")))
+    integrity = status.get("raw_frontier_integrity")
+    if isinstance(integrity, dict) and integrity.get("overall_status") != "healthy":
+        return False
+    return ok
+
+
+def _render_raw_frontier_integrity(env: AppEnv, integrity: dict[str, Any]) -> None:
+    overall = str(integrity.get("overall_status") or "unknown")
+    color = {"healthy": "green", "violated": "red", "unknown": "yellow"}.get(overall, "yellow")
+    summary = raw_frontier_integrity_summary(integrity)
+    detail = "" if summary == "ready" else f" — {summary}"
+    env.ui.console.print(f"  Raw frontier: [{color}]{overall}[/{color}]{detail}")
 
 
 def _compact_mapping_without(value: Any, heavy_keys: set[str]) -> dict[str, Any]:
@@ -1731,11 +1753,14 @@ def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
         "transforms",
         "assertions",
     }
+    required_known_components = {"raw_frontier_integrity"}
     for component, readiness in component_readiness.items():
         if not isinstance(readiness, dict):
             continue
         state = str(readiness.get("state") or "unknown")
         if state in hard_failure_states:
+            return False
+        if state == "unknown" and component in required_known_components:
             return False
         if state == "missing" and component in required_missing_components:
             return False
@@ -1824,7 +1849,7 @@ def _direct_claim_guard(
 
     frontier_component = component_readiness.get("raw_frontier_integrity")
     frontier_ready = isinstance(frontier_component, dict) and frontier_component.get("state") == "ready"
-    frontier_summary = _direct_raw_frontier_integrity_summary(raw_frontier_integrity)
+    frontier_summary = raw_frontier_integrity_summary(raw_frontier_integrity)
 
     search_component = component_readiness.get("search")
     search_ready = isinstance(search_component, dict) and search_component.get("state") == "ready"
@@ -1881,17 +1906,6 @@ def _direct_raw_frontier_integrity_component(integrity: dict[str, Any] | None) -
     from polylogue.readiness.capability import component_from_raw_frontier_integrity
 
     return component_from_raw_frontier_integrity(integrity).to_dict()
-
-
-def _direct_raw_frontier_integrity_summary(integrity: dict[str, Any]) -> str:
-    if str(integrity.get("overall_status")) == "healthy":
-        return "ready"
-    reasons = [
-        str(integrity.get(key) or "")
-        for key in ("broken_head_reason", "missing_source_raw_reason", "cursor_ahead_reason")
-    ]
-    reasons = [reason for reason in reasons if reason]
-    return "; ".join(reasons) if reasons else "raw frontier integrity unavailable"
 
 
 def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
@@ -2209,6 +2223,10 @@ def _show_direct_status(
                         f"{_safe_int(materialization.get('warning'))} warning, "
                         f"{_safe_int(materialization.get('blocked'))} blocked"
                     )
+            _render_raw_frontier_integrity(
+                env,
+                _direct_raw_frontier_integrity(active_root, materialization),
+            )
             _render_archive_facade_routes(env, _archive_facade_route_status())
             _render_archive_cli_routes(env, _archive_cli_route_status())
             _render_archive_runtime_paths(env, _archive_runtime_path_status())

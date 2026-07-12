@@ -421,7 +421,10 @@ def _readiness_scalar_int(conn: sqlite3.Connection, sql: str) -> int:
 
 def _table_columns(conn: sqlite3.Connection, schema: str, table: str) -> frozenset[str]:
     try:
-        rows = conn.execute(f"PRAGMA {schema}.table_info({table})").fetchall()
+        # ``sessions.session_id`` and other identity columns are generated.
+        # table_info omits generated/hidden columns, which made exact lost-raw
+        # counts pair with empty samples on the canonical archive schema.
+        rows = conn.execute(f"PRAGMA {schema}.table_xinfo({table})").fetchall()
     except sqlite3.Error as exc:
         logger.warning("archive readiness table-columns probe failed for %s.%s: %s", schema, table, exc, exc_info=True)
         return frozenset()
