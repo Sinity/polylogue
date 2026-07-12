@@ -87,6 +87,29 @@ jobs:
         run: uv run devtools release verify-distribution --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
+      - name: Verify installed wheel exposes the exact build revision
+        env:
+          EXPECTED_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          uv venv "${RUNNER_TEMP}/build-info-venv"
+          uv pip install --python "${RUNNER_TEMP}/build-info-venv/bin/python" "${RUNNER_TEMP}/dist/dist"/*.whl
+          "${RUNNER_TEMP}/build-info-venv/bin/python" -I - <<'PY'
+          import json
+          import os
+
+          from polylogue.version import VERSION_INFO
+
+          payload = {
+              "version": VERSION_INFO.version,
+              "revision": VERSION_INFO.commit,
+              "dirty": VERSION_INFO.dirty,
+          }
+          print(json.dumps(payload, sort_keys=True))
+          assert payload["revision"] == os.environ["EXPECTED_REVISION"], payload
+          assert len(payload["revision"] or "") == 40, payload
+          assert payload["dirty"] is False, payload
+          PY
       - name: twine check (PyPI metadata long-description renderability)
         run: |
           uv run --with twine python -m twine check "${RUNNER_TEMP}/dist/dist"/*.whl "${RUNNER_TEMP}/dist/dist"/*.tar.gz
@@ -237,6 +260,41 @@ jobs:
             exit 1
           fi
 
+  pipx-smoke:
+    # pipx is the documented user-facing install route. Install the built
+    # wheel with pipx itself so console-script discovery is not accidentally
+    # relying on the repository's dev environment or a plain venv path.
+    name: pipx-smoke
+    needs: build
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: distribution-artifacts
+          path: dist/
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install built wheel through pipx and smoke every console script
+        shell: bash
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+          PIPX_HOME: ${{ runner.temp }}/pipx-home
+          PIPX_BIN_DIR: ${{ runner.temp }}/pipx-bin
+        run: |
+          set -euo pipefail
+          python -m pip install --user pipx
+          wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
+          python -m pipx install --suffix=-smoke "${wheel}"
+          archive_root="${RUNNER_TEMP}/polylogue-pipx-archive"
+          mkdir -p "${archive_root}"
+          export POLYLOGUE_ARCHIVE_ROOT="${archive_root}"
+          "${PIPX_BIN_DIR}/polylogue-smoke" --version
+          "${PIPX_BIN_DIR}/polylogue-smoke" --plain analyze --count
+          "${PIPX_BIN_DIR}/polylogued-smoke" --help > /dev/null
+          "${PIPX_BIN_DIR}/polylogue-mcp-smoke" --help > /dev/null
+
   installed-smoke-mcp:
     # polylogue-mcp is a thin wrapper that pins the matching polylogue release.
     # Install both wheels together and confirm the console script resolves
@@ -320,7 +378,7 @@ jobs:
 
   publish-pypi:
     name: publish-pypi
-    needs: [build, installed-smoke, installed-smoke-mcp, installed-smoke-hooks, sbom]
+    needs: [build, installed-smoke, installed-smoke-mcp, installed-smoke-hooks, pipx-smoke, sbom]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && inputs.release_tag != '')
     timeout-minutes: 15
     runs-on: ubuntu-latest
