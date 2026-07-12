@@ -89,6 +89,29 @@ def test_nonsemantic_delta_without_operations_is_rejected(monkeypatch: pytest.Mo
     assert lifecycle.index_fast_forward_plan(32, 36) is None
 
 
+def test_delta_without_a_declared_class_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An operation cannot create a clone route without a delta classification."""
+    unclassified_declaration = IndexDeltaDeclaration(
+        version=36,
+        classes=(),
+        operations=(
+            FastForwardOperation(
+                name="v36-unclassified-index",
+                kind=FastForwardOperationKind.CREATE_INDEX,
+                objects=(("index", "idx_web_constructs_message"),),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "INDEX_DELTA_DECLARATIONS",
+        (*lifecycle.INDEX_DELTA_DECLARATIONS, unclassified_declaration),
+    )
+
+    assert lifecycle.index_delta_declaration_report(36)["invalid_versions"] == (36,)
+    assert lifecycle.index_fast_forward_plan(32, 36) is None
+
+
 def test_schema_policy_rejects_an_index_bump_without_a_delta_declaration(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

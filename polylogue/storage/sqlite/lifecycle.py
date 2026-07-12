@@ -72,6 +72,7 @@ class IndexFastForwardPlan:
         return (
             bool(self.declarations)
             and not self.requires_semantic_reparse
+            and all(declaration.classes for declaration in self.declarations)
             and all(declaration.operations for declaration in self.declarations)
         )
 
