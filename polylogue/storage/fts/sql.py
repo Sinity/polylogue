@@ -6,7 +6,15 @@ from typing import Protocol
 
 # Re-export canonical chunked from polylogue.core.common.
 from polylogue.core.common import chunked
+from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 
+# polylogue-9jsi: "unicode61 remove_diacritics 2" folds combining-mark
+# diacritics (o accent, a ogonek, z dot, ...) symmetrically for indexed text
+# and MATCH query text -- see polylogue/storage/fts/pl_fold.py for the full
+# rationale. This tokenizer string is one of two canonical DDL sites (the
+# other is the CREATE VIRTUAL TABLE messages_fts definition embedded in
+# polylogue/storage/sqlite/archive_tiers/index.py); a drift-lock test keeps
+# them identical.
 FTS_MESSAGES_TABLE_SQL = """
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
         block_id UNINDEXED,
@@ -16,7 +24,7 @@ FTS_MESSAGES_TABLE_SQL = """
         text,
         content='',
         contentless_delete=1,
-        tokenize='unicode61'
+        tokenize='unicode61 remove_diacritics 2'
     );
 """
 
@@ -65,7 +73,7 @@ def insert_session_rows_sql(chunk_size: int) -> str:
             FROM raw_target_sessions
         )
         INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)
-        SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type, b.search_text
+        SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type, {pl_fold_sql_expr("b.search_text")}
         FROM blocks AS b
         JOIN target_sessions AS target
           ON target.session_id = b.session_id
@@ -74,16 +82,16 @@ def insert_session_rows_sql(chunk_size: int) -> str:
 
 
 def insert_all_message_rows_sql() -> str:
-    return """
+    return f"""
         INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)
-        SELECT rowid, block_id, message_id, session_id, block_type, search_text
+        SELECT rowid, block_id, message_id, session_id, block_type, {pl_fold_sql_expr("search_text")}
         FROM blocks
         WHERE search_text != ''
     """
 
 
 def insert_missing_message_rows_sql() -> str:
-    return """
+    return f"""
         WITH missing(rowid, block_id, message_id, session_id, block_type, search_text) AS (
             SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type, b.search_text
             FROM blocks AS b
@@ -91,13 +99,13 @@ def insert_missing_message_rows_sql() -> str:
             WHERE d.id IS NULL AND b.search_text != ''
         )
         INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)
-        SELECT rowid, block_id, message_id, session_id, block_type, search_text
+        SELECT rowid, block_id, message_id, session_id, block_type, {pl_fold_sql_expr("search_text")}
         FROM missing
     """
 
 
 def insert_missing_message_rows_range_sql() -> str:
-    return """
+    return f"""
         WITH missing(rowid, block_id, message_id, session_id, block_type, search_text) AS (
             SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type, b.search_text
             FROM blocks AS b
@@ -108,7 +116,7 @@ def insert_missing_message_rows_range_sql() -> str:
               AND b.rowid <= ?
         )
         INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)
-        SELECT rowid, block_id, message_id, session_id, block_type, search_text
+        SELECT rowid, block_id, message_id, session_id, block_type, {pl_fold_sql_expr("search_text")}
         FROM missing
     """
 
