@@ -101,9 +101,10 @@ class SQLiteRawMixin:
             origin = origin_from_provider(record.payload_provider)
         else:
             origin = origin_from_provider(Provider.from_string(record.source_name or "unknown"))
-        capture_mode = (
-            record.capture_mode or record.payload_provider or Provider.from_string(record.source_name or "unknown")
-        )
+        # ``payload_provider`` may be the canonical compatibility projection
+        # for a historical NULL capture mode.  Preserve that NULL unless an
+        # acquisition path explicitly supplied capture provenance.
+        capture_mode = record.capture_mode
         blob_hash_hex = record.blob_hash or record.raw_id
         try:
             blob_hash = bytes.fromhex(blob_hash_hex)
@@ -133,7 +134,7 @@ class SQLiteRawMixin:
                 (
                     record.raw_id,
                     origin.value,
-                    capture_mode.value,
+                    capture_mode.value if capture_mode is not None else None,
                     None,
                     record.source_path,
                     int(record.source_index or 0),

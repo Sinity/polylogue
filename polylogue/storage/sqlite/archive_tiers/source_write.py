@@ -109,6 +109,7 @@ class ArchiveRawSessionEnvelope:
 
     raw_id: str
     origin: str
+    capture_mode: str | None
     native_id: str | None
     source_path: str
     source_index: int
@@ -614,7 +615,7 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
     row = conn.execute(
         """
         SELECT
-            raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+            raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash, blob_size,
             acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error, validated_at_ms,
             validation_status, validation_error, validation_drift_count, validation_mode,
             detection_warnings_json
@@ -682,6 +683,7 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
     return ArchiveRawSessionEnvelope(
         raw_id=row["raw_id"],
         origin=row["origin"],
+        capture_mode=row["capture_mode"],
         native_id=row["native_id"],
         source_path=row["source_path"],
         source_index=row["source_index"],

@@ -111,6 +111,7 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
     assert isinstance(envelope, ArchiveRawSessionEnvelope)
     assert envelope.raw_id == expected_raw_id
     assert envelope.origin == Origin.CLAUDE_CODE_SESSION.value
+    assert envelope.capture_mode == Provider.CLAUDE_CODE.value
     assert envelope.native_id == "session-1"
     assert envelope.source_path == "/tmp/record.jsonl"
     assert envelope.blob_hash == computed_blob_hash

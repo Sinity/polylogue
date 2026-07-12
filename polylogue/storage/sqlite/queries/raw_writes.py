@@ -23,9 +23,11 @@ async def save_raw_session(
         origin = origin_from_provider(record.payload_provider)
     else:
         origin = origin_from_provider(Provider.from_string(record.source_name or "unknown"))
-    capture_mode = (
-        record.capture_mode or record.payload_provider or Provider.from_string(record.source_name or "unknown")
-    )
+    # Only the acquisition path can assert a capture mode.  A hydrated legacy
+    # row has ``None`` here even though its compatibility projection supplies
+    # a canonical payload provider; writing that projection back must not turn
+    # historical unknown provenance into a guess.
+    capture_mode = record.capture_mode
     blob_hash_hex = record.blob_hash or record.raw_id
     try:
         blob_hash = bytes.fromhex(blob_hash_hex)
@@ -49,7 +51,7 @@ async def save_raw_session(
         (
             record.raw_id,
             origin.value,
-            capture_mode.value,
+            capture_mode.value if capture_mode is not None else None,
             None,
             record.source_path,
             int(record.source_index or 0),
@@ -79,7 +81,7 @@ async def save_raw_session(
     )
     inserted = bool(cursor.rowcount > 0)
 
-    if not inserted:
+    if not inserted and capture_mode is not None:
         await conn.execute(
             "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
             (capture_mode.value, record.raw_id),

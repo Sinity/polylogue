@@ -1361,6 +1361,7 @@ class LiveBatchProcessor:
                     raw_id=raw_id,
                     blob_hash=(blob_hash if provider is Provider.HERMES and blob_hash is not None else None),
                     payload_provider=provider,
+                    capture_mode=provider,
                     source_name=source_name,
                     source_path=(
                         str(original_sqlite_source_path(path) or path) if path in raw_source_revisions else str(path)
@@ -1843,6 +1844,7 @@ class LiveBatchProcessor:
                                 RawSessionRecord(
                                     raw_id=raw_data.blob_hash,
                                     payload_provider=member_provider,
+                                    capture_mode=member_provider,
                                     source_name=member_provider.value,
                                     source_path=raw_data.source_path,
                                     source_index=raw_data.source_index or 0,

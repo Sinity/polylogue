@@ -7,6 +7,7 @@ from pathlib import Path
 
 from typing_extensions import TypedDict
 
+from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.sources.parsers.base import RawSessionData
 from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
@@ -82,6 +83,7 @@ def make_raw_record(
         raw_id=raw_id,
         blob_hash=(blob_hash if source_name == "hermes" else None),
         blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
+        capture_mode=Provider.from_string(source_name),
         source_name=source_name,
         source_path=raw_data.source_path,
         source_index=raw_data.source_index,
