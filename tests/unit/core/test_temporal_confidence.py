@@ -9,8 +9,14 @@ from typing import get_args
 
 import pytest
 
-from polylogue.insights.archive import SessionProfileInsight
-from polylogue.insights.archive_models import SessionEnrichmentPayload, SessionEvidencePayload, SessionInferencePayload
+from polylogue.insights.archive import SessionProfileInsight, SessionWorkEventInsight
+from polylogue.insights.archive_models import (
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
+)
 from polylogue.insights.temporal_source import (
     TIME_CONFIDENCE_VALUES,
     TemporalSource,
@@ -20,6 +26,7 @@ from polylogue.insights.temporal_source import (
     weakest_source,
 )
 from polylogue.storage.insights.session.records import SessionProfileRecord
+from polylogue.storage.insights.timeline.records import SessionWorkEventRecord
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 _TEMPORAL_SOURCES: tuple[TemporalSource, ...] = get_args(TemporalSource)
@@ -117,3 +124,38 @@ def test_profile_insight_projects_recorded_temporal_source_to_public_provenance(
 
     assert insight.provenance.input_high_water_mark_source == "provider_ts"
     assert insight.provenance.time_confidence == "recorded"
+
+
+def test_timeline_materialization_time_projects_to_unknown_public_provenance() -> None:
+    """Materialization time orders a timeless event but must not pose as event time."""
+
+    record = SessionWorkEventRecord.model_construct(
+        event_id="event-1",
+        session_id="profile-1",
+        materializer_version=1,
+        materialized_at="2026-07-12T10:00:00+00:00",
+        source_updated_at=None,
+        source_sort_key=None,
+        input_high_water_mark=None,
+        input_high_water_mark_source="materialization_ts",
+        input_row_count=1,
+        source_name="claude-code",
+        event_index=0,
+        heuristic_label="implementation",
+        confidence=0.5,
+        start_index=0,
+        end_index=1,
+        summary="timeless event",
+        evidence_payload=WorkEventEvidencePayload(start_index=0, end_index=1),
+        inference_payload=WorkEventInferencePayload(
+            heuristic_label="implementation",
+            summary="timeless event",
+            confidence=0.5,
+        ),
+        search_text="timeless event",
+    )
+
+    insight = SessionWorkEventInsight.from_record(record)
+
+    assert insight.provenance.input_high_water_mark_source == "materialization_ts"
+    assert insight.provenance.time_confidence == "unknown"
