@@ -19,8 +19,7 @@ Specify format:
 
 ```bash
 polylogue --id claude-ai:abc123 read --format json
-polylogue --id claude-ai:abc123 read --format html
-polylogue --id claude-ai:abc123 read --format obsidian
+polylogue --id claude-ai:abc123 read --format yaml
 ```
 
 ## Query-Set Reads
@@ -47,21 +46,22 @@ polylogue --since "last month" find 'since:last month' then read --all --format 
 
 | Format | Description |
 |--------|-------------|
-| `text` | Plain text -- message content only, no formatting |
-| `markdown` | Default -- formatted markdown with message roles, timestamps, and code blocks |
-| `json` | Full session as structured JSON |
+| `markdown` | Default human-readable query-set output |
+| `json` | Query-set envelope as structured JSON |
 | `ndjson` | One JSON object per line (query-set default) |
-| `yaml` | YAML representation |
-| `html` | HTML with Pygments syntax highlighting on code blocks |
-| `obsidian` | YAML frontmatter + markdown body, compatible with Obsidian vaults |
-| `org` | Org-mode format for Emacs users |
-| `csv` | Comma-separated rows |
+| `yaml` | Query-set envelope as YAML |
+| `plaintext` | Unformatted query-set rows |
+| `csv` | Comma-separated query-set rows |
+
+These are the formats supported by the standard query-set export path. Other
+views have their own contracts; use `polylogue read --views --format json` to
+inspect the current view-specific formats before relying on one in automation.
 
 Set format with `--format` / `-f`:
 
 ```bash
 polylogue --id <id> read --format json
-polylogue --since yesterday find 'since:yesterday' then read --all --format html
+polylogue --since yesterday find 'since:yesterday' then read --all --format yaml
 ```
 
 ## Content Blocks

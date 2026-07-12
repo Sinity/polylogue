@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from devtools import render_docs_surface
 
 
@@ -25,12 +27,21 @@ def test_build_docs_readme_groups_docs_by_reader_tier() -> None:
     assert ".local/README.md" not in rendered
 
 
-def test_undocumented_paths_reports_an_unregistered_doc(tmp_path: Path) -> None:
+def test_render_outputs_rejects_an_unregistered_doc(tmp_path: Path) -> None:
     docs_root = tmp_path / "docs"
     docs_root.mkdir()
     (docs_root / "new-guide.md").write_text("# New guide\n", encoding="utf-8")
+    readme_path = tmp_path / "README.md"
+    readme_path.write_text(
+        "<!-- BEGIN GENERATED: docs-surface -->\nold\n<!-- END GENERATED: docs-surface -->\n",
+        encoding="utf-8",
+    )
 
-    assert render_docs_surface.undocumented_paths((), docs_root=docs_root) == {"docs/new-guide.md"}
+    with pytest.raises(ValueError, match="unindexed documentation: docs/new-guide.md"):
+        render_docs_surface.render_outputs(
+            readme_path=readme_path,
+            docs_readme_path=docs_root / "README.md",
+        )
 
 
 def test_replace_marked_section_swaps_generated_block() -> None:
