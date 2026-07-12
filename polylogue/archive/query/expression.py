@@ -42,6 +42,8 @@ and explicit Boolean session predicates:
     blocks where type:code AND text:timeout
     messages where time >= 2026-01-01T00:00:00+00:00
     sessions where repo:polylogue | messages where role:assistant | group by role | count | sort by count desc
+    assertions where kind:annotation AND value.score:>=4
+    exists assertion(value.status:approved)
 
 Unit-scoped ``messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots where ...`` predicates are executable
 in two shared paths: ``compile_expression`` keeps the compatibility session
@@ -56,6 +58,20 @@ instead of discarding pipeline stages while lowering to a session selector.
 They also support ``time >= VALUE``, ``time <= VALUE``, and
 ``time between A and B`` predicates over the same row timestamp used by
 ``sort by time``.
+
+The ``assertion`` unit additionally supports typed JSON-path predicates over
+``value.<dotted.path>`` (polylogue-rxdo.7), since the plain ``value`` field is
+a substring match over the whole JSON blob and cannot express label
+analytics: ``value.score:>=4``, ``value.rubric.confidence:<0.5``, and plain
+equality ``value.status:approved``; combine multiple paths the same way any
+other field predicate combines, with ``AND``/``OR``
+(``value.score:>=4 AND value.status:approved``). Comparison operators (``>``,
+``>=``, ``<``, ``<=``) require a numeric right-hand side and compare the
+extracted scalar as a number; ``=`` (the default when no operator is given)
+compares the raw extracted scalar, so string/boolean/integer labels still
+match by value. The path is restricted to dotted identifier segments (no
+SQLite JSON-path wildcards or array indexing) and is only accepted for the
+``assertion`` unit -- other units reject ``value.*`` fields as unknown.
 
 Unknown fields and unsupported structured forms fail loudly. The Lark grammar
 in this module is the query grammar. Compact field/text clauses and explicit
@@ -88,6 +104,7 @@ Public API
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field, replace
 from difflib import get_close_matches
@@ -868,8 +885,10 @@ class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]
         if matched is None:
             raise ExpressionCompileError(f"invalid field clause: {token}", field=None)
         negated, field_name, raw_value = matched.group(1), matched.group(2), matched.group(3)
+        value_path_field = field_name.lower().startswith("value.")
         if raw_value.startswith('"'):
-            raw_value = _decode_escaped_string(Token("ESCAPED_STRING", raw_value))
+            if not value_path_field:
+                raw_value = _decode_escaped_string(Token("ESCAPED_STRING", raw_value))
         elif raw_value.startswith("("):
             raw_value = raw_value[1:-1]
         return _FieldToken(field=field_name.lower(), raw_value=raw_value, negated=bool(negated))
@@ -899,14 +918,39 @@ def _canonical_session_alias(field_name: str) -> str:
     return "id" if field_name == "session" else field_name
 
 
+_VALUE_PATH_PREFIX = "value."
+_VALUE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_assertion_value_path_field(field_name: str) -> bool:
+    """Return whether *field_name* is a dynamic ``value.<path>`` assertion field.
+
+    These are not enumerable in the closed structural-field registries
+    (:data:`_ASSERTION_STRUCTURAL_FIELDS` etc.) because the path is caller-
+    chosen JSON-object navigation below the assertion ``value`` column
+    (polylogue-rxdo.7 typed value predicates). Every dotted segment must be a
+    plain identifier -- no SQLite JSON-path wildcards/array indexing -- so the
+    shape stays unambiguous before it reaches SQL lowering.
+    """
+
+    if not field_name.startswith(_VALUE_PATH_PREFIX):
+        return False
+    suffix = field_name[len(_VALUE_PATH_PREFIX) :]
+    if not suffix:
+        return False
+    return all(_VALUE_PATH_SEGMENT_RE.match(segment) for segment in suffix.split("."))
+
+
 def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     field_name = token.field
     session_field = _scoped_session_field(field_name)
     validation_field = session_field or field_name
+    is_value_path_field = session_field is None and _is_assertion_value_path_field(field_name)
     if (
         session_field is None
         and field_name not in EXPRESSION_FIELD_REGISTRY
         and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS
+        and not is_value_path_field
     ):
         raise ExpressionCompileError(
             _unknown_query_field_message(field_name, include_structural=True),
@@ -915,13 +959,20 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     if (
         validation_field not in _BOOLEAN_SUPPORTED_FIELDS
         and validation_field not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS
+        and not is_value_path_field
     ):
         raise ExpressionCompileError(
             f"field {field_name!r} is not supported inside Boolean SQL predicates yet",
             field=field_name,
         )
 
-    values = _split_alternation(token.raw_value) if token.raw_value else ()
+    values = (
+        _split_assertion_value_path_alternation(token.raw_value)
+        if is_value_path_field and token.raw_value
+        else _split_alternation(token.raw_value)
+        if token.raw_value
+        else ()
+    )
     if validation_field == "origin":
         known_origins = {o.value for o in Origin}
         for value in values:
@@ -954,6 +1005,47 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
         values = (match.group(2),)
         count_predicate = QueryFieldPredicate(field=field_name, values=values, op=op_text)
         return QueryNotPredicate(count_predicate) if token.negated else count_predicate
+    elif is_value_path_field:
+        if not values:
+            raise ExpressionCompileError(f"field {field_name!r} requires a value", field=field_name)
+        parsed_values: list[str] = []
+        parsed_ops: set[QueryCompareOp] = set()
+        for raw_value in values:
+            match = re.fullmatch(r"(>=|<=|=|>|<)?(.+)", raw_value.strip(), re.DOTALL)
+            if match is None or not match.group(2).strip():
+                raise ExpressionCompileError(f"field {field_name!r} requires a value", field=field_name)
+            op_text = cast(QueryCompareOp, match.group(1) or "=")
+            value_text = match.group(2).strip()
+            if op_text != "=":
+                try:
+                    numeric_value = float(value_text)
+                except ValueError as exc:
+                    raise ExpressionCompileError(
+                        f"field {field_name!r} comparison operator {op_text!r} requires a numeric value",
+                        field=field_name,
+                    ) from exc
+                if not math.isfinite(numeric_value):
+                    raise ExpressionCompileError(
+                        f"field {field_name!r} comparison operator {op_text!r} requires a finite numeric value",
+                        field=field_name,
+                    )
+            else:
+                _validate_assertion_value_path_equality_literal(value_text, field_name=field_name)
+            parsed_ops.add(op_text)
+            parsed_values.append(value_text)
+        if len(parsed_ops) != 1:
+            raise ExpressionCompileError(
+                f"field {field_name!r} alternation must use one comparison operator",
+                field=field_name,
+            )
+        op_text = next(iter(parsed_ops))
+        if op_text != "=" and len(parsed_values) != 1:
+            raise ExpressionCompileError(
+                f"field {field_name!r} numeric comparison accepts one value",
+                field=field_name,
+            )
+        value_path_predicate = QueryFieldPredicate(field=field_name, values=tuple(parsed_values), op=op_text)
+        return QueryNotPredicate(value_path_predicate) if token.negated else value_path_predicate
     elif validation_field == "date" and values:
         raw_value = values[-1].strip()
         match = re.fullmatch(r"(>=|<=|>|<)?(.+)", raw_value)
@@ -1064,7 +1156,8 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
             supported = set(query_unit_field_names(unit))
             supported_field = predicate.field
             validation_field = session_field or predicate.field
-        if supported_field not in supported:
+        value_path_field = unit == "assertion" and _is_assertion_value_path_field(supported_field)
+        if supported_field not in supported and not value_path_field:
             raise ExpressionCompileError(
                 f"field {predicate.field!r} is not supported for {unit} predicates",
                 field=predicate.field,
@@ -1151,6 +1244,30 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                 raise ExpressionCompileError(
                     f"field {validation_field!r} requires a numeric value", field=validation_field
                 ) from exc
+        if value_path_field:
+            if not predicate.values:
+                raise ExpressionCompileError(f"field {predicate.field!r} requires a value", field=predicate.field)
+            if predicate.op != "=":
+                if len(predicate.values) != 1:
+                    raise ExpressionCompileError(
+                        f"field {predicate.field!r} numeric comparison accepts one value",
+                        field=predicate.field,
+                    )
+                try:
+                    numeric_value = float(predicate.values[0])
+                except ValueError as exc:
+                    raise ExpressionCompileError(
+                        f"field {predicate.field!r} comparison operator {predicate.op!r} requires a numeric value",
+                        field=predicate.field,
+                    ) from exc
+                if not math.isfinite(numeric_value):
+                    raise ExpressionCompileError(
+                        f"field {predicate.field!r} comparison operator {predicate.op!r} requires a finite numeric value",
+                        field=predicate.field,
+                    )
+            else:
+                for value in predicate.values:
+                    _validate_assertion_value_path_equality_literal(value, field_name=predicate.field)
         return
     if isinstance(predicate, QueryNotPredicate):
         _validate_predicate_context(predicate.child, unit=unit)
@@ -2495,6 +2612,67 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
 def _split_alternation(raw: str) -> tuple[str, ...]:
     """Split ``a|b|c`` into ``("a", "b", "c")``."""
     return tuple(part.strip() for part in raw.split("|") if part.strip())
+
+
+def _split_assertion_value_path_alternation(raw: str) -> tuple[str, ...]:
+    """Split value-path alternatives while preserving JSON string literals."""
+
+    values: list[str] = []
+    start = 0
+    quoted = False
+    escaped = False
+    for index, character in enumerate(raw):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quoted:
+            escaped = True
+            continue
+        if character == '"':
+            quoted = not quoted
+            continue
+        if character == "|" and not quoted:
+            candidate = raw[start:index].strip()
+            if candidate:
+                values.append(candidate)
+            start = index + 1
+    candidate = raw[start:].strip()
+    if candidate:
+        values.append(candidate)
+    return tuple(values)
+
+
+def _validate_assertion_value_path_equality_literal(text: str, *, field_name: str) -> None:
+    """Reject non-scalar or non-finite explicit JSON equality literals."""
+
+    stripped = text.strip()
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        return
+    if isinstance(decoded, float) and not math.isfinite(decoded):
+        raise ExpressionCompileError(
+            f"field {field_name!r} equality requires a finite JSON scalar value",
+            field=field_name,
+        )
+    if isinstance(decoded, int) and not isinstance(decoded, bool):
+        try:
+            numeric_value = float(decoded)
+        except OverflowError as exc:
+            raise ExpressionCompileError(
+                f"field {field_name!r} equality requires a finite JSON scalar value",
+                field=field_name,
+            ) from exc
+        if not math.isfinite(numeric_value):
+            raise ExpressionCompileError(
+                f"field {field_name!r} equality requires a finite JSON scalar value",
+                field=field_name,
+            )
+    if isinstance(decoded, dict | list):
+        raise ExpressionCompileError(
+            f"field {field_name!r} equality requires a JSON scalar value",
+            field=field_name,
+        )
 
 
 _RELATIVE_DATE_RE = re.compile(r"^\d+[hdwm]$", re.IGNORECASE)
