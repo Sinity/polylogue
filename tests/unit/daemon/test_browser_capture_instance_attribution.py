@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
+from typing import Any
 
 import pytest
 
@@ -55,6 +57,46 @@ def _envelope(instance_id: str, *, backfill_job_id: str) -> BrowserCaptureEnvelo
             },
         }
     )
+
+
+def _write_capture_in_process(payload: dict[str, object], spool_path: str, barrier: Any, result_queue: Any) -> None:
+    """Run one receiver write in a fresh interpreter for the flock regression."""
+    try:
+        envelope = BrowserCaptureEnvelope.model_validate(payload)
+        barrier.wait(timeout=10)
+        result = write_capture_envelope(envelope, spool_path=Path(spool_path))
+        result_queue.put({"deduplicated": result.deduplicated})
+    except BaseException as exc:
+        result_queue.put({"error": repr(exc)})
+
+
+def test_multiple_receiver_processes_deduplicate_without_corrupting_spool(tmp_path: Path) -> None:
+    """The advisory spool lock serializes writers beyond one receiver process."""
+    first = _envelope("extension-instance-a", backfill_job_id="job-a")
+    second = _envelope("extension-instance-b", backfill_job_id="job-b")
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_write_capture_in_process,
+            args=(envelope.model_dump(mode="json"), str(tmp_path), barrier, result_queue),
+        )
+        for envelope in (first, second)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20)
+        assert process.exitcode == 0
+
+    outcomes = [result_queue.get(timeout=5) for _ in processes]
+    assert all("error" not in outcome for outcome in outcomes)
+    assert {outcome["deduplicated"] for outcome in outcomes} == {False, True}
+    artifacts = list(tmp_path.rglob("*.json"))
+    assert len(artifacts) == 1
+    assert BrowserCaptureEnvelope.model_validate_json(artifacts[0].read_bytes()).provider_session_id == "concurrent-1"
+    assert not list(tmp_path.rglob(".*.tmp"))
 
 
 @pytest.mark.asyncio
