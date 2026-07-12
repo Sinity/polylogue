@@ -4793,7 +4793,11 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_
     Anti-vacuity: removing facade delegation, schema validation, live
     reference resolution, or the user-tier write makes this test fail.
     """
-    archive = _archive(tmp_path)
+    configured_root = tmp_path / "configured"
+    active_root = tmp_path / "active"
+    configured_root.mkdir()
+    active_root.mkdir()
+    archive = Polylogue(archive_root=configured_root, db_path=active_root / "index.db")
     try:
         session = ParsedSession(
             source_name=Provider.CODEX,
@@ -4801,7 +4805,7 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_
             title="Annotation facade target",
             messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
         )
-        with ArchiveStore(tmp_path) as archive_db:
+        with ArchiveStore(active_root) as archive_db:
             session_id = archive_db.write_parsed(session)
 
         registry = AnnotationSchemaRegistry()
@@ -4841,7 +4845,8 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_
         assert result.qualified_schema_id == "test.facade-import@v1"
         assert result.valid_count == 1
         assert result.rows[0].assertion_ref is not None
-        with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert not (configured_root / "user.db").exists()
+        with sqlite3.connect(active_root / "user.db") as conn:
             persisted = conn.execute("SELECT status, scope_ref FROM assertions WHERE key = 'row-1'").fetchone()
         assert persisted == ("candidate", "annotation-batch:facade-import")
     finally:

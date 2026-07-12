@@ -1843,9 +1843,21 @@ class PolylogueArchiveMixin:
         """
         from polylogue.annotations.importer import import_annotation_batch
 
+        class _ActiveArchiveImportFacade:
+            @property
+            def archive_root(self) -> Path:
+                return _active_archive_root(self._archive.config)
+
+            def __init__(self, archive: PolylogueArchiveMixin) -> None:
+                self._archive = archive
+
+            async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
+                return await self._archive.resolve_ref(ref)
+
+        import_facade = cast("Polylogue", _ActiveArchiveImportFacade(self))
         if registry is None:
-            return await import_annotation_batch(cast("Polylogue", self), request)
-        return await import_annotation_batch(cast("Polylogue", self), request, registry=registry)
+            return await import_annotation_batch(import_facade, request)
+        return await import_annotation_batch(import_facade, request, registry=registry)
 
     async def get_session(
         self,
