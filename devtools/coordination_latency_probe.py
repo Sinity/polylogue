@@ -29,19 +29,21 @@ def measure(*, samples: int, cwd: Path | None = None) -> dict[str, Any]:
 
     root = (cwd or Path.cwd()).resolve()
     raw: list[dict[str, object]] = []
+    latencies: list[float] = []
     for number in range(samples):
         stages: dict[str, float] = {}
         started = perf_counter()
         payload = build_coordination_envelope(cwd=root, stage_timings_ms=stages)
+        latency_ms = round((perf_counter() - started) * 1_000, 3)
+        latencies.append(latency_ms)
         raw.append(
             {
                 "sample": number,
-                "latency_ms": round((perf_counter() - started) * 1_000, 3),
+                "latency_ms": latency_ms,
                 "stages_ms": stages,
                 "serialized_bytes": payload.projection.serialized_bytes,
             }
         )
-    latencies = [float(row["latency_ms"]) for row in raw]
     return {
         "version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
