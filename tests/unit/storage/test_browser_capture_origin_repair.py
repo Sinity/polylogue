@@ -656,7 +656,7 @@ def test_browser_origin_repair_accepts_exact_semantic_superseded_sibling(tmp_pat
     )
 
 
-@pytest.mark.parametrize("mutation", ["receipt", "membership", "selected"])
+@pytest.mark.parametrize("mutation", ["receipt", "revision", "membership", "selected", "blob"])
 def test_browser_origin_repair_rejects_underproven_semantic_supersession(tmp_path: Path, mutation: str) -> None:
     mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
     semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
@@ -667,17 +667,35 @@ def test_browser_origin_repair_rejects_underproven_semantic_supersession(tmp_pat
                 "UPDATE raw_revision_applications SET accepted_raw_id = ? WHERE raw_id = ?",
                 (sibling_raw_id, sibling_raw_id),
             )
+    elif mutation == "revision":
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "UPDATE raw_revision_applications SET accepted_source_revision = ? WHERE raw_id = ?",
+                ("0" * 64, sibling_raw_id),
+            )
     elif mutation == "membership":
         with sqlite3.connect(tmp_path / "source.db") as source:
             source.execute(
                 "UPDATE raw_session_memberships SET decision = 'ambiguous', decided_at_ms = 4 WHERE raw_id = ?",
                 (sibling_raw_id,),
             )
-    else:
+    elif mutation == "selected":
         with sqlite3.connect(tmp_path / "index.db") as index:
             index.execute(
                 "UPDATE raw_revision_applications SET decision = 'selected_baseline' WHERE raw_id = ?",
                 (sibling_raw_id,),
+            )
+    else:
+        different_payload = _browser_payload("browser-origin-two")
+        blob_hash, blob_size = BlobStore(tmp_path / "blob").write_from_bytes(different_payload)
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute(
+                "UPDATE raw_sessions SET native_id = 'browser-origin-two', blob_hash = ?, blob_size = ? WHERE raw_id = ?",
+                (bytes.fromhex(blob_hash), blob_size, sibling_raw_id),
+            )
+            source.execute(
+                "UPDATE blob_refs SET blob_hash = ?, size_bytes = ? WHERE ref_id = ?",
+                (bytes.fromhex(blob_hash), blob_size, sibling_raw_id),
             )
 
     report = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
