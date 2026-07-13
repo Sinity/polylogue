@@ -9,8 +9,12 @@ from __future__ import annotations
 import shutil
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
+
+if TYPE_CHECKING:
+    from polylogue.surfaces.payloads import MutationStatus
 
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
@@ -237,7 +241,7 @@ def _identity_reset_targets(*, conv_id: str | None, source_path: Path | None) ->
 def _emit_identity_reset_result(
     env: AppEnv,
     *,
-    status: str,
+    status: MutationStatus,
     session_ids: list[str],
     affected_count: int,
     output_format: str | None,
