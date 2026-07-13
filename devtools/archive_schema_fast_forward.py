@@ -313,6 +313,32 @@ def reflink_clone(source: Path, destination: Path) -> None:
     _fsync_directory(destination.parent)
 
 
+def _finalize_clone_database(path: Path) -> None:
+    """Checkpoint a completed staging clone before immutable evidence reads.
+
+    The copy-forward transaction can leave a WAL and shared-memory file even
+    though the clone is complete.  They are safe to remove only after the
+    writing connection has closed and a successful truncate checkpoint proves
+    that the database file contains every committed page.
+    """
+    with sqlite3.connect(path) as conn:
+        checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint is None or int(checkpoint[0]) != 0:
+            raise SchemaFastForwardError(f"could not checkpoint completed clone {path}: {checkpoint!r}")
+    for suffix in _SQLITE_SIDECARS:
+        sidecar = Path(f"{path}{suffix}")
+        if not sidecar.exists():
+            continue
+        # A non-empty WAL or rollback journal after the completed checkpoint
+        # would carry data the immutable database file does not prove.  SHM is
+        # transient shared state and may remain non-empty after its last close.
+        if suffix != "-shm" and sidecar.stat().st_size:
+            raise SchemaFastForwardError(f"completed clone retains non-empty sidecar: {sidecar}")
+        sidecar.unlink()
+    _fsync_directory(path.parent)
+    _require_no_sidecars(path)
+
+
 def fast_forward_index_clone(source: Path, destination: Path) -> CloneForwardResult:
     """Copy-forward index v35→v36 while preserving rows and all FK declarations."""
     source_before = _database_evidence(source)
@@ -345,6 +371,7 @@ def fast_forward_index_clone(source: Path, destination: Path) -> CloneForwardRes
             quick_check = tuple(str(row[0]) for row in conn.execute("PRAGMA quick_check"))
             if quick_check != ("ok",):
                 raise SchemaFastForwardError(f"index clone quick_check failed: {quick_check!r}")
+        _finalize_clone_database(destination)
     except Exception:
         destination.unlink(missing_ok=True)
         raise
@@ -377,6 +404,7 @@ def fast_forward_embeddings_clone(source: Path, destination: Path) -> CloneForwa
             preserved_fk = all(after_fk.get(table) == declarations for table, declarations in before_fk.items())
             if not preserved_fk or foreign_key_check or quick_check != ("ok",):
                 raise SchemaFastForwardError("embeddings clone integrity contract failed")
+        _finalize_clone_database(destination)
     except Exception:
         destination.unlink(missing_ok=True)
         raise

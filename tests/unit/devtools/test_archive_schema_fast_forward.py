@@ -23,11 +23,22 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 
-def _create_v35_index(path: Path) -> None:
+def _clear_wal_sidecars(path: Path) -> None:
+    """Leave a WAL-mode fixture stable enough for clone preflight."""
+    with sqlite3.connect(path) as conn:
+        checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        assert checkpoint is not None and checkpoint[0] == 0
+    for suffix in ("-wal", "-shm", "-journal"):
+        Path(f"{path}{suffix}").unlink(missing_ok=True)
+
+
+def _create_v35_index(path: Path, *, wal_mode: bool = False) -> None:
     # The fixture is an actual v35-shaped Origin CHECK schema, not simply a
     # lowered PRAGMA version on current DDL.
     legacy_ddl = INDEX_DDL.replace(", 'beads-issue'", "")
     with sqlite3.connect(path) as conn:
+        if wal_mode:
+            conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(legacy_ddl)
         conn.execute("PRAGMA user_version = 35")
         conn.execute(
@@ -51,6 +62,8 @@ def _create_v35_index(path: Path) -> None:
             ("chatgpt-export:child", 0, "fixture", "keeps inbound FK declarations honest"),
         )
         conn.commit()
+    if wal_mode:
+        _clear_wal_sidecars(path)
 
 
 def _fk_declarations(path: Path) -> dict[str, tuple[tuple[object, ...], ...]]:
@@ -69,14 +82,16 @@ def _fk_declarations(path: Path) -> dict[str, tuple[tuple[object, ...], ...]]:
 def test_index_clone_copy_forward_preserves_fk_graph_ddl_and_rows(tmp_path: Path) -> None:
     source = tmp_path / "index-v35.db"
     clone = tmp_path / "index-v36.db"
-    _create_v35_index(source)
+    _create_v35_index(source, wal_mode=True)
     before_fk = _fk_declarations(source)
+    _clear_wal_sidecars(source)
 
     result = fast_forward_index_clone(source, clone)
 
     assert result.source.user_version == 35
     assert result.clone.user_version == 36
     assert result.source.table_counts == result.clone.table_counts
+    assert not any(Path(f"{clone}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal"))
     assert _fk_declarations(clone) == before_fk
     with sqlite3.connect(clone) as conn:
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -144,6 +159,7 @@ def test_embedding_clone_preserves_vectors_and_installs_failure_lifecycle(tmp_pa
     source = tmp_path / "embeddings-v1.db"
     clone = tmp_path / "embeddings-v2.db"
     with sqlite3.connect(source) as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
         loaded, error = try_load_sqlite_vec(conn)
         if not loaded:
             pytest.skip(f"sqlite-vec unavailable: {error}")
@@ -157,11 +173,13 @@ def test_embedding_clone_preserves_vectors_and_installs_failure_lifecycle(tmp_pa
         )
         conn.execute("INSERT INTO embedding_status(session_id, origin) VALUES (?, ?)", ("session:1", "chatgpt-export"))
         conn.commit()
+    _clear_wal_sidecars(source)
 
     result = fast_forward_embeddings_clone(source, clone)
 
     assert result.source.user_version == 1
     assert result.clone.user_version == 2
+    assert not any(Path(f"{clone}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal"))
     with sqlite3.connect(clone) as conn:
         loaded, error = try_load_sqlite_vec(conn)
         assert loaded, error
