@@ -219,7 +219,8 @@ Polylogue is pre-1.0 and under active dogfooding. The codebase already supports 
 - memory and resumption experiments;
 - the long-term Sinex-backed evidence architecture.
 
-Roadmap authority lives in Beads:
+Roadmap authority lives in the committed Beads graph, available through the
+[web board](https://sinity.github.io/polylogue/main/beads/) or locally:
 
 ```bash
 bd ready
