@@ -991,7 +991,7 @@ class LiveBatchProcessor:
 
         if self._cursor.get_record(path) is None:
             self._invalidate_cursor_for_full_retry(path, source_name=source_name, stat=stat)
-        self._cursor.mark_failed(path)
+        self._cursor.defer_full_cursor_reconciliation(path)
 
     def _invalidate_cursor_for_full_retry(
         self,

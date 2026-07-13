@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -44,6 +44,7 @@ from polylogue.storage.sqlite.connection_profile import open_connection
 
 _INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
 _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
+_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S = 60
 
 # Per-source-family cursor-lag sample history (#1349). Daemon-runtime state,
 # not part of SCHEMA_VERSION — same lifecycle as live_cursor / live_convergence_debt.
@@ -1085,6 +1086,30 @@ class CursorStore:
                 updated_at=now,
                 failure_count=failures,
                 next_retry_at=datetime.fromtimestamp(retry_at, tz=UTC).isoformat(),
+            )
+
+        self._read_modify_write_cursor_record(path, mutate)
+
+    def defer_full_cursor_reconciliation(self, path: Path) -> None:
+        """Retry archive-backed full-cursor handoff without poisoning the source.
+
+        A raw full capture can be durable and parseable while its live JSONL
+        source is still appending too quickly to establish a stable handoff.
+        This is a scheduling condition, not a parse/persistence failure: it
+        must never consume the finite failure budget that quarantines malformed
+        files.
+        """
+
+        def mutate(current: CursorRecord | None) -> CursorRecord | None:
+            if current is None:
+                return None
+            now = datetime.now(UTC)
+            return replace(
+                current,
+                updated_at=now.isoformat(),
+                failure_count=0,
+                next_retry_at=(now + timedelta(seconds=_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S)).isoformat(),
+                excluded=False,
             )
 
         self._read_modify_write_cursor_record(path, mutate)

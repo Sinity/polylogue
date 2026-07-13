@@ -1790,13 +1790,8 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
         b'{"type":"response_item","payload":{"type":"message","id":"captured","role":"user",'
         b'"content":[{"type":"input_text","text":"captured"}]}}\n'
     )
-    appended_records = (
-        b'{"type":"response_item","payload":{"type":"message","id":"later-a","role":"assistant",'
-        b'"content":[{"type":"output_text","text":"later-a"}]}}\n',
-        b'{"type":"response_item","payload":{"type":"message","id":"later-b","role":"assistant",'
-        b'"content":[{"type":"output_text","text":"later-b"}]}}\n',
-    )
     path.write_bytes(captured)
+    captured_stat = path.stat()
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
@@ -1818,7 +1813,11 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
         nonlocal next_record
         result = original_hash(source_path, start_offset=start_offset, end_offset=end_offset)
         with path.open("ab") as handle:
-            handle.write(appended_records[next_record])
+            handle.write(
+                b'{"type":"response_item","payload":{"type":"message","id":"later-'
+                + str(next_record).encode()
+                + b'","role":"assistant","content":[{"type":"output_text","text":"later"}]}}\n'
+            )
         next_record += 1
         return result
 
@@ -1831,10 +1830,44 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
     assert deferred is not None
     assert deferred.byte_offset == 0
     assert deferred.content_fingerprint is None
-    assert deferred.failure_count == 1
+    assert deferred.failure_count == 0
+    assert deferred.next_retry_at is not None
+    assert not deferred.excluded
+
+    for _ in range(4):
+        processor._record_full_cursor(
+            path,
+            raw_fingerprint=sha256(captured).hexdigest(),
+            raw_byte_size=len(captured),
+            source_name="codex",
+            captured_content_hash=sha256(captured).hexdigest(),
+            captured_file_observation=(
+                captured_stat.st_dev,
+                captured_stat.st_ino,
+                captured_stat.st_size,
+                captured_stat.st_mtime_ns,
+                captured_stat.st_ctime_ns,
+            ),
+        )
+    repeatedly_deferred = cursor.get_record(path)
+    assert repeatedly_deferred is not None
+    assert repeatedly_deferred.failure_count == 0
+    assert repeatedly_deferred.next_retry_at is not None
+    assert not repeatedly_deferred.excluded
 
     monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", original_hash)
     watcher = LiveWatcher(polylogue, (WatchSource(name="codex", root=root),), cursor=cursor)
+    original_reconcile = watcher._reconcile_archived_cursor
+    monkeypatch.setattr(watcher, "_reconcile_archived_cursor", lambda _path, *, stat: False)
+    monkeypatch.setattr(live_watcher, "_retry_due", lambda _retry_at: True)
+    for _ in range(5):
+        assert not watcher._needs_work(path)
+    unavailable = cursor.get_record(path)
+    assert unavailable is not None
+    assert unavailable.failure_count == 0
+    assert not unavailable.excluded
+
+    monkeypatch.setattr(watcher, "_reconcile_archived_cursor", original_reconcile)
     assert watcher._needs_work(path)
     reconciled = cursor.get_record(path)
     assert reconciled is not None

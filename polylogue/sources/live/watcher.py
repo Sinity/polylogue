@@ -624,6 +624,14 @@ class LiveWatcher:
             return cursor is not None and size > cursor.byte_offset
         if cursor.excluded:
             return False
+        if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
+            if not _retry_due(cursor.next_retry_at):
+                return False
+            if self._reconcile_archived_cursor(path, stat=stat):
+                reconciled = self._cursor.get_record(path)
+                return reconciled is not None and size > reconciled.byte_offset
+            self._cursor.defer_full_cursor_reconciliation(path)
+            return False
         if cursor.failure_count > 0:
             if self._reconcile_archived_cursor(path, stat=stat):
                 cursor = self._cursor.get_record(path)
