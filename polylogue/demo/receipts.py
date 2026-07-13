@@ -5,14 +5,36 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
+from polylogue.errors import DatabaseError
+from polylogue.insights.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.scenarios import (
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
     DEMO_CODEX_RECEIPTS_SESSION_ID,
 )
 
 _EXPECTED_CLAIM = "All tests pass. The clock fix is complete."
+_COMPLETION_CLAIM_SAMPLE_SIZE = 250
+_COMPLETION_CLAIM_SEED = "polylogue-demo-receipts-v1"
+_COMPLETION_CLAIM_QUERY = (
+    "assistant text blocks matching the declared high-specificity completion phrases: "
+    "all tests pass | tests are passing | implementation is complete | task is complete | "
+    "fix is complete | completed successfully"
+)
+_COMPLETION_FTS_QUERY = (
+    '"all tests pass" OR "tests are passing" OR "implementation is complete" OR '
+    '"task is complete" OR "fix is complete" OR "completed successfully"'
+)
+_COMPLETION_MARKERS = (
+    "all tests pass",
+    "tests are passing",
+    "implementation is complete",
+    "task is complete",
+    "fix is complete",
+    "completed successfully",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +78,7 @@ class DemoReceiptsResult:
     anti_grep_failed_actions: int
     raw_id: str | None
     raw_blob_sha256: str | None
+    completion_claims: CompletionClaimExperimentResult | None = None
     problems: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
@@ -77,7 +100,100 @@ class DemoReceiptsResult:
                 "raw_id": self.raw_id,
                 "blob_sha256": self.raw_blob_sha256,
             },
+            "completion_claim_experiment": (
+                self.completion_claims.to_payload() if self.completion_claims is not None else None
+            ),
             "problems": list(self.problems),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionClaimEvidence:
+    """One sampled completion claim resolved against typed action outcomes."""
+
+    claim_ref: str
+    session_ref: str
+    origin: str
+    classification: str
+    prior_action_ref: str | None
+    prior_is_error: bool | None
+    prior_exit_code: int | None
+    repair_action_ref: str | None
+    repair_is_error: bool | None
+    repair_exit_code: int | None
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "claim_ref": self.claim_ref,
+            "session_ref": self.session_ref,
+            "origin": self.origin,
+            "classification": self.classification,
+            "prior_action_ref": self.prior_action_ref,
+            "prior_is_error": self.prior_is_error,
+            "prior_exit_code": self.prior_exit_code,
+            "repair_action_ref": self.repair_action_ref,
+            "repair_is_error": self.repair_is_error,
+            "repair_exit_code": self.repair_exit_code,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionClaimExperimentResult:
+    """Aggregate completion-claim result with a deterministic sample manifest."""
+
+    archive_root: Path
+    manifest: CohortManifest
+    evidence: tuple[CompletionClaimEvidence, ...]
+    unsupported_count: int
+    neutral_prior_count: int
+    contradicted_then_repaired_count: int
+    contradicted_without_repair_count: int
+    evidence_fingerprint: str
+
+    @property
+    def sample_size(self) -> int:
+        return len(self.evidence)
+
+    def to_payload(self) -> dict[str, object]:
+        denominator = self.sample_size
+        return {
+            "archive_root": str(self.archive_root),
+            "method": {
+                "population_query": _COMPLETION_CLAIM_QUERY,
+                "unsupported_definition": (
+                    "No structurally recorded action outcome precedes the selected completion claim."
+                ),
+                "contradicted_then_repaired_definition": (
+                    "The latest structurally recorded action before the claim failed, and a later action "
+                    "with the same tool and command succeeded."
+                ),
+            },
+            "manifest": self.manifest.to_payload(),
+            "evidence_fingerprint": self.evidence_fingerprint,
+            "headline": {
+                "denominator": denominator,
+                "unsupported_count": self.unsupported_count,
+                "unsupported_rate": self.unsupported_count / denominator if denominator else None,
+                "unsupported_percent": (100 * self.unsupported_count / denominator) if denominator else None,
+                "neutral_prior_count": self.neutral_prior_count,
+                "neutral_prior_rate": self.neutral_prior_count / denominator if denominator else None,
+                "neutral_prior_percent": (100 * self.neutral_prior_count / denominator) if denominator else None,
+                "contradicted_then_repaired_count": self.contradicted_then_repaired_count,
+                "contradicted_then_repaired_rate": (
+                    self.contradicted_then_repaired_count / denominator if denominator else None
+                ),
+                "contradicted_then_repaired_percent": (
+                    100 * self.contradicted_then_repaired_count / denominator if denominator else None
+                ),
+                "contradicted_without_repair_count": self.contradicted_without_repair_count,
+                "contradicted_without_repair_rate": (
+                    self.contradicted_without_repair_count / denominator if denominator else None
+                ),
+                "contradicted_without_repair_percent": (
+                    100 * self.contradicted_without_repair_count / denominator if denominator else None
+                ),
+            },
+            "evidence": [item.to_payload() for item in self.evidence],
         }
 
 
@@ -116,6 +232,207 @@ def _action_receipt(row: sqlite3.Row) -> DemoActionReceipt:
         exit_code=int(row["exit_code"]),
         is_error=bool(row["is_error"]),
         output=str(row["output_text"] or ""),
+    )
+
+
+def _completion_template(text: str) -> str:
+    lowered = text.lower()
+    return next((marker for marker in _COMPLETION_MARKERS if marker in lowered), "other")
+
+
+def _archive_cursor(conn: sqlite3.Connection) -> str:
+    schema_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    session_count, message_count, last_message_id = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM sessions), COUNT(*), COALESCE(MAX(message_id), '') FROM messages"
+    ).fetchone()
+    payload = f"index-v{schema_version}:sessions={session_count}:messages={message_count}:last={last_message_id}"
+    return f"sha256:{sha256(payload.encode()).hexdigest()}"
+
+
+def _action_rows(
+    conn: sqlite3.Connection,
+    session_id: str,
+    position_clause: str,
+    message_position: int,
+    variant_index: int,
+    block_position: int,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        f"""
+        SELECT a.*, result_message.position AS result_message_position,
+               result_message.variant_index AS result_message_variant_index,
+               result_block.position AS result_block_position
+        FROM actions AS a
+        JOIN blocks AS result_block ON result_block.block_id = a.tool_result_block_id
+        JOIN messages AS result_message ON result_message.message_id = result_block.message_id
+        WHERE a.session_id = ?
+          AND (a.exit_code IS NOT NULL OR a.is_error IS NOT NULL)
+          AND (
+              result_message.position {position_clause} ?
+              OR (result_message.position = ? AND result_message.variant_index {position_clause} ?)
+              OR (
+                  result_message.position = ?
+                  AND result_message.variant_index = ?
+                  AND result_block.position {position_clause} ?
+              )
+          )
+        ORDER BY result_message.position, result_message.variant_index, result_block.position, a.tool_result_block_id
+        """,
+        (
+            session_id,
+            message_position,
+            message_position,
+            variant_index,
+            message_position,
+            variant_index,
+            block_position,
+        ),
+    ).fetchall()
+
+
+def _is_failed_action(row: sqlite3.Row) -> bool:
+    return int(row["is_error"] or 0) == 1 or int(row["exit_code"] or 0) != 0
+
+
+def _optional_bool(value: object) -> bool | None:
+    return None if value is None else bool(value)
+
+
+def _is_matching_repair(failed: sqlite3.Row, candidate: sqlite3.Row) -> bool:
+    failed_command = _command_from_row(failed)
+    failed_tool_name = str(failed["tool_name"] or "")
+    return (
+        not _is_failed_action(candidate)
+        and bool(failed_tool_name)
+        and str(candidate["tool_name"] or "") == failed_tool_name
+        and bool(failed_command)
+        and _command_from_row(candidate) == failed_command
+    )
+
+
+def inspect_completion_claims(
+    archive_root: Path,
+    *,
+    sample_size: int = _COMPLETION_CLAIM_SAMPLE_SIZE,
+) -> CompletionClaimExperimentResult:
+    """Sample completion claims and resolve them against typed action evidence.
+
+    The population is deliberately lexical and declared in the result rather
+    than inferred as every possible claim. Action outcomes, not prose, decide
+    whether a sampled claim lacks evidence or was contradicted then repaired.
+    """
+
+    with _connect(archive_root / "index.db") as conn:
+        from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
+
+        check_fts_readiness(message_fts_search_readiness_sync(conn), "Run `polylogued run`.")
+        candidates_rows = conn.execute(
+            """
+            SELECT b.block_id, b.text, b.position AS block_position, m.session_id,
+                   m.position, m.variant_index, s.origin, m.model_name
+            FROM blocks AS b
+            JOIN messages AS m ON m.message_id = b.message_id
+            JOIN sessions AS s ON s.session_id = m.session_id
+            WHERE b.block_type = 'text'
+              AND m.role = 'assistant'
+              AND m.material_origin = 'assistant_authored'
+              AND b.rowid IN (
+                  SELECT rowid
+                  FROM messages_fts
+                  WHERE messages_fts MATCH ?
+              )
+            ORDER BY b.block_id
+            """,
+            (_COMPLETION_FTS_QUERY,),
+        ).fetchall()
+        candidates = [
+            CohortCandidate(
+                object_ref=f"block:{row['block_id']}",
+                dimensions={"origin": str(row["origin"]), "model": str(row["model_name"] or "unknown")},
+                template_key=_completion_template(str(row["text"] or "")),
+            )
+            for row in candidates_rows
+        ]
+        manifest = compile_cohort_manifest(
+            CohortSpec(
+                population_query=_COMPLETION_CLAIM_QUERY,
+                archive_cursor=_archive_cursor(conn),
+                seed=_COMPLETION_CLAIM_SEED,
+                requested_size=sample_size,
+                strata=("origin",),
+                exact_template_cap=25,
+            ),
+            candidates,
+        )
+        selected = {ref.removeprefix("block:") for ref in manifest.selected_refs}
+        evidence: list[CompletionClaimEvidence] = []
+        for row in candidates_rows:
+            block_id = str(row["block_id"])
+            if block_id not in selected:
+                continue
+            prior = _action_rows(
+                conn,
+                str(row["session_id"]),
+                "<",
+                int(row["position"]),
+                int(row["variant_index"]),
+                int(row["block_position"]),
+            )
+            prior_action = prior[-1] if prior else None
+            failed = prior_action if prior_action is not None and _is_failed_action(prior_action) else None
+            repair = None
+            classification = "prior_outcome_recorded"
+            if prior_action is None:
+                classification = "unsupported_by_structural_tool_evidence"
+            elif failed is not None:
+                later = _action_rows(
+                    conn,
+                    str(row["session_id"]),
+                    ">",
+                    int(row["position"]),
+                    int(row["variant_index"]),
+                    int(row["block_position"]),
+                )
+                repair = next((candidate for candidate in later if _is_matching_repair(failed, candidate)), None)
+                classification = (
+                    "contradicted_then_repaired" if repair is not None else "contradicted_without_recorded_repair"
+                )
+            evidence.append(
+                CompletionClaimEvidence(
+                    claim_ref=f"block:{block_id}",
+                    session_ref=f"session:{row['session_id']}",
+                    origin=str(row["origin"]),
+                    classification=classification,
+                    prior_action_ref=(
+                        f"block:{prior_action['tool_result_block_id']}" if prior_action is not None else None
+                    ),
+                    prior_is_error=(_optional_bool(prior_action["is_error"]) if prior_action is not None else None),
+                    prior_exit_code=(
+                        int(prior_action["exit_code"])
+                        if prior_action is not None and prior_action["exit_code"] is not None
+                        else None
+                    ),
+                    repair_action_ref=f"block:{repair['tool_result_block_id']}" if repair is not None else None,
+                    repair_is_error=(_optional_bool(repair["is_error"]) if repair is not None else None),
+                    repair_exit_code=(
+                        int(repair["exit_code"]) if repair is not None and repair["exit_code"] is not None else None
+                    ),
+                )
+            )
+    unsupported_count = sum(item.classification == "unsupported_by_structural_tool_evidence" for item in evidence)
+    neutral_prior_count = sum(item.classification == "prior_outcome_recorded" for item in evidence)
+    repaired_count = sum(item.classification == "contradicted_then_repaired" for item in evidence)
+    unrepaired_count = sum(item.classification == "contradicted_without_recorded_repair" for item in evidence)
+    fingerprint_payload = json.dumps([item.to_payload() for item in evidence], sort_keys=True, separators=(",", ":"))
+    return CompletionClaimExperimentResult(
+        archive_root=archive_root,
+        manifest=manifest,
+        evidence=tuple(evidence),
+        unsupported_count=unsupported_count,
+        neutral_prior_count=neutral_prior_count,
+        contradicted_then_repaired_count=repaired_count,
+        contradicted_without_repair_count=unrepaired_count,
+        evidence_fingerprint=f"sha256:{sha256(fingerprint_payload.encode()).hexdigest()}",
     )
 
 
@@ -230,6 +547,12 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
     except (OSError, sqlite3.Error) as exc:
         problems.append(f"source evidence unreadable: {exc}")
 
+    completion_claims: CompletionClaimExperimentResult | None = None
+    try:
+        completion_claims = inspect_completion_claims(archive_root)
+    except (DatabaseError, OSError, sqlite3.Error) as exc:
+        problems.append(f"completion-claim evidence unreadable: {exc}")
+
     verdict = "contradicted_at_claim_time_then_repaired" if not problems else "invalid_demo_evidence"
     return DemoReceiptsResult(
         archive_root=archive_root,
@@ -245,6 +568,7 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
         anti_grep_failed_actions=anti_grep_failed_actions,
         raw_id=raw_id,
         raw_blob_sha256=raw_blob_sha256,
+        completion_claims=completion_claims,
         problems=tuple(problems),
     )
 
@@ -302,14 +626,74 @@ def render_demo_receipts(result: DemoReceiptsResult) -> str:
             f"  blob_sha256: {result.raw_blob_sha256 or 'unavailable'}",
         ]
     )
+    experiment = result.completion_claims
+    if experiment is not None:
+        headline = experiment.to_payload()["headline"]
+        assert isinstance(headline, dict)
+        lines.extend(
+            [
+                "",
+                "completion-claim experiment:",
+                f"  sample manifest: {experiment.manifest.manifest_id}",
+                f"  denominator: {headline['denominator']}",
+                _headline_line(headline, "unsupported", "unsupported by structural evidence"),
+                _headline_line(headline, "neutral_prior", "neutral prior outcome"),
+                _headline_line(headline, "contradicted_then_repaired", "contradicted then repaired"),
+                _headline_line(
+                    headline,
+                    "contradicted_without_repair",
+                    "contradicted without recorded repair",
+                ),
+            ]
+        )
     if result.problems:
         lines.extend(["", "problems:", *(f"  - {problem}" for problem in result.problems)])
     return "\n".join(lines) + "\n"
 
 
+def render_completion_claims(result: CompletionClaimExperimentResult) -> str:
+    """Render an aggregate-only local completion-claim receipt."""
+
+    headline = result.to_payload()["headline"]
+    assert isinstance(headline, dict)
+    return "\n".join(
+        [
+            "Polylogue completion-claim receipt",
+            f"archive: {result.archive_root}",
+            f"sample manifest: {result.manifest.manifest_id}",
+            f"evidence fingerprint: {result.evidence_fingerprint}",
+            f"denominator: {headline['denominator']}",
+            _headline_line(headline, "unsupported", "unsupported by structural evidence"),
+            _headline_line(headline, "neutral_prior", "neutral prior outcome"),
+            _headline_line(headline, "contradicted_then_repaired", "contradicted then repaired"),
+            _headline_line(
+                headline,
+                "contradicted_without_repair",
+                "contradicted without recorded repair",
+            ),
+            "",
+        ]
+    )
+
+
+def _headline_line(headline: dict[str, object], key: str, label: str) -> str:
+    count = headline[f"{key}_count"]
+    percent = headline[f"{key}_percent"]
+    if not isinstance(count, int):
+        raise TypeError(f"headline {key!r} count must be an integer")
+    if percent is not None and not isinstance(percent, (int, float)):
+        raise TypeError(f"headline {key!r} percent must be numeric or null")
+    rendered_percent = "n/a" if percent is None else f"{percent:.1f}%"
+    return f"{label}: {count} ({rendered_percent})"
+
+
 __all__ = [
     "DemoActionReceipt",
+    "CompletionClaimEvidence",
+    "CompletionClaimExperimentResult",
     "DemoReceiptsResult",
+    "inspect_completion_claims",
     "inspect_demo_receipts",
+    "render_completion_claims",
     "render_demo_receipts",
 ]
