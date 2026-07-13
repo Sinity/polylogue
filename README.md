@@ -4,7 +4,7 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-4584b6?logo=python&logoColor=white" alt="Python 3.11+"></a>
   <a href="https://pypi.org/project/polylogue/"><img src="https://img.shields.io/pypi/v/polylogue?label=PyPI" alt="PyPI release"></a>
   <a href="https://github.com/sinity/polylogue/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/ci.yml?branch=master&label=ci" alt="CI status"></a>
-  <a href="https://sinity.github.io/polylogue/"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/pages.yml?branch=master&label=docs" alt="Documentation deployment"></a>
+  <a href="https://sinity.github.io/polylogue/"><img src="https://img.shields.io/badge/docs-live-2563eb" alt="Live documentation"></a>
   <a href="https://github.com/sinity/polylogue/actions/workflows/codeql.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/codeql.yml?branch=master&label=CodeQL" alt="CodeQL analysis"></a>
   <a href="https://github.com/Sinity/homebrew-polylogue"><img src="https://img.shields.io/badge/Homebrew-tap-fbb040?logo=homebrew&logoColor=111827" alt="Homebrew tap"></a>
 </p>
@@ -186,7 +186,7 @@ References:
 <!-- BEGIN GENERATED: docs-surface -->
 ## Documentation
 
-Live site: <https://sinity.github.io/polylogue/> (auto-published on every merge to `master`).
+Live site: <https://sinity.github.io/polylogue/>.
 
 Start with the task-oriented guides below; [docs/README.md](docs/README.md) separates guides, reference, internals, operations, evidence, design, and historical records. Current sequencing and active workstreams live in the Beads backlog (`bd ready`, `bd list --status open`).
 
@@ -209,15 +209,12 @@ Start with the task-oriented guides below; [docs/README.md](docs/README.md) sepa
 
 ## Current status
 
-Polylogue is pre-1.0 and under active dogfooding. The codebase already supports multi-origin ingestion, normalized tool-aware archives, typed refs, lineage, cost and usage projections, deterministic demos, CLI/MCP/Python/web surfaces, and reviewed context compilation. The active Beads backlog is currently hardening the trust floor and public product experience, particularly:
-
-- disjoint cross-provider token and cost accounting;
-- loud degraded-mode and readiness signals;
-- semantic transcript rendering shared by CLI and web;
-- public claims and findings with resolvable evidence;
-- install and release-channel verification;
-- memory and resumption experiments;
-- the long-term Sinex-backed evidence architecture.
+Polylogue is pre-1.0 and under active dogfooding. It already supports
+multi-origin ingestion, normalized tool-aware archives, typed evidence refs,
+session lineage, cost and usage projections, deterministic demos,
+CLI/MCP/Python/web readers, and reviewed context compilation. Public claims are
+paired with bounded proof artifacts; private-archive findings retain their
+sampling and disclosure boundaries.
 
 Roadmap authority lives in the committed Beads graph, available through the
 [web board](https://sinity.github.io/polylogue/main/beads/) or locally:
