@@ -460,18 +460,38 @@ def reuse_index_clone(source: Path, staged_clone: Path, destination: Path) -> Cl
 
 
 def atomic_promote(clone: Path, active: Path, rollback: Path) -> dict[str, str]:
-    """Atomically publish one regular prepared clone and retain rollback bytes."""
+    """Atomically publish one prepared clone and retain rollback bytes.
+
+    Prepared clones and rollback storage may be on a different subvolume from
+    the active archive.  ``rename(2)`` cannot cross that boundary, so copy both
+    operands first and perform the only replacement within ``active.parent``.
+    The active path is therefore never absent, even when the staging volume is
+    distinct from the archive volume.
+    """
     if rollback.exists() or clone == active:
         raise SchemaFastForwardError(f"rollback target is unavailable: {rollback}")
     if not clone.exists() or not active.exists():
         raise SchemaFastForwardError("atomic promotion requires both active and prepared clone")
-    os.replace(active, rollback)
+    local_clone = active.with_name(f".{active.name}.schema-forward-{uuid.uuid4().hex}.tmp")
+    published = False
     try:
-        os.replace(clone, active)
+        reflink_clone(clone, local_clone)
+        reflink_clone(active, rollback)
+        os.replace(local_clone, active)
+        published = True
+        _fsync_directory(active.parent)
     except Exception:
-        os.replace(rollback, active)
+        local_clone.unlink(missing_ok=True)
+        if published and rollback.exists():
+            try:
+                _restore_snapshot(rollback, active)
+            except Exception as restore_exc:
+                raise SchemaFastForwardError(
+                    f"promotion failed and rollback could not restore {active}"
+                ) from restore_exc
+        rollback.unlink(missing_ok=True)
         raise
-    _fsync_directory(active.parent)
+    clone.unlink(missing_ok=True)
     return {"kind": "file", "active": str(active), "rollback": str(rollback)}
 
 
@@ -506,16 +526,33 @@ def _promote_index_generation(clone: Path, active_link: Path) -> dict[str, str]:
     }
 
 
-def _restore_promoted(item: dict[str, str], rollback_root: Path) -> None:
+def _restore_promoted(item: dict[str, str]) -> None:
     active = Path(item["active"])
     rollback = Path(item["rollback"])
     if item.get("kind") == "symlink":
         _swap_active_symlink(active, rollback, label="schema-forward-rollback")
         return
-    failed = rollback_root / f"failed-{active.name}"
     if rollback.exists():
-        os.replace(active, failed)
-        os.replace(rollback, active)
+        _restore_snapshot(rollback, active)
+
+
+def _restore_snapshot(snapshot: Path, active: Path) -> None:
+    """Restore retained bytes without assuming snapshot and active share a device."""
+    if not snapshot.exists():
+        raise SchemaFastForwardError(f"rollback snapshot is unavailable: {snapshot}")
+    replacement = active.with_name(f".{active.name}.schema-forward-rollback-{uuid.uuid4().hex}.tmp")
+    try:
+        reflink_clone(snapshot, replacement)
+        # A failed migration may have created WAL sidecars for the bytes being
+        # replaced.  They must not replay against the restored snapshot once
+        # the stopped daemon restarts.
+        for suffix in _SQLITE_SIDECARS:
+            Path(f"{active}{suffix}").unlink(missing_ok=True)
+        os.replace(replacement, active)
+    except Exception:
+        replacement.unlink(missing_ok=True)
+        raise
+    _fsync_directory(active.parent)
 
 
 def plan_clone_forward(
@@ -611,6 +648,7 @@ def activate_prepared_forward(
     require_no_beads_evidence(source, index)
     rollback_root = staging_root / "rollback"
     rollback_root.mkdir(exist_ok=False)
+    snapshots: list[tuple[Path, Path]] = []
     promoted: list[dict[str, str]] = []
     try:
         # Keep exact old durable bytes locally before the runner commits.  The
@@ -619,7 +657,7 @@ def activate_prepared_forward(
         for path in (source, user):
             clone = rollback_root / path.name
             reflink_clone(path, clone)
-            promoted.append({"active": str(path), "rollback": str(clone)})
+            snapshots.append((clone, path))
         with sqlite3.connect(source) as conn:
             migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=backup_manifest)
         with sqlite3.connect(user) as conn:
@@ -629,7 +667,9 @@ def activate_prepared_forward(
         promoted.append(atomic_promote(staging_root / ops.name, ops, rollback_root / ops.name))
     except Exception as exc:
         for item in reversed(promoted):
-            _restore_promoted(item, rollback_root)
+            _restore_promoted(item)
+        for snapshot, active in reversed(snapshots):
+            _restore_snapshot(snapshot, active)
         payload.update({"status": "rolled_back", "activation_error": f"{type(exc).__name__}: {exc}"})
         _write_receipt(receipt_path, payload)
         raise
