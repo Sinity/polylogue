@@ -173,8 +173,16 @@ def _ingest_append_plans_archive(
                     # recovery path for a legacy/crash-interrupted cohort
                     # whose accepted metadata has not yet been established.
                     replay_plan = archive.raw_revision_replay_plan(logical_source_key)
-                    if not replay_plan.accepted_raw_ids:
+                    if raw_id not in replay_plan.accepted_raw_ids:
                         replay_plan = archive.classify_raw_revision_cohort(logical_source_key)
+                    if raw_id not in replay_plan.accepted_raw_ids:
+                        # A non-empty plan can still represent an older
+                        # accepted chain while a newly observed full snapshot
+                        # remains ambiguous.  Never acknowledge this append
+                        # or advance its cursor until its own raw evidence is
+                        # part of the accepted chain.
+                        deferred.append(plan)
+                        continue
                     parsed_by_raw_id: dict[str, Any] = {}
                     for replay_raw_id in replay_plan.accepted_raw_ids:
                         replay_provider, replay_payload, replay_source_path, _kind = archive.raw_revision_material(

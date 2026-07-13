@@ -18,6 +18,7 @@ no CI budget; route and byte-count assertions keep the harness non-vacuous.
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -102,6 +103,53 @@ def _seed_cohort_and_append_plan(
     )
 
 
+def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _AppendPlan:
+    """Seed a newer asserted full that temporarily hides the new append."""
+    initialize_active_archive_root(archive_root)
+    session_id = "append-partial-classification-proof"
+    snapshots = _full_snapshots(session_id)
+    source_path = archive_root / "captures" / "append-partial-classification-proof.jsonl"
+    source_path.parent.mkdir()
+    append_payload = f'{{"type":"session_meta","payload":{{"id":"{session_id}"}}}}\n'.encode() + _codex_record(
+        session_id, "append", "a" * 16_384
+    )
+    source_path.write_bytes(snapshots[-1] + append_payload)
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        for index, payload in enumerate(snapshots):
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=str(source_path),
+                acquired_at_ms=index + 1,
+                revision=RawRevisionEnvelope(
+                    f"codex:{session_id}",
+                    RawRevisionKind.FULL,
+                    f"full-{index}",
+                    index,
+                    authority=(
+                        RawRevisionAuthority.BYTE_PROVEN
+                        if index < len(snapshots) - 1
+                        else RawRevisionAuthority.ASSERTED
+                    ),
+                ),
+            )
+    stat = source_path.stat()
+    return _AppendPlan(
+        path=source_path,
+        source_name="codex",
+        start_offset=len(snapshots[-1]),
+        last_complete_newline=stat.st_size,
+        stat_size=stat.st_size,
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        payload=append_payload,
+        payload_hash=hashlib.sha256(append_payload).hexdigest(),
+        cursor_fingerprint="full-2",
+        bytes_read=len(append_payload),
+    )
+
+
 def test_watcher_append_uses_durable_replay_metadata_without_historical_full_reads(tmp_path: Path) -> None:
     """An established append cohort replays only its selected full and tail."""
     plan = _seed_cohort_and_append_plan(tmp_path)
@@ -156,16 +204,39 @@ def test_watcher_append_does_not_reclassify_an_established_cohort(tmp_path: Path
     assert result.succeeded == [plan]
 
 
-def test_watcher_append_recovers_incomplete_cohort_via_historical_classification(tmp_path: Path) -> None:
-    """Incomplete metadata retains the classifier fallback instead of skipping authority proof."""
+def test_watcher_append_defers_incomplete_cohort_after_historical_classification(tmp_path: Path) -> None:
+    """Incomplete metadata keeps authority proof and must not advance the append cursor."""
     plan = _seed_cohort_and_append_plan(tmp_path, full_authority=RawRevisionAuthority.ASSERTED)
 
     with append_cohort_memory_counter() as counter:
         result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
 
-    assert result.succeeded == [plan]
+    assert result.succeeded == []
+    assert result.deferred == [plan]
     # The fallback itself returns a replay plan after establishing the full
     # cohort, so both the fast probe and classifier's final plan are observed.
     assert counter.calls_by_site["raw_revision_replay_plan"] == 2
     assert counter.calls_by_site["classify_raw_revision_cohort"] == 1
     assert counter.calls_by_site["historical_full_blob.read_all"] == 3
+
+
+def test_watcher_append_reclassifies_when_nonempty_plan_omits_current_append(tmp_path: Path) -> None:
+    """A newer asserted full must not let the watcher advance an omitted append cursor."""
+    plan = _seed_partially_classified_cohort_and_append_plan(tmp_path)
+
+    with append_cohort_memory_counter() as counter:
+        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
+
+    assert result.succeeded == []
+    assert result.deferred == [plan]
+    assert counter.calls_by_site["raw_revision_replay_plan"] == 2
+    assert counter.calls_by_site["classify_raw_revision_cohort"] == 1
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+        assert source.execute("SELECT 1 FROM raw_sessions WHERE revision_kind = 'append'").fetchone() is not None
+        assert (
+            index.execute(
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
+                ("codex:append-partial-classification-proof",),
+            ).fetchone()
+            is None
+        )
