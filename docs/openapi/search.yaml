@@ -1390,6 +1390,35 @@ components:
           - $ref: '#/components/schemas/RouteReadinessPayload'
           - type: 'null'
           default: null
+        query_run_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Query Run Ref
+        query_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Query Hash
+        result_fingerprint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Result Fingerprint
+        exactness:
+          anyOf:
+          - enum:
+            - exact
+            - capped
+            - sampled
+            - estimate
+            type: string
+          - type: 'null'
+          default: null
+          title: Exactness
       required:
       - hits
       - total

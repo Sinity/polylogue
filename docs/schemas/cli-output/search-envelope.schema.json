@@ -890,6 +890,24 @@
       ],
       "default": null
     },
+    "exactness": {
+      "anyOf": [
+        {
+          "enum": [
+            "exact",
+            "capped",
+            "sampled",
+            "estimate"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Exactness"
+    },
     "hits": {
       "items": {
         "$ref": "#/$defs/SessionSearchHitPayload"
@@ -933,6 +951,30 @@
       "title": "Query",
       "type": "string"
     },
+    "query_hash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Query Hash"
+    },
+    "query_run_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Query Run Ref"
+    },
     "ranking_policy": {
       "default": "mixed-bm25-rrf-vector",
       "title": "Ranking Policy",
@@ -942,6 +984,18 @@
       "default": "1",
       "title": "Ranking Policy Version",
       "type": "string"
+    },
+    "result_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Fingerprint"
     },
     "retrieval_lane": {
       "title": "Retrieval Lane",

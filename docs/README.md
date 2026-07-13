@@ -41,6 +41,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Provider Package Completeness](provider-completeness.md) | Readiness report for provider/importer package modes by origin and capture mode. |
 | [Material Protocol v1](material-protocol-v1.md) | Normalized-session interchange wire format. |
 | [Schema Annotations](schema-annotations.md) | Versioned annotation schemas and batch provenance. |
+| [Query Identity](query-identity.md) | Canonical query, query-run, and result-set reference identities. |
 | [CLI Output Schemas](schemas/cli-output/README.md) | Machine-readable CLI output schema catalog. |
 | [Projection Render Specification](projection-render-spec.md) | Projection and renderer contract for archive reads. |
 | [Web Route Readiness States](web-route-readiness-states.md) | Readiness-state semantics for web routes. |

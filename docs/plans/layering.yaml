@@ -100,7 +100,7 @@ writer_modules:
           durability: disposable
           interruption: restartable
       entrypoints:
-        [add_convergence_debt, record_cursor_lag_sample, record_daemon_stage_event, record_ingest_attempt,
+        [add_convergence_debt, record_cursor_lag_sample, record_daemon_stage_event, record_ingest_attempt, record_query_run,
         record_daemon_lifecycle_heartbeat, record_daemon_lifecycle_signal, record_daemon_lifecycle_start,
         record_daemon_lifecycle_stop, record_mcp_call, upsert_embedding_catchup_run, upsert_ingest_cursor,
         upsert_otlp_span]

@@ -265,7 +265,7 @@ def test_user_tier_v3_migrates_to_current_with_verified_backup_receipt(
         result = migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
         assert result.from_version == 3
         assert result.to_version == USER_SCHEMA_VERSION
-        assert result.applied_versions == (4, 5, 6)
+        assert result.applied_versions == (4, 5, 6, 7)
         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
         assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
@@ -304,6 +304,14 @@ def test_user_tier_v5_annotation_migration_requires_verified_backup_and_matches_
             ) VALUES ('sentinel', 'session:sentinel', 'annotation', 1, 1)
             """
         )
+        seed_conn.execute(
+            """
+            INSERT INTO assertions (
+                assertion_id, target_ref, key, kind, value_json, created_at_ms, updated_at_ms
+            ) VALUES ('saved-query-sentinel', 'saved_view:sentinel', 'recent', 'saved_query', ?, 1, 1)
+            """,
+            (json.dumps({"origin": "codex-session", "limit": 10}),),
+        )
         seed_conn.commit()
     manifest = _verified_backup_manifest(tmp_path / "backup-v5", profile="user_overlays")
 
@@ -311,10 +319,15 @@ def test_user_tier_v5_annotation_migration_requires_verified_backup_and_matches_
     try:
         result = migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
         assert result.from_version == 5
-        assert result.to_version == USER_SCHEMA_VERSION == 6
-        assert result.applied_versions == (6,)
+        assert result.to_version == USER_SCHEMA_VERSION == 7
+        assert result.applied_versions == (6, 7)
         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
         assert conn.execute("SELECT assertion_id FROM assertions WHERE assertion_id = 'sentinel'").fetchone()
+        saved_target = conn.execute(
+            "SELECT target_ref FROM assertions WHERE assertion_id = 'saved-query-sentinel'"
+        ).fetchone()
+        assert saved_target is not None and str(saved_target[0]).startswith("query:")
+        assert conn.execute("SELECT COUNT(*) FROM queries").fetchone()[0] == 1
         schema_row = conn.execute(
             """
             SELECT schema_id, schema_version, definition_json, definition_sha256, registered_at_ms

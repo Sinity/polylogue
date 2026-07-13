@@ -535,6 +535,10 @@ def migrate_archive_tier(
                     f"{tier.value} migration {step.name} expected version {step.version - 1}, found {before}"
                 )
             _execute_migration_sql(conn, step.sql)
+            if tier is ArchiveTier.USER and step.version == 7:
+                from polylogue.storage.sqlite.query_objects import migrate_saved_query_assertions
+
+                migrate_saved_query_assertions(conn)
             conn.execute(f"PRAGMA user_version = {step.version}")
             applied.append(step.version)
         quick_check = conn.execute("PRAGMA quick_check").fetchone()
