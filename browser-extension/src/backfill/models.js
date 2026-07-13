@@ -18,7 +18,7 @@ export const DEFAULT_BACKFILL_POLICY = Object.freeze({
   breakerThreshold: 2,
 });
 
-export const TERMINAL_QUEUE_STATES = new Set(["complete", "unchanged", "no_turns", "auth_required", "failed", "cancelled"]);
+export const TERMINAL_QUEUE_STATES = new Set(["complete", "unchanged", "no_turns", "auth_required", "bridge_oversize", "failed", "cancelled"]);
 
 export function backfillAlarmName(jobId) {
   return `${BACKFILL_ALARM}:${jobId}`;

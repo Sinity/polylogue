@@ -220,7 +220,7 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("state").textContent).toContain("not been saved");
   });
 
-  it("names a stale receiver ACK contract and recovery loss as actionable backfill states", async () => {
+  it("names receiver, recovery, and bridge-size holds as actionable backfill states", async () => {
     const job = (cooldown_reason) => ({
       id: `job-${cooldown_reason}`,
       provider: "chatgpt",
@@ -242,6 +242,13 @@ describe("popup capture", () => {
     await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("profile recovery required"));
     expect(document.getElementById("backfill-last").textContent).toContain("profile was replaced");
     expect(document.getElementById("backfill-resume").disabled).toBe(true);
+
+    await loadPopup({}, [CHATGPT_TAB], async (message) => message.type === "polylogue.backfill.status"
+      ? { ok: true, jobs: [job("backfill_bridge_response_too_large")] }
+      : { ok: true });
+    await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("bridge limit reached"));
+    expect(document.getElementById("backfill-last").textContent).toContain("held; Resume explicitly retries");
+    expect(document.getElementById("backfill-resume").disabled).toBe(false);
   });
 
   it("renders mission-control status, open tabs, and the active decision timeline", async () => {

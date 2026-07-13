@@ -2,6 +2,13 @@ export async function executeProviderPageRequest(request) {
   const currentOrigin = window.location.origin;
   const requestTimeoutMs = 55000;
   const absoluteMaxResponseBytes = 32 * 1024 * 1024;
+  // A ChatGPT conversation is fetched in MAIN world, then reduced before the
+  // scripting-result bridge. Both stages stay bounded independently: raw
+  // provider bloat may use 64 MiB in page memory, but no more than 24 MiB can
+  // cross into extension storage/worker code. 24 MiB leaves 8 MiB of headroom
+  // beneath Chrome's established 32 MiB scripting-result limit.
+  const compactChatGptSourceMaxBytes = 64 * 1024 * 1024;
+  const compactChatGptBridgeMaxBytes = 24 * 1024 * 1024;
   const originalFetch = window.fetch;
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const maxResponseBytes = Number.isInteger(request?.maxResponseBytes)
@@ -20,9 +27,13 @@ export async function executeProviderPageRequest(request) {
     return value;
   }
 
-  async function readBoundedBody(response) {
+  function sizeError(code, observedBytes, limitBytes) {
+    return new Error(`${code}:observed_bytes=${observedBytes};limit_bytes=${limitBytes}`);
+  }
+
+  async function readBoundedBody(response, maxBytes = maxResponseBytes, tooLargeCode = "backfill_bridge_response_too_large") {
     const declared = Number.parseInt(response.headers.get("content-length") || "", 10);
-    if (Number.isFinite(declared) && declared > maxResponseBytes) throw new Error("backfill_bridge_response_too_large");
+    if (Number.isFinite(declared) && declared > maxBytes) throw sizeError(tooLargeCode, declared, maxBytes);
     if (response.body?.getReader) {
       const reader = response.body.getReader();
       const decoder = new globalThis.TextDecoder();
@@ -32,20 +43,20 @@ export async function executeProviderPageRequest(request) {
         const chunk = await reader.read();
         if (chunk.done) break;
         size += chunk.value.byteLength;
-        if (size > maxResponseBytes) {
-          await reader.cancel("backfill_bridge_response_too_large");
-          throw new Error("backfill_bridge_response_too_large");
+        if (size > maxBytes) {
+          await reader.cancel(tooLargeCode);
+          throw sizeError(tooLargeCode, size, maxBytes);
         }
         body += decoder.decode(chunk.value, { stream: true });
       }
       return body + decoder.decode();
     }
     const body = await response.text();
-    if (new globalThis.TextEncoder().encode(body).length > maxResponseBytes) throw new Error("backfill_bridge_response_too_large");
+    if (new globalThis.TextEncoder().encode(body).length > maxBytes) throw sizeError(tooLargeCode, new globalThis.TextEncoder().encode(body).length, maxBytes);
     return body;
   }
 
-  async function fetchBounded(url, options) {
+  async function fetchBounded(url, options, maxBytes = maxResponseBytes, tooLargeCode = "backfill_bridge_response_too_large") {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort("backfill_bridge_request_timeout"), requestTimeoutMs);
     try {
@@ -55,11 +66,66 @@ export async function executeProviderPageRequest(request) {
         status: response.status,
         contentType: response.headers.get("content-type") || "",
         retryAfter: response.headers.get("retry-after") || null,
-        body: await readBoundedBody(response),
+        body: await readBoundedBody(response, maxBytes, tooLargeCode),
       };
     } finally {
       window.clearTimeout(timeout);
     }
+  }
+
+  function compactChatGptContent(content) {
+    if (!content || typeof content !== "object") return {};
+    if (Array.isArray(content.parts)) {
+      return {
+        parts: content.parts.flatMap((part) => {
+          if (typeof part === "string") return [part];
+          if (part && typeof part === "object" && typeof part.text === "string") return [{ text: part.text }];
+          return [];
+        }),
+      };
+    }
+    if (typeof content.text === "string") return { text: content.text };
+    if (typeof content.result === "string") return { result: content.result };
+    return {};
+  }
+
+  function compactChatGptConversation(body) {
+    let source;
+    try { source = JSON.parse(body); } catch { throw new Error("provider_contract_drift:chatgpt_conversation_not_json_object"); }
+    if (!source || typeof source !== "object" || !source.mapping || typeof source.mapping !== "object") {
+      throw new Error("provider_contract_drift:chatgpt_conversation.mapping_must_be_object");
+    }
+    const mapping = {};
+    for (const [nodeId, node] of Object.entries(source.mapping)) {
+      const message = node?.message;
+      mapping[nodeId] = {
+        id: typeof node?.id === "string" ? node.id : null,
+        parent: typeof node?.parent === "string" ? node.parent : null,
+        message: message && typeof message === "object"
+          ? {
+              id: typeof message.id === "string" ? message.id : null,
+              author: { role: typeof message.author?.role === "string" ? message.author.role : null },
+              content: compactChatGptContent(message.content),
+              create_time: typeof message.create_time === "string" || typeof message.create_time === "number" ? message.create_time : null,
+              status: typeof message.status === "string" ? message.status : null,
+              metadata: { model_slug: typeof message.metadata?.model_slug === "string" ? message.metadata.model_slug : null },
+            }
+          : null,
+      };
+    }
+    const projected = JSON.stringify({
+      polylogue_bridge_projection: "chatgpt-native-compact-v1",
+      id: typeof source.id === "string" ? source.id : null,
+      title: typeof source.title === "string" ? source.title : null,
+      create_time: typeof source.create_time === "string" || typeof source.create_time === "number" ? source.create_time : null,
+      update_time: typeof source.update_time === "string" || typeof source.update_time === "number" ? source.update_time : null,
+      mapping,
+    });
+    const bytes = new globalThis.TextEncoder().encode(projected).length;
+    if (bytes > compactChatGptBridgeMaxBytes) {
+      throw sizeError("backfill_bridge_projection_too_large", bytes, compactChatGptBridgeMaxBytes);
+    }
+    return projected;
   }
 
   async function chatGptRequest() {
@@ -92,11 +158,14 @@ export async function executeProviderPageRequest(request) {
     if (typeof accessToken !== "string" || !accessToken || typeof accountId !== "string" || !accountId) {
       throw new Error("backfill_bridge_auth_context_unavailable");
     }
-    return fetchBounded(url.href, {
+    const response = await fetchBounded(url.href, {
       credentials: "include",
       cache: "no-store",
       headers: { Authorization: `Bearer ${accessToken}`, "ChatGPT-Account-Id": accountId },
-    });
+    }, request.operation === "conversation" ? compactChatGptSourceMaxBytes : maxResponseBytes,
+    request.operation === "conversation" ? "backfill_bridge_source_response_too_large" : "backfill_bridge_response_too_large");
+    if (request.operation === "conversation" && response.ok) response.body = compactChatGptConversation(response.body);
+    return response;
   }
 
   function selectedClaudeOrganizationId() {

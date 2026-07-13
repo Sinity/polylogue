@@ -15,6 +15,11 @@ function nowIso(nowMs) { return new Date(nowMs).toISOString(); }
 
 function queueId(jobId, provider, nativeId) { return `${jobId}:${provider}:${nativeId}`; }
 
+function bridgeOversizeError(error) {
+  return String(error?.message || error).startsWith("backfill_bridge_source_response_too_large:")
+    || String(error?.message || error).startsWith("backfill_bridge_projection_too_large:");
+}
+
 function mergePolicy(patch = {}) {
   const policy = { ...DEFAULT_BACKFILL_POLICY, ...patch };
   if (policy.leaseMs <= PROVIDER_REQUEST_TIMEOUT_MS * 2) throw new Error("backfill_lease_must_exceed_request_timeout");
@@ -282,6 +287,7 @@ export class BackfillCoordinator {
       response = await this.adapters[job.provider].fetchNative(item.native_id);
     } catch (error) {
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
+      if (bridgeOversizeError(error)) return this.holdBridgeOversize(job, item, error, now);
       return this.retryTransport(job, item, error, now);
     }
     job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
@@ -321,7 +327,7 @@ export class BackfillCoordinator {
         return this.pauseJob(job, "storage_budget_exhausted", now);
       }
       try {
-        await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: "native_full", lease_owner: this.instanceId, lease_expires_at_ms: now + job.policy.leaseMs, last_response_class: "captured" });
+        await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: capture.provider_meta?.capture_fidelity || "native_full", lease_owner: this.instanceId, lease_expires_at_ms: now + job.policy.leaseMs, last_response_class: "captured" });
       } catch (error) {
         if (error?.name !== "QuotaExceededError") throw error;
         return this.pauseJob({ ...job, last_error: "indexeddb_quota_exceeded" }, "indexeddb_quota_exceeded", now);
@@ -384,6 +390,21 @@ export class BackfillCoordinator {
     if (failures >= job.policy.breakerThreshold) return this.pauseJob(next, "repeated_transport_failures", now);
     await this.saveJob(next);
     return next;
+  }
+
+  async holdBridgeOversize(job, item, error, now) {
+    const message = String(error?.message || error);
+    await this.saveQueue(job, {
+      ...item,
+      state: "bridge_oversize",
+      attempt_count: item.attempt_count || 0,
+      next_eligible_at_ms: null,
+      lease_owner: null,
+      lease_expires_at_ms: null,
+      last_response_class: "bridge_response_too_large",
+      last_error: message,
+    });
+    return this.pauseJob({ ...job, last_error: message }, "backfill_bridge_response_too_large", now);
   }
 
   async handleProviderBlock(job, response, classification, now) {

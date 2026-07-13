@@ -375,10 +375,13 @@ function renderBackfill(jobs) {
   if (selector) selector.value = job.id;
   const contractBlocked = job.cooldown_reason === "receiver_contract_incompatible";
   const recoveryBlocked = job.cooldown_reason === "browser_profile_recovery_required";
+  const bridgeBlocked = job.cooldown_reason === "backfill_bridge_response_too_large";
   statusNode.textContent = contractBlocked
     ? `${job.provider} · receiver upgrade required`
     : recoveryBlocked
       ? `${job.provider} · profile recovery required`
+      : bridgeBlocked
+        ? `${job.provider} · conversation bridge limit reached`
       : `${job.provider} · ${job.status}`;
   document.getElementById("backfill-cursor").textContent = job.inventory_complete ? `${job.inventory_cursor} · complete` : job.inventory_cursor || "--";
   const progress = job.progress || {};
@@ -389,6 +392,8 @@ function renderBackfill(jobs) {
     ? "Receiver ACK contract is stale. Upgrade/restart receiver, then Resume."
     : recoveryBlocked
       ? "Browser profile was replaced. Inspect exported ledger before starting a new job."
+      : bridgeBlocked
+        ? "A native conversation exceeded the bounded bridge. It is held; Resume explicitly retries it with compact capture."
       : job.recovery_checkpoint_error
         ? `Profile recovery checkpoint failed: ${job.recovery_checkpoint_error}`
       : job.last_ack?.receiver_request_id || job.last_error || "--";
