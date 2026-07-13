@@ -4,10 +4,11 @@ export async function executeProviderPageRequest(request) {
   const absoluteMaxResponseBytes = 32 * 1024 * 1024;
   // A ChatGPT conversation is fetched in MAIN world, then reduced before the
   // scripting-result bridge. Both stages stay bounded independently: raw
-  // provider bloat may use 64 MiB in page memory, but no more than 8 MiB can
-  // cross into extension storage/worker code.
+  // provider bloat may use 64 MiB in page memory, but no more than 24 MiB can
+  // cross into extension storage/worker code. 24 MiB leaves 8 MiB of headroom
+  // beneath Chrome's established 32 MiB scripting-result limit.
   const compactChatGptSourceMaxBytes = 64 * 1024 * 1024;
-  const compactChatGptBridgeMaxBytes = 8 * 1024 * 1024;
+  const compactChatGptBridgeMaxBytes = 24 * 1024 * 1024;
   const originalFetch = window.fetch;
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const maxResponseBytes = Number.isInteger(request?.maxResponseBytes)

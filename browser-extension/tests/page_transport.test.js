@@ -106,6 +106,28 @@ describe("first-party provider page transport", () => {
     expect(JSON.stringify(body)).not.toContain("ignored_large_provider_metadata");
   });
 
+  it("crosses a compact ChatGPT projection above 8 MiB within the bounded bridge", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      return new Response(JSON.stringify({
+        id: "conversation-1",
+        mapping: {
+          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ["x".repeat(9 * 1024 * 1024)] } } },
+        },
+      }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
+
+    expect(result).toMatchObject({ ok: true, response: { ok: true } });
+    expect(new globalThis.TextEncoder().encode(result.response.body).length).toBeGreaterThan(8 * 1024 * 1024);
+    expect(new globalThis.TextEncoder().encode(result.response.body).length).toBeLessThan(24 * 1024 * 1024);
+  });
+
   it("fails closed when a compact ChatGPT projection still exceeds its bridge limit", async () => {
     const token = "synthetic-bearer-secret";
     const accountId = "synthetic-account-secret";
@@ -115,7 +137,7 @@ describe("first-party provider page transport", () => {
       return new Response(JSON.stringify({
         id: "conversation-1",
         mapping: {
-          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ["x".repeat(8 * 1024 * 1024)] } } },
+          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ["x".repeat(24 * 1024 * 1024)] } } },
         },
       }));
     });
@@ -123,7 +145,7 @@ describe("first-party provider page transport", () => {
 
     const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
 
-    expect(result.error).toMatch(/^backfill_bridge_projection_too_large:observed_bytes=.+;limit_bytes=8388608$/);
+    expect(result.error).toMatch(/^backfill_bridge_projection_too_large:observed_bytes=.+;limit_bytes=25165824$/);
   });
 
   it("uses the exact Claude UI selector despite ambiguous per-organization keys", async () => {
