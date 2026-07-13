@@ -68,6 +68,7 @@ _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.quarantined-accepte
 _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-origin-copy-forward.v1"
 _QUARANTINED_CENSUS_STAGE_FINGERPRINT = "repair-quarantined-accepted-raw-v1"
 _QUARANTINED_CENSUS_STAGE_DETAIL = "census-only evidence staged before accepted-head authority refinement"
+_BROWSER_ORIGIN_SEMANTIC_HISTORICAL_WITNESS_LIMIT = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -1655,7 +1656,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         """,
         (canonical_key,),
     ).fetchall()
-    if raw is None or blob_ref is None or len(memberships) != 1 or len(census) != 1 or len(applications) != 1:
+    if raw is None or blob_ref is None or len(memberships) != 1 or len(census) != 1 or not applications:
         return False
     try:
         blob_hash = _bytes_value(raw["blob_hash"])
@@ -1670,7 +1671,99 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
     except (OSError, ValueError, json.JSONDecodeError):
         return False
     membership = memberships[0]
-    application = applications[0]
+    selected_applications = [application for application in applications if str(application["raw_id"]) == raw_id]
+    historical_supersessions = [application for application in applications if str(application["raw_id"]) != raw_id]
+    if (
+        len(selected_applications) != 1
+        or len(historical_supersessions) > _BROWSER_ORIGIN_SEMANTIC_HISTORICAL_WITNESS_LIMIT
+    ):
+        return False
+    application = selected_applications[0]
+    # A semantic head can legitimately retain prior equivalent raw evidence.
+    # It is not replacement authority: every additional application must be an
+    # explicit supersession *to this exact head*.  Any independent selected or
+    # divergent historical receipt still makes the proof ineligible.
+    for historical in historical_supersessions:
+        historical_raw_id = str(historical["raw_id"])
+        if tuple(historical) != (
+            historical_raw_id,
+            session_id,
+            ApplicationDecision.SUPERSEDED.value,
+            raw_id,
+            accepted_hash,
+        ):
+            return False
+        historical_raw = conn.execute(
+            """
+            SELECT origin, native_id, source_path, blob_hash, blob_size,
+                   logical_source_key, revision_kind, source_revision,
+                   predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+                   append_start_offset, append_end_offset, acquisition_generation,
+                   revision_authority
+            FROM source.raw_sessions WHERE raw_id = ?
+            """,
+            (historical_raw_id,),
+        ).fetchone()
+        historical_blob_ref = conn.execute(
+            """
+            SELECT blob_hash, source_path, size_bytes FROM source.blob_refs
+            WHERE ref_id = ? AND ref_type = 'raw_payload'
+            """,
+            (historical_raw_id,),
+        ).fetchone()
+        historical_memberships = conn.execute(
+            """
+            SELECT provider_session_id, source_revision, normalized_content_hash, message_count,
+                   predecessor_raw_id, acquisition_generation, revision_authority, decision
+            FROM source.raw_session_memberships WHERE raw_id = ? AND logical_source_key = ?
+            """,
+            (historical_raw_id, canonical_key),
+        ).fetchall()
+        historical_census = conn.execute(
+            "SELECT status, member_count FROM source.raw_membership_census WHERE raw_id = ?",
+            (historical_raw_id,),
+        ).fetchall()
+        if historical_raw is None or historical_blob_ref is None:
+            return False
+        historical_blob_hash = _bytes_value(historical_raw["blob_hash"])
+        historical_blob_size = int(historical_raw["blob_size"])
+        if (
+            tuple(historical_raw)
+            != (
+                canonical_origin.value,
+                native_id,
+                str(historical_raw["source_path"]),
+                historical_blob_hash,
+                historical_blob_size,
+                None,
+                RawRevisionKind.UNKNOWN.value,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                RawRevisionAuthority.QUARANTINED.value,
+            )
+            or tuple(historical_blob_ref)
+            != (historical_blob_hash, str(historical_raw["source_path"]), historical_blob_size)
+            or len(historical_memberships) != 1
+            or tuple(historical_memberships[0])
+            != (
+                native_id,
+                accepted_hash.hex(),
+                accepted_hash,
+                message_count,
+                None,
+                0,
+                RawRevisionAuthority.QUARANTINED.value,
+                None,
+            )
+            or len(historical_census) != 1
+            or tuple(historical_census[0]) != ("complete", 1)
+        ):
+            return False
     return (
         len(payload) == int(raw["blob_size"])
         and hashlib.sha256(payload).digest() == blob_hash
