@@ -737,6 +737,92 @@ def test_legacy_browser_native_id_copy_forward_rejects_stale_proof_before_writin
         assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == before
 
 
+def test_legacy_browser_native_id_copy_forward_refuses_preexisting_canonical_head(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    _seed_equivalent_canonical_head(tmp_path, raw_id)
+
+    report = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "legacy-native-id copy-forward refuses pre-existing canonical head authority"
+
+
+def test_legacy_browser_native_id_copy_forward_requires_single_membership_key(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority, decision, decided_at_ms
+            )
+            SELECT raw_id, 'chatgpt:competing-membership', provider_session_id,
+                   source_revision, normalized_content_hash, message_count,
+                   acquisition_generation, revision_authority, decision, decided_at_ms
+            FROM raw_session_memberships
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+
+    report = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "membership census does not exactly reproduce the accepted session"
+
+
+def test_legacy_browser_native_id_copy_forward_requires_single_payload_blob_ref(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            SELECT x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF',
+                   ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+            FROM blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'
+            """,
+            (raw_id,),
+        )
+
+    report = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "source envelope does not exactly bind the normalized session"
+
+
+def test_legacy_browser_native_id_atomic_apply_rolls_back_after_source_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.storage.repair as repair_module
+
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+    tables = {
+        "source": ("raw_sessions", "blob_refs", "raw_session_memberships", "raw_membership_census"),
+        "index": ("sessions", "raw_revision_heads", "raw_revision_applications"),
+    }
+    before = {
+        (tier, table): _rows(tmp_path, tier, table, "1 = 1", ())
+        for tier, tier_tables in tables.items()
+        for table in tier_tables
+    }
+
+    def fail_after_source_stage(conn: sqlite3.Connection, item: object) -> None:
+        raise RuntimeError("injected index transition failure")
+
+    monkeypatch.setattr(repair_module, "_apply_browser_origin_repair_item", fail_after_source_stage)
+    receipt = tmp_path / "legacy-atomic-rollback.jsonl"
+    with pytest.raises(RuntimeError, match="injected index transition failure"):
+        repair_legacy_browser_capture_missing_native_ids(
+            _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+        )
+
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
+    for (tier, table), rows in before.items():
+        assert _rows(tmp_path, tier, table, "1 = 1", ()) == rows
+
+
 def test_browser_capture_origin_copy_forward_accepts_source_v7_without_capture_mode(tmp_path: Path) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:

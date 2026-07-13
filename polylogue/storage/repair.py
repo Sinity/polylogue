@@ -343,15 +343,15 @@ def _browser_origin_source_envelope_is_exact(
     )
     if row is None or tuple(row) != expected:
         return None
-    blob_ref = conn.execute(
+    blob_refs = conn.execute(
         f"""
         SELECT blob_hash, source_path, size_bytes
         FROM {schema}.blob_refs
         WHERE ref_id = ? AND ref_type = 'raw_payload'
         """,
         (raw_id,),
-    ).fetchone()
-    if blob_ref is None or tuple(blob_ref) != (blob_hash, source_path, blob_size):
+    ).fetchall()
+    if len(blob_refs) != 1 or tuple(blob_refs[0]) != (blob_hash, source_path, blob_size):
         return None
     return cast(sqlite3.Row, row)
 
@@ -1608,8 +1608,12 @@ def _verify_browser_origin_copy_forward_source_stage(
     archive_root: Path,
     conn: sqlite3.Connection,
     item: BrowserCaptureOriginRepairItem,
+    *,
+    source_schema: str = "main",
 ) -> None:
     """Reprove source-only witnesses while its write transaction is held."""
+    if source_schema not in {"main", "source"}:
+        raise ValueError(f"unsupported source schema: {source_schema}")
     assert item.canonical_origin is not None
     assert item.canonical_provider is not None
     assert item.canonical_logical_source_key is not None
@@ -1624,7 +1628,7 @@ def _verify_browser_origin_copy_forward_source_stage(
     if (
         _browser_origin_source_envelope_is_exact(
             conn,
-            schema="main",
+            schema=source_schema,
             raw_id=item.raw_id,
             origin=Origin.UNKNOWN_EXPORT.value,
             capture_mode=Provider.UNKNOWN.value,
@@ -1662,18 +1666,23 @@ def _verify_browser_origin_copy_forward_source_stage(
     if projection.session_hash.hex() != item.accepted_content_hash:
         raise RuntimeError(f"normalized session content changed before copy-forward stage for {item.raw_id}")
     membership = conn.execute(
-        """
+        f"""
         SELECT provider_session_id, source_revision, normalized_content_hash,
                message_count, acquisition_generation, revision_authority, decision
-        FROM raw_session_memberships WHERE raw_id = ? AND logical_source_key = ?
+        FROM {source_schema}.raw_session_memberships WHERE raw_id = ? AND logical_source_key = ?
         """,
         (item.raw_id, item.canonical_logical_source_key),
     ).fetchone()
+    membership_count = conn.execute(
+        f"SELECT COUNT(*) FROM {source_schema}.raw_session_memberships WHERE raw_id = ?", (item.raw_id,)
+    ).fetchone()
     census = conn.execute(
-        "SELECT status, member_count FROM raw_membership_census WHERE raw_id = ?", (item.raw_id,)
+        f"SELECT status, member_count FROM {source_schema}.raw_membership_census WHERE raw_id = ?", (item.raw_id,)
     ).fetchone()
     if (
         membership is None
+        or membership_count is None
+        or int(membership_count[0]) != 1
         or tuple(membership)
         != (
             sessions[0].provider_session_id,
@@ -2345,6 +2354,9 @@ def _inspect_browser_capture_origin_mismatch(
         """,
         (raw_id, canonical_key),
     ).fetchone()
+    membership_count = conn.execute(
+        "SELECT COUNT(*) FROM source.raw_session_memberships WHERE raw_id = ?", (raw_id,)
+    ).fetchone()
     census = conn.execute(
         "SELECT status, member_count FROM source.raw_membership_census WHERE raw_id = ?",
         (raw_id,),
@@ -2352,6 +2364,8 @@ def _inspect_browser_capture_origin_mismatch(
     projection = session_revision_projection(session)
     if (
         membership is None
+        or membership_count is None
+        or int(membership_count[0]) != 1
         or census is None
         or str(membership["provider_session_id"]) != session.provider_session_id
         or str(membership["source_revision"]) != accepted_hash.hex()
@@ -2527,6 +2541,11 @@ def _inspect_browser_capture_origin_mismatch(
         and not copy_forward_terminal
     ):
         return _browser_origin_ineligible(raw_id, "copy-forward terminal byte authority is not exact")
+    if allow_legacy_null_native_id and canonical_head is not None and not copy_forward_terminal:
+        return _browser_origin_ineligible(
+            raw_id,
+            "legacy-native-id copy-forward refuses pre-existing canonical head authority",
+        )
     if canonical_head is not None and not copy_forward_terminal:
         if _canonical_browser_origin_head_is_exact(
             conn,
@@ -2795,7 +2814,14 @@ def _finish_browser_origin_receipt(
     _fsync_parent(receipt.path)
 
 
-def _stage_browser_origin_copy_forward_source(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
+def _stage_browser_origin_copy_forward_source(
+    conn: sqlite3.Connection,
+    item: BrowserCaptureOriginRepairItem,
+    *,
+    source_schema: str = "main",
+) -> None:
+    if source_schema not in {"main", "source"}:
+        raise ValueError(f"unsupported source schema: {source_schema}")
     assert item.copy_forward_raw_id is not None
     assert item.copy_forward_source_path is not None
     assert item.canonical_origin is not None
@@ -2809,7 +2835,7 @@ def _stage_browser_origin_copy_forward_source(conn: sqlite3.Connection, item: Br
     assert item.accepted_frontier is not None
     native_id = item.session_id.split(":", 1)[1]
     blob_hash = bytes.fromhex(item.blob_hash)
-    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_sessions)")}
+    columns = {str(row[1]) for row in conn.execute(f"PRAGMA {source_schema}.table_info(raw_sessions)")}
     names = [
         "raw_id",
         "origin",
@@ -2846,26 +2872,26 @@ def _stage_browser_origin_copy_forward_source(conn: sqlite3.Connection, item: Br
         names.insert(2, "capture_mode")
         values.insert(2, item.canonical_provider)
     conn.execute(
-        f"INSERT INTO raw_sessions ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+        f"INSERT INTO {source_schema}.raw_sessions ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
         values,
     )
     acquired_at_ms = int(time.time() * 1000)
     conn.execute(
-        """
-        INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+        f"""
+        INSERT INTO {source_schema}.blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
         VALUES (?, ?, 'raw_payload', ?, ?, ?)
         """,
         (blob_hash, item.copy_forward_raw_id, item.copy_forward_source_path, item.blob_size, acquired_at_ms),
     )
     conn.execute(
-        """
-        INSERT INTO raw_session_memberships (
+        f"""
+        INSERT INTO {source_schema}.raw_session_memberships (
             raw_id, logical_source_key, provider_session_id, source_revision,
             normalized_content_hash, message_count, acquisition_generation,
             revision_authority, decision, decided_at_ms
         )
         SELECT ?, ?, ?, ?, ?, message_count, 0, 'byte_proven', 'applied', ?
-        FROM raw_session_memberships
+        FROM {source_schema}.raw_session_memberships
         WHERE raw_id = ? AND logical_source_key = ?
         """,
         (
@@ -2880,8 +2906,8 @@ def _stage_browser_origin_copy_forward_source(conn: sqlite3.Connection, item: Br
         ),
     )
     conn.execute(
-        """
-        INSERT INTO raw_membership_census (
+        f"""
+        INSERT INTO {source_schema}.raw_membership_census (
             raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
         ) VALUES (?, 'browser-origin-copy-forward-v1', 'complete', 1, ?, ?)
         """,
@@ -3070,44 +3096,85 @@ def _repair_browser_capture_origin_mismatches(
                     raise RuntimeError("authority proof changed before copy-forward source staging")
                 if any(item.status == "ineligible" for item in pre_source_items):
                     raise RuntimeError("a browser-capture origin target became ineligible before source staging")
-                with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
-                    source_conn.execute("PRAGMA foreign_keys = ON")
-                    source_conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        for item in items:
-                            if (
-                                item.status == "eligible"
-                                and item.repair_strategy == "copy_forward"
-                                and not item.copy_forward_source_complete
-                            ):
-                                _verify_browser_origin_copy_forward_source_stage(archive_root, source_conn, item)
-                                _stage_browser_origin_copy_forward_source(source_conn, item)
-                        source_conn.commit()
-                    except Exception:
-                        source_conn.rollback()
-                        raise
-                with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
-                    conn.execute("PRAGMA foreign_keys = ON")
-                    conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
-                    conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        locked = inspect(conn)
-                        if _browser_origin_proof_digest(locked) != proof_digest:
-                            raise RuntimeError("authority proof changed after acquiring the repair transaction")
-                        if any(item.status == "ineligible" for item in locked):
-                            raise RuntimeError("a browser-capture origin target became ineligible")
-                        if receipt.terminal and any(item.status != "already_repaired" for item in locked):
-                            raise RuntimeError("terminal operator receipt disagrees with durable copy-forward state")
-                        for item in locked:
-                            if item.status == "eligible":
-                                _apply_browser_origin_repair_item(conn, item)
-                        after = inspect(conn)
-                        if any(item.status != "already_repaired" for item in after):
-                            raise RuntimeError("browser-capture origin copy-forward did not reach terminal state")
-                        conn.commit()
-                    except Exception:
-                        conn.rollback()
-                        raise
+                if allow_legacy_null_native_id:
+                    # The legacy route must never leave a resumable source-only
+                    # stage: source copy-forward and index authority transition
+                    # are one attached-database transaction.
+                    with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+                        conn.execute("PRAGMA foreign_keys = ON")
+                        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+                        conn.execute("BEGIN IMMEDIATE")
+                        try:
+                            locked = inspect(conn)
+                            if _browser_origin_proof_digest(locked) != proof_digest:
+                                raise RuntimeError("authority proof changed after acquiring the repair transaction")
+                            if any(item.status == "ineligible" for item in locked):
+                                raise RuntimeError("a browser-capture origin target became ineligible")
+                            if receipt.terminal and any(item.status != "already_repaired" for item in locked):
+                                raise RuntimeError(
+                                    "terminal operator receipt disagrees with durable copy-forward state"
+                                )
+                            for item in locked:
+                                if (
+                                    item.status == "eligible"
+                                    and item.repair_strategy == "copy_forward"
+                                    and not item.copy_forward_source_complete
+                                ):
+                                    _verify_browser_origin_copy_forward_source_stage(
+                                        archive_root, conn, item, source_schema="source"
+                                    )
+                                    _stage_browser_origin_copy_forward_source(conn, item, source_schema="source")
+                            for item in locked:
+                                if item.status == "eligible":
+                                    _apply_browser_origin_repair_item(conn, item)
+                            after = inspect(conn)
+                            if any(item.status != "already_repaired" for item in after):
+                                raise RuntimeError("legacy browser copy-forward did not reach terminal state")
+                            conn.commit()
+                        except Exception:
+                            conn.rollback()
+                            raise
+                else:
+                    with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
+                        source_conn.execute("PRAGMA foreign_keys = ON")
+                        source_conn.execute("BEGIN IMMEDIATE")
+                        try:
+                            for item in items:
+                                if (
+                                    item.status == "eligible"
+                                    and item.repair_strategy == "copy_forward"
+                                    and not item.copy_forward_source_complete
+                                ):
+                                    _verify_browser_origin_copy_forward_source_stage(archive_root, source_conn, item)
+                                    _stage_browser_origin_copy_forward_source(source_conn, item)
+                            source_conn.commit()
+                        except Exception:
+                            source_conn.rollback()
+                            raise
+                    with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+                        conn.execute("PRAGMA foreign_keys = ON")
+                        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+                        conn.execute("BEGIN IMMEDIATE")
+                        try:
+                            locked = inspect(conn)
+                            if _browser_origin_proof_digest(locked) != proof_digest:
+                                raise RuntimeError("authority proof changed after acquiring the repair transaction")
+                            if any(item.status == "ineligible" for item in locked):
+                                raise RuntimeError("a browser-capture origin target became ineligible")
+                            if receipt.terminal and any(item.status != "already_repaired" for item in locked):
+                                raise RuntimeError(
+                                    "terminal operator receipt disagrees with durable copy-forward state"
+                                )
+                            for item in locked:
+                                if item.status == "eligible":
+                                    _apply_browser_origin_repair_item(conn, item)
+                            after = inspect(conn)
+                            if any(item.status != "already_repaired" for item in after):
+                                raise RuntimeError("browser-capture origin copy-forward did not reach terminal state")
+                            conn.commit()
+                        except Exception:
+                            conn.rollback()
+                            raise
                 items = [
                     dataclasses.replace(after_item, repaired=before.status == "eligible")
                     for before, after_item in zip(locked, after, strict=True)
