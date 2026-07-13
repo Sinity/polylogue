@@ -278,6 +278,27 @@ def _seed_semantic_canonical_head(root: Path, mismatched_raw_id: str) -> str:
             """,
             (raw_id,),
         )
+        accepted_hash = bytes(
+            index.execute(
+                "SELECT accepted_content_hash FROM raw_revision_heads WHERE accepted_raw_id = ?", (raw_id,)
+            ).fetchone()[0]
+        )
+        semantic_revision = accepted_hash.hex()
+        decision_id = RevisionApplicationReceipt(
+            raw_id=raw_id,
+            session_id="chatgpt-export:browser-origin-one",
+            logical_source_key="chatgpt:browser-origin-one",
+            source_revision=semantic_revision,
+            acquisition_generation=0,
+            decision=ApplicationDecision.SELECTED_BASELINE,
+            accepted_raw_id=raw_id,
+            accepted_source_revision=semantic_revision,
+            accepted_content_hash=accepted_hash,
+        ).decision_id
+        index.execute(
+            "UPDATE raw_revision_applications SET decision_id = ? WHERE raw_id = ? AND decision = 'selected_baseline'",
+            (decision_id, raw_id),
+        )
         source.commit()
         index.commit()
     return raw_id
@@ -654,6 +675,31 @@ def test_browser_origin_repair_accepts_exact_semantic_superseded_sibling(tmp_pat
         )
         == historical_before
     )
+    receipt = tmp_path / "semantic-sibling-receipt.jsonl"
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [mismatched_raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    assert applied.repaired_count == 1
+    assert applied.items[0].status == "already_repaired"
+    assert applied.items[0].semantic_canonical_raw_id == semantic_raw_id
+    assert applied.items[0].semantic_historical_raw_ids == (sibling_raw_id,)
+    assert applied.items[0].semantic_witness_digest == item.semantic_witness_digest
+
+    reapplied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [mismatched_raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+
+    assert reapplied.repaired_count == 0
+    assert reapplied.items[0].semantic_witness_digest == item.semantic_witness_digest
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
 
 
 @pytest.mark.parametrize("mutation", ["receipt", "revision", "membership", "selected", "blob"])
@@ -701,6 +747,48 @@ def test_browser_origin_repair_rejects_underproven_semantic_supersession(tmp_pat
     report = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
 
     assert report.ineligible_count == 1
+
+
+@pytest.mark.parametrize("field", ["decision_id", "detail", "decided_at_ms", "frontier"])
+def test_browser_origin_repair_refuses_changed_semantic_receipt_before_apply(tmp_path: Path, field: str) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
+    sibling_raw_id = _seed_semantic_superseded_sibling(tmp_path, semantic_raw_id)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        if field == "decision_id":
+            index.execute(
+                "UPDATE raw_revision_applications SET decision_id = ? WHERE raw_id = ?",
+                ("f" * 64, sibling_raw_id),
+            )
+        elif field == "detail":
+            index.execute(
+                "UPDATE raw_revision_applications SET detail = 'tampered' WHERE raw_id = ?",
+                (sibling_raw_id,),
+            )
+        elif field == "decided_at_ms":
+            index.execute(
+                "UPDATE raw_revision_applications SET decided_at_ms = decided_at_ms + 1 WHERE raw_id = ?",
+                (sibling_raw_id,),
+            )
+        else:
+            index.execute(
+                "UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1 WHERE accepted_raw_id = ?",
+                (semantic_raw_id,),
+            )
+
+    with pytest.raises(RuntimeError, match="(ineligible|proof digest)"):
+        repair_browser_capture_origin_mismatches(
+            _config(tmp_path),
+            [mismatched_raw_id],
+            apply=True,
+            receipt_path=tmp_path / f"semantic-{field}.jsonl",
+            proof_digest=dry_run.proof_digest,
+        )
+    assert (
+        _rows(tmp_path, "source", "raw_sessions", "source_path LIKE ?", ("browser-capture-origin-copy-forward/%",))
+        == []
+    )
 
 
 @pytest.mark.parametrize("mutation", ["frontier", "pointer", "membership"])
