@@ -217,6 +217,62 @@ def test_reconcile_removes_message_orphaned_by_index_rebuild(tmp_path: Path) -> 
     assert [item.session_id for item in pending] == [session_id]
 
 
+def test_apply_accepts_generation_metadata_beside_external_pointer_anchor(tmp_path: Path) -> None:
+    """A public archive symlink must use the anchor tier's generation metadata.
+
+    Anti-vacuity: looking beside ``public_root/index.db`` rather than beside
+    the active-pointer anchor makes this production-shaped layout refuse the
+    otherwise authorized orphan deletion.
+    """
+    public_root = tmp_path / "archive"
+    tier_root = tmp_path / "db-tier"
+    public_root.mkdir()
+    tier_root.mkdir()
+    session_id = "codex-session:external-tier"
+    message_id = f"{session_id}:orphan"
+    tier_index = tier_root / "index.db"
+    _connect_index(tier_index, sessions=[session_id], messages={session_id: []}, authoritative_generation=False)
+
+    public_index = public_root / "index.db"
+    public_index.symlink_to(tier_index)
+    (public_root / ".index-active-pointer").write_text(str(tier_index), encoding="utf-8")
+    generation_dir = tier_root / ".index-generations" / "gen-current"
+    generation_dir.mkdir(parents=True)
+    (generation_dir / "generation.json").write_text(
+        json.dumps(
+            {
+                "generation_id": "gen-current",
+                "owner_id": "test",
+                "archive_root": str(public_root),
+                "index_path": str(tier_index),
+                "state": "active",
+                "created_at_ms": _NOW_MS,
+                "source_snapshot": "source-at-rebuild-start",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    embeddings_db = public_root / "embeddings.db"
+    conn = _connect_embeddings(embeddings_db)
+    _write_embedding(conn, message_id=message_id, session_id=session_id, embedded_at_ms=_OLD_MS)
+    conn.close()
+
+    report = reconcile_embedding_orphans(
+        public_index,
+        embeddings_db,
+        dry_run=False,
+        now_ms=_NOW_MS,
+        mutation_authority="offline-exclusive",
+    )
+
+    assert report.removed_message_rows == 1
+    assert report.removed_vector_rows == 1
+    with _connect_embeddings(embeddings_db) as verify:
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 0
+        assert verify.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 0
+
+
 def test_reconcile_preserves_content_hash_mismatch_when_identity_present(tmp_path: Path) -> None:
     """Content-hash guard: a message that still exists (identity present) is
     never removed merely because its stored content_hash is stale — that is
@@ -748,7 +804,7 @@ def test_apply_refuses_generationless_index_even_when_schema_matches(tmp_path: P
     _write_embedding(conn, message_id=message_id, session_id=session_id, embedded_at_ms=_OLD_MS)
     conn.close()
 
-    with pytest.raises(RuntimeError, match="requires active index generation readiness evidence"):
+    with pytest.raises(RuntimeError, match="requires an active index generation pointer"):
         reconcile_embedding_orphans(
             index_db,
             embeddings_db,

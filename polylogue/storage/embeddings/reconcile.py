@@ -489,23 +489,34 @@ def _assert_index_identity(index_path: Path, expected: _IndexIdentity) -> None:
 def _assert_active_index_generation(index_path: Path) -> None:
     """Require the active source-snapshotted generation for deletion truth."""
 
-    root = index_path.parent
-    generations = root / ".index-generations"
-    metadata_paths = tuple(generations.glob("*/generation.json")) if generations.is_dir() else ()
-    if not metadata_paths:
-        raise RuntimeError("embedding orphan reconciliation requires active index generation readiness evidence")
-
-    pointer = root / ".index-active-pointer"
+    configured_root = index_path.parent
+    pointer = configured_root / ".index-active-pointer"
     if not pointer.is_file():
         raise RuntimeError("embedding orphan reconciliation requires an active index generation pointer")
     try:
-        pointed_path = Path(pointer.read_text(encoding="utf-8").strip()).resolve(strict=True)
+        pointer_anchor = Path(pointer.read_text(encoding="utf-8").strip())
+        if (
+            not pointer_anchor.is_absolute()
+            or pointer_anchor.name != "index.db"
+            or ".index-generations" in pointer_anchor.parts
+        ):
+            raise ValueError("invalid active index generation pointer anchor")
+        pointed_path = pointer_anchor.resolve(strict=True)
     except (OSError, ValueError) as exc:
         raise RuntimeError(
             "embedding orphan reconciliation found an unreadable active index generation pointer"
         ) from exc
     if pointed_path != index_path.resolve(strict=True):
         raise RuntimeError("embedding orphan reconciliation refuses a non-active index generation")
+
+    # The configured archive root may expose ``index.db`` as a symlink into a
+    # separately mounted database tier.  IndexGenerationStore deliberately
+    # keeps generation metadata beside the pointer anchor, not beside that
+    # public symlink, so resolve readiness from the anchor's parent.
+    generations = pointer_anchor.parent / ".index-generations"
+    metadata_paths = tuple(generations.glob("*/generation.json")) if generations.is_dir() else ()
+    if not metadata_paths:
+        raise RuntimeError("embedding orphan reconciliation requires active index generation readiness evidence")
 
     for metadata_path in metadata_paths:
         try:
