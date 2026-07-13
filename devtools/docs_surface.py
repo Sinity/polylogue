@@ -118,6 +118,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Schema Annotations", "schema-annotations.md", "Versioned annotation schemas and batch provenance.", "reference"
     ),
     _entry(
+        "Query Identity",
+        "query-identity.md",
+        "Canonical query, query-run, and result-set reference identities.",
+        "reference",
+    ),
+    _entry(
         "CLI Output Schemas", "schemas/cli-output/README.md", "Machine-readable CLI output schema catalog.", "reference"
     ),
     _entry(

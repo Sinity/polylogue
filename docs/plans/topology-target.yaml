@@ -706,7 +706,7 @@ files:
     target: polylogue/browser_capture/identity.py
     owner: stable
   - path: polylogue/browser_capture/models.py
-    loc: 398
+    loc: 411
     target: polylogue/browser_capture/models.py
     owner: stable
   - path: polylogue/browser_capture/receiver.py
@@ -714,11 +714,11 @@ files:
     target: polylogue/browser_capture/receiver.py
     owner: stable
   - path: polylogue/browser_capture/route_contracts.py
-    loc: 131
+    loc: 141
     target: polylogue/browser_capture/route_contracts.py
     owner: stable
   - path: polylogue/browser_capture/server.py
-    loc: 435
+    loc: 439
     target: polylogue/browser_capture/server.py
     owner: stable
   - path: polylogue/cli/__init__.py
@@ -822,7 +822,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/judge.py
-    loc: 223
+    loc: 288
     target: polylogue/cli/commands/judge.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
@@ -842,7 +842,7 @@ files:
     target: polylogue/cli/commands/paths.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
-    loc: 552
+    loc: 559
     target: polylogue/cli/commands/reset.py
     owner: stable
   - path: polylogue/cli/commands/status.py
@@ -1129,7 +1129,7 @@ files:
     target: polylogue/coordination/__init__.py
     owner: stable
   - path: polylogue/coordination/envelope.py
-    loc: 2207
+    loc: 2291
     target: polylogue/coordination/envelope.py
     owner: stable
   - path: polylogue/coordination/payloads.py
@@ -1213,6 +1213,11 @@ files:
   - path: polylogue/core/provider_identity.py
     loc: 177
     target: polylogue/core/provider_identity.py
+    owner: core-primitive
+    reason: core primitive
+  - path: polylogue/core/query_identity.py
+    loc: 157
+    target: polylogue/core/query_identity.py
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/refs.py
@@ -1613,7 +1618,7 @@ files:
     target: polylogue/insights/export_bundles.py
     owner: stable
   - path: polylogue/insights/fable_packet.py
-    loc: 203
+    loc: 306
     target: polylogue/insights/fable_packet.py
     owner: stable
   - path: polylogue/insights/fallback.py
@@ -1850,7 +1855,7 @@ files:
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 1262
+    loc: 1280
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
@@ -1866,7 +1871,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 1232
+    loc: 1287
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3220,7 +3225,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 3019
+    loc: 3034
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3524,7 +3529,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 2046
+    loc: 2229
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
