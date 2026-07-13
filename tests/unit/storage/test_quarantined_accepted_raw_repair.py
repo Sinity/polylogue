@@ -484,6 +484,31 @@ def test_quarantined_accepted_raw_repair_stages_source_v7_census_before_target_c
     assert dry_run.eligible_count == 1, dry_run.items[0].reason
     assert dry_run.items[0].census_stage_raw_ids == tuple(sorted((raw_id, sibling_raw_id)))
     receipt = tmp_path / "source-v7-stage.jsonl"
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority
+            ) VALUES (?, 'chatgpt:staged', 'staged', ?, ?, 1, 0, 'quarantined')
+            """,
+            (
+                sibling_raw_id,
+                dry_run.items[0].accepted_content_hash,
+                bytes.fromhex(dry_run.items[0].accepted_content_hash or ""),
+            ),
+        )
+        source.execute(
+            """
+            INSERT INTO raw_membership_census (
+                raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+            ) VALUES (?, 'repair-quarantined-accepted-raw-v1', 'complete', 1, 0,
+                      'census-only evidence staged before accepted-head authority refinement')
+            """,
+            (sibling_raw_id,),
+        )
+        source.commit()
     applied = repair_quarantined_accepted_raws(
         _config(tmp_path),
         [raw_id],

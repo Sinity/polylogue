@@ -451,6 +451,18 @@ def _stage_quarantined_census_cohort(
         row = conn.execute("SELECT raw_id FROM raw_sessions WHERE raw_id = ?", (staged_raw_id,)).fetchone()
         if row is None:
             raise RuntimeError(f"census staging witness changed for {staged_raw_id}")
+        membership_count = int(
+            conn.execute("SELECT COUNT(*) FROM raw_session_memberships WHERE raw_id = ?", (staged_raw_id,)).fetchone()[
+                0
+            ]
+        )
+        census_count = int(
+            conn.execute("SELECT COUNT(*) FROM raw_membership_census WHERE raw_id = ?", (staged_raw_id,)).fetchone()[0]
+        )
+        if membership_count == census_count == 1:
+            continue
+        if membership_count or census_count:
+            raise RuntimeError(f"census staging evidence became partial for {staged_raw_id}")
         conn.execute(
             """
             INSERT INTO raw_session_memberships (
@@ -1529,7 +1541,13 @@ def _canonical_browser_origin_head_is_exact(
         from polylogue.sources.revision_backfill import _parse_one
 
         sessions = _parse_one(provider, payload, str(raw["source_path"]))
-    except (OSError, ValueError, json.JSONDecodeError):
+    except Exception as exc:
+        logger.warning(
+            "semantic canonical browser head normalization failed",
+            raw_id=raw_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
         return False
     if (
         hashlib.sha256(payload).digest() != blob_hash
@@ -1679,6 +1697,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
             RawRevisionAuthority.QUARANTINED.value,
         )
         and str(membership["provider_session_id"]) == native_id
+        and str(membership["source_revision"]) == accepted_hash.hex()
         and _bytes_value(membership["normalized_content_hash"]) == accepted_hash
         and int(membership["message_count"]) == message_count
         and membership["predecessor_raw_id"] is None
