@@ -216,15 +216,15 @@ def get_query(conn: sqlite3.Connection, query_hash: str) -> QueryObject | None:
 
 
 def list_watched_queries(conn: sqlite3.Connection) -> tuple[QueryObject, ...]:
-    """Return current mutable-name watch definitions, one name per query version."""
+    """Return distinct immutable query versions selected by watched names."""
     rows = conn.execute(
         """
-        SELECT q.query_hash, q.canonical_plan_json, q.grain, q.lane, q.rank_policy,
-               q.definition_protocol_version
+        SELECT DISTINCT q.query_hash, q.canonical_plan_json, q.grain, q.lane,
+               q.rank_policy, q.definition_protocol_version
         FROM query_names AS n
         JOIN queries AS q ON q.query_hash = n.query_hash
         WHERE n.watch = 1
-        ORDER BY n.updated_at_ms, n.name
+        ORDER BY q.query_hash
         """
     ).fetchall()
     return tuple(

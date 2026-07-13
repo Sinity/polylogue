@@ -332,7 +332,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/evaluator.py
-    loc: 161
+    loc: 165
     target: polylogue/archive/query/evaluator.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -1320,8 +1320,12 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 1942
+    loc: 1677
     target: polylogue/daemon/convergence_stages.py
+    owner: stable
+  - path: polylogue/daemon/convergence_standing_queries.py
+    loc: 302
+    target: polylogue/daemon/convergence_standing_queries.py
     owner: stable
   - path: polylogue/daemon/cursor_lag_alert.py
     loc: 409
@@ -3774,7 +3778,7 @@ files:
     target: polylogue/storage/sqlite/queries/tool_usage.py
     owner: stable
   - path: polylogue/storage/sqlite/query_objects.py
-    loc: 467
+    loc: 475
     target: polylogue/storage/sqlite/query_objects.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store.py

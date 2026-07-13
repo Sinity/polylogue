@@ -102,6 +102,23 @@ def test_cache_only_evaluation_after_index_reset_never_compares_baseline(tmp_pat
         assert conn.execute("SELECT COUNT(*) FROM result_sets WHERE persistence_class = 'watch'").fetchone()[0] == 1
 
 
+def test_watched_aliases_materialize_one_query_once_per_convergence(tmp_path: Path) -> None:
+    index_db, query_hash = _seed_watch(tmp_path)
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        put_query_name(conn, name="codex-alias", query_hash=query_hash, watch=True, updated_at_ms=3)
+        conn.commit()
+
+    evaluator = _Evaluator(members=("session:one",))
+    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions(("session:changed",)) is True
+
+    assert len(evaluator.requests) == 1
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM result_sets WHERE persistence_class = 'watch'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'finding'").fetchone()[0] == 0
+
+
 def test_promoted_expected_count_divergence_targets_original_finding_without_watch(tmp_path: Path) -> None:
     index_db, query_hash = _seed_watch(tmp_path, watch=False)
     with sqlite3.connect(tmp_path / "user.db") as conn:
