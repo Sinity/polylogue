@@ -454,6 +454,7 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
                 },
             },
         },
+        "preserved_native_bytes": "x" * 32_000,
     }
     capture_payload = {
         "polylogue_capture_kind": "browser_llm_session",
@@ -466,6 +467,10 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
             "adapter_name": "chatgpt-native-v1",
             "capture_mode": "snapshot",
         },
+        # Real receiver artifacts are key-sorted, so a large native payload
+        # precedes the typed session and can push ``session.provider`` beyond
+        # the ordinary 8 KiB acquisition prefix.
+        "raw_provider_payload": native_payload,
         "session": {
             "provider": "chatgpt",
             "provider_session_id": "dom-fallback",
@@ -473,7 +478,6 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
             "updated_at": "2026-04-24T00:00:01+00:00",
             "turns": [{"provider_turn_id": "dom-u1", "role": "user", "text": "DOM fallback", "ordinal": 0}],
         },
-        "raw_provider_payload": native_payload,
         "padding": "x" * 256,
     }
     source.write_text(json.dumps(capture_payload), encoding="utf-8")
@@ -498,10 +502,11 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
     assert result.ingested_session_count == 1
     assert result.ingested_message_count == 2
     assert result.raw_source_names[source] == "chatgpt"
+    assert source.read_bytes().find(b'"provider": "chatgpt"') > 8192
     with sqlite3.connect(source_db) as conn:
-        assert conn.execute("SELECT origin, native_id FROM raw_sessions").fetchone() == (
-            "chatgpt-export",
-            "native-large",
+        assert conn.execute("SELECT origin FROM raw_sessions").fetchone() == ("chatgpt-export",)
+        assert conn.execute("SELECT logical_source_key FROM raw_session_memberships").fetchone() == (
+            "chatgpt:native-large",
         )
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT native_id, title FROM sessions").fetchone() == (
@@ -521,6 +526,10 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
             """
             ).fetchone()[0]
             == "user:Native user text|assistant:Native answer text"
+        )
+        assert conn.execute("SELECT logical_source_key, session_id FROM raw_revision_heads").fetchone() == (
+            "chatgpt:native-large",
+            "chatgpt-export:native-large",
         )
 
 
