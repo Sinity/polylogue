@@ -1176,8 +1176,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     @property
     def _client_host(self) -> str:
         """Extract client IP from the request."""
-        # The client_address is (host, port) from the underlying socket.
-        return str(self.client_address[0])
+        client_address: object = self.client_address
+        return str(client_address[0]) if isinstance(client_address, tuple) else "127.0.0.1"
 
     def _web_credential_token(self) -> str | None:
         return read_web_credential_cookie(self.headers.get("Cookie", ""))
@@ -2091,7 +2091,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
 
     def _handle_health(self) -> None:
+        from polylogue.config import load_polylogue_config
         from polylogue.paths import active_index_db_path
+        from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+        from polylogue.version import POLYLOGUE_VERSION, VERSION_INFO
 
         dbp = active_index_db_path()
         db_size = dbp.stat().st_size if dbp.exists() else 0
@@ -2124,6 +2127,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "blob_dir_size_bytes": 0,
             "quick_check": "pass" if quick_check_ok else "error",
             "quick_check_age_s": None,
+            "archive_root": str(load_polylogue_config().archive_root),
+            "index_schema_version": INDEX_SCHEMA_VERSION,
+            "daemon_version": POLYLOGUE_VERSION,
+            "commit": VERSION_INFO.commit,
+            "started_at": getattr(self.server, "started_at", None),
         }
         self._send_json(HTTPStatus.OK, overview)
 

@@ -15,7 +15,7 @@ from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -1171,6 +1171,8 @@ async def run_daemon_services(
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
+    uds_server: Any | None = None
+    uds_server_task: asyncio.Task[None] | None = None
     server: BrowserCaptureHTTPServer | None = None
     server_task: asyncio.Task[None] | None = None
     watcher: LiveWatcher | None = None
@@ -1226,6 +1228,16 @@ async def run_daemon_services(
             )
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
+            from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
+
+            uds_server = DaemonAPIUnixHTTPServer(
+                daemon_socket_path(),
+                DaemonAPIHandler,
+                auth_token=api_auth_token,
+                write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+            )
+            uds_server_task = asyncio.create_task(asyncio.to_thread(uds_server.serve_forever, 0.5))
+            tasks.append(uds_server_task)
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
                     "component_started",
@@ -1397,6 +1409,8 @@ async def run_daemon_services(
                 await _shutdown_server_if_serving(server, server_task, label="browser-capture")
             if api_server is not None:
                 await _shutdown_server_if_serving(api_server, api_server_task, label="api")
+            if uds_server is not None:
+                await _shutdown_server_if_serving(uds_server, uds_server_task, label="uds")
 
             # Cancel all component tasks.
             for task in tasks:
@@ -1455,6 +1469,9 @@ async def run_daemon_services(
             if api_server is not None:
                 with contextlib.suppress(Exception):
                     api_server.server_close()
+            if uds_server is not None:
+                with contextlib.suppress(Exception):
+                    uds_server.server_close()
             if cleanup_task is not None:
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()

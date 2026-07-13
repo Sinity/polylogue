@@ -471,7 +471,7 @@ files:
     owner: archive-raw-payload
     reason: archive-domain semantics
   - path: polylogue/archive/resume_routing.py
-    loc: 70
+    loc: 77
     target: polylogue/archive/resume_routing.py
     owner: stable
   - path: polylogue/archive/revision_authority.py
@@ -865,6 +865,10 @@ files:
     loc: 82
     target: polylogue/cli/convergence_feedback.py
     owner: stable
+  - path: polylogue/cli/daemon_client.py
+    loc: 62
+    target: polylogue/cli/daemon_client.py
+    owner: stable
   - path: polylogue/cli/help_markdown.py
     loc: 59
     target: polylogue/cli/help_markdown.py
@@ -926,7 +930,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 2718
+    loc: 2720
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
@@ -1291,7 +1295,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 1919
+    loc: 1936
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1367,7 +1371,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 4545
+    loc: 4553
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/lifecycle.py
@@ -1458,6 +1462,10 @@ files:
   - path: polylogue/daemon/topology_http.py
     loc: 236
     target: polylogue/daemon/topology_http.py
+    owner: stable
+  - path: polylogue/daemon/uds.py
+    loc: 71
+    target: polylogue/daemon/uds.py
     owner: stable
   - path: polylogue/daemon/user_state_http.py
     loc: 636
