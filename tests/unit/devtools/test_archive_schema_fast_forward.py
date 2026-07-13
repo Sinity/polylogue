@@ -322,6 +322,67 @@ def test_activation_failure_restores_durable_snapshots_without_cross_device_rena
     assert all(source_item.parent == destination_item.parent for source_item, destination_item in replace_calls)
 
 
+def test_activation_final_evidence_failure_is_rolled_back_inside_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-promotion evidence must not strand an unrecorded activation."""
+    archive = tmp_path / "archive"
+    staging = tmp_path / "staging"
+    archive.mkdir()
+    staging.mkdir()
+    source = archive / "source.db"
+    user = archive / "user.db"
+    for database in (source, user, archive / "index.db", archive / "embeddings.db", archive / "ops.db"):
+        with sqlite3.connect(database) as conn:
+            conn.execute("CREATE TABLE retained (value TEXT)")
+            conn.execute("INSERT INTO retained VALUES ('original')")
+            conn.commit()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": "polylogue.archive-schema-fast-forward.v1",
+                "status": "prepared",
+                "archive_root": str(archive),
+                "staging_root": str(staging),
+                "backup_manifest": str(manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("devtools.archive_schema_fast_forward._require_service_stopped", lambda _service: None)
+    monkeypatch.setattr("devtools.archive_schema_fast_forward._require_receipt_identity", lambda *_args: None)
+    monkeypatch.setattr("devtools.archive_schema_fast_forward.require_no_beads_evidence", lambda *_paths: None)
+    monkeypatch.setattr("devtools.archive_schema_fast_forward.migrate_archive_tier", lambda *_args, **_kwargs: None)
+    finalized: list[Path] = []
+    monkeypatch.setattr(
+        "devtools.archive_schema_fast_forward._finalize_clone_database", lambda path: finalized.append(path)
+    )
+    monkeypatch.setattr(
+        "devtools.archive_schema_fast_forward._promote_index_generation",
+        lambda *_args: {"kind": "file", "active": str(archive / "index.db"), "rollback": "unused"},
+    )
+    monkeypatch.setattr(
+        "devtools.archive_schema_fast_forward.atomic_promote",
+        lambda _clone, active, _rollback: {"kind": "file", "active": str(active), "rollback": "unused"},
+    )
+    monkeypatch.setattr("devtools.archive_schema_fast_forward._restore_promoted", lambda _item: None)
+    monkeypatch.setattr(
+        "devtools.archive_schema_fast_forward._database_evidence",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("synthetic final evidence failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic final evidence failure"):
+        activate_prepared_forward(receipt_path=receipt, backup_manifest=manifest)
+
+    assert finalized == [source, user]
+    assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == "rolled_back"
+    with sqlite3.connect(source) as conn:
+        assert conn.execute("SELECT value FROM retained").fetchall() == [("original",)]
+
+
 def test_index_generation_promotion_preserves_active_symlink_protocol(tmp_path: Path) -> None:
     archive = tmp_path / "archive"
     generations = archive / ".index-generations"
