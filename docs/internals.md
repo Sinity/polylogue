@@ -137,6 +137,12 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   migrations are allowed only under the numbered migration resource roots, while
   derived-tier upgrade helpers remain forbidden.
 
+- User schema version 7 adds durable content-addressed `queries`, mutable
+  `query_names`, promoted `result_sets`/`result_set_members`, and planner
+  emitted `query_edges`. Existing `saved_query` assertions are repointed to
+  their canonical `query:<hash>` target in the same verified-backup migration.
+  Exact result members are retained only for watch/pinned/finding/cohort
+  persistence classes; ordinary execution relations remain ops-tier telemetry.
 - User schema version 6 adds immutable, fingerprinted `annotation_schemas`
   definitions and independent `annotation_batches` provenance containers.
   Batch labels remain assertion rows linked through an

@@ -1281,6 +1281,12 @@ class SearchEnvelope(SurfacePayloadModel):
     action_affordances: tuple[ActionAffordancePayload, ...] = ()
     diagnostics: QueryMissDiagnosticsPayload | None = None
     route_state: RouteReadinessPayload | None = None
+    # Analysis-provenance fields are additive: response builders populate them
+    # after a committed run has been recorded by the owning execution surface.
+    query_run_ref: str | None = None
+    query_hash: str | None = None
+    result_fingerprint: str | None = None
+    exactness: Literal["exact", "capped", "sampled", "estimate"] | None = None
 
 
 QueryUnitKind: TypeAlias = Literal[

@@ -189,6 +189,30 @@ ON mcp_call_log(tool_name, started_at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_ops_mcp_call_log_started
 ON mcp_call_log(started_at_ms);
 
+-- High-volume operational query telemetry. Result membership stays virtual:
+-- a row stores only an ordered fingerprint and bounded public-ref sample.
+CREATE TABLE IF NOT EXISTS query_runs (
+    run_id              TEXT PRIMARY KEY NOT NULL CHECK(run_id GLOB 'qr_*' AND length(run_id) > 3),
+    query_hash          TEXT NOT NULL CHECK(length(query_hash) = 64 AND query_hash NOT GLOB '*[^0-9a-f]*'),
+    actor               TEXT,
+    surface             TEXT CHECK(surface IN ('cli', 'mcp', 'daemon-web', 'api', 'daemon-internal')),
+    verb                TEXT,
+    request_json        TEXT CHECK(request_json IS NULL OR json_valid(request_json)),
+    lowered_spec_json   TEXT CHECK(lowered_spec_json IS NULL OR json_valid(lowered_spec_json)),
+    archive_epoch       TEXT,
+    started_at_ms       INTEGER,
+    duration_ms         INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0),
+    status              TEXT CHECK(status IN ('ok', 'error', 'degraded', 'truncated')),
+    degraded_json       TEXT CHECK(degraded_json IS NULL OR json_valid(degraded_json)),
+    unit                TEXT,
+    member_count        INTEGER CHECK(member_count IS NULL OR member_count >= 0),
+    exactness           TEXT CHECK(exactness IN ('exact', 'capped', 'sampled', 'estimate')),
+    result_fingerprint  TEXT CHECK(result_fingerprint IS NULL OR (length(result_fingerprint) = 64 AND result_fingerprint NOT GLOB '*[^0-9a-f]*')),
+    sample_refs_json    TEXT CHECK(sample_refs_json IS NULL OR (json_valid(sample_refs_json) AND json_type(sample_refs_json) = 'array' AND json_array_length(sample_refs_json) <= 20))
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_query_runs_query_started ON query_runs(query_hash, started_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_query_runs_started ON query_runs(started_at_ms);
+
 CREATE TABLE IF NOT EXISTS mcp_call_session_refs (
     call_id       TEXT NOT NULL REFERENCES mcp_call_log(call_id) ON DELETE CASCADE,
     session_id    TEXT NOT NULL,

@@ -3481,11 +3481,11 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops.py
-    loc: 203
+    loc: 227
     target: polylogue/storage/sqlite/archive_tiers/ops.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops_write.py
-    loc: 1115
+    loc: 1175
     target: polylogue/storage/sqlite/archive_tiers/ops_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
@@ -3513,7 +3513,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/types.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user.py
-    loc: 155
+    loc: 211
     target: polylogue/storage/sqlite/archive_tiers/user.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_annotations.py
@@ -3561,7 +3561,7 @@ files:
     target: polylogue/storage/sqlite/maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/migration_runner.py
-    loc: 565
+    loc: 569
     target: polylogue/storage/sqlite/migration_runner.py
     owner: stable
   - path: polylogue/storage/sqlite/migrations/__init__.py
@@ -3756,6 +3756,10 @@ files:
     loc: 196
     target: polylogue/storage/sqlite/queries/tool_usage.py
     owner: stable
+  - path: polylogue/storage/sqlite/query_objects.py
+    loc: 242
+    target: polylogue/storage/sqlite/query_objects.py
+    owner: stable
   - path: polylogue/storage/sqlite/query_store.py
     loc: 121
     target: polylogue/storage/sqlite/query_store.py
@@ -3826,7 +3830,7 @@ files:
     target: polylogue/surfaces/chronicle.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 3626
+    loc: 3632
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/surfaces/projection_spec.py
