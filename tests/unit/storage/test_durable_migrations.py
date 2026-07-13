@@ -454,6 +454,7 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
 ) -> None:
     """The Beads origin copy-forward retains v7 evidence and accepts new raws."""
     db_path = workspace_env["archive_root"] / "source.db"
+    db_path.unlink(missing_ok=True)
     old_ddl = SOURCE_DDL.replace(", 'beads-issue'", "")
     old_ddl = old_ddl.replace(
         "    capture_mode            TEXT CHECK ((capture_mode IN "
@@ -636,7 +637,7 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
 
         assert result.from_version == 2
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (3, 4, 5, 6, 7, 8)
+        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
@@ -694,7 +695,7 @@ def test_source_tier_v3_adds_publication_reservations_with_verified_backup_recei
     conn = sqlite3.connect(db_path)
     try:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.applied_versions == (4, 5, 6, 7, 8)
+        assert result.applied_versions == (4, 5, 6, 7, 8, 9)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         conn.execute(
             """
