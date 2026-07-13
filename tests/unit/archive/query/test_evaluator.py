@@ -219,3 +219,32 @@ def test_evaluation_request_rejects_an_unsupported_definition_protocol() -> None
 
     with pytest.raises(ValueError, match="unsupported"):
         QueryEvaluationRequest(query=unsupported, purpose="reference")
+
+
+def test_retained_sampled_result_set_fails_closed_as_a_set_operand() -> None:
+    conn = _conn()
+    query = put_query(
+        conn,
+        {"field": "title", "value": "sampled"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    result = put_result_set(
+        conn,
+        result_set_id="sampled-retained",
+        query_hash=query.query_hash,
+        grain="session",
+        corpus_epoch="index:g1",
+        member_refs=("session:sample",),
+        exactness="sampled",
+        persistence_class="pinned",
+        created_at_ms=2,
+    )
+
+    with pytest.raises(RetainedRelationUnavailableError, match="not an exact set operand"):
+        resolve_ref_operand(
+            RefOperand(ObjectRef(kind="result-set", object_id=result.result_set_id)),
+            DurableRefResolver(conn, _Evaluator()),
+        )

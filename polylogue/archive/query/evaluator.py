@@ -132,6 +132,10 @@ class DurableRefResolver:
             raise RetainedRelationUnavailableError(
                 f"result-set:{result_set_id} has no retained exact relation; use query:<hash> to re-evaluate"
             )
+        if manifest.exactness != "exact":
+            raise RetainedRelationUnavailableError(
+                f"result-set:{result_set_id} is {manifest.exactness}, not an exact set operand; use query:<hash> to re-evaluate"
+            )
         query = get_query(self._conn, manifest.query_hash)
         lineage = (*extra_lineage, ObjectRef(kind="result-set", object_id=result_set_id))
         if query is not None:
