@@ -98,12 +98,12 @@ def synthetic_site(
     (docs / "getting-started.md").write_text(
         "# Getting Started\n\n"
         "Welcome to the synthetic site.\n\n"
-        "[Search docs](search.md) and [repo README](../README.md).\n\n"
+        "[Search details](search.md#search-details) and [repo README](../README.md).\n\n"
         "Plain file names such as CLAUDE.md should not become external links.\n",
         encoding="utf-8",
     )
     (docs / "search.md").write_text(
-        "# Search\n\nLook things up here.\n",
+        "# Search\n\nLook things up here.\n\n## Search Details\n\nUse a query.\n",
         encoding="utf-8",
     )
     (docs / "demos.md").write_text("# Demos\n\nRun a proof.\n", encoding="utf-8")
@@ -177,7 +177,7 @@ def test_build_site_emits_expected_pages(synthetic_site: Path) -> None:
 def test_doc_pages_render_markdown_body(synthetic_site: Path) -> None:
     """Markdown sources are rendered into the page body."""
     html = _read(synthetic_site / "docs" / "getting-started" / "index.html")
-    assert "<h1>Getting Started</h1>" in html
+    assert '<h1 id="getting-started">Getting Started</h1>' in html
     assert "Welcome to the synthetic site" in html
 
 
@@ -188,6 +188,12 @@ def test_doc_pages_carry_page_title(synthetic_site: Path) -> None:
     rendered_title = "".join(collector.title_chars).strip()
     assert "Search" in rendered_title
     assert "Polylogue" in rendered_title
+
+
+def test_markdown_headings_receive_linkable_ids(synthetic_site: Path) -> None:
+    html = _read(synthetic_site / "docs" / "search" / "index.html")
+    assert '<h1 id="search">Search</h1>' in html
+    assert '<h2 id="search-details">Search Details</h2>' in html
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +251,7 @@ def test_markdown_links_rewritten_for_site_and_repo_files(synthetic_site: Path) 
     """Markdown links point at built site pages or stable source blobs."""
     html = _read(synthetic_site / "docs" / "getting-started" / "index.html")
     hrefs = _collect_links(html).hrefs
-    assert "../search/" in hrefs
+    assert "../search/#search-details" in hrefs
     assert "https://github.com/Sinity/polylogue/blob/master/README.md" in hrefs
     assert "http://CLAUDE.md" not in hrefs
 

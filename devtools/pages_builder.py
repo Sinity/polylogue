@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import posixpath
+import re
 import shutil
 import subprocess
 import sys
@@ -210,7 +211,19 @@ def _render_markdown(
         return str(renderer.renderToken(tokens, idx, options, env))
 
     renderer.rules["link_open"] = _link_open
-    result: str = md.render(content)
+    tokens = md.parse(content)
+    seen_slugs: dict[str, int] = {}
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open" or index + 1 >= len(tokens):
+            continue
+        title = tokens[index + 1].content
+        base = re.sub(r"[^\w\- ]", "", title.casefold()).replace("_", "")
+        base = re.sub(r"\s+", "-", base).strip("-") or "section"
+        occurrence = seen_slugs.get(base, 0)
+        seen_slugs[base] = occurrence + 1
+        token.attrSet("id", base if occurrence == 0 else f"{base}-{occurrence}")
+
+    result: str = md.renderer.render(tokens, md.options, {})
     return result
 
 
@@ -350,9 +363,12 @@ class _SiteLinkParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.links: list[str] = []
+        self.ids: set[str] = set()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = dict(attrs)
+        if attr_map.get("id"):
+            self.ids.add(attr_map["id"] or "")
         if tag == "a" and attr_map.get("href"):
             self.links.append(attr_map["href"] or "")
         elif tag in {"img", "script"} and attr_map.get("src"):
@@ -363,8 +379,10 @@ class _SiteLinkParser(HTMLParser):
 
 def _local_link_target(page_path: Path, site_dir: Path, href: str) -> Path | None:
     parsed = urlparse(href)
-    if parsed.scheme or parsed.netloc or href.startswith("#"):
+    if parsed.scheme or parsed.netloc:
         return None
+    if not parsed.path and parsed.fragment:
+        return page_path
     if parsed.path in {"", "#"}:
         return None
     path = parsed.path
@@ -383,9 +401,13 @@ def _local_link_target(page_path: Path, site_dir: Path, href: str) -> Path | Non
 
 def validate_site_links(site_dir: Path) -> list[BrokenSiteLink]:
     broken: list[BrokenSiteLink] = []
+    parsed_pages: dict[Path, _SiteLinkParser] = {}
     for page in sorted(site_dir.rglob("*.html")):
         parser = _SiteLinkParser()
         parser.feed(page.read_text(encoding="utf-8"))
+        parsed_pages[page.resolve()] = parser
+
+    for page, parser in parsed_pages.items():
         for href in parser.links:
             target = _local_link_target(page, site_dir, href)
             if target is not None and not target.exists():
@@ -396,6 +418,18 @@ def validate_site_links(site_dir: Path) -> list[BrokenSiteLink]:
                         target=target.relative_to(site_dir).as_posix(),
                     )
                 )
+                continue
+            fragment = urlparse(href).fragment
+            if target is not None and fragment:
+                target_parser = parsed_pages.get(target.resolve())
+                if target_parser is not None and fragment not in target_parser.ids:
+                    broken.append(
+                        BrokenSiteLink(
+                            page=page.relative_to(site_dir).as_posix(),
+                            href=href,
+                            target=f"{target.relative_to(site_dir).as_posix()}#{fragment}",
+                        )
+                    )
     return broken
 
 
