@@ -30,4 +30,6 @@ def test_write_revision_produces_one_file_per_segment(tmp_path: Path) -> None:
     write_revision(encoded, tmp_path / "revision")
 
     segment_files = sorted((tmp_path / "revision" / "segments").glob("*.ndjson"))
-    assert len(segment_files) == len(encoded.manifest.segments)
+    # transcript segments + the per-revision head segment
+    assert len(segment_files) == len(encoded.manifest.segments) + 1
+    assert (tmp_path / "revision" / "segments" / encoded.manifest.head_segment.filename).is_file()

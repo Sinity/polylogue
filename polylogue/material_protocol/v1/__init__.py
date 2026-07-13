@@ -25,6 +25,7 @@ from polylogue.material_protocol.v1.errors import (
     NotAnAppendError,
     RecordCountMismatchError,
     SegmentMissingError,
+    SemanticClosureError,
     SequenceOrderError,
     UnknownOriginVocabularyError,
 )
@@ -73,6 +74,7 @@ __all__ = [
     "SEMANTICS_VERSION",
     "SegmentDescriptor",
     "SegmentMissingError",
+    "SemanticClosureError",
     "SequenceOrderError",
     "SessionEventInput",
     "SessionMaterial",

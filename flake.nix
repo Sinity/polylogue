@@ -42,7 +42,8 @@
 
       polylogue = pkgs.python313Packages.buildPythonPackage {
         pname = "polylogue";
-        version = "0.1.0";
+        # Single authoritative version: pyproject.toml (release-please owns bumps).
+        version = (builtins.fromTOML (builtins.readFile ./pyproject.toml)).project.version;
         pyproject = true;
         src = ./.;
 

@@ -43,7 +43,15 @@ class AnchorNotFoundError(MaterialProtocolError):
 
 
 class NotAnAppendError(MaterialProtocolError):
-    """A claimed append revision does not reproduce the prior revision's record prefix."""
+    """A claimed append revision does not reproduce the prior revision's
+    transcript prefix by canonical bytes (a changed record with a stable id
+    is an edit, not an append)."""
+
+
+class SemanticClosureError(MaterialProtocolError):
+    """Cross-record facts contradict each other (e.g. the session record's
+    message_count disagrees with the actual message records), or a record
+    kind appears in the wrong space (head vs transcript)."""
 
 
 __all__ = [
@@ -54,6 +62,7 @@ __all__ = [
     "NotAnAppendError",
     "RecordCountMismatchError",
     "SegmentMissingError",
+    "SemanticClosureError",
     "SequenceOrderError",
     "UnknownOriginVocabularyError",
 ]

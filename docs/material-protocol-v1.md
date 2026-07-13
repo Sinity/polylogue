@@ -52,7 +52,8 @@ identical input.
 
 ## Records
 
-Every record is a JSON object with at least `kind`, `record_id`, and `seq`.
+Every record is a JSON object with at least `kind`, `record_id`, and `seq`
+(`seq` is scoped to the record's space — head or transcript — see below).
 `record_id` formulas mirror `index.db`'s generated columns exactly:
 
 - `session`: `record_id = session_id = "{origin}:{native_id}"`
@@ -64,14 +65,22 @@ Every record is a JSON object with at least `kind`, `record_id`, and `seq`.
 - `session_event` (covers compaction, via `event_type="compaction"`, and any
   other typed fact the archive records): `record_id = "{session_id}:{position}"`
 
-`seq` is a single global, strictly increasing counter across the whole
-revision (starting at 0), in this fixed walk order — this **is** the
-manifest's `sequence_rule`:
+Records live in one of two **spaces** with different mutability contracts
+(semantics v2), each with its own strictly increasing `seq` starting at 0 —
+together this **is** the manifest's `sequence_rule`:
 
-1. the `session` record
+**Head** (`head.ndjson`, reserved segment index `-1`) — the revision-mutable
+summary, re-encoded fresh on **every** revision and never byte-reused:
+
+1. the `session` record (`title`, `tags`, `metadata`, `updated_at_ms`,
+   `message_count` all legitimately change as a session grows)
 2. `lineage` records, sorted by `(dst_origin, dst_native_id, link_type)`
-3. `usage` records, sorted by `model_name`
-4. for each message, in transcript order (`position`, `variant_index` —
+   (`status`/`confidence`/`observed_at_ms` are revision-mutable)
+3. `usage` records, sorted by `model_name` (aggregates grow per append)
+
+**Transcript** (`seg-NNNNN.ndjson`) — the immutable observed facts:
+
+1. for each message, in transcript order (`position`, `variant_index` —
    **not** re-sorted by timestamp, because equal or missing timestamps can't
    total-order a transcript on their own):
    - the `message` record
@@ -79,12 +88,15 @@ manifest's `sequence_rule`:
    - its `attachment` records, in attachment position order
    - `session_event` records whose source message is this message, in event
      position order
-5. finally, any `session_event` records with no matching source message, in
+2. finally, any `session_event` records with no matching source message, in
    event position order
 
-This order is deliberately append-friendly: growing a session by appending
-trailing messages (the common live-watcher case) only ever adds records
-after every previously emitted one.
+The split is what makes appends *semantically* sound, not just
+byte-convenient: growing a session only ever adds transcript records after
+every previously emitted one, while every fact that changes on growth
+(counts, aggregates, timestamps, titles) lives in the head, which is always
+current because it is always re-encoded. Mutable revision summaries never
+sit inside bytes whose contract is reuse.
 
 Tool call/result correlation is carried structurally: a `tool_use` block and
 its `tool_result` block share `tool_id`; `tool_result_is_error` /
@@ -104,18 +116,21 @@ Key fields (`RevisionManifest` in `manifest.py`):
   `Origin` enum (`polylogue.core.enums.Origin`) this revision was encoded
   against. See [Origin vocabulary pinning](#origin-vocabulary-pinning).
 - `session_id`, `origin`, `native_id` — the session identity.
-- `revision_id` — `content_digest.polylogue_sha256`: the SHA-256 of every
-  sealed segment's bytes concatenated in segment-index order. Two encoders
-  that produce the same canonical bytes get the same `revision_id`.
+- `revision_id` — `content_digest.polylogue_sha256`: the SHA-256 of the
+  head segment's bytes followed by every sealed transcript segment's bytes
+  in segment-index order. Two encoders that produce the same canonical
+  bytes get the same `revision_id`.
 - `superseded_revision_id` — the prior revision this one replaces, or
   `null` for a first revision.
 - `content_digest` — a multi-digest descriptor (`ContentDigest`): Polylogue's
   own SHA-256, canonicalizer version, size, media type, and optional
   `sinex_cas_digest` / `provider_digest` slots for cross-system digests.
   **None of these is the domain object id** — `session_id` is.
-- `segments` — one `SegmentDescriptor` per sealed segment: index, filename,
-  SHA-256, size, record count, and the `[first_seq, last_seq]` range it
-  covers.
+- `head_segment` — the `SegmentDescriptor` for the per-revision head
+  (`head.ndjson`, index `-1`, its own `[first_seq, last_seq]` space).
+- `segments` — one `SegmentDescriptor` per sealed transcript segment: index,
+  filename, SHA-256, size, record count, and the `[first_seq, last_seq]`
+  range it covers in the transcript space.
 - `expected_record_counts` — per-`kind` record counts across the whole
   revision.
 - `anchors` — `record_id -> AnchorEntry {segment_index, line_index, seq,
@@ -136,20 +151,26 @@ Key fields (`RevisionManifest` in `manifest.py`):
 
 ## Segmentation and immutability
 
-Segments are bounded (`max_records_per_segment`, default 500) and, once
-sealed, immutable: their bytes never change. A session that grows (the
-common case — a live watcher appending messages) gets a **new revision**
-that:
+Transcript segments are bounded (`max_records_per_segment`, default 500)
+and, once sealed, immutable: their bytes never change. A session that grows
+(the common case — a live watcher appending messages) gets a **new
+revision** that:
 
-- reuses every prior segment's exact bytes/descriptor unchanged, and
-- appends only the new trailing records into new segment(s) after the prior
-  ones.
+- re-encodes the head fresh (so the session/lineage/usage summary is always
+  current — the head is never reused),
+- reuses every prior transcript segment's exact bytes/descriptor unchanged,
+  and
+- appends only the new trailing transcript records into new segment(s)
+  after the prior ones.
 
-`encode_appended_revision()` implements this: it verifies the new material's
-ordered record list reproduces the prior revision's records as an exact
-prefix (raising `NotAnAppendError` otherwise), then only encodes the tail.
-Every anchor that existed in the prior revision is byte-identical in the new
-one — same `segment_index`, `line_index`, `sha256`.
+`encode_appended_revision()` implements this. Reuse is gated on **canonical
+bytes**, not record ids: the new material's transcript record list must
+reproduce the prior revision's transcript prefix such that every prefix
+record re-hashes to its prior anchor `sha256` (a changed record with a
+stable id is an edit, not an append — `NotAnAppendError`). Only then is the
+tail encoded. Every transcript anchor that existed in the prior revision is
+byte-identical in the new one — same `segment_index`, `line_index`,
+`sha256`; head anchors are revision-local by design.
 
 A **regenerated** revision (the provider file was reparsed from scratch, not
 just appended to — a resegmentation/edit, not a pure append) is encoded fresh
@@ -176,6 +197,18 @@ any of:
 | per-`kind` counts don't match `expected_record_counts` | `RecordCountMismatchError` |
 | the manifest's `anchors` don't exactly match what a full scan finds (missing, extra, or any field different) | `AnchorMismatchError` |
 | `origin_vocabulary_version`/`origin_vocabulary_digest` isn't a known, matching pair | `UnknownOriginVocabularyError` |
+| cross-record facts contradict each other (see below) | `SemanticClosureError` |
+
+Beyond byte/count/anchor integrity, `verify_revision` enforces **semantic
+closure** — a revision cannot verify while carrying contradictory facts:
+
+- exactly one `session` record exists, in the head, and its `record_id`
+  equals the manifest's `session_id`;
+- the session record's `message_count` equals the actual number of `message`
+  records in the transcript;
+- every `message` record's `block_count` equals its actual `block` records;
+- head segments contain only `session`/`lineage`/`usage` kinds; transcript
+  segments only `message`/`block`/`attachment`/`session_event` kinds.
 
 `resolve_anchor(manifest, segment_bytes, record_id)` is the narrow,
 single-record version of the same integrity check (segment/line lookup +
