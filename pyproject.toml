@@ -102,10 +102,11 @@ tree-sitter = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sinity/polylogue"
+Homepage = "https://sinity.github.io/polylogue/"
 Repository = "https://github.com/sinity/polylogue"
 Issues = "https://github.com/sinity/polylogue/issues"
-Documentation = "https://github.com/sinity/polylogue#readme"
+Documentation = "https://sinity.github.io/polylogue/"
+Changelog = "https://github.com/Sinity/polylogue/blob/master/CHANGELOG.md"
 
 [project.scripts]
 polylogue = "polylogue.cli:main"

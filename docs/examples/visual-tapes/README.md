@@ -16,8 +16,9 @@ that larger demo packet lives at `docs/examples/demo-tour/demo-tour.gif`.
 
 - `demo-tour.tape` — tape spec for the one-command demo tour; its canonical GIF
   copy lives in `docs/examples/demo-tour/demo-tour.gif`.
-- `query-tour.tape` / `query-tour.gif` — query/read drilldown against a seeded
-  demo archive.
+- `evidence-receipt.tape` / `evidence-receipt.png` — reproducible command flow
+  and static first-contact receipt for an assistant claim checked against
+  failed and successful test outcomes.
 - `reader-evidence-tour.tape` / `reader-evidence-tour.gif` — browserless reader
   evidence lane against synthetic fixtures.
 - `browser-capture-tour.tape` / `browser-capture-tour.gif` — headless Chrome

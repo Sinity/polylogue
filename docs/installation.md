@@ -1,18 +1,18 @@
 # Installation
 
-Polylogue has source/Nix routes now and release-artifact routes once the
-corresponding tag artifacts have been published and smoke-tested. A GitHub tag
-or release page alone is not proof that PyPI, GHCR, Homebrew, or extension
-artifacts are available: use the linked verification for the channel you plan
-to install from.
+Polylogue is available from PyPI, the Sinity Homebrew tap, and its Nix flake.
+Container and browser-extension artifacts remain version-specific: a GitHub
+tag or release page alone is not proof that those channels carry a matching
+artifact, so use the linked verification for the channel you plan to install
+from.
 
 | Channel | Audience | Install after its artifact smoke passes | Verification |
 | --- | --- | --- | --- |
 | `nix develop` | Local development, source checkout, verification | `nix develop` | [Contributing](../CONTRIBUTING.md) |
 | Nix flake | NixOS / nix-darwin users | `nix run github:Sinity/polylogue -- --help` | [`flake.nix`](../flake.nix) |
-| PyPI / pipx | Python CLI users | `pipx install "polylogue==X.Y.Z"` | `polylogue --version`, `polylogued --help`, `polylogue-mcp --help` |
+| PyPI / pipx | Python CLI users | `pipx install polylogue` | `polylogue --version`, `polylogued --help`, `polylogue-mcp --help` |
 | GHCR | Container deployments | `podman pull ghcr.io/sinity/polylogue:X.Y.Z` | `podman run --rm --entrypoint polylogue ghcr.io/sinity/polylogue:X.Y.Z --version` |
-| Homebrew | macOS/Linuxbrew users | `brew install sinity/tap/polylogue` | `brew test polylogue` |
+| Homebrew | macOS/Linuxbrew users | `brew tap sinity/polylogue && brew install polylogue` | `brew test polylogue` |
 | Browser extension | Browser-capture users | Download the matching release `.zip` / `.xpi` | verify `build-manifest.json` version equals `X.Y.Z` |
 | NixOS / Home Manager module | Managed local daemon deployment | see below | `systemctl status polylogued.service` |
 
@@ -89,17 +89,29 @@ systemctl status polylogued.service
 polylogue ops status
 ```
 
-## PyPI, containers, and Homebrew
+## PyPI and Homebrew
 
-After the release workflow has published the matching version, `pipx` is the
-recommended isolated CLI install:
+`pipx` is the recommended isolated Python CLI install. `uv tool` provides the
+same isolation model if uv is already your package frontend:
 
 ```bash
-pipx install "polylogue==X.Y.Z"
+pipx install polylogue
+# or: uv tool install polylogue
 polylogue --version
 polylogued --help
 polylogue-mcp --help
 ```
+
+The Homebrew tap installs the published PyPI release into a formula-owned
+virtual environment:
+
+```bash
+brew tap sinity/polylogue
+brew install polylogue
+brew test polylogue
+```
+
+## Containers
 
 For containers, use `--version` for the concise human build identity and query
 the packaged runtime's `VERSION_INFO.commit` for the full revision before
@@ -116,13 +128,6 @@ git ls-remote https://github.com/Sinity/polylogue refs/tags/vX.Y.Z
 The published workflow performs this smoke for both slim and distroless images;
 it requires the concise version to match the source prefix and the machine-
 readable runtime field to equal the complete source revision.
-
-For Homebrew, install only after the release-triggered tap PR has merged:
-
-```bash
-brew install sinity/tap/polylogue
-brew test polylogue
-```
 
 ### Recovering an already-created tag
 

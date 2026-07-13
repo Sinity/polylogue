@@ -2,14 +2,17 @@
 
 <p align="center">
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-4584b6?logo=python&logoColor=white" alt="Python 3.11+"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e" alt="MIT License"></a>
+  <a href="https://pypi.org/project/polylogue/"><img src="https://img.shields.io/pypi/v/polylogue?label=PyPI" alt="PyPI release"></a>
   <a href="https://github.com/sinity/polylogue/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/ci.yml?branch=master&label=ci" alt="CI status"></a>
+  <a href="https://sinity.github.io/polylogue/"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/pages.yml?branch=master&label=docs" alt="Documentation deployment"></a>
+  <a href="https://github.com/sinity/polylogue/actions/workflows/codeql.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/codeql.yml?branch=master&label=CodeQL" alt="CodeQL analysis"></a>
+  <a href="https://github.com/Sinity/homebrew-polylogue"><img src="https://img.shields.io/badge/Homebrew-tap-fbb040?logo=homebrew&logoColor=111827" alt="Homebrew tap"></a>
 </p>
 
 **Polylogue is a local evidence system for AI work.** It turns ChatGPT, Claude, Codex, Gemini, Antigravity, Hermes, and coding-agent histories into one evidence-addressable archive: search what happened, read tool activity as work rather than chat, audit claims against structural outcomes, understand cost and lineage, and give the next agent reviewed context.
 
 <p align="center">
-  <img src="docs/examples/visual-tapes/query-tour.gif" alt="Polylogue query and evidence drilldown" width="900">
+  <img src="docs/examples/visual-tapes/evidence-receipt.png" alt="Polylogue checks an assistant claim against failed and successful test receipts" width="900">
 </p>
 
 Polylogue answers questions that transcript folders and vendor chat history do not:
@@ -22,12 +25,35 @@ Polylogue answers questions that transcript folders and vendor chat history do n
 
 Polylogue is local-first. Lexical search and the core archive stay on your machine. Optional semantic search is disabled by default and sends selected text only to the embedding provider you configure.
 
+## Install
+
+Polylogue is published on [PyPI](https://pypi.org/project/polylogue/) and the
+[Sinity Homebrew tap](https://github.com/Sinity/homebrew-polylogue). Nix users
+can run the flake without installing it:
+
+```bash
+# Python CLI in an isolated environment
+pipx install polylogue
+# or: uv tool install polylogue
+
+# Homebrew on macOS or Linux
+brew tap sinity/polylogue
+brew install polylogue
+
+# Nix, one shot
+nix run github:Sinity/polylogue -- --help
+```
+
+All three routes expose `polylogue`; the Python and Nix distributions also
+provide `polylogued` and `polylogue-mcp`. See [Installation](docs/installation.md)
+for source checkout, managed-service, container, and verification details.
+
 ## Run the first proof
 
 The smallest useful demonstration is one command:
 
 ```bash
-nix run github:Sinity/polylogue -- demo receipts
+nix run github:Sinity/polylogue -- demo receipts --compact
 ```
 
 From a source checkout:
@@ -35,7 +61,7 @@ From a source checkout:
 ```bash
 git clone https://github.com/Sinity/polylogue.git
 cd polylogue
-nix develop -c polylogue demo receipts
+nix develop -c polylogue demo receipts --compact
 ```
 
 It creates a throwaway private-data-free archive, imports provider-shaped artifacts through the normal parser and storage path, and compares an assistant success claim with a structurally failed test receipt, a later successful repair, and a prose-only anti-grep control. The result is a bounded contract proof: it demonstrates how Polylogue reasons from evidence, not how often real agents make this mistake.
@@ -202,26 +228,6 @@ bd list --status open
 
 Do not infer roadmap state from GitHub Issues.
 
-## Installation
-
-Supported current paths are source checkout and Nix. PyPI, Homebrew, OCI images, and browser-store distribution remain release-channel targets until the release matrix proves them.
-
-```bash
-# One-shot CLI
-nix run github:Sinity/polylogue -- --help
-
-# Development checkout
-git clone https://github.com/Sinity/polylogue.git
-cd polylogue
-nix develop
-
-polylogue --help
-polylogued run
-polylogue-mcp --help
-```
-
-See [Installation](docs/installation.md) and [Release Readiness](docs/plans/release-readiness-gate.md).
-
 ## Development
 
 ```bash
@@ -235,7 +241,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [TESTING.md](TESTING.md), and [Developer
 ## Security
 
 Polylogue assumes a trusted single-user local host. The daemon binds to loopback by default, protected routes use bearer tokens, browser capture uses a distinct token, and mutating browser-accessible routes enforce Origin policy. Raw archives can contain source code, secrets, personal conversations, paths, and tool output; use host disk encryption and review [docs/security.md](docs/security.md) and [docs/daemon-threat-model.md](docs/daemon-threat-model.md).
-
-## License
-
-MIT.

@@ -110,12 +110,18 @@ def seed_command(
     is_flag=True,
     help="Inspect only the completion-claim cohort; suitable for an operator-owned archive.",
 )
+@click.option(
+    "--compact",
+    is_flag=True,
+    help="Keep plain output to the claim, test outcomes, and anti-grep control.",
+)
 def receipts_command(
     root: Path | None,
     seed: bool | None,
     force: bool,
     output_format: str,
     completion_claims_only: bool,
+    compact: bool,
 ) -> None:
     """Compare a demo assistant claim with structural tool evidence."""
 
@@ -148,7 +154,15 @@ def receipts_command(
         payload["seeded_for_command"] = should_seed
         click.echo(json.dumps(payload, sort_keys=True))
     else:
-        click.echo(render_demo_receipts(result), nl=False)
+        archive_label = None if has_configured_root else "<demo-archive>"
+        click.echo(
+            render_demo_receipts(
+                result,
+                archive_label=archive_label,
+                compact=compact,
+            ),
+            nl=False,
+        )
     if not result.ok:
         raise click.ClickException("demo receipts verification failed")
 

@@ -145,7 +145,7 @@ class TestDefaultTapeContent:
     def test_default_tape_names(self) -> None:
         assert [spec.name for spec in default_tape_specs()] == [
             "demo-tour",
-            "query-tour",
+            "evidence-receipt",
             "reader-evidence-tour",
             "browser-capture-tour",
         ]
@@ -159,14 +159,21 @@ class TestDefaultTapeContent:
         assert 'Type "cat demo-tour/transcript.txt"' in tape
         assert 'Type "cat demo-tour/report.md"' in tape
 
-    def test_query_tour_uses_demo_archive_not_live_archive(self) -> None:
-        spec = next(spec for spec in default_tape_specs() if spec.name == "query-tour")
+    def test_evidence_receipt_hides_setup_and_surfaces_structural_verdict(self) -> None:
+        spec = next(spec for spec in default_tape_specs() if spec.name == "evidence-receipt")
 
         tape = generate_tape(spec)
 
-        assert "POLYLOGUE_ARCHIVE_ROOT=query-tour/archive" in tape
-        assert 'Type "polylogue read --all -n 1"' not in tape
-        assert 'Type "polylogue --latest -f markdown"' not in tape
+        assert "Set TypingSpeed 0.02" in tape
+        assert "Hide" in tape
+        assert "mkdir -p evidence-receipt && cd evidence-receipt" in tape
+        assert "polylogue demo receipts --compact >/dev/null" in tape
+        assert "Show" in tape
+        assert 'Type "polylogue demo receipts --compact --no-seed"' in tape
+        assert "Wait+Screen /verdict: contradicted_at_claim_time_then_repaired/" in tape
+        assert (
+            tape.index("Hide") < tape.index("Show") < tape.index('Type "polylogue demo receipts --compact --no-seed"')
+        )
 
     def test_reader_evidence_tour_uses_visual_smoke_lane(self) -> None:
         spec = next(spec for spec in default_tape_specs() if spec.name == "reader-evidence-tour")

@@ -1,13 +1,18 @@
-# Files kept out of LOC stats — tokei reads this with .gitignore semantics.
-# (tokei already skips dot-dirs like .agent/ by default; listed here for
-#  robustness under `tokei --hidden` and to document intent.)
+# Files kept out of product LOC stats — tokei reads this with .gitignore
+# semantics. Internal agent workspaces have their own operational audits and
+# are not part of the product implementation count.
+
+.agent/
 
 # Vendored upstream litellm price catalog (~44k lines).
 polylogue/archive/semantic/data/litellm_model_prices.json
 
 # Generated surfaces.
 docs/schemas/cli-output/
-.agent/demos/
+docs/generated/
+docs/openapi/
+docs/plans/topology-target.yaml
+docs/topology-status.md
 
 # Fixtures / captured provider payloads (parser witnesses, not first-party code).
 **/representatives/
