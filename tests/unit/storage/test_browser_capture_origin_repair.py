@@ -237,6 +237,41 @@ def _seed_equivalent_canonical_head(root: Path, mismatched_raw_id: str) -> str:
     return raw_id
 
 
+def _seed_semantic_canonical_head(root: Path, mismatched_raw_id: str) -> str:
+    raw_id = _seed_equivalent_canonical_head(root, mismatched_raw_id)
+    with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = NULL, revision_kind = 'unknown', source_revision = NULL,
+                baseline_raw_id = NULL, acquisition_generation = NULL,
+                revision_authority = 'quarantined'
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+        source.execute(
+            """
+            UPDATE raw_session_memberships
+            SET source_revision = lower(hex(normalized_content_hash)), revision_authority = 'quarantined',
+                decision = NULL, decided_at_ms = NULL
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+        index.execute(
+            """
+            UPDATE raw_revision_heads
+            SET accepted_frontier_kind = 'semantic', accepted_frontier = 1
+            WHERE accepted_raw_id = ?
+            """,
+            (raw_id,),
+        )
+        source.commit()
+        index.commit()
+    return raw_id
+
+
 def _rows(root: Path, tier: str, table: str, where: str, params: tuple[object, ...]) -> list[tuple[object, ...]]:
     with sqlite3.connect(root / f"{tier}.db") as conn:
         return [tuple(row) for row in conn.execute(f"SELECT * FROM {table} WHERE {where} ORDER BY 1", params)]
@@ -474,6 +509,68 @@ def test_browser_capture_origin_repair_restores_equivalent_canonical_head(tmp_pa
             canonical_raw_id,
             f"browser_capture_origin_supersession:{mismatched_raw_id}",
         )
+
+
+def test_browser_capture_origin_repair_copy_forwards_from_semantic_canonical_witness(tmp_path: Path) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source_count = source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+
+    assert dry_run.eligible_count == 1, dry_run.items[0].reason
+    assert dry_run.items[0].repair_strategy == "copy_forward"
+    assert dry_run.items[0].replacement_raw_id != semantic_raw_id
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [mismatched_raw_id],
+        apply=True,
+        receipt_path=tmp_path / "semantic-copy-receipt.jsonl",
+        proof_digest=dry_run.proof_digest,
+    )
+
+    copy_raw_id = applied.items[0].copy_forward_raw_id
+    assert copy_raw_id is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (source_count + 1,)
+        assert source.execute(
+            "SELECT revision_authority FROM raw_sessions WHERE raw_id = ?", (semantic_raw_id,)
+        ).fetchone() == ("quarantined",)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
+        ).fetchone() == (copy_raw_id,)
+
+
+@pytest.mark.parametrize("mutation", ["frontier", "pointer", "membership"])
+def test_browser_capture_origin_repair_rejects_underproven_semantic_canonical_head(
+    tmp_path: Path, mutation: str
+) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
+    if mutation == "frontier":
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "UPDATE raw_revision_heads SET accepted_frontier_kind = 'byte' WHERE accepted_raw_id = ?",
+                (semantic_raw_id,),
+            )
+    elif mutation == "pointer":
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "UPDATE sessions SET raw_id = ? WHERE session_id = 'chatgpt-export:browser-origin-one'",
+                (semantic_raw_id,),
+            )
+    else:
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute(
+                "UPDATE raw_session_memberships SET decision = 'ambiguous', decided_at_ms = 5 WHERE raw_id = ?",
+                (semantic_raw_id,),
+            )
+
+    report = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+
+    assert report.ineligible_count == 1
 
 
 @pytest.mark.parametrize("mutation", ["envelope", "membership", "application"])
