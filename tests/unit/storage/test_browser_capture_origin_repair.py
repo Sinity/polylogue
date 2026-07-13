@@ -584,6 +584,17 @@ def test_browser_capture_origin_rejects_unresolved_source_membership(tmp_path: P
     assert report.ineligible_count == 1
 
 
+def test_browser_capture_origin_rejects_legacy_raw_without_native_id(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("UPDATE raw_sessions SET native_id = NULL WHERE raw_id = ?", (raw_id,))
+
+    report = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "source envelope does not exactly bind the normalized session"
+
+
 def test_browser_capture_origin_copy_forward_accepts_source_v7_without_capture_mode(tmp_path: Path) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
