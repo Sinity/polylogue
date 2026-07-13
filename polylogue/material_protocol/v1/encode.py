@@ -341,6 +341,20 @@ def encode_appended_revision(
     linked only via ``superseded_revision_id``) instead of claiming
     append-anchor-stability.
     """
+    # Session identity must match the prior revision explicitly: with the
+    # session record living in the (never-compared) head, an empty-transcript
+    # prior would otherwise accept a completely different session as an
+    # "append" of the first.
+    if (
+        full_material.session_id != prior_manifest.session_id
+        or full_material.origin.value != prior_manifest.origin
+        or full_material.native_id != prior_manifest.native_id
+    ):
+        raise NotAnAppendError(
+            f"session identity changed: prior=({prior_manifest.session_id!r}, {prior_manifest.origin!r}, "
+            f"{prior_manifest.native_id!r}), full_material=({full_material.session_id!r}, "
+            f"{full_material.origin.value!r}, {full_material.native_id!r})"
+        )
     prior_transcript_count = sum(segment.record_count for segment in prior_manifest.segments)
     prior_anchors_by_seq: dict[int, tuple[str, AnchorEntry]] = {
         anchor.seq: (record_id, anchor)

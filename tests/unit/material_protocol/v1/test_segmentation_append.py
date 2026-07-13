@@ -246,3 +246,41 @@ def test_verifier_rejects_contradictory_session_message_count() -> None:
 
     with pytest.raises(SemanticClosureError, match="message_count"):
         verify_revision(tampered_manifest, tampered_segments)
+
+
+def test_append_rejects_different_session_identity_even_with_empty_transcript() -> None:
+    """Codex review P2 on #2838: an empty-transcript prior must not accept a
+    different session as an 'append' — the identity guard is explicit now
+    that the session record lives in the never-compared head.
+
+    Anti-vacuity: removing the session-identity check in
+    encode_appended_revision accepts this material and emits a manifest for
+    session B superseding session A's revision.
+    """
+    import dataclasses
+
+    import pytest
+
+    from polylogue.material_protocol.v1 import NotAnAppendError
+
+    empty_material = dataclasses.replace(
+        build_large_session_material(1),
+        messages=(),
+        session_events=(),
+    )
+    prior = encode_session_revision(
+        empty_material, revision_created_at="2026-07-12T00:00:00Z", max_records_per_segment=10
+    )
+    assert sum(d.record_count for d in prior.manifest.segments) == 0
+
+    other_session = dataclasses.replace(build_large_session_material(2), native_id="another-session")
+    assert other_session.session_id != empty_material.session_id
+
+    with pytest.raises(NotAnAppendError, match="session identity changed"):
+        encode_appended_revision(
+            prior.manifest,
+            prior.segments,
+            other_session,
+            revision_created_at="2026-07-12T01:00:00Z",
+            max_records_per_segment=10,
+        )
