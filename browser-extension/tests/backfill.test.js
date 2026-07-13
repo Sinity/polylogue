@@ -194,9 +194,12 @@ describe("background backfill coordinator", () => {
     await h.coordinator.wake(job.id);
     expect(h.adapter.enumerateCalls).toBe(0);
 
+    const cancelling = h.coordinator.control(job.id, "cancel");
     releasePreflight();
-    await resuming;
-    expect(await h.store.getJob(job.id)).toMatchObject({ status: "running", receiver_contract_epoch: "instance-a" });
+    await Promise.all([resuming, cancelling]);
+    expect(await h.store.getJob(job.id)).toMatchObject({ status: "cancelled", receiver_contract_epoch: "instance-a" });
+    await h.coordinator.wake(job.id);
+    expect(h.adapter.enumerateCalls).toBe(0);
   });
 
   it("reports a recovery-checkpoint write failure without failing durable backfill work", async () => {

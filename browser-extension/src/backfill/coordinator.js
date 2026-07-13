@@ -33,6 +33,7 @@ export class BackfillCoordinator {
     this.random = random;
     this.instanceId = instanceId;
     this.receiverContractEpoch = receiverContractEpoch;
+    this.controlChains = new Map();
   }
 
   async start({ provider, cutoff, policy = {}, provider_options = {} }) {
@@ -72,6 +73,20 @@ export class BackfillCoordinator {
   }
 
   async control(jobId, action) {
+    // A preflight is asynchronous. Serialize operator actions per job so a
+    // delayed resume cannot overwrite a later cancel (or pause) after its
+    // receiver check returns.
+    const previous = this.controlChains.get(jobId) || Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => this.performControl(jobId, action));
+    this.controlChains.set(jobId, next);
+    void next.then(
+      () => { if (this.controlChains.get(jobId) === next) this.controlChains.delete(jobId); },
+      () => { if (this.controlChains.get(jobId) === next) this.controlChains.delete(jobId); },
+    );
+    return next;
+  }
+
+  async performControl(jobId, action) {
     const now = this.clock();
     const status = action === "start" || action === "resume" ? "running" : action === "pause" ? "paused" : action === "cancel" ? "cancelled" : null;
     if (!status) throw new Error(`unknown_backfill_action:${action}`);
