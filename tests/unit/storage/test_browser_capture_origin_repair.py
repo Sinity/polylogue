@@ -359,7 +359,9 @@ def test_browser_capture_origin_rebuild_keeps_copy_forward_head(tmp_path: Path) 
         ).fetchone() == (copy_raw_id,)
 
 
-@pytest.mark.parametrize("mutation", ["blob", "head", "origin", "application", "canonical_head"])
+@pytest.mark.parametrize(
+    "mutation", ["blob", "head", "origin", "application", "generation", "authority", "canonical_head"]
+)
 def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Path, mutation: str) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
@@ -374,6 +376,18 @@ def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Pat
                 "DELETE FROM raw_revision_applications WHERE raw_id = ? AND decision = 'selected_baseline'",
                 (raw_id,),
             )
+        elif mutation == "generation":
+            source.execute("UPDATE raw_sessions SET acquisition_generation = 1 WHERE raw_id = ?", (raw_id,))
+            source.execute("UPDATE raw_session_memberships SET acquisition_generation = 1 WHERE raw_id = ?", (raw_id,))
+            index.execute(
+                "UPDATE raw_revision_heads SET acquisition_generation = 1 WHERE accepted_raw_id = ?", (raw_id,)
+            )
+            index.execute(
+                "UPDATE raw_revision_applications SET acquisition_generation = 1 WHERE raw_id = ?",
+                (raw_id,),
+            )
+        elif mutation == "authority":
+            source.execute("UPDATE raw_sessions SET revision_authority = 'byte_proven' WHERE raw_id = ?", (raw_id,))
         else:
             index.execute(
                 """

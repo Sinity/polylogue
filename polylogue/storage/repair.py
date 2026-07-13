@@ -1336,6 +1336,7 @@ def _inspect_browser_capture_origin_mismatch(
         or str(raw["revision_authority"]) != RawRevisionAuthority.QUARANTINED.value
         or raw["source_revision"] is None
         or raw["acquisition_generation"] is None
+        or int(raw["acquisition_generation"]) != 0
         or any(
             raw[name] is not None
             for name in (
