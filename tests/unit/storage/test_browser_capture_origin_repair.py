@@ -9,7 +9,7 @@ import pytest
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import Provider
-from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.repair import (
     repair_browser_capture_origin_mismatches,
@@ -152,6 +152,7 @@ def _seed_equivalent_canonical_head(root: Path, mismatched_raw_id: str) -> str:
     payload = _browser_payload()
     session = _parse_one(Provider.CHATGPT, payload, "browser-capture/chatgpt/canonical.json")[0]
     accepted_hash = bytes.fromhex(session_content_hash(session))
+    projection = session_revision_projection(session)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CHATGPT,
@@ -196,6 +197,36 @@ def _seed_equivalent_canonical_head(root: Path, mismatched_raw_id: str) -> str:
             (mismatched_raw_id, session_id),
         )
         archive.commit()
+    with sqlite3.connect(root / "source.db") as source:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = 'chatgpt:browser-origin-one', revision_kind = 'full',
+                source_revision = lower(hex(blob_hash)), baseline_raw_id = raw_id,
+                acquisition_generation = 0, revision_authority = 'byte_proven'
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+        source.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority, decision, decided_at_ms
+            ) VALUES (?, 'chatgpt:browser-origin-one', 'browser-origin-one', ?, ?, ?, 0,
+                      'byte_proven', 'applied', 4)
+            """,
+            (raw_id, blob_hash, accepted_hash, len(projection.message_hashes)),
+        )
+        source.execute(
+            """
+            INSERT INTO raw_membership_census (
+                raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+            ) VALUES (?, 'canonical-parser', 'complete', 1, 4, 'canonical evidence')
+            """,
+            (raw_id,),
+        )
     return raw_id
 
 
@@ -366,6 +397,65 @@ def test_browser_capture_origin_repair_restores_equivalent_canonical_head(tmp_pa
             canonical_raw_id,
             f"browser_capture_origin_supersession:{mismatched_raw_id}",
         )
+
+
+@pytest.mark.parametrize("mutation", ["envelope", "membership", "application"])
+def test_browser_capture_origin_repair_rejects_underproven_canonical_head(tmp_path: Path, mutation: str) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
+    if mutation == "envelope":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute(
+                "UPDATE raw_sessions SET revision_authority = 'quarantined' WHERE raw_id = ?", (canonical_raw_id,)
+            )
+    elif mutation == "membership":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute(
+                "UPDATE raw_session_memberships SET decision = 'ambiguous' WHERE raw_id = ?", (canonical_raw_id,)
+            )
+    else:
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "DELETE FROM raw_revision_applications WHERE raw_id = ? AND decision = 'selected_baseline'",
+                (canonical_raw_id,),
+            )
+
+    report = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+
+    assert report.ineligible_count == 1
+
+
+def test_browser_capture_origin_copy_forward_reproves_before_source_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.storage.repair as repair_module
+
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    original_lock = repair_module._lock_browser_origin_receipt
+
+    def mutate_after_receipt(
+        path: Path,
+        items: list[repair_module.BrowserCaptureOriginRepairItem],
+    ) -> repair_module._BrowserOriginReceipt:
+        receipt = original_lock(path, items)
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute("UPDATE raw_sessions SET blob_size = blob_size + 1 WHERE raw_id = ?", (raw_id,))
+        return receipt
+
+    monkeypatch.setattr(repair_module, "_lock_browser_origin_receipt", mutate_after_receipt)
+    with pytest.raises(RuntimeError, match="source evidence changed"):
+        repair_browser_capture_origin_mismatches(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=tmp_path / "source-race.jsonl",
+            proof_digest=dry_run.proof_digest,
+        )
+    assert (
+        _rows(tmp_path, "source", "raw_sessions", "source_path LIKE ?", ("browser-capture-origin-copy-forward/%",))
+        == []
+    )
 
 
 def test_browser_capture_origin_copy_forward_resumes_after_source_stage_interrupt(tmp_path: Path) -> None:

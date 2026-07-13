@@ -1087,6 +1087,200 @@ def _browser_origin_copy_raw_id(
     return digest.hexdigest()
 
 
+def _verify_browser_origin_copy_forward_source_stage(
+    archive_root: Path,
+    conn: sqlite3.Connection,
+    item: BrowserCaptureOriginRepairItem,
+) -> None:
+    """Reprove source-only witnesses while its write transaction is held."""
+    assert item.canonical_origin is not None
+    assert item.canonical_provider is not None
+    assert item.canonical_logical_source_key is not None
+    assert item.session_id is not None
+    assert item.old_logical_source_key is not None
+    assert item.source_path is not None
+    assert item.source_index is not None
+    assert item.blob_hash is not None
+    assert item.blob_size is not None
+    assert item.accepted_content_hash is not None
+    raw = conn.execute(
+        """
+        SELECT origin, source_path, source_index, blob_hash, blob_size,
+               logical_source_key, revision_kind, source_revision, baseline_raw_id,
+               acquisition_generation, revision_authority
+        FROM raw_sessions WHERE raw_id = ?
+        """,
+        (item.raw_id,),
+    ).fetchone()
+    expected = (
+        Origin.UNKNOWN_EXPORT.value,
+        item.source_path,
+        item.source_index,
+        bytes.fromhex(item.blob_hash),
+        item.blob_size,
+        item.old_logical_source_key,
+        RawRevisionKind.FULL.value,
+        item.blob_hash,
+        None,
+        0,
+        RawRevisionAuthority.QUARANTINED.value,
+    )
+    if raw is None or tuple(raw) != expected:
+        raise RuntimeError(f"source evidence changed before copy-forward stage for {item.raw_id}")
+    blob_ref = conn.execute(
+        """
+        SELECT blob_hash, size_bytes FROM blob_refs
+        WHERE ref_id = ? AND ref_type = 'raw_payload'
+        """,
+        (item.raw_id,),
+    ).fetchone()
+    if blob_ref is None or tuple(blob_ref) != (bytes.fromhex(item.blob_hash), item.blob_size):
+        raise RuntimeError(f"raw blob reference changed before copy-forward stage for {item.raw_id}")
+    store = BlobStore(archive_root / "blob")
+    payload = store.read_all(item.blob_hash)
+    if len(payload) != item.blob_size or hashlib.sha256(payload).hexdigest() != item.blob_hash:
+        raise RuntimeError(f"retained blob changed before copy-forward stage for {item.raw_id}")
+    try:
+        provider = detect_provider(json.loads(payload))
+        if provider is None or provider.value != item.canonical_provider:
+            raise ValueError("provider identity changed")
+        from polylogue.sources.revision_backfill import _parse_one
+
+        sessions = _parse_one(provider, payload, item.source_path)
+    except Exception as exc:
+        raise RuntimeError(f"browser parser evidence changed before copy-forward stage for {item.raw_id}") from exc
+    if len(sessions) != 1 or str(make_session_id(provider, sessions[0].provider_session_id)) != item.session_id:
+        raise RuntimeError(f"normalized session identity changed before copy-forward stage for {item.raw_id}")
+    projection = session_revision_projection(sessions[0])
+    if projection.session_hash.hex() != item.accepted_content_hash:
+        raise RuntimeError(f"normalized session content changed before copy-forward stage for {item.raw_id}")
+    membership = conn.execute(
+        """
+        SELECT provider_session_id, source_revision, normalized_content_hash,
+               message_count, acquisition_generation, revision_authority, decision
+        FROM raw_session_memberships WHERE raw_id = ? AND logical_source_key = ?
+        """,
+        (item.raw_id, item.canonical_logical_source_key),
+    ).fetchone()
+    census = conn.execute(
+        "SELECT status, member_count FROM raw_membership_census WHERE raw_id = ?", (item.raw_id,)
+    ).fetchone()
+    if (
+        membership is None
+        or tuple(membership)
+        != (
+            sessions[0].provider_session_id,
+            item.accepted_content_hash,
+            projection.session_hash,
+            len(projection.message_hashes),
+            0,
+            RawRevisionAuthority.QUARANTINED.value,
+            "applied",
+        )
+        or census is None
+        or tuple(census) != ("complete", 1)
+    ):
+        raise RuntimeError(f"membership evidence changed before copy-forward stage for {item.raw_id}")
+
+
+def _canonical_browser_origin_head_is_exact(
+    conn: sqlite3.Connection,
+    *,
+    canonical_head: sqlite3.Row,
+    canonical_key: str,
+    canonical_origin: Origin,
+    session_id: str,
+    accepted_hash: bytes,
+    message_count: int,
+) -> bool:
+    """Return whether an existing canonical head has full byte authority witnesses."""
+    raw_id = str(canonical_head["accepted_raw_id"])
+    source_revision = str(canonical_head["accepted_source_revision"])
+    frontier = int(canonical_head["accepted_frontier"])
+    generation = int(canonical_head["acquisition_generation"])
+    raw = conn.execute(
+        """
+        SELECT origin, blob_hash, blob_size, logical_source_key, revision_kind,
+               source_revision, baseline_raw_id, acquisition_generation, revision_authority
+        FROM source.raw_sessions WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    blob_ref = conn.execute(
+        "SELECT blob_hash, size_bytes FROM source.blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'",
+        (raw_id,),
+    ).fetchone()
+    membership = conn.execute(
+        """
+        SELECT provider_session_id, source_revision, normalized_content_hash, message_count,
+               acquisition_generation, revision_authority, decision
+        FROM source.raw_session_memberships WHERE raw_id = ? AND logical_source_key = ?
+        """,
+        (raw_id, canonical_key),
+    ).fetchone()
+    census = conn.execute(
+        "SELECT status, member_count FROM source.raw_membership_census WHERE raw_id = ?", (raw_id,)
+    ).fetchone()
+    application = conn.execute(
+        """
+        SELECT session_id, source_revision, acquisition_generation, decision, accepted_raw_id,
+               accepted_source_revision, accepted_content_hash, baseline_raw_id
+        FROM raw_revision_applications
+        WHERE raw_id = ? AND logical_source_key = ? AND decision = 'selected_baseline'
+        """,
+        (raw_id, canonical_key),
+    ).fetchone()
+    native_id = session_id.split(":", 1)[1]
+    if (
+        raw is None
+        or blob_ref is None
+        or membership is None
+        or census is None
+        or application is None
+        or str(canonical_head["session_id"]) != session_id
+        or _bytes_value(canonical_head["accepted_content_hash"]) != accepted_hash
+        or str(canonical_head["accepted_frontier_kind"]) != "byte"
+    ):
+        return False
+    return (
+        tuple(raw)
+        == (
+            canonical_origin.value,
+            bytes.fromhex(source_revision),
+            frontier,
+            canonical_key,
+            RawRevisionKind.FULL.value,
+            source_revision,
+            raw_id,
+            generation,
+            RawRevisionAuthority.BYTE_PROVEN.value,
+        )
+        and tuple(blob_ref) == (bytes.fromhex(source_revision), frontier)
+        and tuple(membership)
+        == (
+            native_id,
+            source_revision,
+            accepted_hash,
+            message_count,
+            generation,
+            RawRevisionAuthority.BYTE_PROVEN.value,
+            "applied",
+        )
+        and tuple(census) == ("complete", 1)
+        and tuple(application)
+        == (
+            session_id,
+            source_revision,
+            generation,
+            ApplicationDecision.SELECTED_BASELINE.value,
+            raw_id,
+            source_revision,
+            accepted_hash,
+            raw_id,
+        )
+    )
+
+
 def _inspect_browser_capture_origin_mismatch(
     archive_root: Path,
     raw_id: str,
@@ -1248,7 +1442,8 @@ def _inspect_browser_capture_origin_mismatch(
     canonical_head = conn.execute(
         """
         SELECT session_id, accepted_raw_id, accepted_source_revision,
-               accepted_content_hash, accepted_frontier_kind, accepted_frontier
+               accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+               acquisition_generation
         FROM raw_revision_heads WHERE logical_source_key = ?
         """,
         (canonical_key,),
@@ -1358,15 +1553,14 @@ def _inspect_browser_capture_origin_mismatch(
         replacement_source_revision = str(canonical_head["accepted_source_revision"])
         replacement_frontier_kind = str(canonical_head["accepted_frontier_kind"])
         replacement_frontier = int(canonical_head["accepted_frontier"])
-        replacement_source = conn.execute(
-            "SELECT origin FROM source.raw_sessions WHERE raw_id = ?",
-            (replacement_raw_id,),
-        ).fetchone()
-        if (
-            str(canonical_head["session_id"]) != session_id
-            or _bytes_value(canonical_head["accepted_content_hash"]) != accepted_hash
-            or replacement_source is None
-            or str(replacement_source["origin"]) != canonical_origin.value
+        if not _canonical_browser_origin_head_is_exact(
+            conn,
+            canonical_head=canonical_head,
+            canonical_key=canonical_key,
+            canonical_origin=canonical_origin,
+            session_id=session_id,
+            accepted_hash=accepted_hash,
+            message_count=len(projection.message_hashes),
         ):
             return _browser_origin_ineligible(raw_id, "canonical logical source has an incompatible accepted head")
         supersession = conn.execute(
@@ -1796,6 +1990,7 @@ def repair_browser_capture_origin_mismatches(
                                 and item.repair_strategy == "copy_forward"
                                 and not item.copy_forward_source_complete
                             ):
+                                _verify_browser_origin_copy_forward_source_stage(archive_root, source_conn, item)
                                 _stage_browser_origin_copy_forward_source(source_conn, item)
                         source_conn.commit()
                     except Exception:
