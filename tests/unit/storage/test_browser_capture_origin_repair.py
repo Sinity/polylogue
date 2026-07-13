@@ -126,6 +126,7 @@ def _seed_mismatched_browser_head(root: Path) -> str:
             """
             UPDATE raw_sessions
             SET origin = 'unknown-export',
+                native_id = 'browser-origin-one',
                 logical_source_key = 'unknown:browser-origin-one', revision_kind = 'full',
                 source_revision = lower(hex(blob_hash)), acquisition_generation = 0,
                 revision_authority = 'quarantined'
@@ -208,7 +209,7 @@ def _seed_equivalent_canonical_head(root: Path, mismatched_raw_id: str) -> str:
         source.execute(
             """
             UPDATE raw_sessions
-            SET logical_source_key = 'chatgpt:browser-origin-one', revision_kind = 'full',
+            SET native_id = 'browser-origin-one', logical_source_key = 'chatgpt:browser-origin-one', revision_kind = 'full',
                 source_revision = lower(hex(blob_hash)), baseline_raw_id = raw_id,
                 acquisition_generation = 0, revision_authority = 'byte_proven'
             WHERE raw_id = ?
@@ -262,14 +263,106 @@ def _seed_semantic_canonical_head(root: Path, mismatched_raw_id: str) -> str:
         index.execute(
             """
             UPDATE raw_revision_heads
-            SET accepted_frontier_kind = 'semantic', accepted_frontier = 1
+            SET accepted_source_revision = lower(hex(accepted_content_hash)),
+                accepted_frontier_kind = 'semantic', accepted_frontier = 1
             WHERE accepted_raw_id = ?
             """,
             (raw_id,),
         )
+        index.execute(
+            """
+            UPDATE raw_revision_applications
+            SET source_revision = lower(hex(accepted_content_hash)),
+                accepted_source_revision = lower(hex(accepted_content_hash)),
+                baseline_raw_id = NULL
+            WHERE raw_id = ? AND decision = 'selected_baseline'
+            """,
+            (raw_id,),
+        )
+        accepted_hash = bytes(
+            index.execute(
+                "SELECT accepted_content_hash FROM raw_revision_heads WHERE accepted_raw_id = ?", (raw_id,)
+            ).fetchone()[0]
+        )
+        semantic_revision = accepted_hash.hex()
+        decision_id = RevisionApplicationReceipt(
+            raw_id=raw_id,
+            session_id="chatgpt-export:browser-origin-one",
+            logical_source_key="chatgpt:browser-origin-one",
+            source_revision=semantic_revision,
+            acquisition_generation=0,
+            decision=ApplicationDecision.SELECTED_BASELINE,
+            accepted_raw_id=raw_id,
+            accepted_source_revision=semantic_revision,
+            accepted_content_hash=accepted_hash,
+        ).decision_id
+        index.execute(
+            "UPDATE raw_revision_applications SET decision_id = ? WHERE raw_id = ? AND decision = 'selected_baseline'",
+            (decision_id, raw_id),
+        )
         source.commit()
         index.commit()
     return raw_id
+
+
+def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
+    sibling_raw_id = "a" * 64
+    with sqlite3.connect(root / "source.db") as source:
+        for table, identity in (
+            ("raw_sessions", "raw_id"),
+            ("blob_refs", "ref_id"),
+            ("raw_session_memberships", "raw_id"),
+            ("raw_membership_census", "raw_id"),
+        ):
+            columns = [str(row[1]) for row in source.execute(f"PRAGMA table_info({table})")]
+            projection = ["?" if column == identity else column for column in columns]
+            source.execute(
+                f"INSERT INTO {table} ({', '.join(columns)}) "
+                f"SELECT {', '.join(projection)} FROM {table} WHERE {identity} = ?",
+                (sibling_raw_id, semantic_raw_id),
+            )
+        source.execute(
+            "UPDATE raw_sessions SET native_id = 'browser-origin-one' WHERE raw_id = ?",
+            (sibling_raw_id,),
+        )
+        original_blob_hash = source.execute(
+            "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?",
+            (semantic_raw_id,),
+        ).fetchone()[0]
+        store = BlobStore(root / "blob")
+        sibling_blob_hash, sibling_blob_size = store.write_from_bytes(store.read_all(original_blob_hash) + b"\n")
+        source.execute(
+            "UPDATE raw_sessions SET blob_hash = ?, blob_size = ? WHERE raw_id = ?",
+            (bytes.fromhex(sibling_blob_hash), sibling_blob_size, sibling_raw_id),
+        )
+        source.execute(
+            "UPDATE blob_refs SET blob_hash = ?, size_bytes = ? WHERE ref_id = ?",
+            (bytes.fromhex(sibling_blob_hash), sibling_blob_size, sibling_raw_id),
+        )
+        source.commit()
+    with sqlite3.connect(root / "index.db") as index:
+        accepted_hash = index.execute(
+            "SELECT accepted_content_hash FROM raw_revision_heads WHERE accepted_raw_id = ?",
+            (semantic_raw_id,),
+        ).fetchone()[0]
+        record_revision_application_sync(
+            index,
+            RevisionApplicationReceipt(
+                raw_id=sibling_raw_id,
+                session_id="chatgpt-export:browser-origin-one",
+                logical_source_key="chatgpt:browser-origin-one",
+                source_revision=bytes(accepted_hash).hex(),
+                acquisition_generation=1,
+                decision=ApplicationDecision.SUPERSEDED,
+                accepted_raw_id=semantic_raw_id,
+                accepted_source_revision=bytes(accepted_hash).hex(),
+                accepted_content_hash=bytes(accepted_hash),
+                detail="membership:superseded_equivalent",
+            ),
+            decided_at_ms=3,
+        )
+        index.commit()
+    return sibling_raw_id
 
 
 def _rows(root: Path, tier: str, table: str, where: str, params: tuple[object, ...]) -> list[tuple[object, ...]]:
@@ -395,7 +488,24 @@ def test_browser_capture_origin_rebuild_keeps_copy_forward_head(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    "mutation", ["blob", "head", "origin", "application", "generation", "authority", "canonical_head"]
+    "mutation",
+    [
+        "blob",
+        "head",
+        "origin",
+        "application",
+        "generation",
+        "authority",
+        "native_id",
+        "source_index",
+        "blob_ref_path",
+        "predecessor_source",
+        "predecessor_raw",
+        "append_start",
+        "append_end",
+        "capture_mode",
+        "canonical_head",
+    ],
 )
 def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Path, mutation: str) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
@@ -423,6 +533,26 @@ def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Pat
             )
         elif mutation == "authority":
             source.execute("UPDATE raw_sessions SET revision_authority = 'byte_proven' WHERE raw_id = ?", (raw_id,))
+        elif mutation == "native_id":
+            source.execute("UPDATE raw_sessions SET native_id = 'wrong-native-id' WHERE raw_id = ?", (raw_id,))
+        elif mutation == "source_index":
+            source.execute("UPDATE raw_sessions SET source_index = 1 WHERE raw_id = ?", (raw_id,))
+        elif mutation == "blob_ref_path":
+            source.execute(
+                "UPDATE blob_refs SET source_path = 'browser-capture/wrong.json' WHERE ref_id = ?", (raw_id,)
+            )
+        elif mutation == "predecessor_source":
+            source.execute(
+                "UPDATE raw_sessions SET predecessor_source_revision = ? WHERE raw_id = ?", ("0" * 64, raw_id)
+            )
+        elif mutation == "predecessor_raw":
+            source.execute("UPDATE raw_sessions SET predecessor_raw_id = ? WHERE raw_id = ?", ("f" * 64, raw_id))
+        elif mutation == "append_start":
+            source.execute("UPDATE raw_sessions SET append_start_offset = 0 WHERE raw_id = ?", (raw_id,))
+        elif mutation == "append_end":
+            source.execute("UPDATE raw_sessions SET append_end_offset = 1 WHERE raw_id = ?", (raw_id,))
+        elif mutation == "capture_mode":
+            source.execute("UPDATE raw_sessions SET capture_mode = 'chatgpt' WHERE raw_id = ?", (raw_id,))
         else:
             index.execute(
                 """
@@ -452,6 +582,17 @@ def test_browser_capture_origin_rejects_unresolved_source_membership(tmp_path: P
     report = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
 
     assert report.ineligible_count == 1
+
+
+def test_browser_capture_origin_rejects_legacy_raw_without_native_id(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("UPDATE raw_sessions SET native_id = NULL WHERE raw_id = ?", (raw_id,))
+
+    report = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "source envelope does not exactly bind the normalized session"
 
 
 def test_browser_capture_origin_copy_forward_accepts_source_v7_without_capture_mode(tmp_path: Path) -> None:
@@ -543,7 +684,397 @@ def test_browser_capture_origin_repair_copy_forwards_from_semantic_canonical_wit
         ).fetchone() == (copy_raw_id,)
 
 
-@pytest.mark.parametrize("mutation", ["frontier", "pointer", "membership"])
+def test_browser_origin_repair_accepts_exact_semantic_superseded_sibling(tmp_path: Path) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
+    sibling_raw_id = _seed_semantic_superseded_sibling(tmp_path, semantic_raw_id)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert (
+            source.execute(
+                "SELECT blob_hash FROM raw_sessions WHERE raw_id = ?",
+                (sibling_raw_id,),
+            ).fetchone()
+            != source.execute(
+                "SELECT blob_hash FROM raw_sessions WHERE raw_id = ?",
+                (semantic_raw_id,),
+            ).fetchone()
+        )
+    historical_before = _rows(
+        tmp_path,
+        "index",
+        "raw_revision_applications",
+        "raw_id = ?",
+        (sibling_raw_id,),
+    )
+
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+
+    assert dry_run.eligible_count == 1, dry_run.items[0].reason
+    item = dry_run.items[0]
+    assert item.semantic_canonical_raw_id == semantic_raw_id
+    assert item.semantic_historical_raw_ids == (sibling_raw_id,)
+    assert item.semantic_witness_digest is not None
+    assert (
+        _rows(
+            tmp_path,
+            "index",
+            "raw_revision_applications",
+            "raw_id = ?",
+            (sibling_raw_id,),
+        )
+        == historical_before
+    )
+    receipt = tmp_path / "semantic-sibling-receipt.jsonl"
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [mismatched_raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    assert applied.repaired_count == 1
+    assert applied.items[0].status == "already_repaired"
+    assert applied.items[0].semantic_canonical_raw_id == semantic_raw_id
+    assert applied.items[0].semantic_historical_raw_ids == (sibling_raw_id,)
+    assert applied.items[0].semantic_witness_digest == item.semantic_witness_digest
+    assert applied.items[0].terminal_byte_witness_digest is not None
+
+    reapplied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [mismatched_raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+
+    assert reapplied.repaired_count == 0
+    assert reapplied.items[0].semantic_witness_digest == item.semantic_witness_digest
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "head_frontier",
+        "head_revision",
+        "receipt_id",
+        "receipt_time",
+        "copy_predecessor_revision",
+        "copy_predecessor_raw",
+        "copy_append_start",
+        "copy_append_end",
+        "copy_capture_mode",
+    ],
+)
+def test_browser_origin_repair_refuses_mutated_terminal_byte_authority(tmp_path: Path, mutation: str) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
+    _seed_semantic_superseded_sibling(tmp_path, semantic_raw_id)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+    receipt = tmp_path / "terminal-byte-authority.jsonl"
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [mismatched_raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    copy_raw_id = applied.items[0].copy_forward_raw_id
+    assert copy_raw_id is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source_count = source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        if mutation == "head_frontier":
+            index.execute(
+                "UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1 WHERE accepted_raw_id = ?",
+                (copy_raw_id,),
+            )
+        elif mutation == "head_revision":
+            index.execute(
+                "UPDATE raw_revision_heads SET accepted_source_revision = ? WHERE accepted_raw_id = ?",
+                ("0" * 64, copy_raw_id),
+            )
+        elif mutation == "receipt_id":
+            index.execute(
+                "UPDATE raw_revision_applications SET decision_id = ? WHERE raw_id = ?",
+                ("e" * 64, copy_raw_id),
+            )
+        elif mutation == "receipt_time":
+            index.execute(
+                "UPDATE raw_revision_applications SET decided_at_ms = decided_at_ms + 1 WHERE raw_id = ?",
+                (copy_raw_id,),
+            )
+        else:
+            with sqlite3.connect(tmp_path / "source.db") as source:
+                if mutation == "copy_predecessor_revision":
+                    source.execute(
+                        "UPDATE raw_sessions SET predecessor_source_revision = ? WHERE raw_id = ?",
+                        ("0" * 64, copy_raw_id),
+                    )
+                elif mutation == "copy_predecessor_raw":
+                    source.execute(
+                        "UPDATE raw_sessions SET predecessor_raw_id = ? WHERE raw_id = ?",
+                        ("f" * 64, copy_raw_id),
+                    )
+                elif mutation == "copy_append_start":
+                    source.execute("UPDATE raw_sessions SET append_start_offset = 0 WHERE raw_id = ?", (copy_raw_id,))
+                elif mutation == "copy_append_end":
+                    source.execute("UPDATE raw_sessions SET append_end_offset = 1 WHERE raw_id = ?", (copy_raw_id,))
+                else:
+                    source.execute("UPDATE raw_sessions SET capture_mode = 'unknown' WHERE raw_id = ?", (copy_raw_id,))
+
+    with pytest.raises(RuntimeError, match="ineligible"):
+        repair_browser_capture_origin_mismatches(
+            _config(tmp_path),
+            [mismatched_raw_id],
+            apply=True,
+            receipt_path=receipt,
+            proof_digest=dry_run.proof_digest,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (source_count,)
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
+
+
+def test_browser_origin_repair_refuses_competing_terminal_copy_application(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    receipt = tmp_path / "competing-copy-application.jsonl"
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+    item = applied.items[0]
+    assert item.copy_forward_raw_id is not None
+    assert item.session_id is not None
+    assert item.canonical_logical_source_key is not None
+    assert item.blob_hash is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source_count = source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        record_revision_application_sync(
+            index,
+            RevisionApplicationReceipt(
+                raw_id=item.copy_forward_raw_id,
+                session_id=item.session_id,
+                logical_source_key=item.canonical_logical_source_key,
+                source_revision=item.blob_hash,
+                acquisition_generation=0,
+                decision=ApplicationDecision.DEFERRED,
+                accepted_raw_id=None,
+                accepted_source_revision=None,
+                accepted_content_hash=None,
+                detail="competing copy receipt",
+            ),
+            decided_at_ms=99,
+        )
+
+    with pytest.raises(RuntimeError, match="ineligible"):
+        repair_browser_capture_origin_mismatches(
+            _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (source_count,)
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
+
+
+@pytest.mark.parametrize(
+    "decision", [ApplicationDecision.SUPERSEDED, ApplicationDecision.DEFERRED, ApplicationDecision.AMBIGUOUS]
+)
+def test_browser_origin_repair_refuses_extra_old_key_receipt(tmp_path: Path, decision: ApplicationDecision) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        blob_hash = source.execute(
+            "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()[0]
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        accepted_hash = bytes(
+            index.execute(
+                "SELECT content_hash FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
+            ).fetchone()[0]
+        )
+        record_revision_application_sync(
+            index,
+            RevisionApplicationReceipt(
+                raw_id=raw_id,
+                session_id="chatgpt-export:browser-origin-one",
+                logical_source_key="unknown:browser-origin-one",
+                source_revision=blob_hash,
+                acquisition_generation=0,
+                decision=decision,
+                accepted_raw_id=raw_id if decision is ApplicationDecision.SUPERSEDED else None,
+                accepted_source_revision=blob_hash if decision is ApplicationDecision.SUPERSEDED else None,
+                accepted_content_hash=accepted_hash if decision is ApplicationDecision.SUPERSEDED else None,
+                detail=f"unexpected {decision.value}",
+            ),
+            decided_at_ms=98,
+        )
+
+    assert repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id]).ineligible_count == 1
+
+
+@pytest.mark.parametrize("head_shape", ["old", "semantic"])
+def test_browser_origin_repair_refuses_head_receipt_timestamp_drift(tmp_path: Path, head_shape: str) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    accepted_raw_id = raw_id if head_shape == "old" else _seed_semantic_canonical_head(tmp_path, raw_id)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        index.execute(
+            "UPDATE raw_revision_heads SET decided_at_ms = decided_at_ms + 1 WHERE accepted_raw_id = ?",
+            (accepted_raw_id,),
+        )
+
+    assert repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id]).ineligible_count == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "receipt",
+        "revision",
+        "membership",
+        "selected",
+        "blob",
+        "native_id",
+        "source_index",
+        "blob_ref_path",
+        "predecessor_source",
+        "predecessor_raw",
+        "append_start",
+        "append_end",
+        "capture_mode",
+        "negative_decided_at",
+    ],
+)
+def test_browser_origin_repair_rejects_underproven_semantic_supersession(tmp_path: Path, mutation: str) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
+    sibling_raw_id = _seed_semantic_superseded_sibling(tmp_path, semantic_raw_id)
+    if mutation == "receipt":
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "UPDATE raw_revision_applications SET accepted_raw_id = ? WHERE raw_id = ?",
+                (sibling_raw_id, sibling_raw_id),
+            )
+    elif mutation == "revision":
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "UPDATE raw_revision_applications SET accepted_source_revision = ? WHERE raw_id = ?",
+                ("0" * 64, sibling_raw_id),
+            )
+    elif mutation == "membership":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute(
+                "UPDATE raw_session_memberships SET decision = 'ambiguous', decided_at_ms = 4 WHERE raw_id = ?",
+                (sibling_raw_id,),
+            )
+    elif mutation == "selected":
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "UPDATE raw_revision_applications SET decision = 'selected_baseline' WHERE raw_id = ?",
+                (sibling_raw_id,),
+            )
+    elif mutation == "blob":
+        different_payload = _browser_payload("browser-origin-two")
+        blob_hash, blob_size = BlobStore(tmp_path / "blob").write_from_bytes(different_payload)
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute(
+                "UPDATE raw_sessions SET native_id = 'browser-origin-two', blob_hash = ?, blob_size = ? WHERE raw_id = ?",
+                (bytes.fromhex(blob_hash), blob_size, sibling_raw_id),
+            )
+            source.execute(
+                "UPDATE blob_refs SET blob_hash = ?, size_bytes = ? WHERE ref_id = ?",
+                (bytes.fromhex(blob_hash), blob_size, sibling_raw_id),
+            )
+    elif mutation == "negative_decided_at":
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute("PRAGMA ignore_check_constraints = ON")
+            index.execute(
+                "UPDATE raw_revision_applications SET decided_at_ms = -1 WHERE raw_id = ?",
+                (sibling_raw_id,),
+            )
+    else:
+        updates = {
+            "native_id": ("native_id = 'wrong-native-id'", ()),
+            "source_index": ("source_index = 1", ()),
+            "blob_ref_path": (None, ()),
+            "predecessor_source": ("predecessor_source_revision = ?", ("0" * 64,)),
+            "predecessor_raw": ("predecessor_raw_id = ?", ("f" * 64,)),
+            "append_start": ("append_start_offset = 0", ()),
+            "append_end": ("append_end_offset = 1", ()),
+            "capture_mode": ("capture_mode = 'unknown'", ()),
+        }
+        assignment, params = updates[mutation]
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            if assignment is None:
+                source.execute(
+                    "UPDATE blob_refs SET source_path = 'browser-capture/wrong.json' WHERE ref_id = ?",
+                    (sibling_raw_id,),
+                )
+            else:
+                source.execute(f"UPDATE raw_sessions SET {assignment} WHERE raw_id = ?", (*params, sibling_raw_id))
+
+    report = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+
+    assert report.ineligible_count == 1
+
+
+@pytest.mark.parametrize("field", ["decision_id", "detail", "decided_at_ms", "frontier"])
+def test_browser_origin_repair_refuses_changed_semantic_receipt_before_apply(tmp_path: Path, field: str) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
+    sibling_raw_id = _seed_semantic_superseded_sibling(tmp_path, semantic_raw_id)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        if field == "decision_id":
+            index.execute(
+                "UPDATE raw_revision_applications SET decision_id = ? WHERE raw_id = ?",
+                ("f" * 64, sibling_raw_id),
+            )
+        elif field == "detail":
+            index.execute(
+                "UPDATE raw_revision_applications SET detail = 'tampered' WHERE raw_id = ?",
+                (sibling_raw_id,),
+            )
+        elif field == "decided_at_ms":
+            index.execute(
+                "UPDATE raw_revision_applications SET decided_at_ms = decided_at_ms + 1 WHERE raw_id = ?",
+                (sibling_raw_id,),
+            )
+        else:
+            index.execute(
+                "UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1 WHERE accepted_raw_id = ?",
+                (semantic_raw_id,),
+            )
+
+    with pytest.raises(RuntimeError, match="(ineligible|proof digest)"):
+        repair_browser_capture_origin_mismatches(
+            _config(tmp_path),
+            [mismatched_raw_id],
+            apply=True,
+            receipt_path=tmp_path / f"semantic-{field}.jsonl",
+            proof_digest=dry_run.proof_digest,
+        )
+    assert (
+        _rows(tmp_path, "source", "raw_sessions", "source_path LIKE ?", ("browser-capture-origin-copy-forward/%",))
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "frontier",
+        "pointer",
+        "membership",
+        "native_id",
+        "source_index",
+        "blob_ref_path",
+        "predecessor_source",
+        "predecessor_raw",
+        "append_start",
+        "append_end",
+        "capture_mode",
+    ],
+)
 def test_browser_capture_origin_repair_rejects_underproven_semantic_canonical_head(
     tmp_path: Path, mutation: str
 ) -> None:
@@ -561,19 +1092,54 @@ def test_browser_capture_origin_repair_rejects_underproven_semantic_canonical_he
                 "UPDATE sessions SET raw_id = ? WHERE session_id = 'chatgpt-export:browser-origin-one'",
                 (semantic_raw_id,),
             )
-    else:
+    elif mutation == "membership":
         with sqlite3.connect(tmp_path / "source.db") as source:
             source.execute(
                 "UPDATE raw_session_memberships SET decision = 'ambiguous', decided_at_ms = 5 WHERE raw_id = ?",
                 (semantic_raw_id,),
             )
+    else:
+        updates = {
+            "native_id": ("native_id = 'wrong-native-id'", ()),
+            "source_index": ("source_index = 1", ()),
+            "blob_ref_path": (None, ()),
+            "predecessor_source": ("predecessor_source_revision = ?", ("0" * 64,)),
+            "predecessor_raw": ("predecessor_raw_id = ?", ("f" * 64,)),
+            "append_start": ("append_start_offset = 0", ()),
+            "append_end": ("append_end_offset = 1", ()),
+            "capture_mode": ("capture_mode = 'unknown'", ()),
+        }
+        assignment, params = updates[mutation]
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            if assignment is None:
+                source.execute(
+                    "UPDATE blob_refs SET source_path = 'browser-capture/wrong.json' WHERE ref_id = ?",
+                    (semantic_raw_id,),
+                )
+            else:
+                source.execute(f"UPDATE raw_sessions SET {assignment} WHERE raw_id = ?", (*params, semantic_raw_id))
 
     report = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
 
     assert report.ineligible_count == 1
 
 
-@pytest.mark.parametrize("mutation", ["envelope", "membership", "application"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "envelope",
+        "membership",
+        "application",
+        "native_id",
+        "source_index",
+        "blob_ref_path",
+        "predecessor_source",
+        "predecessor_raw",
+        "append_start",
+        "append_end",
+        "capture_mode",
+    ],
+)
 def test_browser_capture_origin_repair_rejects_underproven_canonical_head(tmp_path: Path, mutation: str) -> None:
     mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
     canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
@@ -587,12 +1153,32 @@ def test_browser_capture_origin_repair_rejects_underproven_canonical_head(tmp_pa
             source.execute(
                 "UPDATE raw_session_memberships SET decision = 'ambiguous' WHERE raw_id = ?", (canonical_raw_id,)
             )
-    else:
+    elif mutation == "application":
         with sqlite3.connect(tmp_path / "index.db") as index:
             index.execute(
                 "DELETE FROM raw_revision_applications WHERE raw_id = ? AND decision = 'selected_baseline'",
                 (canonical_raw_id,),
             )
+    else:
+        updates = {
+            "native_id": ("native_id = 'wrong-native-id'", ()),
+            "source_index": ("source_index = 1", ()),
+            "blob_ref_path": (None, ()),
+            "predecessor_source": ("predecessor_source_revision = ?", ("0" * 64,)),
+            "predecessor_raw": ("predecessor_raw_id = ?", ("f" * 64,)),
+            "append_start": ("append_start_offset = 0", ()),
+            "append_end": ("append_end_offset = 1", ()),
+            "capture_mode": ("capture_mode = 'unknown'", ()),
+        }
+        assignment, params = updates[mutation]
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            if assignment is None:
+                source.execute(
+                    "UPDATE blob_refs SET source_path = 'browser-capture/wrong.json' WHERE ref_id = ?",
+                    (canonical_raw_id,),
+                )
+            else:
+                source.execute(f"UPDATE raw_sessions SET {assignment} WHERE raw_id = ?", (*params, canonical_raw_id))
 
     report = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
 
@@ -613,25 +1199,61 @@ def test_browser_capture_origin_repair_rejects_missing_canonical_blob(tmp_path: 
     assert report.ineligible_count == 1
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "blob_size",
+        "native_id",
+        "source_index",
+        "blob_ref_path",
+        "predecessor_source",
+        "predecessor_raw",
+        "append_start",
+        "append_end",
+        "capture_mode",
+    ],
+)
 def test_browser_capture_origin_copy_forward_reproves_before_source_stage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
     import polylogue.storage.repair as repair_module
 
     raw_id = _seed_mismatched_browser_head(tmp_path)
     dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
-    original_lock = repair_module._lock_browser_origin_receipt
+    original_verify = repair_module._verify_browser_origin_copy_forward_source_stage
 
-    def mutate_after_receipt(
-        path: Path,
-        items: list[repair_module.BrowserCaptureOriginRepairItem],
-    ) -> repair_module._BrowserOriginReceipt:
-        receipt = original_lock(path, items)
-        with sqlite3.connect(tmp_path / "source.db") as source:
+    def mutate_at_locked_source_stage(
+        archive_root: Path,
+        source: sqlite3.Connection,
+        item: repair_module.BrowserCaptureOriginRepairItem,
+    ) -> None:
+        if mutation == "blob_size":
             source.execute("UPDATE raw_sessions SET blob_size = blob_size + 1 WHERE raw_id = ?", (raw_id,))
-        return receipt
+        elif mutation == "native_id":
+            source.execute("UPDATE raw_sessions SET native_id = 'wrong-native-id' WHERE raw_id = ?", (raw_id,))
+        elif mutation == "source_index":
+            source.execute("UPDATE raw_sessions SET source_index = 1 WHERE raw_id = ?", (raw_id,))
+        elif mutation == "blob_ref_path":
+            source.execute(
+                "UPDATE blob_refs SET source_path = 'browser-capture/wrong.json' WHERE ref_id = ?", (raw_id,)
+            )
+        elif mutation == "predecessor_source":
+            source.execute(
+                "UPDATE raw_sessions SET predecessor_source_revision = ? WHERE raw_id = ?", ("0" * 64, raw_id)
+            )
+        elif mutation == "predecessor_raw":
+            source.execute("UPDATE raw_sessions SET predecessor_raw_id = ? WHERE raw_id = ?", ("f" * 64, raw_id))
+        elif mutation == "append_start":
+            source.execute("UPDATE raw_sessions SET append_start_offset = 0 WHERE raw_id = ?", (raw_id,))
+        elif mutation == "append_end":
+            source.execute("UPDATE raw_sessions SET append_end_offset = 1 WHERE raw_id = ?", (raw_id,))
+        else:
+            source.execute("UPDATE raw_sessions SET capture_mode = 'chatgpt' WHERE raw_id = ?", (raw_id,))
+        original_verify(archive_root, source, item)
 
-    monkeypatch.setattr(repair_module, "_lock_browser_origin_receipt", mutate_after_receipt)
+    monkeypatch.setattr(
+        repair_module, "_verify_browser_origin_copy_forward_source_stage", mutate_at_locked_source_stage
+    )
     with pytest.raises(RuntimeError, match="source evidence changed"):
         repair_browser_capture_origin_mismatches(
             _config(tmp_path),
