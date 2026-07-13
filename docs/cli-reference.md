@@ -162,7 +162,7 @@ Commands:
     analyze   Analyze matched sessions and named facet families.
     facets    Show global or scoped archive facet families.
     delete    Delete matched sessions.
-    continue  Compile a successor-agent continuation report.
+    continue  Print or execute the harness command that resumes a session.
     Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
     command.
 
@@ -480,7 +480,6 @@ Usage: polylogue continue [OPTIONS]
 
   Examples:
       polylogue find id:abc then continue
-      polylogue find id:abc then continue
       polylogue find id:abc then continue --exec
       polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
 
@@ -501,8 +500,8 @@ Options:
   --limit INTEGER                 Maximum continuation candidates to return.
                                   [default: 10]
   --json                          Shortcut for --format json.
-  -f, --format [json]             Output format. JSON emits the shared
-                                  ContextImage payload.
+  -f, --format [json]             Reserved for compatibility; continue emits a
+                                  shell command only.
   --help                          Show this message and exit.
 ```
 

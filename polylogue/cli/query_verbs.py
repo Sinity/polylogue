@@ -1362,7 +1362,7 @@ def read_verb(
     "output_format",
     type=click.Choice(["json"]),
     default=None,
-    help="Output format. JSON emits the shared ContextImage payload.",
+    help="Reserved for compatibility; continue emits a shell command only.",
 )
 @click.pass_context
 def continue_verb(
@@ -1381,7 +1381,6 @@ def continue_verb(
 
     \b
     Examples:
-        polylogue find id:abc then continue
         polylogue find id:abc then continue
         polylogue find id:abc then continue --exec
         polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
