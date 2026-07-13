@@ -198,3 +198,28 @@ def test_select_returns_fzf_choice_in_json_in_a_real_pty(
         "origin": "chatgpt-export",
         "title": "Interactive picker candidate older",
     }
+
+
+def test_select_candidate_reordering_changes_the_fzf_selected_session(
+    cli_workspace: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Mutation control: changing real query order changes the chosen first row."""
+    _seed_picker_sessions(cli_workspace)
+
+    selected: set[str] = set()
+    for name, args in (
+        ("ascending", ["--sort", "date"]),
+        ("descending", ["--sort", "date", "--reverse"]),
+    ):
+        picker_dir = tmp_path / f"{name}-bin"
+        picker_dir.mkdir()
+        _install_first_row_fzf(picker_dir, tmp_path / f"{name}-fzf-options.txt")
+        result = run_in_pty(
+            [*args, "find", "title:Interactive", "then", "select"],
+            env=_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir),
+        )
+        assert result.exit_code == 0
+        selected.add(grid_to_text(result.grid).splitlines()[-1])
+
+    assert selected == {"chatgpt-export:ext-newer", "chatgpt-export:ext-older"}
