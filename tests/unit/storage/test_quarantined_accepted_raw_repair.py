@@ -430,25 +430,97 @@ def test_quarantined_accepted_raw_repair_preserves_parallel_provenance_context(t
     assert report.items[0].authority_context_digest
 
 
-def test_quarantined_accepted_raw_repair_source_v7_authorizes_only_fixed_cohort(tmp_path: Path) -> None:
-    authorized_fixture_raw = _seed_invalid_head(tmp_path, "authorized")
-    arbitrary_raw = _seed_invalid_head(tmp_path, "arbitrary")
-    from polylogue.storage import repair as repair_module
-
-    authorized_raw = sorted(repair_module._LEGACY_YLA_AUTHORITY_RAW_IDS)[0]
-    _retarget_fixture_raw_id(tmp_path, authorized_fixture_raw, authorized_raw)
+def test_quarantined_accepted_raw_repair_source_v7_requires_injective_origin(tmp_path: Path) -> None:
+    injective_raw = _seed_invalid_head(tmp_path, "injective")
+    noninjective_raw = _seed_invalid_head(tmp_path, "noninjective")
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute("ALTER TABLE raw_sessions DROP COLUMN capture_mode")
         source.execute("PRAGMA user_version = 7")
+        source.execute("UPDATE raw_sessions SET origin = 'aistudio-drive' WHERE raw_id = ?", (noninjective_raw,))
         source.commit()
 
-    eligible = repair_module.repair_quarantined_accepted_raws(_config(tmp_path), [authorized_raw])
-    refused = repair_module.repair_quarantined_accepted_raws(_config(tmp_path), [arbitrary_raw])
+    eligible = repair_quarantined_accepted_raws(_config(tmp_path), [injective_raw])
+    refused = repair_quarantined_accepted_raws(_config(tmp_path), [noninjective_raw])
 
     assert eligible.eligible_count == 1, eligible.items[0].reason
     assert eligible.items[0].capture_mode is None
     assert refused.ineligible_count == 1
-    assert refused.items[0].reason == "legacy source tier authorizes only the fixed yla8.10 repair cohort"
+    assert refused.items[0].reason == "source-v7 origin is not injective without capture-mode authority"
+
+
+def test_quarantined_accepted_raw_repair_stages_source_v7_census_before_target_cas(tmp_path: Path) -> None:
+    raw_id = _seed_invalid_head(tmp_path, "staged")
+    sibling_raw_id = "e" * 64
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind, source_revision,
+                acquisition_generation, revision_authority
+            ) SELECT ?, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                     acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind, source_revision,
+                     acquisition_generation, revision_authority
+              FROM raw_sessions WHERE raw_id = ?
+            """,
+            (sibling_raw_id, raw_id),
+        )
+        source.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            SELECT blob_hash, ?, ref_type, source_path, size_bytes, acquired_at_ms
+              FROM blob_refs WHERE ref_id = ?
+            """,
+            (sibling_raw_id, raw_id),
+        )
+        source.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (raw_id,))
+        source.execute("DELETE FROM raw_membership_census WHERE raw_id = ?", (raw_id,))
+        source.execute("ALTER TABLE raw_sessions DROP COLUMN capture_mode")
+        source.execute("PRAGMA user_version = 7")
+        source.commit()
+
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
+
+    assert dry_run.eligible_count == 1, dry_run.items[0].reason
+    assert dry_run.items[0].census_stage_raw_ids == tuple(sorted((raw_id, sibling_raw_id)))
+    receipt = tmp_path / "source-v7-stage.jsonl"
+    applied = repair_quarantined_accepted_raws(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+
+    assert applied.repaired_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute(
+            "SELECT revision_authority, baseline_raw_id FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == ("byte_proven", raw_id)
+        assert source.execute(
+            "SELECT revision_authority, baseline_raw_id FROM raw_sessions WHERE raw_id = ?", (sibling_raw_id,)
+        ).fetchone() == ("quarantined", None)
+        assert source.execute(
+            "SELECT COUNT(*) FROM raw_session_memberships WHERE raw_id IN (?, ?)", (raw_id, sibling_raw_id)
+        ).fetchone() == (2,)
+        assert source.execute(
+            "SELECT COUNT(*) FROM raw_membership_census WHERE raw_id IN (?, ?)", (raw_id, sibling_raw_id)
+        ).fetchone() == (2,)
+
+
+def test_quarantined_accepted_raw_repair_refuses_source_v7_census_staging_with_mixed_cohort(tmp_path: Path) -> None:
+    raw_id = _seed_invalid_head(tmp_path, "mixed")
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (raw_id,))
+        source.execute("DELETE FROM raw_membership_census WHERE raw_id = ?", (raw_id,))
+        source.execute("UPDATE raw_sessions SET origin = 'aistudio-drive' WHERE raw_id = ?", (raw_id,))
+        source.execute("ALTER TABLE raw_sessions DROP COLUMN capture_mode")
+        source.commit()
+
+    report = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "source-v7 origin is not injective without capture-mode authority"
 
 
 def test_quarantined_accepted_raw_repair_rejects_duplicates_and_rolls_back_batch(

@@ -66,13 +66,8 @@ _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.quarantined-accepted-raw-repair.v1"
 _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-origin-copy-forward.v1"
-_LEGACY_YLA_AUTHORITY_RAW_IDS = frozenset(
-    {
-        "a7d004c9aa943f6a10211851904105ee1c647c331552646e1b9cbe268940ed11",
-        "f19944c8fe19cd59aab2e67d2c8dc04569834d1557a7441c5dc628a117a15176",
-        "fa0574f82a49e6ba58a3abdfd0a49c81189d81c4217f888ffe18ff909dacbd01",
-    }
-)
+_QUARANTINED_CENSUS_STAGE_FINGERPRINT = "repair-quarantined-accepted-raw-v1"
+_QUARANTINED_CENSUS_STAGE_DETAIL = "census-only evidence staged before accepted-head authority refinement"
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +138,8 @@ class QuarantinedAcceptedRawRepairItem:
     parallel_session_head_count: int = 0
     quarantined_sibling_raw_count: int = 0
     membership_row_count: int = 0
+    census_stage_raw_ids: tuple[str, ...] = ()
+    parsed_message_count: int | None = None
     proof_digest: str | None = None
     repaired: bool = False
 
@@ -185,6 +182,7 @@ class BrowserCaptureOriginRepairItem:
     copy_forward_raw_id: str | None = None
     copy_forward_source_path: str | None = None
     copy_forward_source_complete: bool = False
+    semantic_canonical_raw_id: str | None = None
     evidence_digest: str | None = None
     proof_digest: str | None = None
     repaired: bool = False
@@ -264,6 +262,218 @@ def _raw_sessions_capture_mode_available(conn: sqlite3.Connection) -> bool:
     return any(str(row[1]) == "capture_mode" for row in conn.execute("PRAGMA main.table_info(raw_sessions)").fetchall())
 
 
+def _stageable_quarantined_census_cohort(
+    archive_root: Path,
+    *,
+    conn: sqlite3.Connection,
+    raw: sqlite3.Row,
+    origin: Origin,
+    provider: Provider,
+    logical_source_key: str,
+    session_id: str,
+    accepted_hash: bytes,
+) -> tuple[tuple[str, ...], str | None]:
+    """Prove a source-v7 same-path cohort is safe for census-only staging.
+
+    This deliberately proves every raw before inserting any membership evidence.
+    It never changes a raw envelope or index authority; the caller may refine only
+    the requested accepted raw after this witness exists.
+    """
+    rows = conn.execute(
+        """
+        SELECT raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+               file_mtime_ms, logical_source_key, revision_kind, source_revision,
+               predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+               append_start_offset, append_end_offset, acquisition_generation,
+               revision_authority
+        FROM raw_sessions WHERE source_path = ? ORDER BY raw_id
+        """,
+        (str(raw["source_path"]),),
+    ).fetchall()
+    if not rows or str(rows[0]["source_path"]) != str(raw["source_path"]):
+        return (), "same-source-path cohort is missing"
+    store = BlobStore(archive_root / "blob")
+    staged_ids: list[str] = []
+    for candidate in rows:
+        candidate_id = str(candidate["raw_id"])
+        try:
+            candidate_blob_hash = _bytes_value(candidate["blob_hash"])
+        except ValueError:
+            return (), "same-source-path cohort has a malformed blob hash"
+        expected_envelope = (
+            logical_source_key,
+            RawRevisionKind.FULL.value,
+            candidate_blob_hash.hex(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+            RawRevisionAuthority.QUARANTINED.value,
+        )
+        repaired_target_envelope = (
+            logical_source_key,
+            RawRevisionKind.FULL.value,
+            candidate_blob_hash.hex(),
+            None,
+            None,
+            candidate_id,
+            None,
+            None,
+            0,
+            RawRevisionAuthority.BYTE_PROVEN.value,
+        )
+        actual_envelope = (
+            candidate["logical_source_key"],
+            str(candidate["revision_kind"]),
+            candidate["source_revision"],
+            candidate["predecessor_source_revision"],
+            candidate["predecessor_raw_id"],
+            candidate["baseline_raw_id"],
+            candidate["append_start_offset"],
+            candidate["append_end_offset"],
+            candidate["acquisition_generation"],
+            str(candidate["revision_authority"]),
+        )
+        blob_ref = conn.execute(
+            """
+            SELECT blob_hash, source_path, size_bytes FROM blob_refs
+            WHERE ref_id = ? AND ref_type = 'raw_payload'
+            """,
+            (candidate_id,),
+        ).fetchall()
+        memberships = conn.execute(
+            """
+            SELECT logical_source_key, provider_session_id, source_revision,
+                   normalized_content_hash, message_count, predecessor_raw_id,
+                   acquisition_generation, revision_authority, decision, decided_at_ms
+            FROM raw_session_memberships WHERE raw_id = ?
+            """,
+            (candidate_id,),
+        ).fetchall()
+        census = conn.execute(
+            """
+            SELECT parser_fingerprint, status, member_count, detail
+            FROM raw_membership_census WHERE raw_id = ?
+            """,
+            (candidate_id,),
+        ).fetchall()
+        if (
+            str(candidate["origin"]) != origin.value
+            or int(candidate["source_index"]) < 0
+            or actual_envelope
+            not in (
+                {expected_envelope, repaired_target_envelope}
+                if candidate_id == str(raw["raw_id"])
+                else {expected_envelope}
+            )
+            or len(blob_ref) != 1
+            or tuple(blob_ref[0]) != (candidate_blob_hash, str(candidate["source_path"]), int(candidate["blob_size"]))
+        ):
+            return (), "same-source-path cohort has incompatible durable authority"
+        if not store.exists(candidate_blob_hash.hex()) or not store.verify(candidate_blob_hash.hex()):
+            return (), "same-source-path cohort has a missing or invalid retained blob"
+        payload = store.read_all(candidate_blob_hash.hex())
+        if len(payload) != int(candidate["blob_size"]) or hashlib.sha256(payload).digest() != candidate_blob_hash:
+            return (), "same-source-path cohort bytes do not match their raw envelope"
+        try:
+            from polylogue.pipeline.services.ingest_worker import _normalized_session
+            from polylogue.sources.revision_backfill import _parse_one
+
+            fallback_timestamp = (
+                datetime.fromtimestamp(int(candidate["file_mtime_ms"]) / 1000, UTC).isoformat()
+                if candidate["file_mtime_ms"] is not None
+                else None
+            )
+            sessions = [
+                _normalized_session(session, fallback_timestamp=fallback_timestamp)
+                for session in _parse_one(provider, payload, str(candidate["source_path"]))
+            ]
+        except Exception as exc:
+            logger.warning(
+                "quarantined census staging normalization failed",
+                raw_id=candidate_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return (), "same-source-path cohort did not normalize cleanly"
+        if (
+            len(sessions) != 1
+            or str(make_session_id(provider, sessions[0].provider_session_id)) != session_id
+            or f"{provider.value}:{sessions[0].provider_session_id}" != logical_source_key
+            or bytes.fromhex(session_content_hash(sessions[0])) != accepted_hash
+        ):
+            return (), "same-source-path cohort differs from the accepted session"
+        expected_membership = (
+            logical_source_key,
+            sessions[0].provider_session_id,
+            accepted_hash.hex(),
+            accepted_hash,
+            len(sessions[0].messages),
+            None,
+            0,
+            RawRevisionAuthority.QUARANTINED.value,
+            None,
+            None,
+        )
+        expected_census = (_QUARANTINED_CENSUS_STAGE_FINGERPRINT, "complete", 1, _QUARANTINED_CENSUS_STAGE_DETAIL)
+        if (memberships or census) and not (
+            len(memberships) == 1
+            and tuple(memberships[0]) == expected_membership
+            and len(census) == 1
+            and tuple(census[0]) == expected_census
+        ):
+            return (), "same-source-path cohort has pre-existing membership authority"
+        staged_ids.append(candidate_id)
+    return tuple(staged_ids), None
+
+
+def _stage_quarantined_census_cohort(
+    conn: sqlite3.Connection,
+    item: QuarantinedAcceptedRawRepairItem,
+) -> None:
+    """Insert only the pre-proven singleton census/membership evidence."""
+    assert item.logical_source_key is not None
+    assert item.session_id is not None
+    assert item.accepted_content_hash is not None
+    assert item.parsed_message_count is not None
+    for staged_raw_id in item.census_stage_raw_ids:
+        row = conn.execute("SELECT raw_id FROM raw_sessions WHERE raw_id = ?", (staged_raw_id,)).fetchone()
+        if row is None:
+            raise RuntimeError(f"census staging witness changed for {staged_raw_id}")
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, 'quarantined')
+            """,
+            (
+                staged_raw_id,
+                item.logical_source_key,
+                item.session_id.split(":", 1)[1],
+                item.accepted_content_hash,
+                bytes.fromhex(item.accepted_content_hash),
+                item.parsed_message_count,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_membership_census (
+                raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+            ) VALUES (?, ?, 'complete', 1, ?, ?)
+            """,
+            (
+                staged_raw_id,
+                _QUARANTINED_CENSUS_STAGE_FINGERPRINT,
+                int(time.time() * 1000),
+                _QUARANTINED_CENSUS_STAGE_DETAIL,
+            ),
+        )
+
+
 def _inspect_quarantined_accepted_raw(
     archive_root: Path,
     raw_id: str,
@@ -272,8 +482,6 @@ def _inspect_quarantined_accepted_raw(
 ) -> QuarantinedAcceptedRawRepairItem:
     """Prove one accepted head against source main + attached read-only index."""
     capture_mode_available = _raw_sessions_capture_mode_available(conn)
-    if not capture_mode_available and raw_id not in _LEGACY_YLA_AUTHORITY_RAW_IDS:
-        return _quarantined_raw_item(raw_id, "legacy source tier authorizes only the fixed yla8.10 repair cohort")
     capture_mode_projection = "capture_mode" if capture_mode_available else "NULL AS capture_mode"
     try:
         raw = conn.execute(
@@ -494,17 +702,6 @@ def _inspect_quarantined_accepted_raw(
         return _quarantined_raw_item(raw_id, "immutable baseline receipt does not exactly match the accepted head")
     if competing_head_count or any(str(row["revision_authority"]) != "quarantined" for row in competing_revision_rows):
         return _quarantined_raw_item(raw_id, "competing accepted or byte-proven source authority exists")
-    target_memberships = [row for row in membership_rows if str(row["raw_id"]) == raw_id]
-    if len(target_memberships) != 1 or len(census_rows) != 1:
-        return _quarantined_raw_item(raw_id, "expected one target membership and one membership census")
-    membership = target_memberships[0]
-    census = census_rows[0]
-    if (
-        str(census["status"]) != "complete"
-        or int(census["member_count"]) != 1
-        or any(row["decision"] == "applied" and str(row["raw_id"]) != raw_id for row in membership_rows)
-    ):
-        return _quarantined_raw_item(raw_id, "membership authority is failed, ambiguous, or competitively applied")
     if len(blob_ref_rows) != 1:
         return _quarantined_raw_item(raw_id, "expected exactly one raw-payload blob reference")
     blob_ref = blob_ref_rows[0]
@@ -557,6 +754,8 @@ def _inspect_quarantined_accepted_raw(
         origin = Origin.from_string(str(raw["origin"]))
         capture_mode = str(raw["capture_mode"]) if raw["capture_mode"] is not None else None
         fiber = origin_provider_fiber(origin)
+        if not capture_mode_available and len(fiber) != 1:
+            return _quarantined_raw_item(raw_id, "source-v7 origin is not injective without capture-mode authority")
         if len(fiber) > 1 and capture_mode is None:
             return _quarantined_raw_item(raw_id, "non-injective origin lacks durable capture-mode authority")
         capture_provider = Provider.from_string(capture_mode) if capture_mode is not None else None
@@ -586,8 +785,43 @@ def _inspect_quarantined_accepted_raw(
         or bytes.fromhex(session_content_hash(parsed)) != accepted_hash
     ):
         return _quarantined_raw_item(raw_id, "normalized parser identity or content differs from the accepted session")
-    parsed_logical_source_key = f"{parsed.source_name.value}:{parsed.provider_session_id}"
+    target_memberships = [row for row in membership_rows if str(row["raw_id"]) == raw_id]
+    census_stage_raw_ids: tuple[str, ...] = ()
+    if len(target_memberships) != 1 or len(census_rows) != 1:
+        if capture_mode_available or target_memberships or census_rows:
+            return _quarantined_raw_item(raw_id, "expected one target membership and one membership census")
+        census_stage_raw_ids, stage_reason = _stageable_quarantined_census_cohort(
+            archive_root,
+            conn=conn,
+            raw=raw,
+            origin=origin,
+            provider=provider,
+            logical_source_key=logical_source_key,
+            session_id=session_id,
+            accepted_hash=accepted_hash,
+        )
+        if stage_reason is not None or raw_id not in census_stage_raw_ids:
+            return _quarantined_raw_item(raw_id, stage_reason or "target is absent from its census staging cohort")
+        # The existing source-v7 rows have no membership evidence yet.  The
+        # cohort helper above parses every byte before allowing its precise
+        # census-only insert; use the parsed target shape for the stable proof.
+        membership = None
+        census = None
+    else:
+        membership = target_memberships[0]
+        census = census_rows[0]
     if (
+        membership is not None
+        and census is not None
+        and (
+            str(census["status"]) != "complete"
+            or int(census["member_count"]) != 1
+            or any(row["decision"] == "applied" and str(row["raw_id"]) != raw_id for row in membership_rows)
+        )
+    ):
+        return _quarantined_raw_item(raw_id, "membership authority is failed, ambiguous, or competitively applied")
+    parsed_logical_source_key = f"{parsed.source_name.value}:{parsed.provider_session_id}"
+    if membership is not None and (
         str(membership["logical_source_key"]) != parsed_logical_source_key
         or str(membership["provider_session_id"]) != parsed.provider_session_id
         or _bytes_value(membership["normalized_content_hash"]) != accepted_hash
@@ -599,6 +833,25 @@ def _inspect_quarantined_accepted_raw(
         or membership["decision"] == "applied"
     ):
         return _quarantined_raw_item(raw_id, "membership evidence does not match the normalized accepted session")
+    if (
+        not capture_mode_available
+        and membership is not None
+        and census is not None
+        and str(census["parser_fingerprint"]) == _QUARANTINED_CENSUS_STAGE_FINGERPRINT
+        and str(census["detail"]) == _QUARANTINED_CENSUS_STAGE_DETAIL
+    ):
+        census_stage_raw_ids, stage_reason = _stageable_quarantined_census_cohort(
+            archive_root,
+            conn=conn,
+            raw=raw,
+            origin=origin,
+            provider=provider,
+            logical_source_key=logical_source_key,
+            session_id=session_id,
+            accepted_hash=accepted_hash,
+        )
+        if stage_reason is not None or raw_id not in census_stage_raw_ids:
+            return _quarantined_raw_item(raw_id, stage_reason or "census staging witness no longer includes target")
 
     status = "already_repaired" if actual_envelope == expected_envelope else "eligible"
     item = QuarantinedAcceptedRawRepairItem(
@@ -651,12 +904,14 @@ def _inspect_quarantined_accepted_raw(
             applications,
             parallel_session_heads,
             competing_revision_rows,
-            membership_rows,
-            census_rows,
+            [] if census_stage_raw_ids else membership_rows,
+            [] if census_stage_raw_ids else census_rows,
         ),
         parallel_session_head_count=len(parallel_session_heads),
         quarantined_sibling_raw_count=len(competing_revision_rows),
         membership_row_count=len(membership_rows),
+        census_stage_raw_ids=census_stage_raw_ids,
+        parsed_message_count=len(parsed.messages),
     )
     return dataclasses.replace(item, proof_digest=_proof_digest(item))
 
@@ -1015,6 +1270,15 @@ def repair_quarantined_accepted_raws(
                         if receipt.torn_terminals and any(item.status != "already_repaired" for item in locked_items):
                             raise RuntimeError("torn terminal receipt has no matching committed source refinement")
                         for item in locked_items:
+                            if item.status == "eligible" and item.census_stage_raw_ids:
+                                _stage_quarantined_census_cohort(source_conn, item)
+                        staged_items = [
+                            _inspect_quarantined_accepted_raw(archive_root, raw_id, conn=source_conn)
+                            for raw_id in raw_ids
+                        ]
+                        if any(item.status == "ineligible" for item in staged_items):
+                            raise RuntimeError("census staging did not preserve the proven repair shape")
+                        for item in staged_items:
                             if item.status == "eligible":
                                 _cas_refine_quarantined_accepted_raw(source_conn, item)
                         after_items = [
@@ -1303,6 +1567,118 @@ def _canonical_browser_origin_head_is_exact(
             accepted_hash,
             raw_id,
         )
+    )
+
+
+def _canonical_browser_origin_head_is_semantically_equivalent(
+    conn: sqlite3.Connection,
+    *,
+    archive_root: Path,
+    canonical_head: sqlite3.Row,
+    canonical_key: str,
+    canonical_origin: Origin,
+    session_id: str,
+    accepted_hash: bytes,
+    message_count: int,
+    indexed_raw_id: str,
+) -> bool:
+    """Prove a quarantined semantic head is evidence, not a replacement authority.
+
+    The caller deliberately creates a new byte-proven canonical raw instead of
+    repointing at this old head.  That keeps semantic and byte evidence distinct.
+    """
+    raw_id = str(canonical_head["accepted_raw_id"])
+    native_id = session_id.split(":", 1)[1]
+    if (
+        str(canonical_head["session_id"]) != session_id
+        or _bytes_value(canonical_head["accepted_content_hash"]) != accepted_hash
+        or str(canonical_head["accepted_frontier_kind"]) != "semantic"
+        or str(indexed_raw_id) == raw_id
+    ):
+        return False
+    raw = conn.execute(
+        """
+        SELECT origin, source_path, blob_hash, blob_size, logical_source_key,
+               revision_kind, source_revision, predecessor_source_revision,
+               predecessor_raw_id, baseline_raw_id, append_start_offset,
+               append_end_offset, acquisition_generation, revision_authority
+        FROM source.raw_sessions WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    blob_ref = conn.execute(
+        "SELECT blob_hash, source_path, size_bytes FROM source.blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'",
+        (raw_id,),
+    ).fetchone()
+    memberships = conn.execute(
+        """
+        SELECT provider_session_id, source_revision, normalized_content_hash, message_count,
+               predecessor_raw_id, acquisition_generation, revision_authority, decision
+        FROM source.raw_session_memberships WHERE raw_id = ? AND logical_source_key = ?
+        """,
+        (raw_id, canonical_key),
+    ).fetchall()
+    census = conn.execute(
+        "SELECT status, member_count FROM source.raw_membership_census WHERE raw_id = ?", (raw_id,)
+    ).fetchall()
+    applications = conn.execute(
+        """
+        SELECT raw_id, session_id, decision, accepted_raw_id, accepted_content_hash
+        FROM raw_revision_applications WHERE logical_source_key = ?
+        """,
+        (canonical_key,),
+    ).fetchall()
+    if raw is None or blob_ref is None or len(memberships) != 1 or len(census) != 1 or len(applications) != 1:
+        return False
+    try:
+        blob_hash = _bytes_value(raw["blob_hash"])
+        store = BlobStore(archive_root / "blob")
+        payload = store.read_all(blob_hash.hex())
+        provider = detect_provider(json.loads(payload))
+        if provider is None or origin_from_provider(provider) is not canonical_origin:
+            return False
+        from polylogue.sources.revision_backfill import _parse_one
+
+        sessions = _parse_one(provider, payload, str(raw["source_path"]))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    membership = memberships[0]
+    application = applications[0]
+    return (
+        len(payload) == int(raw["blob_size"])
+        and hashlib.sha256(payload).digest() == blob_hash
+        and tuple(blob_ref) == (blob_hash, str(raw["source_path"]), int(raw["blob_size"]))
+        and len(sessions) == 1
+        and str(make_session_id(provider, sessions[0].provider_session_id)) == session_id
+        and f"{provider.value}:{sessions[0].provider_session_id}" == canonical_key
+        and bytes.fromhex(session_content_hash(sessions[0])) == accepted_hash
+        and tuple(raw)
+        == (
+            canonical_origin.value,
+            str(raw["source_path"]),
+            blob_hash,
+            int(raw["blob_size"]),
+            None,
+            RawRevisionKind.UNKNOWN.value,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            RawRevisionAuthority.QUARANTINED.value,
+        )
+        and str(membership["provider_session_id"]) == native_id
+        and _bytes_value(membership["normalized_content_hash"]) == accepted_hash
+        and int(membership["message_count"]) == message_count
+        and membership["predecessor_raw_id"] is None
+        and int(membership["acquisition_generation"]) == 0
+        and str(membership["revision_authority"]) == RawRevisionAuthority.QUARANTINED.value
+        and membership["decision"] is None
+        and tuple(census[0]) == ("complete", 1)
+        and tuple(application)
+        == (raw_id, session_id, ApplicationDecision.SELECTED_BASELINE.value, raw_id, accepted_hash)
     )
 
 
@@ -1616,12 +1992,9 @@ def _inspect_browser_capture_origin_mismatch(
     replacement_frontier_kind = "byte"
     replacement_frontier = blob_size
     already_repaired = copy_forward_terminal
+    semantic_canonical_raw_id: str | None = None
     if canonical_head is not None and not copy_forward_terminal:
-        replacement_raw_id = str(canonical_head["accepted_raw_id"])
-        replacement_source_revision = str(canonical_head["accepted_source_revision"])
-        replacement_frontier_kind = str(canonical_head["accepted_frontier_kind"])
-        replacement_frontier = int(canonical_head["accepted_frontier"])
-        if not _canonical_browser_origin_head_is_exact(
+        if _canonical_browser_origin_head_is_exact(
             conn,
             archive_root=archive_root,
             canonical_head=canonical_head,
@@ -1631,33 +2004,66 @@ def _inspect_browser_capture_origin_mismatch(
             accepted_hash=accepted_hash,
             message_count=len(projection.message_hashes),
         ):
-            return _browser_origin_ineligible(raw_id, "canonical logical source has an incompatible accepted head")
-        supersession = conn.execute(
-            """
-            SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
-                   detail FROM raw_revision_applications
-            WHERE raw_id = ? AND logical_source_key = ? AND decision = 'superseded'
-            """,
-            (raw_id, canonical_key),
-        ).fetchone()
-        repair_strategy = "restore_canonical_head"
-        already_repaired = (
-            str(indexed["raw_id"]) == replacement_raw_id
-            and supersession is not None
-            and tuple(supersession)
-            == (
-                replacement_raw_id,
-                replacement_source_revision,
-                accepted_hash,
-                f"browser_capture_origin_supersession:{raw_id}",
+            replacement_raw_id = str(canonical_head["accepted_raw_id"])
+            replacement_source_revision = str(canonical_head["accepted_source_revision"])
+            replacement_frontier_kind = str(canonical_head["accepted_frontier_kind"])
+            replacement_frontier = int(canonical_head["accepted_frontier"])
+            supersession = conn.execute(
+                """
+                SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
+                       detail FROM raw_revision_applications
+                WHERE raw_id = ? AND logical_source_key = ? AND decision = 'superseded'
+                """,
+                (raw_id, canonical_key),
+            ).fetchone()
+            repair_strategy = "restore_canonical_head"
+            already_repaired = (
+                str(indexed["raw_id"]) == replacement_raw_id
+                and supersession is not None
+                and tuple(supersession)
+                == (
+                    replacement_raw_id,
+                    replacement_source_revision,
+                    accepted_hash,
+                    f"browser_capture_origin_supersession:{raw_id}",
+                )
             )
-        )
+        elif not _canonical_browser_origin_head_is_semantically_equivalent(
+            conn,
+            archive_root=archive_root,
+            canonical_head=canonical_head,
+            canonical_key=canonical_key,
+            canonical_origin=canonical_origin,
+            session_id=session_id,
+            accepted_hash=accepted_hash,
+            message_count=len(projection.message_hashes),
+            indexed_raw_id=str(indexed["raw_id"]),
+        ):
+            return _browser_origin_ineligible(raw_id, "canonical logical source has an incompatible accepted head")
+        else:
+            semantic_canonical_raw_id = str(canonical_head["accepted_raw_id"])
     if copy_raw is not None and repair_strategy == "copy_forward" and not copy_forward_source_complete:
         return _browser_origin_ineligible(
             raw_id, "copy-forward raw id exists but its durable source stage is not exact"
         )
     if str(indexed["raw_id"]) not in {raw_id, replacement_raw_id}:
         return _browser_origin_ineligible(raw_id, "indexed session points at unrelated raw evidence")
+    if copy_forward_terminal and semantic_canonical_raw_id is None:
+        prior_semantic = conn.execute(
+            """
+            SELECT application.raw_id
+            FROM raw_revision_applications AS application
+            JOIN source.raw_sessions AS candidate ON candidate.raw_id = application.raw_id
+            WHERE application.logical_source_key = ? AND application.decision = 'selected_baseline'
+              AND application.raw_id != ? AND application.accepted_content_hash = ?
+              AND candidate.origin = ? AND candidate.revision_kind = 'unknown'
+              AND candidate.revision_authority = 'quarantined'
+            ORDER BY application.raw_id
+            """,
+            (canonical_key, copy_raw_id, accepted_hash, canonical_origin.value),
+        ).fetchall()
+        if len(prior_semantic) == 1:
+            semantic_canonical_raw_id = str(prior_semantic[0]["raw_id"])
     evidence_rows = conn.execute(
         """
         SELECT decision_id, raw_id, logical_source_key, decision, accepted_raw_id,
@@ -1696,6 +2102,7 @@ def _inspect_browser_capture_origin_mismatch(
         copy_forward_raw_id=copy_raw_id if repair_strategy == "copy_forward" else None,
         copy_forward_source_path=copy_path if repair_strategy == "copy_forward" else None,
         copy_forward_source_complete=copy_forward_source_complete,
+        semantic_canonical_raw_id=semantic_canonical_raw_id,
         evidence_digest=evidence_digest,
     )
     return dataclasses.replace(item, proof_digest=_browser_origin_item_digest(item))
@@ -1926,6 +2333,30 @@ def _finalize_browser_origin_copy_forward_index(conn: sqlite3.Connection, item: 
     assert item.accepted_content_hash is not None
     assert item.accepted_frontier is not None
     acquired_at_ms = int(time.time() * 1000)
+    if item.semantic_canonical_raw_id is not None:
+        cursor = conn.execute(
+            """
+            UPDATE raw_revision_heads
+            SET accepted_raw_id = ?, accepted_source_revision = ?,
+                accepted_frontier_kind = 'byte', accepted_frontier = ?,
+                acquisition_generation = 0, append_end_offset = NULL,
+                decided_at_ms = ?
+            WHERE logical_source_key = ? AND session_id = ? AND accepted_raw_id = ?
+              AND accepted_content_hash = ? AND accepted_frontier_kind = 'semantic'
+            """,
+            (
+                item.copy_forward_raw_id,
+                item.blob_hash,
+                item.accepted_frontier,
+                acquired_at_ms,
+                item.canonical_logical_source_key,
+                item.session_id,
+                item.semantic_canonical_raw_id,
+                bytes.fromhex(item.accepted_content_hash),
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"semantic canonical-head CAS failed for {item.raw_id}")
     cursor = conn.execute(
         "UPDATE sessions SET raw_id = ? WHERE session_id = ? AND raw_id = ?",
         (item.copy_forward_raw_id, item.session_id, item.raw_id),
