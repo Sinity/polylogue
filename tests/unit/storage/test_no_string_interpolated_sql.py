@@ -58,15 +58,27 @@ _AUDITED_SITES: Final[dict[_AuditedSiteKey, str]] = {
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
         "ArchiveStore.query_actions",
-        "d23e920a2a302a20",
+        "37242de27bfb5ed2",
         0,
-    ): "query_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL plus closed predicate/order fragments; user values are bound.",
+    ): "query_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL, a closed command projection, and closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
         "ArchiveStore.query_session_actions",
-        "00e73501ef574c76",
+        "57bcf5aec5660000",
         0,
-    ): "query_session_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL, placeholders, and closed order direction; ids are bound.",
+    ): "query_session_actions interpolates _ACTION_FOLLOWUP_RELATION_SQL, a closed command projection, placeholders, and closed order direction; ids are bound.",
+    (
+        "polylogue/storage/sqlite/archive_tiers/archive.py",
+        "ArchiveStore.query_session_action_occurrences",
+        "10dac81780564a24",
+        0,
+    ): "query_session_action_occurrences interpolates a closed command projection, placeholders, and a closed order direction; ids are bound.",
+    (
+        "polylogue/storage/sqlite/archive_tiers/archive.py",
+        "ArchiveStore.query_blocks",
+        "6f5325af0e480c77",
+        0,
+    ): "query_blocks interpolates a closed command projection plus closed predicate/order fragments; user values are bound.",
     (
         "polylogue/storage/sqlite/archive_tiers/archive.py",
         "ArchiveStore.query_runs",

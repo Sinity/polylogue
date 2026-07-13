@@ -728,6 +728,49 @@ def _sql_string_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+_LEGACY_EXECUTION_TOOL_NAMES = (
+    "bash",
+    "exec",
+    "exec_command",
+    "functions.exec",
+    "functions.exec_command",
+    "local_shell_call",
+    "run",
+    "shell",
+    "shell_command",
+    "terminal",
+)
+
+
+def _action_command_expression(row_alias: str) -> str:
+    """Return canonical command text without rewriting historical evidence.
+
+    Current parsers persist ``command`` alongside provider-native fields. Older
+    Codex rows may instead carry ``cmd`` or free-form ``arguments``. Restrict
+    those fallbacks to execution tools so unrelated argument strings never
+    become shell commands merely because they share the same JSON key.
+    """
+
+    execution_tools = ", ".join(_sql_string_literal(name) for name in _LEGACY_EXECUTION_TOOL_NAMES)
+    return f"""
+        COALESCE(
+            NULLIF({row_alias}.tool_command, ''),
+            CASE
+                WHEN LOWER(COALESCE({row_alias}.tool_name, '')) IN ({execution_tools}) THEN
+                    COALESCE(
+                        NULLIF(json_extract({row_alias}.tool_input, '$.cmd'), ''),
+                        CASE
+                            WHEN json_type({row_alias}.tool_input, '$.arguments') = 'text'
+                                THEN NULLIF(json_extract({row_alias}.tool_input, '$.arguments'), '')
+                            ELSE NULL
+                        END
+                    )
+                ELSE NULL
+            END
+        )
+    """.strip()
+
+
 _ACTION_FOLLOWUP_ACK_CONDITION = " OR ".join(
     f"followup_text_lower LIKE '%' || {_sql_string_literal(marker)} || '%'" for marker in ACKNOWLEDGMENT_MARKERS
 )
@@ -4580,7 +4623,7 @@ class ArchiveStore:
         handler_expr = (
             "CASE "
             f"WHEN {tool_expr} >= 'mcp__' AND {tool_expr} < 'mcp__\U0010ffff' THEN 'mcp' "
-            "WHEN NULLIF(u.tool_command, '') IS NOT NULL THEN 'shell' "
+            f"WHEN NULLIF({_action_command_expression('u')}, '') IS NOT NULL THEN 'shell' "
             "ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') "
             "END"
         )
@@ -7223,7 +7266,7 @@ class ArchiveStore:
                 a.tool_result_block_id,
                 a.tool_name,
                 a.semantic_type,
-                a.tool_command,
+                {_action_command_expression("a")} AS tool_command,
                 a.tool_path,
                 m.occurred_at_ms,
                 a.output_text,
@@ -7274,7 +7317,7 @@ class ArchiveStore:
                 a.tool_result_block_id,
                 a.tool_name,
                 a.semantic_type,
-                a.tool_command,
+                {_action_command_expression("a")} AS tool_command,
                 a.tool_path,
                 m.occurred_at_ms,
                 a.output_text,
@@ -7329,7 +7372,7 @@ class ArchiveStore:
                 r.block_id AS tool_result_block_id,
                 u.tool_name,
                 u.semantic_type,
-                u.tool_command,
+                {_action_command_expression("u")} AS tool_command,
                 u.tool_path,
                 m.occurred_at_ms,
                 r.search_text AS output_text,
@@ -7886,7 +7929,7 @@ class ArchiveStore:
                 b.text,
                 b.tool_name,
                 b.semantic_type,
-                b.tool_command,
+                {_action_command_expression("b")} AS tool_command,
                 b.tool_path
             FROM blocks b
             JOIN sessions s ON s.session_id = b.session_id
@@ -9546,7 +9589,7 @@ def _message_field_predicate_clause(message_alias: str, predicate: QueryFieldPre
             """.strip()
         else:
             action_column = {
-                "command": "COALESCE(filter_actions.tool_command, '')",
+                "command": f"COALESCE({_action_command_expression('filter_actions')}, '')",
                 "path": "REPLACE(COALESCE(filter_actions.tool_path, ''), char(92), '/')",
                 "output": "COALESCE(filter_actions.output_text, '')",
             }[field]
@@ -9572,7 +9615,7 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
     if field == "time":
         return _time_predicate_clause(_query_unit_time_expression("action", action_alias), predicate)
     if field == "command":
-        return _like_clause(f"COALESCE({action_alias}.tool_command, '')", predicate.values)
+        return _like_clause(f"COALESCE({_action_command_expression(action_alias)}, '')", predicate.values)
     if field == "path":
         return _like_clause(f"REPLACE(COALESCE({action_alias}.tool_path, ''), char(92), '/')", predicate.values)
     if field == "output":
@@ -9599,7 +9642,7 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
             f"""
             COALESCE({action_alias}.tool_name, '') || ' ' ||
             COALESCE({action_alias}.semantic_type, '') || ' ' ||
-            COALESCE({action_alias}.tool_command, '') || ' ' ||
+            COALESCE({_action_command_expression(action_alias)}, '') || ' ' ||
             COALESCE({action_alias}.tool_path, '') || ' ' ||
             COALESCE({action_alias}.tool_input, '') || ' ' ||
             COALESCE({action_alias}.output_text, '')
@@ -9621,7 +9664,7 @@ def _file_field_predicate_clause(action_alias: str, predicate: QueryFieldPredica
             REPLACE(COALESCE({action_alias}.tool_path, ''), char(92), '/') || ' ' ||
             COALESCE({action_alias}.tool_name, '') || ' ' ||
             COALESCE({action_alias}.semantic_type, '') || ' ' ||
-            COALESCE({action_alias}.tool_command, '')
+            COALESCE({_action_command_expression(action_alias)}, '')
             """.strip(),
             predicate.values,
         )
@@ -9641,7 +9684,7 @@ def _block_field_predicate_clause(block_alias: str, predicate: QueryFieldPredica
     if field in {"action", "command", "path"}:
         column = {
             "action": f"{block_alias}.semantic_type",
-            "command": f"COALESCE({block_alias}.tool_command, '')",
+            "command": f"COALESCE({_action_command_expression(block_alias)}, '')",
             "path": f"REPLACE(COALESCE({block_alias}.tool_path, ''), char(92), '/')",
         }[field]
         if field == "action":
@@ -10420,7 +10463,7 @@ def _session_filter_clause(
                   AND lower(
                       COALESCE(filter_actions.tool_name, '') || ' ' ||
                       COALESCE(filter_actions.semantic_type, '') || ' ' ||
-                      COALESCE(filter_actions.tool_command, '') || ' ' ||
+                      COALESCE({_action_command_expression("filter_actions")}, '') || ' ' ||
                       COALESCE(filter_actions.tool_path, '') || ' ' ||
                       COALESCE(filter_actions.tool_input, '') || ' ' ||
                       COALESCE(filter_actions.output_text, '')
