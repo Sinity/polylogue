@@ -110,6 +110,36 @@ def test_beads_origin_or_path_fails_closed_before_clone(tmp_path: Path) -> None:
         fast_forward_index_clone(source, tmp_path / "clone.db")
 
 
+def test_beads_census_rejects_wal_before_it_can_create_a_shm_sidecar(tmp_path: Path) -> None:
+    """A sidecar-bearing archive must fail before a read-only census opens it.
+
+    ``mode=ro`` alone creates ``-shm`` while a writer's WAL exists.  This is
+    the exact state that used to make prepare reject sidecars it had just
+    introduced itself.  Keep the writer open, remove only its visible SHM
+    pathname, then prove the census neither reconnects nor recreates it.
+    """
+    source = tmp_path / "index-v35.db"
+    writer = sqlite3.connect(source)
+    try:
+        writer.execute("PRAGMA journal_mode = WAL")
+        writer.execute("CREATE TABLE retained (value TEXT)")
+        writer.execute("INSERT INTO retained VALUES ('fixture')")
+        writer.commit()
+        wal = Path(f"{source}-wal")
+        shm = Path(f"{source}-shm")
+        assert wal.exists()
+        shm.unlink(missing_ok=True)
+        assert not shm.exists()
+
+        with pytest.raises(SchemaFastForwardError, match="SQLite sidecars"):
+            beads_evidence(source)
+
+        assert wal.exists()
+        assert not shm.exists()
+    finally:
+        writer.close()
+
+
 def test_embedding_clone_preserves_vectors_and_installs_failure_lifecycle(tmp_path: Path) -> None:
     source = tmp_path / "embeddings-v1.db"
     clone = tmp_path / "embeddings-v2.db"

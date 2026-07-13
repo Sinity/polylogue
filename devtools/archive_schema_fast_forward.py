@@ -104,6 +104,19 @@ def _require_no_sidecars(path: Path) -> None:
         raise SchemaFastForwardError(f"SQLite sidecars make clone proof ambiguous: {', '.join(present)}")
 
 
+def _open_immutable_readonly(path: Path) -> sqlite3.Connection:
+    """Open stable archive bytes without creating a WAL shared-memory sidecar.
+
+    Clone proof deliberately rejects a database with a WAL, journal, or SHM
+    sidecar: those bytes are not a complete, stable snapshot.  Check that
+    invariant *before* opening SQLite, then use immutable mode so a census of
+    a sidecar-free WAL-mode archive cannot create a new ``-shm`` file itself.
+    """
+    resolved = path.resolve(strict=True)
+    _require_no_sidecars(resolved)
+    return sqlite3.connect(f"{resolved.as_uri()}?mode=ro&immutable=1", uri=True)
+
+
 def _table_names(conn: sqlite3.Connection) -> tuple[str, ...]:
     return tuple(
         str(row[0])
@@ -122,7 +135,7 @@ def _table_counts(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 def _database_evidence(path: Path) -> DatabaseEvidence:
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+    with _open_immutable_readonly(path) as conn:
         _load_vec_if_required(conn)
         return DatabaseEvidence(
             path=str(path),
@@ -246,7 +259,7 @@ def _execute_script(conn: sqlite3.Connection, sql: str) -> None:
 def beads_evidence(path: Path) -> dict[str, int]:
     """Return any Beads origin/path rows; non-empty evidence blocks execution."""
     findings: dict[str, int] = {}
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+    with _open_immutable_readonly(path) as conn:
         for table in _table_names(conn):
             columns = {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')}
             if "origin" in columns:
