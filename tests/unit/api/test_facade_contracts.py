@@ -3722,7 +3722,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
             archive_db.write_parsed(chatgpt)
 
         [insight] = await archive.list_tool_usage_insights(
-            ToolUsageInsightQuery(origin=Provider.CODEX.value, tool="read")
+            ToolUsageInsightQuery(origin=Origin.CODEX_SESSION.value, tool="read")
         )
 
         assert insight.total_call_count == 1
@@ -3732,7 +3732,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
         assert insight.has_coverage_gaps is True
         assert len(insight.entries) == 1
         entry = insight.entries[0]
-        assert entry.source_name == Provider.CODEX.value
+        assert entry.source_name == Origin.CODEX_SESSION.value
         assert entry.normalized_tool_name == "read"
         assert entry.action_kind == "file_read"
         assert entry.call_count == 1
@@ -3742,10 +3742,10 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
         assert entry.affected_path_calls == 1
         assert entry.output_text_calls == 1
         coverage = {item.source_name: item for item in insight.origin_coverage}
-        assert coverage[Provider.CODEX.value].data_available is True
-        assert coverage[Provider.CODEX.value].action_count == 1
-        assert coverage[Provider.CHATGPT.value].data_available is False
-        assert coverage[Provider.CHATGPT.value].session_count == 1
+        assert coverage[Origin.CODEX_SESSION.value].data_available is True
+        assert coverage[Origin.CODEX_SESSION.value].action_count == 1
+        assert coverage[Origin.CHATGPT_EXPORT.value].data_available is False
+        assert coverage[Origin.CHATGPT_EXPORT.value].session_count == 1
     finally:
         await archive.close()
 

@@ -400,3 +400,60 @@ async def test_search_hits_for_plan_degrades_semantic_and_hybrid_without_embeddi
         config,
     )
     assert hybrid_hits == []
+
+
+@pytest.mark.asyncio
+async def test_search_hits_origin_filter_excludes_other_origins(tmp_path: Path) -> None:
+    """An origin filter over identical FTS content selects only that origin.
+
+    Regression for the origin/provider seam (#2820 review P1): the FTS leg
+    passed provider tokens (``chatgpt``) into a SQL filter over origin tokens
+    (``chatgpt-export``), silently matching nothing — or, with the filter
+    dropped, everything. Two origins sharing the same searchable text pin both
+    failure directions against a real seeded ``index.db``: mutating the
+    production filter tokens or removing the origin restriction each flips an
+    assertion.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    render_root = tmp_path / "render"
+    render_root.mkdir(parents=True, exist_ok=True)
+    db_path = archive_root / "index.db"
+
+    (
+        SessionBuilder(db_path, "conv-chatgpt")
+        .provider(Provider.CHATGPT.value)
+        .title("Needle One")
+        .updated_at("2026-04-22T12:00:00+00:00")
+        .add_message("m1", role="user", text="shared needle payload for origin filtering")
+        .save()
+    )
+    (
+        SessionBuilder(db_path, "conv-codex")
+        .provider(Provider.CODEX.value)
+        .title("Needle Two")
+        .updated_at("2026-04-22T13:00:00+00:00")
+        .add_message("m1", role="user", text="shared needle payload for origin filtering")
+        .save()
+    )
+
+    config = Config(
+        archive_root=archive_root,
+        render_root=render_root,
+        sources=[Source(name="test", path=tmp_path / "inbox")],
+        db_path=db_path,
+    )
+
+    async def _hit_ids(origins: tuple[str, ...] | None) -> list[str]:
+        hits = await search_hits_for_plan(
+            SessionQueryPlan(query_terms=("needle",), origins=origins or (), limit=10),
+            config,
+        )
+        return sorted(hit.session_id for hit in hits)
+
+    chatgpt_id = native_session_id_for("chatgpt", "conv-chatgpt")
+    codex_id = native_session_id_for("codex", "conv-codex")
+
+    assert await _hit_ids(("chatgpt-export",)) == [chatgpt_id]
+    assert await _hit_ids(("codex-session",)) == [codex_id]
+    assert await _hit_ids(None) == sorted([chatgpt_id, codex_id])
