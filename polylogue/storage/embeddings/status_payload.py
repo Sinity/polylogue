@@ -321,7 +321,8 @@ def _active_failure_details(
                 "resolution_action": None if row[12] is None else str(row[12]),
                 "supported_actions": ["acknowledge", "requeue", "supersede"],
                 "resolution_command": (
-                    f"polylogue ops embed resolve-failure {shlex.quote(str(row[0]))} --action ACTION --yes"
+                    f"polylogue ops embed resolve-failure {shlex.quote(str(row[0]))}"
+                    " --action <acknowledge|requeue|supersede> --yes"
                 ),
             }
         )

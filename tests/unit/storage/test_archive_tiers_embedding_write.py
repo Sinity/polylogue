@@ -277,3 +277,40 @@ def test_new_failure_supersedes_prior_active_failure_for_same_session(tmp_path: 
     status = read_embedding_status(conn, "codex-session:retry-loop")
     assert status.needs_reindex is False
     assert status.error_message == "Embedding generation failed: HTTP 400"
+
+
+def test_acknowledging_retryable_failure_stops_auto_requeue_but_stays_blocked(tmp_path: Path) -> None:
+    """Operator acknowledgement of a retryable failure ends the retry loop.
+
+    Anti-vacuity: without the non-requeue resolution clearing needs_reindex,
+    the session stays in the automatic backlog despite the operator resolution;
+    clearing error_message too would erase it from the visible blocked count.
+    """
+    conn = _connect(tmp_path / "embeddings.db")
+    failure = record_embedding_failure(
+        conn,
+        session_id="codex-session:flaky",
+        origin=Origin.CODEX_SESSION,
+        message_refs=("codex-session:flaky:m1",),
+        provider="voyage",
+        model="voyage-4",
+        error_class="provider_timeout",
+        error_message="Embedding generation timed out",
+        retryable=True,
+        occurred_at_ms=1_800_000_000_000,
+    )
+    before = read_embedding_status(conn, "codex-session:flaky")
+    assert before.needs_reindex is True
+    assert before.error_message == "Embedding generation timed out"
+
+    acknowledged = resolve_embedding_failure(
+        conn,
+        failure_id=failure.failure_id,
+        action="acknowledge",
+        note="known flaky historical payload",
+        resolved_at_ms=1_800_000_000_100,
+    )
+    assert acknowledged.lifecycle_state == "acknowledged"
+    after = read_embedding_status(conn, "codex-session:flaky")
+    assert after.needs_reindex is False
+    assert after.error_message == "Embedding generation timed out"

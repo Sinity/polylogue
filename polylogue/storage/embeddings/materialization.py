@@ -900,6 +900,10 @@ def embed_session_sync(
     )
 
 
+class _ProviderRequestError(RuntimeError):
+    """Marks an exception raised by the embedding provider call itself."""
+
+
 def embed_archive_session_sync(
     index_db_path: Path,
     vec_provider: VectorProvider,
@@ -985,9 +989,12 @@ def embed_archive_session_sync(
         for start in range(0, len(embeddable), batch_size):
             batch = embeddable[start : start + batch_size]
             attempted_message_refs = tuple(str(row["message_id"]) for row in batch)
-            embeddings = text_provider._get_embeddings([str(row["text"]) for row in batch], input_type="document")
+            try:
+                embeddings = text_provider._get_embeddings([str(row["text"]) for row in batch], input_type="document")
+            except Exception as exc:
+                raise _ProviderRequestError(str(exc)) from exc
             if len(embeddings) != len(batch):
-                raise RuntimeError("embedding provider returned a mismatched vector count")
+                raise _ProviderRequestError("embedding provider returned a mismatched vector count")
             writes: list[ArchiveEmbeddingWrite] = []
             for row, embedding in zip(batch, embeddings, strict=True):
                 if row["content_hash"] is None:
@@ -1011,9 +1018,6 @@ def embed_archive_session_sync(
             message_count=len(embeddable),
             model=text_provider.model,
         )
-        from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_open_embedding_failures_for_session
-
-        resolve_open_embedding_failures_for_session(embeddings_conn, session_id=session_id)
     except Exception as exc:
         try:
             from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
@@ -1022,16 +1026,26 @@ def embed_archive_session_sync(
                 "SELECT origin FROM sessions WHERE session_id = ?", (session_id,)
             ).fetchone()
             if origin_row is not None:
+                if isinstance(exc, _ProviderRequestError):
+                    provider = "voyage"
+                    error_class = embedding_error_class(exc)
+                    retryable = not is_terminal_embedding_provider_error(str(exc))
+                else:
+                    # Local faults (sqlite-vec load, SQL, content-hash validation,
+                    # write) must not masquerade as provider failures in the ledger.
+                    provider = "local"
+                    error_class = "internal_error"
+                    retryable = True
                 record_embedding_failure(
                     embeddings_conn,
                     session_id=session_id,
                     origin=str(origin_row["origin"]),
                     message_refs=attempted_message_refs,
-                    provider="voyage",
+                    provider=provider,
                     model=text_provider.model,
-                    error_class=embedding_error_class(exc),
+                    error_class=error_class,
                     error_message=str(exc),
-                    retryable=not is_terminal_embedding_provider_error(str(exc)),
+                    retryable=retryable,
                 )
         finally:
             with contextlib.suppress(sqlite3.Error):
@@ -1103,6 +1117,11 @@ def _record_archive_embedding_success(
             """,
             (session_id, origin, message_count, now_ms, needs_reindex),
         )
+    # Every terminal success outcome — including "nothing to embed" — resolves
+    # the session's open failures, or they linger as phantom debt.
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_open_embedding_failures_for_session
+
+    resolve_open_embedding_failures_for_session(conn, session_id=session_id)
 
 
 _PROSE_MATERIAL_ORIGINS = frozenset({"human_authored", "assistant_authored"})

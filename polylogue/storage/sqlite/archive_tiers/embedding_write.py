@@ -277,6 +277,15 @@ def resolve_embedding_failure(
                 "UPDATE embedding_status SET needs_reindex = 1, error_message = NULL WHERE session_id = ?",
                 (str(row[0]),),
             )
+        else:
+            # acknowledge/supersede end the retry loop: clear the failure-driven
+            # requeue flag but keep error_message, which moves the session from
+            # the pending backlog into the visible blocked count. The guard keeps
+            # config-change reindex marks (which never set error_message) intact.
+            conn.execute(
+                "UPDATE embedding_status SET needs_reindex = 0 WHERE session_id = ? AND error_message IS NOT NULL",
+                (str(row[0]),),
+            )
     return read_embedding_failure(conn, failure_id)
 
 

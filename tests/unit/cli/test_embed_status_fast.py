@@ -285,7 +285,8 @@ def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Pat
             "resolution_action": None,
             "supported_actions": ["acknowledge", "requeue", "supersede"],
             "resolution_command": (
-                "polylogue ops embed resolve-failure embedding-failure:terminal --action ACTION --yes"
+                "polylogue ops embed resolve-failure embedding-failure:terminal"
+                " --action <acknowledge|requeue|supersede> --yes"
             ),
         }
     ]
