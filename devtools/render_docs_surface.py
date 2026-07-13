@@ -106,7 +106,7 @@ def build_readme_section(
             "<!-- BEGIN GENERATED: docs-surface -->",
             "## Documentation",
             "",
-            "Live site: <https://sinity.github.io/polylogue/> (auto-published on every merge to `master`).",
+            "Live site: <https://sinity.github.io/polylogue/>.",
             "",
             "Start with the task-oriented guides below; [docs/README.md](docs/README.md) "
             "separates guides, reference, internals, operations, evidence, design, and "
