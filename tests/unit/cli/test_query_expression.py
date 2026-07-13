@@ -3004,6 +3004,56 @@ class TestBooleanQueryExpression:
             (session_id, "shell", script)
         ]
 
+    def test_legacy_codex_execution_payloads_are_queryable_without_rewrite(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        fixtures = (
+            ("legacy-arguments", "exec", {"arguments": "polylogue find repo:polylogue"}),
+            ("legacy-cmd", "exec_command", {"cmd": "polylogue status"}),
+            ("unrelated-arguments", "Task", {"arguments": "polylogue should remain ordinary task input"}),
+        )
+        for session_id, tool_name, tool_input in fixtures:
+            (
+                SessionBuilder(index_db, session_id)
+                .provider("codex")
+                .add_message(
+                    f"message-{session_id}",
+                    role="assistant",
+                    text="tool invocation",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": tool_name,
+                            "tool_id": f"tool-{session_id}",
+                            "input": tool_input,
+                        }
+                    ],
+                )
+                .save()
+            )
+
+        action_source = parse_unit_source_expression("actions where command:polylogue")
+        block_source = parse_unit_source_expression("blocks where command:polylogue")
+        assert action_source is not None
+        assert block_source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            action_rows = archive.query_actions(action_source.predicate, limit=100)
+            block_rows = archive.query_blocks(block_source.predicate, limit=100)
+
+        assert sorted((row.session_id, row.tool_name, row.tool_command) for row in action_rows) == [
+            ("codex-session:ext-legacy-arguments", "exec", "polylogue find repo:polylogue"),
+            ("codex-session:ext-legacy-cmd", "exec_command", "polylogue status"),
+        ]
+        assert sorted((row.session_id, row.tool_name, row.tool_command) for row in block_rows) == [
+            ("codex-session:ext-legacy-arguments", "exec", "polylogue find repo:polylogue"),
+            ("codex-session:ext-legacy-cmd", "exec_command", "polylogue status"),
+        ]
+
     def test_file_unit_source_parses_terminal_and_exists_forms(self) -> None:
         terminal = parse_unit_source_expression("files where action:file_edit AND path:archive/query")
         assert terminal is not None
