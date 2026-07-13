@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
+from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import get_logger
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.source_sessions import (
@@ -559,6 +560,7 @@ def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ..
         make_fts_stage(db_path),
         make_embed_stage(db_path),
         make_insights_stage(db_path),
+        make_standing_query_stage(db_path),
     )
 
 
@@ -1671,4 +1673,5 @@ __all__ = [
     "make_embed_stage",
     "make_fts_stage",
     "make_insights_stage",
+    "make_standing_query_stage",
 ]

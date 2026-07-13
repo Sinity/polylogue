@@ -28,6 +28,11 @@ QUERY_REF_KIND: Final = "query"
 QUERY_RUN_REF_KIND: Final = "query-run"
 RESULT_SET_REF_KIND: Final = "result-set"
 QUERY_RUN_ID_PREFIX: Final = "qr_"
+LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION: Final = "polylogue.query-definition.v0"
+QUERY_DEFINITION_PROTOCOL_VERSION: Final = "polylogue.query-definition.v1"
+SUPPORTED_QUERY_DEFINITION_PROTOCOL_VERSIONS: Final = frozenset(
+    {LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION, QUERY_DEFINITION_PROTOCOL_VERSION}
+)
 
 _COMMUTATIVE_OPERATORS: Final = frozenset({"and", "or"})
 _SHA256_HEX_RE: Final = re.compile(r"^[0-9a-f]{64}$")
@@ -43,6 +48,7 @@ def canonical_query_plan(
     lane: str,
     rank_policy: str,
     field_aliases: Mapping[str, str] | None = None,
+    definition_protocol_version: str = QUERY_DEFINITION_PROTOCOL_VERSION,
 ) -> dict[str, JsonValue]:
     """Return the stable canonical payload used to identify a query.
 
@@ -51,8 +57,12 @@ def canonical_query_plan(
     field token; it is applied only to values in ``field`` keys.
     """
     aliases = {_nfc(key): _nfc(value) for key, value in (field_aliases or {}).items()}
+    protocol_version = _nfc(definition_protocol_version)
+    if not protocol_version:
+        raise ValueError("definition protocol version cannot be empty")
     return {
         "ast": _canonical_value(planned_ast, field_aliases=aliases),
+        "definition_protocol_version": protocol_version,
         "grain": _nfc(grain),
         "lane": _nfc(lane),
         "rank_policy": _nfc(rank_policy),
@@ -66,6 +76,7 @@ def query_hash_for_plan(
     lane: str,
     rank_policy: str,
     field_aliases: Mapping[str, str] | None = None,
+    definition_protocol_version: str = QUERY_DEFINITION_PROTOCOL_VERSION,
 ) -> str:
     """Return the SHA-256 identity of an expanded planned query."""
     return hash_payload(
@@ -75,8 +86,17 @@ def query_hash_for_plan(
             lane=lane,
             rank_policy=rank_policy,
             field_aliases=field_aliases,
+            definition_protocol_version=definition_protocol_version,
         )
     )
+
+
+def require_supported_definition_protocol_version(definition_protocol_version: str) -> str:
+    """Return a supported definition version or fail closed before evaluation."""
+    version = _nfc(definition_protocol_version)
+    if version not in SUPPORTED_QUERY_DEFINITION_PROTOCOL_VERSIONS:
+        raise ValueError(f"unsupported query definition protocol version: {version!r}")
+    return version
 
 
 def query_ref(query_hash: str) -> ObjectRef:
@@ -145,6 +165,8 @@ def _require_sha256(value: str, *, label: str) -> None:
 
 __all__ = [
     "JsonValue",
+    "LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION",
+    "QUERY_DEFINITION_PROTOCOL_VERSION",
     "QUERY_REF_KIND",
     "QUERY_RUN_ID_PREFIX",
     "QUERY_RUN_REF_KIND",

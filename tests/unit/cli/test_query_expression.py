@@ -33,6 +33,9 @@ from polylogue.archive.query.expression import (
     QueryUnitPipeline,
     QueryUnitSessionScopeStage,
     QueryUnitSource,
+    RefOperand,
+    RefOperandCycleError,
+    ResolvedRefOperand,
     UnsupportedSessionTerminalActionError,
     _CountRangeToken,
     _CountToken,
@@ -45,7 +48,9 @@ from polylogue.archive.query.expression import (
     compile_expression_into,
     explain_expression,
     parse_expression_ast,
+    parse_reference_query_pipeline,
     parse_unit_source_expression,
+    resolve_ref_operand,
 )
 from polylogue.archive.query.metadata import query_unit_descriptors
 from polylogue.archive.query.predicate import (
@@ -60,6 +65,7 @@ from polylogue.archive.query.predicate import (
     QueryTextPredicate,
 )
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.core.refs import ObjectRef
 from polylogue.storage.runtime import MessageRecord
 
 # ---------------------------------------------------------------------------
@@ -493,6 +499,69 @@ class TestExplainExpression:
 
 
 class TestBooleanQueryExpression:
+    def test_reference_pipeline_preserves_result_set_as_typed_operand(self) -> None:
+        pipeline = parse_reference_query_pipeline("from result-set:stable-set | group by model | count")
+
+        assert pipeline is not None
+        assert pipeline.operand == RefOperand(reference=ObjectRef(kind="result-set", object_id="stable-set"))
+        assert pipeline.stages == ("group by model", "count")
+
+    def test_reference_pipeline_bypasses_lark_field_clause_colon_ambiguity(self) -> None:
+        ast = parse_expression_ast("from result-set:stable-set | count")
+
+        assert ast.ref_operand == RefOperand(reference=ObjectRef(kind="result-set", object_id="stable-set"))
+        assert ast.clauses == ()
+
+    @pytest.mark.parametrize(
+        ("expression", "match"),
+        [
+            ("from query:not-a-hash", "query hash must be 64 lowercase hexadecimal characters"),
+            ("from query-run:not-a-run", "query run id must start with 'qr_'"),
+        ],
+    )
+    def test_reference_pipeline_uses_canonical_substrate_identity_validation(self, expression: str, match: str) -> None:
+        with pytest.raises(ExpressionCompileError, match=match):
+            parse_reference_query_pipeline(expression)
+
+    def test_reference_explain_reports_durable_lineage_without_textual_expansion(self) -> None:
+        payload = explain_expression("from result-set:stable-set | group by model | count").to_payload()
+
+        assert payload["ast"] == {
+            "entry": "reference_pipeline",
+            "reference_pipeline": {
+                "source": {
+                    "kind": "ref_operand",
+                    "reference": "result-set:stable-set",
+                    "reference_kind": "result-set",
+                    "evaluation_mode": "retained",
+                },
+                "stages": ["group by model", "count"],
+            },
+        }
+        assert cast(dict[str, Any], payload["lowering_plan"])["reference_lineage"] == ["result-set:stable-set"]
+
+    def test_reference_pipeline_rejects_compatibility_text_lowering(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="never expanded into text"):
+            compile_expression("from result-set:stable-set")
+
+    def test_reference_resolver_rejects_a_cycle_before_materialization(self) -> None:
+        operand = RefOperand(reference=ObjectRef(kind="query", object_id="stable-query"))
+
+        class _CyclicResolver:
+            def resolve_ref_operand(self, resolved_operand: RefOperand) -> ResolvedRefOperand:
+                return ResolvedRefOperand(
+                    operand=resolved_operand,
+                    grain="session",
+                    lineage=(ObjectRef(kind="query", object_id="stable-query"),),
+                )
+
+        with pytest.raises(RefOperandCycleError, match="reference cycle"):
+            resolve_ref_operand(operand, _CyclicResolver())
+
+    def test_macro_token_is_not_reinterpreted_as_a_reference_operand(self) -> None:
+        assert parse_reference_query_pipeline("@saved") is None
+        assert _clauses("@saved") == [_TextToken(text="@saved", quoted=False, negated=False)]
+
     def test_boolean_ast_exposes_predicate_tree(self) -> None:
         ast = parse_expression_ast("repo:polylogue OR origin:chatgpt-export")
 

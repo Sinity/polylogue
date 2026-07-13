@@ -481,9 +481,15 @@ def validate_migration_backup_manifest(
 
 
 def _execute_migration_sql(conn: sqlite3.Connection, sql: str) -> None:
-    statements = [statement.strip() for statement in sql.split(";") if statement.strip()]
-    for statement in statements:
-        conn.execute(statement)
+    statement = ""
+    for line in sql.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise MigrationError("migration SQL ended with an incomplete statement")
 
 
 def migrate_archive_tier(
@@ -535,7 +541,9 @@ def migrate_archive_tier(
                     f"{tier.value} migration {step.name} expected version {step.version - 1}, found {before}"
                 )
             _execute_migration_sql(conn, step.sql)
-            if tier is ArchiveTier.USER and step.version == 7:
+            # Saved-query migration now runs after v8 has installed the
+            # definition-version column consumed by the canonical identity API.
+            if tier is ArchiveTier.USER and step.version == 8:
                 from polylogue.storage.sqlite.query_objects import migrate_saved_query_assertions
 
                 migrate_saved_query_assertions(conn)
