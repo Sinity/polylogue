@@ -1175,7 +1175,7 @@ def _verify_browser_origin_copy_forward_source_stage(
             len(projection.message_hashes),
             0,
             RawRevisionAuthority.QUARANTINED.value,
-            "applied",
+            None,
         )
         or census is None
         or tuple(census) != ("complete", 1)
@@ -1336,6 +1336,7 @@ def _inspect_browser_capture_origin_mismatch(
         or str(raw["revision_authority"]) != RawRevisionAuthority.QUARANTINED.value
         or raw["source_revision"] is None
         or raw["acquisition_generation"] is None
+        or int(raw["acquisition_generation"]) != 0
         or any(
             raw[name] is not None
             for name in (
@@ -1417,6 +1418,17 @@ def _inspect_browser_capture_origin_mismatch(
         "SELECT session_id, origin, native_id, content_hash FROM sessions WHERE session_id = ?",
         (session_id,),
     ).fetchone()
+    old_applications = conn.execute(
+        """
+        SELECT session_id, logical_source_key, source_revision, acquisition_generation,
+               decision, accepted_raw_id, accepted_source_revision,
+               accepted_content_hash, baseline_raw_id, decided_at_ms
+        FROM raw_revision_applications
+        WHERE raw_id = ? AND logical_source_key = ? AND decision = 'selected_baseline'
+        ORDER BY decision_id
+        """,
+        (raw_id, old_key),
+    ).fetchall()
     if (
         head is None
         or indexed is None
@@ -1428,6 +1440,21 @@ def _inspect_browser_capture_origin_mismatch(
         or int(head["accepted_frontier"]) != blob_size
         or int(head["acquisition_generation"]) != int(raw["acquisition_generation"])
         or _bytes_value(indexed["content_hash"]) != accepted_hash
+        or len(old_applications) != 1
+        or tuple(old_applications[0])[:-1]
+        != (
+            session_id,
+            old_key,
+            blob_hash_hex,
+            int(raw["acquisition_generation"]),
+            ApplicationDecision.SELECTED_BASELINE.value,
+            raw_id,
+            blob_hash_hex,
+            accepted_hash,
+            raw_id,
+        )
+        or not isinstance(old_applications[0][-1], int)
+        or int(old_applications[0][-1]) < 0
     ):
         return _browser_origin_ineligible(raw_id, "current accepted head does not exactly prove the normalized session")
     membership = conn.execute(
@@ -1453,7 +1480,12 @@ def _inspect_browser_capture_origin_mismatch(
         or int(membership["message_count"]) != len(projection.message_hashes)
         or int(membership["acquisition_generation"]) != int(raw["acquisition_generation"])
         or str(membership["revision_authority"]) != RawRevisionAuthority.QUARANTINED.value
-        or str(membership["decision"]) != "applied"
+        # A quarantined source raw has not been admitted to replay, so its
+        # singleton census witness must remain undecided.  The old
+        # selected-baseline receipt above is the separate, immutable authority
+        # witness for the current unknown-key head.  A non-null membership
+        # decision would be incompatible with this narrow recovery shape.
+        or membership["decision"] is not None
         or str(census["status"]) != "complete"
         or int(census["member_count"]) != 1
     ):
