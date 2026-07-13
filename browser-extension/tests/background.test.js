@@ -476,6 +476,38 @@ describe("background receiver diagnostics", () => {
     expect(fetchCalls[0].url).toContain("provider=grok&provider_session_id=query-77");
   });
 
+  it("does not invent a conversation identity for the X home timeline", async () => {
+    tabs = [{ id: 78, url: "https://x.com/home", title: "Home", active: true }];
+    globalThis.fetch = vi.fn(async (url) => {
+      fetchCalls.push({ url });
+      return responseJson({ ok: true });
+    });
+
+    activatedListener({ tabId: 78 });
+
+    await vi.waitFor(() => expect(fetchCalls).toHaveLength(1));
+    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/status");
+    expect(stored.polylogueSessionLedger).toBeUndefined();
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("records a local popup capture failure as a held decision without offline state", async () => {
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-local-failure", title: "ChatGPT", active: true }];
+
+    await sendRuntimeMessage({
+      type: "polylogue.capturePageFailed",
+      tab_id: 42,
+      tab_url: tabs[0].url,
+      error: "no_turns",
+    });
+
+    expect(stored.polylogueConversationTimeline["chatgpt:conv-local-failure"][0]).toMatchObject({
+      event: "held_with_reason",
+      detail: "content_capture_failed",
+    });
+    expect(stored.polylogueState).toMatchObject({ online: true, error: "no_turns" });
+  });
+
   it("does not capture existing provider tabs on extension update", async () => {
     expect(installedListener).toBeTypeOf("function");
     globalThis.fetch = vi.fn(async () => responseJson({ ok: true, active: true }));
@@ -863,6 +895,22 @@ describe("capture retry queue", () => {
       "conv-concurrent-a",
       "conv-concurrent-b",
     ]);
+  });
+
+  it("reports an oversized retry capture as dropped instead of queued", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    const response = await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: {
+        session: { provider: "chatgpt", provider_session_id: "conv-oversized", turns: [{ text: "x".repeat(43_000_000) }] },
+      },
+    });
+
+    expect(response.queued).toBe(false);
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(0);
+    expect(stored.polylogueConversationTimeline["chatgpt:conv-oversized"][0].detail).toBe("capture_queue_entry_over_budget");
   });
 
   it("drops a retry after a later non-retryable receiver rejection", async () => {

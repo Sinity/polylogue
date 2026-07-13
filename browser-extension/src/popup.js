@@ -177,6 +177,7 @@ function tabState(tab, ledger) {
         if (pathId) return pathId;
         const queryId = url.searchParams.get("conversation") || url.searchParams.get("conversationId");
         if (queryId) return queryId;
+        if (!(parts[0] === "i" && parts[1] === "grok")) return null;
         let hash = 0x811c9dc5;
         for (const char of `${url.origin}${url.pathname}${url.search}`) {
           hash ^= char.charCodeAt(0);
@@ -578,13 +579,11 @@ document.getElementById("capture").addEventListener("click", async () => {
       }));
     }
     if (!result?.ok) {
-      await chrome.storage.local.set({
-        polylogueState: {
-          online: false,
-          captured: false,
-          error: result?.error || "This page is not supported.",
-          updated_at: new Date().toISOString()
-        }
+      await chrome.runtime.sendMessage({
+        type: "polylogue.capturePageFailed",
+        error: result?.error || "capture_page_failed",
+        tab_id: tab.id,
+        tab_url: tab.url || tab.pendingUrl || null,
       });
     }
     await render();

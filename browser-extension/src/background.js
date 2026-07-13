@@ -269,12 +269,14 @@ async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
       reason: "capture_queue_entry_over_budget",
       error: entry.last_error,
     });
-    return getCaptureQueue();
+    return { queue: await getCaptureQueue(), accepted: false, evicted: [entry] };
   }
   const queue = await getCaptureQueue();
   let entries = [...queue.entries, entry];
   let droppedCount = queue.dropped_count || 0;
+  const evicted = [];
   while (entries.length > CAPTURE_QUEUE_MAX_ENTRIES || byteLength(entries) > CAPTURE_QUEUE_MAX_BYTES) {
+    evicted.push(entries[0]);
     entries = entries.slice(1);
     droppedCount += 1;
   }
@@ -288,7 +290,7 @@ async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
     error: entry.last_error,
     queue_length: entries.length,
   });
-  return nextQueue;
+  return { queue: nextQueue, accepted: true, evicted };
   });
 }
 
@@ -1066,6 +1068,7 @@ function conversationIdForUrl(url) {
       if (pathId) return pathId;
       const queryId = parsed.searchParams.get("conversation") || parsed.searchParams.get("conversationId");
       if (queryId) return queryId;
+      if (!(parts[0] === "i" && parts[1] === "grok")) return null;
       let hash = 0x811c9dc5;
       for (const char of `${parsed.origin}${parsed.pathname}${parsed.search}`) {
         hash ^= char.charCodeAt(0);
@@ -1391,13 +1394,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         result = await postJson("/v1/browser-captures", envelope);
       } catch (error) {
         if (isRetryableCaptureError(error)) {
-          await enqueueCaptureForRetry({ envelope, reason: message.reason, error, tab: sender.tab });
+          const queued = await enqueueCaptureForRetry({ envelope, reason: message.reason, error, tab: sender.tab });
+          for (const evicted of queued.accepted ? queued.evicted : []) {
+            const evictedSummary = envelopeSessionSummary(evicted.envelope);
+            await appendConversationTimeline({
+              provider: evictedSummary.provider,
+              providerSessionId: evictedSummary.providerSessionId,
+              event: "held_with_reason",
+              reason: evicted.reason,
+              detail: queued.accepted ? "capture_queue_evicted" : "capture_queue_entry_over_budget",
+              tabId: evicted.tab_id || null,
+            });
+          }
           await appendConversationTimeline({
             provider: summary.provider,
             providerSessionId: summary.providerSessionId,
             event: "held_with_reason",
             reason: message.reason || "content_script_capture",
-            detail: "capture_queued_for_retry",
+            detail: queued.accepted ? "capture_queued_for_retry" : "capture_queue_entry_over_budget",
             tabId: sender.tab?.id || null,
           });
           await setStateForTab(sender.tab?.id || null, {
@@ -1410,7 +1424,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }, sender.tab?.url || sender.tab?.pendingUrl || null);
           sendResponse({
             ok: false,
-            queued: true,
+            queued: queued.accepted,
             error: String(error.message || error),
             receiver_request_id: error.receiverRequestId || null,
           });
@@ -1566,6 +1580,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       sendResponse(state.archive_state || state.status || state);
+      return;
+    }
+    if (message.type === "polylogue.capturePageFailed") {
+      const tab = sender.tab || (message.tab_url ? { id: message.tab_id || null, url: message.tab_url } : null);
+      const url = tab?.url || tab?.pendingUrl || "";
+      const provider = archiveProviderForUrl(url);
+      const providerSessionId = conversationIdForUrl(url);
+      await appendConversationTimeline({
+        provider,
+        providerSessionId,
+        event: "held_with_reason",
+        reason: "popup_capture",
+        detail: "content_capture_failed",
+        tabId: tab?.id || null,
+      });
+      await setStateForTab(tab?.id || null, {
+        online: true,
+        captured: false,
+        provider,
+        provider_session_id: providerSessionId,
+        active_page_state: providerSessionId ? "conversation" : "supported_no_session",
+        error: message.error || "capture_page_failed",
+      }, url || null);
+      sendResponse({ ok: false });
       return;
     }
     if (message.type === "polylogue.captureSupportedTabs") {
