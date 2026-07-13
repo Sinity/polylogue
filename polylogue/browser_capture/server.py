@@ -191,6 +191,13 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
         self.send_header("Access-Control-Max-Age", "600")
+        # Chrome's Private Network Access policy blocks an already-origin-approved
+        # extension fetch to this loopback receiver unless the preflight explicitly
+        # grants it (https://developer.chrome.com/blog/private-network-access-preflight).
+        # Without this the browser reports a bare "Failed to fetch" with no other
+        # signal, so the extension popup's health check hangs forever.
+        if self.headers.get("Access-Control-Request-Private-Network", "").lower() == "true":
+            self.send_header("Access-Control-Allow-Private-Network", "true")
         self.end_headers()
 
     def do_GET(self) -> None:
