@@ -65,7 +65,9 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         self.coordination_cache_building: set[tuple[str, int]] = set()
 
     def server_close(self) -> None:
-        self.archive_query_executor.shutdown(wait=False, cancel_futures=True)
+        executor = getattr(self, "archive_query_executor", None)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
         if self._owned_write_runtime is not None:
             self._owned_write_runtime.close()
             self._owned_write_runtime = None

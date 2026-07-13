@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+from os import getpid
 from pathlib import Path
 
 import pytest
@@ -66,3 +68,45 @@ def test_daemon_probe_rejects_the_tmp_archive_config_trap(monkeypatch: pytest.Mo
         )
         is None
     )
+
+
+def test_daemon_client_probes_the_production_uds_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stdlib client reaches the production AF_UNIX server, not a TCP substitute."""
+
+    from http import HTTPStatus
+
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
+
+    def health(self: DaemonAPIHandler) -> None:
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "archive_root": "/realm/archive",
+                "index_schema_version": 24,
+                "daemon_version": "0.1.0",
+                "commit": "test",
+                "started_at": "2026-07-13T00:00:00+00:00",
+            },
+        )
+
+    monkeypatch.setattr(DaemonAPIHandler, "_handle_health", health)
+    socket_path = Path("/realm/tmp") / f"polylogue-uds-{getpid()}.sock"
+    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = DaemonClient(socket_path)
+        assert (
+            client.probe(
+                archive_root="/realm/archive",
+                index_schema_version=24,
+                daemon_version="0.1.0",
+            )
+            is not None
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
