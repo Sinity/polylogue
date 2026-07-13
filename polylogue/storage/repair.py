@@ -292,6 +292,15 @@ def _stageable_quarantined_census_cohort(
     ).fetchall()
     if not rows or str(rows[0]["source_path"]) != str(raw["source_path"]):
         return (), "same-source-path cohort is missing"
+    oversized = [
+        str(candidate["raw_id"])
+        for candidate in rows
+        if int(candidate["blob_size"]) > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES
+    ]
+    if oversized:
+        return (), "same-source-path cohort exceeds the per-raw retained-blob repair limit"
+    if sum(int(candidate["blob_size"]) for candidate in rows) > _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES:
+        return (), "same-source-path cohort exceeds the aggregate retained-blob repair limit"
     store = BlobStore(archive_root / "blob")
     staged_ids: list[str] = []
     for candidate in rows:

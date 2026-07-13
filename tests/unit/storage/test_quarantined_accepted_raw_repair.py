@@ -532,6 +532,87 @@ def test_quarantined_accepted_raw_repair_refuses_source_v7_census_staging_with_m
     assert report.items[0].reason == "source-v7 origin is not injective without capture-mode authority"
 
 
+def test_quarantined_accepted_raw_repair_bounds_source_v7_census_staging_cohort(tmp_path: Path) -> None:
+    raw_id = _seed_invalid_head(tmp_path, "oversized-cohort")
+    sibling_raw_id = "d" * 64
+    oversized = 256 * 1024 * 1024 + 1
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind, source_revision,
+                acquisition_generation, revision_authority
+            ) SELECT ?, origin, native_id, source_path, source_index, blob_hash, ?,
+                     acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind, source_revision,
+                     acquisition_generation, revision_authority
+              FROM raw_sessions WHERE raw_id = ?
+            """,
+            (sibling_raw_id, oversized, raw_id),
+        )
+        source.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            SELECT blob_hash, ?, ref_type, source_path, ?, acquired_at_ms
+              FROM blob_refs WHERE ref_id = ?
+            """,
+            (sibling_raw_id, oversized, raw_id),
+        )
+        source.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (raw_id,))
+        source.execute("DELETE FROM raw_membership_census WHERE raw_id = ?", (raw_id,))
+        source.execute("ALTER TABLE raw_sessions DROP COLUMN capture_mode")
+        source.commit()
+
+    report = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "same-source-path cohort exceeds the per-raw retained-blob repair limit"
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute(
+            "SELECT COUNT(*) FROM raw_session_memberships WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            0,
+        )
+
+
+def test_quarantined_accepted_raw_repair_bounds_source_v7_census_staging_aggregate(tmp_path: Path) -> None:
+    raw_id = _seed_invalid_head(tmp_path, "aggregate-cohort")
+    sibling_size = 171 * 1024 * 1024
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        for sibling_raw_id in ("a" * 64, "b" * 64, "c" * 64):
+            source.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                    acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind, source_revision,
+                    acquisition_generation, revision_authority
+                ) SELECT ?, origin, native_id, source_path, source_index, blob_hash, ?,
+                         acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind, source_revision,
+                         acquisition_generation, revision_authority
+                  FROM raw_sessions WHERE raw_id = ?
+                """,
+                (sibling_raw_id, sibling_size, raw_id),
+            )
+            source.execute(
+                """
+                INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+                SELECT blob_hash, ?, ref_type, source_path, ?, acquired_at_ms
+                  FROM blob_refs WHERE ref_id = ?
+                """,
+                (sibling_raw_id, sibling_size, raw_id),
+            )
+        source.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (raw_id,))
+        source.execute("DELETE FROM raw_membership_census WHERE raw_id = ?", (raw_id,))
+        source.execute("ALTER TABLE raw_sessions DROP COLUMN capture_mode")
+        source.commit()
+
+    report = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "same-source-path cohort exceeds the aggregate retained-blob repair limit"
+
+
 def test_quarantined_accepted_raw_repair_rejects_duplicates_and_rolls_back_batch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
