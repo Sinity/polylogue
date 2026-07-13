@@ -517,6 +517,17 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(Path.cwd() / PYTEST_EVENTS_PATH)
 
 
+def test_verify_subprocess_env_replaces_cloud_basetemp_in_local_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", "/tmp/polylogue-pytest")
+    completed = subprocess.CompletedProcess(args=["devtools"], returncode=0, stdout="", stderr="")
+
+    with patch("devtools.verify.subprocess.run", return_value=completed) as run:
+        _run("render all", ["devtools", "render all", "--check"])
+
+    env = run.call_args.kwargs["env"]
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == "/realm/tmp/polylogue-pytest"
+
+
 def test_run_reads_structured_pytest_report() -> None:
     """The structured pytest report is the primary metadata source (#1026, #998)."""
     completed = subprocess.CompletedProcess(

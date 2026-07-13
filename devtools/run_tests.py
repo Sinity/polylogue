@@ -42,7 +42,7 @@ from devtools.verify import (
     _clear_pytest_report,
     _run,
 )
-from devtools.verify_runs import VerifyRun, git_head
+from devtools.verify_runs import VerifyRun, git_head, normalize_pytest_basetemp_env
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
@@ -50,7 +50,7 @@ _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
 
 def _managed_env() -> dict[str, str]:
     """Mirror devtools.verify's subprocess environment for parity."""
-    env = os.environ.copy()
+    env = normalize_pytest_basetemp_env(os.environ)
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
