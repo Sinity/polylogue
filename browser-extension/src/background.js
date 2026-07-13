@@ -76,7 +76,7 @@ async function withExtensionInstanceAttribution(envelope) {
 
 async function backfillCoordinator() {
   if (!backfillCoordinatorPromise) {
-    backfillCoordinatorPromise = (async () => {
+    const candidate = (async () => {
       const store = new IndexedDbBackfillStore();
       const stored = await chrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
       await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
@@ -97,6 +97,10 @@ async function backfillCoordinator() {
         receiverContractEpoch: BACKFILL_WORKER_EPOCH,
       });
     })();
+    backfillCoordinatorPromise = candidate;
+    void candidate.catch(() => {
+      if (backfillCoordinatorPromise === candidate) backfillCoordinatorPromise = null;
+    });
   }
   return backfillCoordinatorPromise;
 }
@@ -666,13 +670,16 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null) 
   }
 }
 
-async function getJson(path) {
+async function getJson(path, timeoutMs = null) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "GET", path, request_id: requestId });
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort("receiver_request_timeout"), timeoutMs) : 0;
   try {
     const response = await fetch(`${settings.baseUrl}${path}`, {
       headers: await requestHeaders({ requestId }),
+      signal: controller?.signal,
     });
     const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
     const body = await response.json().catch(() => ({}));
@@ -704,11 +711,13 @@ async function getJson(path) {
       error: String(error.message || error),
     });
     throw error;
+  } finally {
+    if (timeout) globalThis.clearTimeout(timeout);
   }
 }
 
 async function backfillReceiverPreflight() {
-  const capability = await getJson("/v1/browser-captures/capabilities");
+  const capability = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
   const fields = capability?.durable_ack_fields;
   if (!Array.isArray(fields) || DURABLE_RECEIVER_ACK_FIELDS.some((field) => !fields.includes(field))) {
     throw new Error("receiver_contract_incompatible:durable_ack_fields_missing");

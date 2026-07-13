@@ -557,6 +557,24 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("retries coordinator initialization after recovery storage fails once", async () => {
+    globalThis.chrome.storage.local.get = vi.fn()
+      .mockRejectedValueOnce(new Error("synthetic_recovery_storage_failure"))
+      .mockImplementation(async (defaults) => ({ ...defaults, ...stored }));
+    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: false, error: "synthetic_recovery_storage_failure" });
+    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: true, jobs: [] });
+  });
+
+  it("bounds receiver capability preflight with the provider request timeout", async () => {
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
+    });
+    await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+    expect(fetchCalls[0]).toMatchObject({ url: expect.stringContaining("/v1/browser-captures/capabilities") });
+    expect(fetchCalls[0].options.signal).toBeDefined();
+  });
+
   it("restores a packaged recovery checkpoint as an actionable paused job and ignores its alarm", async () => {
     await loadBackground({
       polylogueBackfillRecoveryCheckpoint: {
