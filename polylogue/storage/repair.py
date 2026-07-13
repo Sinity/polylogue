@@ -1500,7 +1500,7 @@ def _canonical_browser_origin_head_is_exact(
     session_id: str,
     accepted_hash: bytes,
     message_count: int,
-) -> _SemanticCanonicalWitness | None:
+) -> bool:
     """Return whether an existing canonical head has full byte authority witnesses."""
     raw_id = str(canonical_head["accepted_raw_id"])
     source_revision = str(canonical_head["accepted_source_revision"])
@@ -1549,7 +1549,7 @@ def _canonical_browser_origin_head_is_exact(
         or _bytes_value(canonical_head["accepted_content_hash"]) != accepted_hash
         or str(canonical_head["accepted_frontier_kind"]) != "byte"
     ):
-        return None
+        return False
     try:
         blob_hash = bytes.fromhex(source_revision)
         store = BlobStore(archive_root / "blob")
