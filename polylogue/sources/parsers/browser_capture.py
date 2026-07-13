@@ -341,6 +341,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
 
 
 __all__ = [
+    "COMPACT_BROWSER_CAPTURE_INGEST_FLAG",
     "DOM_FALLBACK_INGEST_FLAG",
     "NATIVE_BROWSER_CAPTURE_INGEST_FLAG",
     "TEMPORARY_CHAT_INGEST_FLAG",
