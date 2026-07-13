@@ -734,6 +734,47 @@ def test_receiver_auth_allows_cors_preflight_without_bearer_token(tmp_path: Path
     assert "X-Request-ID" in allow_headers
 
 
+def test_receiver_preflight_grants_private_network_access_when_requested(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path, auth_token="secret", extra_origins=(_CHATGPT_ORIGIN,)) as (host, port):
+        conn = HTTPConnection(host, port)
+        conn.request(
+            "OPTIONS",
+            "/v1/browser-captures",
+            headers={
+                "Origin": _CHATGPT_ORIGIN,
+                "Access-Control-Request-Headers": "authorization, content-type, x-request-id",
+                "Access-Control-Request-Private-Network": "true",
+            },
+        )
+        response = conn.getresponse()
+        allow_private_network = response.getheader("Access-Control-Allow-Private-Network")
+        response.read()
+        conn.close()
+
+    assert response.status == HTTPStatus.NO_CONTENT
+    assert allow_private_network == "true"
+
+
+def test_receiver_preflight_omits_private_network_header_when_not_requested(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path, auth_token="secret", extra_origins=(_CHATGPT_ORIGIN,)) as (host, port):
+        conn = HTTPConnection(host, port)
+        conn.request(
+            "OPTIONS",
+            "/v1/browser-captures",
+            headers={
+                "Origin": _CHATGPT_ORIGIN,
+                "Access-Control-Request-Headers": "authorization, content-type, x-request-id",
+            },
+        )
+        response = conn.getresponse()
+        allow_private_network = response.getheader("Access-Control-Allow-Private-Network")
+        response.read()
+        conn.close()
+
+    assert response.status == HTTPStatus.NO_CONTENT
+    assert allow_private_network is None
+
+
 def test_receiver_allows_extra_web_origin_only_with_token(tmp_path: Path) -> None:
     with _running_receiver(tmp_path, auth_token="secret", extra_origins=(_CHATGPT_ORIGIN,)) as (host, port):
         conn = HTTPConnection(host, port)
