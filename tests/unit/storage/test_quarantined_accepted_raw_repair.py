@@ -512,6 +512,50 @@ def test_quarantined_accepted_raw_repair_does_not_claim_a_competing_receipt_comm
     assert json.loads(interrupted_receipt.read_text().splitlines()[-1])["repaired_raw_ids"] == []
 
 
+def test_quarantined_accepted_raw_repair_attributes_from_locked_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
+    receipt = tmp_path / "pre-lease-competitor.jsonl"
+    from polylogue.storage import index_generation
+
+    class CompetingRepairLease:
+        def __init__(self, archive_root: Path) -> None:
+            self.archive_root = archive_root
+
+        def __enter__(self) -> CompetingRepairLease:
+            with sqlite3.connect(self.archive_root / "source.db") as source:
+                source.execute(
+                    """
+                    UPDATE raw_sessions
+                    SET logical_source_key = ?, revision_kind = 'full', source_revision = ?,
+                        baseline_raw_id = raw_id, acquisition_generation = 0,
+                        revision_authority = 'byte_proven'
+                    WHERE raw_id = ?
+                    """,
+                    ("chatgpt:repair-one", dry_run.items[0].accepted_source_revision, raw_id),
+                )
+                source.commit()
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+    monkeypatch.setattr(index_generation, "RebuildLease", CompetingRepairLease)
+    result = repair_quarantined_accepted_raws(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+
+    assert result.repaired_count == 0
+    assert result.already_repaired_count == 1
+    assert json.loads(receipt.read_text().splitlines()[-1])["repaired_raw_ids"] == []
+
+
 def test_quarantined_accepted_raw_repair_acquires_exclusive_archive_lock_before_receipt(tmp_path: Path) -> None:
     raw_id = _seed_invalid_head(tmp_path)
     dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])

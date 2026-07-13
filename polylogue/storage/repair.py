@@ -969,7 +969,7 @@ def repair_quarantined_accepted_raws(
                         raise
                 items = [
                     dataclasses.replace(after, repaired=before.status == "eligible")
-                    for before, after in zip(items, after_items, strict=True)
+                    for before, after in zip(locked_items, after_items, strict=True)
                 ]
                 if not receipt.terminal:
                     _finish_quarantined_raw_repair_receipt(receipt, items=items)
