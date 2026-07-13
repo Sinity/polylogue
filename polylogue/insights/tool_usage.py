@@ -86,7 +86,7 @@ class ToolUsageCoverageEntry(ArchiveInsightModel):
     has_affected_paths_signal: bool
     has_output_text_signal: bool
     data_available: bool
-    """True when the provider exposes any action rows in the archive."""
+    """True when the origin exposes any action rows in the archive."""
 
 
 class ToolUsageInsight(ArchiveInsightModel):
@@ -94,7 +94,7 @@ class ToolUsageInsight(ArchiveInsightModel):
 
     The envelope itself is a single insight item. Each call returns
     exactly one ``ToolUsageInsight`` containing every aggregation entry
-    and every provider coverage entry resolved by the query. This shape
+    and every origin coverage entry resolved by the query. This shape
     keeps usage and coverage atomically consistent — readers never see
     one half without the other.
     """
@@ -115,12 +115,12 @@ class ToolUsageInsight(ArchiveInsightModel):
 class ToolUsageInsightQuery(PaginatedInsightQuery):
     """Query parameters for ``list_tool_usage_insights``.
 
-    ``provider`` and ``tool`` narrow the returned aggregation entries but
+    ``origin`` and ``tool`` narrow the returned aggregation entries but
     never the coverage map — coverage gaps are always reported across all
     providers so a narrowed query never hides them.
     """
 
-    provider: str | None = None
+    origin: str | None = None
     tool: str | None = None
     mcp_server: str | None = None
     action_kind: str | None = None
@@ -176,8 +176,8 @@ def build_tool_usage_insight(
     """
 
     entries = [_tool_usage_entry(row) for row in rows]
-    if query.provider:
-        entries = [entry for entry in entries if entry.source_name == query.provider]
+    if query.origin:
+        entries = [entry for entry in entries if entry.source_name == query.origin]
     if query.tool:
         entries = [entry for entry in entries if entry.normalized_tool_name == query.tool]
     if query.mcp_server:

@@ -111,8 +111,8 @@ class SessionReader(Protocol):
         self,
         limit: int | None = 50,
         offset: int = 0,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
+        origin: str | None = None,
+        origins: builtins.list[str] | None = None,
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
@@ -134,8 +134,8 @@ class SessionReader(Protocol):
         self,
         limit: int | None = 50,
         offset: int = 0,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
+        origin: str | None = None,
+        origins: builtins.list[str] | None = None,
         source: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -156,8 +156,8 @@ class SessionReader(Protocol):
 
     async def count(
         self,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
+        origin: str | None = None,
+        origins: builtins.list[str] | None = None,
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
@@ -197,21 +197,21 @@ class SearchStore(Protocol):
         self,
         query: str,
         limit: int = 20,
-        providers: builtins.list[str] | None = None,
+        origins: builtins.list[str] | None = None,
     ) -> list[Session]: ...
 
     async def search_summaries(
         self,
         query: str,
         limit: int = 20,
-        providers: builtins.list[str] | None = None,
+        origins: builtins.list[str] | None = None,
     ) -> list[SessionSummary]: ...
 
     async def search_summary_hits(
         self,
         query: str,
         limit: int = 20,
-        providers: builtins.list[str] | None = None,
+        origins: builtins.list[str] | None = None,
         since: str | None = None,
     ) -> list[SessionSearchHit]: ...
 
@@ -249,7 +249,7 @@ class SessionQueryRuntimeStore(
         self,
         query: str,
         limit: int = 20,
-        providers: builtins.list[str] | None = None,
+        origins: builtins.list[str] | None = None,
     ) -> list[Session]: ...
 
 

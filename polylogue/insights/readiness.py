@@ -20,10 +20,10 @@ InsightReadinessVerdict = Literal[
 _REPAIR_HINT = build_maintenance_target_catalog().repair_hint(("session_insights",), include_run_all=True)
 
 
-def _origin_for_provider_value(provider: str | None) -> str | None:
-    from polylogue.storage.sqlite.archive_tiers.archive import _origin_for_provider_value as _impl
+def _origin_value(origin: str | None) -> str | None:
+    from polylogue.storage.sqlite.archive_tiers.archive import _origin_value as _impl
 
-    return _impl(provider)
+    return _impl(origin)
 
 
 def _provider_for_origin_value(origin: str) -> str:
@@ -48,7 +48,7 @@ def _iso_from_ms(value: object) -> str | None:
 
 class InsightReadinessQuery(ArchiveInsightModel):
     insights: tuple[str, ...] = ()
-    provider: str | None = None
+    origin: str | None = None
     since: str | None = None
     until: str | None = None
 
@@ -101,7 +101,7 @@ class InsightReadinessReport(ArchiveInsightModel):
     checked_at: str
     aggregate_verdict: InsightReadinessVerdict
     total_sessions: int = 0
-    provider: str | None = None
+    origin: str | None = None
     since: str | None = None
     until: str | None = None
     insights: tuple[InsightReadinessEntry, ...] = ()
@@ -345,25 +345,25 @@ async def _table_columns(conn: aiosqlite.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in rows}
 
 
-def _provider_filter_origin(provider: str | None) -> str | None:
-    if not provider:
+def _provider_filter_origin(origin: str | None) -> str | None:
+    if not origin:
         return None
-    return _origin_for_provider_value(provider)
+    return _origin_value(origin)
 
 
 def _where_clause(
     spec: InsightReadinessSpec,
     query: InsightReadinessQuery,
 ) -> tuple[str, list[object]]:
-    """Build a provider/time filter expressed against the joined ``sessions``.
+    """Build a origin/time filter expressed against the joined ``sessions``.
 
-    Archive insight tables key everything on ``session_id``; provider identity
+    Archive insight tables key everything on ``session_id``; origin identity
     lives on ``sessions.origin`` and recency on ``sessions.sort_key_ms``, so
     every filter clause references the ``s.`` alias from the session join.
     """
     clauses: list[str] = []
     params: list[object] = []
-    origin = _provider_filter_origin(query.provider)
+    origin = _provider_filter_origin(query.origin)
     if origin is not None:
         clauses.append("s.origin = ?")
         params.append(origin)
@@ -455,7 +455,7 @@ async def _fallback_coverage(
 def _schema_contract_issues(spec: InsightReadinessSpec, columns: set[str]) -> tuple[str, ...]:
     """Report structural schema drift for an archive insight table.
 
-    has no per-row version columns and derives provider/time
+    has no per-row version columns and derives origin/time
     via the ``sessions`` join, so the only contract a present table can break
     is its own primary ``session_id`` key (every archive insight table is keyed
     on it). A missing ``session_id`` column means the table is not the expected
@@ -592,7 +592,7 @@ async def build_insight_readiness_report(
         checked_at=datetime.now(timezone.utc).isoformat(),
         aggregate_verdict=_aggregate_verdict(insights),
         total_sessions=status.total_sessions,
-        provider=request.provider,
+        origin=request.origin,
         since=request.since,
         until=request.until,
         insights=insights,

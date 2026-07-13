@@ -176,23 +176,23 @@ async def fetch_search_results(
         return True, results
 
     query = " ".join(plan.fts_terms)
-    # Legacy repository search filters the `sessions.source_name` provider
+    # Legacy repository search filters the `sessions.source_name` origin
     # column; the archive path (archive_execution) filters `origin`. Until the
     # source_name→origin reconciliation (#1743 Phase 2) moves this SQL onto the
-    # origin column, project the plan's origin tokens back to provider tokens
+    # origin column, project the plan's origin tokens back to origin tokens
     # for this leg.
     source_names = _origins_as_provider_tokens(plan.origins)
     if summaries:
         summary_results = await repository.search_summaries(
             query,
             limit=search_limit(plan),
-            providers=source_names,
+            origins=source_names,
         )
         return True, summary_results
     session_results = await repository.search(
         query,
         limit=search_limit(plan),
-        providers=source_names,
+        origins=source_names,
     )
     return True, session_results
 

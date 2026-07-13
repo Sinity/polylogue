@@ -240,7 +240,7 @@ class SessionTagRollupListQuery:
 class ArtifactObservationListQuery:
     """Canonical durable-artifact observation selection for storage reads."""
 
-    origins: tuple[str, ...] = ()
+    providers: tuple[str, ...] = ()
     support_statuses: tuple[str, ...] = ()
     artifact_kinds: tuple[str, ...] = ()
     limit: int | None = None

@@ -79,15 +79,15 @@ class SearchableTimeWindowInsightQuery(TimeWindowInsightQuery):
         return bool(self.query)
 
 
-class ProviderTimeWindowInsightQuery(TimeWindowInsightQuery):
-    provider: str | None = None
+class OriginTimeWindowInsightQuery(TimeWindowInsightQuery):
+    origin: str | None = None
 
 
-class ProviderSearchInsightQuery(SearchableTimeWindowInsightQuery):
-    provider: str | None = None
+class OriginSearchInsightQuery(SearchableTimeWindowInsightQuery):
+    origin: str | None = None
 
 
-class SessionWindowInsightQuery(ProviderSearchInsightQuery):
+class SessionWindowInsightQuery(OriginSearchInsightQuery):
     first_message_since: str | None = None
     first_message_until: str | None = None
     session_date_since: str | None = None
@@ -97,7 +97,7 @@ class SessionWindowInsightQuery(ProviderSearchInsightQuery):
     sort: str = "source"
 
 
-class SessionTimelineWindowInsightQuery(ProviderTimeWindowInsightQuery):
+class SessionTimelineWindowInsightQuery(OriginTimeWindowInsightQuery):
     session_id: str | None = None
     session_date_since: str | None = None
     session_date_until: str | None = None
@@ -117,7 +117,7 @@ class SessionProfileInsightQuery(SessionWindowInsightQuery):
     terminal_state: str | None = None
 
 
-class SessionLatencyProfileInsightQuery(ProviderTimeWindowInsightQuery):
+class SessionLatencyProfileInsightQuery(OriginTimeWindowInsightQuery):
     session_id: str | None = None
     only_stuck: bool = False
 
@@ -134,27 +134,27 @@ class ThreadInsightQuery(SearchableTimeWindowInsightQuery):
     pass
 
 
-class SessionTagRollupQuery(ProviderSearchInsightQuery):
+class SessionTagRollupQuery(OriginSearchInsightQuery):
     limit: int | None = 100
 
 
-class ArchiveCoverageInsightQuery(ProviderTimeWindowInsightQuery):
-    group_by: str = "provider"
+class ArchiveCoverageInsightQuery(OriginTimeWindowInsightQuery):
+    group_by: str = "origin"
     limit: int | None = None
 
 
-class SessionCostInsightQuery(ProviderTimeWindowInsightQuery):
+class SessionCostInsightQuery(OriginTimeWindowInsightQuery):
     session_id: str | None = None
     model: str | None = None
     status: str | None = None
 
 
-class CostRollupInsightQuery(ProviderTimeWindowInsightQuery):
+class CostRollupInsightQuery(OriginTimeWindowInsightQuery):
     model: str | None = None
     limit: int | None = None
 
 
-class UsageTimelineInsightQuery(ProviderTimeWindowInsightQuery):
+class UsageTimelineInsightQuery(OriginTimeWindowInsightQuery):
     model: str | None = None
     group_by: str = "month-origin-model"
     limit: int | None = None
@@ -451,7 +451,7 @@ class WeekSessionSummaryInsight(ArchiveInsightModel):
 class ArchiveCoverageInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "archive_coverage"
-    group_by: str = "provider"
+    group_by: str = "origin"
     bucket: str = ""
     source_name: str | None = None
     session_count: int

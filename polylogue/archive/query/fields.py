@@ -892,34 +892,34 @@ def has_message_content_type_filter(plan: object) -> bool:
 
 def provider_scope_for_plan(plan: _ProviderScopedPlan) -> tuple[str | None, tuple[str, ...]]:
     # The plan filters on origin tokens internally; the legacy record-query /
-    # source_name read path still keys on provider tokens, so project back here
+    # source_name read path still keys on origin tokens, so project back here
     # (#1743 — removed once that path moves onto the origin column in Phase 2).
     values = tuple(provider_from_origin(Origin.from_string(token)).value for token in plan.origins)
-    provider = values[0] if len(values) == 1 else None
+    origin = values[0] if len(values) == 1 else None
     provider_group = values if len(values) > 1 else ()
-    return provider, provider_group
+    return origin, provider_group
 
 
 def session_record_query_for_plan(plan: object) -> SessionRecordQuery:
-    provider, providers = provider_scope_for_plan(cast(_ProviderScopedPlan, plan))
+    origin, origins = provider_scope_for_plan(cast(_ProviderScopedPlan, plan))
     changes: dict[str, object] = {}
     for descriptor in QUERY_FIELD_DESCRIPTORS:
         if descriptor.record_attr is None or not descriptor.is_active_for_plan(plan):
             continue
         changes[descriptor.record_attr] = descriptor.storage_plan_value(plan)
     return _ReplaceRecordQuery(
-        SessionRecordQuery(provider=provider, providers=providers),
+        SessionRecordQuery(origin=origin, origins=origins),
         **changes,
     )
 
 
 def sql_pushdown_params_for_plan(plan: object) -> SqlPushdownParams:
     params: SqlPushdownParams = {}
-    provider, providers = provider_scope_for_plan(cast(_ProviderScopedPlan, plan))
-    if provider is not None:
-        params["provider"] = provider
-    elif providers:
-        params["providers"] = list(providers)
+    origin, origins = provider_scope_for_plan(cast(_ProviderScopedPlan, plan))
+    if origin is not None:
+        params["origin"] = origin
+    elif origins:
+        params["origins"] = list(origins)
     for descriptor in QUERY_FIELD_DESCRIPTORS:
         if descriptor.sql_param is None or not descriptor.is_active_for_plan(plan):
             continue

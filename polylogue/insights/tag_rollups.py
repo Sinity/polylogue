@@ -28,7 +28,7 @@ _ORIGIN_TAG_PREFIX = "origin:"
 def synthesize_provider_tag_rollups(
     archive: ArchiveStore,
     *,
-    provider: str | None = None,
+    origin: str | None = None,
     query: str | None = None,
     since_ms: int | None = None,
     until_ms: int | None = None,
@@ -55,12 +55,12 @@ def synthesize_provider_tag_rollups(
     # lookup (see core/sources.py's provider_from_origin family_hint), which
     # this function never performs. What *is* coarse is the resulting
     # rollup: origin_filter can only select the whole "aistudio-drive"
-    # bucket, so provider="gemini" and provider="drive" return identical
+    # bucket, so origin="gemini" and origin="drive" return identical
     # counts today (both fold into one origin-tag rollup, and per-origin
     # ArchiveStore.stats_by("origin", ...) has no finer axis to group on --
     # see polylogue-4rrv's follow-up bead for the durable capture-mode field
     # that would be needed to split them).
-    origin_filter = origin_from_provider(Provider.from_string(provider)).value if provider is not None else None
+    origin_filter = origin_from_provider(Provider.from_string(origin)).value if origin is not None else None
     rollups: list[SessionTagRollupInsight] = []
     for origin_value, count in counts.items():
         if origin_filter is not None and origin_value != origin_filter:

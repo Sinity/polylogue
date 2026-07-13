@@ -237,7 +237,7 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     type=click.Choice(["headline", "full"]),
     default="full",
     show_default=True,
-    help="Report detail: headline skips expensive provider-event and stale-rollup diagnostics.",
+    help="Report detail: headline skips expensive origin-event and stale-rollup diagnostics.",
 )
 @click.option(
     "--json",
@@ -262,9 +262,9 @@ def usage_command(
     detail: str,
     output_format: str,
 ) -> None:
-    """Audit provider usage accounting without turning it into a cost report.
+    """Audit origin usage accounting without turning it into a cost report.
 
-    Provider event rows, provider cumulative counters, transcript words, and
+    Provider event rows, origin cumulative counters, transcript words, and
     model rollups are printed as separate evidence streams so cached tokens,
     reasoning tokens, zero-token events, missing models, multi-model sessions,
     source acquisition debt, and stale rollups stay visible.
@@ -298,7 +298,7 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
     pricing_lanes = tuple(getattr(report, "pricing_lanes", ()))
     if pricing_lanes:
         env.ui.console.print(
-            f"  stored/provider-priced cost: ${float(getattr(report, 'stored_provider_priced_usd', 0.0) or 0.0):,.2f}"
+            f"  stored/origin-priced cost: ${float(getattr(report, 'stored_provider_priced_usd', 0.0) or 0.0):,.2f}"
         )
         env.ui.console.print(
             f"  catalog API-equivalent cost: ${float(getattr(report, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
@@ -348,7 +348,7 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
         env.ui.console.print(f"\n[bold]{row.origin}[/bold]")
         env.ui.console.print(
             "  coverage: "
-            f"provider={row.provider}  declared={row.declared_coverage}  state={row.coverage_state}  "
+            f"origin={row.origin}  declared={row.declared_coverage}  state={row.coverage_state}  "
             f"evidence={row.evidence_stream}"
         )
         if row.coverage_basis:
@@ -365,7 +365,7 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
             f"acquired_not_materialized={row.acquired_not_materialized_count}"
         )
         env.ui.console.print(
-            "  provider events: "
+            "  origin events: "
             f"{row.provider_event_count} across {row.provider_event_session_count} sessions  "
             f"token_count={row.token_count_event_count}  message_usage={row.message_usage_event_count}  "
             f"zero_token={row.zero_token_event_count}  missing_model={row.missing_model_event_count}"
@@ -376,8 +376,8 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
             f"estimated={row.estimated_model_row_count}  multi_model_sessions={row.multi_model_session_count}  "
             f"stale_sessions={row.stale_rollup_session_count}"
         )
-        env.ui.console.print(f"  provider request usage:    {_usage_counter_line(row.provider_request_usage)}")
-        env.ui.console.print(f"  provider cumulative usage: {_usage_counter_line(row.provider_cumulative_usage)}")
+        env.ui.console.print(f"  origin request usage:    {_usage_counter_line(row.provider_request_usage)}")
+        env.ui.console.print(f"  origin cumulative usage: {_usage_counter_line(row.provider_cumulative_usage)}")
         env.ui.console.print(
             f"  model rollup usage ({row.model_rollup_grain}): {_usage_counter_line(row.model_rollup_usage)}"
         )
@@ -414,7 +414,7 @@ def _usage_counter_line(counters: object) -> str:
 
 
 @click.command("tools")
-@click.option("--origin", help="Filter by origin or provider token")
+@click.option("--origin", help="Filter by origin or origin token")
 @click.option("--tool", help="Only entries for this exact normalized tool name, e.g. mcp__serena__find_symbol")
 @click.option("--mcp-server", help="Only MCP tools with this server prefix, e.g. serena -> mcp__serena__*")
 @click.option("--action-kind", help="Only entries for this action kind")
@@ -578,7 +578,7 @@ async def _tools(
         )
 
     query = ToolUsageInsightQuery(
-        provider=origin,
+        origin=origin,
         tool=tool,
         mcp_server=mcp_server,
         action_kind=action_kind,
@@ -593,14 +593,14 @@ async def _tools(
             mcp_family = family.replace("-", "_")
             action_patterns = tuple(dict.fromkeys((family, *detail_patterns)))
             mcp_query = ToolUsageInsightQuery(
-                provider=origin,
+                origin=origin,
                 mcp_server=mcp_family,
                 action_kind=action_kind,
                 since_ms=since_ms,
                 limit=limit,
             )
             action_query = ToolUsageInsightQuery(
-                provider=origin,
+                origin=origin,
                 action_kind=action_kind,
                 since_ms=since_ms,
                 limit=limit,

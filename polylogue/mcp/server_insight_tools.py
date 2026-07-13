@@ -131,7 +131,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             result = await poly.tool_call_latency_distribution(
                 since=since,
                 until=until,
-                provider=_origin_to_provider_token(origin),
+                origin=_origin_to_provider_token(origin),
                 tool_category=tool_category,
                 limit=hooks.clamp_limit(limit),
             )
@@ -161,7 +161,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.tool()
     async def find_stuck_sessions(since: str | None = None, limit: int = 20) -> str:
-        """Find sessions with provider tool calls bounded as stuck."""
+        """Find sessions with origin tool calls bounded as stuck."""
 
         async def run() -> str:
             poly = hooks.get_polylogue()
@@ -200,7 +200,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     group_by=group_by,
                     since=since,
                     until=until,
-                    provider=_origin_to_provider_token(origin),
+                    origin=_origin_to_provider_token(origin),
                 )
             except ValueError:
                 return hooks.error_json(
@@ -405,7 +405,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     group_by=group_by,
                     since=since,
                     until=until,
-                    provider=_origin_to_provider_token(origin),
+                    origin=_origin_to_provider_token(origin),
                 )
             except ValueError as exc:
                 return hooks.error_json(
@@ -580,7 +580,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 result = await poly.correlate_sessions(
                     metric_x=metric_x,
                     metric_y=metric_y,
-                    provider=_origin_to_provider_token(origin),
+                    origin=_origin_to_provider_token(origin),
                     since=since,
                     until=until,
                 )

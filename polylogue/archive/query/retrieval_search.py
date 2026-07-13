@@ -124,7 +124,7 @@ async def search_action_results(
     if not await action_search_ready(plan, repository):
         raise DatabaseError("Action search index is not fresh; daemon repair must complete before search.")
     try:
-        return await repository.search_actions(query, limit=limit, providers=source_names)
+        return await repository.search_actions(query, limit=limit, origins=source_names)
     except Exception as exc:
         logger.warning(
             "action search failed",
@@ -148,7 +148,7 @@ async def search_hybrid_results(
     """
     query = search_query_text(plan)
     source_names = _origins_as_provider_tokens(plan.origins)
-    text_results = await repository.search(query, limit=limit * 3, providers=source_names)
+    text_results = await repository.search(query, limit=limit * 3, origins=source_names)
     action_results = await search_action_results(plan, repository, limit=limit * 3)
     vector_results: list[Session] = []
     if plan.vector_provider is not None:

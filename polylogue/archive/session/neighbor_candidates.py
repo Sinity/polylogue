@@ -100,7 +100,7 @@ class NeighborDiscoveryRequest:
 
     session_id: str | None = None
     query: str | None = None
-    provider: str | None = None
+    origin: str | None = None
     limit: int = 10
     window_hours: int = 24
     candidate_pool_limit: int = 100
@@ -127,8 +127,8 @@ def _canonical_provider(value: str | None) -> str | None:
 
 
 def _provider_list(value: str | None) -> list[str] | None:
-    provider = _canonical_provider(value)
-    return [provider] if provider else None
+    origin = _canonical_provider(value)
+    return [origin] if origin else None
 
 
 def _source_timestamp(session: Session) -> datetime | None:
@@ -283,7 +283,7 @@ async def _add_same_title_candidates(
     store: SessionQueryRuntimeStore,
     *,
     target: Session,
-    provider: str | None,
+    origin: str | None,
     source_id: str,
     pool_limit: int,
 ) -> None:
@@ -292,7 +292,7 @@ async def _add_same_title_candidates(
         return
     summaries = await store.list_summaries_by_query(
         SessionRecordQuery(
-            provider=provider,
+            origin=origin,
             title_contains=target.display_title,
             limit=pool_limit,
         )
@@ -316,7 +316,7 @@ async def _add_nearby_candidates(
     store: SessionQueryRuntimeStore,
     *,
     target: Session,
-    provider: str | None,
+    origin: str | None,
     source_id: str,
     window_hours: int,
     pool_limit: int,
@@ -327,7 +327,7 @@ async def _add_nearby_candidates(
     since, until = _date_window(anchor, window_hours)
     summaries = await store.list_summaries_by_query(
         SessionRecordQuery(
-            provider=provider,
+            origin=origin,
             since=since,
             until=until,
             limit=pool_limit,
@@ -357,13 +357,13 @@ async def _add_query_candidates(
     store: SessionQueryRuntimeStore,
     *,
     query: str | None,
-    providers: list[str] | None,
+    origins: list[str] | None,
     source_id: str | None,
     pool_limit: int,
 ) -> None:
     if not query or not query.strip():
         return
-    hits = await store.search_summary_hits(query.strip(), limit=pool_limit, providers=providers)
+    hits = await store.search_summary_hits(query.strip(), limit=pool_limit, origins=origins)
     for hit in hits:
         if source_id is not None and hit.session_id == source_id:
             continue
@@ -375,12 +375,12 @@ async def _add_shared_attachment_candidates(
     store: SessionQueryRuntimeStore,
     *,
     target: Session,
-    providers: list[str] | None,
+    origins: list[str] | None,
     source_id: str,
     pool_limit: int,
 ) -> None:
     for identity in _attachment_identities(target):
-        hits = await store.search_summary_hits(identity, limit=pool_limit, providers=providers)
+        hits = await store.search_summary_hits(identity, limit=pool_limit, origins=origins)
         for hit in hits:
             if hit.session_id == source_id:
                 continue
@@ -401,14 +401,14 @@ async def _add_source_content_search_candidates(
     store: SessionQueryRuntimeStore,
     *,
     target: Session,
-    providers: list[str] | None,
+    origins: list[str] | None,
     source_id: str,
     pool_limit: int,
 ) -> None:
     seed = _source_search_seed(target)
     if seed is None:
         return
-    hits = await store.search_summary_hits(seed, limit=pool_limit, providers=providers)
+    hits = await store.search_summary_hits(seed, limit=pool_limit, origins=origins)
     for hit in hits:
         if hit.session_id == source_id:
             continue
@@ -501,8 +501,8 @@ async def discover_neighbor_candidates(
 
     target = await _load_target(store, request.session_id)
     source_id = str(target.id) if target is not None else None
-    provider = _canonical_provider(request.provider)
-    providers = _provider_list(provider)
+    origin = _canonical_provider(request.origin)
+    origins = _provider_list(origin)
     pool_limit = max(request.candidate_pool_limit, request.limit)
     drafts: dict[str, _CandidateDraft] = {}
 
@@ -511,7 +511,7 @@ async def discover_neighbor_candidates(
             drafts,
             store,
             target=target,
-            provider=provider,
+            origin=origin,
             source_id=source_id,
             pool_limit=pool_limit,
         )
@@ -519,7 +519,7 @@ async def discover_neighbor_candidates(
             drafts,
             store,
             target=target,
-            provider=provider,
+            origin=origin,
             source_id=source_id,
             window_hours=request.window_hours,
             pool_limit=pool_limit,
@@ -528,7 +528,7 @@ async def discover_neighbor_candidates(
             drafts,
             store,
             target=target,
-            providers=providers,
+            origins=origins,
             source_id=source_id,
             pool_limit=pool_limit,
         )
@@ -536,7 +536,7 @@ async def discover_neighbor_candidates(
             drafts,
             store,
             target=target,
-            providers=providers,
+            origins=origins,
             source_id=source_id,
             pool_limit=pool_limit,
         )
@@ -545,7 +545,7 @@ async def discover_neighbor_candidates(
         drafts,
         store,
         query=request.query,
-        providers=providers,
+        origins=origins,
         source_id=source_id,
         pool_limit=pool_limit,
     )

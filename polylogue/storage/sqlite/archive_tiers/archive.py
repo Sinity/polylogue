@@ -4488,7 +4488,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where = ["b.block_type = 'tool_use'"]
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4550,7 +4550,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where = ["u.block_type = 'tool_use'"]
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4647,7 +4647,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where: list[str] = ["u.block_type = 'tool_use'"]
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4864,7 +4864,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where: list[str] = []
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -5954,7 +5954,7 @@ class ArchiveStore:
             else known_insight_readiness_names()
         )
         status = self.session_insight_status()
-        origin_filter = _origin_value(request.provider)
+        origin_filter = _origin_value(request.origin)
         since_ms = _epoch_ms_from_iso(request.since)
         until_ms = _epoch_ms_from_iso(request.until)
         total_sessions = self.count_sessions(origin=origin_filter, since_ms=since_ms, until_ms=until_ms)
@@ -5979,7 +5979,7 @@ class ArchiveStore:
             checked_at=datetime.now(UTC).isoformat(),
             aggregate_verdict=_insight_readiness_aggregate_verdict(entries),
             total_sessions=total_sessions,
-            provider=request.provider,
+            origin=request.origin,
             since=request.since,
             until=request.until,
             insights=entries,
@@ -8699,7 +8699,7 @@ def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
 
 
 def _tool_usage_builder_query(query: ToolUsageInsightQuery) -> ToolUsageInsightQuery:
-    origin = _origin_for_tool_usage_filter(query.provider)
+    origin = _origin_value(query.origin)
     updates: dict[str, object] = {"limit": None, "offset": 0}
     if origin is None:
         return query.model_copy(update=updates)

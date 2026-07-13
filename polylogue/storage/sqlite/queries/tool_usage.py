@@ -66,7 +66,7 @@ async def get_tool_usage_rows(
     request = query or ToolUsageInsightQuery()
     where: list[str] = []
     params: list[object] = []
-    origin = _origin_for_tool_usage_filter(request.provider)
+    origin = _origin_for_tool_usage_filter(request.origin)
     if origin:
         where.append("s.origin = ?")
         params.append(origin)
@@ -185,7 +185,7 @@ def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
 
 
 def _provider_for_origin(origin: str) -> Provider:
-    """Return the canonical provider-wire ``Provider`` for an origin token.
+    """Return the canonical origin-wire ``Provider`` for an origin token.
 
     Delegates to the single source of truth in ``core/sources.py`` instead
     of a hand-copied dict -- see ``archive/query/archive_execution.py``'s
