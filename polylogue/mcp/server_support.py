@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None
 TResult = TypeVar("TResult")
-MCPRole = Literal["read", "write", "admin"]
+MCPRole = Literal["read", "write", "review", "admin"]
 MCP_RESPONSE_BUDGET_BYTES = 25_000
 _QUERY_ERROR_VALID_VALUES: dict[str, tuple[str, ...]] = {
     "sort": ("date", "tokens", "messages", "words", "longest", "random"),
@@ -124,7 +124,7 @@ class ServerCallbacks:
 
 def role_allows(role: MCPRole, required: MCPRole) -> bool:
     """Return whether an MCP server role allows the required capability."""
-    order: dict[MCPRole, int] = {"read": 0, "write": 1, "admin": 2}
+    order: dict[MCPRole, int] = {"read": 0, "write": 1, "review": 2, "admin": 3}
     return order[role] >= order[required]
 
 

@@ -404,6 +404,44 @@ class ArchiveAssertionJudgmentEnvelope:
     candidate: ArchiveAssertionEnvelope
     judgment: ArchiveAssertionEnvelope
     resulting_assertion: ArchiveAssertionEnvelope | None = None
+    outcome: str = "applied"
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveAssertionBulkJudgmentItemEnvelope:
+    candidate_ref: str
+    decision: str
+    reason: str | None = None
+    inject: bool = False
+    actor_ref: str = ASSERTION_DEFAULT_AUTHOR_REF
+    replacement_kind: str | AssertionKind | None = None
+    replacement_body_text: str | None = None
+    replacement_value: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveAssertionBulkJudgmentResultEnvelope:
+    candidate_ref: str
+    outcome: str
+    result: ArchiveAssertionJudgmentEnvelope | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveAssertionBulkJudgmentEnvelope:
+    items: tuple[ArchiveAssertionBulkJudgmentResultEnvelope, ...]
+
+    @property
+    def applied_count(self) -> int:
+        return sum(item.outcome == "applied" for item in self.items)
+
+    @property
+    def idempotent_count(self) -> int:
+        return sum(item.outcome == "idempotent" for item in self.items)
+
+    @property
+    def failed_count(self) -> int:
+        return sum(item.outcome == "failed" for item in self.items)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1193,6 +1231,91 @@ def upsert_pathology_findings_as_assertions(
     return envelopes
 
 
+@dataclass(frozen=True, slots=True)
+class FindingAssertionInput:
+    """One deterministic, evidence-backed finding awaiting operator judgment."""
+
+    finding_kind: str
+    target_ref: str
+    body_text: str
+    evidence_refs: Sequence[str]
+    detector_ref: str
+    value: Mapping[str, object]
+    scope_ref: str | None = None
+
+
+def assertion_id_for_finding(
+    *,
+    finding_kind: str,
+    target_ref: str,
+    value: Mapping[str, object],
+    evidence_refs: Sequence[str],
+    detector_ref: str,
+) -> str:
+    """Return a stable identity for a materialized finding assertion."""
+
+    return _deterministic_id(
+        f"assertion-{AssertionKind.FINDING}",
+        finding_kind,
+        target_ref,
+        _json_dumps(dict(value)),
+        *sorted(evidence_refs),
+        detector_ref,
+    )
+
+
+def upsert_findings_as_assertions(
+    conn: sqlite3.Connection,
+    findings: Sequence[FindingAssertionInput],
+    *,
+    now_ms: int | None = None,
+) -> list[ArchiveAssertionEnvelope]:
+    """Materialize detector findings as private, non-injected candidates.
+
+    Findings deliberately use the same assertion candidate -> judgment ->
+    promoted-active path as pathology rows.  Their deterministic identity
+    makes a repeated materialization a no-op at the row-identity level.
+    """
+
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    envelopes: list[ArchiveAssertionEnvelope] = []
+    for finding in findings:
+        value = dict(finding.value)
+        value.setdefault("format", "polylogue.finding.v1")
+        value.setdefault("finding_kind", finding.finding_kind)
+        assertion_id = assertion_id_for_finding(
+            finding_kind=finding.finding_kind,
+            target_ref=finding.target_ref,
+            value=value,
+            evidence_refs=finding.evidence_refs,
+            detector_ref=finding.detector_ref,
+        )
+        existing = read_assertion_envelope(conn, assertion_id)
+        if existing is not None and existing.status != AssertionStatus.CANDIDATE:
+            envelopes.append(existing)
+            continue
+        envelopes.append(
+            upsert_assertion(
+                conn,
+                assertion_id=assertion_id,
+                scope_ref=finding.scope_ref,
+                target_ref=finding.target_ref,
+                key=finding.finding_kind,
+                kind=AssertionKind.FINDING,
+                value=value,
+                body_text=finding.body_text,
+                author_ref=finding.detector_ref,
+                author_kind="detector",
+                evidence_refs=finding.evidence_refs,
+                status=AssertionStatus.CANDIDATE,
+                visibility=AssertionVisibility.PRIVATE,
+                context_policy=_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY,
+                now_ms=timestamp,
+            )
+        )
+    return envelopes
+
+
 def _transform_candidate_evidence_refs(candidate: DecisionCandidate) -> list[str]:
     return [_format_transform_raw_ref(ref) for ref in candidate.raw_refs]
 
@@ -1347,6 +1470,7 @@ def judge_assertion_candidate(
     decision: str,
     reason: str | None = None,
     actor_ref: str = ASSERTION_DEFAULT_AUTHOR_REF,
+    inject: bool = False,
     replacement_kind: str | AssertionKind | None = None,
     replacement_body_text: str | None = None,
     replacement_value: object | None = None,
@@ -1357,12 +1481,38 @@ def judge_assertion_candidate(
     normalized_decision = decision.strip().lower()
     if normalized_decision not in {"accept", "reject", "defer", "supersede"}:
         raise ValueError("candidate assertion decision must be accept, reject, defer, or supersede")
+    normalized_replacement_kind = None if replacement_kind is None else _normalize_assertion_kind(replacement_kind)
+    normalized_replacement_value = (
+        None if replacement_value is None else _normalize_assertion_value(replacement_value).as_json_value()
+    )
+    if normalized_decision != "supersede" and any(
+        value is not None
+        for value in (normalized_replacement_kind, replacement_body_text, normalized_replacement_value)
+    ):
+        raise ValueError("replacement fields are only valid for a supersede judgment")
     candidate_id = _assertion_id_from_ref(candidate_ref)
     candidate = read_assertion_envelope(conn, candidate_id)
     if candidate is None:
         raise ValueError(f"candidate assertion not found: {candidate_ref}")
     if candidate.status != AssertionStatus.CANDIDATE:
-        raise ValueError(f"candidate assertion is not awaiting judgment: {candidate_ref}")
+        latest = _latest_candidate_judgment(conn, candidate_id)
+        if latest is not None and _is_exact_judgment_retry(
+            latest,
+            decision=normalized_decision,
+            reason=reason,
+            actor_ref=actor_ref,
+            inject=inject,
+            replacement_kind=normalized_replacement_kind,
+            replacement_body_text=replacement_body_text,
+            replacement_value=normalized_replacement_value,
+        ):
+            return ArchiveAssertionJudgmentEnvelope(
+                candidate=candidate,
+                judgment=latest,
+                resulting_assertion=_resulting_assertion_from_judgment(conn, latest),
+                outcome="idempotent",
+            )
+        raise ValueError(f"candidate assertion has a conflicting prior judgment: {candidate_ref}")
 
     timestamp = now_ms if now_ms is not None else _now_ms()
     resulting_assertion: ArchiveAssertionEnvelope | None = None
@@ -1378,9 +1528,10 @@ def judge_assertion_candidate(
             conn,
             candidate,
             actor_ref=actor_ref,
-            replacement_kind=replacement_kind,
+            inject=inject,
+            replacement_kind=normalized_replacement_kind,
             replacement_body_text=replacement_body_text,
-            replacement_value=replacement_value,
+            replacement_value=normalized_replacement_value,
             now_ms=timestamp,
         )
 
@@ -1392,6 +1543,21 @@ def judge_assertion_candidate(
     evidence_refs = [*candidate.evidence_refs, f"assertion:{candidate_id}"]
     if resulting_assertion is not None:
         evidence_refs.append(f"assertion:{resulting_assertion.assertion_id}")
+    judgment_value: dict[str, JSONValue] = {
+        "decision": normalized_decision,
+        "candidate_ref": f"assertion:{candidate_id}",
+        "reason": reason,
+        "inject_authorized": inject if normalized_decision in {"accept", "supersede"} else False,
+        "resulting_assertion_ref": None
+        if resulting_assertion is None
+        else f"assertion:{resulting_assertion.assertion_id}",
+    }
+    if normalized_decision == "supersede":
+        judgment_value.update(
+            replacement_kind=None if normalized_replacement_kind is None else normalized_replacement_kind.value,
+            replacement_body_text=replacement_body_text,
+            replacement_value=normalized_replacement_value,
+        )
     judgment = upsert_assertion(
         conn,
         assertion_id=assertion_id_for_candidate_judgment(candidate_id, normalized_decision),
@@ -1399,14 +1565,7 @@ def judge_assertion_candidate(
         target_ref=f"assertion:{candidate_id}",
         key=f"{normalized_decision}/{candidate_id}",
         kind=AssertionKind.JUDGMENT,
-        value={
-            "decision": normalized_decision,
-            "candidate_ref": f"assertion:{candidate_id}",
-            "reason": reason,
-            "resulting_assertion_ref": None
-            if resulting_assertion is None
-            else f"assertion:{resulting_assertion.assertion_id}",
-        },
+        value=judgment_value,
         body_text=reason,
         author_ref=actor_ref,
         author_kind="user",
@@ -1424,6 +1583,163 @@ def judge_assertion_candidate(
     )
 
 
+def judge_assertion_candidates(
+    conn: sqlite3.Connection,
+    items: Sequence[ArchiveAssertionBulkJudgmentItemEnvelope],
+    *,
+    now_ms: int | None = None,
+) -> ArchiveAssertionBulkJudgmentEnvelope:
+    """Apply independent candidate judgments in one transaction.
+
+    A malformed or conflicting item rolls back only its savepoint.  Repeated
+    refs are intentionally collapsed before execution so one request cannot
+    create duplicate review history for the same candidate.
+    """
+
+    unique_items: dict[str, ArchiveAssertionBulkJudgmentItemEnvelope] = {}
+    ordered_candidate_ids: list[str] = []
+    result_order: list[str | ArchiveAssertionBulkJudgmentResultEnvelope] = []
+    conflicting_duplicates: set[str] = set()
+
+    for item in items:
+        try:
+            candidate_id = _assertion_id_from_ref(item.candidate_ref)
+        except ValueError as exc:
+            result_order.append(
+                ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=item.candidate_ref, outcome="failed", error=str(exc)
+                )
+            )
+            continue
+        previous = unique_items.get(candidate_id)
+        if previous is None:
+            unique_items[candidate_id] = item
+            ordered_candidate_ids.append(candidate_id)
+            result_order.append(candidate_id)
+        elif not _same_bulk_judgment_input(previous, item):
+            conflicting_duplicates.add(candidate_id)
+
+    results_by_candidate_id: dict[str, ArchiveAssertionBulkJudgmentResultEnvelope] = {}
+    batch_savepoint = "assertion_judgment_batch"
+    conn.execute(f"SAVEPOINT {batch_savepoint}")
+    try:
+        for index, candidate_id in enumerate(ordered_candidate_ids):
+            item = unique_items[candidate_id]
+            if candidate_id in conflicting_duplicates:
+                results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=f"assertion:{candidate_id}",
+                    outcome="failed",
+                    error="conflicting duplicate judgment inputs for candidate",
+                )
+                continue
+            savepoint = f"assertion_judgment_{index}"
+            conn.execute(f"SAVEPOINT {savepoint}")
+            try:
+                result = judge_assertion_candidate(
+                    conn,
+                    candidate_ref=f"assertion:{candidate_id}",
+                    decision=item.decision,
+                    reason=item.reason,
+                    actor_ref=item.actor_ref,
+                    inject=item.inject,
+                    replacement_kind=item.replacement_kind,
+                    replacement_body_text=item.replacement_body_text,
+                    replacement_value=item.replacement_value,
+                    now_ms=now_ms,
+                )
+            except (TypeError, ValueError) as exc:
+                conn.execute(f"ROLLBACK TO {savepoint}")
+                results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=f"assertion:{candidate_id}", outcome="failed", error=str(exc)
+                )
+            else:
+                results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=f"assertion:{candidate_id}", outcome=result.outcome, result=result
+                )
+            finally:
+                conn.execute(f"RELEASE {savepoint}")
+    except BaseException:
+        conn.execute(f"ROLLBACK TO {batch_savepoint}")
+        conn.execute(f"RELEASE {batch_savepoint}")
+        raise
+    else:
+        conn.execute(f"RELEASE {batch_savepoint}")
+    return ArchiveAssertionBulkJudgmentEnvelope(
+        items=tuple(
+            entry if isinstance(entry, ArchiveAssertionBulkJudgmentResultEnvelope) else results_by_candidate_id[entry]
+            for entry in result_order
+        )
+    )
+
+
+def _same_bulk_judgment_input(
+    left: ArchiveAssertionBulkJudgmentItemEnvelope,
+    right: ArchiveAssertionBulkJudgmentItemEnvelope,
+) -> bool:
+    """Compare duplicate input after its candidate reference was normalized."""
+
+    return (
+        left.decision,
+        left.reason,
+        left.actor_ref,
+        left.inject,
+        left.replacement_kind,
+        left.replacement_body_text,
+        left.replacement_value,
+    ) == (
+        right.decision,
+        right.reason,
+        right.actor_ref,
+        right.inject,
+        right.replacement_kind,
+        right.replacement_body_text,
+        right.replacement_value,
+    )
+
+
+def _is_exact_judgment_retry(
+    judgment: ArchiveAssertionEnvelope,
+    *,
+    decision: str,
+    reason: str | None,
+    actor_ref: str,
+    inject: bool,
+    replacement_kind: AssertionKind | None,
+    replacement_body_text: str | None,
+    replacement_value: JSONValue | None,
+) -> bool:
+    value = judgment.value if isinstance(judgment.value, dict) else {}
+    if decision == "supersede" and not {
+        "replacement_kind",
+        "replacement_body_text",
+        "replacement_value",
+    }.issubset(value):
+        # Earlier judgment rows did not preserve replacement intent, so they
+        # cannot prove an edited retry is exact.  Fail closed rather than
+        # silently treating a possible correction as already applied.
+        return False
+    return (
+        value.get("decision") == decision
+        and value.get("reason") == reason
+        and judgment.author_ref == actor_ref
+        and bool(value.get("inject_authorized", False)) == inject
+        and value.get("replacement_kind") == (None if replacement_kind is None else replacement_kind.value)
+        and value.get("replacement_body_text") == replacement_body_text
+        and value.get("replacement_value") == replacement_value
+    )
+
+
+def _resulting_assertion_from_judgment(
+    conn: sqlite3.Connection,
+    judgment: ArchiveAssertionEnvelope,
+) -> ArchiveAssertionEnvelope | None:
+    value = judgment.value if isinstance(judgment.value, dict) else {}
+    result_ref = value.get("resulting_assertion_ref")
+    if not isinstance(result_ref, str):
+        return None
+    return read_assertion_envelope(conn, _assertion_id_from_ref(result_ref))
+
+
 def _assertion_id_from_ref(value: str) -> str:
     if value.startswith("assertion:"):
         ref = ObjectRef.parse(value)
@@ -1438,13 +1754,14 @@ def _promote_candidate_assertion(
     candidate: ArchiveAssertionEnvelope,
     *,
     actor_ref: str,
+    inject: bool,
     replacement_kind: str | AssertionKind | None,
     replacement_body_text: str | None,
     replacement_value: object | None,
     now_ms: int,
 ) -> ArchiveAssertionEnvelope:
     context_policy: dict[str, JSONValue] = dict(candidate.context_policy)
-    context_policy["inject"] = bool(context_policy.get("inject", False))
+    context_policy["inject"] = inject
     context_policy.pop("promotion_required", None)
     return upsert_assertion(
         conn,
@@ -1623,6 +1940,7 @@ ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
     AssertionKind.RUN_STATE,
     AssertionKind.TRANSFORM_CANDIDATE,
     AssertionKind.PATHOLOGY,
+    AssertionKind.FINDING,
 )
 
 
@@ -1761,6 +2079,9 @@ __all__ = [
     "ASSERTION_DEFAULT_VISIBILITY",
     "ArchiveAnnotationEnvelope",
     "ArchiveAssertionEnvelope",
+    "ArchiveAssertionBulkJudgmentEnvelope",
+    "ArchiveAssertionBulkJudgmentItemEnvelope",
+    "ArchiveAssertionBulkJudgmentResultEnvelope",
     "ArchiveAssertionCandidateReviewEnvelope",
     "ArchiveAssertionJudgmentEnvelope",
     "ArchiveBlackboardNoteEnvelope",
@@ -1786,11 +2107,13 @@ __all__ = [
     "assertion_id_for_session_tag",
     "assertion_id_for_suppression",
     "assertion_id_for_pathology_finding",
+    "assertion_id_for_finding",
     "assertion_id_for_transform_candidate",
     "assertion_id_for_workspace",
     "correction_id_for",
     "count_assertion_claims",
     "judge_assertion_candidate",
+    "judge_assertion_candidates",
     "list_archive_blackboard_note_envelopes",
     "list_assertion_candidates",
     "list_assertion_candidate_reviews",
@@ -1820,6 +2143,8 @@ __all__ = [
     "upsert_session_tag_assertion",
     "upsert_suppression",
     "upsert_pathology_findings_as_assertions",
+    "FindingAssertionInput",
+    "upsert_findings_as_assertions",
     "upsert_transform_candidate_assertions",
     "upsert_workspace",
 ]

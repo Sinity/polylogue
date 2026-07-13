@@ -104,6 +104,7 @@ if TYPE_CHECKING:
     from polylogue.storage.search.models import SearchResult
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
     from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ArchiveAssertionBulkJudgmentEnvelope,
         ArchiveAssertionCandidateReviewEnvelope,
         ArchiveAssertionEnvelope,
     )
@@ -111,6 +112,7 @@ if TYPE_CHECKING:
     from polylogue.storage.usage import ProviderUsageReport
     from polylogue.surfaces.payloads import (
         ArchiveDebtListPayload,
+        AssertionBulkJudgmentPayload,
         AssertionCandidateReviewListPayload,
         AssertionClaimPayload,
         AssertionJudgmentResultPayload,
@@ -1136,6 +1138,7 @@ def _archive_judge_assertion_candidate(
     decision: str,
     reason: str | None = None,
     actor_ref: str = "user:local",
+    inject: bool = False,
     replacement_kind: str | None = None,
     replacement_body_text: str | None = None,
     replacement_value: object | None = None,
@@ -1157,6 +1160,7 @@ def _archive_judge_assertion_candidate(
                 decision=decision,
                 reason=reason,
                 actor_ref=actor_ref,
+                inject=inject,
                 replacement_kind=replacement_kind,
                 replacement_body_text=replacement_body_text,
                 replacement_value=replacement_value,
@@ -1247,6 +1251,31 @@ def _archive_capture_assertion_candidate(
             conn.close()
     except sqlite3.Error as exc:
         raise RuntimeError(f"failed to capture assertion candidate: {exc}") from exc
+
+
+def _archive_judge_assertion_candidates(
+    config: Config,
+    *,
+    items: Sequence[Any],
+) -> Any:
+    """Write an independently-recoverable bulk candidate judgment batch."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidates
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        raise ValueError("assertion user tier is not initialized")
+    try:
+        conn = sqlite3.connect(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            result = judge_assertion_candidates(conn, items)
+            conn.commit()
+            return result
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to judge assertion candidates: {exc}") from exc
 
 
 def _archive_emit_pathology_assertions(
@@ -2429,6 +2458,7 @@ class PolylogueArchiveMixin:
         decision: str,
         reason: str | None = None,
         actor_ref: str = "user:local",
+        inject: bool = False,
         replacement_kind: str | None = None,
         replacement_body_text: str | None = None,
         replacement_value: object | None = None,
@@ -2443,6 +2473,7 @@ class PolylogueArchiveMixin:
             decision=decision,
             reason=reason,
             actor_ref=actor_ref,
+            inject=inject,
             replacement_kind=replacement_kind,
             replacement_body_text=replacement_body_text,
             replacement_value=replacement_value,
@@ -2475,6 +2506,18 @@ class PolylogueArchiveMixin:
             author_kind=author_kind,
         )
         return AssertionClaimPayload.from_envelope(envelope)
+
+    async def judge_assertion_candidates(
+        self,
+        *,
+        items: Sequence[Any],
+    ) -> AssertionBulkJudgmentPayload:
+        """Apply a review batch with per-candidate partial-success outcomes."""
+
+        from polylogue.surfaces.payloads import AssertionBulkJudgmentPayload
+
+        result = _archive_judge_assertion_candidates(self.config, items=items)
+        return AssertionBulkJudgmentPayload.from_envelope(cast("ArchiveAssertionBulkJudgmentEnvelope", result))
 
     async def join_typed_annotations(
         self,

@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from hashlib import sha256
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 from polylogue.annotations.importer import (
     AnnotationBatchImportError,
@@ -1194,4 +1194,87 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("clear_corrections", run, session_id=session_id)
 
 
-__all__ = ["register_mutation_tools"]
+def register_assertion_review_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+    """Register promotion tools only for authenticated review capability."""
+
+    @mcp.tool()
+    async def judge_assertion_candidate(
+        candidate_ref: str,
+        decision: Literal["accept", "reject", "defer", "supersede"],
+        reason: str | None = None,
+        inject: bool = False,
+        actor_ref: str = "user:local",
+        replacement_kind: str | None = None,
+        replacement_body_text: str | None = None,
+        replacement_value: object | None = None,
+    ) -> str:
+        """Judge one candidate; caller text is provenance, not authorization."""
+
+        from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
+
+        async def run() -> str:
+            payload = await hooks.get_polylogue().judge_assertion_candidates(
+                items=(
+                    ArchiveAssertionBulkJudgmentItemEnvelope(
+                        candidate_ref=candidate_ref,
+                        decision=decision,
+                        reason=reason,
+                        inject=inject,
+                        actor_ref=actor_ref,
+                        replacement_kind=replacement_kind,
+                        replacement_body_text=replacement_body_text,
+                        replacement_value=replacement_value,
+                    ),
+                )
+            )
+            return hooks.json_payload(payload, exclude_none=True)
+
+        return await hooks.async_safe_call("judge_assertion_candidate", run)
+
+    @mcp.tool()
+    async def judge_assertion_candidates(
+        items: list[dict[str, object]],
+        actor_ref: str = "user:local",
+    ) -> str:
+        """Bulk judge candidates with independently reported partial success."""
+
+        from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
+
+        def make_item(item: dict[str, object]) -> ArchiveAssertionBulkJudgmentItemEnvelope:
+            candidate_ref = item.get("candidate_ref")
+            decision = item.get("decision")
+            if not isinstance(candidate_ref, str) or not isinstance(decision, str):
+                raise ValueError("each judgment requires string candidate_ref and decision")
+            inject = item.get("inject", False)
+            if type(inject) is not bool:
+                raise ValueError("each judgment requires boolean inject")
+            reason = item.get("reason")
+            replacement_kind = item.get("replacement_kind")
+            replacement_body_text = item.get("replacement_body_text")
+            if replacement_kind is not None and not isinstance(replacement_kind, str):
+                raise ValueError("replacement_kind must be a string when provided")
+            if replacement_body_text is not None and not isinstance(replacement_body_text, str):
+                raise ValueError("replacement_body_text must be a string when provided")
+            return ArchiveAssertionBulkJudgmentItemEnvelope(
+                candidate_ref=candidate_ref,
+                decision=decision,
+                reason=reason if isinstance(reason, str) else None,
+                inject=inject,
+                actor_ref=actor_ref,
+                replacement_kind=replacement_kind,
+                replacement_body_text=replacement_body_text,
+                replacement_value=item.get("replacement_value"),
+            )
+
+        async def run() -> str:
+            try:
+                judgments = tuple(make_item(item) for item in items)
+            except ValueError as exc:
+                return hooks.error_json(str(exc), code="invalid_assertion_judgment")
+            payload = await hooks.get_polylogue().judge_assertion_candidates(items=judgments)
+            return hooks.json_payload(payload, exclude_none=True)
+
+        return await hooks.async_safe_call("judge_assertion_candidates", run)
+
+
+__all__ = ["register_assertion_review_tools", "register_mutation_tools"]

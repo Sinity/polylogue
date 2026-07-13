@@ -57,7 +57,7 @@ from polylogue.mcp.query_contracts import (
 from polylogue.mcp.server_context_tools import register_context_tools
 from polylogue.mcp.server_insight_tools import register_insight_tools
 from polylogue.mcp.server_maintenance_tools import register_maintenance_tools
-from polylogue.mcp.server_mutation_tools import register_mutation_tools
+from polylogue.mcp.server_mutation_tools import register_assertion_review_tools, register_mutation_tools
 from polylogue.mcp.server_support import role_allows
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -879,6 +879,48 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("list_assertion_claims", run)
 
     @mcp.tool()
+    async def list_assertion_candidates(
+        target_ref: str | None = None,
+        limit: MCPToolLimit = 20,
+    ) -> str:
+        """List pending assertion candidates without promoting them."""
+
+        async def run() -> str:
+            from polylogue.surfaces.payloads import AssertionClaimListPayload
+
+            clamped_limit = hooks.clamp_limit(limit)
+            items = await hooks.get_polylogue().list_assertion_candidates(
+                target_ref=target_ref,
+                limit=clamped_limit,
+            )
+            return hooks.json_payload(
+                AssertionClaimListPayload(
+                    items=tuple(items),
+                    total=len(items),
+                    limit=clamped_limit,
+                    statuses=(AssertionStatus.CANDIDATE,),
+                )
+            )
+
+        return await hooks.async_safe_call("list_assertion_candidates", run)
+
+    @mcp.tool()
+    async def list_assertion_candidate_reviews(
+        target_ref: str | None = None,
+        limit: MCPToolLimit = 20,
+    ) -> str:
+        """List durable candidate review history separately from active claims."""
+
+        async def run() -> str:
+            payload = await hooks.get_polylogue().list_assertion_candidate_reviews(
+                target_ref=target_ref,
+                limit=hooks.clamp_limit(limit),
+            )
+            return hooks.json_payload(payload)
+
+        return await hooks.async_safe_call("list_assertion_candidate_reviews", run)
+
+    @mcp.tool()
     async def get_session_summary(id: str) -> str:
         async def run() -> str:
             config = hooks.get_config()
@@ -1236,6 +1278,8 @@ def register_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     register_insight_tools(mcp, hooks)
     if role_allows(hooks.role, "write"):
         register_mutation_tools(mcp, hooks)
+    if role_allows(hooks.role, "review"):
+        register_assertion_review_tools(mcp, hooks)
     if role_allows(hooks.role, "admin"):
         register_maintenance_tools(mcp, hooks)
 

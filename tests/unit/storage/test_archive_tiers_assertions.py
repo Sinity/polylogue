@@ -12,6 +12,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.insights.transforms import compile_session_digest
+from polylogue.storage.sqlite.archive_tiers import user_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -21,15 +22,20 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_AUTHOR_KIND,
     ASSERTION_DEFAULT_AUTHOR_REF,
     ASSERTION_DEFAULT_VISIBILITY,
+    ArchiveAssertionBulkJudgmentItemEnvelope,
+    ArchiveAssertionJudgmentEnvelope,
     AssertionKind,
     AssertionStatus,
     AssertionVisibility,
+    FindingAssertionInput,
     assertion_envelope_to_payload,
     assertion_id_for_candidate_judgment,
+    assertion_id_for_finding,
     assertion_id_for_pathology_finding,
     assertion_id_for_promoted_candidate,
     assertion_id_for_transform_candidate,
     judge_assertion_candidate,
+    judge_assertion_candidates,
     list_assertion_candidate_reviews,
     list_assertion_candidates,
     list_assertion_claims,
@@ -38,6 +44,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     mark_assertion_status,
     read_assertion_envelope,
     upsert_assertion,
+    upsert_findings_as_assertions,
     upsert_pathology_findings_as_assertions,
     upsert_transform_candidate_assertions,
 )
@@ -696,6 +703,7 @@ def test_list_assertion_claims_filters_lifecycle_assertions(tmp_path: Path) -> N
             AssertionKind.RUN_STATE,
             AssertionKind.TRANSFORM_CANDIDATE,
             AssertionKind.PATHOLOGY,
+            AssertionKind.FINDING,
         }
 
         rows: list[tuple[str, str, AssertionKind, str, str, dict[str, object] | None, int]] = [
@@ -1013,6 +1021,7 @@ def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tm
             "decision": "accept",
             "candidate_ref": f"assertion:{candidate.assertion_id}",
             "reason": "looks correct",
+            "inject_authorized": False,
             "resulting_assertion_ref": f"assertion:{result.resulting_assertion.assertion_id}",
         }
     finally:
@@ -1040,6 +1049,7 @@ def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: 
             "decision": "reject",
             "candidate_ref": f"assertion:{candidate.assertion_id}",
             "reason": "unsupported by transcript",
+            "inject_authorized": False,
             "resulting_assertion_ref": None,
         }
         assert candidate.assertion_id not in {item.assertion_id for item in list_assertion_candidates(conn)}
@@ -1071,6 +1081,7 @@ def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Pa
             "decision": "defer",
             "candidate_ref": f"assertion:{candidate.assertion_id}",
             "reason": "needs another source",
+            "inject_authorized": False,
             "resulting_assertion_ref": None,
         }
         assert result.judgment.evidence_refs == [
@@ -1117,8 +1128,269 @@ def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path:
             "decision": "supersede",
             "candidate_ref": f"assertion:{candidate.assertion_id}",
             "reason": "replacement is more precise",
+            "inject_authorized": False,
+            "replacement_kind": AssertionKind.DECISION.value,
+            "replacement_body_text": "Accepted replacement decision",
+            "replacement_value": {"source": "operator"},
             "resulting_assertion_ref": f"assertion:{result.resulting_assertion.assertion_id}",
         }
+        retry = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{candidate.assertion_id}",
+            decision="supersede",
+            reason="replacement is more precise",
+            actor_ref="user:local",
+            replacement_kind=AssertionKind.DECISION,
+            replacement_body_text="Accepted replacement decision",
+            replacement_value={"source": "operator"},
+            now_ms=1_700_000_011_000,
+        )
+        assert retry.outcome == "idempotent"
+        with pytest.raises(ValueError, match="conflicting prior judgment"):
+            judge_assertion_candidate(
+                conn,
+                candidate_ref=f"assertion:{candidate.assertion_id}",
+                decision="supersede",
+                reason="replacement is more precise",
+                actor_ref="user:local",
+                replacement_kind=AssertionKind.DECISION,
+                replacement_body_text="Changed replacement decision",
+                replacement_value={"source": "operator"},
+            )
+    finally:
+        conn.close()
+
+
+def test_candidate_accept_rejects_supersede_replacement_fields(tmp_path: Path) -> None:
+    """Only supersede may alter a candidate's promoted content."""
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_session_digest(_recovery_candidate_session())
+        candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
+
+        with pytest.raises(ValueError, match="only valid for a supersede"):
+            judge_assertion_candidate(
+                conn,
+                candidate_ref=f"assertion:{candidate.assertion_id}",
+                decision="accept",
+                replacement_body_text="Unexpected replacement",
+            )
+
+        refreshed = read_assertion_envelope(conn, candidate.assertion_id)
+        assert refreshed is not None and refreshed.status is AssertionStatus.CANDIDATE
+        assert read_assertion_envelope(conn, assertion_id_for_promoted_candidate(candidate.assertion_id)) is None
+    finally:
+        conn.close()
+
+
+def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlled(tmp_path: Path) -> None:
+    """The real user-tier batch writer retains valid judgments around failures."""
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_session_digest(_recovery_candidate_session())
+        candidates = upsert_transform_candidate_assertions(
+            conn,
+            digest.model_copy(update={"decision_candidates": (digest.decision_candidates[0],) * 2}),
+            now_ms=1_700_000_000_000,
+        )
+        first, second = candidates
+        initial = judge_assertion_candidates(
+            conn,
+            (
+                ArchiveAssertionBulkJudgmentItemEnvelope(
+                    candidate_ref=f"assertion:{first.assertion_id}", decision="accept", inject=True
+                ),
+                ArchiveAssertionBulkJudgmentItemEnvelope(
+                    candidate_ref=f"assertion:{second.assertion_id}", decision="reject", reason="unsupported"
+                ),
+                ArchiveAssertionBulkJudgmentItemEnvelope(candidate_ref="assertion:", decision="accept"),
+                ArchiveAssertionBulkJudgmentItemEnvelope(
+                    candidate_ref=first.assertion_id, decision="accept", inject=True
+                ),
+            ),
+            now_ms=1_700_000_001_000,
+        )
+        assert [item.outcome for item in initial.items] == ["applied", "applied", "failed"]
+        assert initial.applied_count == 2
+        assert initial.failed_count == 1
+        assert initial.items[0].result is not None
+        promoted = initial.items[0].result.resulting_assertion
+        assert promoted is not None and promoted.context_policy == {"inject": True}
+        assert initial.items[1].result is not None
+        assert initial.items[1].result.resulting_assertion is None
+
+        retry = judge_assertion_candidates(
+            conn,
+            (
+                ArchiveAssertionBulkJudgmentItemEnvelope(
+                    candidate_ref=f"assertion:{first.assertion_id}", decision="accept", inject=True
+                ),
+                ArchiveAssertionBulkJudgmentItemEnvelope(
+                    candidate_ref=f"assertion:{first.assertion_id}", decision="accept", inject=False
+                ),
+            ),
+            now_ms=1_700_000_002_000,
+        )
+        assert [item.outcome for item in retry.items] == ["failed"]
+        # A changed duplicate input is not silently collapsed into an otherwise
+        # idempotent result: it must not be able to hide a conflicting request.
+        assert retry.failed_count == 1
+        assert "conflicting duplicate" in (retry.items[0].error or "")
+        changed_injection = judge_assertion_candidates(
+            conn,
+            (
+                ArchiveAssertionBulkJudgmentItemEnvelope(
+                    candidate_ref=f"assertion:{first.assertion_id}", decision="accept", inject=False
+                ),
+            ),
+        )
+        assert changed_injection.items[0].outcome == "failed"
+        conflicting = judge_assertion_candidates(
+            conn,
+            (
+                ArchiveAssertionBulkJudgmentItemEnvelope(
+                    candidate_ref=f"assertion:{first.assertion_id}", decision="reject", inject=False
+                ),
+            ),
+        )
+        assert conflicting.items[0].outcome == "failed"
+        assert "conflicting prior judgment" in (conflicting.items[0].error or "")
+    finally:
+        conn.close()
+
+
+def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-item failure must not commit judgments from earlier batch items."""
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_session_digest(_recovery_candidate_session())
+        candidates = upsert_transform_candidate_assertions(
+            conn,
+            digest.model_copy(update={"decision_candidates": (digest.decision_candidates[0],) * 2}),
+            now_ms=1_700_000_000_000,
+        )
+        conn.commit()
+        original = user_write.judge_assertion_candidate
+        calls = 0
+
+        def raise_on_second_judgment(
+            connection: sqlite3.Connection,
+            *,
+            candidate_ref: str,
+            decision: str,
+            reason: str | None = None,
+            actor_ref: str = ASSERTION_DEFAULT_AUTHOR_REF,
+            inject: bool = False,
+            replacement_kind: str | AssertionKind | None = None,
+            replacement_body_text: str | None = None,
+            replacement_value: object | None = None,
+            now_ms: int | None = None,
+        ) -> ArchiveAssertionJudgmentEnvelope:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("simulated unexpected batch failure")
+            return original(
+                connection,
+                candidate_ref=candidate_ref,
+                decision=decision,
+                reason=reason,
+                actor_ref=actor_ref,
+                inject=inject,
+                replacement_kind=replacement_kind,
+                replacement_body_text=replacement_body_text,
+                replacement_value=replacement_value,
+                now_ms=now_ms,
+            )
+
+        monkeypatch.setattr(user_write, "judge_assertion_candidate", raise_on_second_judgment)
+        with pytest.raises(RuntimeError, match="unexpected batch failure"):
+            judge_assertion_candidates(
+                conn,
+                tuple(
+                    ArchiveAssertionBulkJudgmentItemEnvelope(
+                        candidate_ref=f"assertion:{candidate.assertion_id}", decision="accept"
+                    )
+                    for candidate in candidates
+                ),
+                now_ms=1_700_000_001_000,
+            )
+
+        assert not conn.in_transaction
+        candidate_statuses: list[AssertionStatus] = []
+        for candidate in candidates:
+            refreshed = read_assertion_envelope(conn, candidate.assertion_id)
+            assert refreshed is not None
+            candidate_statuses.append(refreshed.status)
+        assert candidate_statuses == [
+            AssertionStatus.CANDIDATE,
+            AssertionStatus.CANDIDATE,
+        ]
+        assert (
+            read_assertion_envelope(conn, assertion_id_for_candidate_judgment(candidates[0].assertion_id, "accept"))
+            is None
+        )
+    finally:
+        conn.close()
+
+
+def test_findings_reuse_candidate_judgment_lifecycle_and_deduplicate(tmp_path: Path) -> None:
+    """A repeated detector finding is one candidate assertion, not a new lifecycle."""
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        finding = FindingAssertionInput(
+            finding_kind="measure",
+            target_ref="session:codex-session:finding-demo",
+            body_text="The measure changed enough to require operator review.",
+            evidence_refs=("session:codex-session:finding-demo",),
+            detector_ref="agent:finding-detector",
+            value={"statistic": {"op": "eq", "value": 3, "unit": "runs"}, "n": 3},
+        )
+        first = upsert_findings_as_assertions(conn, (finding,), now_ms=10)
+        second = upsert_findings_as_assertions(conn, (finding,), now_ms=11)
+        assert [row.assertion_id for row in first] == [row.assertion_id for row in second]
+        assert first[0].assertion_id == assertion_id_for_finding(
+            finding_kind="measure",
+            target_ref=finding.target_ref,
+            value={"format": "polylogue.finding.v1", "finding_kind": "measure", **finding.value},
+            evidence_refs=finding.evidence_refs,
+            detector_ref=finding.detector_ref,
+        )
+        assert first[0].kind is AssertionKind.FINDING
+        assert first[0].status is AssertionStatus.CANDIDATE
+        assert first[0].context_policy == {"inject": False, "promotion_required": True}
+        accepted = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{first[0].assertion_id}",
+            decision="accept",
+            inject=False,
+            now_ms=12,
+        )
+        assert accepted.resulting_assertion is not None
+        assert accepted.resulting_assertion.kind is AssertionKind.FINDING
+        rematerialized = upsert_findings_as_assertions(
+            conn,
+            (
+                FindingAssertionInput(
+                    finding_kind=finding.finding_kind,
+                    target_ref=finding.target_ref,
+                    body_text="Detector wording changed after operator review.",
+                    evidence_refs=finding.evidence_refs,
+                    detector_ref=finding.detector_ref,
+                    value=finding.value,
+                    scope_ref="insight:changed-detector-scope",
+                ),
+            ),
+            now_ms=13,
+        )
+        assert rematerialized == [accepted.candidate]
+        assert rematerialized[0].body_text == finding.body_text
+        assert rematerialized[0].scope_ref is None
+        assert rematerialized[0].updated_at_ms == accepted.candidate.updated_at_ms
     finally:
         conn.close()
 

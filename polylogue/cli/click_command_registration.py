@@ -102,6 +102,7 @@ _SHORT_HELP: dict[str, str] = {
     "hooks": "Install and monitor harness capture hooks.",
     "init": "Detect chat sources and write a starter polylogue.toml.",
     "insights": "Check and export derived insight materialization.",
+    "judge": "Interactively triage candidate assertions.",
     "maintenance": "Preview and run maintenance backfill operations.",
     "note": "Capture a terminal memory candidate.",
     "ops": "Run operational archive and daemon commands.",
@@ -132,6 +133,7 @@ _GROUP_ATTRS: dict[str, str] = {
 
 _COMMAND_ATTRS: dict[str, str] = {
     "import_command": "import_command",
+    "judge": "judge_command",
 }
 
 
@@ -160,6 +162,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("hooks"),
     _L("import_command"),
     _L("init"),
+    _L("judge"),
     _L("note"),
     _L("ops"),
     _L("status"),

@@ -91,6 +91,7 @@ if TYPE_CHECKING:
         ArchiveRunQueryRow,
     )
     from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ArchiveAssertionBulkJudgmentEnvelope,
         ArchiveAssertionCandidateReviewEnvelope,
         ArchiveAssertionEnvelope,
         ArchiveAssertionJudgmentEnvelope,
@@ -1696,6 +1697,7 @@ class AssertionJudgmentPayload(SurfacePayloadModel):
     candidate_ref: str
     decision: Literal["accept", "reject", "defer", "supersede"]
     reason: str | None = None
+    inject_authorized: bool = False
     actor_ref: str | None = None
     decided_at_ms: int
     resulting_assertion_ref: str | None = None
@@ -1723,6 +1725,7 @@ class AssertionJudgmentPayload(SurfacePayloadModel):
             candidate_ref=str(value.get("candidate_ref") or envelope.target_ref),
             decision=cast(Literal["accept", "reject", "defer", "supersede"], decision),
             reason=str(value["reason"]) if value.get("reason") is not None else None,
+            inject_authorized=bool(value.get("inject_authorized", False)),
             actor_ref=envelope.author_ref,
             decided_at_ms=envelope.updated_at_ms,
             resulting_assertion_ref=str(resulting_assertion_ref) if resulting_assertion_ref is not None else None,
@@ -1736,6 +1739,7 @@ class AssertionJudgmentResultPayload(SurfacePayloadModel):
     candidate: AssertionClaimPayload
     judgment: AssertionJudgmentPayload
     resulting_assertion: AssertionClaimPayload | None = None
+    outcome: Literal["applied", "idempotent"] = "applied"
 
     @classmethod
     def from_envelope(cls, envelope: ArchiveAssertionJudgmentEnvelope) -> AssertionJudgmentResultPayload:
@@ -1745,6 +1749,38 @@ class AssertionJudgmentResultPayload(SurfacePayloadModel):
             resulting_assertion=None
             if envelope.resulting_assertion is None
             else AssertionClaimPayload.from_envelope(envelope.resulting_assertion),
+            outcome=cast(Literal["applied", "idempotent"], envelope.outcome),
+        )
+
+
+class AssertionBulkJudgmentItemPayload(SurfacePayloadModel):
+    candidate_ref: str
+    outcome: Literal["applied", "idempotent", "failed"]
+    result: AssertionJudgmentResultPayload | None = None
+    error: str | None = None
+
+
+class AssertionBulkJudgmentPayload(SurfacePayloadModel):
+    items: tuple[AssertionBulkJudgmentItemPayload, ...]
+    applied_count: int
+    idempotent_count: int
+    failed_count: int
+
+    @classmethod
+    def from_envelope(cls, envelope: ArchiveAssertionBulkJudgmentEnvelope) -> AssertionBulkJudgmentPayload:
+        return cls(
+            items=tuple(
+                AssertionBulkJudgmentItemPayload(
+                    candidate_ref=item.candidate_ref,
+                    outcome=cast(Literal["applied", "idempotent", "failed"], item.outcome),
+                    result=None if item.result is None else AssertionJudgmentResultPayload.from_envelope(item.result),
+                    error=item.error,
+                )
+                for item in envelope.items
+            ),
+            applied_count=envelope.applied_count,
+            idempotent_count=envelope.idempotent_count,
+            failed_count=envelope.failed_count,
         )
 
 

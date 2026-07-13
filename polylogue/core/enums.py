@@ -428,6 +428,7 @@ class AssertionKind(PolylogueStrEnum):
     PROMPT_EVAL = "prompt_eval"
     TRANSFORM_CANDIDATE = "transform_candidate"
     PATHOLOGY = "pathology"
+    FINDING = "finding"
 
     @classmethod
     def from_string(cls, value: str | AssertionKind) -> AssertionKind:
