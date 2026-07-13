@@ -119,6 +119,26 @@ def test_watched_aliases_materialize_one_query_once_per_convergence(tmp_path: Pa
         assert conn.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'finding'").fetchone()[0] == 0
 
 
+def test_watch_baseline_tracks_return_to_a_prior_membership(tmp_path: Path) -> None:
+    index_db, _ = _seed_watch(tmp_path)
+    evaluator = _Evaluator(members=("session:a",))
+    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions(("session:changed",)) is True  # baseline A
+    evaluator.members = ("session:b",)
+    assert stage.execute_sessions(("session:changed",)) is True  # A -> B
+    evaluator.members = ("session:a",)
+    assert stage.execute_sessions(("session:changed",)) is True  # B -> A
+
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        rows = conn.execute(
+            "SELECT value_json FROM assertions WHERE kind = 'finding' ORDER BY created_at_ms, assertion_id"
+        ).fetchall()
+        assert len(rows) == 2
+        assert "baseline_ref" in str(rows[1][0])
+        assert "result-set:watch-" in str(rows[1][0])
+
+
 def test_promoted_expected_count_divergence_targets_original_finding_without_watch(tmp_path: Path) -> None:
     index_db, query_hash = _seed_watch(tmp_path, watch=False)
     with sqlite3.connect(tmp_path / "user.db") as conn:

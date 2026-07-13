@@ -11,6 +11,7 @@ from polylogue.storage.sqlite.query_objects import (
     EvaluationReceipt,
     get_query,
     get_retained_query_run,
+    get_watched_query_baseline,
     list_watched_queries,
     migrate_saved_query_assertions,
     put_evaluation_receipt,
@@ -19,6 +20,7 @@ from polylogue.storage.sqlite.query_objects import (
     put_query_name,
     put_result_set,
     put_retained_query_run,
+    put_watched_query_baseline,
 )
 
 
@@ -173,3 +175,77 @@ def test_watched_definition_retention_and_receipt_are_durable_contracts() -> Non
     assert list_watched_queries(conn) == (restored,)
     assert get_retained_query_run(conn, "qr_saved") is not None
     assert conn.execute("SELECT result_set_id FROM query_evaluation_receipts").fetchone()[0] == result.result_set_id
+
+
+def test_watch_baseline_and_receipt_ids_reject_cross_query_or_conflicting_state() -> None:
+    conn = _conn()
+    first = put_query(
+        conn,
+        {"field": "title", "value": "first"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    second = put_query(
+        conn,
+        {"field": "title", "value": "second"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    first_result = put_result_set(
+        conn,
+        result_set_id="first-watch",
+        query_hash=first.query_hash,
+        grain="session",
+        corpus_epoch="index:g1",
+        member_refs=("session:one",),
+        exactness="exact",
+        persistence_class="watch",
+        created_at_ms=2,
+    )
+    second_result = put_result_set(
+        conn,
+        result_set_id="second-watch",
+        query_hash=second.query_hash,
+        grain="session",
+        corpus_epoch="index:g1",
+        member_refs=("session:two",),
+        exactness="exact",
+        persistence_class="watch",
+        created_at_ms=2,
+    )
+    put_watched_query_baseline(
+        conn, query_hash=first.query_hash, result_set_id=first_result.result_set_id, updated_at_ms=2
+    )
+    assert get_watched_query_baseline(conn, first.query_hash) == first_result
+    with pytest.raises(ValueError, match="baseline"):
+        put_watched_query_baseline(
+            conn, query_hash=first.query_hash, result_set_id=second_result.result_set_id, updated_at_ms=2
+        )
+
+    receipt = EvaluationReceipt("receipt-stable", "source:g1", "user:g1", "index:g1", "build:test")
+    put_evaluation_receipt(
+        conn, query_hash=first.query_hash, result_set_id=first_result.result_set_id, receipt=receipt, created_at_ms=3
+    )
+    put_evaluation_receipt(
+        conn, query_hash=first.query_hash, result_set_id=first_result.result_set_id, receipt=receipt, created_at_ms=3
+    )
+    with pytest.raises(ValueError, match="same query"):
+        put_evaluation_receipt(
+            conn,
+            query_hash=first.query_hash,
+            result_set_id=second_result.result_set_id,
+            receipt=receipt,
+            created_at_ms=3,
+        )
+    with pytest.raises(ValueError, match="conflicts"):
+        put_evaluation_receipt(
+            conn,
+            query_hash=first.query_hash,
+            result_set_id=first_result.result_set_id,
+            receipt=EvaluationReceipt("receipt-stable", "source:g2", "user:g1", "index:g1", "build:test"),
+            created_at_ms=3,
+        )

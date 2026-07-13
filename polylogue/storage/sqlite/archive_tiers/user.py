@@ -129,6 +129,14 @@ CREATE TABLE IF NOT EXISTS query_evaluation_receipts (
 CREATE INDEX IF NOT EXISTS idx_query_evaluation_receipts_query_time
 ON query_evaluation_receipts(query_hash, created_at_ms DESC);
 
+-- Result manifests are immutable and membership-addressed, so a separate
+-- pointer records the last watch evaluation even when membership recurs.
+CREATE TABLE IF NOT EXISTS watched_query_baselines (
+    query_hash      TEXT PRIMARY KEY NOT NULL REFERENCES queries(query_hash) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    result_set_id   TEXT NOT NULL REFERENCES result_sets(result_set_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    updated_at_ms   INTEGER NOT NULL CHECK(updated_at_ms >= 0)
+) STRICT;
+
 -- Immutable versioned annotation construct definitions. Definition JSON is
 -- canonical and fingerprinted in Python; the row-level identity cannot be
 -- reused for a different construct after registration.

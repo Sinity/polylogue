@@ -30,6 +30,9 @@ RESULT_SET_REF_KIND: Final = "result-set"
 QUERY_RUN_ID_PREFIX: Final = "qr_"
 LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION: Final = "polylogue.query-definition.v0"
 QUERY_DEFINITION_PROTOCOL_VERSION: Final = "polylogue.query-definition.v1"
+SUPPORTED_QUERY_DEFINITION_PROTOCOL_VERSIONS: Final = frozenset(
+    {LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION, QUERY_DEFINITION_PROTOCOL_VERSION}
+)
 
 _COMMUTATIVE_OPERATORS: Final = frozenset({"and", "or"})
 _SHA256_HEX_RE: Final = re.compile(r"^[0-9a-f]{64}$")
@@ -86,6 +89,14 @@ def query_hash_for_plan(
             definition_protocol_version=definition_protocol_version,
         )
     )
+
+
+def require_supported_definition_protocol_version(definition_protocol_version: str) -> str:
+    """Return a supported definition version or fail closed before evaluation."""
+    version = _nfc(definition_protocol_version)
+    if version not in SUPPORTED_QUERY_DEFINITION_PROTOCOL_VERSIONS:
+        raise ValueError(f"unsupported query definition protocol version: {version!r}")
+    return version
 
 
 def query_ref(query_hash: str) -> ObjectRef:

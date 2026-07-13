@@ -14,7 +14,13 @@ from polylogue.archive.query.expression import RefOperand, resolve_ref_operand
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.query_objects import EvaluationReceipt, put_query, put_result_set, put_retained_query_run
+from polylogue.storage.sqlite.query_objects import (
+    EvaluationReceipt,
+    QueryObject,
+    put_query,
+    put_result_set,
+    put_retained_query_run,
+)
 
 
 class _Evaluator:
@@ -141,3 +147,17 @@ def test_retained_query_run_rejects_a_result_set_for_another_query() -> None:
             result_set_id=result.result_set_id,
             retained_at_ms=3,
         )
+
+
+def test_evaluation_request_rejects_an_unsupported_definition_protocol() -> None:
+    unsupported = QueryObject(
+        query_hash="a" * 64,
+        canonical_plan={},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        definition_protocol_version="polylogue.query-definition.v999",
+    )
+
+    with pytest.raises(ValueError, match="unsupported"):
+        QueryEvaluationRequest(query=unsupported, purpose="reference")

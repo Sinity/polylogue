@@ -26,13 +26,14 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 )
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 from polylogue.storage.sqlite.query_objects import (
-    get_latest_result_set,
     get_query,
     get_result_set,
+    get_watched_query_baseline,
     list_watched_queries,
     membership_merkle_root,
     put_evaluation_receipt,
     put_result_set,
+    put_watched_query_baseline,
 )
 
 logger = get_logger(__name__)
@@ -135,7 +136,7 @@ def _materialize_watch_evaluation(
     *,
     now_ms: int,
 ) -> None:
-    baseline = get_latest_result_set(conn, query_hash=query_hash, persistence_class="watch")
+    baseline = get_watched_query_baseline(conn, query_hash)
     root = membership_merkle_root(evaluation.member_refs)
     if baseline is not None and baseline.membership_merkle_root == root:
         put_evaluation_receipt(
@@ -144,6 +145,12 @@ def _materialize_watch_evaluation(
             receipt=evaluation.receipt,
             result_set_id=baseline.result_set_id,
             created_at_ms=now_ms,
+        )
+        put_watched_query_baseline(
+            conn,
+            query_hash=query_hash,
+            result_set_id=baseline.result_set_id,
+            updated_at_ms=now_ms,
         )
         return
     result_set_id = _watch_result_set_id(query_hash, evaluation.member_refs)
@@ -166,6 +173,12 @@ def _materialize_watch_evaluation(
         receipt=evaluation.receipt,
         result_set_id=current.result_set_id,
         created_at_ms=now_ms,
+    )
+    put_watched_query_baseline(
+        conn,
+        query_hash=query_hash,
+        result_set_id=current.result_set_id,
+        updated_at_ms=now_ms,
     )
     if baseline is None:
         return

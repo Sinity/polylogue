@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from polylogue.archive.query.expression import RefOperand, RelationGrain, ResolvedRefOperand
+from polylogue.core.query_identity import require_supported_definition_protocol_version
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.sqlite.query_objects import (
     EvaluationReceipt,
@@ -38,6 +39,9 @@ class QueryEvaluationRequest:
     changed_session_ids: tuple[str, ...] = ()
     excluded_scope_refs: tuple[str, ...] = ()
     excluded_origin_prefixes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        require_supported_definition_protocol_version(self.query.definition_protocol_version)
 
 
 @dataclass(frozen=True, slots=True)

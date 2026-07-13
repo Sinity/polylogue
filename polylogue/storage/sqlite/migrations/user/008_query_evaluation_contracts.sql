@@ -31,3 +31,11 @@ CREATE TABLE IF NOT EXISTS query_evaluation_receipts (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_query_evaluation_receipts_query_time
 ON query_evaluation_receipts(query_hash, created_at_ms DESC);
+
+-- Immutable manifests cannot express which recurring membership was most
+-- recently evaluated, so watches retain an explicit durable baseline pointer.
+CREATE TABLE IF NOT EXISTS watched_query_baselines (
+    query_hash      TEXT PRIMARY KEY NOT NULL REFERENCES queries(query_hash) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    result_set_id   TEXT NOT NULL REFERENCES result_sets(result_set_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    updated_at_ms   INTEGER NOT NULL CHECK(updated_at_ms >= 0)
+) STRICT;

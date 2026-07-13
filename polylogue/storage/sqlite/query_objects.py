@@ -14,6 +14,7 @@ from polylogue.core.query_identity import (
     canonical_query_plan,
     query_hash_for_plan,
     query_ref,
+    require_supported_definition_protocol_version,
 )
 
 QueryEdgeKind = Literal["operand-of", "refines", "supersedes", "derived-from", "same-as"]
@@ -82,6 +83,7 @@ def put_query(
     created_at_ms: int,
 ) -> QueryObject:
     """Idempotently persist one canonical expanded query plan."""
+    definition_protocol_version = require_supported_definition_protocol_version(definition_protocol_version)
     canonical_plan = canonical_query_plan(
         planned_ast,
         grain=grain,
@@ -280,6 +282,46 @@ def get_latest_result_set(
     return _manifest_from_row(row) if row is not None else None
 
 
+def get_watched_query_baseline(conn: sqlite3.Connection, query_hash: str) -> ResultSetManifest | None:
+    """Return the last evaluated durable watch relation for one query."""
+    row = conn.execute(
+        """
+        SELECT rs.result_set_id, rs.query_hash, rs.grain, rs.corpus_epoch, rs.member_count,
+               rs.membership_merkle_root, rs.ordered_rank_hash, rs.exactness, rs.persistence_class
+        FROM watched_query_baselines AS baseline
+        JOIN result_sets AS rs ON rs.result_set_id = baseline.result_set_id
+        WHERE baseline.query_hash = ?
+        """,
+        (query_hash,),
+    ).fetchone()
+    return _manifest_from_row(row) if row is not None else None
+
+
+def put_watched_query_baseline(
+    conn: sqlite3.Connection,
+    *,
+    query_hash: str,
+    result_set_id: str,
+    updated_at_ms: int,
+) -> None:
+    """Advance one query's baseline pointer, including A→B→A transitions."""
+    result_set = get_result_set(conn, result_set_id)
+    if result_set is None:
+        raise KeyError(f"result-set:{result_set_id}")
+    if result_set.query_hash != query_hash or result_set.persistence_class != "watch":
+        raise ValueError("watched query baseline must reference that query's watch result set")
+    conn.execute(
+        """
+        INSERT INTO watched_query_baselines (query_hash, result_set_id, updated_at_ms)
+        VALUES (?, ?, ?)
+        ON CONFLICT(query_hash) DO UPDATE SET
+            result_set_id = excluded.result_set_id,
+            updated_at_ms = excluded.updated_at_ms
+        """,
+        (query_hash, result_set_id, updated_at_ms),
+    )
+
+
 def put_retained_query_run(
     conn: sqlite3.Connection,
     *,
@@ -323,6 +365,36 @@ def put_evaluation_receipt(
     created_at_ms: int,
 ) -> None:
     """Persist immutable execution context for a materialized relation."""
+    if result_set_id is not None:
+        result_set = get_result_set(conn, result_set_id)
+        if result_set is None:
+            raise KeyError(f"result-set:{result_set_id}")
+        if result_set.query_hash != query_hash:
+            raise ValueError("evaluation receipt result set must belong to the same query")
+    values = (
+        query_hash,
+        result_set_id,
+        receipt.source_generation,
+        receipt.user_generation,
+        receipt.index_generation,
+        receipt.runtime_build_ref,
+        _json(list(receipt.model_refs)),
+        _json(receipt.resolved_bounds or {}),
+        _json(receipt.degradation or {}),
+        created_at_ms,
+    )
+    existing = conn.execute(
+        """
+        SELECT query_hash, result_set_id, source_generation, user_generation, index_generation,
+               runtime_build_ref, model_refs_json, resolved_bounds_json, degradation_json, created_at_ms
+        FROM query_evaluation_receipts WHERE receipt_id = ?
+        """,
+        (receipt.receipt_id,),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing) != values:
+            raise ValueError(f"evaluation receipt id conflicts with a different execution: {receipt.receipt_id}")
+        return
     conn.execute(
         """
         INSERT INTO query_evaluation_receipts (
@@ -330,21 +402,8 @@ def put_evaluation_receipt(
             index_generation, runtime_build_ref, model_refs_json, resolved_bounds_json,
             degradation_json, created_at_ms
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(receipt_id) DO NOTHING
         """,
-        (
-            receipt.receipt_id,
-            query_hash,
-            result_set_id,
-            receipt.source_generation,
-            receipt.user_generation,
-            receipt.index_generation,
-            receipt.runtime_build_ref,
-            _json(list(receipt.model_refs)),
-            _json(receipt.resolved_bounds or {}),
-            _json(receipt.degradation or {}),
-            created_at_ms,
-        ),
+        (receipt.receipt_id, *values),
     )
 
 
@@ -463,6 +522,7 @@ __all__ = [
     "get_result_set",
     "get_result_set_members",
     "get_retained_query_run",
+    "get_watched_query_baseline",
     "list_watched_queries",
     "membership_merkle_root",
     "migrate_saved_query_assertions",
@@ -472,4 +532,5 @@ __all__ = [
     "put_query_name",
     "put_retained_query_run",
     "put_result_set",
+    "put_watched_query_baseline",
 ]

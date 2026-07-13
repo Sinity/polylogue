@@ -8,6 +8,7 @@ from polylogue.core.query_identity import (
     query_hash_for_plan,
     query_ref,
     query_run_ref,
+    require_supported_definition_protocol_version,
     result_set_ref,
 )
 
@@ -87,3 +88,8 @@ def test_definition_protocol_version_is_bound_into_query_identity() -> None:
         rank_policy="mixed",
         definition_protocol_version="polylogue.query-definition.v2",
     )
+
+
+def test_unsupported_definition_protocol_version_fails_closed_at_execution_boundary() -> None:
+    with pytest.raises(ValueError, match="unsupported"):
+        require_supported_definition_protocol_version("polylogue.query-definition.v999")
