@@ -334,6 +334,11 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         tags_to_add=tags_to_add,
         metadata_to_set=metadata_to_set,
         delete_matched=delete_matched,
+        sample_count=sample_count,
+        since_session_id=since_session_id,
+        cursor=cursor,
+        sort=sort,
+        reverse=reverse,
     ):
         return
     if not index_db_path.exists():
@@ -990,10 +995,32 @@ def _try_emit_daemon_unit_page(
     tags_to_add: tuple[str, ...],
     metadata_to_set: tuple[tuple[str, str], ...],
     delete_matched: bool,
+    sample_count: int | None,
+    since_session_id: str | None,
+    cursor: object | None,
+    sort: str | None,
+    reverse: bool,
 ) -> bool:
     """Render daemon query-unit envelopes with the existing CLI renderer."""
 
     if source is None or stream or tags_to_add or metadata_to_set or delete_matched:
+        return False
+    if any(
+        (
+            params.get("stats_only"),
+            params.get("stats_by"),
+            params.get("count_only"),
+            params.get("open_result"),
+            params.get("conv_id"),
+            sample_count is not None,
+            since_session_id is not None,
+            cursor is not None,
+            sort is not None,
+            reverse,
+        )
+    ):
+        # Session-only modes must keep failing with the local UsageError; the
+        # daemon endpoint would silently ignore these flags and return rows.
         return False
     daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
     daemon_params["expression"] = expression
