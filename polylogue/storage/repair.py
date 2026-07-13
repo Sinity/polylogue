@@ -11,7 +11,7 @@ import re
 import sqlite3
 import time
 from collections.abc import Callable
-from contextlib import closing
+from contextlib import closing, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +23,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionKind,
 )
+from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
@@ -37,10 +38,10 @@ from polylogue.maintenance.targets import (
     build_maintenance_target_catalog,
 )
 from polylogue.paths import archive_file_set_root_for_paths
-from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.protocols import ProgressCallback
-from polylogue.sources.dispatch import is_stream_record_provider
+from polylogue.sources.dispatch import detect_provider, is_stream_record_provider
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
@@ -64,6 +65,7 @@ _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT = 100
 _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.quarantined-accepted-raw-repair.v1"
+_BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-origin-copy-forward.v1"
 _LEGACY_YLA_AUTHORITY_RAW_IDS = frozenset(
     {
         "a7d004c9aa943f6a10211851904105ee1c647c331552646e1b9cbe268940ed11",
@@ -156,6 +158,49 @@ class QuarantinedAcceptedRawRepairReport:
     proof_digest: str
     receipt_path: str | None
     items: tuple[QuarantinedAcceptedRawRepairItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserCaptureOriginRepairItem:
+    raw_id: str
+    status: str
+    reason: str
+    origin: str | None = None
+    source_path: str | None = None
+    source_index: int | None = None
+    blob_hash: str | None = None
+    blob_size: int | None = None
+    old_logical_source_key: str | None = None
+    canonical_provider: str | None = None
+    canonical_origin: str | None = None
+    canonical_logical_source_key: str | None = None
+    session_id: str | None = None
+    accepted_content_hash: str | None = None
+    accepted_frontier: int | None = None
+    repair_strategy: str | None = None
+    replacement_raw_id: str | None = None
+    replacement_source_revision: str | None = None
+    replacement_frontier_kind: str | None = None
+    replacement_frontier: int | None = None
+    copy_forward_raw_id: str | None = None
+    copy_forward_source_path: str | None = None
+    copy_forward_source_complete: bool = False
+    evidence_digest: str | None = None
+    proof_digest: str | None = None
+    repaired: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserCaptureOriginRepairReport:
+    mode: str
+    requested_count: int
+    eligible_count: int
+    repaired_count: int
+    already_repaired_count: int
+    ineligible_count: int
+    proof_digest: str
+    receipt_path: str | None
+    items: tuple[BrowserCaptureOriginRepairItem, ...]
 
 
 def _quarantined_raw_item(raw_id: str, reason: str) -> QuarantinedAcceptedRawRepairItem:
@@ -998,6 +1043,997 @@ def repair_quarantined_accepted_raws(
         already_repaired_count=sum(item.status == "already_repaired" for item in items),
         ineligible_count=sum(item.status == "ineligible" for item in items),
         proof_digest=aggregate_proof,
+        receipt_path=str(receipt_path) if receipt_path is not None else None,
+        items=tuple(items),
+    )
+
+
+def _browser_origin_ineligible(raw_id: str, reason: str) -> BrowserCaptureOriginRepairItem:
+    return BrowserCaptureOriginRepairItem(raw_id=raw_id, status="ineligible", reason=reason)
+
+
+def _browser_origin_item_payload(item: BrowserCaptureOriginRepairItem) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in dataclasses.asdict(item).items()
+        if key not in {"status", "reason", "proof_digest", "repaired", "copy_forward_source_complete"}
+    }
+
+
+def _browser_origin_item_digest(item: BrowserCaptureOriginRepairItem) -> str:
+    return hashlib.sha256(
+        json.dumps(_browser_origin_item_payload(item), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _browser_origin_proof_digest(items: list[BrowserCaptureOriginRepairItem]) -> str:
+    return hashlib.sha256(json.dumps([item.proof_digest for item in items], separators=(",", ":")).encode()).hexdigest()
+
+
+def _browser_origin_copy_raw_id(
+    origin: Origin,
+    source_path: str,
+    source_index: int,
+    blob_hash: bytes,
+    native_id: str,
+) -> str:
+    digest = hashlib.sha256()
+    for value in (origin.value, source_path, str(source_index)):
+        digest.update(value.encode("utf-8", errors="surrogatepass"))
+        digest.update(b"\0")
+    digest.update(blob_hash)
+    digest.update(b"\0")
+    digest.update(native_id.encode("utf-8", errors="surrogatepass"))
+    return digest.hexdigest()
+
+
+def _verify_browser_origin_copy_forward_source_stage(
+    archive_root: Path,
+    conn: sqlite3.Connection,
+    item: BrowserCaptureOriginRepairItem,
+) -> None:
+    """Reprove source-only witnesses while its write transaction is held."""
+    assert item.canonical_origin is not None
+    assert item.canonical_provider is not None
+    assert item.canonical_logical_source_key is not None
+    assert item.session_id is not None
+    assert item.old_logical_source_key is not None
+    assert item.source_path is not None
+    assert item.source_index is not None
+    assert item.blob_hash is not None
+    assert item.blob_size is not None
+    assert item.accepted_content_hash is not None
+    raw = conn.execute(
+        """
+        SELECT origin, source_path, source_index, blob_hash, blob_size,
+               logical_source_key, revision_kind, source_revision, baseline_raw_id,
+               acquisition_generation, revision_authority
+        FROM raw_sessions WHERE raw_id = ?
+        """,
+        (item.raw_id,),
+    ).fetchone()
+    expected = (
+        Origin.UNKNOWN_EXPORT.value,
+        item.source_path,
+        item.source_index,
+        bytes.fromhex(item.blob_hash),
+        item.blob_size,
+        item.old_logical_source_key,
+        RawRevisionKind.FULL.value,
+        item.blob_hash,
+        None,
+        0,
+        RawRevisionAuthority.QUARANTINED.value,
+    )
+    if raw is None or tuple(raw) != expected:
+        raise RuntimeError(f"source evidence changed before copy-forward stage for {item.raw_id}")
+    blob_ref = conn.execute(
+        """
+        SELECT blob_hash, size_bytes FROM blob_refs
+        WHERE ref_id = ? AND ref_type = 'raw_payload'
+        """,
+        (item.raw_id,),
+    ).fetchone()
+    if blob_ref is None or tuple(blob_ref) != (bytes.fromhex(item.blob_hash), item.blob_size):
+        raise RuntimeError(f"raw blob reference changed before copy-forward stage for {item.raw_id}")
+    store = BlobStore(archive_root / "blob")
+    payload = store.read_all(item.blob_hash)
+    if len(payload) != item.blob_size or hashlib.sha256(payload).hexdigest() != item.blob_hash:
+        raise RuntimeError(f"retained blob changed before copy-forward stage for {item.raw_id}")
+    try:
+        provider = detect_provider(json.loads(payload))
+        if provider is None or provider.value != item.canonical_provider:
+            raise ValueError("provider identity changed")
+        from polylogue.sources.revision_backfill import _parse_one
+
+        sessions = _parse_one(provider, payload, item.source_path)
+    except Exception as exc:
+        raise RuntimeError(f"browser parser evidence changed before copy-forward stage for {item.raw_id}") from exc
+    if len(sessions) != 1 or str(make_session_id(provider, sessions[0].provider_session_id)) != item.session_id:
+        raise RuntimeError(f"normalized session identity changed before copy-forward stage for {item.raw_id}")
+    projection = session_revision_projection(sessions[0])
+    if projection.session_hash.hex() != item.accepted_content_hash:
+        raise RuntimeError(f"normalized session content changed before copy-forward stage for {item.raw_id}")
+    membership = conn.execute(
+        """
+        SELECT provider_session_id, source_revision, normalized_content_hash,
+               message_count, acquisition_generation, revision_authority, decision
+        FROM raw_session_memberships WHERE raw_id = ? AND logical_source_key = ?
+        """,
+        (item.raw_id, item.canonical_logical_source_key),
+    ).fetchone()
+    census = conn.execute(
+        "SELECT status, member_count FROM raw_membership_census WHERE raw_id = ?", (item.raw_id,)
+    ).fetchone()
+    if (
+        membership is None
+        or tuple(membership)
+        != (
+            sessions[0].provider_session_id,
+            item.accepted_content_hash,
+            projection.session_hash,
+            len(projection.message_hashes),
+            0,
+            RawRevisionAuthority.QUARANTINED.value,
+            "applied",
+        )
+        or census is None
+        or tuple(census) != ("complete", 1)
+    ):
+        raise RuntimeError(f"membership evidence changed before copy-forward stage for {item.raw_id}")
+
+
+def _canonical_browser_origin_head_is_exact(
+    conn: sqlite3.Connection,
+    *,
+    canonical_head: sqlite3.Row,
+    canonical_key: str,
+    canonical_origin: Origin,
+    session_id: str,
+    accepted_hash: bytes,
+    message_count: int,
+) -> bool:
+    """Return whether an existing canonical head has full byte authority witnesses."""
+    raw_id = str(canonical_head["accepted_raw_id"])
+    source_revision = str(canonical_head["accepted_source_revision"])
+    frontier = int(canonical_head["accepted_frontier"])
+    generation = int(canonical_head["acquisition_generation"])
+    raw = conn.execute(
+        """
+        SELECT origin, blob_hash, blob_size, logical_source_key, revision_kind,
+               source_revision, baseline_raw_id, acquisition_generation, revision_authority
+        FROM source.raw_sessions WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    blob_ref = conn.execute(
+        "SELECT blob_hash, size_bytes FROM source.blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'",
+        (raw_id,),
+    ).fetchone()
+    membership = conn.execute(
+        """
+        SELECT provider_session_id, source_revision, normalized_content_hash, message_count,
+               acquisition_generation, revision_authority, decision
+        FROM source.raw_session_memberships WHERE raw_id = ? AND logical_source_key = ?
+        """,
+        (raw_id, canonical_key),
+    ).fetchone()
+    census = conn.execute(
+        "SELECT status, member_count FROM source.raw_membership_census WHERE raw_id = ?", (raw_id,)
+    ).fetchone()
+    application = conn.execute(
+        """
+        SELECT session_id, source_revision, acquisition_generation, decision, accepted_raw_id,
+               accepted_source_revision, accepted_content_hash, baseline_raw_id
+        FROM raw_revision_applications
+        WHERE raw_id = ? AND logical_source_key = ? AND decision = 'selected_baseline'
+        """,
+        (raw_id, canonical_key),
+    ).fetchone()
+    native_id = session_id.split(":", 1)[1]
+    if (
+        raw is None
+        or blob_ref is None
+        or membership is None
+        or census is None
+        or application is None
+        or str(canonical_head["session_id"]) != session_id
+        or _bytes_value(canonical_head["accepted_content_hash"]) != accepted_hash
+        or str(canonical_head["accepted_frontier_kind"]) != "byte"
+    ):
+        return False
+    return (
+        tuple(raw)
+        == (
+            canonical_origin.value,
+            bytes.fromhex(source_revision),
+            frontier,
+            canonical_key,
+            RawRevisionKind.FULL.value,
+            source_revision,
+            raw_id,
+            generation,
+            RawRevisionAuthority.BYTE_PROVEN.value,
+        )
+        and tuple(blob_ref) == (bytes.fromhex(source_revision), frontier)
+        and tuple(membership)
+        == (
+            native_id,
+            source_revision,
+            accepted_hash,
+            message_count,
+            generation,
+            RawRevisionAuthority.BYTE_PROVEN.value,
+            "applied",
+        )
+        and tuple(census) == ("complete", 1)
+        and tuple(application)
+        == (
+            session_id,
+            source_revision,
+            generation,
+            ApplicationDecision.SELECTED_BASELINE.value,
+            raw_id,
+            source_revision,
+            accepted_hash,
+            raw_id,
+        )
+    )
+
+
+def _inspect_browser_capture_origin_mismatch(
+    archive_root: Path,
+    raw_id: str,
+    *,
+    conn: sqlite3.Connection,
+) -> BrowserCaptureOriginRepairItem:
+    conn.row_factory = sqlite3.Row
+    raw = conn.execute(
+        """
+        SELECT raw_id, origin, native_id, source_path, source_index, blob_hash,
+               blob_size, logical_source_key, revision_kind, source_revision,
+               predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+               append_start_offset, append_end_offset, acquisition_generation,
+               revision_authority
+        FROM source.raw_sessions WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    if raw is None:
+        return _browser_origin_ineligible(raw_id, "source raw is missing")
+    if str(raw["origin"]) != Origin.UNKNOWN_EXPORT.value:
+        return _browser_origin_ineligible(raw_id, "source raw is not typed under unknown-export")
+    source_path = str(raw["source_path"])
+    if "browser-capture" not in source_path:
+        return _browser_origin_ineligible(raw_id, "source raw is not a browser-capture artifact")
+    if (
+        str(raw["revision_kind"]) != RawRevisionKind.FULL.value
+        or str(raw["revision_authority"]) != RawRevisionAuthority.QUARANTINED.value
+        or raw["source_revision"] is None
+        or raw["acquisition_generation"] is None
+        or any(
+            raw[name] is not None
+            for name in (
+                "predecessor_source_revision",
+                "predecessor_raw_id",
+                "baseline_raw_id",
+                "append_start_offset",
+                "append_end_offset",
+            )
+        )
+    ):
+        return _browser_origin_ineligible(raw_id, "source raw is not the exact quarantined full mismatch shape")
+    blob_hash = _bytes_value(raw["blob_hash"])
+    blob_size = int(raw["blob_size"])
+    if len(blob_hash) != 32 or blob_size < 1 or blob_size > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES:
+        return _browser_origin_ineligible(raw_id, "retained browser capture exceeds the bounded proof shape")
+    blob_hash_hex = blob_hash.hex()
+    if str(raw["source_revision"]) != blob_hash_hex:
+        return _browser_origin_ineligible(raw_id, "source revision does not equal the retained blob digest")
+    blob_ref = conn.execute(
+        """
+        SELECT blob_hash, source_path, size_bytes FROM source.blob_refs
+        WHERE ref_id = ? AND ref_type = 'raw_payload'
+        """,
+        (raw_id,),
+    ).fetchone()
+    if blob_ref is None or _bytes_value(blob_ref["blob_hash"]) != blob_hash or int(blob_ref["size_bytes"]) != blob_size:
+        return _browser_origin_ineligible(raw_id, "raw payload blob reference does not match the source envelope")
+    store = BlobStore(archive_root / "blob")
+    blob_path = store.blob_path(blob_hash_hex)
+    if not blob_path.is_file() or blob_path.stat().st_size != blob_size:
+        return _browser_origin_ineligible(raw_id, "retained raw blob is missing or has the wrong size")
+    payload = store.read_all(blob_hash_hex)
+    if hashlib.sha256(payload).digest() != blob_hash:
+        return _browser_origin_ineligible(raw_id, "retained raw blob digest does not match durable source evidence")
+    try:
+        decoded = json.loads(payload)
+        provider = detect_provider(decoded)
+        if provider is None or provider is Provider.UNKNOWN:
+            return _browser_origin_ineligible(raw_id, "complete browser envelope has no canonical provider identity")
+        from polylogue.sources.revision_backfill import _parse_one
+
+        sessions = _parse_one(provider, payload, source_path)
+    except Exception as exc:
+        logger.warning(
+            "browser capture origin repair normalization failed",
+            raw_id=raw_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return _browser_origin_ineligible(
+            raw_id, f"retained browser capture did not parse cleanly: {type(exc).__name__}"
+        )
+    if len(sessions) != 1:
+        return _browser_origin_ineligible(raw_id, f"retained browser capture normalized to {len(sessions)} sessions")
+    session = sessions[0]
+    canonical_origin = origin_from_provider(provider)
+    canonical_key = f"{provider.value}:{session.provider_session_id}"
+    session_id = str(make_session_id(provider, session.provider_session_id))
+    old_key = str(raw["logical_source_key"] or "")
+    if old_key != f"{Provider.UNKNOWN.value}:{session.provider_session_id}":
+        return _browser_origin_ineligible(raw_id, "unknown source key does not match the normalized session identity")
+    if canonical_origin is Origin.UNKNOWN_EXPORT or canonical_key == old_key:
+        return _browser_origin_ineligible(raw_id, "normalized provider does not establish a different canonical origin")
+    accepted_hash = bytes.fromhex(session_content_hash(session))
+    head = conn.execute(
+        """
+        SELECT session_id, accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier, acquisition_generation
+        FROM raw_revision_heads WHERE logical_source_key = ? AND accepted_raw_id = ?
+        """,
+        (old_key, raw_id),
+    ).fetchone()
+    indexed = conn.execute(
+        "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    indexed_evidence = conn.execute(
+        "SELECT session_id, origin, native_id, content_hash FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if (
+        head is None
+        or indexed is None
+        or indexed_evidence is None
+        or str(head["session_id"]) != session_id
+        or str(head["accepted_source_revision"]) != blob_hash_hex
+        or _bytes_value(head["accepted_content_hash"]) != accepted_hash
+        or str(head["accepted_frontier_kind"]) != "byte"
+        or int(head["accepted_frontier"]) != blob_size
+        or int(head["acquisition_generation"]) != int(raw["acquisition_generation"])
+        or _bytes_value(indexed["content_hash"]) != accepted_hash
+    ):
+        return _browser_origin_ineligible(raw_id, "current accepted head does not exactly prove the normalized session")
+    membership = conn.execute(
+        """
+        SELECT provider_session_id, source_revision, normalized_content_hash,
+               message_count, acquisition_generation, revision_authority, decision
+        FROM source.raw_session_memberships
+        WHERE raw_id = ? AND logical_source_key = ?
+        """,
+        (raw_id, canonical_key),
+    ).fetchone()
+    census = conn.execute(
+        "SELECT status, member_count FROM source.raw_membership_census WHERE raw_id = ?",
+        (raw_id,),
+    ).fetchone()
+    projection = session_revision_projection(session)
+    if (
+        membership is None
+        or census is None
+        or str(membership["provider_session_id"]) != session.provider_session_id
+        or _bytes_value(membership["normalized_content_hash"]) != projection.session_hash
+        or int(membership["message_count"]) != len(projection.message_hashes)
+        or int(membership["acquisition_generation"]) != int(raw["acquisition_generation"])
+        or str(membership["revision_authority"]) != RawRevisionAuthority.QUARANTINED.value
+        or str(census["status"]) != "complete"
+        or int(census["member_count"]) != 1
+    ):
+        return _browser_origin_ineligible(raw_id, "membership census does not exactly reproduce the accepted session")
+    copy_path = f"browser-capture-origin-copy-forward/{raw_id}.json"
+    copy_raw_id = _browser_origin_copy_raw_id(
+        canonical_origin,
+        copy_path,
+        int(raw["source_index"]),
+        blob_hash,
+        session.provider_session_id,
+    )
+    canonical_head = conn.execute(
+        """
+        SELECT session_id, accepted_raw_id, accepted_source_revision,
+               accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+               acquisition_generation
+        FROM raw_revision_heads WHERE logical_source_key = ?
+        """,
+        (canonical_key,),
+    ).fetchone()
+    copy_raw = conn.execute(
+        """
+        SELECT origin, native_id, source_path, source_index, blob_hash, blob_size,
+               logical_source_key, revision_kind, source_revision, baseline_raw_id,
+               acquisition_generation, revision_authority
+        FROM source.raw_sessions WHERE raw_id = ?
+        """,
+        (copy_raw_id,),
+    ).fetchone()
+    copy_membership = conn.execute(
+        """
+        SELECT provider_session_id, source_revision, normalized_content_hash,
+               message_count, acquisition_generation, revision_authority, decision
+        FROM source.raw_session_memberships
+        WHERE raw_id = ? AND logical_source_key = ?
+        """,
+        (copy_raw_id, canonical_key),
+    ).fetchone()
+    copy_census = conn.execute(
+        "SELECT status, member_count FROM source.raw_membership_census WHERE raw_id = ?",
+        (copy_raw_id,),
+    ).fetchone()
+    copy_application = conn.execute(
+        """
+        SELECT session_id, logical_source_key, source_revision, acquisition_generation,
+               decision, accepted_raw_id, accepted_source_revision, accepted_content_hash,
+               baseline_raw_id, detail
+        FROM raw_revision_applications
+        WHERE raw_id = ? AND logical_source_key = ?
+        """,
+        (copy_raw_id, canonical_key),
+    ).fetchone()
+    copy_raw_exact = copy_raw is not None and (
+        str(copy_raw["origin"]),
+        str(copy_raw["native_id"]),
+        str(copy_raw["source_path"]),
+        int(copy_raw["source_index"]),
+        _bytes_value(copy_raw["blob_hash"]),
+        int(copy_raw["blob_size"]),
+        str(copy_raw["logical_source_key"]),
+        str(copy_raw["revision_kind"]),
+        str(copy_raw["source_revision"]),
+        str(copy_raw["baseline_raw_id"]),
+        int(copy_raw["acquisition_generation"]),
+        str(copy_raw["revision_authority"]),
+    ) == (
+        canonical_origin.value,
+        session.provider_session_id,
+        copy_path,
+        int(raw["source_index"]),
+        blob_hash,
+        blob_size,
+        canonical_key,
+        RawRevisionKind.FULL.value,
+        blob_hash_hex,
+        copy_raw_id,
+        0,
+        RawRevisionAuthority.BYTE_PROVEN.value,
+    )
+    copy_forward_source_complete = (
+        copy_raw_exact
+        and copy_membership is not None
+        and str(copy_membership["provider_session_id"]) == session.provider_session_id
+        and str(copy_membership["source_revision"]) == accepted_hash.hex()
+        and _bytes_value(copy_membership["normalized_content_hash"]) == accepted_hash
+        and int(copy_membership["message_count"]) == len(projection.message_hashes)
+        and int(copy_membership["acquisition_generation"]) == 0
+        and str(copy_membership["revision_authority"]) == RawRevisionAuthority.BYTE_PROVEN.value
+        and str(copy_membership["decision"]) == "applied"
+        and copy_census is not None
+        and tuple(copy_census) == ("complete", 1)
+    )
+    copy_forward_terminal = (
+        copy_forward_source_complete
+        and canonical_head is not None
+        and str(canonical_head["session_id"]) == session_id
+        and str(canonical_head["accepted_raw_id"]) == copy_raw_id
+        and _bytes_value(canonical_head["accepted_content_hash"]) == accepted_hash
+        and str(indexed["raw_id"]) == copy_raw_id
+        and copy_application is not None
+        and tuple(copy_application)
+        == (
+            session_id,
+            canonical_key,
+            blob_hash_hex,
+            0,
+            ApplicationDecision.SELECTED_BASELINE.value,
+            copy_raw_id,
+            blob_hash_hex,
+            accepted_hash,
+            copy_raw_id,
+            f"browser_capture_origin_copy_forward:{raw_id}",
+        )
+    )
+    repair_strategy = "copy_forward"
+    replacement_raw_id = copy_raw_id
+    replacement_source_revision = blob_hash_hex
+    replacement_frontier_kind = "byte"
+    replacement_frontier = blob_size
+    already_repaired = copy_forward_terminal
+    if canonical_head is not None and not copy_forward_terminal:
+        replacement_raw_id = str(canonical_head["accepted_raw_id"])
+        replacement_source_revision = str(canonical_head["accepted_source_revision"])
+        replacement_frontier_kind = str(canonical_head["accepted_frontier_kind"])
+        replacement_frontier = int(canonical_head["accepted_frontier"])
+        if not _canonical_browser_origin_head_is_exact(
+            conn,
+            canonical_head=canonical_head,
+            canonical_key=canonical_key,
+            canonical_origin=canonical_origin,
+            session_id=session_id,
+            accepted_hash=accepted_hash,
+            message_count=len(projection.message_hashes),
+        ):
+            return _browser_origin_ineligible(raw_id, "canonical logical source has an incompatible accepted head")
+        supersession = conn.execute(
+            """
+            SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
+                   detail FROM raw_revision_applications
+            WHERE raw_id = ? AND logical_source_key = ? AND decision = 'superseded'
+            """,
+            (raw_id, canonical_key),
+        ).fetchone()
+        repair_strategy = "restore_canonical_head"
+        already_repaired = (
+            str(indexed["raw_id"]) == replacement_raw_id
+            and supersession is not None
+            and tuple(supersession)
+            == (
+                replacement_raw_id,
+                replacement_source_revision,
+                accepted_hash,
+                f"browser_capture_origin_supersession:{raw_id}",
+            )
+        )
+    if copy_raw is not None and repair_strategy == "copy_forward" and not copy_forward_source_complete:
+        return _browser_origin_ineligible(
+            raw_id, "copy-forward raw id exists but its durable source stage is not exact"
+        )
+    if str(indexed["raw_id"]) not in {raw_id, replacement_raw_id}:
+        return _browser_origin_ineligible(raw_id, "indexed session points at unrelated raw evidence")
+    evidence_rows = conn.execute(
+        """
+        SELECT decision_id, raw_id, logical_source_key, decision, accepted_raw_id,
+               accepted_source_revision, accepted_content_hash, decided_at_ms
+        FROM raw_revision_applications WHERE session_id = ? ORDER BY decision_id
+        """,
+        (session_id,),
+    ).fetchall()
+    evidence_rows = [row for row in evidence_rows if str(row["logical_source_key"]) == old_key]
+    evidence_digest = _authority_rows_digest([raw], [head], [indexed_evidence], [membership], [census], evidence_rows)
+    item = BrowserCaptureOriginRepairItem(
+        raw_id=raw_id,
+        status="already_repaired" if already_repaired else "eligible",
+        reason=(
+            "canonical replacement head already supersedes the mismatched current pointer"
+            if already_repaired
+            else "exact retained browser capture can be repaired without rewriting historical evidence"
+        ),
+        origin=str(raw["origin"]),
+        source_path=source_path,
+        source_index=int(raw["source_index"]),
+        blob_hash=blob_hash_hex,
+        blob_size=blob_size,
+        old_logical_source_key=old_key,
+        canonical_provider=provider.value,
+        canonical_origin=canonical_origin.value,
+        canonical_logical_source_key=canonical_key,
+        session_id=session_id,
+        accepted_content_hash=accepted_hash.hex(),
+        accepted_frontier=blob_size,
+        repair_strategy=repair_strategy,
+        replacement_raw_id=replacement_raw_id,
+        replacement_source_revision=replacement_source_revision,
+        replacement_frontier_kind=replacement_frontier_kind,
+        replacement_frontier=replacement_frontier,
+        copy_forward_raw_id=copy_raw_id if repair_strategy == "copy_forward" else None,
+        copy_forward_source_path=copy_path if repair_strategy == "copy_forward" else None,
+        copy_forward_source_complete=copy_forward_source_complete,
+        evidence_digest=evidence_digest,
+    )
+    return dataclasses.replace(item, proof_digest=_browser_origin_item_digest(item))
+
+
+@dataclass(slots=True)
+class _BrowserOriginReceipt:
+    path: Path
+    descriptor: int
+    target_hash: str
+    terminal: bool
+    torn: bytes = b""
+
+    def close(self) -> None:
+        fcntl.flock(self.descriptor, fcntl.LOCK_UN)
+        os.close(self.descriptor)
+
+
+def _lock_browser_origin_receipt(path: Path, items: list[BrowserCaptureOriginRepairItem]) -> _BrowserOriginReceipt:
+    if path.is_symlink():
+        raise RuntimeError("repair receipt path must not be a symbolic link")
+    targets = [_browser_origin_item_payload(item) for item in items]
+    target_hash = hashlib.sha256(json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        opened = os.fstat(descriptor)
+        named = path.stat(follow_symlinks=False)
+        if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+            raise RuntimeError("repair receipt path changed while it was being locked")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        chunks: list[bytes] = []
+        remaining = opened.st_size
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                raise RuntimeError("existing repair receipt changed during its locked read")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        existing = b"".join(chunks)
+        if existing:
+            first, separator, tail = existing.partition(b"\n")
+            if not separator:
+                raise RuntimeError("existing repair receipt has a torn planned record")
+            try:
+                planned = json.loads(first)
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError("existing repair receipt has invalid planned JSON") from exc
+            expected = {
+                "schema": _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA,
+                "state": "planned",
+                "target_hash": target_hash,
+                "targets": targets,
+            }
+            if {key: planned.get(key) for key in expected} != expected:
+                raise RuntimeError("existing repair receipt targets do not match the exact proof")
+            terminal = False
+            torn = tail
+            if tail.endswith(b"\n") and tail:
+                lines = tail.splitlines()
+                try:
+                    applied = json.loads(lines[-1])
+                except (ValueError, json.JSONDecodeError):
+                    applied = None
+                if isinstance(applied, dict) and applied.get("state") == "applied":
+                    if (
+                        applied.get("schema") != _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA
+                        or applied.get("target_hash") != target_hash
+                        or applied.get("replacement_raw_ids") != [item.replacement_raw_id for item in items]
+                    ):
+                        raise RuntimeError("existing repair receipt has a conflicting terminal record")
+                    terminal = True
+                    torn = b""
+            return _BrowserOriginReceipt(path, descriptor, target_hash, terminal, torn)
+        planned = {
+            "schema": _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA,
+            "state": "planned",
+            "target_hash": target_hash,
+            "targets": targets,
+            "planned_at_ms": int(time.time() * 1000),
+        }
+        _write_receipt_all(descriptor, (json.dumps(planned, sort_keys=True, separators=(",", ":")) + "\n").encode())
+        os.fsync(descriptor)
+        _fsync_parent(path)
+        return _BrowserOriginReceipt(path, descriptor, target_hash, False)
+    except Exception:
+        with suppress(OSError):
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        raise
+
+
+def _finish_browser_origin_receipt(
+    receipt: _BrowserOriginReceipt,
+    items: list[BrowserCaptureOriginRepairItem],
+) -> None:
+    os.lseek(receipt.descriptor, 0, os.SEEK_END)
+    terminal: dict[str, object] = {
+        "schema": _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA,
+        "state": "applied",
+        "target_hash": receipt.target_hash,
+        "applied_at_ms": int(time.time() * 1000),
+        "replacement_raw_ids": [item.replacement_raw_id for item in items],
+    }
+    if receipt.torn:
+        if not receipt.torn.endswith(b"\n"):
+            _write_receipt_all(receipt.descriptor, b"\xff\n")
+        terminal["preserved_torn_terminal"] = {
+            "bytes": len(receipt.torn),
+            "sha256": hashlib.sha256(receipt.torn).hexdigest(),
+        }
+    _write_receipt_all(
+        receipt.descriptor,
+        (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode(),
+    )
+    os.fsync(receipt.descriptor)
+    _fsync_parent(receipt.path)
+
+
+def _stage_browser_origin_copy_forward_source(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
+    assert item.copy_forward_raw_id is not None
+    assert item.copy_forward_source_path is not None
+    assert item.canonical_origin is not None
+    assert item.canonical_provider is not None
+    assert item.canonical_logical_source_key is not None
+    assert item.session_id is not None
+    assert item.blob_hash is not None
+    assert item.blob_size is not None
+    assert item.source_index is not None
+    assert item.accepted_content_hash is not None
+    assert item.accepted_frontier is not None
+    native_id = item.session_id.split(":", 1)[1]
+    blob_hash = bytes.fromhex(item.blob_hash)
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_sessions)")}
+    names = [
+        "raw_id",
+        "origin",
+        "native_id",
+        "source_path",
+        "source_index",
+        "blob_hash",
+        "blob_size",
+        "acquired_at_ms",
+        "logical_source_key",
+        "revision_kind",
+        "source_revision",
+        "baseline_raw_id",
+        "acquisition_generation",
+        "revision_authority",
+    ]
+    values: list[object] = [
+        item.copy_forward_raw_id,
+        item.canonical_origin,
+        native_id,
+        item.copy_forward_source_path,
+        item.source_index,
+        blob_hash,
+        item.blob_size,
+        int(time.time() * 1000),
+        item.canonical_logical_source_key,
+        RawRevisionKind.FULL.value,
+        item.blob_hash,
+        item.copy_forward_raw_id,
+        0,
+        RawRevisionAuthority.BYTE_PROVEN.value,
+    ]
+    if "capture_mode" in columns:
+        names.insert(2, "capture_mode")
+        values.insert(2, item.canonical_provider)
+    conn.execute(
+        f"INSERT INTO raw_sessions ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+        values,
+    )
+    acquired_at_ms = int(time.time() * 1000)
+    conn.execute(
+        """
+        INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+        VALUES (?, ?, 'raw_payload', ?, ?, ?)
+        """,
+        (blob_hash, item.copy_forward_raw_id, item.copy_forward_source_path, item.blob_size, acquired_at_ms),
+    )
+    conn.execute(
+        """
+        INSERT INTO raw_session_memberships (
+            raw_id, logical_source_key, provider_session_id, source_revision,
+            normalized_content_hash, message_count, acquisition_generation,
+            revision_authority, decision, decided_at_ms
+        )
+        SELECT ?, ?, ?, ?, ?, message_count, 0, 'byte_proven', 'applied', ?
+        FROM raw_session_memberships
+        WHERE raw_id = ? AND logical_source_key = ?
+        """,
+        (
+            item.copy_forward_raw_id,
+            item.canonical_logical_source_key,
+            native_id,
+            item.accepted_content_hash,
+            bytes.fromhex(item.accepted_content_hash),
+            acquired_at_ms,
+            item.raw_id,
+            item.canonical_logical_source_key,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO raw_membership_census (
+            raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+        ) VALUES (?, 'browser-origin-copy-forward-v1', 'complete', 1, ?, ?)
+        """,
+        (
+            item.copy_forward_raw_id,
+            acquired_at_ms,
+            f"origin copy-forward from immutable raw {item.raw_id}",
+        ),
+    )
+
+
+def _finalize_browser_origin_copy_forward_index(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
+    from polylogue.storage.sqlite.archive_tiers.revision_application import (
+        RevisionApplicationReceipt,
+        record_revision_application_sync,
+    )
+
+    assert item.copy_forward_raw_id is not None
+    assert item.canonical_logical_source_key is not None
+    assert item.session_id is not None
+    assert item.blob_hash is not None
+    assert item.accepted_content_hash is not None
+    assert item.accepted_frontier is not None
+    acquired_at_ms = int(time.time() * 1000)
+    cursor = conn.execute(
+        "UPDATE sessions SET raw_id = ? WHERE session_id = ? AND raw_id = ?",
+        (item.copy_forward_raw_id, item.session_id, item.raw_id),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError(f"session raw pointer CAS failed for {item.raw_id}")
+    record_revision_application_sync(
+        conn,
+        RevisionApplicationReceipt(
+            raw_id=item.copy_forward_raw_id,
+            session_id=item.session_id,
+            logical_source_key=item.canonical_logical_source_key,
+            source_revision=item.blob_hash,
+            acquisition_generation=0,
+            decision=ApplicationDecision.SELECTED_BASELINE,
+            accepted_raw_id=item.copy_forward_raw_id,
+            accepted_source_revision=item.blob_hash,
+            accepted_content_hash=bytes.fromhex(item.accepted_content_hash),
+            accepted_frontier_kind="byte",
+            accepted_frontier=item.accepted_frontier,
+            baseline_raw_id=item.copy_forward_raw_id,
+            detail=f"browser_capture_origin_copy_forward:{item.raw_id}",
+        ),
+        decided_at_ms=acquired_at_ms,
+    )
+
+
+def _restore_browser_origin_canonical_head(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
+    from polylogue.storage.sqlite.archive_tiers.revision_application import (
+        RevisionApplicationReceipt,
+        record_revision_application_sync,
+    )
+
+    assert item.session_id is not None
+    assert item.canonical_logical_source_key is not None
+    assert item.blob_hash is not None
+    assert item.accepted_content_hash is not None
+    assert item.replacement_raw_id is not None
+    assert item.replacement_source_revision is not None
+    assert item.replacement_frontier_kind is not None
+    assert item.replacement_frontier is not None
+    decided_at_ms = int(time.time() * 1000)
+    cursor = conn.execute(
+        "UPDATE sessions SET raw_id = ? WHERE session_id = ? AND raw_id = ?",
+        (item.replacement_raw_id, item.session_id, item.raw_id),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError(f"session raw pointer CAS failed for {item.raw_id}")
+    record_revision_application_sync(
+        conn,
+        RevisionApplicationReceipt(
+            raw_id=item.raw_id,
+            session_id=item.session_id,
+            logical_source_key=item.canonical_logical_source_key,
+            source_revision=item.blob_hash,
+            acquisition_generation=0,
+            decision=ApplicationDecision.SUPERSEDED,
+            accepted_raw_id=item.replacement_raw_id,
+            accepted_source_revision=item.replacement_source_revision,
+            accepted_content_hash=bytes.fromhex(item.accepted_content_hash),
+            accepted_frontier_kind=item.replacement_frontier_kind,
+            accepted_frontier=item.replacement_frontier,
+            detail=f"browser_capture_origin_supersession:{item.raw_id}",
+        ),
+        decided_at_ms=decided_at_ms,
+    )
+
+
+def _apply_browser_origin_repair_item(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
+    if item.repair_strategy == "copy_forward":
+        _finalize_browser_origin_copy_forward_index(conn, item)
+        return
+    if item.repair_strategy == "restore_canonical_head":
+        _restore_browser_origin_canonical_head(conn, item)
+        return
+    raise RuntimeError(f"unsupported browser-capture origin repair strategy: {item.repair_strategy}")
+
+
+def repair_browser_capture_origin_mismatches(
+    config: Config,
+    raw_ids: list[str],
+    *,
+    apply: bool = False,
+    receipt_path: Path | None = None,
+    proof_digest: str | None = None,
+) -> BrowserCaptureOriginRepairReport:
+    """Copy exact browser-capture evidence forward under parsed origin authority."""
+    if len(set(raw_ids)) != len(raw_ids):
+        raise ValueError("duplicate raw ids are not allowed")
+    if not raw_ids or len(raw_ids) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
+        raise ValueError("raw-id list must contain 1..100 entries")
+    if any(re.fullmatch(r"[0-9a-f]{64}", raw_id) is None for raw_id in raw_ids):
+        raise ValueError("raw ids must be lowercase SHA-256 identifiers")
+    block_reason = offline_maintenance_block_reason(config, active=apply, dry_run=not apply)
+    if block_reason is not None:
+        raise RuntimeError(block_reason)
+    archive_root = _raw_materialization_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        raise RuntimeError("source or index tier is missing")
+
+    def inspect(connection: sqlite3.Connection) -> list[BrowserCaptureOriginRepairItem]:
+        return [_inspect_browser_capture_origin_mismatch(archive_root, raw_id, conn=connection) for raw_id in raw_ids]
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+        items = inspect(conn)
+    aggregate = _browser_origin_proof_digest(items)
+    if apply and any(item.status == "ineligible" for item in items):
+        raise RuntimeError("browser-capture origin repair refused because one or more targets are ineligible")
+    if apply and receipt_path is None:
+        raise ValueError("apply requires an explicit operator repair receipt path")
+    if apply and proof_digest != aggregate:
+        raise RuntimeError("apply proof digest does not match the exact dry-run target list")
+    if apply:
+        from polylogue.storage.index_generation import RebuildLease
+
+        assert receipt_path is not None
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        with RebuildLease(archive_root):
+            receipt = _lock_browser_origin_receipt(receipt_path, items)
+            try:
+                with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
+                    source_conn.execute("PRAGMA foreign_keys = ON")
+                    source_conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        for item in items:
+                            if (
+                                item.status == "eligible"
+                                and item.repair_strategy == "copy_forward"
+                                and not item.copy_forward_source_complete
+                            ):
+                                _verify_browser_origin_copy_forward_source_stage(archive_root, source_conn, item)
+                                _stage_browser_origin_copy_forward_source(source_conn, item)
+                        source_conn.commit()
+                    except Exception:
+                        source_conn.rollback()
+                        raise
+                with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        locked = inspect(conn)
+                        if _browser_origin_proof_digest(locked) != proof_digest:
+                            raise RuntimeError("authority proof changed after acquiring the repair transaction")
+                        if any(item.status == "ineligible" for item in locked):
+                            raise RuntimeError("a browser-capture origin target became ineligible")
+                        if receipt.terminal and any(item.status != "already_repaired" for item in locked):
+                            raise RuntimeError("terminal operator receipt disagrees with durable copy-forward state")
+                        for item in locked:
+                            if item.status == "eligible":
+                                _apply_browser_origin_repair_item(conn, item)
+                        after = inspect(conn)
+                        if any(item.status != "already_repaired" for item in after):
+                            raise RuntimeError("browser-capture origin copy-forward did not reach terminal state")
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        raise
+                items = [
+                    dataclasses.replace(after_item, repaired=before.status == "eligible")
+                    for before, after_item in zip(locked, after, strict=True)
+                ]
+                if not receipt.terminal:
+                    _finish_browser_origin_receipt(receipt, items)
+            finally:
+                receipt.close()
+    return BrowserCaptureOriginRepairReport(
+        mode="apply" if apply else "dry-run",
+        requested_count=len(items),
+        eligible_count=sum(item.status == "eligible" for item in items),
+        repaired_count=sum(item.repaired for item in items),
+        already_repaired_count=sum(item.status == "already_repaired" for item in items),
+        ineligible_count=sum(item.status == "ineligible" for item in items),
+        proof_digest=aggregate,
         receipt_path=str(receipt_path) if receipt_path is not None else None,
         items=tuple(items),
     )
