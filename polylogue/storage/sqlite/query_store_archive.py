@@ -91,51 +91,49 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await sessions_q.resolve_id(conn, id_prefix, strict=strict)
 
-    async def search_sessions(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
-        return (await self.search_session_hits(query, limit=limit, providers=providers)).session_ids()
+    async def search_sessions(self, query: str, limit: int = 100, origins: list[str] | None = None) -> list[str]:
+        return (await self.search_session_hits(query, limit=limit, origins=origins)).session_ids()
 
-    async def search_action_sessions(
-        self, query: str, limit: int = 100, providers: list[str] | None = None
-    ) -> list[str]:
-        return (await self.search_action_session_hits(query, limit=limit, providers=providers)).session_ids()
+    async def search_action_sessions(self, query: str, limit: int = 100, origins: list[str] | None = None) -> list[str]:
+        return (await self.search_action_session_hits(query, limit=limit, origins=origins)).session_ids()
 
     async def search_session_hits(
         self,
         query: str,
         limit: int = 100,
-        providers: list[str] | None = None,
+        origins: list[str] | None = None,
     ) -> SessionSearchResult:
         async with self._connection_factory() as conn:
-            return await sessions_q.search_session_hits(conn, query, limit, providers)
+            return await sessions_q.search_session_hits(conn, query, limit, origins)
 
     async def search_session_evidence_hits(
         self,
         query: str,
         limit: int = 100,
-        providers: list[str] | None = None,
+        origins: list[str] | None = None,
         since: str | None = None,
     ) -> list[SessionSearchEvidenceRow]:
         async with self._connection_factory() as conn:
-            return await sessions_q.search_session_evidence_hits(conn, query, limit, providers, since)
+            return await sessions_q.search_session_evidence_hits(conn, query, limit, origins, since)
 
     async def search_attachment_identity_evidence_hits(
         self,
         query: str,
         limit: int = 100,
-        providers: list[str] | None = None,
+        origins: list[str] | None = None,
         since: str | None = None,
     ) -> list[SessionSearchEvidenceRow]:
         async with self._connection_factory() as conn:
-            return await attachments_q.search_attachment_identity_evidence_hits(conn, query, limit, providers, since)
+            return await attachments_q.search_attachment_identity_evidence_hits(conn, query, limit, origins, since)
 
     async def search_action_session_hits(
         self,
         query: str,
         limit: int = 100,
-        providers: list[str] | None = None,
+        origins: list[str] | None = None,
     ) -> SessionSearchResult:
         async with self._connection_factory() as conn:
-            return await sessions_q.search_action_session_hits(conn, query, limit, providers)
+            return await sessions_q.search_action_session_hits(conn, query, limit, origins)
 
     async def get_messages(self, session_id: str) -> list[MessageRecord]:
         async with self._connection_factory() as conn:
@@ -284,7 +282,7 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await stats_q.aggregate_message_stats(conn, session_ids)
 
-    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
+    async def get_stats_by(self, group_by: str = "origin") -> dict[str, int]:
         async with self._connection_factory() as conn:
             return await stats_q.get_stats_by(conn, group_by)
 

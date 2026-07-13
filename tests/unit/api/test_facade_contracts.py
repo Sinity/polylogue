@@ -3183,7 +3183,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         unit_envelope = await archive.query_units("messages where text:needle", limit=5)
         normal_neighbors = await archive.neighbor_candidates(
             query="needle",
-            provider=Provider.CODEX.value,
+            origin="codex-session",
             limit=3,
         )
         paged_messages, total_messages = await archive.get_messages_paginated(
@@ -3524,7 +3524,7 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
             )
 
         rollups = await archive.list_session_tag_rollup_insights(
-            SessionTagRollupQuery(provider=Provider.CODEX.value, query="foc", limit=10)
+            SessionTagRollupQuery(origin=Provider.CODEX.value, query="foc", limit=10)
         )
 
         assert len(rollups) == 1
@@ -3622,13 +3622,13 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
             conn.commit()
 
         provider_rows = await archive.list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(group_by="provider", provider=Provider.CODEX.value)
+            ArchiveCoverageInsightQuery(group_by="origin", origin="codex-session")
         )
         day_rows = await archive.list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(group_by="day", provider=Provider.CODEX.value, limit=10)
+            ArchiveCoverageInsightQuery(group_by="day", origin=Provider.CODEX.value, limit=10)
         )
         week_rows = await archive.list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(group_by="week", provider=Provider.CODEX.value, limit=10)
+            ArchiveCoverageInsightQuery(group_by="week", origin=Provider.CODEX.value, limit=10)
         )
 
         assert len(provider_rows) == 1
@@ -3722,17 +3722,17 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
             archive_db.write_parsed(chatgpt)
 
         [insight] = await archive.list_tool_usage_insights(
-            ToolUsageInsightQuery(provider=Provider.CODEX.value, tool="read")
+            ToolUsageInsightQuery(origin=Origin.CODEX_SESSION.value, tool="read")
         )
 
         assert insight.total_call_count == 1
         assert insight.total_distinct_tools == 1
-        assert insight.providers_with_data == 1
-        assert insight.providers_without_data == 1
+        assert insight.origins_with_data == 1
+        assert insight.origins_without_data == 1
         assert insight.has_coverage_gaps is True
         assert len(insight.entries) == 1
         entry = insight.entries[0]
-        assert entry.source_name == Provider.CODEX.value
+        assert entry.source_name == Origin.CODEX_SESSION.value
         assert entry.normalized_tool_name == "read"
         assert entry.action_kind == "file_read"
         assert entry.call_count == 1
@@ -3741,11 +3741,11 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
         assert entry.distinct_tool_ids == 1
         assert entry.affected_path_calls == 1
         assert entry.output_text_calls == 1
-        coverage = {item.source_name: item for item in insight.provider_coverage}
-        assert coverage[Provider.CODEX.value].data_available is True
-        assert coverage[Provider.CODEX.value].action_count == 1
-        assert coverage[Provider.CHATGPT.value].data_available is False
-        assert coverage[Provider.CHATGPT.value].session_count == 1
+        coverage = {item.source_name: item for item in insight.origin_coverage}
+        assert coverage[Origin.CODEX_SESSION.value].data_available is True
+        assert coverage[Origin.CODEX_SESSION.value].action_count == 1
+        assert coverage[Origin.CHATGPT_EXPORT.value].data_available is False
+        assert coverage[Origin.CHATGPT_EXPORT.value].session_count == 1
     finally:
         await archive.close()
 
@@ -3927,7 +3927,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         events = await archive.get_session_work_event_insights(session_id)
         filtered_events = await archive.list_session_work_event_insights(
             SessionWorkEventInsightQuery(
-                provider=Provider.CODEX.value,
+                origin="codex-session",
                 heuristic_label="implementation",
                 since="2026-02-02T02:40:30Z",
                 limit=10,
@@ -3935,7 +3935,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         )
         phases = await archive.get_session_phase_insights(session_id)
         filtered_phases = await archive.list_session_phase_insights(
-            SessionPhaseInsightQuery(provider=Provider.CODEX.value, limit=10)
+            SessionPhaseInsightQuery(origin=Provider.CODEX.value, limit=10)
         )
 
         assert len(events) == 1
@@ -4225,13 +4225,13 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
             )
 
         costs = await archive.list_session_cost_insights(
-            SessionCostInsightQuery(provider=Provider.CODEX.value, status="priced", limit=10)
+            SessionCostInsightQuery(origin=Provider.CODEX.value, status="priced", limit=10)
         )
         unavailable = await archive.list_session_cost_insights(
-            SessionCostInsightQuery(provider=Provider.CHATGPT.value, status="unavailable", limit=10)
+            SessionCostInsightQuery(origin=Provider.CHATGPT.value, status="unavailable", limit=10)
         )
         model_filtered = await archive.list_session_cost_insights(SessionCostInsightQuery(model="claude-sonnet-4-5"))
-        rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(provider=Provider.CODEX.value))
+        rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(origin=Provider.CODEX.value))
         all_rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(limit=10))
         model_rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(model="claude-sonnet-4-5"))
 
@@ -4338,13 +4338,13 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
 
         profile = await archive.get_session_latency_profile_insight(session_id)
         listed = await archive.list_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(provider=Provider.CODEX.value, limit=10)
+            SessionLatencyProfileInsightQuery(origin=Provider.CODEX.value, limit=10)
         )
         only_stuck = await archive.list_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(provider=Provider.CODEX.value, only_stuck=True, limit=10)
+            SessionLatencyProfileInsightQuery(origin=Provider.CODEX.value, only_stuck=True, limit=10)
         )
         stuck = await archive.find_stuck_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(provider=Provider.CODEX.value, limit=10)
+            SessionLatencyProfileInsightQuery(origin=Provider.CODEX.value, limit=10)
         )
 
         assert profile is not None
@@ -4502,7 +4502,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         inference_only = await archive.get_session_profile_insight(session_id, tier="inference")
         listed = await archive.list_session_profile_insights(
             SessionProfileInsightQuery(
-                provider=Provider.CODEX.value,
+                origin="codex-session",
                 workflow_shape="implementation",
                 terminal_state="completed",
                 tier="merged",

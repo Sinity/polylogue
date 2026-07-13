@@ -37,7 +37,7 @@ from polylogue.insights.archive import (
     UsageTimelineInsightQuery,
 )
 from polylogue.insights.cost_enrichment import enrich_session_cost_insights
-from polylogue.insights.tag_rollups import synthesize_provider_tag_rollups
+from polylogue.insights.tag_rollups import synthesize_origin_tag_rollups
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.insights.topology import (
     LogicalSession,
@@ -316,29 +316,29 @@ class PolylogueInsightsMixin:
         since_ms = _archive_query_date_ms("since", request.since)
         until_ms = _archive_query_date_ms("until", request.until)
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            # The archive rebuild does not write ``provider:<name>`` rows into
-            # session_tags (provider identity lives on sessions.origin), so the
+            # The archive rebuild does not write ``origin:<name>`` rows into
+            # session_tags (origin identity lives on sessions.origin), so the
             # archive read only returns explicit/auto tags. Synthesize the
-            # provider rollups to preserve the legacy ``insights tags``
+            # origin rollups to preserve the legacy ``insights tags``
             # contract, then merge them with the materialized tag rollups.
             materialized = archive.list_session_tag_rollup_insights(
-                provider=request.provider,
+                origin=request.origin,
                 query=request.query,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 limit=None,
                 offset=0,
             )
-            provider_rollups = synthesize_provider_tag_rollups(
+            origin_rollups = synthesize_origin_tag_rollups(
                 archive,
-                provider=request.provider,
+                origin=request.origin,
                 query=request.query,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 materialized_at=datetime.now(UTC).isoformat(),
             )
         rollups = sorted(
-            [*materialized, *provider_rollups],
+            [*materialized, *origin_rollups],
             key=lambda rollup: (-rollup.session_count, rollup.tag),
         )
         if request.offset:
@@ -370,7 +370,7 @@ class PolylogueInsightsMixin:
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             return archive.list_session_work_event_insights(
                 session_id=request.session_id,
-                provider=request.provider,
+                origin=request.origin,
                 heuristic_label=request.heuristic_label,
                 since_ms=since_ms,
                 until_ms=until_ms,
@@ -401,7 +401,7 @@ class PolylogueInsightsMixin:
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             return archive.list_session_phase_insights(
                 session_id=request.session_id,
-                provider=request.provider,
+                origin=request.origin,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 limit=request.limit,
@@ -434,7 +434,7 @@ class PolylogueInsightsMixin:
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             return archive.list_archive_coverage_insights(
                 group_by=request.group_by,
-                provider=request.provider,
+                origin=request.origin,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
                 limit=request.limit,
@@ -465,7 +465,7 @@ class PolylogueInsightsMixin:
                 archive,
                 archive.list_session_cost_insights(
                     session_id=request.session_id,
-                    provider=request.provider,
+                    origin=request.origin,
                     status=None,
                     model=None,
                     since_ms=_archive_query_date_ms("since", request.since),
@@ -499,7 +499,7 @@ class PolylogueInsightsMixin:
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             return archive.list_session_latency_profile_insights(
                 session_id=request.session_id,
-                provider=request.provider,
+                origin=request.origin,
                 only_stuck=request.only_stuck,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
@@ -514,7 +514,7 @@ class PolylogueInsightsMixin:
         request = query or SessionLatencyProfileInsightQuery()
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             return archive.find_stuck_session_latency_profile_insights(
-                provider=request.provider,
+                origin=request.origin,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
                 limit=request.limit,
@@ -527,7 +527,7 @@ class PolylogueInsightsMixin:
         request = query or CostRollupInsightQuery()
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             return archive.list_cost_rollup_insights(
-                provider=request.provider,
+                origin=request.origin,
                 model=request.model,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
@@ -542,7 +542,7 @@ class PolylogueInsightsMixin:
         request = query or UsageTimelineInsightQuery()
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             return archive.list_usage_timeline_insights(
-                provider=request.provider,
+                origin=request.origin,
                 model=request.model,
                 group_by=request.group_by,
                 since_ms=_archive_query_date_ms("since", request.since),
@@ -612,7 +612,7 @@ class PolylogueInsightsMixin:
         group_by: str = "workflow_shape",
         since: str | None = None,
         until: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
     ) -> dict[str, object]:
         """GROUP BY session counts over workflow_shape/terminal_state/origin.
 
@@ -621,7 +621,7 @@ class PolylogueInsightsMixin:
         from polylogue.insights.archive_rollups import aggregate_session_profiles_by_dimension
 
         profiles = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(provider=provider, since=since, until=until, limit=None)
+            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
         )
         buckets = aggregate_session_profiles_by_dimension(profiles, group_by)
         return {"group_by": group_by, "total_sessions": len(profiles), "buckets": buckets}
@@ -632,7 +632,7 @@ class PolylogueInsightsMixin:
         group_by: str = "week",
         since: str | None = None,
         until: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
     ) -> dict[str, object]:
         """Histogram session workflow shapes by week, origin, or project.
 
@@ -642,7 +642,7 @@ class PolylogueInsightsMixin:
         from polylogue.insights.archive_rollups import workflow_shape_distribution_buckets
 
         profiles = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(provider=provider, since=since, until=until, limit=None)
+            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
         )
         buckets = workflow_shape_distribution_buckets(profiles, group_by)
         return {"group_by": group_by, "total_sessions": len(profiles), "buckets": buckets}
@@ -670,7 +670,7 @@ class PolylogueInsightsMixin:
         *,
         since: str | None = None,
         until: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         tool_category: str | None = None,
         limit: int = 500,
     ) -> dict[str, object]:
@@ -678,7 +678,7 @@ class PolylogueInsightsMixin:
         from polylogue.insights.archive_rollups import tool_call_latency_distribution_payload
 
         insights = await self.list_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(provider=provider, since=since, until=until, limit=limit)
+            SessionLatencyProfileInsightQuery(origin=origin, since=since, until=until, limit=limit)
         )
         return tool_call_latency_distribution_payload(insights, tool_category=tool_category)
 
@@ -731,7 +731,7 @@ class PolylogueInsightsMixin:
         if ref_profile is None:
             return None
         candidates = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(provider=ref_profile.source_name, limit=candidate_pool_limit)
+            SessionProfileInsightQuery(origin=ref_profile.source_name, limit=candidate_pool_limit)
         )
         scored = compute_metadata_similarity_candidates(ref_profile, candidates, exclude_session_id=session_id)
         return {
@@ -745,7 +745,7 @@ class PolylogueInsightsMixin:
         *,
         metric_x: str,
         metric_y: str,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
     ) -> dict[str, object]:
@@ -760,7 +760,7 @@ class PolylogueInsightsMixin:
         ensure_known_session_metric(metric_y, "metric_y")
 
         profiles = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(provider=provider, since=since, until=until, limit=None)
+            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
         )
         return pearson_session_correlation(profiles, metric_x=metric_x, metric_y=metric_y)
 

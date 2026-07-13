@@ -386,12 +386,6 @@ def _active_archive_root(config: Config) -> Path:
     return archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
 
 
-def _archive_origin_for_provider(provider: str | None) -> str | None:
-    if provider is None:
-        return None
-    return origin_from_provider(Provider.from_string(provider)).value
-
-
 def _provider_for_archive_origin(origin: str) -> Provider:
     try:
         return provider_from_origin(Origin(origin))
@@ -1492,7 +1486,7 @@ class _ArchiveInsightExportOperations:
     async def list_session_profile_insights(self, query: object) -> list[ArchiveInsightModel]:
         return list(
             self._archive.list_session_profile_insights(
-                provider=str(provider) if (provider := getattr(query, "provider", None)) is not None else None,
+                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 workflow_shape=getattr(query, "workflow_shape", None),
                 terminal_state=getattr(query, "terminal_state", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
@@ -1507,7 +1501,7 @@ class _ArchiveInsightExportOperations:
         return list(
             self._archive.list_session_work_event_insights(
                 session_id=getattr(query, "session_id", None),
-                provider=str(provider) if (provider := getattr(query, "provider", None)) is not None else None,
+                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 heuristic_label=getattr(query, "heuristic_label", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
@@ -1520,7 +1514,7 @@ class _ArchiveInsightExportOperations:
         return list(
             self._archive.list_session_phase_insights(
                 session_id=getattr(query, "session_id", None),
-                provider=str(provider) if (provider := getattr(query, "provider", None)) is not None else None,
+                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 kind=getattr(query, "kind", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
@@ -1543,7 +1537,7 @@ class _ArchiveInsightExportOperations:
     async def list_session_tag_rollup_insights(self, query: object) -> list[ArchiveInsightModel]:
         return list(
             self._archive.list_session_tag_rollup_insights(
-                provider=str(provider) if (provider := getattr(query, "provider", None)) is not None else None,
+                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 query=getattr(query, "query", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
@@ -1555,8 +1549,8 @@ class _ArchiveInsightExportOperations:
     async def list_archive_coverage_insights(self, query: object) -> list[ArchiveInsightModel]:
         return list(
             self._archive.list_archive_coverage_insights(
-                group_by=str(getattr(query, "group_by", "provider")),
-                provider=str(provider) if (provider := getattr(query, "provider", None)) is not None else None,
+                group_by=str(getattr(query, "group_by", "origin")),
+                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
                 limit=getattr(query, "limit", None),
@@ -1613,8 +1607,8 @@ class _ArchiveNeighborRuntime:
         self,
         limit: int | None = 50,
         offset: int = 0,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
+        origin: str | None = None,
+        origins: builtins.list[str] | None = None,
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
@@ -1636,8 +1630,8 @@ class _ArchiveNeighborRuntime:
         for summary in await self.list_summaries(
             limit=limit,
             offset=offset,
-            provider=provider,
-            providers=providers,
+            origin=origin,
+            origins=origins,
             since=since,
             until=until,
             title_contains=title_contains,
@@ -1664,8 +1658,8 @@ class _ArchiveNeighborRuntime:
         self,
         limit: int | None = 50,
         offset: int = 0,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
+        origin: str | None = None,
+        origins: builtins.list[str] | None = None,
         source: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -1685,14 +1679,14 @@ class _ArchiveNeighborRuntime:
         message_type: str | None = None,
     ) -> builtins.list[SessionSummary]:
         del source
-        origin, origins = self._provider_filters(provider=provider, providers=providers)
+        filter_origin, filter_origins = self._origin_filters(origin=origin, origins=origins)
         return [
             _archive_summary_to_domain(summary)
             for summary in self._archive.list_summaries(
                 limit=limit or 50,
                 offset=offset,
-                origin=origin,
-                origins=origins,
+                origin=filter_origin,
+                origins=filter_origins,
                 referenced_paths=tuple(referenced_path or ()),
                 cwd_prefix=cwd_prefix,
                 action_terms=tuple(action_terms or ()),
@@ -1714,8 +1708,8 @@ class _ArchiveNeighborRuntime:
 
     async def count(
         self,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
+        origin: str | None = None,
+        origins: builtins.list[str] | None = None,
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
@@ -1733,12 +1727,12 @@ class _ArchiveNeighborRuntime:
         max_words: int | None = None,
         message_type: str | None = None,
     ) -> int:
-        origin, origins = self._provider_filters(provider=provider, providers=providers)
+        filter_origin, filter_origins = self._origin_filters(origin=origin, origins=origins)
         return cast(
             int,
             self._archive.count_sessions(
-                origin=origin,
-                origins=origins,
+                origin=filter_origin,
+                origins=filter_origins,
                 referenced_paths=tuple(referenced_path or ()),
                 cwd_prefix=cwd_prefix,
                 action_terms=tuple(action_terms or ()),
@@ -1762,16 +1756,16 @@ class _ArchiveNeighborRuntime:
         self,
         query: str,
         limit: int = 20,
-        providers: builtins.list[str] | None = None,
+        origins: builtins.list[str] | None = None,
         since: str | None = None,
     ) -> builtins.list[Any]:
         from polylogue.archive.query.search_hits import session_search_hit_from_summary
 
-        _origin, origins = self._provider_filters(provider=None, providers=providers)
+        _origin, filter_origins = self._origin_filters(origin=None, origins=origins)
         hits = self._archive.search_summaries(
             query,
             limit=limit,
-            origins=origins,
+            origins=filter_origins,
             since_ms=_archive_query_date_ms("since", since),
         )
         results: builtins.list[Any] = []
@@ -1797,10 +1791,10 @@ class _ArchiveNeighborRuntime:
         self,
         query: str,
         limit: int = 20,
-        providers: builtins.list[str] | None = None,
+        origins: builtins.list[str] | None = None,
     ) -> builtins.list[Session]:
         sessions: builtins.list[Session] = []
-        for hit in await self.search_summary_hits(query, limit=limit, providers=providers):
+        for hit in await self.search_summary_hits(query, limit=limit, origins=origins):
             session = await self.get(hit.session_id)
             if session is not None:
                 sessions.append(session)
@@ -1810,9 +1804,9 @@ class _ArchiveNeighborRuntime:
         self,
         query: str,
         limit: int = 20,
-        providers: builtins.list[str] | None = None,
+        origins: builtins.list[str] | None = None,
     ) -> builtins.list[SessionSummary]:
-        return [hit.summary for hit in await self.search_summary_hits(query, limit=limit, providers=providers)]
+        return [hit.summary for hit in await self.search_summary_hits(query, limit=limit, origins=origins)]
 
     def iter_messages(
         self,
@@ -1849,9 +1843,9 @@ class _ArchiveNeighborRuntime:
         return []
 
     def _query_kwargs(self, query: object, *, default_limit: int) -> dict[str, object]:
-        origin, origins = self._provider_filters(
-            provider=getattr(query, "provider", None),
-            providers=builtins.list(getattr(query, "providers", ()) or ()),
+        origin, origins = self._origin_filters(
+            origin=getattr(query, "origin", None),
+            origins=builtins.list(getattr(query, "origins", ()) or ()),
         )
         return {
             "limit": getattr(query, "limit", None) or default_limit,
@@ -1877,19 +1871,15 @@ class _ArchiveNeighborRuntime:
             "until_ms": _archive_query_date_ms("until", getattr(query, "until", None)),
         }
 
-    def _provider_filters(
+    def _origin_filters(
         self,
         *,
-        provider: str | None,
-        providers: builtins.list[str] | None,
+        origin: str | None,
+        origins: builtins.list[str] | None,
     ) -> tuple[str | None, tuple[str, ...]]:
-        origin = _archive_origin_for_provider(provider)
-        origins: builtins.list[str] = []
-        for provider_value in providers or []:
-            candidate = _archive_origin_for_provider(provider_value)
-            if candidate is not None:
-                origins.append(candidate)
-        return origin, tuple(origins)
+        validated_origin = Origin(origin).value if origin is not None else None
+        validated_origins = tuple(Origin(value).value for value in origins or [])
+        return validated_origin, validated_origins
 
 
 def _actions_for_session(session: Session) -> tuple[Action, ...]:
@@ -4151,7 +4141,7 @@ class PolylogueArchiveMixin:
         request = query or SessionProfileInsightQuery()
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             return archive.list_session_profile_insights(
-                provider=request.provider,
+                origin=request.origin,
                 workflow_shape=request.workflow_shape,
                 terminal_state=request.terminal_state,
                 since_ms=_archive_query_date_ms("since", request.since),
@@ -4697,7 +4687,7 @@ class PolylogueArchiveMixin:
         *,
         session_id: str | None = None,
         query: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         limit: int = 10,
         window_hours: int = 24,
     ) -> list[SessionNeighborCandidate]:
@@ -4717,7 +4707,7 @@ class PolylogueArchiveMixin:
                 NeighborDiscoveryRequest(
                     session_id=session_id,
                     query=query,
-                    provider=provider,
+                    origin=origin,
                     limit=limit,
                     window_hours=window_hours,
                 ),
@@ -4728,7 +4718,7 @@ class PolylogueArchiveMixin:
         *,
         session_id: str | None = None,
         query: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         limit: int = 10,
         window_hours: int = 24,
     ) -> list[JSONDocument]:
@@ -4739,7 +4729,7 @@ class PolylogueArchiveMixin:
         candidates = await self.neighbor_candidates(
             session_id=session_id,
             query=query,
-            provider=provider,
+            origin=origin,
             limit=limit,
             window_hours=window_hours,
         )

@@ -1,4 +1,4 @@
-"""Tests for provider analytics product computation."""
+"""Tests for origin analytics product computation."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def _archive(tmp_path: Path) -> Polylogue:
 
 
 async def _coverage(archive: Polylogue) -> list[ArchiveCoverageInsight]:
-    return await archive.list_archive_coverage_insights(ArchiveCoverageInsightQuery(group_by="provider"))
+    return await archive.list_archive_coverage_insights(ArchiveCoverageInsightQuery(group_by="origin"))
 
 
 class TestArchiveCoverageInsight:

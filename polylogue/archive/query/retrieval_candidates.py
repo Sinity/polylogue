@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, overload
 
-from polylogue.archive.query.support import _origins_as_provider_tokens
+from polylogue.archive.query.support import _canonical_origins
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
@@ -176,23 +176,18 @@ async def fetch_search_results(
         return True, results
 
     query = " ".join(plan.fts_terms)
-    # Legacy repository search filters the `sessions.source_name` provider
-    # column; the archive path (archive_execution) filters `origin`. Until the
-    # source_name→origin reconciliation (#1743 Phase 2) moves this SQL onto the
-    # origin column, project the plan's origin tokens back to provider tokens
-    # for this leg.
-    source_names = _origins_as_provider_tokens(plan.origins)
+    origins = _canonical_origins(plan.origins)
     if summaries:
         summary_results = await repository.search_summaries(
             query,
             limit=search_limit(plan),
-            providers=source_names,
+            origins=origins,
         )
         return True, summary_results
     session_results = await repository.search(
         query,
         limit=search_limit(plan),
-        providers=source_names,
+        origins=origins,
     )
     return True, session_results
 

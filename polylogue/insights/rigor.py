@@ -551,7 +551,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         notes=(
             "provenance.materializer_version is a hardcoded literal 1 for day/week grouping "
             "(archive.py) with no dedicated store_constants entry, and absent entirely for "
-            "provider grouping -- not declared as a version_field to avoid implying a real "
+            "origin grouping -- not declared as a version_field to avoid implying a real "
             "materialized-artifact version exists. The six field_contracts entries above "
             "(9e5.29) render None -- never 0.0 -- whenever their declared denominator is zero; "
             "day/week grouping does not compute avg_user_words/avg_authored_user_words/"
@@ -572,16 +572,16 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "read straight from the canonical actions view; there is no heuristic/estimate "
             "layer. ``mcp_server`` is a deterministic string parse, not an inference. Consumers "
             "should check ``has_coverage_gaps`` (or the per-entry "
-            "``provider_coverage[].data_available``) to distinguish a genuine zero tool-use "
+            "``origin_coverage[].data_available``) to distinguish a genuine zero tool-use "
             "count from an origin with no ingested action data at all."
         ),
         consumer_fields=(
             "entries",
-            "provider_coverage",
+            "origin_coverage",
             "total_call_count",
             "total_distinct_tools",
-            "providers_with_data",
-            "providers_without_data",
+            "origins_with_data",
+            "origins_without_data",
             "has_coverage_gaps",
         ),
         version_fields=(RigorVersionField(name="materializer_version", current_version=TOOL_USAGE_INSIGHT_VERSION),),

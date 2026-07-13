@@ -45,7 +45,7 @@ async def test_message_id_sql_injection(temp_repo: SessionRepository) -> None:
 
 
 async def test_source_name_sql_injection(temp_repo: SessionRepository) -> None:
-    assert await temp_repo.list(provider="doesnotexist") == []
+    assert await temp_repo.list(origin="doesnotexist") == []
 
 
 async def test_session_title_sql_injection(temp_repo: SessionRepository) -> None:
@@ -98,7 +98,7 @@ def test_escape_fts5_security_contract(raw_query: str, expected: str, should_com
 
 async def test_empty_string_parameters_handled(temp_repo: SessionRepository) -> None:
     assert await temp_repo.view("") is None
-    assert isinstance(await temp_repo.list(provider=""), list)
+    assert isinstance(await temp_repo.list(origin=""), list)
 
 
 async def test_none_parameters_handled(temp_repo: SessionRepository) -> None:
@@ -112,7 +112,7 @@ async def test_none_parameters_handled(temp_repo: SessionRepository) -> None:
 
 async def test_very_long_string_parameters(temp_repo: SessionRepository) -> None:
     assert await temp_repo.view("a" * 10000) is None
-    assert isinstance(await temp_repo.list(provider="x" * 1000), list)
+    assert isinstance(await temp_repo.list(origin="x" * 1000), list)
 
 
 async def test_unicode_in_parameters(temp_repo: SessionRepository) -> None:
@@ -144,5 +144,5 @@ def test_control_chars_in_queries_handled(text_with_control: str) -> None:
 @settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 async def test_repository_survives_injection_property(temp_repo: SessionRepository, injection_payload: str) -> None:
     assert await temp_repo.view(injection_payload) is None
-    result = await temp_repo.list(provider=injection_payload[:50])
+    result = await temp_repo.list(origin=injection_payload[:50])
     assert isinstance(result, list)

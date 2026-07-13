@@ -1282,21 +1282,21 @@ def test_archive_coverage_averages_render_none_not_zero_over_empty_denominator(t
         facade.write_parsed(all_assistant_session)
 
     with ArchiveStore.open_existing(root) as facade:
-        provider_rows = facade.list_archive_coverage_insights(group_by="provider")
+        origin_rows = facade.list_archive_coverage_insights(group_by="origin")
         day_rows = facade.list_archive_coverage_insights(group_by="day")
 
-    assert len(provider_rows) == 1
-    provider_row = provider_rows[0]
+    assert len(origin_rows) == 1
+    origin_row = origin_rows[0]
     # session_count > 0 (a real group), so this average IS computable.
-    assert provider_row.session_count == 1
-    assert provider_row.avg_messages_per_session == 1.0
+    assert origin_row.session_count == 1
+    assert origin_row.avg_messages_per_session == 1.0
     # user_message_count == 0 for an all-assistant session -- the average
     # over zero user messages must be None, never a fabricated 0.0.
-    assert provider_row.avg_user_words is None
-    assert provider_row.avg_authored_user_words is None
+    assert origin_row.avg_user_words is None
+    assert origin_row.avg_authored_user_words is None
     # assistant_message_count == 1 (nonzero denominator), so this field is a
     # real computed value -- possibly 0.0 -- never None.
-    assert provider_row.avg_assistant_words is not None
+    assert origin_row.avg_assistant_words is not None
 
     assert len(day_rows) == 1
     day_row = day_rows[0]

@@ -3051,7 +3051,7 @@ class ArchiveStore:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         heuristic_label: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -3064,7 +3064,7 @@ class ArchiveStore:
         if session_id is not None:
             where.append("we.session_id = ?")
             params.append(self.resolve_session_id(session_id))
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -3127,7 +3127,7 @@ class ArchiveStore:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -3139,7 +3139,7 @@ class ArchiveStore:
         if session_id is not None:
             where.append("sp.session_id = ?")
             params.append(self.resolve_session_id(session_id))
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -3359,7 +3359,7 @@ class ArchiveStore:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         status: str | None = None,
         model: str | None = None,
         since_ms: int | None = None,
@@ -3382,7 +3382,7 @@ class ArchiveStore:
                 return []
             where.append("s.session_id = ?")
             params.append(resolved_session_id)
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -3424,7 +3424,7 @@ class ArchiveStore:
     def list_cost_rollup_insights(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         model: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -3432,7 +3432,7 @@ class ArchiveStore:
         offset: int = 0,
     ) -> list[CostRollupInsight]:
         """Aggregate archive model-usage rows into public cost rollups."""
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         where = ["s.sort_key_ms > 0"]
         params: list[object] = []
         if origin is not None:
@@ -3624,7 +3624,7 @@ class ArchiveStore:
     def list_usage_timeline_insights(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         model: str | None = None,
         group_by: str = "month-origin-model",
         since_ms: int | None = None,
@@ -3634,7 +3634,7 @@ class ArchiveStore:
     ) -> list[UsageTimelineInsight]:
         """Aggregate provider usage and cost evidence by session-month buckets."""
 
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         include_origin = group_by in {"month-origin", "month-origin-model"}
         include_model = group_by in {"month-model", "month-origin-model"}
         buckets: dict[tuple[str, str | None, str | None], _UsageTimelineAccumulator] = {}
@@ -3993,7 +3993,7 @@ class ArchiveStore:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         only_stuck: bool = False,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -4006,7 +4006,7 @@ class ArchiveStore:
         if session_id is not None:
             where.append("s.session_id = ?")
             params.append(self.resolve_session_id(session_id))
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4038,7 +4038,7 @@ class ArchiveStore:
     def find_stuck_session_latency_profile_insights(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -4050,7 +4050,7 @@ class ArchiveStore:
         whose projected stuck count is non-zero.
         """
         return self.list_session_latency_profile_insights(
-            provider=provider,
+            origin=origin,
             only_stuck=True,
             since_ms=since_ms,
             until_ms=until_ms,
@@ -4111,7 +4111,7 @@ class ArchiveStore:
     def list_session_profile_insights(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         workflow_shape: str | None = None,
         terminal_state: str | None = None,
         since_ms: int | None = None,
@@ -4136,7 +4136,7 @@ class ArchiveStore:
         )
         where: list[str] = []
         params: list[object] = []
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4423,7 +4423,7 @@ class ArchiveStore:
     def list_session_tag_rollup_insights(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         query: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -4433,7 +4433,7 @@ class ArchiveStore:
         """Aggregate archive session tags into public tag-rollup insights."""
         where: list[str] = []
         params: list[object] = []
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4510,7 +4510,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where = ["b.block_type = 'tool_use'"]
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4556,7 +4556,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": str(row["origin"] or "unknown-export"),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "tool_use"),
@@ -4572,7 +4572,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where = ["u.block_type = 'tool_use'"]
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4640,7 +4640,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": str(row["origin"] or "unknown-export"),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "unknown"),
@@ -4669,7 +4669,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where: list[str] = ["u.block_type = 'tool_use'"]
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4751,7 +4751,7 @@ class ArchiveStore:
         buckets: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
         sessions: dict[tuple[str, str, str, str, str], set[str]] = {}
         for row in rows:
-            source_name = _provider_for_origin(str(row["origin"])).value
+            source_name = str(row["origin"] or "unknown-export")
             public_row = {
                 "tool_name": str(row["tool_name"] or ""),
                 "match_detail": str(row["match_detail"] or ""),
@@ -4868,7 +4868,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": str(row["origin"] or "unknown-export"),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": f"{family}/command-detail",
                 "action_kind": str(row["action_kind"] or "tool_use"),
@@ -4886,7 +4886,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where: list[str] = []
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4943,7 +4943,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "tool_use"),
                 "call_count": int(row["call_count"] or 0),
@@ -4976,7 +4976,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": str(row["origin"] or "unknown-export"),
                 "session_count": int(row["session_count"] or 0),
                 "action_count": int(row["action_count"] or 0),
                 "distinct_tool_count": int(row["distinct_tool_count"] or 0),
@@ -4991,17 +4991,17 @@ class ArchiveStore:
     def list_archive_coverage_insights(
         self,
         *,
-        group_by: str = "provider",
-        provider: str | None = None,
+        group_by: str = "origin",
+        origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[ArchiveCoverageInsight]:
         """Aggregate archive coverage from index tables."""
-        origin = _origin_for_provider_value(provider)
-        if group_by == "provider":
-            return self._provider_coverage_insights(origin=origin, limit=limit, offset=offset)
+        origin = _origin_value(origin)
+        if group_by == "origin":
+            return self._origin_coverage_insights(origin=origin, limit=limit, offset=offset)
         if group_by == "day":
             return self._time_bucket_coverage_insights(
                 bucket_format="%Y-%m-%d",
@@ -5022,9 +5022,9 @@ class ArchiveStore:
                 limit=limit,
                 offset=offset,
             )
-        raise ValueError("archive coverage group_by must be one of: provider, day, week")
+        raise ValueError("archive coverage group_by must be one of: origin, day, week")
 
-    def _provider_coverage_insights(
+    def _origin_coverage_insights(
         self,
         *,
         origin: str | None,
@@ -5063,7 +5063,7 @@ class ArchiveStore:
             """,
             tuple(params),
         ).fetchall()
-        return [_provider_coverage_from_archive_row(row) for row in rows]
+        return [_origin_coverage_from_archive_row(row) for row in rows]
 
     def _time_bucket_coverage_insights(
         self,
@@ -5976,7 +5976,7 @@ class ArchiveStore:
             else known_insight_readiness_names()
         )
         status = self.session_insight_status()
-        origin_filter = _origin_for_provider_value(request.provider)
+        origin_filter = _origin_value(request.origin)
         since_ms = _epoch_ms_from_iso(request.since)
         until_ms = _epoch_ms_from_iso(request.until)
         total_sessions = self.count_sessions(origin=origin_filter, since_ms=since_ms, until_ms=until_ms)
@@ -6001,7 +6001,7 @@ class ArchiveStore:
             checked_at=datetime.now(UTC).isoformat(),
             aggregate_verdict=_insight_readiness_aggregate_verdict(entries),
             total_sessions=total_sessions,
-            provider=request.provider,
+            origin=request.origin,
             since=request.since,
             until=request.until,
             insights=entries,
@@ -8708,24 +8708,22 @@ def _learning_correction_from_archive_row(row: sqlite3.Row | tuple[object, ...])
     )
 
 
-def _origin_for_provider_value(provider: str | None) -> str | None:
-    if provider is None:
+def _origin_value(origin: str | None) -> str | None:
+    if origin is None:
         return None
-    return origin_from_provider(Provider.from_string(provider)).value
+    return Origin(origin).value
 
 
-def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
-    if provider_or_origin is None:
-        return None
-    return origin_from_provider(provider_or_origin).value
+def _origin_for_tool_usage_filter(origin: str | None) -> str | None:
+    return _origin_value(origin)
 
 
 def _tool_usage_builder_query(query: ToolUsageInsightQuery) -> ToolUsageInsightQuery:
-    origin = _origin_for_tool_usage_filter(query.provider)
+    origin = _origin_value(query.origin)
     updates: dict[str, object] = {"limit": None, "offset": 0}
     if origin is None:
         return query.model_copy(update=updates)
-    updates["provider"] = _provider_for_origin(origin).value
+    updates["origin"] = origin
     return query.model_copy(update=updates)
 
 
@@ -10750,7 +10748,7 @@ def _archive_insight_readiness_evidence(
     return tuple(values)
 
 
-def _provider_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsight:
+def _origin_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsight:
     session_count = int(row["session_count"] or 0)
     message_count = int(row["message_count"] or 0)
     user_message_count = int(row["user_message_count"] or 0)
@@ -10762,11 +10760,10 @@ def _provider_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsi
     sessions_with_tools = int(row["sessions_with_tools"] or 0)
     sessions_with_thinking = int(row["sessions_with_thinking"] or 0)
     origin = str(row["origin"])
-    source_name = _provider_for_origin(origin).value
     return ArchiveCoverageInsight(
-        group_by="provider",
-        bucket=source_name,
-        source_name=source_name,
+        group_by="origin",
+        bucket=origin,
+        source_name=origin,
         session_count=session_count,
         message_count=message_count,
         user_message_count=user_message_count,

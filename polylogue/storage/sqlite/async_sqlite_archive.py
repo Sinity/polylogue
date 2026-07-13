@@ -247,18 +247,18 @@ class SQLiteArchiveMixin:
         """Return materialized session-insight coverage counters."""
         return await self.queries.get_session_insight_status(verify_freshness=verify_freshness)
 
-    async def search_sessions(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
+    async def search_sessions(self, query: str, limit: int = 100, origins: list[str] | None = None) -> list[str]:
         """Search sessions using the canonical ranked FTS session query."""
-        return await self.queries.search_sessions(query, limit, providers)
+        return await self.queries.search_sessions(query, limit, origins)
 
     async def search_session_hits(
         self,
         query: str,
         limit: int = 100,
-        providers: list[str] | None = None,
+        origins: list[str] | None = None,
     ) -> SessionSearchResult:
         """Search sessions while preserving ordered session-hit metadata."""
-        return await self.queries.search_session_hits(query, limit, providers)
+        return await self.queries.search_session_hits(query, limit, origins)
 
     async def iter_messages(
         self,
@@ -295,8 +295,8 @@ class SQLiteArchiveMixin:
         """Get message counts for multiple sessions in a single query."""
         return await self.queries.get_message_counts_batch(session_ids)
 
-    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
-        """Get session counts grouped by provider, month, or year."""
+    async def get_stats_by(self, group_by: str = "origin") -> dict[str, int]:
+        """Get session counts grouped by origin, month, or year."""
         return await self.queries.get_stats_by(group_by)
 
     async def get_provider_session_counts(self) -> list[ProviderSessionCountRow]:

@@ -252,7 +252,7 @@ async def test_repository_search_summary_hits_keep_evidence_and_session_order() 
     )
     repo = _FakeRepo(queries)
 
-    summary_hits = await repo.search_summary_hits("storage", limit=5, providers=["chatgpt"], since="2025-01-01")
+    summary_hits = await repo.search_summary_hits("storage", limit=5, origins=["chatgpt"], since="2025-01-01")
 
     assert queries.last_batch_ids == ["conv-b", "conv-a"]
     assert [hit.session_id for hit in summary_hits] == ["conv-b", "conv-a"]
@@ -285,7 +285,7 @@ async def test_repository_search_summary_hits_prioritize_attachment_identity_evi
     )
     repo = _FakeRepo(queries)
 
-    summary_hits = await repo.search_summary_hits("drive-file-1", limit=5, providers=["gemini"])
+    summary_hits = await repo.search_summary_hits("drive-file-1", limit=5, origins=["gemini"])
 
     assert queries.last_batch_ids == ["conv-a", "conv-b"]
     assert [hit.session_id for hit in summary_hits] == ["conv-a", "conv-b"]
@@ -340,7 +340,7 @@ async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
             backend=backend,
         )
 
-        hits = await repo.search_summary_hits(query, limit=5, providers=["gemini"])
+        hits = await repo.search_summary_hits(query, limit=5, origins=["gemini"])
     finally:
         await repo.close()
 

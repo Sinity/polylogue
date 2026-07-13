@@ -6,8 +6,7 @@ from datetime import datetime
 
 import aiosqlite
 
-from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin
 from polylogue.storage.runtime import AttachmentRecord
 from polylogue.storage.search.models import SessionSearchEvidenceRow
 from polylogue.types import SessionId
@@ -173,7 +172,7 @@ async def search_attachment_identity_evidence_hits(
     conn: aiosqlite.Connection,
     query: str,
     limit: int = 100,
-    providers: list[str] | None = None,
+    origins: list[str] | None = None,
     since: str | None = None,
 ) -> list[SessionSearchEvidenceRow]:
     """Search selected attachment identity fields and return evidence-bearing hits."""
@@ -203,8 +202,8 @@ async def search_attachment_identity_evidence_hits(
     """
     params: list[str | int | float] = []
 
-    if providers:
-        scope_params = [origin_from_provider(Provider.from_string(provider)).value for provider in providers]
+    if origins:
+        scope_params = [Origin(origin).value for origin in origins]
         placeholders = ",".join("?" for _ in scope_params)
         sql += f" AND c.origin IN ({placeholders})"
         params.extend(scope_params)

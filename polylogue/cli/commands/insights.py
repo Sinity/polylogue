@@ -117,9 +117,7 @@ def _make_callback(pt: InsightType) -> Callable[..., None]:
     """
     # Pre-resolve accepted fields so we only inject keys the query class understands.
     accepted_query_fields = query_model_field_names(pt)
-    accepted_root_keys = tuple(
-        key for key in _ROOT_FILTER_KEYS if ("provider" if key == "origin" else key) in accepted_query_fields
-    )
+    accepted_root_keys = tuple(key for key in _ROOT_FILTER_KEYS if key in accepted_query_fields)
 
     @click.pass_context
     def callback(
@@ -216,16 +214,16 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
     def origin_label(value: str | None) -> str:
         if not value:
             return "-"
-        projected = project_origin_payload({"provider": value})
+        projected = project_origin_payload({"origin": value})
         if isinstance(projected, dict):
             return str(projected.get("origin") or "-")
         return "-"
 
     click.echo(f"Insight Readiness: {report.aggregate_verdict}")
     click.echo(f"Total sessions: {report.total_sessions}")
-    if report.provider or report.since or report.until:
+    if report.origin or report.since or report.until:
         click.echo(
-            f"Scope: origin={origin_label(report.provider)} since={report.since or '-'} until={report.until or '-'}"
+            f"Scope: origin={origin_label(report.origin)} since={report.since or '-'} until={report.until or '-'}"
         )
     click.echo("")
     for insight in report.insights:
@@ -297,7 +295,7 @@ def insights_status_command(
         )
         query = InsightReadinessQuery(
             insights=insights,
-            provider=filters["provider"] if isinstance(filters["provider"], str) else None,
+            origin=filters["origin"] if isinstance(filters["origin"], str) else None,
             since=filters["since"] if isinstance(filters["since"], str) else None,
             until=filters["until"] if isinstance(filters["until"], str) else None,
         )
@@ -355,7 +353,7 @@ def insights_export_command(
         request = InsightExportBundleRequest(
             output_path=output_path,
             insights=insights,
-            provider=filters["provider"] if isinstance(filters["provider"], str) else None,
+            origin=filters["origin"] if isinstance(filters["origin"], str) else None,
             since=filters["since"] if isinstance(filters["since"], str) else None,
             until=filters["until"] if isinstance(filters["until"], str) else None,
             output_format=export_format,

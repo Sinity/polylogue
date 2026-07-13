@@ -219,9 +219,9 @@ async def list_work_events(
     if query.session_id:
         where.append("swe.session_id = ?")
         params.append(query.session_id)
-    if query.provider:
+    if query.origin:
         where.append("s.origin = ?")
-        params.append(query.provider)
+        params.append(query.origin)
     if query.heuristic_label:
         where.append("swe.work_event_type = ?")
         params.append(query.heuristic_label)
@@ -267,9 +267,9 @@ async def list_session_phases(
     if query.session_id:
         where.append("sph.session_id = ?")
         params.append(query.session_id)
-    if query.provider:
+    if query.origin:
         where.append("s.origin = ?")
-        params.append(query.provider)
+        params.append(query.origin)
     if query.kind:
         where.append("? = 'phase'")
         params.append(query.kind)

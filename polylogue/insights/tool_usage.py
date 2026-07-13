@@ -86,7 +86,7 @@ class ToolUsageCoverageEntry(ArchiveInsightModel):
     has_affected_paths_signal: bool
     has_output_text_signal: bool
     data_available: bool
-    """True when the provider exposes any action rows in the archive."""
+    """True when the origin exposes any action rows in the archive."""
 
 
 class ToolUsageInsight(ArchiveInsightModel):
@@ -94,7 +94,7 @@ class ToolUsageInsight(ArchiveInsightModel):
 
     The envelope itself is a single insight item. Each call returns
     exactly one ``ToolUsageInsight`` containing every aggregation entry
-    and every provider coverage entry resolved by the query. This shape
+    and every origin coverage entry resolved by the query. This shape
     keeps usage and coverage atomically consistent — readers never see
     one half without the other.
     """
@@ -103,11 +103,11 @@ class ToolUsageInsight(ArchiveInsightModel):
     insight_kind: str = "tool_usage"
     materializer_version: int = TOOL_USAGE_INSIGHT_VERSION
     entries: tuple[ToolUsageEntry, ...] = ()
-    provider_coverage: tuple[ToolUsageCoverageEntry, ...] = ()
+    origin_coverage: tuple[ToolUsageCoverageEntry, ...] = ()
     total_call_count: int = 0
     total_distinct_tools: int = 0
-    providers_with_data: int = 0
-    providers_without_data: int = 0
+    origins_with_data: int = 0
+    origins_without_data: int = 0
     has_coverage_gaps: bool = False
     provenance: ArchiveInsightProvenance
 
@@ -115,12 +115,12 @@ class ToolUsageInsight(ArchiveInsightModel):
 class ToolUsageInsightQuery(PaginatedInsightQuery):
     """Query parameters for ``list_tool_usage_insights``.
 
-    ``provider`` and ``tool`` narrow the returned aggregation entries but
+    ``origin`` and ``tool`` narrow the returned aggregation entries but
     never the coverage map — coverage gaps are always reported across all
     providers so a narrowed query never hides them.
     """
 
-    provider: str | None = None
+    origin: str | None = None
     tool: str | None = None
     mcp_server: str | None = None
     action_kind: str | None = None
@@ -170,14 +170,14 @@ def build_tool_usage_insight(
 
     Pure function — extracted so tests can exercise filtering, MCP-server
     derivation, and coverage-flag derivation without standing up a
-    database. Query filters apply only to ``entries``; ``provider_coverage``
+    database. Query filters apply only to ``entries``; ``origin_coverage``
     stays exhaustive so coverage gaps are never hidden when a reader
     narrows the result set.
     """
 
     entries = [_tool_usage_entry(row) for row in rows]
-    if query.provider:
-        entries = [entry for entry in entries if entry.source_name == query.provider]
+    if query.origin:
+        entries = [entry for entry in entries if entry.source_name == query.origin]
     if query.tool:
         entries = [entry for entry in entries if entry.normalized_tool_name == query.tool]
     if query.mcp_server:
@@ -191,18 +191,18 @@ def build_tool_usage_insight(
         entries = entries[: query.limit]
 
     coverage = tuple(_tool_usage_coverage(row) for row in coverage_rows)
-    providers_with_data = sum(1 for entry in coverage if entry.data_available)
-    providers_without_data = sum(1 for entry in coverage if not entry.data_available and entry.session_count > 0)
+    origins_with_data = sum(1 for entry in coverage if entry.data_available)
+    origins_without_data = sum(1 for entry in coverage if not entry.data_available and entry.session_count > 0)
     total_calls = sum(entry.call_count for entry in entries)
     distinct_tools = len({(entry.source_name, entry.normalized_tool_name) for entry in entries})
     return ToolUsageInsight(
         entries=tuple(entries),
-        provider_coverage=coverage,
+        origin_coverage=coverage,
         total_call_count=total_calls,
         total_distinct_tools=distinct_tools,
-        providers_with_data=providers_with_data,
-        providers_without_data=providers_without_data,
-        has_coverage_gaps=providers_without_data > 0,
+        origins_with_data=origins_with_data,
+        origins_without_data=origins_without_data,
+        has_coverage_gaps=origins_without_data > 0,
         provenance=ArchiveInsightProvenance(
             materializer_version=TOOL_USAGE_INSIGHT_VERSION,
             materialized_at=materialized_at,

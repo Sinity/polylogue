@@ -189,10 +189,10 @@ async def run_filter_scan_campaign(db_path: Path) -> CampaignResult:
         metrics["list_50_count"] = len(results)
 
         elapsed, results = await _ameasure(
-            backend.queries.list_sessions(SessionRecordQuery(provider="chatgpt", limit=50))
+            backend.queries.list_sessions(SessionRecordQuery(origin="chatgpt", limit=50))
         )
-        metrics["filter_provider_wall_s"] = round(elapsed, 4)
-        metrics["filter_provider_count"] = len(results)
+        metrics["filter_origin_wall_s"] = round(elapsed, 4)
+        metrics["filter_origin_count"] = len(results)
 
         elapsed, results = await _ameasure(
             backend.queries.list_sessions(SessionRecordQuery(has_tool_use=True, limit=50))

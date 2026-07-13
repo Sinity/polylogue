@@ -69,9 +69,9 @@ def _exception_message(result: Result) -> str:
 
 def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     product = ArchiveCoverageInsight(
-        group_by="provider",
-        bucket="claude-code",
-        source_name="claude-code",
+        group_by="origin",
+        bucket="claude-code-session",
+        source_name="claude-code-session",
         session_count=1,
         message_count=2,
         user_message_count=1,
@@ -358,7 +358,7 @@ def test_usage_timeline_first_page_skips_later_provider_events(cli_workspace: Cl
             until_ms=None,
             limit=1,
         )
-        rows = archive.list_usage_timeline_insights(provider="chatgpt", limit=1)
+        rows = archive.list_usage_timeline_insights(origin="chatgpt", limit=1)
 
     assert cutoff_ms is not None
     assert skip_event_scan is True

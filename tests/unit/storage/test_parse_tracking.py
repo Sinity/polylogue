@@ -360,7 +360,7 @@ class TestResetParseStatus:
     async def test_reset_by_provider(self, backend: SQLiteBackend) -> None:
         """Reset specific provider only clears that provider's records."""
         await self._populate(backend)
-        count = await backend.reset_parse_status(provider="chatgpt")
+        count = await backend.reset_parse_status(origin="chatgpt")
         assert count == 1  # Only raw-0 was chatgpt and parsed
 
         # chatgpt record is reset
@@ -461,7 +461,7 @@ class TestResetValidationStatus:
 
     async def test_reset_by_provider(self, backend: SQLiteBackend) -> None:
         await self._populate(backend)
-        count = await backend.reset_validation_status(provider="chatgpt")
+        count = await backend.reset_validation_status(origin="chatgpt")
         assert count == 1
 
         rec0 = await backend.get_raw_session("raw-0")

@@ -24,7 +24,7 @@ async def _discover(
         candidates = await archive.neighbor_candidates(
             session_id=request.session_id,
             query=request.query,
-            provider=request.provider,
+            origin=request.origin,
             limit=request.limit,
             window_hours=request.window_hours,
         )
@@ -39,7 +39,7 @@ async def _discover_candidates(db_path: Path, request: NeighborDiscoveryRequest)
         return await archive.neighbor_candidates(
             session_id=request.session_id,
             query=request.query,
-            provider=request.provider,
+            origin=request.origin,
             limit=request.limit,
             window_hours=request.window_hours,
         )
@@ -165,7 +165,7 @@ async def test_query_seed_returns_explainable_candidates(db_path: Path) -> None:
 
     ids = await _discover(
         db_path,
-        NeighborDiscoveryRequest(query="schema audit", provider="chatgpt"),
+        NeighborDiscoveryRequest(query="schema audit", origin="chatgpt"),
     )
 
     assert ids == [native_session_id_for("chatgpt", "query-candidate")]

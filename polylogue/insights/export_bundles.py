@@ -66,7 +66,7 @@ class InsightExportBundleError(PolylogueError):
 class InsightExportBundleRequest(ArchiveInsightModel):
     output_path: Path
     insights: tuple[str, ...] = ()
-    provider: str | None = None
+    origin: str | None = None
     since: str | None = None
     until: str | None = None
     output_format: InsightExportFormat = "jsonl"
@@ -155,7 +155,7 @@ def _query_kwargs(
         kwargs["limit"] = None
     if "offset" in fields:
         kwargs["offset"] = 0
-    for key, value in (("provider", request.provider), ("since", request.since), ("until", request.until)):
+    for key, value in (("origin", request.origin), ("since", request.since), ("until", request.until)):
         if value is None:
             continue
         if key in fields:
@@ -238,7 +238,7 @@ async def export_insight_bundle(
     readiness = await operations.get_insight_readiness_report(
         InsightReadinessQuery(
             insights=selected_insights,
-            provider=request.provider,
+            origin=request.origin,
             since=request.since,
             until=request.until,
         )
@@ -295,7 +295,7 @@ async def export_insight_bundle(
             output_format=request.output_format,
             query={
                 "insights": selected_insights,
-                "provider": request.provider,
+                "origin": request.origin,
                 "since": request.since,
                 "until": request.until,
             },

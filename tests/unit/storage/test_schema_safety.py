@@ -377,11 +377,11 @@ class TestSessionFilterSQL:
         # SQL clause must use ? placeholder, not string interpolation
         assert "?" in where_clause
 
-    def test_build_filters_with_empty_provider(self) -> None:
-        """Empty provider should still produce valid SQL."""
+    def test_build_filters_with_empty_origin(self) -> None:
+        """Empty origin should resolve to the safe unknown-origin filter."""
         from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
-        where_clause, params = _build_session_filters(provider="")
+        where_clause, params = _build_session_filters(origin="")
         assert isinstance(where_clause, str)
         assert isinstance(params, list)
 

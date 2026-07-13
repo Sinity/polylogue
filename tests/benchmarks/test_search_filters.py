@@ -60,7 +60,7 @@ def test_bench_filter_provider(benchmark: BenchmarkFixture, bench_db_5k: Path) -
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.repository.list_summaries(provider="chatgpt"),
+        lambda store: store.repository.list_summaries(origin="chatgpt"),
     )
 
 
@@ -90,7 +90,7 @@ def test_bench_filter_count(benchmark: BenchmarkFixture, bench_db_5k: Path) -> N
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.repository.count_by_query(SessionRecordQuery(provider="chatgpt")),
+        lambda store: store.repository.count_by_query(SessionRecordQuery(origin="chatgpt")),
     )
 
 
@@ -101,7 +101,7 @@ def test_bench_filter_combined(benchmark: BenchmarkFixture, bench_db_10k: Path) 
         benchmark,
         bench_db_10k,
         lambda store: store.repository.list_summaries(
-            provider="claude-ai",
+            origin="claude-ai-export",
             has_tool_use=True,
             min_messages=2,
         ),

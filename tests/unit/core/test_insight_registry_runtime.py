@@ -26,9 +26,9 @@ from polylogue.insights.registry import (
 
 def _archive_coverage_insight() -> ArchiveCoverageInsight:
     return ArchiveCoverageInsight(
-        group_by="provider",
-        bucket="claude-code",
-        source_name="claude-code",
+        group_by="origin",
+        bucket="claude-code-session",
+        source_name="claude-code-session",
         session_count=1,
         message_count=2,
         user_message_count=1,
@@ -141,10 +141,10 @@ def test_fetch_insights_sync_uses_registry_dispatch() -> None:
 
     class _Operations:
         def list_archive_coverage_insights(self, query: object) -> str:
-            return f"sync:{query.provider}"
+            return f"sync:{query.origin}"
 
     with patch("polylogue.api.sync.bridge.run_coroutine_sync", side_effect=lambda value: [value]):
-        assert fetch_insights(insight_type, _Operations(), provider="claude-code") == ["sync:claude-code"]
+        assert fetch_insights(insight_type, _Operations(), origin="claude-code") == ["sync:claude-code"]
 
 
 @pytest.mark.asyncio
@@ -153,6 +153,6 @@ async def test_fetch_insights_async_uses_registry_dispatch() -> None:
 
     class _AsyncOperations:
         async def list_archive_coverage_insights(self, query: object) -> list[str]:
-            return [f"async:{query.provider}"]
+            return [f"async:{query.origin}"]
 
-    assert await fetch_insights_async(insight_type, _AsyncOperations(), provider="claude-code") == ["async:claude-code"]
+    assert await fetch_insights_async(insight_type, _AsyncOperations(), origin="claude-code") == ["async:claude-code"]

@@ -186,7 +186,7 @@ class SyncSessionQueriesMixin:
         *,
         session_id: str | None = None,
         query: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         limit: int = 10,
         window_hours: int = 24,
     ) -> list[SessionNeighborCandidate]:
@@ -194,7 +194,7 @@ class SyncSessionQueriesMixin:
             self._facade.neighbor_candidates(
                 session_id=session_id,
                 query=query,
-                provider=provider,
+                origin=origin,
                 limit=limit,
                 window_hours=window_hours,
             )

@@ -1600,9 +1600,9 @@ class TestInsightTools:
             provenance=_provenance(),
         )
         coverage = ArchiveCoverageInsight(
-            group_by="provider",
-            bucket="claude-code",
-            source_name="claude-code",
+            group_by="origin",
+            bucket="claude-code-session",
+            source_name="claude-code-session",
             session_count=1,
             message_count=2,
             user_message_count=1,
@@ -1746,11 +1746,11 @@ class TestInsightTools:
         assert cost_rollups_payload["limit"] == 5
         assert tool_usage_payload["truncated"] is False
         assert tool_usage_payload["limit"] is None
-        assert mock_poly.list_session_profile_insights.await_args.args[0].provider == "claude-code"
-        assert mock_poly.list_session_tag_rollup_insights.await_args.args[0].provider == "claude-code"
-        assert mock_poly.list_archive_coverage_insights.await_args.args[0].group_by == "provider"
-        assert mock_poly.list_archive_coverage_insights.await_args.args[0].provider == "claude-code"
-        assert mock_poly.list_tool_usage_insights.await_args.args[0].provider == "claude-code"
+        assert mock_poly.list_session_profile_insights.await_args.args[0].origin == "claude-code-session"
+        assert mock_poly.list_session_tag_rollup_insights.await_args.args[0].origin == "claude-code-session"
+        assert mock_poly.list_archive_coverage_insights.await_args.args[0].group_by == "origin"
+        assert mock_poly.list_archive_coverage_insights.await_args.args[0].origin == "claude-code-session"
+        assert mock_poly.list_tool_usage_insights.await_args.args[0].origin == "claude-code-session"
         assert mock_poly.list_tool_usage_insights.await_args.args[0].limit is None
 
     @pytest.mark.asyncio
@@ -1796,7 +1796,7 @@ class TestInsightTools:
         assert payload["truncated"] is True
         assert [item["session_id"] for item in payload["items"]] == ["conv-0", "conv-1"]
         query = mock_poly.list_session_cost_insights.await_args.args[0]
-        assert query.provider == "claude-code"
+        assert query.origin == "claude-code-session"
         assert query.limit is None
         assert query.offset == 0
 

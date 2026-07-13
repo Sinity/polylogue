@@ -13,8 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from polylogue.annotations.join import AnnotationGroupDimension
 from polylogue.coordination import build_coordination_envelope
 from polylogue.coordination.payloads import AgentCoordinationPayload
-from polylogue.core.enums import AssertionKind, AssertionStatus, Origin
-from polylogue.core.sources import provider_from_origin
+from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.mcp.archive_support import (
     archive_messages_payload,
     archive_query_unit_payload,
@@ -665,7 +664,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             candidates = await poly.neighbor_candidates(
                 session_id=id,
                 query=query,
-                provider=provider_from_origin(Origin(origin)).value if origin is not None else None,
+                origin=origin,
                 limit=clamped_limit,
                 window_hours=max(1, window_hours),
             )
