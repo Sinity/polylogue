@@ -271,6 +271,8 @@ def regenerate_private_fable_packet(
         if assertion.status != "active" or not isinstance(value, dict) or value.get("_schema") != qualified_schema_id:
             continue
         batch_id = assertion.scope_ref.removeprefix("annotation-batch:") if assertion.scope_ref else "unbatched"
+        applicable_value = value.get("applicable")
+        confidence_value = value.get("confidence")
         for field, field_value in value.items():
             if field.startswith("_") or field in {"applicable", "confidence", "abstain"}:
                 continue
@@ -281,17 +283,15 @@ def regenerate_private_fable_packet(
                     value=field_value if isinstance(field_value, str) else None,
                     batch_id=batch_id,
                     accepted=True,
-                    applicable=value.get("applicable") if isinstance(value.get("applicable"), bool) else None,
-                    confidence=float(value["confidence"])
-                    if isinstance(value.get("confidence"), (int, float))
-                    else None,
+                    applicable=applicable_value if isinstance(applicable_value, bool) else None,
+                    confidence=float(confidence_value) if isinstance(confidence_value, (int, float)) else None,
                     evidence_refs=assertion.evidence_refs,
                 )
             )
     return compile_private_fable_packet(
         manifest=manifest,
         rows=packet_rows,
-        annotation_schema_id=schema.qualified_id if schema is not None else None,
+        annotation_schema_id=schema.schema.qualified_id if schema is not None else None,
         labels=labels,
     )
 
