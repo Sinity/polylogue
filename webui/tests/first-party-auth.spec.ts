@@ -98,6 +98,27 @@ test.beforeAll(async () => {
 test.afterAll(stopServer);
 
 test.describe.serial('first-party daemon credentials', () => {
+  test('cockpit aggregates drive the bounded reader journey', async ({ browser }) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(receipt.base_url, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('html')).toHaveAttribute('data-web-auth-state', 'ready');
+
+    const overview = await directBrowserFetch(page, '/api/overview');
+    expect(overview).toMatchObject({ status: 200, body: { mode: 'cockpit-overview', recent_limit: 6 } });
+    await expect(page.locator('#msg-list')).toContainText('Keep the receipts for AI work.');
+
+    await page.locator('.conv-item').first().click();
+    await expect(page.locator('#msg-list [data-msg-id]').first()).toBeVisible();
+    const selectedId = await page.locator('.conv-item.selected').getAttribute('data-id');
+    expect(selectedId).toBeTruthy();
+
+    const evidence = await directBrowserFetch(page, `/api/sessions/${encodeURIComponent(selectedId ?? '')}/evidence-summary`);
+    expect(evidence).toMatchObject({ status: 200, body: { mode: 'session-evidence-summary' } });
+    await expect(page.locator('.evidence-strip')).toBeVisible();
+    await context.close();
+  });
+
   test('list, read, mutation, and SSE reconnect share a non-leaking credential', async ({ browser }) => {
     const context = await browser.newContext();
     const page = await context.newPage();

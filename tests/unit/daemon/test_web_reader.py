@@ -2370,6 +2370,38 @@ class TestReaderAssertionEndpoint:
         rows = cast(list[dict[str, object]], payload["rows"])
         assert any(row["kind"] == "archive-tier" and row["subject_ref"] == "archive-tier:index" for row in rows)
 
+    def test_operational_web_payloads_redact_configured_archive_paths(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The HTTP projection must not inherit CLI path diagnostics."""
+        archive_root = workspace_env["archive_root"]
+        symlink_root = archive_root.parent / "web-visible-archive"
+        symlink_root.symlink_to(archive_root, target_is_directory=True)
+        monkeypatch.setattr("polylogue.paths.archive_root", lambda: symlink_root)
+        monkeypatch.setattr(
+            "polylogue.daemon.http.get_status_snapshot_payload",
+            lambda: {
+                "component_readiness": {},
+                "status_snapshot": {
+                    "state": "stale",
+                    "captured_at": None,
+                    "age_s": 91,
+                    "refresh_error": f"could not refresh {symlink_root} (resolved {archive_root})",
+                },
+            },
+        )
+        with _running_server(workspace_env, seeded=True) as (_, base_url):
+            overview = _get_json(base_url, "/api/overview")
+            (archive_root / "index.db").unlink()
+            provider = _get_json(base_url, "/api/provider-usage")
+            debt = _get_json(base_url, "/api/archive-debt?kind=archive-tier")
+
+        text = json.dumps({"provider": provider, "debt": debt, "overview": overview})
+        assert "archive_root" not in text
+        assert str(symlink_root) not in text
+        assert str(archive_root) not in text
+        assert "[archive]" in text
+
     def test_assertions_endpoint_reads_shared_assertion_claims(self, workspace_env: dict[str, Path]) -> None:
         _seed_assertion_claims(workspace_env)
         target_ref = quote(f"session:{C1}", safe="")
@@ -2466,6 +2498,7 @@ class TestReaderPrivacy:
     @pytest.mark.parametrize(
         "path",
         [
+            "/api/overview",
             "/api/sessions",
             "/api/sessions/claude-code-session:c1",
             "/api/sessions/claude-code-session:c1/messages",
@@ -2484,6 +2517,156 @@ class TestReaderPrivacy:
         text = json.dumps(payload)
         for prefix in POLYLOGUE_LOCAL_PATH_PREFIXES:
             assert prefix not in text, f"{path} leaked absolute local path with prefix {prefix!r}"
+
+
+class TestCockpitAggregateRoutes:
+    def test_overview_is_bounded_and_reuses_archive_summary_projection(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, "/api/overview"))
+
+        assert payload["mode"] == "cockpit-overview"
+        assert cast(dict[str, object], payload["totals"])["sessions"] == 3
+        assert len(cast(list[object], payload["recent"])) <= 6
+        assert cast(dict[str, object], payload["readiness"])
+
+    @pytest.mark.parametrize(
+        ("is_error", "exit_code", "expected_outcomes"),
+        [
+            (0, 2, {"ok": 0, "failed": 1, "unknown": 0}),
+            (1, 0, {"ok": 1, "failed": 0, "unknown": 0}),
+        ],
+    )
+    def test_evidence_summary_matches_structural_tool_relations(
+        self,
+        workspace_env: dict[str, Path],
+        is_error: int,
+        exit_code: int,
+        expected_outcomes: dict[str, int],
+    ) -> None:
+        from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, Provider
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="evidence-summary",
+                    title="Structural evidence",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m-evidence",
+                            role=Role.ASSISTANT,
+                            text="ran test",
+                            blocks=[
+                                ParsedContentBlock(type=BlockType.TOOL_USE, text="pytest", tool_id="tool-evidence"),
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_RESULT,
+                                    text="failed",
+                                    tool_id="tool-evidence",
+                                ),
+                            ],
+                        )
+                    ],
+                )
+            )
+
+        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
+            conn.execute(
+                "UPDATE blocks SET tool_result_is_error = ?, tool_result_exit_code = ? WHERE session_id = ? AND block_type = 'tool_result'",
+                (is_error, exit_code, "codex-session:evidence-summary"),
+            )
+            conn.commit()
+
+        session_id = "codex-session:evidence-summary"
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, f"/api/sessions/{session_id}/evidence-summary"))
+
+        assert payload["tool_calls"] == 1
+        outcomes = cast(dict[str, object], payload["outcomes"])
+        assert outcomes == expected_outcomes
+        assert cast(dict[str, object], payload["cost"])["total_usd"] == 0.0
+
+    def test_evidence_summary_composes_prefix_sharing_tool_evidence(self, workspace_env: dict[str, Path]) -> None:
+        """The evidence strip and transcript must describe the same composed
+        prefix-sharing session, including inherited tool outcomes."""
+        from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, BranchType, Provider
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        replayed_tool_blocks = [
+            ParsedContentBlock(type=BlockType.TOOL_USE, text="pytest", tool_id="tool-parent"),
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                text="ok",
+                tool_id="tool-parent",
+            ),
+        ]
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            parent_id = archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="evidence-parent",
+                    title="Parent evidence",
+                    messages=[
+                        ParsedMessage(provider_message_id="p0", role=Role.USER, text="start"),
+                        ParsedMessage(
+                            provider_message_id="p1",
+                            role=Role.ASSISTANT,
+                            text="ran pytest",
+                            blocks=replayed_tool_blocks,
+                        ),
+                    ],
+                )
+            )
+            archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="evidence-child",
+                    title="Child evidence",
+                    parent_session_provider_id="evidence-parent",
+                    branch_type=BranchType.FORK,
+                    messages=[
+                        ParsedMessage(provider_message_id="c0", role=Role.USER, text="start"),
+                        ParsedMessage(
+                            provider_message_id="c1",
+                            role=Role.ASSISTANT,
+                            text="ran pytest",
+                            blocks=replayed_tool_blocks,
+                        ),
+                        ParsedMessage(provider_message_id="c2", role=Role.USER, text="child tail"),
+                    ],
+                )
+            )
+
+        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
+            conn.execute(
+                "UPDATE blocks SET tool_result_is_error = 0, tool_result_exit_code = 0 "
+                "WHERE session_id = ? AND block_type = 'tool_result'",
+                (parent_id,),
+            )
+            conn.commit()
+
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            payload = cast(
+                dict[str, object], _get_json(base_url, "/api/sessions/codex-session:evidence-child/evidence-summary")
+            )
+
+        assert payload["tool_calls"] == 1
+        assert payload["outcomes"] == {"ok": 1, "failed": 0, "unknown": 0}
+
+    def test_message_endpoint_clamps_oversized_pages(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.query.spec import MAX_QUERY_LIMIT
+
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/messages?limit=999999&offset=-10")
+            )
+
+        assert payload["limit"] == MAX_QUERY_LIMIT
+        assert payload["offset"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2974,7 +3157,14 @@ class TestReaderInformability:
         assert "Session detail unavailable" in body
         assert "Loading session detail" in body
         assert "loadSessionFromError" in body
+        assert "split('?')[0]" in body
+        assert "function loadMoreSessionMessages()" in body
+        assert "Load more messages" in body
         assert "/api/sessions/" in body
+        assert "Overview readiness is" in body
+        assert "data-overview-snapshot-state" in body
+        assert "Evidence summary unavailable" in body
+        assert "function retryEvidenceSummary(id)" in body
 
     def test_fts_chip_keeps_legacy_tri_state_fallback(self, workspace_env: dict[str, Path]) -> None:
         """``renderFtsChip`` must still distinguish ok / partial /
