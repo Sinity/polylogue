@@ -222,7 +222,7 @@ function renderOpenTabs(tabs, ledger, activeTabId) {
   const node = document.getElementById("open-tabs");
   if (!node) return;
   const supported = (Array.isArray(tabs) ? tabs : []).map((tab) => ({ tab, ...tabState(tab, ledger) }))
-    .filter(({ provider }) => provider !== "unknown");
+    .filter(({ provider, sessionId }) => provider !== "unknown" && Boolean(sessionId));
   document.getElementById("open-tab-count").textContent = String(supported.length);
   if (!supported.length) {
     node.innerHTML = '<div class="log-meta">No supported conversation tabs are open.</div>';
@@ -506,6 +506,14 @@ async function refreshStatus(reason = "popup_manual") {
   await render();
 }
 
+async function currentActiveConversationState() {
+  const [stored, tab] = await Promise.all([
+    chrome.storage.local.get({ polylogueState: null, polylogueSessionLedger: {} }),
+    activeTab(),
+  ]);
+  return activeConversationState(tab, stored.polylogueState, stored.polylogueSessionLedger || {});
+}
+
 document.getElementById("check").addEventListener("click", async () => {
   await withAction("check", () => refreshStatus("popup_manual"), { busy: "Checking" });
 });
@@ -519,8 +527,7 @@ document.getElementById("sync-open-tabs").addEventListener("click", async () => 
 
 document.getElementById("copy-ref").addEventListener("click", async () => {
   await withAction("copy-ref", async () => {
-    const stored = await chrome.storage.local.get({ polylogueState: null });
-    const state = stored.polylogueState || {};
+    const state = await currentActiveConversationState();
     const provider = state.provider || state.last_capture?.provider;
     const providerSessionId = state.provider_session_id || state.last_capture?.provider_session_id;
     const ref = provider && providerSessionId ? `${provider}:${providerSessionId}` : "";
@@ -530,8 +537,11 @@ document.getElementById("copy-ref").addEventListener("click", async () => {
 
 document.getElementById("open-polylogue").addEventListener("click", async () => {
   await withAction("open-polylogue", async () => {
-    const stored = await chrome.storage.local.get({ polylogueState: null, receiverBaseUrl: DEFAULT_RECEIVER });
-    const providerSessionId = stored.polylogueState?.provider_session_id || stored.polylogueState?.last_capture?.provider_session_id;
+    const [stored, state] = await Promise.all([
+      chrome.storage.local.get({ receiverBaseUrl: DEFAULT_RECEIVER }),
+      currentActiveConversationState(),
+    ]);
+    const providerSessionId = state.provider_session_id || state.last_capture?.provider_session_id;
     const url = `${String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "")}/?q=${encodeURIComponent(providerSessionId || "")}`;
     await chrome.tabs.create({ url });
   }, { busy: "Opening" });
