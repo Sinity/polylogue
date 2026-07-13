@@ -184,6 +184,8 @@ class BrowserCaptureOriginRepairItem:
     copy_forward_source_path: str | None = None
     copy_forward_source_complete: bool = False
     semantic_canonical_raw_id: str | None = None
+    semantic_historical_raw_ids: tuple[str, ...] = ()
+    semantic_witness_digest: str | None = None
     evidence_digest: str | None = None
     proof_digest: str | None = None
     repaired: bool = False
@@ -200,6 +202,13 @@ class BrowserCaptureOriginRepairReport:
     proof_digest: str
     receipt_path: str | None
     items: tuple[BrowserCaptureOriginRepairItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticCanonicalWitness:
+    raw_id: str
+    historical_raw_ids: tuple[str, ...]
+    digest: str
 
 
 def _quarantined_raw_item(raw_id: str, reason: str) -> QuarantinedAcceptedRawRepairItem:
@@ -1356,6 +1365,18 @@ def _browser_origin_proof_digest(items: list[BrowserCaptureOriginRepairItem]) ->
     return hashlib.sha256(json.dumps([item.proof_digest for item in items], separators=(",", ":")).encode()).hexdigest()
 
 
+def _browser_origin_semantic_witness_bindings(items: list[BrowserCaptureOriginRepairItem]) -> list[dict[str, object]]:
+    return [
+        {
+            "raw_id": item.raw_id,
+            "semantic_canonical_raw_id": item.semantic_canonical_raw_id,
+            "semantic_historical_raw_ids": list(item.semantic_historical_raw_ids),
+            "semantic_witness_digest": item.semantic_witness_digest,
+        }
+        for item in items
+    ]
+
+
 def _browser_origin_copy_raw_id(
     origin: Origin,
     source_path: str,
@@ -1479,7 +1500,7 @@ def _canonical_browser_origin_head_is_exact(
     session_id: str,
     accepted_hash: bytes,
     message_count: int,
-) -> bool:
+) -> _SemanticCanonicalWitness | None:
     """Return whether an existing canonical head has full byte authority witnesses."""
     raw_id = str(canonical_head["accepted_raw_id"])
     source_revision = str(canonical_head["accepted_source_revision"])
@@ -1528,7 +1549,7 @@ def _canonical_browser_origin_head_is_exact(
         or _bytes_value(canonical_head["accepted_content_hash"]) != accepted_hash
         or str(canonical_head["accepted_frontier_kind"]) != "byte"
     ):
-        return False
+        return None
     try:
         blob_hash = bytes.fromhex(source_revision)
         store = BlobStore(archive_root / "blob")
@@ -1609,7 +1630,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
     accepted_hash: bytes,
     message_count: int,
     indexed_raw_id: str,
-) -> bool:
+) -> _SemanticCanonicalWitness | None:
     """Prove a quarantined semantic head is evidence, not a replacement authority.
 
     The caller deliberately creates a new byte-proven canonical raw instead of
@@ -1623,7 +1644,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         or str(canonical_head["accepted_frontier_kind"]) != "semantic"
         or str(indexed_raw_id) == raw_id
     ):
-        return False
+        return None
     raw = conn.execute(
         """
         SELECT origin, source_path, blob_hash, blob_size, logical_source_key,
@@ -1651,25 +1672,27 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
     ).fetchall()
     applications = conn.execute(
         """
-        SELECT raw_id, session_id, decision, accepted_raw_id, accepted_content_hash
-        FROM raw_revision_applications WHERE logical_source_key = ?
+        SELECT raw_id, session_id, logical_source_key, source_revision, acquisition_generation,
+               decision, accepted_raw_id, accepted_source_revision, accepted_content_hash,
+               baseline_raw_id, predecessor_raw_id, append_end_offset
+        FROM raw_revision_applications WHERE logical_source_key = ? ORDER BY raw_id
         """,
         (canonical_key,),
     ).fetchall()
     if raw is None or blob_ref is None or len(memberships) != 1 or len(census) != 1 or not applications:
-        return False
+        return None
     try:
         blob_hash = _bytes_value(raw["blob_hash"])
         store = BlobStore(archive_root / "blob")
         payload = store.read_all(blob_hash.hex())
         provider = detect_provider(json.loads(payload))
         if provider is None or origin_from_provider(provider) is not canonical_origin:
-            return False
+            return None
         from polylogue.sources.revision_backfill import _parse_one
 
         sessions = _parse_one(provider, payload, str(raw["source_path"]))
     except (OSError, ValueError, json.JSONDecodeError):
-        return False
+        return None
     membership = memberships[0]
     selected_applications = [application for application in applications if str(application["raw_id"]) == raw_id]
     historical_supersessions = [application for application in applications if str(application["raw_id"]) != raw_id]
@@ -1677,22 +1700,32 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         len(selected_applications) != 1
         or len(historical_supersessions) > _BROWSER_ORIGIN_SEMANTIC_HISTORICAL_WITNESS_LIMIT
     ):
-        return False
+        return None
     application = selected_applications[0]
+    historical_raw_rows: list[sqlite3.Row] = []
+    historical_blob_refs: list[sqlite3.Row] = []
+    historical_membership_rows: list[sqlite3.Row] = []
+    historical_census_rows: list[sqlite3.Row] = []
     # A semantic head can legitimately retain prior equivalent raw evidence.
     # It is not replacement authority: every additional application must be an
     # explicit supersession *to this exact head*.  Any independent selected or
     # divergent historical receipt still makes the proof ineligible.
     for historical in historical_supersessions:
         historical_raw_id = str(historical["raw_id"])
-        if tuple(historical) != (
-            historical_raw_id,
-            session_id,
-            ApplicationDecision.SUPERSEDED.value,
-            raw_id,
-            accepted_hash,
+        if (
+            str(historical["session_id"]) != session_id
+            or str(historical["logical_source_key"]) != canonical_key
+            or str(historical["source_revision"]) != accepted_hash.hex()
+            or int(historical["acquisition_generation"]) < 0
+            or str(historical["decision"]) != ApplicationDecision.SUPERSEDED.value
+            or str(historical["accepted_raw_id"]) != raw_id
+            or str(historical["accepted_source_revision"]) != str(canonical_head["accepted_source_revision"])
+            or _bytes_value(historical["accepted_content_hash"]) != accepted_hash
+            or any(
+                historical[name] is not None for name in ("baseline_raw_id", "predecessor_raw_id", "append_end_offset")
+            )
         ):
-            return False
+            return None
         historical_raw = conn.execute(
             """
             SELECT origin, native_id, source_path, blob_hash, blob_size,
@@ -1724,11 +1757,12 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
             (historical_raw_id,),
         ).fetchall()
         if historical_raw is None or historical_blob_ref is None:
-            return False
+            return None
         historical_blob_hash = _bytes_value(historical_raw["blob_hash"])
         historical_blob_size = int(historical_raw["blob_size"])
         if (
-            tuple(historical_raw)
+            historical_blob_size > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES
+            or tuple(historical_raw)
             != (
                 canonical_origin.value,
                 native_id,
@@ -1763,8 +1797,31 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
             or len(historical_census) != 1
             or tuple(historical_census[0]) != ("complete", 1)
         ):
-            return False
-    return (
+            return None
+        try:
+            historical_payload = store.read_all(historical_blob_hash.hex())
+            historical_provider = detect_provider(json.loads(historical_payload))
+            if historical_provider is None or origin_from_provider(historical_provider) is not canonical_origin:
+                return None
+            historical_sessions = _parse_one(
+                historical_provider, historical_payload, str(historical_raw["source_path"])
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            len(historical_payload) != historical_blob_size
+            or hashlib.sha256(historical_payload).digest() != historical_blob_hash
+            or len(historical_sessions) != 1
+            or str(make_session_id(historical_provider, historical_sessions[0].provider_session_id)) != session_id
+            or f"{historical_provider.value}:{historical_sessions[0].provider_session_id}" != canonical_key
+            or bytes.fromhex(session_content_hash(historical_sessions[0])) != accepted_hash
+        ):
+            return None
+        historical_raw_rows.append(historical_raw)
+        historical_blob_refs.append(historical_blob_ref)
+        historical_membership_rows.extend(historical_memberships)
+        historical_census_rows.extend(historical_census)
+    if not (
         len(payload) == int(raw["blob_size"])
         and hashlib.sha256(payload).digest() == blob_hash
         and tuple(blob_ref) == (blob_hash, str(raw["source_path"]), int(raw["blob_size"]))
@@ -1799,7 +1856,38 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         and membership["decision"] is None
         and tuple(census[0]) == ("complete", 1)
         and tuple(application)
-        == (raw_id, session_id, ApplicationDecision.SELECTED_BASELINE.value, raw_id, accepted_hash)
+        == (
+            raw_id,
+            session_id,
+            canonical_key,
+            str(canonical_head["accepted_source_revision"]),
+            int(canonical_head["acquisition_generation"]),
+            ApplicationDecision.SELECTED_BASELINE.value,
+            raw_id,
+            str(canonical_head["accepted_source_revision"]),
+            accepted_hash,
+            None,
+            None,
+            None,
+        )
+    ):
+        return None
+    return _SemanticCanonicalWitness(
+        raw_id=raw_id,
+        historical_raw_ids=tuple(str(row["raw_id"]) for row in historical_supersessions),
+        digest=_authority_rows_digest(
+            [canonical_head],
+            [raw],
+            [blob_ref],
+            memberships,
+            census,
+            [application],
+            historical_supersessions,
+            historical_raw_rows,
+            historical_blob_refs,
+            historical_membership_rows,
+            historical_census_rows,
+        ),
     )
 
 
@@ -2114,6 +2202,8 @@ def _inspect_browser_capture_origin_mismatch(
     replacement_frontier = blob_size
     already_repaired = copy_forward_terminal
     semantic_canonical_raw_id: str | None = None
+    semantic_historical_raw_ids: tuple[str, ...] = ()
+    semantic_witness_digest: str | None = None
     if canonical_head is not None and not copy_forward_terminal:
         if _canonical_browser_origin_head_is_exact(
             conn,
@@ -2149,20 +2239,23 @@ def _inspect_browser_capture_origin_mismatch(
                     f"browser_capture_origin_supersession:{raw_id}",
                 )
             )
-        elif not _canonical_browser_origin_head_is_semantically_equivalent(
-            conn,
-            archive_root=archive_root,
-            canonical_head=canonical_head,
-            canonical_key=canonical_key,
-            canonical_origin=canonical_origin,
-            session_id=session_id,
-            accepted_hash=accepted_hash,
-            message_count=len(projection.message_hashes),
-            indexed_raw_id=str(indexed["raw_id"]),
-        ):
-            return _browser_origin_ineligible(raw_id, "canonical logical source has an incompatible accepted head")
         else:
-            semantic_canonical_raw_id = str(canonical_head["accepted_raw_id"])
+            semantic_witness = _canonical_browser_origin_head_is_semantically_equivalent(
+                conn,
+                archive_root=archive_root,
+                canonical_head=canonical_head,
+                canonical_key=canonical_key,
+                canonical_origin=canonical_origin,
+                session_id=session_id,
+                accepted_hash=accepted_hash,
+                message_count=len(projection.message_hashes),
+                indexed_raw_id=str(indexed["raw_id"]),
+            )
+            if semantic_witness is None:
+                return _browser_origin_ineligible(raw_id, "canonical logical source has an incompatible accepted head")
+            semantic_canonical_raw_id = semantic_witness.raw_id
+            semantic_historical_raw_ids = semantic_witness.historical_raw_ids
+            semantic_witness_digest = semantic_witness.digest
     if copy_raw is not None and repair_strategy == "copy_forward" and not copy_forward_source_complete:
         return _browser_origin_ineligible(
             raw_id, "copy-forward raw id exists but its durable source stage is not exact"
@@ -2224,6 +2317,8 @@ def _inspect_browser_capture_origin_mismatch(
         copy_forward_source_path=copy_path if repair_strategy == "copy_forward" else None,
         copy_forward_source_complete=copy_forward_source_complete,
         semantic_canonical_raw_id=semantic_canonical_raw_id,
+        semantic_historical_raw_ids=semantic_historical_raw_ids,
+        semantic_witness_digest=semantic_witness_digest,
         evidence_digest=evidence_digest,
     )
     return dataclasses.replace(item, proof_digest=_browser_origin_item_digest(item))
@@ -2293,6 +2388,7 @@ def _lock_browser_origin_receipt(path: Path, items: list[BrowserCaptureOriginRep
                         applied.get("schema") != _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA
                         or applied.get("target_hash") != target_hash
                         or applied.get("replacement_raw_ids") != [item.replacement_raw_id for item in items]
+                        or applied.get("semantic_witness_bindings") != _browser_origin_semantic_witness_bindings(items)
                     ):
                         raise RuntimeError("existing repair receipt has a conflicting terminal record")
                     terminal = True
@@ -2327,6 +2423,7 @@ def _finish_browser_origin_receipt(
         "target_hash": receipt.target_hash,
         "applied_at_ms": int(time.time() * 1000),
         "replacement_raw_ids": [item.replacement_raw_id for item in items],
+        "semantic_witness_bindings": _browser_origin_semantic_witness_bindings(items),
     }
     if receipt.torn:
         if not receipt.torn.endswith(b"\n"):
@@ -2601,6 +2698,13 @@ def repair_browser_capture_origin_mismatches(
         with RebuildLease(archive_root):
             receipt = _lock_browser_origin_receipt(receipt_path, items)
             try:
+                with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
+                    proof_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+                    pre_source_items = inspect(proof_conn)
+                if _browser_origin_proof_digest(pre_source_items) != proof_digest:
+                    raise RuntimeError("authority proof changed before copy-forward source staging")
+                if any(item.status == "ineligible" for item in pre_source_items):
+                    raise RuntimeError("a browser-capture origin target became ineligible before source staging")
                 with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
                     source_conn.execute("PRAGMA foreign_keys = ON")
                     source_conn.execute("BEGIN IMMEDIATE")

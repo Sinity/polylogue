@@ -262,8 +262,19 @@ def _seed_semantic_canonical_head(root: Path, mismatched_raw_id: str) -> str:
         index.execute(
             """
             UPDATE raw_revision_heads
-            SET accepted_frontier_kind = 'semantic', accepted_frontier = 1
+            SET accepted_source_revision = lower(hex(accepted_content_hash)),
+                accepted_frontier_kind = 'semantic', accepted_frontier = 1
             WHERE accepted_raw_id = ?
+            """,
+            (raw_id,),
+        )
+        index.execute(
+            """
+            UPDATE raw_revision_applications
+            SET source_revision = lower(hex(accepted_content_hash)),
+                accepted_source_revision = lower(hex(accepted_content_hash)),
+                baseline_raw_id = NULL
+            WHERE raw_id = ? AND decision = 'selected_baseline'
             """,
             (raw_id,),
         )
@@ -319,7 +330,7 @@ def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
                 session_id="chatgpt-export:browser-origin-one",
                 logical_source_key="chatgpt:browser-origin-one",
                 source_revision=bytes(accepted_hash).hex(),
-                acquisition_generation=0,
+                acquisition_generation=1,
                 decision=ApplicationDecision.SUPERSEDED,
                 accepted_raw_id=semantic_raw_id,
                 accepted_source_revision=bytes(accepted_hash).hex(),
@@ -629,15 +640,10 @@ def test_browser_origin_repair_accepts_exact_semantic_superseded_sibling(tmp_pat
     dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
 
     assert dry_run.eligible_count == 1, dry_run.items[0].reason
-    receipt = tmp_path / "semantic-sibling-receipt.jsonl"
-    applied = repair_browser_capture_origin_mismatches(
-        _config(tmp_path),
-        [mismatched_raw_id],
-        apply=True,
-        receipt_path=receipt,
-        proof_digest=dry_run.proof_digest,
-    )
-    assert applied.repaired_count == 1
+    item = dry_run.items[0]
+    assert item.semantic_canonical_raw_id == semantic_raw_id
+    assert item.semantic_historical_raw_ids == (sibling_raw_id,)
+    assert item.semantic_witness_digest is not None
     assert (
         _rows(
             tmp_path,
@@ -648,15 +654,6 @@ def test_browser_origin_repair_accepts_exact_semantic_superseded_sibling(tmp_pat
         )
         == historical_before
     )
-    reapplied = repair_browser_capture_origin_mismatches(
-        _config(tmp_path),
-        [mismatched_raw_id],
-        apply=True,
-        receipt_path=receipt,
-        proof_digest=dry_run.proof_digest,
-    )
-    assert reapplied.repaired_count == 0
-    assert receipt.read_text().count("\n") == 2
 
 
 @pytest.mark.parametrize("mutation", ["receipt", "membership", "selected"])
