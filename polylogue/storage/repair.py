@@ -2,19 +2,31 @@
 
 from __future__ import annotations
 
+import dataclasses
+import fcntl
+import hashlib
+import json
+import os
 import re
 import sqlite3
+import time
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from polylogue.archive.raw_materialization import parsed_non_session_artifact_reason
-from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.archive.revision_authority import (
+    BYTE_AUTHORITY_CENSUS_DETAIL,
+    RawRevisionAuthority,
+    RawRevisionKind,
+)
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.sources import origin_from_provider, origin_provider_fiber, provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
@@ -25,6 +37,8 @@ from polylogue.maintenance.targets import (
     build_maintenance_target_catalog,
 )
 from polylogue.paths import archive_file_set_root_for_paths
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
@@ -45,6 +59,933 @@ _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
 RAW_MATERIALIZATION_RESOURCE_BLOCK_REASON = "non-stream-safe raw payload exceeds the bounded replay limit"
 _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
+_QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_quarantined_raw_exact_byte_and_semantic_proof"
+_QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT = 100
+_QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
+_QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
+_QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.quarantined-accepted-raw-repair.v1"
+
+
+@dataclass(frozen=True, slots=True)
+class QuarantinedAcceptedRawArtifactWitness:
+    artifact_id: str
+    origin: str
+    source_path: str
+    source_index: int
+    artifact_kind: str
+    support_status: str
+    classification_reason: str
+    parse_as_session: int
+    schema_eligible: int
+    malformed_jsonl_lines: int
+    decode_error: str | None
+    cohort_id: str | None
+    link_group_key: str | None
+    sidecar_agent_type: str | None
+    first_observed_at_ms: int
+    last_observed_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class QuarantinedAcceptedRawApplicationWitness:
+    decision_id: str
+    raw_id: str
+    session_id: str
+    logical_source_key: str
+    source_revision: str
+    acquisition_generation: int
+    decision: str
+    accepted_raw_id: str
+    accepted_source_revision: str
+    accepted_content_hash: str
+    baseline_raw_id: str | None
+    predecessor_raw_id: str | None
+    append_end_offset: int | None
+    detail: str
+    decided_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class QuarantinedAcceptedRawRepairItem:
+    raw_id: str
+    status: str
+    reason: str
+    logical_source_key: str | None = None
+    session_id: str | None = None
+    origin: str | None = None
+    capture_mode: str | None = None
+    source_path: str | None = None
+    source_index: int | None = None
+    blob_hash: str | None = None
+    blob_size: int | None = None
+    blob_ref_hash: str | None = None
+    blob_ref_source_path: str | None = None
+    blob_ref_size: int | None = None
+    artifact_witnesses: tuple[QuarantinedAcceptedRawArtifactWitness, ...] = ()
+    accepted_source_revision: str | None = None
+    accepted_content_hash: str | None = None
+    accepted_frontier_kind: str | None = None
+    accepted_frontier: int | None = None
+    head_decided_at_ms: int | None = None
+    acquisition_generation: int | None = None
+    application_decision_id: str | None = None
+    application_witness: QuarantinedAcceptedRawApplicationWitness | None = None
+    authority_context_digest: str | None = None
+    parallel_session_head_count: int = 0
+    quarantined_sibling_raw_count: int = 0
+    membership_row_count: int = 0
+    proof_digest: str | None = None
+    repaired: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class QuarantinedAcceptedRawRepairReport:
+    mode: str
+    requested_count: int
+    eligible_count: int
+    repaired_count: int
+    already_repaired_count: int
+    ineligible_count: int
+    proof_digest: str
+    receipt_path: str | None
+    items: tuple[QuarantinedAcceptedRawRepairItem, ...]
+
+
+def _quarantined_raw_item(raw_id: str, reason: str) -> QuarantinedAcceptedRawRepairItem:
+    return QuarantinedAcceptedRawRepairItem(raw_id=raw_id, status="ineligible", reason=reason)
+
+
+def _bytes_value(value: object) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, memoryview):
+        return bytes(value)
+    raise ValueError("expected SQLite BLOB value")
+
+
+def _authority_rows_digest(*row_sets: list[sqlite3.Row]) -> str:
+    def value_payload(value: object) -> object:
+        if isinstance(value, (bytes, memoryview)):
+            return {"blob_hex": bytes(value).hex()}
+        return value
+
+    payload = [[{key: value_payload(value) for key, value in dict(row).items()} for row in rows] for rows in row_sets]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _attach_repair_index(conn: sqlite3.Connection, index_db: Path) -> None:
+    conn.row_factory = sqlite3.Row
+    conn.execute("ATTACH DATABASE ? AS index_tier", (f"file:{index_db}?mode=ro",))
+
+
+def _validate_quarantined_raw_repair_blob_budget(conn: sqlite3.Connection, raw_ids: list[str]) -> None:
+    """Reject a bounded repair set before any retained blob is loaded into memory."""
+    rows = conn.execute(
+        """
+        SELECT raw_id, blob_size FROM raw_sessions
+        WHERE raw_id IN (SELECT value FROM json_each(?))
+        """,
+        (json.dumps(raw_ids),),
+    ).fetchall()
+    oversized = [
+        str(row["raw_id"]) for row in rows if int(row["blob_size"]) > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES
+    ]
+    if oversized:
+        raise RuntimeError(
+            "quarantined accepted raw repair exceeds the per-target retained-blob limit: " + ", ".join(oversized)
+        )
+    total = sum(int(row["blob_size"]) for row in rows)
+    if total > _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES:
+        raise RuntimeError("quarantined accepted raw repair exceeds the aggregate retained-blob limit")
+
+
+def _proof_digest(item: QuarantinedAcceptedRawRepairItem) -> str:
+    payload = {
+        key: value
+        for key, value in dataclasses.asdict(item).items()
+        if key not in {"proof_digest", "reason", "repaired", "status"}
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _inspect_quarantined_accepted_raw(
+    archive_root: Path,
+    raw_id: str,
+    *,
+    conn: sqlite3.Connection,
+) -> QuarantinedAcceptedRawRepairItem:
+    """Prove one accepted head against source main + attached read-only index."""
+    try:
+        raw = conn.execute(
+            """
+            SELECT raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash, blob_size,
+                   file_mtime_ms, logical_source_key, revision_kind, source_revision,
+                   predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+                   append_start_offset, append_end_offset, acquisition_generation,
+                   revision_authority
+            FROM raw_sessions WHERE raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchone()
+        if raw is None:
+            return _quarantined_raw_item(raw_id, "raw row is missing")
+        heads = conn.execute(
+            """
+            SELECT logical_source_key, session_id, accepted_raw_id,
+                   accepted_source_revision, accepted_content_hash,
+                   accepted_frontier_kind, accepted_frontier,
+                   acquisition_generation, append_end_offset, decided_at_ms
+            FROM index_tier.raw_revision_heads WHERE accepted_raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchall()
+        if len(heads) != 1:
+            return _quarantined_raw_item(raw_id, f"expected one accepted head, found {len(heads)}")
+        head = heads[0]
+        logical_source_key = str(head["logical_source_key"])
+        session_id = str(head["session_id"])
+        session_rows = conn.execute(
+            "SELECT session_id, raw_id, content_hash FROM index_tier.sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchall()
+        if len(session_rows) != 1 or str(session_rows[0]["session_id"]) != session_id:
+            return _quarantined_raw_item(raw_id, "accepted head is not the raw's unique indexed session")
+        session_row = session_rows[0]
+        applications = conn.execute(
+            """
+            SELECT decision_id, raw_id, session_id, logical_source_key, source_revision,
+                   acquisition_generation, decision, accepted_raw_id,
+                   accepted_source_revision, accepted_content_hash, append_end_offset,
+                   baseline_raw_id, predecessor_raw_id, detail, decided_at_ms
+            FROM index_tier.raw_revision_applications
+            WHERE raw_id = ? OR accepted_raw_id = ? OR logical_source_key = ?
+            """,
+            (raw_id, raw_id, logical_source_key),
+        ).fetchall()
+        if len(applications) != 1:
+            return _quarantined_raw_item(raw_id, "competing raw-revision application authority exists")
+        receipt = applications[0]
+        competing_head_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM index_tier.raw_revision_heads
+                WHERE logical_source_key = ?
+                  AND NOT (accepted_raw_id = ? AND session_id = ?)
+                """,
+                (logical_source_key, raw_id, session_id),
+            ).fetchone()[0]
+        )
+        parallel_session_heads = conn.execute(
+            """
+            SELECT logical_source_key, session_id, accepted_raw_id, accepted_source_revision,
+                   accepted_content_hash, accepted_frontier_kind, accepted_frontier, decided_at_ms
+            FROM index_tier.raw_revision_heads
+            WHERE session_id = ? AND logical_source_key != ?
+            ORDER BY logical_source_key
+            """,
+            (session_id, logical_source_key),
+        ).fetchall()
+        competing_revision_rows = conn.execute(
+            """
+            SELECT raw_id, logical_source_key, revision_kind, source_revision,
+                   baseline_raw_id, acquisition_generation, revision_authority
+            FROM raw_sessions
+            WHERE raw_id != ? AND logical_source_key = ?
+            ORDER BY raw_id
+            """,
+            (raw_id, logical_source_key),
+        ).fetchall()
+        membership_rows = conn.execute(
+            """
+            SELECT raw_id, logical_source_key, provider_session_id, source_revision,
+                   normalized_content_hash, message_count, predecessor_raw_id,
+                   acquisition_generation, revision_authority, decision, decided_at_ms
+            FROM raw_session_memberships
+            WHERE raw_id = ? OR logical_source_key = ?
+            ORDER BY logical_source_key, raw_id
+            """,
+            (raw_id, logical_source_key),
+        ).fetchall()
+        census_rows = conn.execute(
+            """
+            SELECT raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+            FROM raw_membership_census WHERE raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchall()
+        blob_ref_rows = conn.execute(
+            """
+            SELECT blob_hash, source_path, size_bytes FROM blob_refs
+            WHERE ref_id = ? AND ref_type = 'raw_payload'
+            """,
+            (raw_id,),
+        ).fetchall()
+        artifact_rows = conn.execute(
+            """
+            SELECT artifact_id, origin, source_path, source_index, artifact_kind,
+                   support_status, classification_reason, parse_as_session,
+                   schema_eligible, malformed_jsonl_lines, decode_error, cohort_id,
+                   link_group_key, sidecar_agent_type, first_observed_at_ms,
+                   last_observed_at_ms
+            FROM raw_artifacts WHERE raw_id = ? ORDER BY artifact_id
+            """,
+            (raw_id,),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        logger.warning("quarantined raw repair authority read failed", raw_id=raw_id, error=str(exc))
+        return _quarantined_raw_item(raw_id, f"authority tiers are unreadable: {exc}")
+
+    try:
+        accepted_hash = _bytes_value(head["accepted_content_hash"])
+        stored_hash = _bytes_value(session_row["content_hash"])
+        receipt_hash = _bytes_value(receipt["accepted_content_hash"])
+        blob_hash_bytes = _bytes_value(raw["blob_hash"])
+    except ValueError as exc:
+        return _quarantined_raw_item(raw_id, str(exc))
+    accepted_revision = str(head["accepted_source_revision"])
+    generation = int(head["acquisition_generation"])
+    expected_envelope = (
+        logical_source_key,
+        RawRevisionKind.FULL.value,
+        accepted_revision,
+        None,
+        None,
+        raw_id,
+        None,
+        None,
+        generation,
+        RawRevisionAuthority.BYTE_PROVEN.value,
+    )
+    actual_envelope = (
+        raw["logical_source_key"],
+        str(raw["revision_kind"]),
+        raw["source_revision"],
+        raw["predecessor_source_revision"],
+        raw["predecessor_raw_id"],
+        raw["baseline_raw_id"],
+        raw["append_start_offset"],
+        raw["append_end_offset"],
+        raw["acquisition_generation"],
+        str(raw["revision_authority"]),
+    )
+    quarantined_envelope = (
+        logical_source_key,
+        RawRevisionKind.FULL.value,
+        accepted_revision,
+        None,
+        None,
+        None,
+        None,
+        None,
+        generation,
+        RawRevisionAuthority.QUARANTINED.value,
+    )
+    untyped_envelope = (
+        None,
+        RawRevisionKind.UNKNOWN.value,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        RawRevisionAuthority.QUARANTINED.value,
+    )
+    if actual_envelope not in {untyped_envelope, quarantined_envelope, expected_envelope}:
+        return _quarantined_raw_item(raw_id, "source raw has an incompatible typed authority envelope")
+    if str(head["accepted_frontier_kind"]) != "byte" or head["append_end_offset"] is not None:
+        return _quarantined_raw_item(raw_id, "accepted head is not a full byte frontier")
+    if int(raw["source_index"]) < 0 or int(raw["blob_size"]) != int(head["accepted_frontier"]):
+        return _quarantined_raw_item(raw_id, "raw shape or byte length differs from the accepted full frontier")
+    if accepted_hash != stored_hash or accepted_hash != receipt_hash:
+        return _quarantined_raw_item(raw_id, "head, session, and application content hashes disagree")
+    expected_receipt = (
+        raw_id,
+        session_id,
+        logical_source_key,
+        accepted_revision,
+        generation,
+        "selected_baseline",
+        raw_id,
+        accepted_revision,
+        accepted_hash,
+        raw_id,
+        None,
+        None,
+        int(head["decided_at_ms"]),
+    )
+    actual_receipt = (
+        str(receipt["raw_id"]),
+        str(receipt["session_id"]),
+        str(receipt["logical_source_key"]),
+        str(receipt["source_revision"]),
+        int(receipt["acquisition_generation"]),
+        str(receipt["decision"]),
+        str(receipt["accepted_raw_id"]),
+        str(receipt["accepted_source_revision"]),
+        receipt_hash,
+        receipt["baseline_raw_id"],
+        receipt["predecessor_raw_id"],
+        receipt["append_end_offset"],
+        int(receipt["decided_at_ms"]),
+    )
+    if actual_receipt != expected_receipt:
+        return _quarantined_raw_item(raw_id, "immutable baseline receipt does not exactly match the accepted head")
+    if competing_head_count or any(str(row["revision_authority"]) != "quarantined" for row in competing_revision_rows):
+        return _quarantined_raw_item(raw_id, "competing accepted or byte-proven source authority exists")
+    target_memberships = [row for row in membership_rows if str(row["raw_id"]) == raw_id]
+    if len(target_memberships) != 1 or len(census_rows) != 1:
+        return _quarantined_raw_item(raw_id, "expected one target membership and one membership census")
+    membership = target_memberships[0]
+    census = census_rows[0]
+    if (
+        str(census["status"]) != "complete"
+        or int(census["member_count"]) != 1
+        or any(row["decision"] == "applied" and str(row["raw_id"]) != raw_id for row in membership_rows)
+    ):
+        return _quarantined_raw_item(raw_id, "membership authority is failed, ambiguous, or competitively applied")
+    if len(blob_ref_rows) != 1:
+        return _quarantined_raw_item(raw_id, "expected exactly one raw-payload blob reference")
+    blob_ref = blob_ref_rows[0]
+    if (
+        _bytes_value(blob_ref["blob_hash"]) != blob_hash_bytes
+        or str(blob_ref["source_path"] or "") != str(raw["source_path"] or "")
+        or int(blob_ref["size_bytes"]) != int(raw["blob_size"])
+        or any(
+            str(artifact["origin"]) != str(raw["origin"])
+            or str(artifact["source_path"]) != str(raw["source_path"])
+            or int(artifact["source_index"]) != int(raw["source_index"])
+            for artifact in artifact_rows
+        )
+    ):
+        return _quarantined_raw_item(raw_id, "raw row, blob reference, and artifact identity disagree")
+
+    blob_hash = blob_hash_bytes.hex()
+    if int(raw["blob_size"]) > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES:
+        return _quarantined_raw_item(raw_id, "retained raw exceeds the per-target repair byte limit")
+    artifact_witnesses = tuple(
+        QuarantinedAcceptedRawArtifactWitness(
+            artifact_id=str(artifact["artifact_id"]),
+            origin=str(artifact["origin"]),
+            source_path=str(artifact["source_path"]),
+            source_index=int(artifact["source_index"]),
+            artifact_kind=str(artifact["artifact_kind"]),
+            support_status=str(artifact["support_status"]),
+            classification_reason=str(artifact["classification_reason"]),
+            parse_as_session=int(artifact["parse_as_session"]),
+            schema_eligible=int(artifact["schema_eligible"]),
+            malformed_jsonl_lines=int(artifact["malformed_jsonl_lines"]),
+            decode_error=str(artifact["decode_error"]) if artifact["decode_error"] is not None else None,
+            cohort_id=str(artifact["cohort_id"]) if artifact["cohort_id"] is not None else None,
+            link_group_key=str(artifact["link_group_key"]) if artifact["link_group_key"] is not None else None,
+            sidecar_agent_type=(
+                str(artifact["sidecar_agent_type"]) if artifact["sidecar_agent_type"] is not None else None
+            ),
+            first_observed_at_ms=int(artifact["first_observed_at_ms"]),
+            last_observed_at_ms=int(artifact["last_observed_at_ms"]),
+        )
+        for artifact in artifact_rows
+    )
+    blob_store = BlobStore(archive_root / "blob")
+    if not blob_store.exists(blob_hash) or not blob_store.verify(blob_hash):
+        return _quarantined_raw_item(raw_id, "retained raw blob is missing or fails its content hash")
+    payload = blob_store.read_all(blob_hash)
+    if len(payload) != int(raw["blob_size"]) or hashlib.sha256(payload).hexdigest() != accepted_revision:
+        return _quarantined_raw_item(raw_id, "retained bytes do not prove the accepted source revision")
+    try:
+        origin = Origin.from_string(str(raw["origin"]))
+        capture_mode = str(raw["capture_mode"]) if raw["capture_mode"] is not None else None
+        fiber = origin_provider_fiber(origin)
+        if len(fiber) > 1 and capture_mode is None:
+            return _quarantined_raw_item(raw_id, "non-injective origin lacks durable capture-mode authority")
+        capture_provider = Provider.from_string(capture_mode) if capture_mode is not None else None
+        if capture_provider is not None and capture_provider not in fiber:
+            return _quarantined_raw_item(raw_id, "capture mode falls outside the raw origin provider fiber")
+        provider = provider_from_origin(origin, family_hint=capture_provider)
+        from polylogue.pipeline.services.ingest_worker import _normalized_session
+        from polylogue.sources.revision_backfill import _parse_one
+
+        sessions = _parse_one(provider, payload, str(raw["source_path"]))
+        fallback_timestamp = (
+            datetime.fromtimestamp(int(raw["file_mtime_ms"]) / 1000, UTC).isoformat()
+            if raw["file_mtime_ms"] is not None
+            else None
+        )
+        sessions = [_normalized_session(session, fallback_timestamp=fallback_timestamp) for session in sessions]
+    except Exception as exc:
+        logger.warning("quarantined raw repair normalization failed", raw_id=raw_id, error=str(exc))
+        return _quarantined_raw_item(raw_id, f"retained raw did not normalize cleanly: {type(exc).__name__}: {exc}")
+    if len(sessions) != 1:
+        return _quarantined_raw_item(raw_id, f"retained raw normalized to {len(sessions)} sessions instead of one")
+    parsed = sessions[0]
+    if (
+        origin_from_provider(parsed.source_name) != origin
+        or str(make_session_id(parsed.source_name, parsed.provider_session_id)) != str(head["session_id"])
+        or f"{provider.value}:{parsed.provider_session_id}" != logical_source_key
+        or bytes.fromhex(session_content_hash(parsed)) != accepted_hash
+    ):
+        return _quarantined_raw_item(raw_id, "normalized parser identity or content differs from the accepted session")
+    parsed_logical_source_key = f"{parsed.source_name.value}:{parsed.provider_session_id}"
+    if (
+        str(membership["logical_source_key"]) != parsed_logical_source_key
+        or str(membership["provider_session_id"]) != parsed.provider_session_id
+        or _bytes_value(membership["normalized_content_hash"]) != accepted_hash
+        or str(membership["source_revision"]) != accepted_hash.hex()
+        or int(membership["message_count"]) != len(parsed.messages)
+        or membership["predecessor_raw_id"] is not None
+        or int(membership["acquisition_generation"]) != generation
+        or str(membership["revision_authority"]) != "quarantined"
+        or membership["decision"] == "applied"
+    ):
+        return _quarantined_raw_item(raw_id, "membership evidence does not match the normalized accepted session")
+
+    status = "already_repaired" if actual_envelope == expected_envelope else "eligible"
+    item = QuarantinedAcceptedRawRepairItem(
+        raw_id=raw_id,
+        status=status,
+        reason=(
+            "source envelope already matches the proven accepted head"
+            if status == "already_repaired"
+            else _QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL
+        ),
+        logical_source_key=logical_source_key,
+        session_id=session_id,
+        origin=str(raw["origin"]),
+        capture_mode=capture_mode,
+        source_path=str(raw["source_path"]),
+        source_index=int(raw["source_index"]),
+        blob_hash=blob_hash,
+        blob_size=int(raw["blob_size"]),
+        blob_ref_hash=_bytes_value(blob_ref["blob_hash"]).hex(),
+        blob_ref_source_path=str(blob_ref["source_path"] or ""),
+        blob_ref_size=int(blob_ref["size_bytes"]),
+        artifact_witnesses=artifact_witnesses,
+        accepted_source_revision=accepted_revision,
+        accepted_content_hash=accepted_hash.hex(),
+        accepted_frontier_kind=str(head["accepted_frontier_kind"]),
+        accepted_frontier=int(head["accepted_frontier"]),
+        head_decided_at_ms=int(head["decided_at_ms"]),
+        acquisition_generation=generation,
+        application_decision_id=str(receipt["decision_id"]),
+        application_witness=QuarantinedAcceptedRawApplicationWitness(
+            decision_id=str(receipt["decision_id"]),
+            raw_id=str(receipt["raw_id"]),
+            session_id=str(receipt["session_id"]),
+            logical_source_key=str(receipt["logical_source_key"]),
+            source_revision=str(receipt["source_revision"]),
+            acquisition_generation=int(receipt["acquisition_generation"]),
+            decision=str(receipt["decision"]),
+            accepted_raw_id=str(receipt["accepted_raw_id"]),
+            accepted_source_revision=str(receipt["accepted_source_revision"]),
+            accepted_content_hash=receipt_hash.hex(),
+            baseline_raw_id=str(receipt["baseline_raw_id"]) if receipt["baseline_raw_id"] is not None else None,
+            predecessor_raw_id=(
+                str(receipt["predecessor_raw_id"]) if receipt["predecessor_raw_id"] is not None else None
+            ),
+            append_end_offset=(int(receipt["append_end_offset"]) if receipt["append_end_offset"] is not None else None),
+            detail=str(receipt["detail"]),
+            decided_at_ms=int(receipt["decided_at_ms"]),
+        ),
+        authority_context_digest=_authority_rows_digest(
+            applications,
+            parallel_session_heads,
+            competing_revision_rows,
+            membership_rows,
+            census_rows,
+        ),
+        parallel_session_head_count=len(parallel_session_heads),
+        quarantined_sibling_raw_count=len(competing_revision_rows),
+        membership_row_count=len(membership_rows),
+    )
+    return dataclasses.replace(item, proof_digest=_proof_digest(item))
+
+
+def _repair_receipt_targets(items: list[QuarantinedAcceptedRawRepairItem]) -> list[dict[str, object]]:
+    targets = [
+        {key: value for key, value in dataclasses.asdict(item).items() if key not in {"reason", "repaired", "status"}}
+        for item in items
+    ]
+    return cast(list[dict[str, object]], json.loads(json.dumps(targets, sort_keys=True)))
+
+
+def _repair_proof_digest(items: list[QuarantinedAcceptedRawRepairItem]) -> str:
+    proof_digests = [item.proof_digest for item in items]
+    return hashlib.sha256(json.dumps(proof_digests, separators=(",", ":")).encode()).hexdigest()
+
+
+def _fsync_parent(path: Path) -> None:
+    descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+@dataclass(slots=True)
+class _LockedQuarantinedRawRepairReceipt:
+    path: Path
+    descriptor: int
+    target_hash: str
+    terminal: bool
+    repair_intent_raw_ids: tuple[str, ...]
+    torn_terminals: tuple[bytes, ...] = ()
+    receipt_terminated: bool = True
+
+    def close(self) -> None:
+        fcntl.flock(self.descriptor, fcntl.LOCK_UN)
+        os.close(self.descriptor)
+
+
+def _receipt_write(descriptor: int, payload: bytes) -> int:
+    return os.write(descriptor, payload)
+
+
+def _write_receipt_all(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = _receipt_write(descriptor, payload[offset:])
+        if written <= 0:
+            raise RuntimeError("operator repair receipt write made no progress")
+        offset += written
+
+
+def _receipt_records(descriptor: int) -> tuple[list[dict[str, object] | bytes], bool]:
+    size = os.fstat(descriptor).st_size
+    if size > 16 * 1024 * 1024:
+        raise RuntimeError("existing repair receipt exceeds the bounded parser limit")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining:
+        chunk = os.read(descriptor, remaining)
+        if not chunk:
+            raise RuntimeError("existing repair receipt changed during its locked read")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    payload = b"".join(chunks)
+    terminated = payload.endswith(b"\n")
+    lines = payload.split(b"\n")
+    if terminated:
+        lines.pop()
+    records: list[dict[str, object] | bytes] = []
+    for index, line in enumerate(lines):
+        if index == len(lines) - 1 and not terminated:
+            records.append(line)
+            continue
+        try:
+            parsed: object = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            records.append(line)
+            continue
+        records.append(cast(dict[str, object], parsed) if isinstance(parsed, dict) else line)
+    return records, terminated
+
+
+def _validate_repair_receipt_records(
+    parsed_receipt: tuple[list[dict[str, object] | bytes], bool],
+    *,
+    targets: list[dict[str, object]],
+    target_hash: str,
+) -> tuple[bool, tuple[str, ...], tuple[bytes, ...], bool]:
+    records, terminated = parsed_receipt
+    if not records:
+        raise RuntimeError("existing repair receipt is empty")
+    planned = records[0]
+    if not isinstance(planned, dict):
+        raise RuntimeError("existing repair receipt does not start with valid planned JSON")
+    planned_keys = {"schema", "state", "target_hash", "targets", "repair_intent_raw_ids", "planned_at_ms"}
+    if set(planned) != planned_keys or planned.get("schema") != _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
+        raise RuntimeError("existing repair receipt has an invalid planned record schema")
+    if planned.get("state") != "planned":
+        raise RuntimeError("existing repair receipt must start with a planned record")
+    if planned.get("target_hash") != target_hash or planned.get("targets") != targets:
+        raise RuntimeError("existing repair receipt targets do not match the proven repair set")
+    planned_at_ms = planned.get("planned_at_ms")
+    if not isinstance(planned_at_ms, int) or planned_at_ms < 0:
+        raise RuntimeError("existing repair receipt planned timestamp is invalid")
+    raw_ids = tuple(str(target["raw_id"]) for target in targets)
+    intent = planned.get("repair_intent_raw_ids")
+    if not isinstance(intent, list) or any(not isinstance(raw_id, str) for raw_id in intent):
+        raise RuntimeError("existing repair receipt repair intent is invalid")
+    intent_ids = tuple(cast(list[str], intent))
+    if len(set(intent_ids)) != len(intent_ids) or any(raw_id not in raw_ids for raw_id in intent_ids):
+        raise RuntimeError("existing repair receipt repair intent does not match its targets")
+    if len(records) == 1:
+        if not terminated:
+            raise RuntimeError("existing repair receipt has a torn planned record")
+        return False, intent_ids, (), terminated
+    tail = records[1:]
+    applied = tail[-1] if isinstance(tail[-1], dict) else None
+    torn_terminals = (
+        tuple(record for record in tail[:-1] if isinstance(record, bytes))
+        if applied
+        else tuple(record for record in tail if isinstance(record, bytes))
+    )
+    expected_tail_length = len(torn_terminals) + (1 if applied is not None else 0)
+    if len(tail) != expected_tail_length or any(not fragment for fragment in torn_terminals):
+        raise RuntimeError("existing repair receipt has an invalid state transition")
+    if applied is None:
+        return False, intent_ids, torn_terminals, terminated
+    if not terminated:
+        raise RuntimeError("existing repair receipt has an unterminated applied record")
+    recovered = bool(torn_terminals)
+    applied_keys = {
+        "schema",
+        "state",
+        "target_hash",
+        "applied_at_ms",
+        "repaired_raw_ids",
+        "proven_raw_ids",
+    }
+    if recovered:
+        applied_keys |= {"torn_terminals"}
+    if set(applied) != applied_keys or applied.get("schema") != _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
+        raise RuntimeError("existing repair receipt has an invalid applied record schema")
+    if applied.get("state") != "applied" or applied.get("target_hash") != target_hash:
+        raise RuntimeError("existing repair receipt has an invalid applied target transition")
+    applied_at_ms = applied.get("applied_at_ms")
+    if not isinstance(applied_at_ms, int) or applied_at_ms < 0:
+        raise RuntimeError("existing repair receipt applied timestamp is invalid")
+    repaired_ids = applied.get("repaired_raw_ids")
+    if (
+        applied.get("proven_raw_ids") != list(raw_ids)
+        or not isinstance(repaired_ids, list)
+        or any(not isinstance(raw_id, str) for raw_id in repaired_ids)
+        or len(set(cast(list[str], repaired_ids))) != len(repaired_ids)
+        or any(raw_id not in intent_ids for raw_id in cast(list[str], repaired_ids))
+    ):
+        raise RuntimeError("existing repair receipt applied ids do not match the planned targets")
+    expected_torn_witnesses = [
+        {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()} for fragment in torn_terminals
+    ]
+    if recovered and applied.get("torn_terminals") != expected_torn_witnesses:
+        raise RuntimeError("existing repair receipt recovery does not match its preserved torn terminal")
+    return True, intent_ids, torn_terminals, terminated
+
+
+def _lock_quarantined_raw_repair_receipt(
+    path: Path,
+    items: list[QuarantinedAcceptedRawRepairItem],
+) -> _LockedQuarantinedRawRepairReceipt:
+    """Lock one stable receipt inode and create or validate its planned record."""
+    if path.is_symlink():
+        raise RuntimeError("repair receipt path must not be a symbolic link")
+    targets = _repair_receipt_targets(items)
+    target_hash = hashlib.sha256(json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    repair_intent_raw_ids = tuple(item.raw_id for item in items if item.status == "eligible")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        os.close(descriptor)
+        raise RuntimeError("operator repair receipt is already locked by another apply") from exc
+    try:
+        opened = os.fstat(descriptor)
+        named = path.stat(follow_symlinks=False)
+        if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+            raise RuntimeError("operator repair receipt path changed while it was being locked")
+        if opened.st_size:
+            terminal, existing_intent, torn_terminals, terminated = _validate_repair_receipt_records(
+                _receipt_records(descriptor), targets=targets, target_hash=target_hash
+            )
+            return _LockedQuarantinedRawRepairReceipt(
+                path,
+                descriptor,
+                target_hash,
+                terminal,
+                existing_intent,
+                torn_terminals,
+                terminated,
+            )
+        planned = {
+            "schema": _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
+            "state": "planned",
+            "target_hash": target_hash,
+            "targets": targets,
+            "repair_intent_raw_ids": list(repair_intent_raw_ids),
+            "planned_at_ms": int(time.time() * 1000),
+        }
+        encoded = (json.dumps(planned, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        _write_receipt_all(descriptor, encoded)
+        os.fsync(descriptor)
+        _fsync_parent(path)
+        return _LockedQuarantinedRawRepairReceipt(path, descriptor, target_hash, False, repair_intent_raw_ids)
+    except Exception:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        raise
+
+
+def _finish_quarantined_raw_repair_receipt(
+    receipt: _LockedQuarantinedRawRepairReceipt,
+    *,
+    items: list[QuarantinedAcceptedRawRepairItem],
+) -> None:
+    opened = os.fstat(receipt.descriptor)
+    named = receipt.path.stat(follow_symlinks=False)
+    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+        raise RuntimeError("operator repair receipt path changed before terminal append")
+    os.lseek(receipt.descriptor, 0, os.SEEK_END)
+    preserved_torn_terminals = list(receipt.torn_terminals)
+    if preserved_torn_terminals and not receipt.receipt_terminated:
+        # Make even a complete-JSON prefix permanently distinguishable from a
+        # terminal record after the newline is appended. The exact sealed bytes
+        # remain in the append-only receipt and are bound into the terminal.
+        _write_receipt_all(receipt.descriptor, b"\xff\n")
+        preserved_torn_terminals[-1] += b"\xff"
+    terminal = {
+        "schema": _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
+        "state": "applied",
+        "target_hash": receipt.target_hash,
+        "applied_at_ms": int(time.time() * 1000),
+        "repaired_raw_ids": [item.raw_id for item in items if item.repaired],
+        "proven_raw_ids": [item.raw_id for item in items],
+    }
+    if preserved_torn_terminals:
+        terminal["torn_terminals"] = [
+            {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()}
+            for fragment in preserved_torn_terminals
+        ]
+    _write_receipt_all(
+        receipt.descriptor, (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    )
+    os.fsync(receipt.descriptor)
+    _fsync_parent(receipt.path)
+
+
+def _cas_refine_quarantined_accepted_raw(
+    source_conn: sqlite3.Connection,
+    item: QuarantinedAcceptedRawRepairItem,
+) -> None:
+    assert item.logical_source_key is not None
+    assert item.accepted_source_revision is not None
+    assert item.acquisition_generation is not None
+    cursor = source_conn.execute(
+        """
+        UPDATE raw_sessions
+        SET logical_source_key = ?, revision_kind = 'full', source_revision = ?,
+            baseline_raw_id = raw_id, acquisition_generation = ?,
+            revision_authority = 'byte_proven'
+        WHERE raw_id = ? AND revision_authority = 'quarantined'
+          AND predecessor_source_revision IS NULL AND predecessor_raw_id IS NULL
+          AND append_start_offset IS NULL AND append_end_offset IS NULL
+          AND (
+            (logical_source_key IS NULL AND revision_kind = 'unknown'
+             AND source_revision IS NULL AND baseline_raw_id IS NULL
+             AND acquisition_generation IS NULL)
+            OR
+            (logical_source_key = ? AND revision_kind = 'full'
+             AND source_revision = ? AND baseline_raw_id IS NULL
+             AND acquisition_generation = ?)
+          )
+        """,
+        (
+            item.logical_source_key,
+            item.accepted_source_revision,
+            item.acquisition_generation,
+            item.raw_id,
+            item.logical_source_key,
+            item.accepted_source_revision,
+            item.acquisition_generation,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError(f"source authority CAS failed for {item.raw_id}")
+
+
+def repair_quarantined_accepted_raws(
+    config: Config,
+    raw_ids: list[str],
+    *,
+    apply: bool = False,
+    receipt_path: Path | None = None,
+    proof_digest: str | None = None,
+) -> QuarantinedAcceptedRawRepairReport:
+    """Refine accepted untyped or typed-quarantined full raws after exact proof."""
+    if len(set(raw_ids)) != len(raw_ids):
+        raise ValueError("duplicate raw ids are not allowed")
+    if not raw_ids or len(raw_ids) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
+        raise ValueError(f"raw-id list must contain 1..{_QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT} entries")
+    if any(re.fullmatch(r"[0-9a-f]{64}", raw_id) is None for raw_id in raw_ids):
+        raise ValueError("raw ids must be lowercase SHA-256 identifiers")
+    block_reason = offline_maintenance_block_reason(config, active=apply, dry_run=not apply)
+    if block_reason is not None:
+        raise RuntimeError(block_reason)
+    archive_root = _raw_materialization_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        raise RuntimeError("source or index tier is missing")
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as dry_conn:
+        _attach_repair_index(dry_conn, index_db)
+        _validate_quarantined_raw_repair_blob_budget(dry_conn, raw_ids)
+        items = [_inspect_quarantined_accepted_raw(archive_root, raw_id, conn=dry_conn) for raw_id in raw_ids]
+    aggregate_proof = _repair_proof_digest(items)
+    if apply and any(item.status == "ineligible" for item in items):
+        raise RuntimeError("quarantined accepted raw repair refused because one or more targets are ineligible")
+    if apply and receipt_path is None:
+        raise ValueError("apply requires an explicit operator repair receipt path")
+    if apply and proof_digest != aggregate_proof:
+        raise RuntimeError("apply proof digest does not match the exact dry-run target list")
+    if apply:
+        from polylogue.storage.index_generation import RebuildLease
+
+        assert receipt_path is not None
+        with RebuildLease(archive_root):
+            receipt = _lock_quarantined_raw_repair_receipt(receipt_path, items)
+            try:
+                with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
+                    source_conn.execute("PRAGMA foreign_keys = ON")
+                    _attach_repair_index(source_conn, index_db)
+                    source_conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        _validate_quarantined_raw_repair_blob_budget(source_conn, raw_ids)
+                        locked_items = [
+                            _inspect_quarantined_accepted_raw(archive_root, raw_id, conn=source_conn)
+                            for raw_id in raw_ids
+                        ]
+                        if _repair_proof_digest(locked_items) != proof_digest:
+                            raise RuntimeError("authority proof changed after acquiring the repair transaction")
+                        if any(item.status == "ineligible" for item in locked_items):
+                            raise RuntimeError("a repair target became ineligible after acquiring the transaction")
+                        if receipt.terminal and any(item.status != "already_repaired" for item in locked_items):
+                            raise RuntimeError("terminal operator receipt disagrees with durable source authority")
+                        if receipt.torn_terminals and any(item.status != "already_repaired" for item in locked_items):
+                            raise RuntimeError("torn terminal receipt has no matching committed source refinement")
+                        for item in locked_items:
+                            if item.status == "eligible":
+                                _cas_refine_quarantined_accepted_raw(source_conn, item)
+                        after_items = [
+                            _inspect_quarantined_accepted_raw(archive_root, raw_id, conn=source_conn)
+                            for raw_id in raw_ids
+                        ]
+                        if any(item.status != "already_repaired" for item in after_items):
+                            raise RuntimeError("source envelope refinement did not reach the proven terminal state")
+                        source_conn.commit()
+                    except Exception:
+                        source_conn.rollback()
+                        raise
+                items = [
+                    dataclasses.replace(after, repaired=before.status == "eligible")
+                    for before, after in zip(locked_items, after_items, strict=True)
+                ]
+                if not receipt.terminal:
+                    _finish_quarantined_raw_repair_receipt(receipt, items=items)
+            finally:
+                receipt.close()
+    return QuarantinedAcceptedRawRepairReport(
+        mode="apply" if apply else "dry-run",
+        requested_count=len(items),
+        eligible_count=sum(item.status == "eligible" for item in items),
+        repaired_count=sum(item.repaired for item in items),
+        already_repaired_count=sum(item.status == "already_repaired" for item in items),
+        ineligible_count=sum(item.status == "ineligible" for item in items),
+        proof_digest=aggregate_proof,
+        receipt_path=str(receipt_path) if receipt_path is not None else None,
+        items=tuple(items),
+    )
 
 
 def _format_bytes(value: int) -> str:

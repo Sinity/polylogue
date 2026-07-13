@@ -1326,6 +1326,74 @@ def test_missing_raw_blob_cursor_repair_apply_deletes_only_cursor(
         assert conn.execute("SELECT 1 FROM raw_sessions WHERE source_path = ?", (str(source),)).fetchone() == (1,)
 
 
+def test_quarantined_accepted_raw_repair_cli_dry_run_is_bounded_json(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    del cli_workspace
+    raw_id = "a" * 64
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "quarantined-accepted-raws",
+            "--raw-id",
+            raw_id,
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "dry-run"
+    assert payload["requested_count"] == 1
+    assert payload["ineligible_count"] == 1
+    assert len(payload["proof_digest"]) == 64
+    assert payload["items"][0]["raw_id"] == raw_id
+
+    plain = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "quarantined-accepted-raws", "--raw-id", raw_id],
+        catch_exceptions=False,
+    )
+    assert plain.exit_code == 0
+    assert f"Proof digest: {payload['proof_digest']}" in plain.output
+    assert f"{raw_id} ineligible proof=unavailable" in plain.output
+
+
+def test_quarantined_accepted_raw_repair_cli_apply_requires_receipt_and_proof(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    del cli_workspace
+    raw_id = "a" * 64
+    missing_receipt = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "quarantined-accepted-raws", "--raw-id", raw_id, "--apply"],
+    )
+    assert missing_receipt.exit_code == 2
+    assert "--receipt" in missing_receipt.output
+    missing_proof = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "quarantined-accepted-raws",
+            "--raw-id",
+            raw_id,
+            "--apply",
+            "--receipt",
+            "repair.jsonl",
+        ],
+    )
+    assert missing_proof.exit_code == 2
+    assert "--proof-digest" in missing_proof.output
+
+
 def test_archive_read_cli_lists_archive_sessions(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
