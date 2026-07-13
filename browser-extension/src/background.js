@@ -9,6 +9,9 @@ const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
 const ACTIVE_TAB_STATE_MIN_INTERVAL_MS = 4000;
 const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
+const CONVERSATION_TIMELINE_KEY = "polylogueConversationTimeline";
+const CONVERSATION_TIMELINE_EVENT_LIMIT = 24;
+const CONVERSATION_TIMELINE_CONVERSATION_LIMIT = 80;
 const POST_POLL_INTERVAL_MS = 5000;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
 const BACKFILL_PAGE_REQUEST_TIMEOUT_MS = 58000;
@@ -23,6 +26,20 @@ const pendingPostCommandAcks = new Map();
 let postPollTimer = 0;
 let backfillCoordinatorPromise = null;
 let extensionInstanceIdPromise = null;
+let storageMutationQueue = Promise.resolve();
+let captureQueueMutationQueue = Promise.resolve();
+
+function serializeStorageMutation(mutation) {
+  const result = storageMutationQueue.then(mutation, mutation);
+  storageMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function serializeCaptureQueueMutation(mutation) {
+  const result = captureQueueMutationQueue.then(mutation, mutation);
+  captureQueueMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
 
 function extensionInstanceId() {
   if (!extensionInstanceIdPromise) {
@@ -228,11 +245,14 @@ function isRetryableCaptureError(error) {
   return true;
 }
 
-async function enqueueCaptureForRetry({ envelope, reason, error }) {
+async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
+  return serializeCaptureQueueMutation(async () => {
   const entry = {
     id: buildReceiverRequestId(),
     envelope,
     reason: reason || "content_script_capture",
+    tab_id: tab?.id || null,
+    tab_url: tab?.url || tab?.pendingUrl || null,
     enqueued_at: new Date().toISOString(),
     attempts: 0,
     next_attempt_at: new Date(Date.now() + retryDelayForAttempt(0)).toISOString(),
@@ -249,12 +269,14 @@ async function enqueueCaptureForRetry({ envelope, reason, error }) {
       reason: "capture_queue_entry_over_budget",
       error: entry.last_error,
     });
-    return getCaptureQueue();
+    return { queue: await getCaptureQueue(), accepted: false, evicted: [entry] };
   }
   const queue = await getCaptureQueue();
   let entries = [...queue.entries, entry];
   let droppedCount = queue.dropped_count || 0;
+  const evicted = [];
   while (entries.length > CAPTURE_QUEUE_MAX_ENTRIES || byteLength(entries) > CAPTURE_QUEUE_MAX_BYTES) {
+    evicted.push(entries[0]);
     entries = entries.slice(1);
     droppedCount += 1;
   }
@@ -268,10 +290,12 @@ async function enqueueCaptureForRetry({ envelope, reason, error }) {
     error: entry.last_error,
     queue_length: entries.length,
   });
-  return nextQueue;
+  return { queue: nextQueue, accepted: true, evicted };
+  });
 }
 
 async function drainCaptureQueue(trigger = "alarm") {
+  return serializeCaptureQueueMutation(async () => {
   const queue = await getCaptureQueue();
   if (!queue.entries.length) {
     await clearRetryAlarm();
@@ -291,6 +315,7 @@ async function drainCaptureQueue(trigger = "alarm") {
     try {
       const result = await postJson("/v1/browser-captures", envelope);
       drained += 1;
+      const archiveState = { state: result.state || "spooled_only" };
       await updateSessionLedger({
         provider: summary.provider || result.provider,
         providerSessionId: summary.providerSessionId || result.provider_session_id,
@@ -303,6 +328,7 @@ async function drainCaptureQueue(trigger = "alarm") {
           artifact_ref: result.artifact_ref || null,
           extension_instance_id: result.capture_instance_id || null,
           deduplicated: Boolean(result.deduplicated),
+          archive_state: archiveState,
           last_error: null,
         },
       });
@@ -317,10 +343,18 @@ async function drainCaptureQueue(trigger = "alarm") {
         queued_id: entry.id,
         attempts: entry.attempts,
       });
-      await setState({
+      await appendConversationTimeline({
+        provider: summary.provider || result.provider,
+        providerSessionId: summary.providerSessionId || result.provider_session_id,
+        event: "captured",
+        reason: "capture_retry_drained",
+        detail: archiveState.state,
+      });
+      if (entry.tab_id) await setStateForTab(entry.tab_id, {
         online: true,
         captured: true,
         last_capture: result,
+        archive_state: archiveState,
         provider: summary.provider || result.provider,
         provider_session_id: summary.providerSessionId || result.provider_session_id,
         capture_mode: summary.captureMode,
@@ -330,8 +364,31 @@ async function drainCaptureQueue(trigger = "alarm") {
         extension_instance_id: result.capture_instance_id || null,
         deduplicated: Boolean(result.deduplicated),
         last_receiver_request_id: result.receiver_request_id || null,
-      });
+      }, entry.tab_url);
     } catch (error) {
+      if (!isRetryableCaptureError(error)) {
+        await updateSessionLedger({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          patch: { last_error: String(error.message || error) },
+        });
+        await appendCaptureLog({
+          ok: false,
+          reason: "capture_retry_rejected",
+          queued_id: entry.id,
+          attempts: entry.attempts,
+          error: String(error.message || error),
+        });
+        await appendConversationTimeline({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          event: "held_with_reason",
+          reason: "capture_retry_drained",
+          detail: "capture_rejected",
+          tabId: entry.tab_id || null,
+        });
+        continue;
+      }
       const attempts = entry.attempts + 1;
       remaining.push({
         ...entry,
@@ -356,6 +413,7 @@ async function drainCaptureQueue(trigger = "alarm") {
     await appendDebugLog({ stage: "capture_retry_drain", drained, remaining: remaining.length });
   }
   return { drained, remaining: remaining.length };
+  });
 }
 
 async function loadCaptureQueueIntoCache() {
@@ -438,21 +496,55 @@ async function appendDebugLog(entry) {
 
 async function updateSessionLedger({ provider, providerSessionId, patch }) {
   if (!provider || !providerSessionId) return null;
-  const stored = await chrome.storage.local.get({ polylogueSessionLedger: {} });
-  const ledger =
-    stored.polylogueSessionLedger && typeof stored.polylogueSessionLedger === "object"
-      ? stored.polylogueSessionLedger
+  return serializeStorageMutation(async () => {
+    const stored = await chrome.storage.local.get({ polylogueSessionLedger: {} });
+    const ledger =
+      stored.polylogueSessionLedger && typeof stored.polylogueSessionLedger === "object"
+        ? stored.polylogueSessionLedger
+        : {};
+    const key = sessionKey(provider, providerSessionId);
+    const next = {
+      ...(ledger[key] || {}),
+      provider,
+      provider_session_id: providerSessionId,
+      updated_at: new Date().toISOString(),
+      ...patch,
+    };
+    await chrome.storage.local.set({ polylogueSessionLedger: { ...ledger, [key]: next } });
+    return next;
+  });
+}
+
+async function appendConversationTimeline({ provider, providerSessionId, event, reason = null, detail = null, tabId = null, onlyIfEmpty = false }) {
+  if (!provider || !providerSessionId) return null;
+  return serializeStorageMutation(async () => {
+    const stored = await chrome.storage.local.get({ [CONVERSATION_TIMELINE_KEY]: {} });
+    const timelines = stored[CONVERSATION_TIMELINE_KEY] && typeof stored[CONVERSATION_TIMELINE_KEY] === "object"
+      ? stored[CONVERSATION_TIMELINE_KEY]
       : {};
-  const key = sessionKey(provider, providerSessionId);
-  const next = {
-    ...(ledger[key] || {}),
-    provider,
-    provider_session_id: providerSessionId,
-    updated_at: new Date().toISOString(),
-    ...patch,
-  };
-  await chrome.storage.local.set({ polylogueSessionLedger: { ...ledger, [key]: next } });
-  return next;
+    const key = sessionKey(provider, providerSessionId);
+    if (onlyIfEmpty && Array.isArray(timelines[key]) && timelines[key].length) return null;
+    const entry = {
+      at: new Date().toISOString(),
+      event,
+      reason,
+      detail,
+      tab_id: tabId,
+    };
+    const next = {
+      ...timelines,
+      [key]: [entry, ...(Array.isArray(timelines[key]) ? timelines[key] : [])].slice(0, CONVERSATION_TIMELINE_EVENT_LIMIT),
+    };
+    const keys = Object.keys(next);
+    if (keys.length > CONVERSATION_TIMELINE_CONVERSATION_LIMIT) {
+      keys
+        .sort((left, right) => Date.parse(next[left]?.[0]?.at || "") - Date.parse(next[right]?.[0]?.at || ""))
+        .slice(0, keys.length - CONVERSATION_TIMELINE_CONVERSATION_LIMIT)
+        .forEach((oldKey) => delete next[oldKey]);
+    }
+    await chrome.storage.local.set({ [CONVERSATION_TIMELINE_KEY]: next });
+    return entry;
+  });
 }
 
 function badgeForState(state) {
@@ -461,9 +553,10 @@ function badgeForState(state) {
   }
   if (!state.online) return { text: "off", color: "#9b2c2c" };
   const archiveState = state.archive_state?.state;
-  if (archiveState === "archived" || state.captured) return { text: "ok", color: "#14764e" };
   if (archiveState === "failed" || state.error) return { text: "err", color: "#ad2f2f" };
-  if (archiveState === "spooled_only" || archiveState === "ingest_pending") return { text: "…", color: "#9a5b00" };
+  if (["spooled_only", "ingest_pending", "stale"].includes(archiveState)) return { text: "…", color: "#9a5b00" };
+  if (archiveState === "missing") return { text: "on", color: "#325d8f" };
+  if (archiveState === "archived" || state.captured) return { text: "ok", color: "#14764e" };
   if (state.capture_mode === "dom_degraded") return { text: "dom", color: "#8a5a00" };
   return { text: "on", color: "#325d8f" };
 }
@@ -474,6 +567,28 @@ async function setState(state) {
   const badge = badgeForState(nextState);
   await chrome.action.setBadgeText({ text: badge.text });
   await chrome.action.setBadgeBackgroundColor({ color: badge.color });
+}
+
+async function setStateForTab(tabId, state, expectedTabUrl = null) {
+  if (!tabId || !chrome.tabs?.query) return setState(state);
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTab || activeTab.id !== tabId) return null;
+  const activeUrl = activeTab.url || activeTab.pendingUrl || "";
+  if (expectedTabUrl && activeUrl && activeUrl !== expectedTabUrl) return null;
+  const expectedProvider = state.provider || null;
+  const expectedSessionId = state.provider_session_id || null;
+  const activeProvider = archiveProviderForUrl(activeUrl);
+  const activeSessionId = conversationIdForUrl(activeUrl);
+  if (
+    expectedProvider
+    && expectedSessionId
+    && activeSessionId
+    && (
+      activeProvider !== expectedProvider
+      || activeSessionId !== expectedSessionId
+    )
+  ) return null;
+  return setState(state);
 }
 
 function buildReceiverRequestId() {
@@ -752,7 +867,18 @@ async function cleanupBackfillTransportTab(alarmName) {
   }
 }
 
-async function captureTab(tab, reason = "background") {
+async function captureTab(tab, reason = "background", expectedConversation = null) {
+  if (expectedConversation && tab?.id && chrome.tabs?.get) {
+    const currentTab = await chrome.tabs.get(tab.id);
+    const currentUrl = currentTab?.url || currentTab?.pendingUrl || "";
+    if (
+      !currentTab
+      || currentUrl !== expectedConversation.url
+      || archiveProviderForUrl(currentUrl) !== expectedConversation.provider
+      || conversationIdForUrl(currentUrl) !== expectedConversation.providerSessionId
+    ) return { ok: false, skipped: true, reason: "tab_navigation_changed" };
+    tab = currentTab;
+  }
   if (!tab?.id || !injectionPlanForUrl(tab.url || tab.pendingUrl || "").length) return null;
   const now = Date.now();
   const lastCaptureAt = recentBackgroundCaptures.get(tab.id) || 0;
@@ -774,6 +900,8 @@ async function captureTab(tab, reason = "background") {
       const envelopeSession = resultWithTimeout.envelope?.session || {};
       const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
       const providerSessionId = resultWithTimeout.captureResult?.provider_session_id || envelopeSession.provider_session_id;
+      const pageProvider = archiveProviderForUrl(tab.url || tab.pendingUrl || "") || provider;
+      const pageSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "") || providerSessionId;
       await updateSessionLedger({
         provider,
         providerSessionId,
@@ -794,25 +922,28 @@ async function captureTab(tab, reason = "background") {
       await appendCaptureLog({
         ok: true,
         reason,
-        provider,
-        provider_session_id: providerSessionId,
+        provider: pageProvider,
+        provider_session_id: pageSessionId,
         tab_id: tab.id,
         archive_state: resultWithTimeout.archiveState?.state || null,
         receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
       });
-      await setState({
+      await setStateForTab(tab?.id || null, {
         online: true,
         captured: true,
+        active_page_state: "conversation",
+        active_tab_id: tab.id,
+        passive_reason: reason,
         last_capture: resultWithTimeout.captureResult || resultWithTimeout,
         archive_state: resultWithTimeout.archiveState || null,
-        provider,
-        provider_session_id: providerSessionId,
+        provider: pageProvider,
+        provider_session_id: pageSessionId,
         capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
         asset_acquisition: envelopeSession.provider_meta?.asset_acquisition || null,
         turn_count: Array.isArray(envelopeSession.turns) ? envelopeSession.turns.length : null,
         last_receiver_request_id:
           resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null
-      });
+      }, tab.url || tab.pendingUrl || null);
       await appendDebugLog({
         stage: "capture_result",
         ok: true,
@@ -822,6 +953,17 @@ async function captureTab(tab, reason = "background") {
         capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
         archive_state: resultWithTimeout.archiveState?.state || null,
         receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
+      });
+    } else if (!resultWithTimeout?.timelineRecorded) {
+      const provider = archiveProviderForUrl(tab.url || tab.pendingUrl || "");
+      const providerSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "");
+      await appendConversationTimeline({
+        provider,
+        providerSessionId,
+        event: "held_with_reason",
+        reason,
+        detail: "capture_not_confirmed",
+        tabId: tab.id,
       });
     }
     return resultWithTimeout;
@@ -839,6 +981,14 @@ async function captureTab(tab, reason = "background") {
       reason,
       tab_id: tab.id,
       error: String(error.message || error),
+    });
+    await appendConversationTimeline({
+      provider: archiveProviderForUrl(tab.url || tab.pendingUrl || ""),
+      providerSessionId: conversationIdForUrl(tab.url || tab.pendingUrl || ""),
+      event: "held_with_reason",
+      reason,
+      detail: String(error.message || error),
+      tabId: tab.id,
     });
     return { ok: false, error: String(error.message || error) };
   }
@@ -914,7 +1064,17 @@ function conversationIdForUrl(url) {
       return parts[0] === "chat" && parts[1] ? parts[1] : null;
     }
     if (provider === "grok") {
-      return parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok") || null;
+      const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
+      if (pathId) return pathId;
+      const queryId = parsed.searchParams.get("conversation") || parsed.searchParams.get("conversationId");
+      if (queryId) return queryId;
+      if (!(parts[0] === "i" && parts[1] === "grok")) return null;
+      let hash = 0x811c9dc5;
+      for (const char of `${parsed.origin}${parsed.pathname}${parsed.search}`) {
+        hash ^= char.charCodeAt(0);
+        hash = Math.imul(hash, 0x01000193);
+      }
+      return `dom:${(hash >>> 0).toString(16).padStart(8, "0")}`;
     }
   } catch {
     return null;
@@ -936,7 +1096,16 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
     if (provider && providerSessionId) {
       const query = new URLSearchParams({ provider, provider_session_id: providerSessionId });
       const state = await getJson(`/v1/archive-state?${query.toString()}`);
-      await setState({
+      await appendConversationTimeline({
+        provider,
+        providerSessionId,
+        event: "first_seen",
+        reason,
+        detail: "archive_state_checked",
+        tabId: tab?.id || null,
+        onlyIfEmpty: true,
+      });
+      await setStateForTab(tab?.id || null, {
         online: true,
         captured: Boolean(state.captured),
         archive_state: state,
@@ -946,12 +1115,47 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
         active_tab_id: tab?.id || null,
         passive_reason: reason,
         last_receiver_request_id: state.receiver_request_id || null,
+      }, url);
+      await updateSessionLedger({
+        provider,
+        providerSessionId,
+        patch: {
+          archive_state: state,
+          tab_id: tab?.id || null,
+          tab_url: url || null,
+          last_error: null,
+        },
       });
+      if (state.state === "missing") {
+        await appendConversationTimeline({
+          provider,
+          providerSessionId,
+          event: "detected_new",
+          reason,
+          detail: "archive_state_missing",
+          tabId: tab?.id || null,
+        });
+        const captureResult = await captureTab(tab, "auto_capture_missing", {
+          provider,
+          providerSessionId,
+          url,
+        });
+        if (!captureResult || captureResult.skipped) {
+          await appendConversationTimeline({
+            provider,
+            providerSessionId,
+            event: "held_with_reason",
+            reason: "auto_capture_missing",
+            detail: captureResult?.reason || "capture_not_available",
+            tabId: tab?.id || null,
+          });
+        }
+      }
       return;
     }
 
     const status = await getJson("/v1/status");
-    await setState({
+    await setStateForTab(tab?.id || null, {
       online: true,
       captured: false,
       status,
@@ -961,9 +1165,17 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
       active_tab_id: tab?.id || null,
       passive_reason: reason,
       last_receiver_request_id: status.receiver_request_id || null,
-    });
+    }, url);
   } catch (error) {
-    await setState({
+    await appendConversationTimeline({
+      provider,
+      providerSessionId,
+      event: "held_with_reason",
+      reason,
+      detail: "archive_state_check_failed",
+      tabId: tab?.id || null,
+    });
+    await setStateForTab(tab?.id || null, {
       online: false,
       captured: false,
       provider,
@@ -973,7 +1185,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
       passive_reason: reason,
       error: String(error.message || error),
       last_receiver_request_id: error.receiverRequestId || null,
-    });
+    }, url);
   }
 }
 
@@ -1140,7 +1352,7 @@ chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
   })();
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "polylogue.configureReceiver") {
       const settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
@@ -1182,25 +1394,58 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         result = await postJson("/v1/browser-captures", envelope);
       } catch (error) {
         if (isRetryableCaptureError(error)) {
-          await enqueueCaptureForRetry({ envelope, reason: message.reason, error });
-          await setState({
+          const queued = await enqueueCaptureForRetry({ envelope, reason: message.reason, error, tab: sender.tab });
+          for (const evicted of queued.accepted ? queued.evicted : []) {
+            const evictedSummary = envelopeSessionSummary(evicted.envelope);
+            await appendConversationTimeline({
+              provider: evictedSummary.provider,
+              providerSessionId: evictedSummary.providerSessionId,
+              event: "held_with_reason",
+              reason: evicted.reason,
+              detail: queued.accepted ? "capture_queue_evicted" : "capture_queue_entry_over_budget",
+              tabId: evicted.tab_id || null,
+            });
+          }
+          await appendConversationTimeline({
+            provider: summary.provider,
+            providerSessionId: summary.providerSessionId,
+            event: "held_with_reason",
+            reason: message.reason || "content_script_capture",
+            detail: queued.accepted ? "capture_queued_for_retry" : "capture_queue_entry_over_budget",
+            tabId: sender.tab?.id || null,
+          });
+          await setStateForTab(sender.tab?.id || null, {
             online: false,
             captured: false,
             provider: summary.provider,
             provider_session_id: summary.providerSessionId,
             error: String(error.message || error),
             last_receiver_request_id: error.receiverRequestId || null,
-          });
+          }, sender.tab?.url || sender.tab?.pendingUrl || null);
           sendResponse({
             ok: false,
-            queued: true,
+            queued: queued.accepted,
             error: String(error.message || error),
             receiver_request_id: error.receiverRequestId || null,
           });
           return;
         }
+        await updateSessionLedger({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          patch: { last_error: String(error.message || error) },
+        });
+        await appendConversationTimeline({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          event: "held_with_reason",
+          reason: message.reason || "content_script_capture",
+          detail: "capture_rejected",
+          tabId: sender.tab?.id || null,
+        });
         throw error;
       }
+      const archiveState = { state: result.state || "spooled_only" };
       await updateSessionLedger({
         provider: summary.provider || result.provider,
         providerSessionId: summary.providerSessionId || result.provider_session_id,
@@ -1213,6 +1458,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           artifact_ref: result.artifact_ref || null,
           extension_instance_id: result.capture_instance_id || null,
           deduplicated: Boolean(result.deduplicated),
+          archive_state: archiveState,
           last_error: null,
         },
       });
@@ -1225,10 +1471,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         receiver_request_id: result.receiver_request_id || null,
         artifact_ref: result.artifact_ref || null,
       });
-      await setState({
+      await appendConversationTimeline({
+        provider: summary.provider || result.provider,
+        providerSessionId: summary.providerSessionId || result.provider_session_id,
+        event: "captured",
+        reason: message.reason || "content_script_capture",
+        detail: archiveState.state,
+        tabId: sender.tab?.id || null,
+      });
+      await setStateForTab(sender.tab?.id || null, {
         online: true,
         captured: true,
         last_capture: result,
+        archive_state: archiveState,
         provider: summary.provider || result.provider,
         provider_session_id: summary.providerSessionId || result.provider_session_id,
         capture_mode: summary.captureMode,
@@ -1238,11 +1493,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         extension_instance_id: result.capture_instance_id || null,
         deduplicated: Boolean(result.deduplicated),
         last_receiver_request_id: result.receiver_request_id || null
-      });
+      }, sender.tab?.url || sender.tab?.pendingUrl || null);
       // Receiver just proved reachable — flush anything queued from earlier
       // outages before returning this capture's result.
       void drainCaptureQueue("post_success");
-      sendResponse(result);
+      sendResponse({ ok: true, ...result });
       return;
     }
     if (message.type === "polylogue.getCaptureQueue") {
@@ -1279,26 +1534,76 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         provider_session_id: message.provider_session_id
       });
       const state = await getJson(`/v1/archive-state?${query.toString()}`);
-      await setState({
+      const stored = await chrome.storage.local.get({ polylogueState: null });
+      const previous = stored.polylogueState;
+      const sameSession = previous?.provider === message.provider
+        && previous?.provider_session_id === message.provider_session_id;
+      const preservedCaptureMetadata = sameSession ? {
+        last_capture: previous.last_capture,
+        capture_mode: previous.capture_mode,
+        asset_acquisition: previous.asset_acquisition,
+        turn_count: previous.turn_count,
+        attachment_count: previous.attachment_count,
+      } : {};
+      await setStateForTab(sender.tab?.id || null, {
+        ...preservedCaptureMetadata,
         online: true,
         captured: Boolean(state.captured),
         archive_state: state,
         provider: message.provider,
         provider_session_id: message.provider_session_id,
         last_receiver_request_id: state.receiver_request_id || null
+      }, sender.tab?.url || sender.tab?.pendingUrl || null);
+      await updateSessionLedger({
+        provider: message.provider,
+        providerSessionId: message.provider_session_id,
+        patch: {
+          archive_state: state,
+          tab_id: sender.tab?.id || null,
+          tab_url: sender.tab?.url || null,
+          last_error: null,
+        },
       });
       sendResponse(state);
       return;
     }
     if (message.type === "polylogue.status") {
-      const status = await getJson("/v1/status");
-      await setState({
+      await refreshCurrentActiveTab(message.reason || "status");
+      const stored = await chrome.storage.local.get({ polylogueState: null });
+      const state = stored.polylogueState || {};
+      if (!state.online) {
+        sendResponse({
+          ok: false,
+          error: state.error || "receiver_unavailable",
+          receiver_request_id: state.last_receiver_request_id || null,
+        });
+        return;
+      }
+      sendResponse(state.archive_state || state.status || state);
+      return;
+    }
+    if (message.type === "polylogue.capturePageFailed") {
+      const tab = sender.tab || (message.tab_url ? { id: message.tab_id || null, url: message.tab_url } : null);
+      const url = tab?.url || tab?.pendingUrl || "";
+      const provider = archiveProviderForUrl(url);
+      const providerSessionId = conversationIdForUrl(url);
+      await appendConversationTimeline({
+        provider,
+        providerSessionId,
+        event: "held_with_reason",
+        reason: "popup_capture",
+        detail: "content_capture_failed",
+        tabId: tab?.id || null,
+      });
+      await setStateForTab(tab?.id || null, {
         online: true,
         captured: false,
-        status,
-        last_receiver_request_id: status.receiver_request_id || null
-      });
-      sendResponse(status);
+        provider,
+        provider_session_id: providerSessionId,
+        active_page_state: providerSessionId ? "conversation" : "supported_no_session",
+        error: message.error || "capture_page_failed",
+      }, url || null);
+      sendResponse({ ok: false });
       return;
     }
     if (message.type === "polylogue.captureSupportedTabs") {
@@ -1330,12 +1635,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       receiver_request_id: error.receiverRequestId || null,
       error: String(error.message || error),
     });
-    await setState({
+    const captureSummary = message.type === "polylogue.capture"
+      ? envelopeSessionSummary(message.envelope)
+      : null;
+    await setStateForTab(sender.tab?.id || null, {
       online: false,
       captured: false,
       error: String(error.message || error),
-      last_receiver_request_id: error.receiverRequestId || null
-    });
+      provider: captureSummary?.provider || null,
+      provider_session_id: captureSummary?.providerSessionId || null,
+      last_receiver_request_id: error.receiverRequestId || null,
+    }, sender.tab?.url || sender.tab?.pendingUrl || null);
     sendResponse({
       ok: false,
       error: String(error.message || error),

@@ -143,8 +143,10 @@
     return envelope;
   }
 
-  async function sendCapture(envelope) {
-    const response = await chrome.runtime.sendMessage({ type: "polylogue.capture", envelope });
+  async function sendCapture(envelope, reason = null) {
+    const message = { type: "polylogue.capture", envelope };
+    if (reason) message.reason = reason;
+    const response = await chrome.runtime.sendMessage(message);
     return response;
   }
 

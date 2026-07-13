@@ -102,6 +102,33 @@
       .provider-logo.claude-ai { background: var(--claude); }
       .provider-logo.grok { background: var(--grok); }
       .provider-logo.unknown { background: var(--muted); }
+      .state-chip {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        padding: 3px 8px;
+        border-radius: 999px;
+        color: #fff;
+        background: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .state-chip.ok { background: var(--ok); }
+      .state-chip.warn { background: var(--warn); }
+      .state-chip.bad { background: var(--bad); }
+      .tab-list { display: grid; gap: 7px; }
+      .tab-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 9px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+      }
+      .tab-item.active { border-color: var(--accent); background: #eaf1f8; }
+      .active-card { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+      #fidelity-flag { margin-left: 6px; }
       section {
         padding: 14px 0;
         border-bottom: 1px solid var(--line);
@@ -291,21 +318,23 @@
       </header>
 
       <section>
-        <div class="row"><span class="label">Page</span><span id="page" class="value provider-chip">Unknown</span></div>
-        <div class="row"><span class="label">Receiver</span><span id="receiver" class="value">127.0.0.1:8765</span></div>
-        <div class="row"><span class="label">Archive</span><span id="archive" class="value">Not checked</span></div>
-        <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>
-        <div class="row"><span class="label">Fidelity</span><span id="fidelity" class="value">--</span></div>
-        <div class="row"><span class="label">Turns</span><span id="turns" class="value">--</span></div>
-        <div class="row"><span class="label">Assets</span><span id="assets" class="value">--</span></div>
-        <div class="row"><span class="label">Request</span><span id="receiver-request" class="value">--</span></div>
-        <div class="row"><span class="label">Updated</span><span id="updated" class="value">--</span></div>
+        <div class="section-head"><strong>Open conversations</strong><span id="open-tab-count" class="value">0</span></div>
+        <div id="open-tabs" class="tab-list"></div>
       </section>
-      <div id="asset-failures" class="log-meta"></div>
 
-      <section>
+      <section class="active-card">
+        <div class="section-head"><strong>Active conversation</strong><span id="operator-state" class="state-chip">Checking</span></div>
+        <div class="row"><span id="page" class="value provider-chip">Unknown</span><span id="fidelity-flag" class="state-chip warn" hidden>Partial fidelity</span></div>
         <p id="state">Checking receiver...</p>
         <p id="state-detail"></p>
+        <div class="row"><span class="label">Fidelity</span><span id="fidelity" class="value">--</span></div>
+        <div class="row"><span class="label">Captured / visible</span><span id="turns" class="value">--</span></div>
+        <div class="row"><span class="label">Cost / tokens</span><span id="cost-tokens" class="value">Unavailable</span></div>
+        <div class="row"><span class="label">Assets</span><span id="assets" class="value">--</span></div>
+        <div id="asset-failures" class="log-meta"></div>
+      </section>
+
+      <section>
         <div class="controls">
           <button id="capture" class="primary"><span class="button-label">Capture page</span><span class="button-status"></span></button>
           <button id="check"><span class="button-label">Check status</span><span class="button-status"></span></button>
@@ -314,6 +343,11 @@
           <button id="open-polylogue"><span class="button-label">Open in Polylogue</span><span class="button-status"></span></button>
           <button id="check-receiver"><span class="button-label">Check receiver</span><span class="button-status"></span></button>
         </div>
+      </section>
+
+      <section>
+        <div class="section-head"><strong>What Polylogue did here</strong></div>
+        <div id="timeline" class="log"></div>
       </section>
 
       <section>
@@ -373,6 +407,11 @@
           <button id="debug-export" class="link-button"><span class="button-label">Export JSON</span><span class="button-status"></span></button>
         </div>
         <div id="debug-panel" hidden>
+          <div class="row"><span class="label">Receiver</span><span id="receiver" class="value">127.0.0.1:8765</span></div>
+          <div class="row"><span class="label">Archive state</span><span id="archive" class="value">Not checked</span></div>
+          <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>
+          <div class="row"><span class="label">Request</span><span id="receiver-request" class="value">--</span></div>
+          <div class="row"><span class="label">Updated</span><span id="updated" class="value">--</span></div>
           <div id="debug-log" class="log"></div>
         </div>
       </section>
@@ -387,6 +426,7 @@
         <input id="receiver-token" type="password" autocomplete="off" placeholder="Only needed when receiver auth is enabled">
       </section>
     </main>
+    <script src="operator_status.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

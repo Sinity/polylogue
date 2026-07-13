@@ -1,6 +1,11 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const AUTO_REFRESH_MS = 8000;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
+const { operatorPresentationForState, operatorStatusForState } = globalThis.PolylogueOperatorStatus;
+
+function hostMatches(hostname, domain) {
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -13,11 +18,10 @@ function escapeHtml(value) {
 function hostLabel(url) {
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.includes("chatgpt.com")) return "ChatGPT";
-    if (parsed.hostname.includes("claude.ai")) return "Claude.ai";
-    if (parsed.hostname.includes("grok.com")) return "Grok";
-    if (parsed.hostname === "x.com" || parsed.hostname.endsWith(".x.com")) return "Grok / X";
-    if (parsed.hostname === "twitter.com" || parsed.hostname.endsWith(".twitter.com")) return "Grok / X";
+    if (hostMatches(parsed.hostname, "chatgpt.com")) return "ChatGPT";
+    if (hostMatches(parsed.hostname, "claude.ai")) return "Claude.ai";
+    if (hostMatches(parsed.hostname, "grok.com")) return "Grok";
+    if (hostMatches(parsed.hostname, "x.com") || hostMatches(parsed.hostname, "twitter.com")) return "Grok / X";
     return parsed.hostname;
   } catch {
     return "Unknown";
@@ -27,9 +31,9 @@ function hostLabel(url) {
 function providerFromUrl(url) {
   try {
     const parsed = new URL(url || "");
-    if (parsed.hostname.includes("chatgpt.com")) return "chatgpt";
-    if (parsed.hostname.includes("claude.ai")) return "claude-ai";
-    if (parsed.hostname.includes("grok.com") || parsed.hostname.includes("x.com") || parsed.hostname.includes("twitter.com")) {
+    if (hostMatches(parsed.hostname, "chatgpt.com")) return "chatgpt";
+    if (hostMatches(parsed.hostname, "claude.ai")) return "claude-ai";
+    if (hostMatches(parsed.hostname, "grok.com") || hostMatches(parsed.hostname, "x.com") || hostMatches(parsed.hostname, "twitter.com")) {
       return "grok";
     }
   } catch {
@@ -129,112 +133,112 @@ function relativeAge(iso) {
 }
 
 function stateExplanation(state) {
-  if (!state) {
-    return {
-      badge: ["warn", "idle"],
-      archive: "Not checked",
-      headline: "No receiver state yet.",
-      detail: "The popup refreshes automatically on open. If this stays idle, the service worker has not returned a status payload.",
-    };
-  }
-  if (state.active_page_state === "unsupported") {
-    return {
-      badge: ["warn", "idle"],
-      archive: "Unsupported",
-      headline: "This page is not a supported conversation.",
-      detail: "Open a ChatGPT, Claude.ai, or Grok/X conversation tab. The extension will update this state when the active tab changes.",
-    };
-  }
-  if (!state.online) {
-    if (state.error === "unauthorized") {
-      return {
-        badge: ["bad", "offline"],
-        archive: "Unauthorized",
-        headline: "Receiver requires a pairing token.",
-        detail:
-          'Run `polylogued browser-capture token show` and paste the value into "Receiver token" below, then Save.',
-      };
-    }
-    return {
-      badge: ["bad", "offline"],
-      archive: "Offline",
-      headline: "Receiver offline.",
-      detail: `Start the local receiver, then refresh. ${state.error || ""}`.trim(),
-    };
-  }
-  const archiveState = state.archive_state?.state || null;
-  if (archiveState === "failed" || state.error) {
-    return {
-      badge: ["bad", "failed"],
-      archive: "Failed",
-      headline: "Capture was rejected or could not be parsed.",
-      detail: state.archive_state?.latest_failure || state.error || "Open the debug log and match the request id in the receiver log.",
-    };
-  }
-  if (archiveState === "archived" || state.captured) {
-    return {
-      badge: ["ok", "captured"],
-      archive: "Archived",
-      headline: state.last_capture
-        ? `Last capture: ${state.last_capture.provider} / ${state.last_capture.provider_session_id}`
-        : "The latest capture is visible in the archive.",
-      detail: "Archive evidence includes receiver spool, source raw row, indexed session, and indexed messages.",
-    };
-  }
-  if (archiveState === "stale") {
-    return {
-      badge: ["warn", "stale"],
-      archive: "Stale",
-      headline: "Receiver spool is newer than the indexed archive.",
-      detail: "The daemon has not caught up to the latest browser capture yet. Keep the daemon running; this should converge without a manual repair step.",
-    };
-  }
-  if (archiveState === "ingest_pending") {
-    return {
-      badge: ["warn", "pending"],
-      archive: "Ingest pending",
-      headline: "Capture reached source.db but is not queryable yet.",
-      detail: "The daemon still needs to materialize the indexed session and messages.",
-    };
-  }
-  if (archiveState === "spooled_only") {
-    return {
-      badge: ["warn", "spooled"],
-      archive: "Spooled",
-      headline: "Receiver wrote the capture artifact.",
-      detail: "The daemon has not acquired the spool artifact into source.db yet.",
-    };
-  }
-  if (archiveState === "missing") {
-    return {
-      badge: ["warn", "missing"],
-      archive: "Not archived",
-      headline: "No capture exists for this conversation yet.",
-      detail: "Use Capture page for the active conversation. The extension checks archive state automatically when tabs activate or finish loading.",
-    };
-  }
-  if (state.capture_mode === "dom_degraded") {
-    return {
-      badge: ["warn", "dom"],
-      archive: "DOM fallback",
-      headline: "Captured from visible DOM, not provider-native app data.",
-      detail: "DOM fallback is useful but is not provider-native app data; it may omit branches, provider ids, timestamps, or attachments. Reload the page, wait for the conversation API response, then capture again.",
-    };
-  }
-  if (state.active_page_state === "supported_no_session") {
-    return {
-      badge: ["warn", "ready"],
-      archive: "Ready",
-      headline: "Supported site open, but no conversation id is visible.",
-      detail: "Open or select a concrete conversation. The extension does not read page content until Capture page or Sync open tabs is used.",
-    };
-  }
-  return {
-    badge: ["warn", "online"],
-    archive: "Receiver online",
-    headline: "Receiver online. Open a supported conversation to capture.",
-    detail: "Supported pages are ChatGPT, Claude.ai, and Grok/X conversation routes.",
+  return operatorPresentationForState(state);
+}
+
+function conversationKey(provider, providerSessionId) {
+  return provider && providerSessionId ? `${provider}:${providerSessionId}` : null;
+}
+
+function timelineLabel(entry) {
+  const labels = {
+    captured: "Captured",
+    detected_new: "New conversation detected",
+    held_with_reason: "Held",
+    first_seen: "First seen",
   };
+  return labels[entry?.event] || entry?.event || "Observed";
+}
+
+function renderTimeline(items) {
+  const node = document.getElementById("timeline");
+  if (!node) return;
+  const events = Array.isArray(items) ? items.slice(0, 8) : [];
+  if (!events.length) {
+    node.innerHTML = '<div class="log-meta">No decisions recorded for this conversation yet.</div>';
+    return;
+  }
+  node.innerHTML = events.map((entry) => {
+    const detail = [entry.reason, entry.detail].filter(Boolean).join(" · ");
+    return `<div class="log-item"><div class="log-time">${escapeHtml(relativeAge(entry.at))}</div><div><div class="log-title">${escapeHtml(timelineLabel(entry))}</div><div class="log-meta">${escapeHtml(detail)}</div></div></div>`;
+  }).join("");
+}
+
+function tabState(tab, ledger) {
+  const provider = providerFromUrl(tab?.url || tab?.pendingUrl || "");
+  const sessionId = (() => {
+    try {
+      const url = new URL(tab?.url || tab?.pendingUrl || "");
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (provider === "chatgpt") return parts[parts.indexOf("c") + 1] || null;
+      if (provider === "claude-ai") return parts[0] === "chat" ? parts[1] || null : null;
+      if (provider === "grok") {
+        const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
+        if (pathId) return pathId;
+        const queryId = url.searchParams.get("conversation") || url.searchParams.get("conversationId");
+        if (queryId) return queryId;
+        if (!(parts[0] === "i" && parts[1] === "grok")) return null;
+        let hash = 0x811c9dc5;
+        for (const char of `${url.origin}${url.pathname}${url.search}`) {
+          hash ^= char.charCodeAt(0);
+          hash = Math.imul(hash, 0x01000193);
+        }
+        return `dom:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  })();
+  return { provider, sessionId, ledger: ledger[conversationKey(provider, sessionId)] || {} };
+}
+
+function activeConversationState(tab, globalState, ledger) {
+  const context = tabState(tab, ledger);
+  if (!globalState?.provider || !globalState?.provider_session_id) return globalState || {};
+  if (!context.provider || !context.sessionId) return globalState || {};
+  if (
+    globalState?.provider === context.provider
+    && globalState?.provider_session_id === context.sessionId
+  ) return globalState;
+
+  const item = context.ledger;
+  return {
+    online: globalState?.online ?? true,
+    provider: context.provider,
+    provider_session_id: context.sessionId,
+    active_page_state: "conversation",
+    archive_state: item.archive_state || null,
+    capture_mode: item.capture_mode || null,
+    asset_acquisition: item.asset_acquisition || null,
+    turn_count: item.turn_count ?? null,
+    attachment_count: item.attachment_count ?? null,
+    last_receiver_request_id: item.receiver_request_id || null,
+    updated_at: item.updated_at || null,
+  };
+}
+
+function renderOpenTabs(tabs, ledger, activeTabId) {
+  const node = document.getElementById("open-tabs");
+  if (!node) return;
+  const supported = (Array.isArray(tabs) ? tabs : []).map((tab) => ({ tab, ...tabState(tab, ledger) }))
+    .filter(({ provider, sessionId }) => provider !== "unknown" && Boolean(sessionId));
+  document.getElementById("open-tab-count").textContent = String(supported.length);
+  if (!supported.length) {
+    node.innerHTML = '<div class="log-meta">No supported conversation tabs are open.</div>';
+    return;
+  }
+  node.innerHTML = supported.map(({ tab, provider, sessionId, ledger: item }) => {
+    const status = operatorStatusForState({
+      online: true,
+      captured: item.archive_state?.state === "archived" || Boolean(item.receiver_request_id),
+      archive_state: item.archive_state,
+      capture_mode: item.capture_mode,
+    });
+    const active = tab.id === activeTabId ? " active" : "";
+    const title = tab.title || sessionId || "Untitled conversation";
+    return `<div class="tab-item${active}"><div>${providerLogo(provider)} <strong>${escapeHtml(title)}</strong></div><span class="state-chip ${escapeHtml(status.tone)}">${escapeHtml(status.label)}</span></div>`;
+  }).join("");
 }
 
 function renderLog(items) {
@@ -261,6 +265,15 @@ function fidelityLabel(captureMode) {
   if (captureMode === "native_full") return "Native";
   if (captureMode === "dom_degraded") return "DOM fallback";
   return captureMode || "--";
+}
+
+function costTokensLabel(state) {
+  const totalTokens = state?.usage?.total_tokens ?? state?.total_tokens ?? null;
+  const costUsd = state?.cost_usd ?? state?.cost?.usd ?? null;
+  const parts = [];
+  if (Number.isFinite(costUsd)) parts.push(`$${Number(costUsd).toFixed(3)}`);
+  if (Number.isFinite(totalTokens)) parts.push(`${totalTokens} tokens`);
+  return parts.length ? parts.join(" · ") : "Unavailable";
 }
 
 function truncateForDisplay(value, limit = 200) {
@@ -434,6 +447,8 @@ async function render() {
     polylogueDebugLog: [],
     polylogueCaptureQueue: { entries: [], dropped_count: 0 },
     polylogueState: null,
+    polylogueSessionLedger: {},
+    polylogueConversationTimeline: {},
     receiverAuthToken: "",
     receiverBaseUrl: DEFAULT_RECEIVER
   });
@@ -444,9 +459,11 @@ async function render() {
   document.getElementById("receiver-token").value = stored.receiverAuthToken || "";
   document.getElementById("receiver").textContent = stored.receiverBaseUrl;
   const tab = await activeTab();
+  const openTabs = await chrome.tabs.query({});
   const currentProvider = providerFromUrl(tab?.url || "");
   document.getElementById("page").innerHTML = `${providerLogo(currentProvider)} <span>${escapeHtml(hostLabel(tab?.url || ""))}</span>`;
-  const state = stored.polylogueState;
+  const state = activeConversationState(tab, stored.polylogueState, stored.polylogueSessionLedger || {});
+  const status = operatorStatusForState(state || {});
   const requestNode = document.getElementById("receiver-request");
   const modeNode = document.getElementById("mode");
   const turnsNode = document.getElementById("turns");
@@ -454,11 +471,14 @@ async function render() {
   requestNode.textContent = state?.last_receiver_request_id || "--";
   modeNode.textContent = state?.capture_mode || state?.archive_state?.state || "--";
   document.getElementById("fidelity").textContent = fidelityLabel(state?.capture_mode);
+  document.getElementById("cost-tokens").textContent = costTokensLabel(state);
   renderAssetAcquisition(state?.asset_acquisition);
   const lastSession = state?.last_capture || {};
-  const turnCount = state?.archive_state?.indexed_message_count ?? state?.turn_count ?? lastSession.turn_count ?? "--";
-  const attachmentCount = state?.archive_state?.attachment_count ?? state?.attachment_count ?? lastSession.attachment_count ?? null;
-  turnsNode.textContent = attachmentCount === null ? String(turnCount) : `${turnCount} / ${attachmentCount} files`;
+  const capturedCount = state?.turn_count ?? lastSession.turn_count ?? null;
+  const visibleCount = state?.archive_state?.indexed_message_count ?? null;
+  turnsNode.textContent = capturedCount === null && visibleCount === null
+    ? "--"
+    : `${capturedCount ?? "--"} captured / ${visibleCount ?? "--"} visible`;
   updatedNode.textContent = state?.updated_at ? `${relativeAge(state.updated_at)} ago` : "--";
 
   const explanation = stateExplanation(state);
@@ -467,12 +487,31 @@ async function render() {
   document.getElementById("state").textContent = explanation.headline;
   document.getElementById("state-detail").textContent = explanation.detail;
   setBadge(badgeKind, badgeText);
+  const operatorState = document.getElementById("operator-state");
+  if (operatorState) {
+    operatorState.textContent = status.label;
+    operatorState.className = `state-chip ${status.tone}`;
+  }
+  const fidelityFlag = document.getElementById("fidelity-flag");
+  if (fidelityFlag) fidelityFlag.hidden = !status.partialFidelity;
+  const activeProvider = state?.provider || providerFromUrl(tab?.url || "");
+  const activeSessionId = state?.provider_session_id || tabState(tab, stored.polylogueSessionLedger || {}).sessionId;
+  renderTimeline(stored.polylogueConversationTimeline?.[conversationKey(activeProvider, activeSessionId)] || []);
+  renderOpenTabs(openTabs, stored.polylogueSessionLedger || {}, tab?.id);
   await refreshBackfills().catch(() => renderBackfill([]));
 }
 
 async function refreshStatus(reason = "popup_manual") {
   await chrome.runtime.sendMessage({ type: "polylogue.status", reason });
   await render();
+}
+
+async function currentActiveConversationState() {
+  const [stored, tab] = await Promise.all([
+    chrome.storage.local.get({ polylogueState: null, polylogueSessionLedger: {} }),
+    activeTab(),
+  ]);
+  return activeConversationState(tab, stored.polylogueState, stored.polylogueSessionLedger || {});
 }
 
 document.getElementById("check").addEventListener("click", async () => {
@@ -488,8 +527,7 @@ document.getElementById("sync-open-tabs").addEventListener("click", async () => 
 
 document.getElementById("copy-ref").addEventListener("click", async () => {
   await withAction("copy-ref", async () => {
-    const stored = await chrome.storage.local.get({ polylogueState: null });
-    const state = stored.polylogueState || {};
+    const state = await currentActiveConversationState();
     const provider = state.provider || state.last_capture?.provider;
     const providerSessionId = state.provider_session_id || state.last_capture?.provider_session_id;
     const ref = provider && providerSessionId ? `${provider}:${providerSessionId}` : "";
@@ -499,8 +537,11 @@ document.getElementById("copy-ref").addEventListener("click", async () => {
 
 document.getElementById("open-polylogue").addEventListener("click", async () => {
   await withAction("open-polylogue", async () => {
-    const stored = await chrome.storage.local.get({ polylogueState: null, receiverBaseUrl: DEFAULT_RECEIVER });
-    const providerSessionId = stored.polylogueState?.provider_session_id || stored.polylogueState?.last_capture?.provider_session_id;
+    const [stored, state] = await Promise.all([
+      chrome.storage.local.get({ receiverBaseUrl: DEFAULT_RECEIVER }),
+      currentActiveConversationState(),
+    ]);
+    const providerSessionId = state.provider_session_id || state.last_capture?.provider_session_id;
     const url = `${String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "")}/?q=${encodeURIComponent(providerSessionId || "")}`;
     await chrome.tabs.create({ url });
   }, { busy: "Opening" });
@@ -548,13 +589,11 @@ document.getElementById("capture").addEventListener("click", async () => {
       }));
     }
     if (!result?.ok) {
-      await chrome.storage.local.set({
-        polylogueState: {
-          online: false,
-          captured: false,
-          error: result?.error || "This page is not supported.",
-          updated_at: new Date().toISOString()
-        }
+      await chrome.runtime.sendMessage({
+        type: "polylogue.capturePageFailed",
+        error: result?.error || "capture_page_failed",
+        tab_id: tab.id,
+        tab_url: tab.url || tab.pendingUrl || null,
       });
     }
     await render();
