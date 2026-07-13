@@ -40,6 +40,7 @@ zero orphans and mutates nothing) until ``more_pending`` is ``False``.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -247,6 +248,7 @@ def reconcile_embedding_orphans(
                     "embedding orphan reconciliation apply requires an authoritative index schema: "
                     f"active index is v{actual_index_schema_version}, packaged index is v{INDEX_SCHEMA_VERSION}"
                 )
+            _assert_active_index_generation(index_path)
         conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
 
         scanned_message_meta_rows = _scalar(conn, "SELECT COUNT(*) FROM message_embeddings_meta")
@@ -299,6 +301,7 @@ def reconcile_embedding_orphans(
 
         if not dry_run:
             _assert_index_identity(index_path, expected_index_identity)
+            _assert_active_index_generation(index_path)
             affected_sessions: set[str] = set()
             for row in limited_message:
                 message_id = str(row["message_id"])
@@ -337,6 +340,7 @@ def reconcile_embedding_orphans(
                 removed_status_rows += max(0, cursor.rowcount)
 
             _assert_index_identity(index_path, expected_index_identity)
+            _assert_active_index_generation(index_path)
             conn.commit()
 
         samples: list[EmbeddingOrphanSample] = [
@@ -480,6 +484,55 @@ def _assert_index_identity(index_path: Path, expected: _IndexIdentity) -> None:
         raise RuntimeError(
             "active index generation changed during embedding orphan reconciliation; transaction rolled back"
         )
+
+
+def _assert_active_index_generation(index_path: Path) -> None:
+    """Require the active source-snapshotted generation for deletion truth."""
+
+    configured_root = index_path.parent
+    pointer = configured_root / ".index-active-pointer"
+    if not pointer.is_file():
+        raise RuntimeError("embedding orphan reconciliation requires an active index generation pointer")
+    try:
+        pointer_anchor = Path(pointer.read_text(encoding="utf-8").strip())
+        if (
+            not pointer_anchor.is_absolute()
+            or pointer_anchor.name != "index.db"
+            or ".index-generations" in pointer_anchor.parts
+        ):
+            raise ValueError("invalid active index generation pointer anchor")
+        pointed_path = pointer_anchor.resolve(strict=True)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            "embedding orphan reconciliation found an unreadable active index generation pointer"
+        ) from exc
+    if pointed_path != index_path.resolve(strict=True):
+        raise RuntimeError("embedding orphan reconciliation refuses a non-active index generation")
+
+    # The configured archive root may expose ``index.db`` as a symlink into a
+    # separately mounted database tier.  IndexGenerationStore deliberately
+    # keeps generation metadata beside the pointer anchor, not beside that
+    # public symlink, so resolve readiness from the anchor's parent.
+    generations = pointer_anchor.parent / ".index-generations"
+    metadata_paths = tuple(generations.glob("*/generation.json")) if generations.is_dir() else ()
+    if not metadata_paths:
+        raise RuntimeError("embedding orphan reconciliation requires active index generation readiness evidence")
+
+    for metadata_path in metadata_paths:
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            generation_path = Path(str(payload["index_path"])).resolve(strict=True)
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if generation_path == pointed_path:
+            if (
+                payload.get("state") == "active"
+                and isinstance(payload.get("source_snapshot"), str)
+                and payload["source_snapshot"]
+            ):
+                return
+            raise RuntimeError("embedding orphan reconciliation requires an active source-snapshotted index generation")
+    raise RuntimeError("embedding orphan reconciliation active index is missing generation readiness evidence")
 
 
 def _is_recent(timestamp_ms: int | None, now_ms: int, quiet_window_ms: int) -> bool:

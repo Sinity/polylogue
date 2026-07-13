@@ -18,6 +18,7 @@ from polylogue.storage.embeddings.progress import (
     finish_embedding_catchup_run,
     start_embedding_catchup_run,
 )
+from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
 
 
 class _Cfg:
@@ -149,13 +150,18 @@ def _run_status(db_path: Path, *args: str, cfg: _Cfg | None = None) -> dict[str,
     return _payload(result.output)
 
 
-def _run_status_text(db_path: Path, *, cfg: _Cfg | None = None) -> str:
+def _run_status_text(db_path: Path, *, detail: bool = False, cfg: _Cfg | None = None) -> str:
     runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
     with patch(
         "polylogue.config.load_polylogue_config",
         return_value=cfg or _Cfg(embedding_enabled=False, voyage_api_key=None),
     ):
-        result = runner.invoke(embed_command, ["status"], obj=_env(db_path), catch_exceptions=False)
+        result = runner.invoke(
+            embed_command,
+            ["status", *(["--detail"] if detail else [])],
+            obj=_env(db_path),
+            catch_exceptions=False,
+        )
     assert result.exit_code == 0
     return str(result.output)
 
@@ -212,6 +218,236 @@ def test_status_json_reports_archive_embedding_metadata_without_detail(tmp_path:
     assert payload["embedding_dimensions"] == {}
     assert payload["oldest_embedded_at"] is None
     assert payload["newest_embedded_at"] is None
+
+
+def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Path) -> None:
+    """Status must name an actionable terminal row rather than only its aggregate.
+
+    Anti-vacuity: omitting the text renderer leaves the exact failure id and
+    resolution command unreachable to the operator despite JSON detail.
+    """
+    db_anchor = tmp_path / "custom.sqlite"
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    with sqlite3.connect(index_db.with_name("embeddings.db")) as conn:
+        conn.execute(
+            """
+            CREATE TABLE embedding_failures (
+                failure_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                message_refs_json TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                error_class TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                retryable INTEGER NOT NULL,
+                lifecycle_state TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                resolved_at_ms INTEGER,
+                resolution_action TEXT,
+                resolution_note TEXT,
+                superseded_by TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO embedding_failures VALUES (
+                'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
+                '[\"codex-session:pending:m1\"]', 'voyage', 'voyage-4', 'provider_http_400',
+                'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
+                NULL, NULL, NULL, NULL
+            )
+            """
+        )
+
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["failure_count"] == 1
+    assert payload["terminal_failure_count"] == 1
+    assert payload["retryable_failure_count"] == 0
+    assert payload["failure_details"] == [
+        {
+            "failure_id": "embedding-failure:terminal",
+            "session_id": "codex-session:pending",
+            "origin": "codex-session",
+            "message_refs": ["codex-session:pending:m1"],
+            "provider": "voyage",
+            "model": "voyage-4",
+            "error_class": "provider_http_400",
+            "error_message": "Embedding generation failed: HTTP 400",
+            "retryable": False,
+            "lifecycle_state": "terminal",
+            "created_at": "2027-01-15T08:00:00+00:00",
+            "updated_at": "2027-01-15T08:00:00+00:00",
+            "resolution_action": None,
+            "supported_actions": ["acknowledge", "requeue", "supersede"],
+            "resolution_command": (
+                "polylogue ops embed resolve-failure embedding-failure:terminal"
+                " --action <acknowledge|requeue|supersede> --yes"
+            ),
+        }
+    ]
+    text = _run_status_text(db_anchor, detail=True, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    assert "embedding-failure:terminal: terminal" in text
+    assert "refs: codex-session:pending:m1" in text
+    assert "resolve: polylogue ops embed resolve-failure embedding-failure:terminal" in text
+
+
+def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path) -> None:
+    """The operator command must mutate the failure ledger and retry status.
+
+    Anti-vacuity: replacing the Click command with output-only formatting, or
+    removing its call to ``resolve_embedding_failure``, leaves the terminal row
+    active and the session excluded from a future embedding pass.
+    """
+    db_anchor = tmp_path / "custom.sqlite"
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    embeddings_db = index_db.with_name("embeddings.db")
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE embedding_failures (
+                failure_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                message_refs_json TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                error_class TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                retryable INTEGER NOT NULL,
+                lifecycle_state TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                resolved_at_ms INTEGER,
+                resolution_action TEXT,
+                resolution_note TEXT,
+                superseded_by TEXT
+            );
+            INSERT INTO embedding_status VALUES (
+                'codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400'
+            );
+            INSERT INTO embedding_failures VALUES (
+                'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
+                '["codex-session:pending:m1"]', 'voyage', 'voyage-4', 'provider_http_400',
+                'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
+                NULL, NULL, NULL, NULL
+            );
+            """
+        )
+
+    runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
+    result = runner.invoke(
+        embed_command,
+        [
+            "resolve-failure",
+            "embedding-failure:terminal",
+            "--action",
+            "requeue",
+            "--yes",
+            "--format",
+            "json",
+        ],
+        obj=_env(db_anchor),
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert _payload(result.output) == {
+        "failure_id": "embedding-failure:terminal",
+        "lifecycle_state": "resolved",
+        "resolution_action": "requeue",
+        "resolution_note": None,
+        "session_id": "codex-session:pending",
+        "superseded_by": None,
+    }
+    with sqlite3.connect(embeddings_db) as conn:
+        assert conn.execute(
+            "SELECT lifecycle_state FROM embedding_failures WHERE failure_id = 'embedding-failure:terminal'"
+        ).fetchone() == ("resolved",)
+        assert conn.execute(
+            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = 'codex-session:pending'"
+        ).fetchone() == (1, None)
+
+
+def test_status_excludes_acknowledged_terminal_failure_from_retry_backlog(tmp_path: Path) -> None:
+    """An acknowledgement clears critical debt without falsifying coverage.
+
+    Anti-vacuity: removing the blocked-session lifecycle query makes detail
+    status report this unembedded session as complete, while summary status
+    presents it as a retryable backlog even though the writer excludes it.
+    """
+    db_anchor = tmp_path / "custom.sqlite"
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    embeddings_db = index_db.with_name("embeddings.db")
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("DELETE FROM messages WHERE session_id = 'codex-session:complete'")
+        conn.execute("DELETE FROM sessions WHERE session_id = 'codex-session:complete'")
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.execute("DELETE FROM message_embeddings WHERE message_id = 'codex-session:complete:m1'")
+        conn.execute("DELETE FROM message_embeddings_meta WHERE message_id = 'codex-session:complete:m1'")
+        conn.execute("DELETE FROM embedding_status WHERE session_id = 'codex-session:complete'")
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE embedding_failures (
+                failure_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                message_refs_json TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                error_class TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                retryable INTEGER NOT NULL,
+                lifecycle_state TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                resolved_at_ms INTEGER,
+                resolution_action TEXT,
+                resolution_note TEXT,
+                superseded_by TEXT
+            );
+            INSERT INTO embedding_status VALUES (
+                'codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400'
+            );
+            INSERT INTO embedding_failures VALUES (
+                'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
+                '["codex-session:pending:m1"]', 'voyage', 'voyage-4', 'provider_http_400',
+                'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
+                NULL, NULL, NULL, NULL
+            );
+            """
+        )
+        resolve_embedding_failure(
+            conn,
+            failure_id="embedding-failure:terminal",
+            action="acknowledge",
+            resolved_at_ms=1_800_000_001_000,
+        )
+
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["failure_count"] == 0
+    assert payload["terminal_failure_count"] == 0
+    assert payload["blocked_sessions"] == 1
+    assert payload["pending_sessions"] == 0
+    assert payload["pending_messages"] == 0
+    assert payload["embedding_coverage_percent"] == 0.0
+    assert payload["status"] == "partial"
+    assert payload["next_action"] == {
+        "code": "acknowledged_terminal_exclusions",
+        "command": None,
+        "reason": (
+            "Some sessions have acknowledged or superseded terminal embedding failures; "
+            "they are retained as audit evidence but excluded from automatic retry."
+        ),
+    }
 
 
 def test_status_json_detail_does_not_derive_coverage_from_analyzed_prose_estimate(tmp_path: Path) -> None:

@@ -1468,3 +1468,161 @@ class TestEmbeddingStatsLockedConnection:
         assert stats.embedded_sessions == 0
         assert stats.embedded_messages == 0
         assert stats.pending_sessions == 0
+
+
+def _write_archive_session(archive_root: Path, *, native_id: str, embeddable: bool) -> str:
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    text = "This archive message is long enough to embed for semantic search."
+    with ArchiveStore(archive_root) as archive:
+        return archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=native_id,
+                title="failure resolution session",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text=text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                        material_origin=(MaterialOrigin.HUMAN_AUTHORED if embeddable else MaterialOrigin.TOOL_RESULT),
+                    )
+                ],
+            )
+        )
+
+
+def _seed_open_archive_failure(embeddings_db: Path, session_id: str) -> str:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        failure = record_embedding_failure(
+            conn,
+            session_id=session_id,
+            origin="codex-session",
+            message_refs=(f"{session_id}:m1",),
+            provider="voyage",
+            model="voyage-4",
+            error_class="provider_error",
+            error_message="Embedding generation failed: HTTP 500",
+            retryable=True,
+        )
+        return failure.failure_id
+    finally:
+        conn.close()
+
+
+def _failure_lifecycle_state(embeddings_db: Path, failure_id: str) -> str:
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        row = conn.execute(
+            "SELECT lifecycle_state FROM embedding_failures WHERE failure_id = ?", (failure_id,)
+        ).fetchone()
+        assert row is not None
+        return str(row[0])
+    finally:
+        conn.close()
+
+
+def test_archive_success_outcomes_resolve_open_failures(tmp_path: Path) -> None:
+    """Every terminal success outcome clears prior failure debt.
+
+    Anti-vacuity: dropping resolve_open_embedding_failures_for_session from
+    _record_archive_embedding_success leaves both failures active, so a session
+    that later embeds (or turns out to have nothing embeddable) reports phantom
+    current debt forever.
+    """
+    archive_root = tmp_path / "archive"
+    embedded_session = _write_archive_session(archive_root, native_id="embed-ok", embeddable=True)
+    noop_session = _write_archive_session(archive_root, native_id="embed-noop", embeddable=False)
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    embedded_failure = _seed_open_archive_failure(embeddings_db, embedded_session)
+    noop_failure = _seed_open_archive_failure(embeddings_db, noop_session)
+
+    embedded_outcome = embed_archive_session_sync(index_db, _FakeV1VectorProvider(), embedded_session)
+    noop_outcome = embed_archive_session_sync(index_db, _FakeV1VectorProvider(), noop_session)
+
+    assert embedded_outcome.status == "embedded"
+    assert noop_outcome.status == "no_embeddable_messages"
+    assert _failure_lifecycle_state(embeddings_db, embedded_failure) == "resolved"
+    assert _failure_lifecycle_state(embeddings_db, noop_failure) == "resolved"
+
+
+def test_archive_local_fault_is_not_ledgered_as_provider_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Local storage faults must not masquerade as Voyage provider failures.
+
+    Anti-vacuity: recording every materialization exception with
+    provider="voyage" falsifies the audit ledger; the production handler must
+    branch on whether the provider call itself raised.
+    """
+    from polylogue.storage.sqlite.archive_tiers import embedding_write as embedding_write_module
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    archive_root = tmp_path / "archive"
+    session_id = _write_archive_session(archive_root, native_id="embed-local-fault", embeddable=True)
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+
+    def _raise_write_fault(*args: object, **kwargs: object) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(embedding_write_module, "upsert_message_embeddings", _raise_write_fault)
+    outcome = embed_archive_session_sync(index_db, _FakeV1VectorProvider(), session_id)
+    assert outcome.status == "error"
+
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        provider, error_class, retryable = conn.execute(
+            "SELECT provider, error_class, retryable FROM embedding_failures WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert provider == "local"
+    assert error_class == "internal_error"
+    assert bool(retryable) is True
+
+
+def test_archive_provider_fault_keeps_provider_attribution(tmp_path: Path) -> None:
+    """A genuine provider exception still ledgers as a Voyage failure."""
+    archive_root = tmp_path / "archive"
+    session_id = _write_archive_session(archive_root, native_id="embed-provider-fault", embeddable=True)
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+
+    provider = _FakeV1VectorProvider()
+
+    def _raise_provider_fault(texts: list[str], input_type: str = "document") -> list[list[float]]:
+        raise RuntimeError("Embedding generation failed: HTTP 429")
+
+    provider._get_embeddings = _raise_provider_fault  # type: ignore[method-assign]
+    outcome = embed_archive_session_sync(index_db, provider, session_id)
+    assert outcome.status == "error"
+
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        recorded_provider, error_class = conn.execute(
+            "SELECT provider, error_class FROM embedding_failures WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert recorded_provider == "voyage"
+    assert error_class == "provider_http_429"

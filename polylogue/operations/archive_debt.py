@@ -935,7 +935,7 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
-    info = embedding_readiness_info(index_db, detail=False)
+    info = embedding_readiness_info(index_db, detail=True)
     rows: list[ArchiveDebtRowPayload] = []
     config_enabled = _bool_value(info.get("embedding_config_enabled"))
     has_key = _bool_value(info.get("embedding_has_voyage_key"))
@@ -945,6 +945,7 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
     pending_messages_exact = _bool_value(info.get("embedding_pending_message_count_exact"))
     stale = _int_value(info.get("embedding_stale_count")) or 0
     failures = _int_value(info.get("embedding_failure_count")) or 0
+    terminal_failures = _int_value(info.get("embedding_terminal_failure_count")) or 0
 
     if config_enabled and not has_key:
         rows.append(
@@ -975,13 +976,18 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
                 severity="critical",
                 status="actionable" if enabled else "blocked",
                 owner="daemon",
-                summary=f"{failures} embedding catch-up failure(s) recorded",
+                summary=f"{failures} active embedding failure(s) recorded",
                 evidence_refs=(f"archive-tier:{index_db.with_name('embeddings.db')}",),
                 actions=(
                     ArchiveDebtActionPayload(
-                        label="Inspect embedding status",
+                        label="Inspect active embedding failures",
                         command=("polylogue", "ops", "embed", "status", "--detail"),
                     ),
+                ),
+                caveats=(
+                    (f"{terminal_failures} terminal failure(s) require explicit acknowledge, supersede, or requeue.",)
+                    if terminal_failures
+                    else ("Retryable failures remain eligible for automatic catch-up.",)
                 ),
             )
         )
