@@ -187,6 +187,7 @@ class BrowserCaptureOriginRepairItem:
     semantic_historical_raw_ids: tuple[str, ...] = ()
     semantic_head_snapshot: dict[str, object] | None = None
     semantic_witness_digest: str | None = None
+    terminal_byte_witness_digest: str | None = None
     evidence_digest: str | None = None
     proof_digest: str | None = None
     repaired: bool = False
@@ -1353,7 +1354,15 @@ def _browser_origin_item_payload(item: BrowserCaptureOriginRepairItem) -> dict[s
     payload = {
         key: value
         for key, value in dataclasses.asdict(item).items()
-        if key not in {"status", "reason", "proof_digest", "repaired", "copy_forward_source_complete"}
+        if key
+        not in {
+            "status",
+            "reason",
+            "proof_digest",
+            "repaired",
+            "copy_forward_source_complete",
+            "terminal_byte_witness_digest",
+        }
     }
     # Receipts are JSONL.  Normalize tuples now so an in-memory item has the
     # identical shape when it is compared to a re-read planned record.
@@ -1383,10 +1392,21 @@ def _browser_origin_semantic_witness_bindings(items: list[BrowserCaptureOriginRe
     ]
 
 
+def _browser_origin_terminal_byte_witness_bindings(
+    items: list[BrowserCaptureOriginRepairItem],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "raw_id": item.raw_id,
+            "copy_forward_raw_id": item.copy_forward_raw_id,
+            "terminal_byte_witness_digest": item.terminal_byte_witness_digest,
+        }
+        for item in items
+    ]
+
+
 def _browser_origin_copy_forward_detail(item: BrowserCaptureOriginRepairItem) -> str:
     """Encode the proven semantic-head snapshot in the immutable copy receipt."""
-    if item.semantic_head_snapshot is None:
-        return f"browser_capture_origin_copy_forward:{item.raw_id}"
     return json.dumps(
         {
             "kind": "browser_capture_origin_copy_forward_v2",
@@ -1402,17 +1422,21 @@ def _browser_origin_semantic_head_from_copy_detail(
     detail: object,
     *,
     raw_id: str,
-) -> dict[str, object] | None:
+) -> tuple[bool, dict[str, object] | None]:
     """Read a prior semantic-head snapshot only from the immutable index receipt."""
     try:
         payload = json.loads(str(detail))
     except (TypeError, ValueError, json.JSONDecodeError):
-        return None
+        return False, None
     if not isinstance(payload, dict) or payload.get("kind") != "browser_capture_origin_copy_forward_v2":
-        return None
+        return False, None
     snapshot = payload.get("semantic_head")
-    if not isinstance(snapshot, dict) or payload.get("raw_id") != raw_id:
-        return None
+    if payload.get("raw_id") != raw_id or set(payload) != {"kind", "raw_id", "semantic_head"}:
+        return False, None
+    if snapshot is None:
+        return True, None
+    if not isinstance(snapshot, dict):
+        return False, None
     expected_keys = {
         "session_id",
         "accepted_raw_id",
@@ -1423,7 +1447,7 @@ def _browser_origin_semantic_head_from_copy_detail(
         "acquisition_generation",
     }
     if set(snapshot) != expected_keys:
-        return None
+        return False, None
     try:
         if (
             not isinstance(snapshot["session_id"], str)
@@ -1437,10 +1461,10 @@ def _browser_origin_semantic_head_from_copy_detail(
             or not isinstance(snapshot["acquisition_generation"], int)
             or snapshot["acquisition_generation"] < 0
         ):
-            return None
+            return False, None
     except ValueError:
-        return None
-    return cast(dict[str, object], snapshot)
+        return False, None
+    return True, cast(dict[str, object], snapshot)
 
 
 def _browser_origin_copy_raw_id(
@@ -2204,7 +2228,7 @@ def _inspect_browser_capture_origin_mismatch(
         """
         SELECT session_id, accepted_raw_id, accepted_source_revision,
                accepted_content_hash, accepted_frontier_kind, accepted_frontier,
-               acquisition_generation
+               acquisition_generation, append_end_offset, decided_at_ms
         FROM raw_revision_heads WHERE logical_source_key = ?
         """,
         (canonical_key,),
@@ -2240,9 +2264,9 @@ def _inspect_browser_capture_origin_mismatch(
     ).fetchone()
     copy_application = conn.execute(
         """
-        SELECT session_id, logical_source_key, source_revision, acquisition_generation,
+        SELECT decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation,
                decision, accepted_raw_id, accepted_source_revision, accepted_content_hash,
-               baseline_raw_id, detail
+               baseline_raw_id, predecessor_raw_id, append_end_offset, detail, decided_at_ms
         FROM raw_revision_applications
         WHERE raw_id = ? AND logical_source_key = ?
         """,
@@ -2295,21 +2319,28 @@ def _inspect_browser_capture_origin_mismatch(
         and canonical_head is not None
         and str(canonical_head["session_id"]) == session_id
         and str(canonical_head["accepted_raw_id"]) == copy_raw_id
+        and str(canonical_head["accepted_source_revision"]) == blob_hash_hex
         and _bytes_value(canonical_head["accepted_content_hash"]) == accepted_hash
+        and str(canonical_head["accepted_frontier_kind"]) == "byte"
+        and int(canonical_head["accepted_frontier"]) == blob_size
+        and int(canonical_head["acquisition_generation"]) == 0
+        and canonical_head["append_end_offset"] is None
         and str(indexed["raw_id"]) == copy_raw_id
         and copy_application is not None
-        and tuple(copy_application)[:-1]
-        == (
-            session_id,
-            canonical_key,
-            blob_hash_hex,
-            0,
-            ApplicationDecision.SELECTED_BASELINE.value,
-            copy_raw_id,
-            blob_hash_hex,
-            accepted_hash,
-            copy_raw_id,
-        )
+        and _revision_application_decision_id_is_exact(copy_application)
+        and str(copy_application["session_id"]) == session_id
+        and str(copy_application["logical_source_key"]) == canonical_key
+        and str(copy_application["source_revision"]) == blob_hash_hex
+        and int(copy_application["acquisition_generation"]) == 0
+        and str(copy_application["decision"]) == ApplicationDecision.SELECTED_BASELINE.value
+        and str(copy_application["accepted_raw_id"]) == copy_raw_id
+        and str(copy_application["accepted_source_revision"]) == blob_hash_hex
+        and _bytes_value(copy_application["accepted_content_hash"]) == accepted_hash
+        and str(copy_application["baseline_raw_id"]) == copy_raw_id
+        and copy_application["predecessor_raw_id"] is None
+        and copy_application["append_end_offset"] is None
+        and int(copy_application["decided_at_ms"]) >= 0
+        and int(canonical_head["decided_at_ms"]) == int(copy_application["decided_at_ms"])
     )
     repair_strategy = "copy_forward"
     replacement_raw_id = copy_raw_id
@@ -2321,6 +2352,14 @@ def _inspect_browser_capture_origin_mismatch(
     semantic_historical_raw_ids: tuple[str, ...] = ()
     semantic_head_snapshot: dict[str, object] | None = None
     semantic_witness_digest: str | None = None
+    terminal_byte_witness_digest: str | None = None
+    if (
+        copy_raw is not None
+        and copy_forward_source_complete
+        and str(indexed["raw_id"]) == copy_raw_id
+        and not copy_forward_terminal
+    ):
+        return _browser_origin_ineligible(raw_id, "copy-forward terminal byte authority is not exact")
     if canonical_head is not None and not copy_forward_terminal:
         if _canonical_browser_origin_head_is_exact(
             conn,
@@ -2382,11 +2421,12 @@ def _inspect_browser_capture_origin_mismatch(
         return _browser_origin_ineligible(raw_id, "indexed session points at unrelated raw evidence")
     if copy_forward_terminal:
         assert copy_application is not None
-        terminal_snapshot = _browser_origin_semantic_head_from_copy_detail(copy_application["detail"], raw_id=raw_id)
-        if terminal_snapshot is None:
-            if str(copy_application["detail"]) != f"browser_capture_origin_copy_forward:{raw_id}":
-                return _browser_origin_ineligible(raw_id, "copy-forward receipt detail is not exact")
-        else:
+        detail_is_exact, terminal_snapshot = _browser_origin_semantic_head_from_copy_detail(
+            copy_application["detail"], raw_id=raw_id
+        )
+        if not detail_is_exact:
+            return _browser_origin_ineligible(raw_id, "copy-forward receipt detail is not exact")
+        if terminal_snapshot is not None:
             terminal_witness = _canonical_browser_origin_head_is_semantically_equivalent(
                 conn,
                 archive_root=archive_root,
@@ -2405,6 +2445,7 @@ def _inspect_browser_capture_origin_mismatch(
             semantic_historical_raw_ids = terminal_witness.historical_raw_ids
             semantic_head_snapshot = terminal_witness.head_snapshot
             semantic_witness_digest = terminal_witness.digest
+        terminal_byte_witness_digest = _authority_rows_digest([canonical_head], [copy_application])
     evidence_rows = conn.execute(
         """
         SELECT decision_id, raw_id, logical_source_key, decision, accepted_raw_id,
@@ -2447,6 +2488,7 @@ def _inspect_browser_capture_origin_mismatch(
         semantic_historical_raw_ids=semantic_historical_raw_ids,
         semantic_head_snapshot=semantic_head_snapshot,
         semantic_witness_digest=semantic_witness_digest,
+        terminal_byte_witness_digest=terminal_byte_witness_digest,
         evidence_digest=evidence_digest,
     )
     return dataclasses.replace(item, proof_digest=_browser_origin_item_digest(item))
@@ -2517,6 +2559,8 @@ def _lock_browser_origin_receipt(path: Path, items: list[BrowserCaptureOriginRep
                         or applied.get("target_hash") != target_hash
                         or applied.get("replacement_raw_ids") != [item.replacement_raw_id for item in items]
                         or applied.get("semantic_witness_bindings") != _browser_origin_semantic_witness_bindings(items)
+                        or applied.get("terminal_byte_witness_bindings")
+                        != _browser_origin_terminal_byte_witness_bindings(items)
                     ):
                         raise RuntimeError("existing repair receipt has a conflicting terminal record")
                     terminal = True
@@ -2552,6 +2596,7 @@ def _finish_browser_origin_receipt(
         "applied_at_ms": int(time.time() * 1000),
         "replacement_raw_ids": [item.replacement_raw_id for item in items],
         "semantic_witness_bindings": _browser_origin_semantic_witness_bindings(items),
+        "terminal_byte_witness_bindings": _browser_origin_terminal_byte_witness_bindings(items),
     }
     if receipt.torn:
         if not receipt.torn.endswith(b"\n"):

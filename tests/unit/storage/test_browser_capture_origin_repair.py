@@ -688,6 +688,7 @@ def test_browser_origin_repair_accepts_exact_semantic_superseded_sibling(tmp_pat
     assert applied.items[0].semantic_canonical_raw_id == semantic_raw_id
     assert applied.items[0].semantic_historical_raw_ids == (sibling_raw_id,)
     assert applied.items[0].semantic_witness_digest == item.semantic_witness_digest
+    assert applied.items[0].terminal_byte_witness_digest is not None
 
     reapplied = repair_browser_capture_origin_mismatches(
         _config(tmp_path),
@@ -699,6 +700,59 @@ def test_browser_origin_repair_accepts_exact_semantic_superseded_sibling(tmp_pat
 
     assert reapplied.repaired_count == 0
     assert reapplied.items[0].semantic_witness_digest == item.semantic_witness_digest
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
+
+
+@pytest.mark.parametrize("mutation", ["head_frontier", "head_revision", "receipt_id", "receipt_time"])
+def test_browser_origin_repair_refuses_mutated_terminal_byte_authority(tmp_path: Path, mutation: str) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
+    _seed_semantic_superseded_sibling(tmp_path, semantic_raw_id)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+    receipt = tmp_path / "terminal-byte-authority.jsonl"
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [mismatched_raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    copy_raw_id = applied.items[0].copy_forward_raw_id
+    assert copy_raw_id is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source_count = source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        if mutation == "head_frontier":
+            index.execute(
+                "UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1 WHERE accepted_raw_id = ?",
+                (copy_raw_id,),
+            )
+        elif mutation == "head_revision":
+            index.execute(
+                "UPDATE raw_revision_heads SET accepted_source_revision = ? WHERE accepted_raw_id = ?",
+                ("0" * 64, copy_raw_id),
+            )
+        elif mutation == "receipt_id":
+            index.execute(
+                "UPDATE raw_revision_applications SET decision_id = ? WHERE raw_id = ?",
+                ("e" * 64, copy_raw_id),
+            )
+        else:
+            index.execute(
+                "UPDATE raw_revision_applications SET decided_at_ms = decided_at_ms + 1 WHERE raw_id = ?",
+                (copy_raw_id,),
+            )
+
+    with pytest.raises(RuntimeError, match="ineligible"):
+        repair_browser_capture_origin_mismatches(
+            _config(tmp_path),
+            [mismatched_raw_id],
+            apply=True,
+            receipt_path=receipt,
+            proof_digest=dry_run.proof_digest,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (source_count,)
     assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
 
 
