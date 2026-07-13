@@ -587,7 +587,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         code_refs=(
             "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.update_metadata",
             "polylogue.api.archive.PolylogueArchiveMixin.update_metadata",
-            "polylogue.mcp.server_mutation_tools.set_metadata",
+            "polylogue.mcp.server_personal_state_tools.set_metadata",
         ),
         surfaces=("facade", "mcp", "api"),
         mutates_state=True,
@@ -602,7 +602,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         consumes=("sessions", "assertions"),
         produces=("assertions",),
         path_targets=("metadata-mutation-loop",),
-        code_refs=("polylogue.mcp.server_mutation_tools.delete_metadata",),
+        code_refs=("polylogue.mcp.server_personal_state_tools.delete_metadata",),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,

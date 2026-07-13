@@ -1,7 +1,7 @@
 """Per-tool contract coverage for the MCP mutation-tools surface (#1294).
 
 Pins three durable contracts for every ``@mcp.tool()`` registered by
-``polylogue.mcp.server_mutation_tools.register_mutation_tools``:
+the modules composed by ``polylogue.mcp.server_mutation_tools``:
 
 1. **Argument validation** — each tool has a registered handler, the
    required parameters are mandatory (omitting them raises ``TypeError``),
@@ -52,6 +52,13 @@ from tests.infra.mcp import (
 # ---------------------------------------------------------------------------
 
 
+def _mutation_registration_modules() -> tuple[object, ...]:
+    """Return every module reached by the mutation registration seam."""
+    from polylogue.mcp import server_mutation_tools, server_personal_state_tools
+
+    return (server_mutation_tools, server_personal_state_tools)
+
+
 def _discover_mutation_tool_names() -> frozenset[str]:
     """Discover every ``@mcp.tool()`` registered by
     ``register_mutation_tools``.
@@ -68,34 +75,34 @@ def _discover_mutation_tool_names() -> frozenset[str]:
     read_tools = set(read._tool_manager._tools.keys())
     # Mutation tools are in admin but not in read. Maintenance tools are
     # admin-only too, but they live in server_maintenance_tools and are
-    # excluded by importing the registered names from the mutation module.
-    from polylogue.mcp import server_mutation_tools
-
-    src = inspect.getsource(server_mutation_tools)
+    # excluded by scanning only the modules reached by the mutation seam.
     declared: set[str] = set()
-    for line in src.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("async def ") and "(" in stripped:
-            name = stripped[len("async def ") :].split("(", 1)[0]
-            if name in admin_tools and name not in read_tools:
-                declared.add(name)
+    for module in _mutation_registration_modules():
+        for line in inspect.getsource(module).splitlines():
+            stripped = line.strip()
+            if stripped.startswith("async def ") and "(" in stripped:
+                name = stripped[len("async def ") :].split("(", 1)[0]
+                if name in admin_tools and name not in read_tools:
+                    declared.add(name)
     return frozenset(declared)
 
 
 MUTATION_TOOL_NAMES: frozenset[str] = _discover_mutation_tool_names()
 _MUTATION_SCHEMA = Path("docs/schemas/cli-output/mutation-result.schema.json")
+_MUTATION_TOOL_CODE_REF_PREFIXES = (
+    "polylogue.mcp.server_mutation_tools.",
+    "polylogue.mcp.server_personal_state_tools.",
+)
 
 
 def _discover_mutation_result_tool_names() -> frozenset[str]:
     """Discover mutation tools whose success path emits MutationResultPayload."""
-    from polylogue.mcp import server_mutation_tools
-
-    src = inspect.getsource(server_mutation_tools)
     names: set[str] = set()
-    for chunk in src.split("    @mcp.tool()"):
-        match = re.search(r"async def ([a-zA-Z_][a-zA-Z0-9_]*)\(", chunk)
-        if match and "MutationResultPayload(" in chunk:
-            names.add(match.group(1))
+    for module in _mutation_registration_modules():
+        for chunk in inspect.getsource(module).split("    @mcp.tool()"):
+            match = re.search(r"async def ([a-zA-Z_][a-zA-Z0-9_]*)\(", chunk)
+            if match and "MutationResultPayload(" in chunk:
+                names.add(match.group(1))
     return frozenset(names)
 
 
@@ -347,6 +354,28 @@ class TestMutationToolDiscovery:
     vice versa.
     """
 
+    def test_personal_state_tools_depend_on_parent_composition_seam(self) -> None:
+        """The parent registrar owns the only route into the extracted tools."""
+        from polylogue.mcp import server_personal_state_tools
+        from polylogue.mcp.server import build_server
+
+        registered = cast(MCPServerUnderTest, build_server(role="admin"))
+        registered_names = set(registered._tool_manager._tools)
+        personal_names = {
+            line.strip()[len("async def ") :].split("(", 1)[0]
+            for line in inspect.getsource(server_personal_state_tools).splitlines()
+            if line.strip().startswith("async def ")
+            and "(" in line
+            and line.strip()[len("async def ") :].split("(", 1)[0] in registered_names
+        }
+        assert personal_names
+
+        with patch("polylogue.mcp.server_mutation_tools.register_personal_state_tools") as registrar:
+            suppressed = cast(MCPServerUnderTest, build_server(role="admin"))
+
+        registrar.assert_called_once()
+        assert personal_names.isdisjoint(suppressed._tool_manager._tools), sorted(personal_names)
+
     def test_every_mutation_tool_is_in_matrix(self) -> None:
         missing = MUTATION_TOOL_NAMES - set(TOOL_MATRIX.keys())
         assert not missing, (
@@ -379,8 +408,8 @@ class TestMutationToolDiscovery:
 
     @pytest.mark.parametrize("spec", _MCP_MUTATION_OPERATION_SPECS, ids=lambda spec: spec.name)
     def test_mcp_mutation_operation_spec_names_registered_tool(self, spec: Any) -> None:
-        tool_refs = tuple(ref for ref in spec.code_refs if ref.startswith("polylogue.mcp.server_mutation_tools."))
-        assert tool_refs, f"{spec.name} declares mcp surface but no server_mutation_tools code_ref"
+        tool_refs = tuple(ref for ref in spec.code_refs if ref.startswith(_MUTATION_TOOL_CODE_REF_PREFIXES))
+        assert tool_refs, f"{spec.name} declares mcp surface but no mutation registrar code_ref"
         referenced_tools = {ref.rsplit(".", 1)[-1] for ref in tool_refs}
         missing = referenced_tools - MUTATION_TOOL_NAMES
         assert not missing, (
