@@ -162,7 +162,10 @@ def backfill_historical_revision_evidence(
             revisions: list[MembershipRevision] = []
             projections = {}
             retained_bytes = 0
+            candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
             for raw_id, session, payload_bytes in spill.for_logical_key(logical_key):
+                if raw_id not in candidate_raw_ids:
+                    continue
                 projection = session_revision_projection(session)
                 member_sessions[raw_id] = session
                 projections[raw_id] = projection
