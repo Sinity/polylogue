@@ -2734,7 +2734,7 @@ def _legacy_browser_checkpoint_wal(db: Path, *, name: str) -> None:
 def _legacy_browser_validate_atomic_file_set(source_db: Path, index_db: Path) -> None:
     source = source_db.resolve(strict=True)
     index = index_db.resolve(strict=True)
-    if source.parent != index.parent or source.stat().st_dev != index.stat().st_dev:
+    if source.stat().st_dev != index.stat().st_dev:
         raise RuntimeError("legacy browser repair requires source.db and index.db in one archive filesystem")
 
 
