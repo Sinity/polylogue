@@ -23,6 +23,7 @@ from polylogue.sources.revision_backfill import _parse_one, backfill_historical_
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repair import (
     repair_browser_capture_origin_mismatches,
+    repair_byte_proven_browser_capture_null_native_ids,
     repair_legacy_browser_capture_missing_native_ids,
     repair_quarantined_accepted_raws,
 )
@@ -81,16 +82,21 @@ def _browser_payload(native_id: str = "browser-origin-one") -> bytes:
     return json.dumps(payload, sort_keys=True).encode()
 
 
-def _seed_mismatched_browser_head(root: Path) -> str:
+def _seed_mismatched_browser_head(root: Path, native_id: str = "browser-origin-one") -> str:
     initialize_active_archive_root(root)
-    payload = _browser_payload()
-    session = _parse_one(Provider.CHATGPT, payload, "browser-capture/chatgpt/one.json")[0]
+    source_path = (
+        "browser-capture/chatgpt/one.json"
+        if native_id == "browser-origin-one"
+        else f"browser-capture/chatgpt/{native_id}.json"
+    )
+    payload = _browser_payload(native_id)
+    session = _parse_one(Provider.CHATGPT, payload, source_path)[0]
     accepted_hash = bytes.fromhex(session_content_hash(session))
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.UNKNOWN,
             payload=payload,
-            source_path="browser-capture/chatgpt/one.json",
+            source_path=source_path,
             acquired_at_ms=1,
         )
         blob_hash = (
@@ -102,7 +108,7 @@ def _seed_mismatched_browser_head(root: Path) -> str:
         _stored_raw, session_id = archive.write_parsed_for_retained_raw(
             session,
             raw_id=raw_id,
-            source_path="browser-capture/chatgpt/one.json",
+            source_path=source_path,
             acquired_at_ms=1,
             revision_authoritative=True,
         )
@@ -111,7 +117,7 @@ def _seed_mismatched_browser_head(root: Path) -> str:
             RevisionApplicationReceipt(
                 raw_id=raw_id,
                 session_id=session_id,
-                logical_source_key="unknown:browser-origin-one",
+                logical_source_key=f"unknown:{native_id}",
                 source_revision=blob_hash,
                 acquisition_generation=0,
                 decision=ApplicationDecision.SELECTED_BASELINE,
@@ -131,13 +137,12 @@ def _seed_mismatched_browser_head(root: Path) -> str:
             """
             UPDATE raw_sessions
             SET origin = 'unknown-export',
-                native_id = 'browser-origin-one',
-                logical_source_key = 'unknown:browser-origin-one', revision_kind = 'full',
+                native_id = ?, logical_source_key = ?, revision_kind = 'full',
                 source_revision = lower(hex(blob_hash)), acquisition_generation = 0,
                 revision_authority = 'quarantined'
             WHERE raw_id = ?
             """,
-            (raw_id,),
+            (native_id, f"unknown:{native_id}", raw_id),
         )
         source.execute(
             """
@@ -145,10 +150,10 @@ def _seed_mismatched_browser_head(root: Path) -> str:
                 raw_id, logical_source_key, provider_session_id, source_revision,
                 normalized_content_hash, message_count, acquisition_generation,
                 revision_authority, decision, decided_at_ms
-            ) VALUES (?, 'chatgpt:browser-origin-one', 'browser-origin-one', ?, ?, 1, 0,
+            ) VALUES (?, ?, ?, ?, ?, 1, 0,
                       'quarantined', NULL, NULL)
             """,
-            (raw_id, accepted_hash.hex(), accepted_hash),
+            (raw_id, f"chatgpt:{native_id}", native_id, accepted_hash.hex(), accepted_hash),
         )
         source.execute(
             """
@@ -165,6 +170,22 @@ def _seed_legacy_browser_head_without_native_id(root: Path) -> str:
     raw_id = _seed_mismatched_browser_head(root)
     with closing(sqlite3.connect(root / "source.db")) as source, source:
         source.execute("UPDATE raw_sessions SET native_id = NULL WHERE raw_id = ?", (raw_id,))
+    return raw_id
+
+
+def _seed_byte_proven_browser_head_without_native_id(root: Path, native_id: str = "browser-origin-one") -> str:
+    raw_id = _seed_mismatched_browser_head(root, native_id)
+    with closing(sqlite3.connect(root / "source.db")) as source, source:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET native_id = NULL, baseline_raw_id = raw_id, revision_authority = 'byte_proven'
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+        source.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (raw_id,))
+        source.execute("DELETE FROM raw_membership_census WHERE raw_id = ?", (raw_id,))
     return raw_id
 
 
@@ -1839,3 +1860,186 @@ def test_browser_capture_origin_live_membership_defers_all_quarantined_rows(tmp_
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         processor._apply_membership_sessions(archive, copy_raw_id, [session], acquired_at_ms=7)
         assert archive.raw_revision_head_raw_id("chatgpt:browser-origin-one") == copy_raw_id
+
+
+@pytest.mark.parametrize(
+    "native_id",
+    (
+        "no-canonical-773bbbf1",
+        "no-canonical-bd47782e",
+        "no-canonical-f43a203a",
+    ),
+)
+def test_byte_proven_browser_rekey_copy_forwards_each_no_head_shape(tmp_path: Path, native_id: str) -> None:
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path, native_id)
+    if native_id == "no-canonical-773bbbf1":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute("ALTER TABLE raw_sessions DROP COLUMN capture_mode")
+            source.execute("PRAGMA user_version = 7")
+    active_index = _stage_active_index_generation(tmp_path)
+    old_evidence = {
+        ("source", table): _rows(
+            tmp_path, "source", table, "raw_id = ?" if table != "blob_refs" else "ref_id = ?", (raw_id,)
+        )
+        for table in ("raw_sessions", "blob_refs", "raw_session_memberships", "raw_membership_census")
+    } | {
+        ("index", "raw_revision_heads"): _rows(
+            tmp_path, "index", "raw_revision_heads", "accepted_raw_id = ?", (raw_id,)
+        ),
+        ("index", "raw_revision_applications"): _rows(
+            tmp_path, "index", "raw_revision_applications", "raw_id = ?", (raw_id,)
+        ),
+    }
+
+    dry_run = repair_byte_proven_browser_capture_null_native_ids(_config(tmp_path), [raw_id])
+
+    assert dry_run.eligible_count == 1, dry_run.items[0].reason
+    assert dry_run.items[0].byte_proven_null_native_id_rekey is True
+    assert dry_run.items[0].parsed_message_count == 1
+    assert (tmp_path / "index.db").resolve() == active_index
+    receipt = tmp_path / f"byte-rekey-{native_id}.jsonl"
+    applied = repair_byte_proven_browser_capture_null_native_ids(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+
+    copy_raw_id = applied.items[0].copy_forward_raw_id
+    assert applied.repaired_count == 1
+    assert copy_raw_id is not None
+    for (tier, table), before in old_evidence.items():
+        key = "ref_id" if table == "blob_refs" else "accepted_raw_id" if table == "raw_revision_heads" else "raw_id"
+        assert _rows(tmp_path, tier, table, f"{key} = ?", (raw_id,)) == before
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute(
+            "SELECT origin, native_id, logical_source_key, revision_authority FROM raw_sessions WHERE raw_id = ?",
+            (copy_raw_id,),
+        ).fetchone() == ("chatgpt-export", native_id, f"chatgpt:{native_id}", "byte_proven")
+        assert source.execute(
+            "SELECT provider_session_id, message_count, revision_authority, decision FROM raw_session_memberships "
+            "WHERE raw_id = ?",
+            (copy_raw_id,),
+        ).fetchone() == (native_id, 1, "byte_proven", "applied")
+    lines = [json.loads(line) for line in receipt.read_text().splitlines()]
+    assert [line["state"] for line in lines] == ["planned", "applied"]
+    assert lines[-1]["transaction_protocol"] == "rollback-superjournal-v1"
+    reapplied = repair_byte_proven_browser_capture_null_native_ids(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+    assert reapplied.repaired_count == 0
+    assert reapplied.already_repaired_count == 1
+
+
+@pytest.mark.parametrize("case", ("semantic-2af730ea", "semantic-27527c15"))
+def test_byte_proven_browser_rekey_preserves_exact_semantic_witness(tmp_path: Path, case: str) -> None:
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
+    sibling_raw_id = _seed_semantic_superseded_sibling(tmp_path, semantic_raw_id)
+    historical_before = _rows(tmp_path, "source", "raw_sessions", "raw_id IN (?, ?)", (semantic_raw_id, sibling_raw_id))
+
+    dry_run = repair_byte_proven_browser_capture_null_native_ids(_config(tmp_path), [raw_id])
+
+    assert dry_run.eligible_count == 1, dry_run.items[0].reason
+    assert dry_run.items[0].semantic_canonical_raw_id == semantic_raw_id
+    assert dry_run.items[0].semantic_historical_raw_ids == (sibling_raw_id,)
+    receipt = tmp_path / f"byte-rekey-semantic-{case}.jsonl"
+    applied = repair_byte_proven_browser_capture_null_native_ids(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+
+    assert applied.repaired_count == 1
+    assert (
+        _rows(tmp_path, "source", "raw_sessions", "raw_id IN (?, ?)", (semantic_raw_id, sibling_raw_id))
+        == historical_before
+    )
+    assert applied.items[0].semantic_canonical_raw_id == semantic_raw_id
+    assert applied.items[0].semantic_historical_raw_ids == (sibling_raw_id,)
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    ("canonical_hash_conflict", "superseded_equivalent_membership", "canonical_byte_head", "current_reparse_drift"),
+)
+def test_byte_proven_browser_rekey_fails_closed_for_observed_conflicts(tmp_path: Path, conflict: str) -> None:
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    if conflict == "canonical_hash_conflict":
+        semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "UPDATE raw_revision_heads SET accepted_content_hash = x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF' "
+                "WHERE accepted_raw_id = ?",
+                (semantic_raw_id,),
+            )
+    elif conflict == "superseded_equivalent_membership":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id, source_revision,
+                    normalized_content_hash, message_count, acquisition_generation,
+                    revision_authority, decision, decided_at_ms
+                ) SELECT raw_id, logical_source_key, 'browser-origin-one', source_revision,
+                         x'0000000000000000000000000000000000000000000000000000000000000000', 1, 1,
+                         'quarantined', 'superseded_equivalent', 3
+                  FROM raw_sessions WHERE raw_id = ?
+                """,
+                (raw_id,),
+            )
+    elif conflict == "canonical_byte_head":
+        _seed_equivalent_canonical_head(tmp_path, raw_id)
+    else:
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute("UPDATE raw_sessions SET source_revision = ? WHERE raw_id = ?", ("0" * 64, raw_id))
+
+    report = repair_byte_proven_browser_capture_null_native_ids(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].status == "ineligible"
+
+
+def test_byte_proven_browser_rekey_refuses_stale_proof_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.storage.repair as repair_module
+
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    dry_run = repair_byte_proven_browser_capture_null_native_ids(_config(tmp_path), [raw_id])
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        index.execute(
+            "UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1 WHERE accepted_raw_id = ?",
+            (raw_id,),
+        )
+    with pytest.raises(RuntimeError, match="one or more targets are ineligible"):
+        repair_byte_proven_browser_capture_null_native_ids(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=tmp_path / "stale.jsonl",
+            proof_digest=dry_run.proof_digest,
+        )
+
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path / "rollback")
+    dry_run = repair_byte_proven_browser_capture_null_native_ids(_config(tmp_path / "rollback"), [raw_id])
+    before = {
+        (tier, table): _rows(tmp_path / "rollback", tier, table, "1 = 1", ())
+        for tier, tables in {
+            "source": ("raw_sessions", "blob_refs", "raw_session_memberships", "raw_membership_census"),
+            "index": ("sessions", "raw_revision_heads", "raw_revision_applications"),
+        }.items()
+        for table in tables
+    }
+
+    def fail_after_source_stage(conn: sqlite3.Connection, item: object) -> None:
+        raise RuntimeError("injected byte rekey index failure")
+
+    monkeypatch.setattr(repair_module, "_apply_browser_origin_repair_item", fail_after_source_stage)
+    receipt = tmp_path / "rollback" / "rollback.jsonl"
+    with pytest.raises(RuntimeError, match="injected byte rekey index failure"):
+        repair_byte_proven_browser_capture_null_native_ids(
+            _config(tmp_path / "rollback"),
+            [raw_id],
+            apply=True,
+            receipt_path=receipt,
+            proof_digest=dry_run.proof_digest,
+        )
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
+    for (tier, table), rows in before.items():
+        assert _rows(tmp_path / "rollback", tier, table, "1 = 1", ()) == rows

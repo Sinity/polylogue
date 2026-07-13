@@ -67,6 +67,7 @@ _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.quarantined-accepted-raw-repair.v1"
 _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-origin-copy-forward.v1"
 _LEGACY_BROWSER_CAPTURE_NATIVE_ID_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-legacy-native-id-copy-forward.v1"
+_BYTE_PROVEN_BROWSER_CAPTURE_REKEY_RECEIPT_SCHEMA = "polylogue.browser-capture-byte-proven-rekey.v1"
 _LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL = "rollback-superjournal-v1"
 _QUARANTINED_CENSUS_STAGE_FINGERPRINT = "repair-quarantined-accepted-raw-v1"
 _QUARANTINED_CENSUS_STAGE_DETAIL = "census-only evidence staged before accepted-head authority refinement"
@@ -176,6 +177,7 @@ class BrowserCaptureOriginRepairItem:
     canonical_logical_source_key: str | None = None
     session_id: str | None = None
     accepted_content_hash: str | None = None
+    parsed_message_count: int | None = None
     accepted_frontier: int | None = None
     repair_strategy: str | None = None
     replacement_raw_id: str | None = None
@@ -192,6 +194,7 @@ class BrowserCaptureOriginRepairItem:
     terminal_byte_witness_digest: str | None = None
     legacy_null_native_id: bool = False
     parser_derived_native_id: str | None = None
+    byte_proven_null_native_id_rekey: bool = False
     evidence_digest: str | None = None
     proof_digest: str | None = None
     repaired: bool = False
@@ -1446,6 +1449,8 @@ def _browser_origin_item_payload(item: BrowserCaptureOriginRepairItem) -> dict[s
     # targets exactly, so a planned ordinary repair can still resume.
     if not item.legacy_null_native_id:
         excluded.update({"legacy_null_native_id", "parser_derived_native_id"})
+    if not item.byte_proven_null_native_id_rekey:
+        excluded.update({"byte_proven_null_native_id_rekey", "parsed_message_count"})
     payload = {key: value for key, value in dataclasses.asdict(item).items() if key not in excluded}
     # Receipts are JSONL.  Normalize tuples now so an in-memory item has the
     # identical shape when it is compared to a re-read planned record.
@@ -1517,6 +1522,15 @@ def _browser_origin_copy_forward_detail(item: BrowserCaptureOriginRepairItem) ->
             "parser_derived_native_id": item.parser_derived_native_id,
             "semantic_head": item.semantic_head_snapshot,
         }
+    elif item.byte_proven_null_native_id_rekey:
+        assert item.parser_derived_native_id is not None
+        payload = {
+            "kind": "browser_capture_byte_proven_rekey_v1",
+            "raw_id": item.raw_id,
+            "byte_proven_null_native_id_rekey": True,
+            "parser_derived_native_id": item.parser_derived_native_id,
+            "semantic_head": item.semantic_head_snapshot,
+        }
     return json.dumps(
         payload,
         sort_keys=True,
@@ -1529,6 +1543,7 @@ def _browser_origin_semantic_head_from_copy_detail(
     *,
     raw_id: str,
     parser_derived_native_id: str | None = None,
+    byte_proven_null_native_id_rekey: bool = False,
 ) -> tuple[bool, dict[str, object] | None]:
     """Read a prior semantic-head snapshot only from the immutable index receipt."""
     try:
@@ -1550,7 +1565,16 @@ def _browser_origin_semantic_head_from_copy_detail(
         and payload.get("legacy_null_native_id") is True
         and payload.get("parser_derived_native_id") == parser_derived_native_id
     )
-    if payload.get("raw_id") != raw_id or not (ordinary or legacy):
+    byte_proven_rekey = (
+        byte_proven_null_native_id_rekey
+        and parser_derived_native_id is not None
+        and payload.get("kind") == "browser_capture_byte_proven_rekey_v1"
+        and set(payload)
+        == {"kind", "raw_id", "byte_proven_null_native_id_rekey", "parser_derived_native_id", "semantic_head"}
+        and payload.get("byte_proven_null_native_id_rekey") is True
+        and payload.get("parser_derived_native_id") == parser_derived_native_id
+    )
+    if payload.get("raw_id") != raw_id or not (ordinary or legacy or byte_proven_rekey):
         return False, None
     if snapshot is None:
         return True, None
@@ -1626,7 +1650,14 @@ def _verify_browser_origin_copy_forward_source_stage(
     assert item.blob_hash is not None
     assert item.blob_size is not None
     assert item.accepted_content_hash is not None
-    native_id = None if item.legacy_null_native_id else item.session_id.split(":", 1)[1]
+    null_native_id_mode = item.legacy_null_native_id or item.byte_proven_null_native_id_rekey
+    native_id = None if null_native_id_mode else item.session_id.split(":", 1)[1]
+    source_authority = (
+        RawRevisionAuthority.BYTE_PROVEN if item.byte_proven_null_native_id_rekey else RawRevisionAuthority.QUARANTINED
+    )
+    membership_authority = source_authority.value
+    membership_decision: str | None = "applied" if item.byte_proven_null_native_id_rekey else None
+    baseline_raw_id = item.raw_id if item.byte_proven_null_native_id_rekey else None
     if (
         _browser_origin_source_envelope_is_exact(
             conn,
@@ -1642,9 +1673,9 @@ def _verify_browser_origin_copy_forward_source_stage(
             logical_source_key=item.old_logical_source_key,
             revision_kind=RawRevisionKind.FULL,
             source_revision=item.blob_hash,
-            baseline_raw_id=None,
+            baseline_raw_id=baseline_raw_id,
             acquisition_generation=0,
-            revision_authority=RawRevisionAuthority.QUARANTINED,
+            revision_authority=source_authority,
         )
         is None
     ):
@@ -1681,6 +1712,10 @@ def _verify_browser_origin_copy_forward_source_stage(
     census = conn.execute(
         f"SELECT status, member_count FROM {source_schema}.raw_membership_census WHERE raw_id = ?", (item.raw_id,)
     ).fetchone()
+    if item.byte_proven_null_native_id_rekey:
+        if membership is not None or membership_count is None or int(membership_count[0]) != 0 or census is not None:
+            raise RuntimeError(f"membership evidence changed before copy-forward stage for {item.raw_id}")
+        return
     if (
         membership is None
         or membership_count is None
@@ -1692,8 +1727,8 @@ def _verify_browser_origin_copy_forward_source_stage(
             projection.session_hash,
             len(projection.message_hashes),
             0,
-            RawRevisionAuthority.QUARANTINED.value,
-            None,
+            membership_authority,
+            membership_decision,
         )
         or census is None
         or tuple(census) != ("complete", 1)
@@ -2166,7 +2201,10 @@ def _inspect_browser_capture_origin_mismatch(
     *,
     conn: sqlite3.Connection,
     allow_legacy_null_native_id: bool = False,
+    allow_byte_proven_null_native_id_rekey: bool = False,
 ) -> BrowserCaptureOriginRepairItem:
+    if allow_legacy_null_native_id and allow_byte_proven_null_native_id_rekey:
+        raise ValueError("browser repair modes are mutually exclusive")
     conn.row_factory = sqlite3.Row
     raw = conn.execute(
         """
@@ -2186,9 +2224,12 @@ def _inspect_browser_capture_origin_mismatch(
     source_path = str(raw["source_path"])
     if "browser-capture" not in source_path:
         return _browser_origin_ineligible(raw_id, "source raw is not a browser-capture artifact")
+    expected_source_authority = (
+        RawRevisionAuthority.BYTE_PROVEN if allow_byte_proven_null_native_id_rekey else RawRevisionAuthority.QUARANTINED
+    )
     if (
         str(raw["revision_kind"]) != RawRevisionKind.FULL.value
-        or str(raw["revision_authority"]) != RawRevisionAuthority.QUARANTINED.value
+        or str(raw["revision_authority"]) != expected_source_authority.value
         or raw["source_revision"] is None
         or raw["acquisition_generation"] is None
         or int(raw["acquisition_generation"]) != 0
@@ -2197,10 +2238,14 @@ def _inspect_browser_capture_origin_mismatch(
             for name in (
                 "predecessor_source_revision",
                 "predecessor_raw_id",
-                "baseline_raw_id",
                 "append_start_offset",
                 "append_end_offset",
             )
+        )
+        or (
+            (raw["baseline_raw_id"] != raw_id)
+            if allow_byte_proven_null_native_id_rekey
+            else raw["baseline_raw_id"] is not None
         )
     ):
         return _browser_origin_ineligible(raw_id, "source raw is not the exact quarantined full mismatch shape")
@@ -2252,9 +2297,11 @@ def _inspect_browser_capture_origin_mismatch(
     canonical_key = f"{provider.value}:{session.provider_session_id}"
     session_id = str(make_session_id(provider, session.provider_session_id))
     old_key = str(raw["logical_source_key"] or "")
-    expected_old_native_id = None if allow_legacy_null_native_id else session.provider_session_id
-    if allow_legacy_null_native_id and raw["native_id"] is not None:
-        return _browser_origin_ineligible(raw_id, "legacy-native-id actuator requires a NULL durable native identity")
+    null_native_id_mode = allow_legacy_null_native_id or allow_byte_proven_null_native_id_rekey
+    expected_old_native_id = None if null_native_id_mode else session.provider_session_id
+    if null_native_id_mode and raw["native_id"] is not None:
+        mode = "legacy-native-id" if allow_legacy_null_native_id else "byte-proven browser rekey"
+        return _browser_origin_ineligible(raw_id, f"{mode} actuator requires a NULL durable native identity")
     if (
         _browser_origin_source_envelope_is_exact(
             conn,
@@ -2270,9 +2317,9 @@ def _inspect_browser_capture_origin_mismatch(
             logical_source_key=old_key,
             revision_kind=RawRevisionKind.FULL,
             source_revision=blob_hash_hex,
-            baseline_raw_id=None,
+            baseline_raw_id=raw_id if allow_byte_proven_null_native_id_rekey else None,
             acquisition_generation=0,
-            revision_authority=RawRevisionAuthority.QUARANTINED,
+            revision_authority=expected_source_authority,
         )
         is None
         or int(raw["source_index"]) != 0
@@ -2364,7 +2411,12 @@ def _inspect_browser_capture_origin_mismatch(
         (raw_id,),
     ).fetchone()
     projection = session_revision_projection(session)
-    if (
+    if allow_byte_proven_null_native_id_rekey:
+        if membership is not None or membership_count is None or int(membership_count[0]) != 0 or census is not None:
+            return _browser_origin_ineligible(
+                raw_id, "byte-proven browser rekey requires no retained membership census"
+            )
+    elif (
         membership is None
         or membership_count is None
         or int(membership_count[0]) != 1
@@ -2544,14 +2596,18 @@ def _inspect_browser_capture_origin_mismatch(
     ):
         return _browser_origin_ineligible(raw_id, "copy-forward terminal byte authority is not exact")
     if (
-        allow_legacy_null_native_id
+        (allow_legacy_null_native_id or allow_byte_proven_null_native_id_rekey)
         and canonical_head is not None
         and not copy_forward_terminal
         and str(canonical_head["accepted_frontier_kind"]) != "semantic"
     ):
         return _browser_origin_ineligible(
             raw_id,
-            "legacy-native-id copy-forward refuses pre-existing canonical head authority",
+            (
+                "legacy-native-id copy-forward refuses pre-existing canonical head authority"
+                if allow_legacy_null_native_id
+                else "byte-proven browser rekey refuses pre-existing canonical head authority"
+            ),
         )
     if canonical_head is not None and not copy_forward_terminal:
         if _canonical_browser_origin_head_is_exact(
@@ -2617,7 +2673,8 @@ def _inspect_browser_capture_origin_mismatch(
         detail_is_exact, terminal_snapshot = _browser_origin_semantic_head_from_copy_detail(
             copy_application["detail"],
             raw_id=raw_id,
-            parser_derived_native_id=session.provider_session_id if allow_legacy_null_native_id else None,
+            parser_derived_native_id=session.provider_session_id if null_native_id_mode else None,
+            byte_proven_null_native_id_rekey=allow_byte_proven_null_native_id_rekey,
         )
         if not detail_is_exact:
             return _browser_origin_ineligible(raw_id, "copy-forward receipt detail is not exact")
@@ -2642,7 +2699,12 @@ def _inspect_browser_capture_origin_mismatch(
             semantic_witness_digest = terminal_witness.digest
         terminal_byte_witness_digest = _authority_rows_digest([canonical_head], [copy_application])
     evidence_digest = _authority_rows_digest(
-        [raw], [head], [indexed_evidence], [membership], [census], old_applications
+        [raw],
+        [head],
+        [indexed_evidence],
+        [] if membership is None else [membership],
+        [] if census is None else [census],
+        old_applications,
     )
     item = BrowserCaptureOriginRepairItem(
         raw_id=raw_id,
@@ -2663,6 +2725,7 @@ def _inspect_browser_capture_origin_mismatch(
         canonical_logical_source_key=canonical_key,
         session_id=session_id,
         accepted_content_hash=accepted_hash.hex(),
+        parsed_message_count=len(projection.message_hashes),
         accepted_frontier=blob_size,
         repair_strategy=repair_strategy,
         replacement_raw_id=replacement_raw_id,
@@ -2678,7 +2741,8 @@ def _inspect_browser_capture_origin_mismatch(
         semantic_witness_digest=semantic_witness_digest,
         terminal_byte_witness_digest=terminal_byte_witness_digest,
         legacy_null_native_id=allow_legacy_null_native_id,
-        parser_derived_native_id=session.provider_session_id if allow_legacy_null_native_id else None,
+        parser_derived_native_id=session.provider_session_id if null_native_id_mode else None,
+        byte_proven_null_native_id_rekey=allow_byte_proven_null_native_id_rekey,
         evidence_digest=evidence_digest,
     )
     return dataclasses.replace(item, proof_digest=_browser_origin_item_digest(item))
@@ -2698,7 +2762,7 @@ class _BrowserOriginReceipt:
 
 
 def _browser_origin_requires_legacy_transaction(items: list[BrowserCaptureOriginRepairItem]) -> bool:
-    return any(item.legacy_null_native_id for item in items)
+    return any(item.legacy_null_native_id or item.byte_proven_null_native_id_rekey for item in items)
 
 
 def _legacy_browser_journal_modes(source_db: Path, index_db: Path) -> dict[str, str]:
@@ -3018,28 +3082,49 @@ def _stage_browser_origin_copy_forward_source(
         """,
         (blob_hash, item.copy_forward_raw_id, item.copy_forward_source_path, item.blob_size, acquired_at_ms),
     )
-    conn.execute(
-        f"""
-        INSERT INTO {source_schema}.raw_session_memberships (
-            raw_id, logical_source_key, provider_session_id, source_revision,
-            normalized_content_hash, message_count, acquisition_generation,
-            revision_authority, decision, decided_at_ms
+    if item.byte_proven_null_native_id_rekey:
+        assert item.parsed_message_count is not None
+        conn.execute(
+            f"""
+            INSERT INTO {source_schema}.raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority, decision, decided_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, 'byte_proven', 'applied', ?)
+            """,
+            (
+                item.copy_forward_raw_id,
+                item.canonical_logical_source_key,
+                native_id,
+                item.accepted_content_hash,
+                bytes.fromhex(item.accepted_content_hash),
+                item.parsed_message_count,
+                acquired_at_ms,
+            ),
         )
-        SELECT ?, ?, ?, ?, ?, message_count, 0, 'byte_proven', 'applied', ?
-        FROM {source_schema}.raw_session_memberships
-        WHERE raw_id = ? AND logical_source_key = ?
-        """,
-        (
-            item.copy_forward_raw_id,
-            item.canonical_logical_source_key,
-            native_id,
-            item.accepted_content_hash,
-            bytes.fromhex(item.accepted_content_hash),
-            acquired_at_ms,
-            item.raw_id,
-            item.canonical_logical_source_key,
-        ),
-    )
+    else:
+        conn.execute(
+            f"""
+            INSERT INTO {source_schema}.raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority, decision, decided_at_ms
+            )
+            SELECT ?, ?, ?, ?, ?, message_count, 0, 'byte_proven', 'applied', ?
+            FROM {source_schema}.raw_session_memberships
+            WHERE raw_id = ? AND logical_source_key = ?
+            """,
+            (
+                item.copy_forward_raw_id,
+                item.canonical_logical_source_key,
+                native_id,
+                item.accepted_content_hash,
+                bytes.fromhex(item.accepted_content_hash),
+                acquired_at_ms,
+                item.raw_id,
+                item.canonical_logical_source_key,
+            ),
+        )
     conn.execute(
         f"""
         INSERT INTO {source_schema}.raw_membership_census (
@@ -3177,6 +3262,7 @@ def _repair_browser_capture_origin_mismatches(
     receipt_path: Path | None = None,
     proof_digest: str | None = None,
     allow_legacy_null_native_id: bool = False,
+    allow_byte_proven_null_native_id_rekey: bool = False,
     receipt_schema: str = _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA,
 ) -> BrowserCaptureOriginRepairReport:
     """Copy exact browser-capture evidence forward under parsed origin authority."""
@@ -3202,6 +3288,7 @@ def _repair_browser_capture_origin_mismatches(
                 raw_id,
                 conn=connection,
                 allow_legacy_null_native_id=allow_legacy_null_native_id,
+                allow_byte_proven_null_native_id_rekey=allow_byte_proven_null_native_id_rekey,
             )
             for raw_id in raw_ids
         ]
@@ -3226,7 +3313,7 @@ def _repair_browser_capture_origin_mismatches(
             receipt = _lock_browser_origin_receipt(receipt_path, items, schema=receipt_schema)
             try:
                 legacy_journal_modes: Mapping[str, object] | None = None
-                if allow_legacy_null_native_id:
+                if _browser_origin_requires_legacy_transaction(items):
                     # A previous process may have died after its crash-atomic
                     # commit and before WAL restoration/receipt finalization.
                     # Normalize that safe mixed posture before inspecting any
@@ -3241,7 +3328,7 @@ def _repair_browser_capture_origin_mismatches(
                     raise RuntimeError("authority proof changed before copy-forward source staging")
                 if any(item.status == "ineligible" for item in pre_source_items):
                     raise RuntimeError("a browser-capture origin target became ineligible before source staging")
-                if allow_legacy_null_native_id:
+                if _browser_origin_requires_legacy_transaction(pre_source_items):
                     if all(item.status == "already_repaired" for item in pre_source_items):
                         locked = pre_source_items
                         after = pre_source_items
@@ -3405,6 +3492,33 @@ def repair_legacy_browser_capture_missing_native_ids(
         proof_digest=proof_digest,
         allow_legacy_null_native_id=True,
         receipt_schema=_LEGACY_BROWSER_CAPTURE_NATIVE_ID_REPAIR_RECEIPT_SCHEMA,
+    )
+
+
+def repair_byte_proven_browser_capture_null_native_ids(
+    config: Config,
+    raw_ids: list[str],
+    *,
+    apply: bool = False,
+    receipt_path: Path | None = None,
+    proof_digest: str | None = None,
+) -> BrowserCaptureOriginRepairReport:
+    """Rekey only exact byte-proven browser captures with a NULL native id.
+
+    This is deliberately narrower than the ordinary origin repair and the
+    quarantined legacy route: it admits only a byte-proven old unknown-key head
+    with a self-baseline source envelope, no retained membership census, and a
+    matching selected-baseline receipt. It creates a new canonical byte witness
+    while retaining every old source/index record unchanged.
+    """
+    return _repair_browser_capture_origin_mismatches(
+        config,
+        raw_ids,
+        apply=apply,
+        receipt_path=receipt_path,
+        proof_digest=proof_digest,
+        allow_byte_proven_null_native_id_rekey=True,
+        receipt_schema=_BYTE_PROVEN_BROWSER_CAPTURE_REKEY_RECEIPT_SCHEMA,
     )
 
 
