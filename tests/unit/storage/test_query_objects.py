@@ -249,3 +249,24 @@ def test_watch_baseline_and_receipt_ids_reject_cross_query_or_conflicting_state(
             receipt=EvaluationReceipt("receipt-stable", "source:g2", "user:g1", "index:g1", "build:test"),
             created_at_ms=3,
         )
+    with pytest.raises(sqlite3.IntegrityError, match="same query"):
+        conn.execute(
+            "INSERT INTO retained_query_runs (run_id, query_hash, result_set_id, retained_at_ms) VALUES (?, ?, ?, ?)",
+            ("qr_raw_mismatch", first.query_hash, second_result.result_set_id, 4),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="same query"):
+        conn.execute(
+            """
+            INSERT INTO query_evaluation_receipts (
+                receipt_id, query_hash, result_set_id, source_generation, user_generation,
+                index_generation, runtime_build_ref, model_refs_json, resolved_bounds_json,
+                degradation_json, created_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', ?)
+            """,
+            ("receipt-raw-mismatch", first.query_hash, second_result.result_set_id, "s", "u", "i", "b", 4),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="same query"):
+        conn.execute(
+            "INSERT INTO watched_query_baselines (query_hash, result_set_id, updated_at_ms) VALUES (?, ?, ?)",
+            (first.query_hash, second_result.result_set_id, 4),
+        )

@@ -157,6 +157,12 @@ _USER_DURABLE_SCHEMA_OBJECTS = (
     "query_evaluation_receipts",
     "idx_query_evaluation_receipts_query_time",
     "watched_query_baselines",
+    "retained_query_runs_result_set_query_match_insert",
+    "retained_query_runs_result_set_query_match_update",
+    "query_evaluation_receipts_result_set_query_match_insert",
+    "query_evaluation_receipts_result_set_query_match_update",
+    "watched_query_baselines_result_set_query_match_insert",
+    "watched_query_baselines_result_set_query_match_update",
 )
 
 
@@ -180,6 +186,49 @@ def _normalize_schema_sql(sql: str) -> str:
     collapsed = re.sub(r"\s*,\s*", ",", collapsed)
     collapsed = re.sub(r"\(\s*", "(", collapsed)
     return re.sub(r"\s*\)", ")", collapsed)
+
+
+def _assert_query_provenance_binding_triggers(conn: sqlite3.Connection) -> None:
+    """Exercise migration and fresh DDL against raw SQL bypasses."""
+    first_hash, second_hash = "b" * 64, "c" * 64
+    conn.executemany(
+        """
+        INSERT INTO queries (
+            query_hash, canonical_plan_json, grain, lane, rank_policy, created_at_ms
+        ) VALUES (?, '{}', 'session', 'dialogue', 'mixed', 1)
+        """,
+        ((first_hash,), (second_hash,)),
+    )
+    conn.executemany(
+        """
+        INSERT INTO result_sets (
+            result_set_id, query_hash, grain, corpus_epoch, member_count,
+            membership_merkle_root, ordered_rank_hash, exactness, persistence_class, created_at_ms
+        ) VALUES (?, ?, 'session', 'index:g1', 0, ?, ?, 'exact', 'watch', 1)
+        """,
+        (("binding-first", first_hash, "1" * 64, "2" * 64), ("binding-second", second_hash, "3" * 64, "4" * 64)),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="same query"):
+        conn.execute(
+            "INSERT INTO retained_query_runs (run_id, query_hash, result_set_id, retained_at_ms) VALUES ('qr_raw', ?, 'binding-second', 1)",
+            (first_hash,),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="same query"):
+        conn.execute(
+            """
+            INSERT INTO query_evaluation_receipts (
+                receipt_id, query_hash, result_set_id, source_generation, user_generation,
+                index_generation, runtime_build_ref, model_refs_json, resolved_bounds_json,
+                degradation_json, created_at_ms
+            ) VALUES ('receipt-raw', ?, 'binding-second', 's', 'u', 'i', 'b', '[]', '{}', '{}', 1)
+            """,
+            (first_hash,),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="same query"):
+        conn.execute(
+            "INSERT INTO watched_query_baselines (query_hash, result_set_id, updated_at_ms) VALUES (?, 'binding-second', 1)",
+            (first_hash,),
+        )
 
 
 def _assert_user_v6_annotation_checks(conn: sqlite3.Connection, *, suffix: str) -> None:
@@ -366,11 +415,13 @@ def test_user_tier_v5_annotation_migration_requires_verified_backup_and_matches_
         assert {str(row[1]) for row in conn.execute("PRAGMA index_list(assertions)")} >= {
             "idx_assertions_scope_kind_status"
         }
+        _assert_query_provenance_binding_triggers(conn)
 
         fresh_db = tmp_path / "fresh-user-v6.db"
         initialize_archive_database(fresh_db, ArchiveTier.USER)
         with sqlite3.connect(fresh_db) as fresh_conn:
             assert _user_durable_schema_sql(conn) == _user_durable_schema_sql(fresh_conn)
+            _assert_query_provenance_binding_triggers(fresh_conn)
             assert tuple(conn.execute("PRAGMA foreign_key_list(annotation_batches)")) == tuple(
                 fresh_conn.execute("PRAGMA foreign_key_list(annotation_batches)")
             )

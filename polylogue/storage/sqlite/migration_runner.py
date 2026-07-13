@@ -481,9 +481,15 @@ def validate_migration_backup_manifest(
 
 
 def _execute_migration_sql(conn: sqlite3.Connection, sql: str) -> None:
-    statements = [statement.strip() for statement in sql.split(";") if statement.strip()]
-    for statement in statements:
-        conn.execute(statement)
+    statement = ""
+    for line in sql.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise MigrationError("migration SQL ended with an incomplete statement")
 
 
 def migrate_archive_tier(

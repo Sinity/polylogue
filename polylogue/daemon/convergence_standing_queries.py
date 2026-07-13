@@ -125,8 +125,18 @@ def _standing_user_db_path(db_path: Path) -> Path:
     return db_path.with_name("user.db")
 
 
-def _watch_result_set_id(query_hash: str, member_refs: tuple[str, ...]) -> str:
-    return f"watch-{hash_payload((query_hash, membership_merkle_root(member_refs)))}"
+def _watch_result_set_id(query_hash: str, evaluation: QueryEvaluation) -> str:
+    """Name an immutable watch snapshot by every persisted manifest field."""
+    snapshot = (
+        query_hash,
+        evaluation.grain,
+        evaluation.corpus_epoch,
+        membership_merkle_root(evaluation.member_refs),
+        hash_payload(list(evaluation.member_refs)),
+        evaluation.exactness,
+        "watch",
+    )
+    return f"watch-{hash_payload(snapshot)}"
 
 
 def _materialize_watch_evaluation(
@@ -138,7 +148,17 @@ def _materialize_watch_evaluation(
 ) -> None:
     baseline = get_watched_query_baseline(conn, query_hash)
     root = membership_merkle_root(evaluation.member_refs)
-    if baseline is not None and baseline.membership_merkle_root == root:
+    rank_hash = hash_payload(list(evaluation.member_refs))
+    same_snapshot = baseline is not None and (
+        baseline.grain == evaluation.grain
+        and baseline.corpus_epoch == evaluation.corpus_epoch
+        and baseline.membership_merkle_root == root
+        and baseline.ordered_rank_hash == rank_hash
+        and baseline.exactness == evaluation.exactness
+        and baseline.persistence_class == "watch"
+    )
+    if same_snapshot:
+        assert baseline is not None
         put_evaluation_receipt(
             conn,
             query_hash=query_hash,
@@ -153,7 +173,7 @@ def _materialize_watch_evaluation(
             updated_at_ms=now_ms,
         )
         return
-    result_set_id = _watch_result_set_id(query_hash, evaluation.member_refs)
+    result_set_id = _watch_result_set_id(query_hash, evaluation)
     current = get_result_set(conn, result_set_id)
     if current is None:
         current = put_result_set(
@@ -180,7 +200,7 @@ def _materialize_watch_evaluation(
         result_set_id=current.result_set_id,
         updated_at_ms=now_ms,
     )
-    if baseline is None:
+    if baseline is None or baseline.membership_merkle_root == root:
         return
     query_reference = query_ref(query_hash).format()
     current_reference = result_set_ref(current.result_set_id).format()

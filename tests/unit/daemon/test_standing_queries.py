@@ -27,6 +27,7 @@ class _Evaluator:
     def __init__(self, *, members: tuple[str, ...], cache_only: bool = False) -> None:
         self.members = members
         self.cache_only = cache_only
+        self.corpus_epoch = "index:g1"
         self.requests: list[QueryEvaluationRequest] = []
 
     def evaluate(self, request: QueryEvaluationRequest) -> QueryEvaluation:
@@ -34,7 +35,7 @@ class _Evaluator:
         return QueryEvaluation(
             grain="session",
             member_refs=self.members,
-            corpus_epoch="index:g1",
+            corpus_epoch=self.corpus_epoch,
             exactness="exact",
             cache_only=self.cache_only,
             receipt=EvaluationReceipt(
@@ -156,6 +157,27 @@ def test_watch_baseline_tracks_return_to_a_prior_membership(tmp_path: Path) -> N
         baseline = get_watched_query_baseline(conn, query_hash)
         assert baseline is not None
         assert get_result_set_members(conn, baseline.result_set_id) == ("session:b",)
+
+
+def test_watch_snapshot_metadata_creates_a_new_manifest_without_membership_drift(tmp_path: Path) -> None:
+    index_db, query_hash = _seed_watch(tmp_path)
+    evaluator = _Evaluator(members=("session:a", "session:b"))
+    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions(("session:changed",)) is True
+
+    evaluator.members = ("session:b", "session:a")  # same membership, new rank order
+    assert stage.execute_sessions(("session:changed",)) is True
+    evaluator.corpus_epoch = "index:g2"
+    assert stage.execute_sessions(("session:changed",)) is True
+
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM result_sets WHERE persistence_class = 'watch'").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'finding'").fetchone()[0] == 0
+        baseline = get_watched_query_baseline(conn, query_hash)
+        assert baseline is not None
+        assert baseline.corpus_epoch == "index:g2"
+        assert get_result_set_members(conn, baseline.result_set_id) == ("session:b", "session:a")
 
 
 def test_promoted_expected_count_divergence_targets_original_finding_without_watch(tmp_path: Path) -> None:
