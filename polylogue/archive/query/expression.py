@@ -108,7 +108,7 @@ import math
 import re
 from dataclasses import dataclass, field, replace
 from difflib import get_close_matches
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 
 from lark import Lark, Token, Transformer, v_args
 from lark.exceptions import UnexpectedInput, VisitError
@@ -161,6 +161,7 @@ from polylogue.archive.query.spec import (
     normalize_retrieval_lane,
 )
 from polylogue.core.enums import Origin
+from polylogue.core.refs import ObjectRef
 from polylogue.errors import PolylogueError
 
 
@@ -280,6 +281,103 @@ class QueryExpressionAST:
 
     clauses: tuple[_LexToken, ...]
     boolean_predicate: QueryPredicate | None = None
+    ref_operand: RefOperand | None = None
+
+
+RelationGrain = Literal[
+    "session",
+    "message",
+    "action",
+    "block",
+    "assertion",
+    "file",
+    "run",
+    "observed-event",
+    "context-snapshot",
+    "delegation",
+]
+RefEvaluationMode = Literal["re-evaluate", "retained", "resolver-defined"]
+
+
+@dataclass(frozen=True)
+class RefOperand:
+    """A provenance-preserving operand, never a textual query expansion."""
+
+    reference: ObjectRef
+    grain: RelationGrain | None = None
+
+    @property
+    def evaluation_mode(self) -> RefEvaluationMode:
+        if self.reference.kind == "query":
+            return "re-evaluate"
+        if self.reference.kind in {"query-run", "result-set"}:
+            return "retained"
+        return "resolver-defined"
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "kind": "ref_operand",
+            "reference": self.reference.format(),
+            "reference_kind": self.reference.kind,
+            "evaluation_mode": self.evaluation_mode,
+        }
+        if self.grain is not None:
+            payload["grain"] = self.grain
+        return payload
+
+
+@dataclass(frozen=True)
+class ResolvedRefOperand:
+    """Planner resolution of a :class:`RefOperand` relation."""
+
+    operand: RefOperand
+    grain: RelationGrain
+    lineage: tuple[ObjectRef, ...] = ()
+
+
+class RefResolver(Protocol):
+    """Narrow planner seam for durable query/result/cohort relation lookup."""
+
+    def resolve_ref_operand(self, operand: RefOperand) -> ResolvedRefOperand: ...
+
+
+class RefOperandCycleError(ExpressionCompileError):
+    """Raised when an operand would make the reference lineage cyclic."""
+
+
+def resolve_ref_operand(
+    operand: RefOperand,
+    resolver: RefResolver,
+    *,
+    ancestry: tuple[ObjectRef, ...] = (),
+) -> ResolvedRefOperand:
+    """Resolve an operand and reject a cycle before relation materialization."""
+
+    ancestry_refs = {ref.format() for ref in ancestry}
+    if operand.reference.format() in ancestry_refs:
+        raise RefOperandCycleError(
+            f"reference cycle detected at {operand.reference.format()}; use a non-recursive query definition",
+            field="from",
+        )
+    resolved = resolver.resolve_ref_operand(operand)
+    formatted = [ref.format() for ref in (*ancestry, *resolved.lineage, operand.reference)]
+    if len(formatted) != len(set(formatted)):
+        raise RefOperandCycleError(
+            f"reference cycle detected while resolving {operand.reference.format()}; use a non-recursive query definition",
+            field="from",
+        )
+    return resolved
+
+
+@dataclass(frozen=True)
+class ReferenceQueryPipeline:
+    """A pipeline rooted in a durable reference whose grain is planner-resolved."""
+
+    operand: RefOperand
+    stages: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, object]:
+        return {"source": self.operand.to_payload(), "stages": list(self.stages)}
 
 
 @dataclass(frozen=True)
@@ -1617,6 +1715,53 @@ def _split_pipeline_stages(expression: str) -> tuple[str, ...]:
     return tuple(stages)
 
 
+_REF_OPERAND_KINDS: frozenset[str] = frozenset({"query", "query-run", "result-set", "cohort"})
+
+
+def _parse_ref_operand_stage(stage: str) -> RefOperand | None:
+    """Parse the hand-split ``from <object-ref>`` source stage.
+
+    It intentionally lives outside the Lark grammar with other pipeline
+    stages: a colon-bearing result reference must not compete with the generic
+    ``FIELD_CLAUSE`` terminal.
+    """
+
+    normalized = stage.strip()
+    if not normalized.lower().startswith("from "):
+        return None
+    ref_text = normalized[5:].strip()
+    if not ref_text or any(char.isspace() for char in ref_text):
+        raise ExpressionCompileError("pipeline `from` requires one object reference", field="from")
+    try:
+        reference = ObjectRef.parse(ref_text)
+    except ValueError as exc:
+        raise ExpressionCompileError(f"invalid pipeline `from` reference: {ref_text!r}", field="from") from exc
+    if reference.kind not in _REF_OPERAND_KINDS:
+        supported = ", ".join(sorted(_REF_OPERAND_KINDS))
+        raise ExpressionCompileError(
+            f"pipeline `from` requires a query, query-run, result-set, or cohort reference; got {reference.kind!r}. "
+            f"Supported kinds: {supported}",
+            field="from",
+        )
+    return RefOperand(reference=reference)
+
+
+def parse_reference_query_pipeline(expression: str) -> ReferenceQueryPipeline | None:
+    """Parse a ``from <ref>`` pipeline into a provenance-carrying AST node.
+
+    Relation lookup is deliberately deferred to the planner, which supplies
+    the grain, retained-run availability, and durable query-edge lineage.
+    """
+
+    stages = _split_pipeline_stages(expression)
+    if not stages:
+        return None
+    operand = _parse_ref_operand_stage(stages[0])
+    if operand is None:
+        return None
+    return ReferenceQueryPipeline(operand=operand, stages=stages[1:])
+
+
 #: Canonical query units wired for the ``with <units>`` projection clause.
 #: The clause is unit-agnostic by construction (the fetch/attach path drives off
 #: the descriptor registry), but only units listed here are validated as
@@ -2311,6 +2456,9 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
         expression, _with_units, _with_unit_fields = _split_with_projection_clause(expression)
         if not expression:
             return QueryExpressionAST(())
+    reference_pipeline = parse_reference_query_pipeline(expression)
+    if reference_pipeline is not None:
+        return QueryExpressionAST((), ref_operand=reference_pipeline.operand)
     source_where = _parse_source_where_predicate(expression)
     if source_where is not None:
         return QueryExpressionAST((), boolean_predicate=source_where)
@@ -2460,6 +2608,7 @@ def _ast_payload(
     clauses: tuple[QueryExpressionExplainClause, ...] = (),
     predicate: QueryPredicate | None = None,
     unit_source: QueryUnitSource | None = None,
+    reference_pipeline: ReferenceQueryPipeline | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {"entry": entry}
     if clauses:
@@ -2490,6 +2639,8 @@ def _ast_payload(
             unit_payload["pipeline_stages"] = [stage.to_payload() for stage in unit_source.pipeline_stages]
         unit_payload["pipeline"] = unit_source.pipeline.to_payload()
         payload["unit_source"] = unit_payload
+    if reference_pipeline is not None:
+        payload["reference_pipeline"] = reference_pipeline.to_payload()
     return payload
 
 
@@ -2548,6 +2699,34 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
                 execution_legs=execution_legs,
                 plan_description=plan_description,
             ),
+        )
+    reference_pipeline = parse_reference_query_pipeline(stripped)
+    if reference_pipeline is not None:
+        operand = reference_pipeline.operand
+        selected_units = (operand.grain or "unresolved-reference",)
+        execution_legs = ("durable-reference-relation",)
+        plan_description = (
+            f"reference operand: {operand.reference.format()}",
+            f"reference evaluation: {operand.evaluation_mode}",
+            "relation grain: resolver required before materialization",
+        )
+        lowerer = "reference-operand-to-planner-relation"
+        return QueryExpressionExplanation(
+            source_text=source_text,
+            clauses=(),
+            lowerer=lowerer,
+            lowered_spec=SessionQuerySpec(),
+            selected_units=selected_units,
+            execution_legs=execution_legs,
+            plan_description=plan_description,
+            ast=_ast_payload(entry="reference_pipeline", reference_pipeline=reference_pipeline),
+            lowering_plan={
+                "lowerer": lowerer,
+                "selected_units": list(selected_units),
+                "execution_legs": list(execution_legs),
+                "plan_description": list(plan_description),
+                "reference_lineage": [operand.reference.format()],
+            },
         )
     unit_source = parse_unit_source_expression(stripped)
     if unit_source is not None:
@@ -3094,6 +3273,14 @@ def compile_expression(expression: str) -> SessionQuerySpec:
     # expression before parsing it (outside the Lark grammar, like ``|`` stages).
     expression, with_units, with_unit_fields = _split_with_projection_clause(expression)
 
+    reference_pipeline = parse_reference_query_pipeline(expression)
+    if reference_pipeline is not None:
+        raise ExpressionCompileError(
+            "pipeline `from` requires the reference-aware query planner; "
+            "a durable relation is never expanded into text at the compatibility selector boundary",
+            field="from",
+        )
+
     ast = parse_expression_ast(expression)
     if ast.boolean_predicate is not None:
         similar_text, residual_predicate = _extract_semantic_seed(ast.boolean_predicate)
@@ -3242,6 +3429,11 @@ __all__ = [
     "QueryExpressionExplainClause",
     "QueryExpressionExplanation",
     "QueryExpressionAST",
+    "RefOperand",
+    "RefOperandCycleError",
+    "RefResolver",
+    "ReferenceQueryPipeline",
+    "ResolvedRefOperand",
     "QueryUnitPipeline",
     "QueryUnitCountStage",
     "QueryUnitGroupStage",
@@ -3259,8 +3451,10 @@ __all__ = [
     "SessionQueryTerminalStage",
     "SessionTerminalAction",
     "_HAS_BOOL_MAP",
+    "parse_reference_query_pipeline",
     "parse_unit_source_expression",
     "parse_expression_ast",
+    "resolve_ref_operand",
     "split_with_clause",
     "split_with_projection_clause",
     "WITH_PROJECTION_SUPPORTED_UNITS",
