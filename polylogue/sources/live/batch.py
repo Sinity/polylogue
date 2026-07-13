@@ -2226,6 +2226,14 @@ class LiveBatchProcessor:
             logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
 
     def _record_append_cursor(self, plan: _AppendPlan) -> bool:
+        """Persist a proven append frontier without mistaking later growth for rewrite.
+
+        ``plan`` carries a prefix witness produced before append persistence.
+        A live JSONL writer may append another record before this method runs;
+        that does not invalidate the accepted range. Keep the plan's original
+        observation in the cursor so a same-size replacement is still forced
+        through the full route on the next batch.
+        """
         latest_stat: os.stat_result | None = None
         expected_observation = (
             plan.st_dev,
@@ -2237,12 +2245,8 @@ class LiveBatchProcessor:
         try:
             stat = plan.path.stat()
             latest_stat = stat
-            observed = _file_observation(stat)
-            if plan.ctime_ns is None:
-                if observed[:4] != expected_observation[:4]:
-                    raise ValueError("source observation changed")
-            elif observed != expected_observation:
-                raise ValueError("source observation changed")
+            if stat.st_dev != plan.st_dev or stat.st_ino != plan.st_ino or stat.st_size < plan.last_complete_newline:
+                raise ValueError("source replaced or truncated")
             payload_hash, _payload_bytes = sha256_range_from_path(
                 plan.path,
                 start_offset=plan.start_offset,
@@ -2251,9 +2255,12 @@ class LiveBatchProcessor:
             tail_hash, _tail_bytes = tail_hash_from_path(plan.path, plan.last_complete_newline)
             final_stat = plan.path.stat()
             latest_stat = final_stat
-            final_observation = _file_observation(final_stat)
-            if final_observation != observed:
-                raise ValueError("source changed during cursor verification")
+            if (
+                final_stat.st_dev != plan.st_dev
+                or final_stat.st_ino != plan.st_ino
+                or final_stat.st_size < plan.last_complete_newline
+            ):
+                raise ValueError("source replaced or truncated during cursor verification")
             if payload_hash != plan.payload_hash:
                 raise ValueError("accepted append bytes changed")
             if plan.accepted_tail_hash is not None and tail_hash != plan.accepted_tail_hash:
@@ -2277,6 +2284,11 @@ class LiveBatchProcessor:
                 ),
             )
             return False
+        if _file_observation(final_stat) != expected_observation:
+            logger.info(
+                "live.watcher: source changed after append persistence; retained proven append frontier: %s",
+                plan.path,
+            )
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
         stored_tail_hash = (
             encode_cursor_hash_authority(

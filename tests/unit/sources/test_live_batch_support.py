@@ -33,6 +33,7 @@ from polylogue.sources.live.batch_support import (
     _parse_path_as_session_artifact,
     encode_cursor_hash_authority,
     sha256_range_from_path,
+    tail_hash_from_path,
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -2208,7 +2209,7 @@ def test_append_plan_rejects_malformed_hash_authority(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("rewrite_mode", ["atomic-replacement", "in-place-prefix"])
-def test_append_cursor_forces_full_retry_after_source_rewrite(
+def test_append_cursor_redetects_source_rewrite_after_handoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     rewrite_mode: str,
@@ -2283,16 +2284,14 @@ def test_append_cursor_forces_full_retry_after_source_rewrite(
 
     assert appended.append_file_count == 1
     assert appended.succeeded_file_count == 1
-    assert appended.stale_cursor_write_count == 1
     stale_cursor = cursor.get_record(path)
     assert stale_cursor is not None
-    assert stale_cursor.byte_offset == 0
-    assert stale_cursor.content_fingerprint is None
-    assert LiveWatcher(
+    watcher = LiveWatcher(
         polylogue,
         (WatchSource(name="codex", root=root),),
         cursor=cursor,
-    )._needs_work(path)
+    )
+    assert watcher._needs_work(path)
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT native_id FROM messages ORDER BY native_id").fetchall() == [
             ("message-0a",),
@@ -2304,9 +2303,25 @@ def test_append_cursor_forces_full_retry_after_source_rewrite(
         ]
 
     if rewrite_mode == "in-place-prefix":
+        # The append range itself is still byte-proven, so keep it as a
+        # frontier. The old observation embedded in its tail authority makes
+        # the watcher force this same-size prefix rewrite through the full
+        # route before it can be skipped or appended past.
+        assert appended.stale_cursor_write_count == 0
+        assert stale_cursor.byte_offset == len(baseline_a + append_a)
+        assert stale_cursor.content_fingerprint is not None
         assert b"zerob" in path.read_bytes()
         assert path.read_bytes()[-64 * 1024 :] == accepted_tail_before_rewrite
+        retried = asyncio.run(processor.ingest_files([path]))
+        assert retried.full_file_count == 1
+        assert retried.append_file_count == 0
+        assert retried.succeeded_file_count == 0
+        assert retried.failed_file_count == 1
         return
+
+    assert appended.stale_cursor_write_count == 1
+    assert stale_cursor.byte_offset == 0
+    assert stale_cursor.content_fingerprint is None
 
     retried = asyncio.run(processor.ingest_files([path]))
 
@@ -2323,6 +2338,60 @@ def test_append_cursor_forces_full_retry_after_source_rewrite(
             ("message-aa",),
             ("message-bb",),
         ]
+
+
+def test_append_cursor_rejects_truncation_after_append_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partial append handoff must fail closed when its source truncates."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "append-truncated.jsonl"
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"append-truncated"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    append = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"one"}]}}\n'
+    )
+    path.write_bytes(baseline)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    assert asyncio.run(processor.ingest_files([path])).succeeded_file_count == 1
+    with path.open("ab") as handle:
+        handle.write(append)
+    plan = processor._append_plan(path)
+    assert isinstance(plan, _AppendPlan)
+
+    original_tail_hash = tail_hash_from_path
+
+    def truncate_after_tail(source_path: Path, byte_size: int) -> tuple[str, int]:
+        result = original_tail_hash(source_path, byte_size)
+        source_path.write_bytes(source_path.read_bytes()[: plan.last_complete_newline - 1])
+        return result
+
+    monkeypatch.setattr("polylogue.sources.live.batch.tail_hash_from_path", truncate_after_tail)
+
+    assert processor._record_append_cursor(plan) is False
+    invalidated = cursor.get_record(path)
+    assert invalidated is not None
+    assert invalidated.byte_offset == 0
+    assert invalidated.content_fingerprint is None
+    assert LiveWatcher(
+        polylogue,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+    )._needs_work(path)
 
 
 def test_rewrite_plus_growth_before_planning_fails_closed_to_full_route(tmp_path: Path) -> None:
