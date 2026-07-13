@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Polylogue documentation — local, evidence-addressable archives for AI work.">
-    <title>Export — Polylogue</title>
+    <title>Roadmap and Work Graph — Polylogue</title>
     <style>
 
         :root {
@@ -329,16 +329,16 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     </style>
 
 </head>
-<body class="page-doc">
+<body class="page-board">
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header">
         <div class="header-inner">
             <button class="nav-toggle" type="button" aria-label="Open documentation navigation" aria-expanded="false" onclick="toggleNav(this)">☰</button>
-            <a href="../../" class="logo">poly<span class="logo-mark">logue</span></a>
+            <a href="../" class="logo">poly<span class="logo-mark">logue</span></a>
             <nav class="primary-nav" aria-label="Primary navigation">
-                <a class="nav-essential" href="../getting-started/">Get started</a>
-                <a href="../">Documentation</a>
-                <a class="nav-essential" href="../../beads/">Roadmap</a>
+                <a class="nav-essential" href="../docs/getting-started/">Get started</a>
+                <a href="../docs/">Documentation</a>
+                <a class="nav-essential" href="./">Roadmap</a>
                 <a href="https://github.com/Sinity/polylogue">GitHub</a>
             </nav>
             <button class="theme-toggle" type="button" onclick="toggleTheme(this)" title="Toggle color theme" aria-label="Toggle color theme">◐</button>
@@ -350,209 +350,102 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <section class="nav-section">
                 <div class="nav-section-title">Start</div>
 
-                <a href="../getting-started/" >Getting Started</a>
+                <a href="../docs/getting-started/" >Getting Started</a>
 
-                <a href="../installation/" >Installation</a>
+                <a href="../docs/installation/" >Installation</a>
 
-                <a href="../../demos/" >Demos and Proofs</a>
+                <a href="../demos/" >Demos and Proofs</a>
 
-                <a href="../" >Documentation Map</a>
+                <a href="../docs/" >Documentation Map</a>
 
             </section>
 
             <section class="nav-section">
                 <div class="nav-section-title">Use Polylogue</div>
 
-                <a href="../search/" >Search and Query</a>
+                <a href="../docs/search/" >Search and Query</a>
 
-                <a href="../providers/" >Providers</a>
+                <a href="../docs/providers/" >Providers</a>
 
-                <a href="../insights/" >Insights</a>
+                <a href="../docs/insights/" >Insights</a>
 
-                <a href="./" class="active" aria-current="page">Export</a>
+                <a href="../docs/export/" >Export</a>
 
-                <a href="../daemon/" >Daemon</a>
+                <a href="../docs/daemon/" >Daemon</a>
 
-                <a href="../browser-capture/" >Browser Capture</a>
+                <a href="../docs/browser-capture/" >Browser Capture</a>
 
             </section>
 
             <section class="nav-section">
                 <div class="nav-section-title">Reference</div>
 
-                <a href="../../reference/cli/" >CLI</a>
+                <a href="../reference/cli/" >CLI</a>
 
-                <a href="../../reference/mcp/" >MCP</a>
+                <a href="../reference/mcp/" >MCP</a>
 
-                <a href="../../reference/api/" >Python API</a>
+                <a href="../reference/api/" >Python API</a>
 
-                <a href="../../reference/config/" >Configuration</a>
+                <a href="../reference/config/" >Configuration</a>
 
             </section>
 
             <section class="nav-section">
                 <div class="nav-section-title">Understand</div>
 
-                <a href="../../architecture/rings/" >Architecture</a>
+                <a href="../architecture/rings/" >Architecture</a>
 
-                <a href="../../architecture/internals/" >Internals</a>
+                <a href="../architecture/internals/" >Internals</a>
 
-                <a href="../../architecture/schema/" >Schema</a>
+                <a href="../architecture/schema/" >Schema</a>
 
-                <a href="../../architecture/sinex/" >Polylogue on Sinex</a>
+                <a href="../architecture/sinex/" >Polylogue on Sinex</a>
 
-                <a href="../../architecture/security/" >Security</a>
+                <a href="../architecture/security/" >Security</a>
 
             </section>
 
             <section class="nav-section">
                 <div class="nav-section-title">Project</div>
 
-                <a href="../../beads/" >Roadmap</a>
+                <a href="./" class="active" aria-current="page">Roadmap</a>
 
-                <a href="../../proof/" >Proof Artifacts</a>
+                <a href="../proof/" >Proof Artifacts</a>
 
-                <a href="../../verifiability/coverage/" >Verification</a>
+                <a href="../verifiability/coverage/" >Verification</a>
 
-                <a href="../maintenance/" >Maintenance</a>
+                <a href="../docs/maintenance/" >Maintenance</a>
 
-                <a href="../../architecture/contributing/" >Contributing</a>
+                <a href="../architecture/contributing/" >Contributing</a>
 
-                <a href="../audits/" >Historical Records</a>
+                <a href="../docs/audits/" >Historical Records</a>
 
             </section>
 
         </nav>
         <main class="content" id="main-content">
 
-<article class="doc"><p><a href="../">← Back to Docs</a></p>
-<h1 id="export">Export</h1>
-<p>Polylogue does not have a separate export command. Export is query selection
-plus a <code>read</code> projection plus a renderer. Use <code>read</code> for one selected session
-and <code>read --all</code> when the query result set itself is the export target.</p>
-<h2 id="single-session">Single Session</h2>
-<p>Read one session by ID with a root filter that narrows the archive to a single
-match:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read
-</code></pre>
-<p>Specify format:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read --format json
-polylogue --id claude-ai:abc123 read --format yaml
-</code></pre>
-<h2 id="query-set-reads">Query-Set Reads</h2>
-<p>Read every session matching a filter chain with <code>read --all</code>:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session --since 2026-01 find 'origin:claude-code-session' then read --all
-polylogue --tag important find 'tag:important' then read --all --format markdown
-polylogue --has-tool-use find &quot;refactor&quot; then read --all --format ndjson
-</code></pre>
-<h3 id="piping">Piping</h3>
-<p><code>read --all --format ndjson</code> emits one JSON line per session, suitable for
-piping:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session find 'origin:claude-code-session' then read --all --format ndjson | jq '.title'
-polylogue --since &quot;last month&quot; find 'since:&quot;last month&quot;' then read --all --format ndjson | wc -l
-</code></pre>
-<h2 id="export-formats">Export Formats</h2>
-<table>
-<thead>
-<tr>
-<th>Format</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>markdown</code></td>
-<td>Human-readable query-set output</td>
-</tr>
-<tr>
-<td><code>json</code></td>
-<td>Query-set envelope as structured JSON</td>
-</tr>
-<tr>
-<td><code>ndjson</code></td>
-<td>One JSON object per line</td>
-</tr>
-<tr>
-<td><code>yaml</code></td>
-<td>Query-set envelope as YAML</td>
-</tr>
-<tr>
-<td><code>plaintext</code></td>
-<td>Unformatted query-set rows</td>
-</tr>
-<tr>
-<td><code>csv</code></td>
-<td>Comma-separated query-set rows</td>
-</tr>
-</tbody>
-</table>
-<p>These are the formats supported by the standard query-set export path. Default
-output varies by view and cardinality, so specify a format in automation. Other
-views have their own contracts; use <code>polylogue read --views --format json</code> to
-inspect the current view-specific formats before relying on one.</p>
-<p>Set format with <code>--format</code> / <code>-f</code>:</p>
-<pre><code class="language-bash">polylogue --id &lt;id&gt; read --format json
-polylogue --since yesterday find 'since:yesterday' then read --all --format yaml
-</code></pre>
-<h2 id="content-blocks">Content Blocks</h2>
-<p>Reads include all selected content blocks: text, thinking blocks, tool use, tool
-results, images, code blocks, and document references. Use query-unit
-expressions or explicit read views to narrow what is selected before rendering.</p>
-<h2 id="repeatable-local-packages">Repeatable Local Packages</h2>
-<p>For repeatable local demo/export bundles, describe ordinary <code>read</code> artifacts in
-a JSON/YAML package and render it through <code>devtools workspace read-package</code>.
-Artifact-level projection policy lives under <code>projection</code>, and renderer/layout
-policy lives under <code>render</code>. Both map to ordinary <code>polylogue read</code> flags:</p>
-<pre><code class="language-json">{
-  &quot;version&quot;: 1,
-  &quot;artifacts&quot;: [
-    {
-      &quot;name&quot;: &quot;dialogue-json&quot;,
-      &quot;view&quot;: &quot;dialogue&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;dialogue.json&quot;,
-      &quot;projection&quot;: {
-        &quot;max_tokens&quot;: 120
-      }
-    },
-    {
-      &quot;name&quot;: &quot;spec-json&quot;,
-      &quot;view&quot;: &quot;temporal,chronicle&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;spec.json&quot;,
-      &quot;spec&quot;: true,
-      &quot;render&quot;: {
-        &quot;fields&quot;: &quot;selection,projection,render&quot;
-      }
-    }
-  ]
-}
-</code></pre>
-<p>This is still composition over <code>polylogue read</code>: the package renderer plans
-normal read commands such as <code>--view dialogue --format json --max-tokens 120</code>
-or <code>--spec --fields selection,projection,render</code>.</p>
-<h2 id="sharing-considerations">Sharing Considerations</h2>
-<ul>
-<li>Rendered output can contain full message content including tool inputs/outputs and
-thinking blocks. Review before sharing.</li>
-<li>Cost estimates are approximate; API-reported token counts are exact where
-available.</li>
-<li>Attachment references are preserved but binary blobs are not rendered.</li>
-<li>Use query-unit filters or a narrower read view to produce cleaner output for
-non-technical audiences.</li>
-</ul>
-</article>
-<nav class="doc-pager" aria-label="Adjacent documentation">
-    <a href="../insights/">← Insights</a>
-    <a href="../daemon/">Daemon →</a>
-</nav>
+<header class="board-hero">
+    <div><p class="eyebrow">Committed project record</p><h1>Roadmap and work graph</h1><p>Search the project’s Beads issues, inspect designs and acceptance criteria, and follow dependencies through delivered and active work. This view is rebuilt from the repository on every documentation deployment.</p></div>
+    <div class="board-meta"><a href="https://github.com/Sinity/polylogue/blob/master/.beads/issues.jsonl">View source JSONL</a></div>
+</header>
+<div class="board-stats" id="board-stats" aria-label="Issue summary"></div>
+<form class="board-toolbar" id="board-toolbar">
+    <input type="search" id="board-search" placeholder="Search titles, descriptions, designs, criteria…" aria-label="Search issues">
+    <select id="board-status" aria-label="Filter by status"><option value="active">Active work</option><option value="ready">Ready</option><option value="blocked">Blocked</option><option value="all">All statuses</option><option value="closed">Closed</option></select>
+    <select id="board-priority" aria-label="Filter by priority"><option value="all">All priorities</option><option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select>
+    <select id="board-type" aria-label="Filter by type"><option value="all">All types</option></select>
+</form>
+<div class="board-results-meta"><span id="board-result-count">Loading issues…</span><span>Open an item for its full record</span></div>
+<div class="issue-list" id="issue-list" aria-live="polite"></div>
+<button class="button load-more" id="load-more" type="button" hidden>Show more</button>
 
         </main>
     </div>
     <footer class="site-footer">
         <div class="footer-inner">
             <span>Polylogue · local evidence for AI work</span>
-            <span><a href="../">Documentation</a> · <a href="../../beads/">Roadmap</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
+            <span><a href="../docs/">Documentation</a> · <a href="./">Roadmap</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
         </div>
     </footer>
     <script>
@@ -580,6 +473,89 @@ non-technical audiences.</li>
             }
         });
     </script>
+
+<script>
+(() => {
+    const pageSize = 100;
+    const state = { issues: [], visible: pageSize };
+    const els = Object.fromEntries(['board-stats','board-search','board-status','board-priority','board-type','board-result-count','issue-list','load-more'].map(id => [id, document.getElementById(id)]));
+    const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const text = value => esc(value).replace(/(https?:[/][/][^ <]+)/g, '<a href="$1">$1</a>');
+    const isClosed = issue => issue.status === 'closed';
+    const blockingDeps = issue => (issue.dependencies || []).filter(dep => dep.type === 'blocks' && !isClosed(state.byId.get(dep.depends_on_id) || {}));
+    const bucket = issue => isClosed(issue) ? 'closed' : issue.status === 'in_progress' ? 'in_progress' : blockingDeps(issue).length ? 'blocked' : 'ready';
+    const statusBadge = issue => {
+        const value = bucket(issue);
+        const cls = value === 'closed' ? 'badge-green' : value === 'blocked' ? 'badge-red' : value === 'in_progress' ? 'badge-yellow' : '';
+        return `<span class="badge ${cls}">${esc(value.replace('_', ' '))}</span>`;
+    };
+    const field = (title, value) => value ? `<section class="issue-section"><h3>${title}</h3><div class="issue-prose">${text(value)}</div></section>` : '';
+    const dependencyLinks = issue => {
+        const deps = issue.dependencies || [];
+        if (!deps.length) return '';
+        return `<section class="issue-section"><h3>Relationships</h3><div class="issue-links">${deps.map(dep => `<button class="issue-link" type="button" data-issue="${esc(dep.depends_on_id)}">${esc(dep.type)} · ${esc(dep.depends_on_id)}</button>`).join('')}</div></section>`;
+    };
+    const card = issue => {
+        const labels = (issue.labels || []).map(label => `<span class="badge">${esc(label)}</span>`).join('');
+        const date = issue.updated_at ? new Date(issue.updated_at).toLocaleDateString(undefined, {year:'numeric',month:'short',day:'numeric'}) : '';
+        return `<details class="issue-card" id="${esc(issue.id)}"><summary class="issue-summary"><span class="priority priority-${esc(issue.priority)}">P${esc(issue.priority)}</span><span><span class="issue-title"><span class="issue-id">${esc(issue.id)}</span>${esc(issue.title)}</span><span class="issue-subline">${statusBadge(issue)}<span class="badge">${esc(issue.issue_type || 'task')}</span>${labels}</span></span><span class="issue-updated">${esc(date)}</span></summary><div class="issue-body">${field('Description', issue.description)}${field('Design', issue.design)}${field('Acceptance criteria', issue.acceptance_criteria)}${field('Notes', issue.notes)}${dependencyLinks(issue)}${field('Closure', issue.close_reason)}</div></details>`;
+    };
+    function matches(issue) {
+        const query = els['board-search'].value.trim().toLowerCase();
+        const haystack = [issue.id, issue.title, issue.description, issue.design, issue.acceptance_criteria, issue.notes, issue.close_reason, ...(issue.labels || [])].join(String.fromCharCode(10)).toLowerCase();
+        const status = els['board-status'].value;
+        const issueBucket = bucket(issue);
+        const statusOk = status === 'all' || (status === 'active' && issueBucket !== 'closed') || status === issueBucket;
+        return statusOk && (els['board-priority'].value === 'all' || String(issue.priority) === els['board-priority'].value) && (els['board-type'].value === 'all' || issue.issue_type === els['board-type'].value) && (!query || query.split(' ').filter(Boolean).every(term => haystack.includes(term)));
+    }
+    function updateUrl() {
+        const url = new URL(location.href);
+        [['q','board-search'],['status','board-status'],['priority','board-priority'],['type','board-type']].forEach(([key,id]) => {
+            const value = els[id].value;
+            if (value && !(['status','priority','type'].includes(key) && value === (key === 'status' ? 'active' : 'all'))) url.searchParams.set(key, value); else url.searchParams.delete(key);
+        });
+        history.replaceState(null, '', url);
+    }
+    function render() {
+        const filtered = state.issues.filter(matches).sort((a,b) => (a.priority - b.priority) || String(b.updated_at).localeCompare(String(a.updated_at)));
+        els['issue-list'].innerHTML = filtered.slice(0, state.visible).map(card).join('') || '<div class="empty-state">No issues match these filters.</div>';
+        els['board-result-count'].textContent = `${filtered.length.toLocaleString()} matching issue${filtered.length === 1 ? '' : 's'}`;
+        els['load-more'].hidden = filtered.length <= state.visible;
+        updateUrl();
+        if (location.hash) {
+            const target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+            if (target) { target.open = true; requestAnimationFrame(() => target.scrollIntoView({block:'start'})); }
+        }
+    }
+    function openIssue(id) {
+        const issue = state.byId.get(id);
+        if (!issue) return;
+        els['board-search'].value = id;
+        els['board-status'].value = 'all';
+        state.visible = pageSize;
+        location.hash = encodeURIComponent(id);
+        render();
+    }
+    fetch('issues.jsonl').then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.text(); }).then(raw => {
+        state.issues = raw.split(String.fromCharCode(10)).map(line => line.endsWith(String.fromCharCode(13)) ? line.slice(0, -1) : line).filter(Boolean).map(line => JSON.parse(line)).filter(row => row._type === 'issue');
+        state.byId = new Map(state.issues.map(issue => [issue.id, issue]));
+        const params = new URLSearchParams(location.search);
+        els['board-search'].value = params.get('q') || '';
+        els['board-status'].value = params.get('status') || 'active';
+        els['board-priority'].value = params.get('priority') || 'all';
+        const types = [...new Set(state.issues.map(issue => issue.issue_type).filter(Boolean))].sort();
+        els['board-type'].insertAdjacentHTML('beforeend', types.map(type => `<option value="${esc(type)}">${esc(type)}</option>`).join(''));
+        els['board-type'].value = params.get('type') || 'all';
+        const counts = { total: state.issues.length, active: 0, ready: 0, blocked: 0, closed: 0 };
+        state.issues.forEach(issue => { const b = bucket(issue); counts[b] = (counts[b] || 0) + 1; if (b !== 'closed') counts.active++; });
+        els['board-stats'].innerHTML = [['Active',counts.active],['Ready',counts.ready],['Blocked',counts.blocked],['In progress',counts.in_progress || 0],['Delivered',counts.closed]].map(([label,value]) => `<div class="board-stat"><strong>${value.toLocaleString()}</strong><span>${label}</span></div>`).join('');
+        render();
+    }).catch(error => { els['issue-list'].innerHTML = `<div class="empty-state">Could not load the committed Beads records: ${esc(error.message)}</div>`; els['board-result-count'].textContent = 'Board unavailable'; });
+    ['board-search','board-status','board-priority','board-type'].forEach(id => els[id].addEventListener(id === 'board-search' ? 'input' : 'change', () => { state.visible = pageSize; render(); }));
+    els['load-more'].addEventListener('click', () => { state.visible += pageSize; render(); });
+    els['issue-list'].addEventListener('click', event => { const button = event.target.closest('[data-issue]'); if (button) openIssue(button.dataset.issue); });
+})();
+</script>
 
 </body>
 </html>

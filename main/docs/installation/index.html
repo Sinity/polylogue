@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Polylogue documentation — local, evidence-addressable archives for AI work.">
-    <title>Export — Polylogue</title>
+    <title>Installation — Polylogue</title>
     <style>
 
         :root {
@@ -352,7 +352,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
                 <a href="../getting-started/" >Getting Started</a>
 
-                <a href="../installation/" >Installation</a>
+                <a href="./" class="active" aria-current="page">Installation</a>
 
                 <a href="../../demos/" >Demos and Proofs</a>
 
@@ -369,7 +369,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
                 <a href="../insights/" >Insights</a>
 
-                <a href="./" class="active" aria-current="page">Export</a>
+                <a href="../export/" >Export</a>
 
                 <a href="../daemon/" >Daemon</a>
 
@@ -425,126 +425,340 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         </nav>
         <main class="content" id="main-content">
 
-<article class="doc"><p><a href="../">← Back to Docs</a></p>
-<h1 id="export">Export</h1>
-<p>Polylogue does not have a separate export command. Export is query selection
-plus a <code>read</code> projection plus a renderer. Use <code>read</code> for one selected session
-and <code>read --all</code> when the query result set itself is the export target.</p>
-<h2 id="single-session">Single Session</h2>
-<p>Read one session by ID with a root filter that narrows the archive to a single
-match:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read
-</code></pre>
-<p>Specify format:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read --format json
-polylogue --id claude-ai:abc123 read --format yaml
-</code></pre>
-<h2 id="query-set-reads">Query-Set Reads</h2>
-<p>Read every session matching a filter chain with <code>read --all</code>:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session --since 2026-01 find 'origin:claude-code-session' then read --all
-polylogue --tag important find 'tag:important' then read --all --format markdown
-polylogue --has-tool-use find &quot;refactor&quot; then read --all --format ndjson
-</code></pre>
-<h3 id="piping">Piping</h3>
-<p><code>read --all --format ndjson</code> emits one JSON line per session, suitable for
-piping:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session find 'origin:claude-code-session' then read --all --format ndjson | jq '.title'
-polylogue --since &quot;last month&quot; find 'since:&quot;last month&quot;' then read --all --format ndjson | wc -l
-</code></pre>
-<h2 id="export-formats">Export Formats</h2>
+<article class="doc"><h1 id="installation">Installation</h1>
+<p>Polylogue is available from PyPI, the Sinity Homebrew tap, and its Nix flake.
+Container and browser-extension artifacts remain version-specific: a GitHub
+tag or release page alone is not proof that those channels carry a matching
+artifact, so use the linked verification for the channel you plan to install
+from.</p>
 <table>
 <thead>
 <tr>
-<th>Format</th>
-<th>Description</th>
+<th>Channel</th>
+<th>Audience</th>
+<th>Install after its artifact smoke passes</th>
+<th>Verification</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>markdown</code></td>
-<td>Human-readable query-set output</td>
+<td><code>nix develop</code></td>
+<td>Local development, source checkout, verification</td>
+<td><code>nix develop</code></td>
+<td><a href="../../architecture/contributing/">Contributing</a></td>
 </tr>
 <tr>
-<td><code>json</code></td>
-<td>Query-set envelope as structured JSON</td>
+<td>Nix flake</td>
+<td>NixOS / nix-darwin users</td>
+<td><code>nix run github:Sinity/polylogue -- --help</code></td>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/flake.nix"><code>flake.nix</code></a></td>
 </tr>
 <tr>
-<td><code>ndjson</code></td>
-<td>One JSON object per line</td>
+<td>PyPI / pipx</td>
+<td>Python CLI users</td>
+<td><code>pipx install polylogue</code></td>
+<td><code>polylogue --version</code>, <code>polylogued --help</code>, <code>polylogue-mcp --help</code></td>
 </tr>
 <tr>
-<td><code>yaml</code></td>
-<td>Query-set envelope as YAML</td>
+<td>GHCR</td>
+<td>Container deployments</td>
+<td><code>podman pull ghcr.io/sinity/polylogue:X.Y.Z</code></td>
+<td><code>podman run --rm --entrypoint polylogue ghcr.io/sinity/polylogue:X.Y.Z --version</code></td>
 </tr>
 <tr>
-<td><code>plaintext</code></td>
-<td>Unformatted query-set rows</td>
+<td>Homebrew</td>
+<td>macOS/Linuxbrew users</td>
+<td><code>brew tap sinity/polylogue &amp;&amp; brew install polylogue</code></td>
+<td><code>brew test polylogue</code></td>
 </tr>
 <tr>
-<td><code>csv</code></td>
-<td>Comma-separated query-set rows</td>
+<td>Browser extension</td>
+<td>Browser-capture users</td>
+<td>Download the matching release <code>.zip</code> / <code>.xpi</code></td>
+<td>verify <code>build-manifest.json</code> version equals <code>X.Y.Z</code></td>
+</tr>
+<tr>
+<td>NixOS / Home Manager module</td>
+<td>Managed local daemon deployment</td>
+<td>see below</td>
+<td><code>systemctl status polylogued.service</code></td>
 </tr>
 </tbody>
 </table>
-<p>These are the formats supported by the standard query-set export path. Default
-output varies by view and cardinality, so specify a format in automation. Other
-views have their own contracts; use <code>polylogue read --views --format json</code> to
-inspect the current view-specific formats before relying on one.</p>
-<p>Set format with <code>--format</code> / <code>-f</code>:</p>
-<pre><code class="language-bash">polylogue --id &lt;id&gt; read --format json
-polylogue --since yesterday find 'since:yesterday' then read --all --format yaml
+<p>For the release-channel recovery sequence and exact smoke matrix, see the
+<a href="https://github.com/Sinity/polylogue/blob/master/docs/release.md#backfill-an-existing-tag-without-re-cutting-it">release checklist</a>.</p>
+<p>The source and Nix paths expose the same three console scripts: <code>polylogue</code>,
+<code>polylogued</code>, and <code>polylogue-mcp</code>.</p>
+<h2 id="source-checkout">Source checkout</h2>
+<p>Clone the repository and enter the dev shell:</p>
+<pre><code class="language-bash">git clone https://github.com/Sinity/polylogue.git
+cd polylogue
+nix develop
 </code></pre>
-<h2 id="content-blocks">Content Blocks</h2>
-<p>Reads include all selected content blocks: text, thinking blocks, tool use, tool
-results, images, code blocks, and document references. Use query-unit
-expressions or explicit read views to narrow what is selected before rendering.</p>
-<h2 id="repeatable-local-packages">Repeatable Local Packages</h2>
-<p>For repeatable local demo/export bundles, describe ordinary <code>read</code> artifacts in
-a JSON/YAML package and render it through <code>devtools workspace read-package</code>.
-Artifact-level projection policy lives under <code>projection</code>, and renderer/layout
-policy lives under <code>render</code>. Both map to ordinary <code>polylogue read</code> flags:</p>
-<pre><code class="language-json">{
-  &quot;version&quot;: 1,
-  &quot;artifacts&quot;: [
-    {
-      &quot;name&quot;: &quot;dialogue-json&quot;,
-      &quot;view&quot;: &quot;dialogue&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;dialogue.json&quot;,
-      &quot;projection&quot;: {
-        &quot;max_tokens&quot;: 120
-      }
-    },
-    {
-      &quot;name&quot;: &quot;spec-json&quot;,
-      &quot;view&quot;: &quot;temporal,chronicle&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;spec.json&quot;,
-      &quot;spec&quot;: true,
-      &quot;render&quot;: {
-        &quot;fields&quot;: &quot;selection,projection,render&quot;
-      }
-    }
-  ]
+<p>From inside the dev shell:</p>
+<pre><code class="language-bash">polylogue --help
+polylogue ops status
+polylogued run
+polylogue-mcp --help
+</code></pre>
+<p>Use this route for local work, operator dogfooding, browser-capture debugging,
+and repository verification. The dev shell also provides <code>devtools</code>, which owns
+generated docs, verification, deployment smoke probes, and release checks.</p>
+<h2 id="nix-nixos-quick-start">Nix / NixOS quick start</h2>
+<p>The flake exposes app outputs for the CLI, daemon, and MCP server. Use
+<code>github:Sinity/polylogue</code> for a one-shot smoke of the current published flake,
+or <code>nix develop</code> inside a checkout when you need the repo-local <code>devtools</code>
+surface. One-shot commands are enough for smoke testing a host:</p>
+<pre><code class="language-bash">nix run github:Sinity/polylogue -- --help
+nix run github:Sinity/polylogue#polylogued -- run
+nix run github:Sinity/polylogue#polylogued -- browser-capture status
+nix run github:Sinity/polylogue#polylogue-mcp -- --help
+</code></pre>
+<p>Inside a checkout, use the dev shell when you want the repo-local command
+surface and verification helpers:</p>
+<pre><code class="language-bash">nix develop -c polylogue --help
+nix develop -c polylogued run
+nix develop -c devtools workspace deployment-smoke --browser --browser-executable &quot;$(command -v google-chrome)&quot;
+</code></pre>
+<p>On NixOS hosts where Chrome lives in the per-user profile rather than under a
+distribution path, pass that path explicitly for browser first-paint diagnostics:</p>
+<pre><code class="language-bash">nix develop -c devtools workspace deployment-smoke --browser \
+  --browser-executable /etc/profiles/per-user/$USER/bin/google-chrome
+</code></pre>
+<p>That smoke launches a fresh headless profile against Polylogue's web root. It
+does not claim MCP DevTools control, copied-profile cookies, or live provider
+pages; those are local operator proof modes covered by
+<a href="https://github.com/Sinity/polylogue/blob/master/docs/dev-loop.md"><code>docs/dev-loop.md</code></a>.</p>
+<p>On NixOS, import the flake module shown in the Nix section below. It creates a
+managed <code>polylogued.service</code>; check that deployed surface with:</p>
+<pre><code class="language-bash">systemctl status polylogued.service
+polylogue ops status
+</code></pre>
+<h2 id="pypi-and-homebrew">PyPI and Homebrew</h2>
+<p><code>pipx</code> is the recommended isolated Python CLI install. <code>uv tool</code> provides the
+same isolation model if uv is already your package frontend:</p>
+<pre><code class="language-bash">pipx install polylogue
+# or: uv tool install polylogue
+polylogue --version
+polylogued --help
+polylogue-mcp --help
+</code></pre>
+<p>The Homebrew tap installs the published PyPI release into a formula-owned
+virtual environment:</p>
+<pre><code class="language-bash">brew tap sinity/polylogue
+brew install polylogue
+brew test polylogue
+</code></pre>
+<h2 id="containers">Containers</h2>
+<p>For containers, use <code>--version</code> for the concise human build identity and query
+the packaged runtime's <code>VERSION_INFO.commit</code> for the full revision before
+deploying:</p>
+<pre><code class="language-bash">podman pull ghcr.io/sinity/polylogue:X.Y.Z
+podman run --rm --entrypoint polylogue ghcr.io/sinity/polylogue:X.Y.Z --version
+podman run --rm --entrypoint python ghcr.io/sinity/polylogue:X.Y.Z \
+  -I -c 'from polylogue.version import VERSION_INFO; print(VERSION_INFO.commit)'
+git ls-remote https://github.com/Sinity/polylogue refs/tags/vX.Y.Z
+</code></pre>
+<p>The published workflow performs this smoke for both slim and distroless images;
+it requires the concise version to match the source prefix and the machine-
+readable runtime field to equal the complete source revision.</p>
+<h3 id="recovering-an-already-created-tag">Recovering an already-created tag</h3>
+<p>If a GitHub Release exists without its artifacts, do not re-cut its tag. Follow
+the <a href="https://github.com/Sinity/polylogue/blob/master/docs/release.md#backfill-an-existing-tag-without-re-cutting-it">release checklist recovery sequence</a>,
+which requires the tag, checked-out source, and GitHub Release target commit to
+agree before publication.</p>
+<p>For local container or formula experiments before their artifacts exist, build
+from the checkout:</p>
+<pre><code class="language-bash">docker buildx build -f packaging/Containerfile --target runtime    -t polylogue:slim       .
+docker buildx build -f packaging/Containerfile --target distroless -t polylogue:distroless .
+</code></pre>
+<p>For formula work, build the in-repo template explicitly:</p>
+<pre><code class="language-bash">brew install --build-from-source nix/homebrew-tap-template/Formula/polylogue.rb
+brew test polylogue
+brew audit --strict --online polylogue
+</code></pre>
+<h2 id="nix-flake">Nix flake</h2>
+<p>The flake exposes three apps, a default package, a NixOS module, and a Home
+Manager module. Build artifacts for <code>x86_64-linux</code> are mirrored to the
+<a href="https://sinity.cachix.org"><code>sinity</code> cachix cache</a>; enable it on a fresh host
+to avoid rebuilding the dependency closure.</p>
+<h3 id="one-shot-invocation">One-shot invocation</h3>
+<pre><code class="language-bash">nix run github:Sinity/polylogue                       # polylogue (CLI)
+nix run github:Sinity/polylogue#polylogued -- --help  # daemon
+nix run github:Sinity/polylogue#polylogue-mcp         # MCP server
+</code></pre>
+<p>Enable the binary cache for hit-on-first-pull:</p>
+<pre><code class="language-bash">nix-env -iA cachix -f https://cachix.org/api/v1/install   # if cachix is not on PATH
+cachix use sinity
+</code></pre>
+<h3 id="external-flake-input">External flake input</h3>
+<pre><code class="language-nix">{
+  inputs.polylogue.url = &quot;github:Sinity/polylogue&quot;;
+  # or, via FlakeHub:
+  # inputs.polylogue.url = &quot;https://flakehub.com/f/Sinity/polylogue/*&quot;;
+
+  outputs = { self, nixpkgs, polylogue, ... }: {
+    # Use polylogue.packages.x86_64-linux.default in any derivation
+    # or wire the NixOS / HM module below.
+  };
 }
 </code></pre>
-<p>This is still composition over <code>polylogue read</code>: the package renderer plans
-normal read commands such as <code>--view dialogue --format json --max-tokens 120</code>
-or <code>--spec --fields selection,projection,render</code>.</p>
-<h2 id="sharing-considerations">Sharing Considerations</h2>
-<ul>
-<li>Rendered output can contain full message content including tool inputs/outputs and
-thinking blocks. Review before sharing.</li>
-<li>Cost estimates are approximate; API-reported token counts are exact where
-available.</li>
-<li>Attachment references are preserved but binary blobs are not rendered.</li>
-<li>Use query-unit filters or a narrower read view to produce cleaner output for
-non-technical audiences.</li>
-</ul>
+<h3 id="nixos-module">NixOS module</h3>
+<pre><code class="language-nix">{ inputs, pkgs, ... }: {
+  imports = [ inputs.polylogue.nixosModules.default ];
+
+  services.polylogue = {
+    enable = true;
+    package = inputs.polylogue.packages.${pkgs.system}.default;
+    settings = {
+      archive.root = &quot;/var/lib/polylogue&quot;;
+      daemon-api.port = 8766;
+      browser-capture.port = 8765;
+      embedding.enabled = false;
+    };
+  };
+}
+</code></pre>
+<p>The module wires a <code>polylogued.service</code> systemd unit running <code>polylogued run</code>
+(watch + browser-capture + HTTP API). <code>services.polylogue.settings.*</code> renders
+the same <code>polylogue.toml</code> schema used outside Nix; <code>polylogued run</code> reads that
+effective config instead of receiving duplicated <code>ExecStart</code> flags. Keep bearer
+tokens in environment/secret-manager wiring when possible, because setting them
+in <code>settings.*</code> writes them into the generated TOML. Per-unit hardening defaults
+(<code>Nice = 10</code>, <code>IOSchedulingClass = idle</code>, <code>MemoryHigh = 2G</code>, <code>MemoryMax = 2G</code>)
+are tunable under <code>services.polylogue.service.*</code>; they are deployment policy,
+not archive config.</p>
+<p>After deploying, use <code>polylogue config --format json</code> to inspect effective
+values and source layers, and <code>devtools workspace deployment-smoke --json</code> to capture the
+package versions, archive root, daemon URL, browser-capture receiver URL,
+optional browser executable path, and cgroup resource signals visible on the
+host.</p>
+<h3 id="home-manager-module">Home Manager module</h3>
+<pre><code class="language-nix">{ inputs, pkgs, ... }: {
+  imports = [ inputs.polylogue.homeManagerModules.default ];
+
+  programs.polylogued = {
+    enable = true;
+    package = inputs.polylogue.packages.${pkgs.system}.default;
+    settings.daemon-api.port = 8766;
+  };
+}
+</code></pre>
+<p>The HM module declares a <code>systemd.user.services.polylogued</code> unit and renders the
+same TOML schema as the NixOS module. Set <code>programs.polylogued.autoStart = false;</code> to keep the unit available but not started at login.</p>
+<h3 id="building-locally">Building locally</h3>
+<pre><code class="language-bash">nix build .#polylogue           # the package
+nix build .#api-python          # python interpreter with polylogue importable
+nix flake check                 # smoke + format + lint
+</code></pre>
+<h2 id="browser-extension">Browser extension</h2>
+<p>The Manifest V3 browser-capture extension lives in
+<a href="https://github.com/Sinity/polylogue/blob/master/browser-extension"><code>browser-extension/</code></a> and ships as packed artifacts
+attached to every GitHub release by
+<a href="https://github.com/Sinity/polylogue/blob/master/.github/workflows/extension-release.yml"><code>.github/workflows/extension-release.yml</code></a>.</p>
+<table>
+<thead>
+<tr>
+<th>Artifact</th>
+<th>Browsers</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>polylogue-browser-capture-&lt;version&gt;-chrome.zip</code></td>
+<td>Chrome, Chromium, Edge, Brave, Vivaldi</td>
+<td>Developer-mode unpacked install</td>
+</tr>
+<tr>
+<td><code>polylogue-browser-capture-&lt;version&gt;-firefox.xpi</code></td>
+<td>Firefox</td>
+<td>Temporary install via <code>about:debugging</code></td>
+</tr>
+<tr>
+<td><code>polylogue-browser-capture-&lt;version&gt;-store-submission.json</code></td>
+<td>Store operators</td>
+<td>Version, source revision, Gecko ID, SHA-256, and size for both archives</td>
+</tr>
+<tr>
+<td><code>store-screenshots-&lt;tag&gt;.tar.gz</code></td>
+<td>—</td>
+<td>Submission media for store listings</td>
+</tr>
+</tbody>
+</table>
+<p>Download the artifacts from the
+<a href="https://github.com/Sinity/polylogue/releases/latest">latest release</a>.
+The version is locked to the polylogue Python project version on the same
+tag — the workflow rewrites <code>manifest.json</code> from <code>pyproject.toml</code> before
+packaging so the extension version always matches the daemon protocol it
+was built against. Before uploading to a store, verify each downloaded archive
+against the matching <code>store-submission.json</code>; it binds the pair to the release
+version and complete source revision.</p>
+<h3 id="install-paths">Install paths</h3>
+<p>The full per-browser steps live in
+<a href="https://github.com/Sinity/polylogue/blob/master/browser-extension/README.md#install"><code>browser-extension/README.md</code></a>. At
+a glance:</p>
+<ol>
+<li><strong>Start the receiver.</strong> <code>polylogued browser-capture serve</code> (or
+<code>polylogued run</code> for the full daemon). Default endpoint
+<code>http://127.0.0.1:8765</code>.</li>
+<li><strong>Chrome / Chromium (unpacked from clone).</strong> <code>chrome://extensions</code> →
+Developer mode → Load unpacked → select <code>browser-extension/</code>.</li>
+<li><strong>Chrome / Chromium (packed <code>.zip</code>).</strong> Download the release <code>.zip</code>,
+extract, then Load unpacked against the extracted directory.</li>
+<li><strong>Firefox.</strong> Download the release <code>.xpi</code>. Visit
+<code>about:debugging#/runtime/this-firefox</code> → Load Temporary Add-on → select
+the <code>.xpi</code>.</li>
+</ol>
+<h3 id="distribution-status">Distribution status</h3>
+<table>
+<thead>
+<tr>
+<th>Channel</th>
+<th>Status</th>
+<th>Tracking</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Packed <code>.zip</code> on GitHub Releases</td>
+<td>release-backed; verify the matching asset exists</td>
+<td>this doc</td>
+</tr>
+<tr>
+<td>Packed <code>.xpi</code> on GitHub Releases</td>
+<td>release-backed; verify the matching asset exists</td>
+<td>this doc</td>
+</tr>
+<tr>
+<td>Chrome Web Store</td>
+<td>not submitted (store sign-up + review have non-engineering blockers)</td>
+<td>follow-up</td>
+</tr>
+<tr>
+<td>Mozilla AMO</td>
+<td>not submitted (same blockers)</td>
+<td>follow-up</td>
+</tr>
+</tbody>
+</table>
+<p>The extension is local-only by design — it talks to <code>127.0.0.1:8765</code> and
+nothing else. See <a href="../browser-capture/">docs/browser-capture.md</a> for the
+receiver protocol and <code>docs/daemon-threat-model.md</code> for the security model.</p>
+<h3 id="local-rebuild">Local rebuild</h3>
+<pre><code class="language-bash">cd browser-extension
+npm install
+npm run validate    # in-tree manifest validator
+npm run build       # → dist/polylogue-browser-capture-*-{chrome.zip,firefox.xpi}
+npm run screenshots # optional; needs Playwright Chromium
+</code></pre>
+<p><code>scripts/build.mjs --version X.Y.Z</code> overrides the autodetected version when
+producing a one-off bundle.</p>
 </article>
 <nav class="doc-pager" aria-label="Adjacent documentation">
-    <a href="../insights/">← Insights</a>
-    <a href="../daemon/">Daemon →</a>
+    <a href="../getting-started/">← Getting Started</a>
+    <a href="../">Documentation Map →</a>
 </nav>
 
         </main>

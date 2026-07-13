@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Polylogue documentation — local, evidence-addressable archives for AI work.">
-    <title>Export — Polylogue</title>
+    <title>Browser Capture — Polylogue</title>
     <style>
 
         :root {
@@ -369,11 +369,11 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
                 <a href="../insights/" >Insights</a>
 
-                <a href="./" class="active" aria-current="page">Export</a>
+                <a href="../export/" >Export</a>
 
                 <a href="../daemon/" >Daemon</a>
 
-                <a href="../browser-capture/" >Browser Capture</a>
+                <a href="./" class="active" aria-current="page">Browser Capture</a>
 
             </section>
 
@@ -425,126 +425,327 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         </nav>
         <main class="content" id="main-content">
 
-<article class="doc"><p><a href="../">← Back to Docs</a></p>
-<h1 id="export">Export</h1>
-<p>Polylogue does not have a separate export command. Export is query selection
-plus a <code>read</code> projection plus a renderer. Use <code>read</code> for one selected session
-and <code>read --all</code> when the query result set itself is the export target.</p>
-<h2 id="single-session">Single Session</h2>
-<p>Read one session by ID with a root filter that narrows the archive to a single
-match:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read
+<article class="doc"><h1 id="browser-capture">Browser Capture</h1>
+<p>Polylogue can receive browser-observed LLM sessions through a local-only
+Manifest V3 extension.</p>
+<p>Start the receiver:</p>
+<pre><code class="language-bash">polylogued browser-capture serve
 </code></pre>
-<p>Specify format:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read --format json
-polylogue --id claude-ai:abc123 read --format yaml
-</code></pre>
-<h2 id="query-set-reads">Query-Set Reads</h2>
-<p>Read every session matching a filter chain with <code>read --all</code>:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session --since 2026-01 find 'origin:claude-code-session' then read --all
-polylogue --tag important find 'tag:important' then read --all --format markdown
-polylogue --has-tool-use find &quot;refactor&quot; then read --all --format ndjson
-</code></pre>
-<h3 id="piping">Piping</h3>
-<p><code>read --all --format ndjson</code> emits one JSON line per session, suitable for
-piping:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session find 'origin:claude-code-session' then read --all --format ndjson | jq '.title'
-polylogue --since &quot;last month&quot; find 'since:&quot;last month&quot;' then read --all --format ndjson | wc -l
-</code></pre>
-<h2 id="export-formats">Export Formats</h2>
+<p>For normal long-running local service use, <code>polylogued run</code> starts the browser
+capture receiver together with live source watching.</p>
+<p>The receiver listens on <code>127.0.0.1:8765</code> by default and accepts the route contracts in <code>polylogue/browser_capture/route_contracts.py</code>:</p>
+<ul>
+<li><code>GET /v1/status</code> -&gt; <code>BrowserCaptureReceiverStatusPayload</code></li>
+<li><code>GET /v1/archive-state?provider=chatgpt&amp;provider_session_id=...</code> -&gt; <code>BrowserCaptureArchiveStatePayload</code></li>
+<li><code>POST /v1/browser-captures</code> with <code>BrowserCaptureEnvelope</code> -&gt; <code>BrowserCaptureAcceptedPayload</code> or <code>BrowserCaptureErrorPayload</code></li>
+</ul>
+<p><code>/v1/archive-state</code> reports archive visibility, not just receiver spool
+presence. Its <code>state</code>/<code>lifecycle</code> field is one of:</p>
 <table>
 <thead>
 <tr>
-<th>Format</th>
-<th>Description</th>
+<th>State</th>
+<th>Meaning</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>markdown</code></td>
-<td>Human-readable query-set output</td>
+<td><code>missing</code></td>
+<td>No receiver artifact, raw acquisition row, or indexed session was found.</td>
 </tr>
 <tr>
-<td><code>json</code></td>
-<td>Query-set envelope as structured JSON</td>
+<td><code>spooled_only</code></td>
+<td>The receiver has a local artifact, but live ingest has not acquired it into <code>source.db</code>.</td>
 </tr>
 <tr>
-<td><code>ndjson</code></td>
-<td>One JSON object per line</td>
+<td><code>ingest_pending</code></td>
+<td><code>source.db.raw_sessions</code> has the capture, but <code>index.db.sessions</code> is missing it or has no messages yet.</td>
 </tr>
 <tr>
-<td><code>yaml</code></td>
-<td>Query-set envelope as YAML</td>
+<td><code>archived</code></td>
+<td>The capture has raw evidence, an indexed session, and at least one indexed message. Only this state sets <code>captured: true</code>.</td>
 </tr>
 <tr>
-<td><code>plaintext</code></td>
-<td>Unformatted query-set rows</td>
+<td><code>stale</code></td>
+<td>The receiver spool artifact is newer than the indexed archive row for the same provider session. Keep the daemon running; convergence should advance this without a manual repair command.</td>
 </tr>
 <tr>
-<td><code>csv</code></td>
-<td>Comma-separated query-set rows</td>
+<td><code>failed</code></td>
+<td>The receiver artifact is unreadable or raw validation/parsing recorded a failure.</td>
 </tr>
 </tbody>
 </table>
-<p>These are the formats supported by the standard query-set export path. Default
-output varies by view and cardinality, so specify a format in automation. Other
-views have their own contracts; use <code>polylogue read --views --format json</code> to
-inspect the current view-specific formats before relying on one.</p>
-<p>Set format with <code>--format</code> / <code>-f</code>:</p>
-<pre><code class="language-bash">polylogue --id &lt;id&gt; read --format json
-polylogue --since yesterday find 'since:yesterday' then read --all --format yaml
-</code></pre>
-<h2 id="content-blocks">Content Blocks</h2>
-<p>Reads include all selected content blocks: text, thinking blocks, tool use, tool
-results, images, code blocks, and document references. Use query-unit
-expressions or explicit read views to narrow what is selected before rendering.</p>
-<h2 id="repeatable-local-packages">Repeatable Local Packages</h2>
-<p>For repeatable local demo/export bundles, describe ordinary <code>read</code> artifacts in
-a JSON/YAML package and render it through <code>devtools workspace read-package</code>.
-Artifact-level projection policy lives under <code>projection</code>, and renderer/layout
-policy lives under <code>render</code>. Both map to ordinary <code>polylogue read</code> flags:</p>
-<pre><code class="language-json">{
-  &quot;version&quot;: 1,
-  &quot;artifacts&quot;: [
-    {
-      &quot;name&quot;: &quot;dialogue-json&quot;,
-      &quot;view&quot;: &quot;dialogue&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;dialogue.json&quot;,
-      &quot;projection&quot;: {
-        &quot;max_tokens&quot;: 120
-      }
-    },
-    {
-      &quot;name&quot;: &quot;spec-json&quot;,
-      &quot;view&quot;: &quot;temporal,chronicle&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;spec.json&quot;,
-      &quot;spec&quot;: true,
-      &quot;render&quot;: {
-        &quot;fields&quot;: &quot;selection,projection,render&quot;
-      }
-    }
-  ]
-}
-</code></pre>
-<p>This is still composition over <code>polylogue read</code>: the package renderer plans
-normal read commands such as <code>--view dialogue --format json --max-tokens 120</code>
-or <code>--spec --fields selection,projection,render</code>.</p>
-<h2 id="sharing-considerations">Sharing Considerations</h2>
+<p>The payload includes bounded archive evidence (<code>raw_row_exists</code>, <code>raw_id</code>,
+<code>indexed_session_exists</code>, <code>indexed_session_id</code>, <code>indexed_message_count</code>) and a
+relative <code>artifact_ref</code>. It must not expose absolute paths. Deployment smoke
+uses this endpoint as an invariant check: a receiver that says <code>captured: true</code>
+without raw/index/message evidence is considered broken, not merely stale.</p>
+<p>Inspect the receiver target directly with <code>polylogued browser-capture status</code>,
+include it in the daemon component summary with <code>polylogued status</code>, or include
+the same component status in archive health output with <code>polylogue ops doctor --daemon</code>.</p>
+<h2 id="control-plane-browser-boundary">Control-plane browser boundary</h2>
+<p>Browser capture has a local receiver and an unpacked extension, but it does not
+require Polylogue to borrow the operator's authenticated browser. For web-shell
+or extension debugging, keep these paths distinct:</p>
 <ul>
-<li>Rendered output can contain full message content including tool inputs/outputs and
-thinking blocks. Review before sharing.</li>
-<li>Cost estimates are approximate; API-reported token counts are exact where
-available.</li>
-<li>Attachment references are preserved but binary blobs are not rendered.</li>
-<li>Use query-unit filters or a narrower read view to produce cleaner output for
-non-technical audiences.</li>
+<li>an agent-private Chrome/MCP browser can inspect the local workbench when the
+local control plane provides one;</li>
+<li>the operator's live browser/cookies are used only after explicit approval and
+should be copied into an ignored local profile, never into CI or cloud agents;</li>
+<li><code>devtools workspace deployment-smoke --browser</code> launches a fresh headless
+Chrome/Chromium profile and reports the executable it resolved.</li>
 </ul>
+<p>The deployment fallback is useful for proving that the deployed daemon can
+serve the web root to a real browser engine:</p>
+<pre><code class="language-bash">devtools workspace deployment-smoke --browser --browser-executable &quot;$(command -v google-chrome)&quot;
+</code></pre>
+<p>That smoke does not certify private MCP browser launch, extension ids,
+authenticated ChatGPT/Claude.ai pages, or copied-profile cookies.</p>
+<p>Accepted captures are typed browser-capture envelopes and are written
+atomically under the configured capture spool at <code>&lt;provider&gt;/...json</code>.
+The filename is deterministic from provider and provider session id, so repeated
+observation of the same web session replaces the same source artifact. Receiver
+responses expose this artifact as an <code>artifact_ref</code> relative to the spool root;
+absolute filesystem paths stay inside the receiver process.
+An accepted response also carries <code>content_hash</code>, the SHA-256 of the exact
+UTF-8 JSON request bytes. The receiver returns it only after the atomic spool
+write succeeds. Background backfill therefore treats a response as a durable
+ACK only when both <code>X-Request-ID</code> and the expected content hash match.</p>
+<p>Every receiver response carries <code>X-Request-ID</code>. If the extension or a local
+debug probe sends a safe <code>X-Request-ID</code> header, the receiver echoes its
+sanitized value; otherwise it generates one. Receiver logs use the same id for
+origin rejection, token rejection, malformed payloads, write failures, accepted
+captures, and request timing. During branch-local extension work, copy that id
+from the browser network panel or curl output into the run-local daemon log to
+connect UI action, receiver decision, artifact ref, and duration.</p>
+<p>The extension popup records a redacted debug log for the same lifecycle. Each
+entry is timestamped and carries stage, method/path, request id, receiver
+request id, provider/session identity, archive state, and error metadata where
+available. It does not retain transcript text, raw provider payloads, message
+bodies, or turn arrays. Operators should export this packet when debugging
+capture behavior; it is the intended bridge between visible popup state,
+service-worker requests, receiver responses, and daemon convergence evidence.</p>
+<p>The popup refreshes status automatically on open and while it remains open.
+Manual <strong>Check status</strong> is only an explicit refresh. Button controls expose
+busy/success/failure states so a click has visible feedback even when archive
+convergence takes several seconds.</p>
+<p>The extension lives in <code>browser-extension/</code> and can be loaded unpacked in
+Chrome. It includes ChatGPT and Claude.ai provider adapters, a popup control
+panel, receiver configuration, current-page capture controls, badge state, and
+archive-state feedback. Provider adapters should prefer provider-native
+structured page/app payloads where available and use DOM text extraction only
+as a compatibility fallback. The shared envelope carries session, turn,
+attachment, provenance, and provider metadata semantics.</p>
+<h3 id="background-inventory-delta">Background inventory delta</h3>
+<p>An explicitly started background job uses a ChatGPT or Claude.ai provider
+adapter with four operations: inventory enumeration, native fetch, response
+classification, and normalized capture. IndexedDB stores the inventory cursor,
+queue state, attempts, eligibility deadline, lease owner/expiry, fidelity,
+submitted envelope, and receiver receipt. MV3 alarms resume eligible work after
+service-worker termination; expired leases return to their prior state.</p>
+<p>Provider HTTP runs through a strict first-party page broker. The service worker
+retains durable scheduling, budgets, and receiver ACK ownership, while an
+existing or inactive provider tab supplies ephemeral authenticated context.
+ChatGPT access-token and selected-account values never leave MAIN world;
+Claude requests must match the organization selected by the UI. Only fixed
+inventory and native-conversation operations are allowed. Timeouts,
+response-size limits, auth/challenge classification, and response-shape drift
+fail closed; HTTP 200 without proven page context is not accepted as an empty
+inventory.
+Claude jobs pin their initial UI-selected organization so a later account
+switch cannot mix one organization's inventory with another organization's
+native conversations. A <code>selected_organization_stale</code> pause requires cancelling
+the old job and starting a new one; Resume is appropriate only after restoring
+the original selection.</p>
+<p>The default provider concurrency is one. Token cadence is conservative and
+learned upward after throttling. <code>Retry-After</code> is authoritative, retry delays
+use exponential full jitter, and repeated 429/403/challenge or transport
+failures open a fail-paused circuit. Queue size, captures per wake, and daily
+request count are bounded. Receiver downtime never marks an item complete and
+does not force a second provider fetch: the native-full envelope waits durably
+for an idempotent receiver ACK.</p>
+<p>An IndexedDB execution lease serializes inventory and native-fetch requests as
+well as queue ownership. The coordinator atomically reserves provider budget
+before network I/O; request timeouts are shorter than the lease. Pause/cancel
+increments the job generation and transactionally cancels queue entries, so a
+late response cannot restore stale running state. Successful ACK finalization
+atomically updates job, queue, and the provider-native revision ledger. A later
+job skips only an exact trusted <code>(provider, native id, updated_at)</code> revision;
+records without a revision are fetched. Stored-envelope bytes, receiver retry
+attempts, and actual IndexedDB quota errors all fail paused rather than growing
+without bound.</p>
+<p>This workflow repairs gaps relative to an immutable export/GDPR baseline and a
+user-selected cutoff. It honors provider authentication and controls and cannot
+prove completeness beyond the authenticated inventory returned by the provider.
+It never bypasses anti-bot checks, discovers deleted/ephemeral records absent
+from inventory, or activates an operator foreground tab.
+ChatGPT enumeration traverses all active/starred/archived flag partitions and
+deduplicates repeated native ids in the durable queue.</p>
+<h2 id="dataflow-and-boundary">Dataflow and boundary</h2>
+<pre><code class="language-text">ChatGPT/Claude.ai page/app state
+  -&gt; extension provider adapter (`browser-extension/src/content/*.js`)
+  -&gt; provider-neutral `BrowserCaptureEnvelope` (`browser-extension/src/common.js`)
+  -&gt; extension service worker POST `BrowserCaptureEnvelope`
+  -&gt; local receiver `POST /v1/browser-captures`
+  -&gt; typed Pydantic validation (`polylogue/browser_capture/models.py`)
+  -&gt; atomic source artifact write under the browser-capture spool
+  -&gt; live source watcher/parser (`polylogue/sources/parsers/browser_capture.py`)
+  -&gt; canonical archive session/message/attachment rows
+</code></pre>
+<p>The receiver is a capture ingress, not the web workbench API. The daemon status
+API only reports component readiness and spool location; it does not accept raw
+browser-capture payloads. Route metadata lives in
+<code>polylogue/browser_capture/route_contracts.py</code> so tests and future OpenAPI/web
+surfaces do not infer receiver DTO or auth semantics from handler branches.</p>
+<h2 id="provider-payloads-and-coalescing">Provider payloads and coalescing</h2>
+<p>Browser capture is an acquisition path for the same provider sessions that
+GDPR/Takeout-style imports already store. It must not create a duplicate
+session merely because the evidence arrived through an extension.</p>
+<table>
+<thead>
+<tr>
+<th>Provider/path</th>
+<th>Adapter or source</th>
+<th>Stored payload</th>
+<th>Parser path</th>
+<th>Coalescing key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ChatGPT authenticated page</td>
+<td><code>chatgpt-native-v1</code></td>
+<td>Full <code>/backend-api/conversation/&lt;id&gt;</code> JSON under <code>raw_provider_payload</code></td>
+<td>delegated to the normal ChatGPT parser</td>
+<td><code>chatgpt-export:&lt;conversation_id or id&gt;</code></td>
+</tr>
+<tr>
+<td>ChatGPT authenticated page fallback</td>
+<td><code>chatgpt-dom-v1</code></td>
+<td>Visible turns in the browser-capture envelope</td>
+<td>browser-capture DOM parser</td>
+<td><code>chatgpt-export:&lt;url /c/&lt;id&gt;&gt;</code></td>
+</tr>
+<tr>
+<td>ChatGPT GDPR/export file</td>
+<td>provider import</td>
+<td>Export JSON <code>mapping</code> payload</td>
+<td>normal ChatGPT parser</td>
+<td><code>chatgpt-export:&lt;conversation_id or id&gt;</code></td>
+</tr>
+<tr>
+<td>ChatGPT shared-link helper</td>
+<td>standalone public-share script</td>
+<td>React Router share stream reduced to export-shaped messages</td>
+<td>separate conversion input, not the extension payload</td>
+<td>provider-native share conversation id when converted</td>
+</tr>
+<tr>
+<td>Claude.ai authenticated page</td>
+<td><code>claude-ai-native-v1</code> when the conversation API response is observed; <code>claude-ai-dom-v1</code> fallback</td>
+<td>Full <code>/api/organizations/.../chat_conversations/&lt;id&gt;</code> JSON under <code>raw_provider_payload</code>; otherwise visible turns in the browser-capture envelope</td>
+<td>delegated to the normal Claude.ai parser for native payloads; browser-capture DOM parser for fallback</td>
+<td><code>claude-ai-export:&lt;uuid or url /chat/&lt;id&gt;&gt;</code></td>
+</tr>
+<tr>
+<td>Claude.ai GDPR/export file</td>
+<td>provider import</td>
+<td><code>chat_messages</code> payload</td>
+<td>normal Claude.ai parser</td>
+<td><code>claude-ai-export:&lt;uuid&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>The ChatGPT content script hooks same-origin fetches for authenticated
+conversation JSON and keeps only a bounded recent window in page memory. On
+capture it sends that provider-native JSON as <code>raw_provider_payload</code>; the
+browser-capture parser then delegates to the same ChatGPT parser used by direct
+imports. This is the preferred path because it preserves branches, current
+node, message ids, timestamps, model metadata, attachments, and other fields the
+visible DOM cannot reliably expose.</p>
+<p>DOM extraction is a compatibility fallback for pages where no provider-native
+payload has been observed yet. It still uses the provider-native conversation id
+from the URL, so a later native capture or GDPR import for the same conversation
+updates the same archive session instead of creating a second visible session.
+Fallback DOM captures are therefore acceptable as temporary live evidence, but
+not as a reason to prefer DOM over a clean provider payload.</p>
+<p>Temporary chats are a typed browser-capture session property, not only a
+provider metadata convention. The extension writes
+<code>session.session_kind = &quot;temporary&quot;</code> when the page URL or provider-native
+payload identifies a temporary conversation, and the parser persists the
+existing <code>capture:temporary-chat</code> ingest flag from that typed field. Legacy
+captures that only carry <code>provider_meta.session_kind = &quot;temporary&quot;</code> remain
+accepted for already-spooled artifacts.</p>
+<p>The Claude.ai content script also hooks same-origin conversation fetches and
+uses native payloads when the response is the current
+<code>/chat_conversations/&lt;id&gt;</code> JSON shape with <code>chat_messages</code>. DOM extraction
+remains a fallback for pages where the provider response is not available to
+the content script.</p>
+<h2 id="local-auth-and-origin-policy">Local auth and origin policy</h2>
+<p>Default CORS is extension-only: <code>chrome-extension://*</code>. Remote web origins such
+as <code>https://chatgpt.com</code> and <code>https://claude.ai</code> are not accepted by default; the
+extension service worker sends requests from its own extension origin after the
+content adapter builds the envelope. Extra web origins require an explicit
+receiver auth token. This keeps a normal web page from writing local capture
+artifacts or reading receiver state merely because it is open in the browser.</p>
+<p>If the receiver is unavailable, the extension surfaces an offline state instead
+of dropping content silently.</p>
+<h2 id="branch-local-extension-proof-modes">Branch-local extension proof modes</h2>
+<p>Use <code>devtools workspace dev-loop</code> when changing the receiver, extension, or
+provider adapters from a branch. The branch-local loop owns distinct proof
+levels, from cloud-safe synthetic checks to local workstation evidence:</p>
+<ul>
+<li><code>--extension-smoke</code> imports the real background worker with a Chrome API mock
+and proves receiver auth rejection, receiver status, and accepted capture
+writes without a GUI browser.</li>
+<li><code>--browser-provider-smoke</code> loads the unpacked extension into headless
+Chrome/Chromium, maps deterministic ChatGPT and Claude fixture pages onto
+their real supported origins, and proves content-script capture plus
+receiver request-id/artifact evidence without cookies.</li>
+<li><code>--browser-live-proof</code> is explicit operator-local evidence for authenticated
+copied-profile work. It opens a visible Chrome/Chromium with an
+operator-approved copied user-data-dir, live ChatGPT/Claude conversation
+URLs, and the unpacked extension; it writes a redacted proof summary and keeps
+any raw captured content inside ignored local receiver spool artifacts.</li>
+</ul>
+<p>For a non-authenticated Chrome-family binary check, <code>--browser-smoke</code> sits
+between those two layers: it loads the unpacked extension into a fresh headless
+profile and proves that the MV3 service worker can talk to the branch-local
+receiver. It still does not exercise provider cookies or live pages.</p>
+<p>Use <a href="https://github.com/Sinity/polylogue/blob/master/docs/visual-evidence.md"><code>docs/visual-evidence.md</code></a> for the repo-owned reader
+DOM evidence lane and <a href="https://github.com/Sinity/polylogue/blob/master/docs/dev-loop.md"><code>docs/dev-loop.md</code></a> for the full
+branch-local browser proof ladder. Design screenshots or store media are not
+accepted as browser-capture verification unless they are tied to one of those
+commands and a run-local artifact.</p>
+<p>Generate the copied-profile checklist first:</p>
+<pre><code class="language-bash">devtools workspace dev-loop --browser-plan
+</code></pre>
+<p>Then run the live proof only from a local workstation with a copied profile:</p>
+<pre><code class="language-bash">devtools workspace dev-loop --browser-live-proof \
+  --browser-live-profile-dir .local/browser-profiles/&lt;run-id&gt;-chrome-user-data \
+  --browser-live-chatgpt-url https://chatgpt.com/c/&lt;conversation-id&gt; \
+  --browser-live-claude-url https://claude.ai/chat/&lt;conversation-id&gt;
+</code></pre>
+<p>The live proof refuses CI by default and rejects common live profile roots or
+Chrome singleton lock files unless a local operator explicitly overrides the
+guardrail. Summaries redact source URLs and provider session ids, omit raw turn
+text, and record provider/adapter identity, role coverage, receiver request ids,
+and spool artifact refs.</p>
+<h2 id="current-residual-map-for-1824-1847">Current residual map for #1824 / #1847</h2>
+<p>Fixed in this slice: default web origins no longer cross the local receiver
+boundary unauthenticated; receiver routes have a small executable contract;
+valid and malformed receiver payloads are tested at the HTTP boundary; accepted
+and error DTOs carry receiver/schema/source identity; accepted and archive-state
+DTOs use bounded artifact refs instead of local filesystem paths.</p>
+<p>Still outside this slice: browser-capture artifacts still enter the archive as
+provider sessions (<code>chatgpt</code>, <code>claude-ai</code>) rather than a distinct acquisition
+source family; the daemon web API exposes status/read surfaces but not a full
+web workbench flow; extension-id pinning is still operator policy rather than a
+default because unpacked extension ids are local-install specific.</p>
 </article>
 <nav class="doc-pager" aria-label="Adjacent documentation">
-    <a href="../insights/">← Insights</a>
-    <a href="../daemon/">Daemon →</a>
+    <a href="../daemon/">← Daemon</a>
+    <a href="../maintenance/">Maintenance →</a>
 </nav>
 
         </main>

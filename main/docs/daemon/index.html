@@ -3,139 +3,240 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Polylogue documentation — local, evidence-addressable archives for AI work.">
     <title>Daemon — Polylogue</title>
     <style>
 
         :root {
-            --bg-primary: #0B0E14;
-            --bg-secondary: #13171F;
-            --bg-tertiary: #1A1F2A;
-            --text-primary: #E6E8EC;
-            --text-secondary: #8B919A;
-            --text-tertiary: #555B63;
-            --accent: #3B82F6;
-            --accent-hover: #2563EB;
-            --border: #1E2430;
-            --shadow: rgba(0, 0, 0, 0.4);
-            --green: #22C55E;
-            --yellow: #EAB308;
-            --red: #EF4444;
-            --provider-claude-code: #D97706;
-            --provider-codex: #3B82F6;
-            --provider-chatgpt: #10B981;
-            --provider-gemini: #8B5CF6;
-            --provider-claude-ai: #F59E0B;
-            --header-height: 56px;
-            --nav-width: 240px;
-            --content-max-width: 720px;
-            --footer-height: 40px;
-            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
-            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+            color-scheme: dark;
+            --bg: #071018;
+            --bg-elevated: #0d1822;
+            --bg-soft: #12212d;
+            --bg-code: #08131c;
+            --text: #eef7f7;
+            --text-muted: #9bb0b5;
+            --text-faint: #657b82;
+            --accent: #60e6cc;
+            --accent-strong: #26c7ae;
+            --accent-soft: rgba(96, 230, 204, 0.11);
+            --violet: #a89cff;
+            --border: rgba(172, 205, 210, 0.15);
+            --border-strong: rgba(96, 230, 204, 0.32);
+            --shadow: rgba(0, 0, 0, 0.34);
+            --green: #62dc92;
+            --yellow: #f3c969;
+            --red: #ff7a86;
+            --header-height: 68px;
+            --nav-width: 270px;
+            --content-max-width: 920px;
+            --wide-max-width: 1180px;
+            --font-body: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-code: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
         }
-        @media (prefers-color-scheme: light) {
-            :root {
-                --bg-primary: #FAFAFA;
-                --bg-secondary: #FFFFFF;
-                --bg-tertiary: #F3F4F6;
-                --text-primary: #111827;
-                --text-secondary: #6B7280;
-                --text-tertiary: #9CA3AF;
-                --border: #E5E7EB;
-                --shadow: rgba(0, 0, 0, 0.08);
-            }
+        :root[data-theme="light"] {
+            color-scheme: light;
+            --bg: #f6faf9;
+            --bg-elevated: #ffffff;
+            --bg-soft: #eaf2f0;
+            --bg-code: #edf5f3;
+            --text: #122126;
+            --text-muted: #526970;
+            --text-faint: #789096;
+            --accent: #087d70;
+            --accent-strong: #05685e;
+            --accent-soft: rgba(8, 125, 112, 0.09);
+            --violet: #6558b5;
+            --border: rgba(24, 63, 70, 0.14);
+            --border-strong: rgba(8, 125, 112, 0.32);
+            --shadow: rgba(25, 56, 60, 0.10);
+            --green: #16864a;
+            --yellow: #966713;
+            --red: #b63847;
         }
 
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        html { font-size: 15px; }
+        *, *::before, *::after { box-sizing: border-box; }
+        html { scroll-behavior: smooth; font-size: 16px; }
         body {
+            margin: 0;
             font-family: var(--font-body);
-            background-color: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.6;
+            background:
+                radial-gradient(circle at 76% -8%, rgba(96, 230, 204, 0.09), transparent 31rem),
+                var(--bg);
+            color: var(--text);
+            line-height: 1.68;
             -webkit-font-smoothing: antialiased;
         }
+        a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
+        a:hover { color: var(--accent-strong); }
+        button, input, select { font: inherit; }
+        .skip-link { position: fixed; top: -5rem; left: 1rem; z-index: 100; padding: .6rem .9rem; background: var(--accent); color: #06211d; border-radius: .5rem; }
+        .skip-link:focus { top: .75rem; }
         .site-header {
-            position: sticky; top: 0; z-index: 10;
-            height: var(--header-height);
-            background-color: var(--bg-secondary);
-            border-bottom: 1px solid var(--border);
-            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+            position: sticky; top: 0; z-index: 30; min-height: var(--header-height);
+            background: color-mix(in srgb, var(--bg) 88%, transparent);
+            border-bottom: 1px solid var(--border); backdrop-filter: blur(18px);
         }
-        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
-        .site-header .logo span { color: var(--accent); }
-        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
-        .site-header .search-bar input {
-            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
-            border: 1px solid var(--border); background-color: var(--bg-tertiary);
-            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        .header-inner { max-width: 1500px; min-height: var(--header-height); margin: 0 auto; padding: 0 1.35rem; display: flex; align-items: center; gap: 1.25rem; }
+        .logo { color: var(--text); text-decoration: none; font-weight: 780; font-size: 1.08rem; letter-spacing: -.025em; }
+        .logo-mark { color: var(--accent); }
+        .primary-nav { display: flex; align-items: center; gap: .25rem; margin-left: auto; }
+        .primary-nav a { color: var(--text-muted); text-decoration: none; padding: .45rem .7rem; border-radius: .5rem; font-size: .9rem; }
+        .primary-nav a:hover, .primary-nav a[aria-current="page"] { color: var(--text); background: var(--bg-soft); }
+        .theme-toggle, .nav-toggle {
+            border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-muted);
+            min-width: 2.35rem; min-height: 2.35rem; border-radius: .65rem; cursor: pointer;
         }
-        .site-header .theme-toggle {
-            background: none; border: 1px solid var(--border); border-radius: 6px;
-            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
-        }
-        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .theme-toggle:hover, .nav-toggle:hover { color: var(--text); border-color: var(--border-strong); }
+        .nav-toggle { display: none; }
+        .page-layout { display: grid; grid-template-columns: var(--nav-width) minmax(0, 1fr); min-height: calc(100vh - var(--header-height)); max-width: 1500px; margin: 0 auto; }
         .site-nav {
-            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
-            background-color: var(--bg-primary); border-right: 1px solid var(--border);
-            overflow-y: auto; position: sticky; top: var(--header-height);
-            height: calc(100vh - var(--header-height));
+            position: sticky; top: var(--header-height); align-self: start; height: calc(100vh - var(--header-height)); overflow-y: auto;
+            padding: 1.8rem 1.3rem 3rem; border-right: 1px solid var(--border); scrollbar-width: thin;
         }
-        .site-nav .nav-section { margin-bottom: 1.5rem; }
-        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
-        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
-        .site-nav a:hover { color: var(--text-primary); }
-        .site-nav a.active { color: var(--accent); font-weight: 500; }
-        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
-        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
-        h1:first-child { margin-top: 0; }
-        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
-        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
-        p { margin-bottom: 1rem; }
-        a { color: var(--accent); text-decoration: none; }
-        a:hover { color: var(--accent-hover); }
-        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
-        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
-        pre code { background: none; padding: 0; font-size: inherit; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
-        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
-        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
-        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
-        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
-        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
-        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
-        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
-        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
-        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
-        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
-        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
-        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
-        .site-footer a { color: var(--text-secondary); }
-        .home-hero { text-align: center; padding: 4rem 0 3rem; }
-        .home-hero .eyebrow { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); margin-bottom: 0.8rem; }
-        .home-hero h1 { font-size: clamp(2.4rem, 7vw, 4.5rem); line-height: 1.03; max-width: 820px; margin: 0 auto 1rem; letter-spacing: -0.04em; }
-        .home-hero .tagline { font-size: 1.18rem; color: var(--text-secondary); max-width: 760px; margin: 0 auto 1.3rem; }
-        .hero-command { margin: 0 auto 1rem; }
-        .hero-command code { display: inline-block; padding: 0.65rem 0.9rem; border: 1px solid var(--border); background: var(--bg-secondary); box-shadow: 0 10px 30px var(--shadow); }
-        .hero-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 0.45rem 1.2rem; margin: 0 auto 1.7rem; color: var(--text-tertiary); font-size: 0.8rem; }
-        .hero-stats strong { color: var(--text-primary); font-size: 0.92rem; margin-right: 0.18rem; }
-        .proof-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0 2rem; text-align: left; }
-        .proof-card { background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary)); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem; min-height: 155px; }
-        .proof-card strong { display: block; font-size: 1rem; margin: 0.35rem 0 0.5rem; }
-        .proof-card p { color: var(--text-secondary); font-size: 0.9rem; margin: 0; }
-        .proof-label { color: var(--accent); font-size: 0.73rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
-        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
-        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
-        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
-        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
-        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
-        @media (max-width: 768px) {
-            .site-nav { display: none; }
-            .content { padding: 1.5rem 1rem; }
-            .home-hero h1 { font-size: 2.35rem; }
-            .proof-grid { grid-template-columns: 1fr; }
+        .nav-section { margin-bottom: 1.45rem; }
+        .nav-section-title { color: var(--text-faint); font-size: .68rem; font-weight: 760; letter-spacing: .12em; text-transform: uppercase; margin: 0 .55rem .45rem; }
+        .site-nav a { display: block; color: var(--text-muted); text-decoration: none; font-size: .875rem; line-height: 1.35; padding: .42rem .55rem; border-radius: .45rem; }
+        .site-nav a:hover { color: var(--text); background: var(--bg-soft); }
+        .site-nav a.active { color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+        .content { width: 100%; max-width: var(--content-max-width); margin: 0 auto; padding: 3.4rem 2.8rem 5rem; min-width: 0; }
+        .page-home .page-layout { display: block; }
+        .page-home .site-nav { display: none; }
+        .page-home .content, .page-board .content { max-width: var(--wide-max-width); }
+        .page-board .page-layout { display: block; }
+        .page-board .site-nav { display: none; }
+        .doc { min-width: 0; }
+        h1, h2, h3, h4 { color: var(--text); line-height: 1.18; letter-spacing: -.025em; scroll-margin-top: calc(var(--header-height) + 1rem); }
+        h1 { font-size: clamp(2.15rem, 5vw, 3.45rem); margin: 0 0 1.2rem; font-weight: 790; }
+        h2 { font-size: 1.62rem; margin: 2.8rem 0 .9rem; font-weight: 730; }
+        h3 { font-size: 1.22rem; margin: 2rem 0 .65rem; font-weight: 700; }
+        h4 { font-size: 1rem; margin: 1.5rem 0 .5rem; }
+        p, ul, ol, blockquote, table, pre { margin-top: 0; margin-bottom: 1.2rem; }
+        ul, ol { padding-left: 1.35rem; }
+        li + li { margin-top: .32rem; }
+        strong { color: var(--text); }
+        blockquote { border-left: 3px solid var(--accent); margin-left: 0; padding: .25rem 1rem; color: var(--text-muted); background: var(--accent-soft); border-radius: 0 .5rem .5rem 0; }
+        code { font-family: var(--font-code); font-size: .86em; background: var(--bg-code); border: 1px solid var(--border); padding: .12em .34em; border-radius: .32rem; }
+        pre { background: var(--bg-code); border: 1px solid var(--border); border-radius: .8rem; padding: 1.05rem 1.2rem; overflow-x: auto; box-shadow: 0 14px 32px -28px var(--shadow); }
+        pre code { padding: 0; border: 0; background: none; font-size: .84rem; line-height: 1.58; }
+        table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; font-size: .9rem; }
+        th, td { padding: .7rem .8rem; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+        th { color: var(--text-muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; }
+        hr { border: 0; border-top: 1px solid var(--border); margin: 3rem 0; }
+        .card, .stat-card { background: linear-gradient(145deg, var(--bg-elevated), color-mix(in srgb, var(--bg-elevated) 82%, var(--accent-soft))); border: 1px solid var(--border); border-radius: 1rem; padding: 1.25rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin: 1.3rem 0 2rem; }
+        .stat-card { text-align: center; }
+        .stat-value { color: var(--accent); font-size: 2rem; font-weight: 780; }
+        .stat-label { color: var(--text-muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .1em; }
+        .badge { display: inline-flex; align-items: center; gap: .25rem; padding: .16rem .48rem; border: 1px solid var(--border); border-radius: 99px; color: var(--text-muted); font-size: .72rem; font-weight: 650; }
+        .badge-green { color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); }
+        .badge-yellow { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 9%, transparent); }
+        .badge-red { color: var(--red); background: color-mix(in srgb, var(--red) 9%, transparent); }
+        .site-footer { border-top: 1px solid var(--border); color: var(--text-faint); }
+        .footer-inner { max-width: 1500px; margin: 0 auto; padding: 1.3rem; display: flex; justify-content: space-between; gap: 1rem; font-size: .82rem; }
+        .footer-inner a { color: var(--text-muted); }
+
+        .home-hero { padding: 6.5rem 0 4rem; text-align: left; }
+        .eyebrow { color: var(--accent); font-size: .75rem; font-weight: 780; letter-spacing: .14em; text-transform: uppercase; }
+        .home-hero h1 { max-width: 900px; font-size: clamp(3rem, 8vw, 6rem); line-height: .98; letter-spacing: -.055em; margin: .9rem 0 1.5rem; }
+        .tagline { max-width: 790px; color: var(--text-muted); font-size: clamp(1.08rem, 2vw, 1.34rem); line-height: 1.55; }
+        .hero-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 2rem 0; }
+        .button { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; min-height: 2.8rem; padding: .65rem 1rem; border: 1px solid var(--border); border-radius: .65rem; text-decoration: none; color: var(--text); background: var(--bg-elevated); font-weight: 680; }
+        .button:hover { color: var(--text); border-color: var(--border-strong); transform: translateY(-1px); }
+        .button-primary { color: #04231e; background: var(--accent); border-color: var(--accent); }
+        .button-primary:hover { color: #031a17; background: var(--accent-strong); }
+        .hero-command { max-width: 620px; }
+        .hero-command pre { margin-bottom: 0; }
+        .section-kicker { color: var(--accent); font-size: .72rem; font-weight: 760; letter-spacing: .12em; text-transform: uppercase; }
+        .home-section { padding: 3.5rem 0; border-top: 1px solid var(--border); }
+        .home-section h2 { max-width: 760px; font-size: clamp(2rem, 4vw, 3.2rem); margin-top: .55rem; }
+        .section-intro { max-width: 740px; color: var(--text-muted); font-size: 1.04rem; }
+        .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: .7rem; margin: 2rem 0; }
+        .pipeline-step { position: relative; padding: 1.1rem; border: 1px solid var(--border); border-radius: .85rem; background: var(--bg-elevated); }
+        .pipeline-step:not(:last-child)::after { content: "→"; position: absolute; right: -.68rem; top: 50%; z-index: 2; color: var(--accent); background: var(--bg); padding: .15rem; transform: translateY(-50%); }
+        .pipeline-step span { display: block; color: var(--text-faint); font-size: .68rem; font-weight: 760; letter-spacing: .1em; text-transform: uppercase; }
+        .pipeline-step strong { display: block; margin: .3rem 0; }
+        .pipeline-step p { margin: 0; color: var(--text-muted); font-size: .85rem; }
+        .capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 2rem; }
+        .capability-card { border: 1px solid var(--border); border-radius: 1rem; padding: 1.35rem; background: var(--bg-elevated); }
+        .capability-card .cap-index { color: var(--accent); font-family: var(--font-code); font-size: .72rem; }
+        .capability-card h3 { margin: .55rem 0 .55rem; }
+        .capability-card p { margin: 0; color: var(--text-muted); }
+        .surface-row { display: flex; flex-wrap: wrap; gap: .55rem; margin: 1.4rem 0; }
+        .surface-pill { padding: .45rem .7rem; border: 1px solid var(--border); border-radius: 99px; background: var(--bg-elevated); color: var(--text-muted); font-size: .82rem; }
+        .home-callout { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2rem; margin: 3rem 0 1rem; padding: 1.6rem; border: 1px solid var(--border-strong); border-radius: 1rem; background: var(--accent-soft); }
+        .home-callout h2 { margin: 0 0 .4rem; font-size: 1.45rem; }
+        .home-callout p { color: var(--text-muted); margin: 0; }
+        .doc-pager { display: flex; justify-content: space-between; gap: 1rem; margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--border); font-size: .9rem; }
+
+        .board-hero { display: flex; align-items: end; justify-content: space-between; gap: 2rem; margin-bottom: 1.6rem; }
+        .board-hero h1 { margin-bottom: .5rem; }
+        .board-hero p { color: var(--text-muted); margin: 0; max-width: 720px; }
+        .board-meta { color: var(--text-faint); font-size: .8rem; white-space: nowrap; }
+        .board-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .7rem; margin: 1.2rem 0; }
+        .board-stat { border: 1px solid var(--border); background: var(--bg-elevated); border-radius: .8rem; padding: .75rem .9rem; }
+        .board-stat strong { display: block; font-size: 1.35rem; }
+        .board-stat span { color: var(--text-faint); font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; }
+        .board-toolbar { position: sticky; top: calc(var(--header-height) + .7rem); z-index: 10; display: grid; grid-template-columns: minmax(240px, 1fr) repeat(3, minmax(120px, .2fr)); gap: .65rem; margin: 1.3rem 0; padding: .75rem; border: 1px solid var(--border); border-radius: .9rem; background: color-mix(in srgb, var(--bg) 91%, transparent); backdrop-filter: blur(14px); }
+        .board-toolbar input, .board-toolbar select { width: 100%; min-height: 2.55rem; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: .55rem; padding: .48rem .7rem; }
+        .board-toolbar input:focus, .board-toolbar select:focus { outline: 2px solid var(--border-strong); outline-offset: 1px; }
+        .board-results-meta { display: flex; justify-content: space-between; gap: 1rem; color: var(--text-faint); font-size: .82rem; margin-bottom: .65rem; }
+        .issue-list { display: grid; gap: .72rem; }
+        .issue-card { border: 1px solid var(--border); border-radius: .85rem; background: var(--bg-elevated); overflow: clip; scroll-margin-top: calc(var(--header-height) + 6rem); }
+        .issue-card[open] { border-color: var(--border-strong); box-shadow: 0 16px 38px -32px var(--shadow); }
+        .issue-summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .85rem; align-items: start; padding: 1rem; }
+        .issue-summary::-webkit-details-marker { display: none; }
+        .priority { width: 2rem; height: 2rem; display: inline-grid; place-items: center; border-radius: .5rem; background: var(--bg-soft); color: var(--text-muted); font-family: var(--font-code); font-size: .74rem; font-weight: 700; }
+        .priority-0 { color: var(--red); }
+        .priority-1 { color: var(--yellow); }
+        .issue-title { display: block; color: var(--text); font-weight: 690; line-height: 1.35; }
+        .issue-id { color: var(--text-faint); font-family: var(--font-code); font-size: .73rem; margin-right: .5rem; }
+        .issue-subline { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .55rem; }
+        .issue-updated { color: var(--text-faint); font-size: .75rem; white-space: nowrap; }
+        .issue-body { border-top: 1px solid var(--border); padding: 1.1rem 1.2rem 1.35rem 4rem; }
+        .issue-section + .issue-section { margin-top: 1.25rem; }
+        .issue-section h3 { color: var(--text-faint); font-size: .7rem; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .45rem; }
+        .issue-prose { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-muted); font-size: .9rem; margin: 0; font-family: var(--font-body); }
+        .issue-links { display: flex; flex-wrap: wrap; gap: .4rem; }
+        .issue-link { border: 1px solid var(--border); border-radius: .45rem; padding: .25rem .45rem; color: var(--accent); background: var(--bg-soft); cursor: pointer; font-family: var(--font-code); font-size: .73rem; }
+        .empty-state { text-align: center; color: var(--text-muted); padding: 4rem 1rem; border: 1px dashed var(--border); border-radius: .9rem; }
+        .load-more { display: block; margin: 1.2rem auto 0; }
+
+        @media (max-width: 900px) {
+            .primary-nav a:not(.nav-essential) { display: none; }
+            .nav-toggle { display: inline-grid; place-items: center; }
+            .page-layout { display: block; }
+            .site-nav { display: none; position: fixed; inset: var(--header-height) 0 0 0; z-index: 25; width: min(320px, 88vw); height: calc(100vh - var(--header-height)); background: var(--bg); box-shadow: 25px 0 60px var(--shadow); }
+            body.nav-open { overflow: hidden; }
+            body.nav-open .site-nav { display: block; }
+            .content { padding: 2.5rem 1.25rem 4rem; }
+            .home-hero { padding: 4.2rem 0 3rem; }
+            .pipeline { grid-template-columns: repeat(2, 1fr); }
+            .pipeline-step:nth-child(2)::after { display: none; }
+            .board-toolbar { position: static; grid-template-columns: 1fr 1fr; }
+            .board-toolbar input { grid-column: 1 / -1; }
+            .board-stats { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (max-width: 620px) {
+            .header-inner { padding: 0 .8rem; gap: .55rem; }
+            .primary-nav { gap: .1rem; }
+            .primary-nav a { padding: .4rem .5rem; }
+            .home-hero h1 { font-size: 3rem; }
+            .capability-grid, .pipeline { grid-template-columns: 1fr; }
+            .pipeline-step::after { display: none; }
+            .home-callout { grid-template-columns: 1fr; }
+            .board-hero { display: block; }
+            .board-meta { margin-top: .7rem; white-space: normal; }
+            .board-stats { grid-template-columns: repeat(2, 1fr); }
+            .board-toolbar { grid-template-columns: 1fr; }
+            .board-toolbar input { grid-column: auto; }
+            .issue-summary { grid-template-columns: auto minmax(0, 1fr); }
+            .issue-updated { display: none; }
+            .issue-body { padding-left: 1.1rem; }
+            .footer-inner { display: block; }
         }
         @media print {
-            .site-header, .site-nav, .site-footer { display: none; }
+            .site-header, .site-nav, .site-footer, .board-toolbar { display: none !important; }
+            .page-layout { display: block; }
             .content { max-width: none; padding: 0; }
             body { background: white; color: black; }
         }
@@ -226,173 +327,110 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 .highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
 .highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
     </style>
-    
+
 </head>
-<body>
+<body class="page-doc">
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header">
-        <a href="../../" class="logo">poly<span>logue</span></a>
-        <div class="search-bar">
-            <input type="search" placeholder="Search docs..." id="search-input">
+        <div class="header-inner">
+            <button class="nav-toggle" type="button" aria-label="Open documentation navigation" aria-expanded="false" onclick="toggleNav(this)">☰</button>
+            <a href="../../" class="logo">poly<span class="logo-mark">logue</span></a>
+            <nav class="primary-nav" aria-label="Primary navigation">
+                <a class="nav-essential" href="../getting-started/">Get started</a>
+                <a href="../">Documentation</a>
+                <a class="nav-essential" href="../../beads/">Roadmap</a>
+                <a href="https://github.com/Sinity/polylogue">GitHub</a>
+            </nav>
+            <button class="theme-toggle" type="button" onclick="toggleTheme(this)" title="Toggle color theme" aria-label="Toggle color theme">◐</button>
         </div>
-        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
-            <span class="light-icon">☀</span>
-            <span class="dark-icon">☾</span>
-        </button>
     </header>
     <div class="page-layout">
-        <nav class="site-nav" id="site-nav">
-            
-            <div class="nav-section">
-                <div class="nav-section-title">Start Here</div>
-                
-                <a href="../../demos/" >
-                    Demos
-                </a>
-                
-                <a href="../../findings/claim-vs-evidence/" >
-                    Finding: Structured Failure
-                </a>
-                
-                <a href="../../proof/" >
-                    Proof Artifacts
-                </a>
-                
-                <a href="../../architecture/sinex/" >
-                    Polylogue on Sinex
-                </a>
-                
-            </div>
-            
-            <div class="nav-section">
-                <div class="nav-section-title">Documentation</div>
-                
-                <a href="../getting-started/" >
-                    Getting Started
-                </a>
-                
-                <a href="../search/" >
-                    Search
-                </a>
-                
-                <a href="../providers/" >
-                    Providers
-                </a>
-                
-                <a href="../insights/" >
-                    Insights
-                </a>
-                
-                <a href="../export/" >
-                    Export
-                </a>
-                
-                <a href="./" class="active">
-                    Daemon
-                </a>
-                
-            </div>
-            
-            <div class="nav-section">
+        <nav class="site-nav" id="site-nav" aria-label="Documentation navigation">
+
+            <section class="nav-section">
+                <div class="nav-section-title">Start</div>
+
+                <a href="../getting-started/" >Getting Started</a>
+
+                <a href="../installation/" >Installation</a>
+
+                <a href="../../demos/" >Demos and Proofs</a>
+
+                <a href="../" >Documentation Map</a>
+
+            </section>
+
+            <section class="nav-section">
+                <div class="nav-section-title">Use Polylogue</div>
+
+                <a href="../search/" >Search and Query</a>
+
+                <a href="../providers/" >Providers</a>
+
+                <a href="../insights/" >Insights</a>
+
+                <a href="../export/" >Export</a>
+
+                <a href="./" class="active" aria-current="page">Daemon</a>
+
+                <a href="../browser-capture/" >Browser Capture</a>
+
+            </section>
+
+            <section class="nav-section">
                 <div class="nav-section-title">Reference</div>
-                
-                <a href="../../reference/cli/" >
-                    CLI
-                </a>
-                
-                <a href="../../reference/mcp/" >
-                    MCP
-                </a>
-                
-                <a href="../../reference/api/" >
-                    API
-                </a>
-                
-                <a href="../../reference/config/" >
-                    Config
-                </a>
-                
-            </div>
-            
-            <div class="nav-section">
-                <div class="nav-section-title">Architecture</div>
-                
-                <a href="../../architecture/rings/" >
-                    Rings
-                </a>
-                
-                <a href="../../architecture/internals/" >
-                    Internals
-                </a>
-                
-                <a href="../../architecture/schema/" >
-                    Schema
-                </a>
-                
-                <a href="../../architecture/contributing/" >
-                    Contributing
-                </a>
-                
-            </div>
-            
-            <div class="nav-section">
-                <div class="nav-section-title">Verifiability</div>
-                
-                <a href="../../verifiability/coverage/" >
-                    Coverage
-                </a>
-                
-                <a href="../../verifiability/mutation/" >
-                    Mutation
-                </a>
-                
-                <a href="../../verifiability/freshness/" >
-                    Freshness
-                </a>
-                
-                <a href="../../verifiability/drift/" >
-                    Drift
-                </a>
-                
-            </div>
-            
-            <div class="nav-section">
-                <div class="nav-section-title">Design</div>
-                
-                <a href="../../design/second-brain/" >
-                    Second Brain
-                </a>
-                
-                <a href="../../design/time-machine/" >
-                    Time Machine
-                </a>
-                
-                <a href="../../design/project-memory/" >
-                    Project Memory
-                </a>
-                
-                <a href="../../design/agent-first-mcp/" >
-                    Agent-First MCP
-                </a>
-                
-                <a href="../../design/archive-storytelling/" >
-                    Archive Storytelling
-                </a>
-                
-                <a href="../../design/whole-product/" >
-                    Whole Product
-                </a>
-                
-            </div>
-            
+
+                <a href="../../reference/cli/" >CLI</a>
+
+                <a href="../../reference/mcp/" >MCP</a>
+
+                <a href="../../reference/api/" >Python API</a>
+
+                <a href="../../reference/config/" >Configuration</a>
+
+            </section>
+
+            <section class="nav-section">
+                <div class="nav-section-title">Understand</div>
+
+                <a href="../../architecture/rings/" >Architecture</a>
+
+                <a href="../../architecture/internals/" >Internals</a>
+
+                <a href="../../architecture/schema/" >Schema</a>
+
+                <a href="../../architecture/sinex/" >Polylogue on Sinex</a>
+
+                <a href="../../architecture/security/" >Security</a>
+
+            </section>
+
+            <section class="nav-section">
+                <div class="nav-section-title">Project</div>
+
+                <a href="../../beads/" >Roadmap</a>
+
+                <a href="../../proof/" >Proof Artifacts</a>
+
+                <a href="../../verifiability/coverage/" >Verification</a>
+
+                <a href="../maintenance/" >Maintenance</a>
+
+                <a href="../../architecture/contributing/" >Contributing</a>
+
+                <a href="../audits/" >Historical Records</a>
+
+            </section>
+
         </nav>
-        <main class="content">
-            
-<p><a href="https://github.com/Sinity/polylogue/blob/master/docs/README.md">← Back to Docs</a></p>
-<h1>Daemon (polylogued)</h1>
+        <main class="content" id="main-content">
+
+<article class="doc"><p><a href="../">← Back to Docs</a></p>
+<h1 id="daemon-polylogued">Daemon (polylogued)</h1>
 <p><code>polylogued</code> is the long-lived Polylogue service. It watches chat directories,
 ingests new sessions, runs periodic maintenance, and exposes optional HTTP
 surfaces.</p>
-<h2>Quickstart</h2>
+<h2 id="quickstart">Quickstart</h2>
 <pre><code class="language-bash">polylogued run
 </code></pre>
 <p>The daemon auto-discovers standard chat directories and begins ingestion. It
@@ -400,7 +438,7 @@ stays running until interrupted.</p>
 <p>Check status:</p>
 <pre><code class="language-bash">polylogued status
 </code></pre>
-<h2>Auto-Discovery</h2>
+<h2 id="auto-discovery">Auto-Discovery</h2>
 <p>The daemon watches these directories by default:</p>
 <pre><code>~/.claude/projects/       Claude Code sessions
 ~/.codex/sessions/         Codex sessions
@@ -408,7 +446,7 @@ stays running until interrupted.</p>
 <p>Custom watch roots with <code>--root</code> (repeatable):</p>
 <pre><code class="language-bash">polylogued run --root /path/to/exports --root /another/path
 </code></pre>
-<h2>Configuration Flags</h2>
+<h2 id="configuration-flags">Configuration Flags</h2>
 <p>By default <code>polylogued run</code> enables every component (watch, browser capture, HTTP API). Pass the corresponding <code>--no-*</code> flag to disable any one.</p>
 <table>
 <thead>
@@ -446,7 +484,7 @@ stays running until interrupted.</p>
 </tr>
 </tbody>
 </table>
-<h3>Browser Capture</h3>
+<h3 id="browser-capture">Browser Capture</h3>
 <table>
 <thead>
 <tr>
@@ -499,7 +537,7 @@ alike) — run <code>polylogued browser-capture token show</code> to print it an
 into the extension popup's &quot;Receiver token&quot; field to pair. Pass
 <code>--browser-capture-allow-no-auth</code> to opt out and serve unauthenticated (any
 local process can then read/post to the receiver).</p>
-<h3>HTTP API</h3>
+<h3 id="http-api">HTTP API</h3>
 <table>
 <thead>
 <tr>
@@ -526,7 +564,7 @@ local process can then read/post to the receiver).</p>
 </tr>
 </tbody>
 </table>
-<h2>HTTP API Endpoints</h2>
+<h2 id="http-api-endpoints">HTTP API Endpoints</h2>
 <p>The HTTP API server runs by default. Pass <code>--no-api</code> to disable it. The endpoints below are exposed under the configured <code>--api-host:--api-port</code>.</p>
 <p>Route contract metadata lives in <code>polylogue/daemon/route_contracts.py</code>.
 Dispatch still happens in <code>polylogue/daemon/http.py</code>, but the dispatcher now
@@ -555,18 +593,23 @@ classified with explicit auth and response posture.</p>
 </tr>
 <tr>
 <td>Stable read/query API</td>
-<td>bearer token when configured</td>
+<td>bearer or scoped web credential when configured</td>
 <td><code>GET /api/sessions</code>, <code>GET /api/query-units</code>, <code>GET /api/sessions/:id</code>, <code>GET /api/sessions/:id/read</code>, <code>GET /api/assertions</code>, <code>GET /api/sessions/:id/provenance</code></td>
 </tr>
 <tr>
 <td>User overlay reads</td>
-<td>bearer token when configured</td>
+<td>bearer or scoped web credential when configured</td>
 <td><code>GET /api/user/marks</code>, <code>GET /api/user/saved-views/:id</code></td>
 </tr>
 <tr>
-<td>Browser-accessible mutations</td>
-<td>bearer token plus same-origin browser request</td>
-<td><code>POST /api/user/marks</code>, <code>DELETE /api/user/saved-views/:id</code>, <code>POST /api/maintenance/run</code></td>
+<td>Browser-accessible user-state mutations</td>
+<td>bearer or scoped web credential plus exact-origin browser request</td>
+<td><code>POST /api/user/marks</code>, <code>DELETE /api/user/saved-views/:id</code></td>
+</tr>
+<tr>
+<td>Archive control mutations</td>
+<td>machine bearer when configured plus exact-origin browser request</td>
+<td><code>POST /api/reset</code>, <code>POST /api/ingest</code>, <code>POST /api/maintenance/run</code></td>
 </tr>
 <tr>
 <td>Observability ingest</td>
@@ -578,36 +621,36 @@ classified with explicit auth and response posture.</p>
 <p>User overlay mutation routes return the shared mutation result envelope
 (<code>status</code>, <code>operation</code>, <code>affected_count</code>, and resource/target identity fields).
 Detailed overlay resources are read through the corresponding <code>GET /api/user/...</code> endpoints.</p>
-<h3>GET /api/health</h3>
+<h3 id="get-apihealth">GET /api/health</h3>
 <p>Health check with database statistics.</p>
 <pre><code class="language-json">{&quot;ok&quot;: true, &quot;db_size_bytes&quot;: 52428800, &quot;wal_size_bytes&quot;: 4096, &quot;disk_free_bytes&quot;: 107374182400, &quot;quick_check&quot;: &quot;pass&quot;}
 </code></pre>
-<h3>GET /api/status</h3>
+<h3 id="get-apistatus">GET /api/status</h3>
 <p>Full daemon status including component state, source lag, ingestion throughput,
 FTS readiness, and insight freshness.</p>
-<h3>GET /api/sessions</h3>
+<h3 id="get-apisessions">GET /api/sessions</h3>
 <p>List sessions. Query params: <code>limit</code>, <code>origin</code>, <code>since</code>.</p>
-<h3>GET /api/sessions/:id</h3>
+<h3 id="get-apisessionsid">GET /api/sessions/:id</h3>
 <p>Get a single session by ID.</p>
-<h3>GET /api/sessions/:id/messages</h3>
+<h3 id="get-apisessionsidmessages">GET /api/sessions/:id/messages</h3>
 <p>Get messages for a session. Query params: <code>limit</code>, <code>offset</code>.</p>
-<h3>GET /api/query-units</h3>
+<h3 id="get-apiquery-units">GET /api/query-units</h3>
 <p>Return terminal rows for explicit query-unit expressions. Query params:
 <code>expression</code>, <code>limit</code>, <code>offset</code>. <code>expression</code> must be a
 <code>messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...</code> query and returns the shared
 <code>QueryUnitEnvelope</code> row envelope or, for SQL-backed
 <code>group by FIELD | count</code> pipelines, <code>QueryUnitAggregateEnvelope</code>.</p>
-<h3>GET /api/sessions/:id/read</h3>
+<h3 id="get-apisessionsidread">GET /api/sessions/:id/read</h3>
 <p>Execute a supported single-session read profile and return the shared
 <code>SessionReadViewEnvelope</code>. Query params include <code>view</code>, <code>format</code>, and
 profile-specific options such as <code>limit</code>, <code>offset</code>, <code>window_hours</code>, and
 <code>since_hours</code>.</p>
-<h3>GET /api/assertions</h3>
+<h3 id="get-apiassertions">GET /api/assertions</h3>
 <p>List assertion-backed overlay claims through <code>AssertionClaimListPayload</code>.
 Query params include <code>target_ref</code>, <code>scope_ref</code>, <code>kind</code>, <code>status</code>,
 <code>context_inject</code>, and <code>limit</code>. The default status scope is
 <code>active,candidate</code>; use <code>status=all</code> for an explicit full lifecycle read.</p>
-<h3>GET /api/facets</h3>
+<h3 id="get-apifacets">GET /api/facets</h3>
 <p>Query faceted aggregations. The route returns <code>FacetsResponse</code>, including
 <code>complete_families</code>, <code>deferred_families</code>, <code>generated_at</code>, <code>stale</code>,
 <code>stale_age_s</code>, <code>budget_exceeded</code>, and <code>family_status</code>. Repo and action
@@ -616,34 +659,38 @@ with <code>include_deferred=1</code> or <code>families=repos,action_types</code>
 bounded by <code>budget_ms</code>. The daemon also polls the client socket from SQLite
 progress handlers while computing facet SQL, so browser aborts/timeouts can
 stop already-started archive scans instead of waiting for response write.</p>
-<h3>GET /api/sources</h3>
+<h3 id="get-apisources">GET /api/sources</h3>
 <p>List configured watch sources and their availability.</p>
-<h3>GET /api/raw_artifacts/:id</h3>
+<h3 id="get-apirawartifactsid">GET /api/raw_artifacts/:id</h3>
 <p>Fetch raw (pre-parsed) artifact data by raw ID.</p>
-<h3>POST /api/reset</h3>
+<h3 id="post-apireset">POST /api/reset</h3>
 <p>Trigger a daemon reset operation.</p>
-<h3>GET /</h3>
+<h3 id="get">GET /</h3>
 <p>Web shell (localhost-only, no auth). A lightweight browser interface for
 querying the archive through the daemon.</p>
-<h3>Authentication</h3>
-<p>When an API auth token is configured, <code>/api/*</code> routes require it even from
-loopback. Pass it as a Bearer token:</p>
+<h3 id="authentication">Authentication</h3>
+<p>When an API auth token is configured, machine clients pass it as a bearer:</p>
 <pre><code class="language-bash">curl -H &quot;Authorization: Bearer &lt;token&gt;&quot; http://host:8766/api/status
 </code></pre>
-<p>Mutating browser-accessible routes also reject cross-origin <code>Origin</code> headers,
-even when the Bearer token is valid. <code>GET /healthz/*</code> and <code>GET /metrics</code> remain
-unauthenticated so health checks and Prometheus scrapers can operate without
-credentials.</p>
-<h2>Browser Capture Receiver</h2>
+<p>The first-party web shell does not receive that bearer. It obtains a separate
+short-lived, scoped HttpOnly cookie from <code>POST /api/web-auth/session</code>; ordinary
+fetch and SSE reconnects use the same cookie. Mutation routes require exact
+<code>Origin</code>-to-<code>Host</code> authority in addition to authentication. The cookie carries
+only <code>read</code>, <code>events</code>, and <code>user_state</code> scopes; archive reset, ingest, and
+maintenance controls require the machine bearer when authentication is enabled.
+<code>GET /healthz/*</code>
+and <code>GET /metrics</code> remain unauthenticated so health checks and Prometheus
+scrapers can operate without credentials.</p>
+<h2 id="browser-capture-receiver">Browser Capture Receiver</h2>
 <p>The browser capture receiver accepts chat session payloads from local browser
 extensions. It stores artifacts in the spool directory and triggers ingestion
 through the normal pipeline.</p>
 <p>Enabled by default on <code>127.0.0.1:8765</code>. Disable with <code>--no-browser-capture</code>.</p>
-<h2>Health Monitoring</h2>
+<h2 id="health-monitoring">Health Monitoring</h2>
 <p><code>polylogued status</code> reports typed daemon health via the <code>DaemonStatus</code> model.
 <code>polylogued health</code> runs tiered health checks (fast by default,
 <code>--expensive</code> to include full integrity checks).</p>
-<h3>Status Fields</h3>
+<h3 id="status-fields">Status Fields</h3>
 <table>
 <thead>
 <tr>
@@ -714,7 +761,7 @@ through the normal pipeline.</p>
 </tr>
 </tbody>
 </table>
-<h3>Health Check Tiers</h3>
+<h3 id="health-check-tiers">Health Check Tiers</h3>
 <p><code>polylogued health</code> runs checks grouped by cost:</p>
 <p><strong>Fast</strong> (sub-1s):</p>
 <ul>
@@ -740,7 +787,7 @@ through the normal pipeline.</p>
 <p>Each check produces a typed <code>HealthAlert</code> with severity (<code>ok</code>, <code>warning</code>,
 <code>error</code>, <code>critical</code>), message, and <code>consecutive_failures</code> counter for
 persistent condition detection.</p>
-<h3>Notification Backend</h3>
+<h3 id="notification-backend">Notification Backend</h3>
 <p>Health alerts are delivered through a configurable notification backend.
 The default <code>log</code> backend writes alerts to the structured logger.
 Configure via <code>polylogue.toml</code>:</p>
@@ -750,7 +797,7 @@ backend = &quot;log&quot;
 <p>Or via environment variable:</p>
 <pre><code class="language-bash">export POLYLOGUE_NOTIFICATION_BACKEND=log
 </code></pre>
-<h4>Webhook backend</h4>
+<h4 id="webhook-backend">Webhook backend</h4>
 <p>Selecting <code>backend = &quot;webhook&quot;</code> POSTs a typed JSON envelope to a
 user-configured URL on every non-OK health tick. The URL is fed through the
 resolved config and must be set; missing or empty URLs raise a typed config
@@ -785,16 +832,68 @@ permanent client errors and are not retried. Persistent failure surfaces
 through the existing periodic-loop catch boundary in
 <code>polylogue/daemon/cli.py</code>; it does not crash the daemon. Dedup and
 rate-limiting are out of scope for this backend.</p>
-<h2>Maintenance</h2>
+<h2 id="build-identity-deployment-attestation">Build Identity &amp; Deployment Attestation</h2>
+<p>Every runtime (Nix package, <code>pip</code>/<code>uv</code> install from a git checkout, or an
+sdist) embeds the exact git commit it was built from and reports it through
+two channels, distinct on purpose:</p>
+<ul>
+<li><strong>Concise human version</strong> — <code>polylogue --version</code> / <code>polylogued --version</code>
+and <code>polylogue.version.POLYLOGUE_VERSION</code>: <code>&lt;pyproject-version&gt;+&lt;8-char commit prefix&gt;[-dirty]</code>, e.g. <code>0.1.0+d8194234</code>. Meant for logs and
+<code>--version</code> banners, not for exact identity comparison — an 8-character
+prefix is not collision-proof.</li>
+<li><strong>Full machine-readable revision</strong> — the same build's <em>complete</em> 40-character
+commit hash, for attestation:
+<ul>
+<li><code>polylogue.version.VERSION_INFO.commit</code> (Python) — always the full hash,
+never truncated.</li>
+<li><code>polylogued status --json</code> → <code>archive_storage.identity.build_commit</code>
+(also <code>.build_dirty</code>), from <code>ArchiveIdentity.as_dict()</code>
+(<code>polylogue/storage/archive_identity.py</code>).</li>
+<li><code>GET /metrics</code> → <code>polylogue_daemon_build_info{version=&quot;...&quot;, revision=&quot;...&quot;, dirty=&quot;true|false&quot;} 1</code> — <code>revision</code> is the full hash,
+<code>version</code> is the concise human string above.</li>
+</ul>
+</li>
+</ul>
+<p>For Nix-packaged deployments, the embedded commit comes from the flake's
+<code>self.rev</code> (or <code>self.dirtyRev</code> with the <code>-dirty</code> suffix stripped and tracked
+separately as <code>BUILD_DIRTY</code>, when the source tree was dirty at build time —
+see <code>flake.nix</code>'s <code>buildRevision</code>/<code>buildDirty</code> and the <code>checks.build-info</code>
+package-level proof that the embedded value matches <code>self</code>).</p>
+<p><strong>Joining runtime identity to deployment evidence.</strong> A consuming flake (e.g.
+<code>sinnix</code>) pins Polylogue as a flake input and records its exact provenance in
+that flake's own <code>flake.lock</code>, under <code>nodes.polylogue.locked</code>:</p>
+<pre><code class="language-json">{
+  &quot;rev&quot;: &quot;d81942345…&quot;,       // full 40-char commit — compare directly to
+                              // polylogue_daemon_build_info{revision=…}
+  &quot;narHash&quot;: &quot;sha256-…&quot;      // content hash of the fetched source tree
+}
+</code></pre>
+<p>To confirm a running daemon matches what was actually deployed:</p>
+<ol>
+<li>Read the running build's revision: <code>curl -s http://127.0.0.1:8766/metrics | grep polylogue_daemon_build_info</code> (or
+<code>polylogued status --json | jq .archive_storage.identity.build_commit</code>).</li>
+<li>Read the deploying flake's locked revision: <code>jq .nodes.polylogue.locked.rev flake.lock</code> in the consuming repo (<code>sinnix</code>).</li>
+<li>The two full hashes must match exactly. A mismatch means the running
+binary was built from a different commit than the one the deployment
+flake currently locks — e.g. a <code>nixos-rebuild switch</code> that hasn't picked
+up a <code>nix flake update</code> yet, or a manually-built/side-loaded package.
+<code>narHash</code> corroborates that the fetched source tree content itself was
+not tampered with in transit, independent of the <code>rev</code> string.</li>
+<li><code>build_dirty</code> / <code>dirty=&quot;true&quot;</code> means the build was taken from an
+uncommitted working tree — there is no <code>rev</code> to join against a lockfile
+at all for that build; treat it as unattested and rebuild from a clean
+commit before trusting the comparison.</li>
+</ol>
+<h2 id="maintenance">Maintenance</h2>
 <p>Maintenance tasks are split between daemon-owned (fast, inline) and
 operator-owned (heavy, scheduled externally via systemd timers or cron).</p>
 <p>For the operator-facing maintenance surface — <code>polylogue ops maintenance preview/plan/run</code>, the resume/<code>--operation-id</code> pattern, scope filters,
 the status and failure surfaces, and incident runbooks — see
-<a href="https://github.com/Sinity/polylogue/blob/master/docs/maintenance.md">maintenance.md</a>. The daemon's inline convergence
+<a href="../maintenance/">maintenance.md</a>. The daemon's inline convergence
 loops below cover the high-frequency, low-cost tasks; anything that
 exceeds those bounded windows is operator-driven and documented
 there.</p>
-<h3>Daemon-Owned Tasks</h3>
+<h3 id="daemon-owned-tasks">Daemon-Owned Tasks</h3>
 <p>These run automatically inside the daemon process:</p>
 <table>
 <thead>
@@ -837,7 +936,7 @@ there.</p>
 health_check_interval_s = 300
 health_check_tiers = &quot;fast&quot;
 </code></pre>
-<h3>Operator-Owned Tasks</h3>
+<h3 id="operator-owned-tasks">Operator-Owned Tasks</h3>
 <p>These are heavier operations that should run outside the daemon via
 systemd timers, cron, or manual invocation. The daemon does not own
 these — operators are responsible for scheduling them:</p>
@@ -877,7 +976,7 @@ these — operators are responsible for scheduling them:</p>
 </tr>
 </tbody>
 </table>
-<h3>Litestream Integration (Guidance)</h3>
+<h3 id="litestream-integration-guidance">Litestream Integration (Guidance)</h3>
 <p>Litestream provides continuous SQLite replication by shipping WAL frames
 to object storage. Integration guidance:</p>
 <ol>
@@ -903,7 +1002,7 @@ triggers Litestream to create new generations. No daemon changes needed.</li>
         path: polylogue/user
         endpoint: https://s3.amazonaws.com
 </code></pre>
-<h3>Blob Store Backup Guidance</h3>
+<h3 id="blob-store-backup-guidance">Blob Store Backup Guidance</h3>
 <p>The blob store uses content-addressed storage under
 <code>&lt;archive_root&gt;/blob/</code>. Each blob's filename is its SHA-256 hash, so
 identical content is automatically deduplicated. For backup:</p>
@@ -929,7 +1028,7 @@ to a missing blob address are restored automatically before raw materialization
 replay. Container/member paths such as <code>export.zip:conversations.json</code> are
 deliberately left for source re-acquisition because the referenced blob may be
 an extracted record inside the member, not the member file itself.</p>
-<h3>Vacuum Guidance</h3>
+<h3 id="vacuum-guidance">Vacuum Guidance</h3>
 <p>SQLite <code>VACUUM</code> rebuilds the database file, reclaiming free pages. It
 requires the full database size in free disk space. Two approaches:</p>
 <p><code>polylogue ops backup</code> is not a vacuum operation. It creates a byte-exact,
@@ -938,7 +1037,7 @@ backups during a quiet window (and stop the daemon for durable-tier migration
 backups). To reclaim pages, stop the daemon, run <code>sqlite3 &lt;db&gt; &quot;VACUUM&quot;</code>, verify
 the database, then restart. Use <code>VACUUM INTO</code> manually only when a reviewed
 copy-and-swap maintenance plan requires it.</p>
-<h2>Systemd Integration</h2>
+<h2 id="systemd-integration">Systemd Integration</h2>
 <p>Example unit file for running <code>polylogued</code> as a user service:</p>
 <pre><code class="language-ini">[Unit]
 Description=Polylogue daemon
@@ -955,13 +1054,13 @@ WantedBy=default.target
 </code></pre>
 <p>The daemon writes a pidfile to the archive root and uses <code>fcntl</code> advisory
 locking to prevent concurrent instances.</p>
-<h2>Embeddings</h2>
+<h2 id="embeddings">Embeddings</h2>
 <p>The daemon can generate Voyage AI vector embeddings for message content, stored
 in the <code>message_embeddings</code> vec0 virtual table and consumed by <code>--similar</code> search
 and the <code>hybrid</code> retrieval lane.</p>
 <p>Embedding convergence is <strong>opt-in</strong> — ordinary daemon catch-up does not make
 provider API calls unless explicitly configured.</p>
-<h3>Configuration</h3>
+<h3 id="configuration">Configuration</h3>
 <p>Embedding settings live in the <code>[embedding]</code> section of <code>polylogue.toml</code> (see
 <code>polylogue config</code> for the resolved path). The daemon reads these keys:</p>
 <table>
@@ -1016,11 +1115,11 @@ voyage_api_key = &quot;va-...&quot;
 </code></pre>
 <p>Without a <code>voyage_api_key</code>, the embedding stage reports &quot;disabled&quot; in daemon
 status — this is not an error.</p>
-<h3>Model/dimension changes</h3>
+<h3 id="modeldimension-changes">Model/dimension changes</h3>
 <p>When the configured model or dimension differs from stored embeddings, the
 daemon marks all sessions for re-embedding. A dimension change also drops
 and recreates the vec0 virtual table.</p>
-<h3>Checking coverage</h3>
+<h3 id="checking-coverage">Checking coverage</h3>
 <pre><code class="language-bash">polylogue analyze                    # embedding coverage in archive aggregates
 polylogue ops embed status               # cheap readiness + latest catch-up run
 polylogue ops embed status --detail      # exact pending-message/retrieval accounting
@@ -1032,7 +1131,7 @@ archive as <code>embedding_catchup_runs</code>. The latest run is shown by
 sessions, embedded messages, errors, and estimated cost. This is the
 operator recovery point after interruption, OOM, restart, or a cost/error
 window stop; per-session retry state still lives in <code>embedding_status</code>.</p>
-<h2>Service Recovery</h2>
+<h2 id="service-recovery">Service Recovery</h2>
 <p><code>polylogued</code> is typically managed as a systemd user service. Example unit:</p>
 <pre><code class="language-ini"># ~/.config/systemd/user/polylogued.service
 [Unit]
@@ -1067,7 +1166,7 @@ systemd drop-in without changing daemon behavior.</p>
 <li><code>polylogue.toml</code> is valid (run <code>polylogue config</code>)</li>
 <li>No other instance is running (pidfile lock)</li>
 </ul>
-<h2>Backup and Recovery</h2>
+<h2 id="backup-and-recovery">Backup and Recovery</h2>
 <p>The Polylogue archive consists of:</p>
 <ul>
 <li><code>source.db</code> — raw acquisition/source evidence SQLite database</li>
@@ -1100,31 +1199,45 @@ systemctl --user start polylogued
 </code></pre>
 <p>The daemon will catch up on any files ingested after the backup was taken.</p>
 <pre><code></code></pre>
-
-<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
-<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+</article>
+<nav class="doc-pager" aria-label="Adjacent documentation">
     <a href="../export/">← Export</a>
-    <a href="../../reference/cli/">CLI Reference →</a>
+    <a href="../browser-capture/">Browser Capture →</a>
 </nav>
 
         </main>
     </div>
     <footer class="site-footer">
-        <span>Polylogue — local evidence for AI work</span>
-        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+        <div class="footer-inner">
+            <span>Polylogue · local evidence for AI work</span>
+            <span><a href="../">Documentation</a> · <a href="../../beads/">Roadmap</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
+        </div>
     </footer>
     <script>
+        (function () {
+            var saved = localStorage.getItem('polylogue-theme');
+            var preferred = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', saved || preferred);
+        })();
         function toggleTheme() {
             var html = document.documentElement;
-            var current = html.getAttribute('data-theme');
-            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
-            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+            var next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', next);
+            localStorage.setItem('polylogue-theme', next);
         }
-        (function() {
-            var saved = localStorage.getItem('theme');
-            if (saved) document.documentElement.setAttribute('data-theme', saved);
-        })();
+        function toggleNav(button) {
+            var open = document.body.classList.toggle('nav-open');
+            button.setAttribute('aria-expanded', String(open));
+            button.setAttribute('aria-label', open ? 'Close documentation navigation' : 'Open documentation navigation');
+        }
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') {
+                document.body.classList.remove('nav-open');
+                var button = document.querySelector('.nav-toggle');
+                if (button) button.setAttribute('aria-expanded', 'false');
+            }
+        });
     </script>
-    
+
 </body>
 </html>

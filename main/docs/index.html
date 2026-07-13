@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Polylogue documentation — local, evidence-addressable archives for AI work.">
-    <title>Export — Polylogue</title>
+    <title>Documentation Map — Polylogue</title>
     <style>
 
         :root {
@@ -334,11 +334,11 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     <header class="site-header">
         <div class="header-inner">
             <button class="nav-toggle" type="button" aria-label="Open documentation navigation" aria-expanded="false" onclick="toggleNav(this)">☰</button>
-            <a href="../../" class="logo">poly<span class="logo-mark">logue</span></a>
+            <a href="../" class="logo">poly<span class="logo-mark">logue</span></a>
             <nav class="primary-nav" aria-label="Primary navigation">
-                <a class="nav-essential" href="../getting-started/">Get started</a>
-                <a href="../">Documentation</a>
-                <a class="nav-essential" href="../../beads/">Roadmap</a>
+                <a class="nav-essential" href="getting-started/">Get started</a>
+                <a href="./">Documentation</a>
+                <a class="nav-essential" href="../beads/">Roadmap</a>
                 <a href="https://github.com/Sinity/polylogue">GitHub</a>
             </nav>
             <button class="theme-toggle" type="button" onclick="toggleTheme(this)" title="Toggle color theme" aria-label="Toggle color theme">◐</button>
@@ -350,201 +350,540 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <section class="nav-section">
                 <div class="nav-section-title">Start</div>
 
-                <a href="../getting-started/" >Getting Started</a>
+                <a href="getting-started/" >Getting Started</a>
 
-                <a href="../installation/" >Installation</a>
+                <a href="installation/" >Installation</a>
 
-                <a href="../../demos/" >Demos and Proofs</a>
+                <a href="../demos/" >Demos and Proofs</a>
 
-                <a href="../" >Documentation Map</a>
+                <a href="./" class="active" aria-current="page">Documentation Map</a>
 
             </section>
 
             <section class="nav-section">
                 <div class="nav-section-title">Use Polylogue</div>
 
-                <a href="../search/" >Search and Query</a>
+                <a href="search/" >Search and Query</a>
 
-                <a href="../providers/" >Providers</a>
+                <a href="providers/" >Providers</a>
 
-                <a href="../insights/" >Insights</a>
+                <a href="insights/" >Insights</a>
 
-                <a href="./" class="active" aria-current="page">Export</a>
+                <a href="export/" >Export</a>
 
-                <a href="../daemon/" >Daemon</a>
+                <a href="daemon/" >Daemon</a>
 
-                <a href="../browser-capture/" >Browser Capture</a>
+                <a href="browser-capture/" >Browser Capture</a>
 
             </section>
 
             <section class="nav-section">
                 <div class="nav-section-title">Reference</div>
 
-                <a href="../../reference/cli/" >CLI</a>
+                <a href="../reference/cli/" >CLI</a>
 
-                <a href="../../reference/mcp/" >MCP</a>
+                <a href="../reference/mcp/" >MCP</a>
 
-                <a href="../../reference/api/" >Python API</a>
+                <a href="../reference/api/" >Python API</a>
 
-                <a href="../../reference/config/" >Configuration</a>
+                <a href="../reference/config/" >Configuration</a>
 
             </section>
 
             <section class="nav-section">
                 <div class="nav-section-title">Understand</div>
 
-                <a href="../../architecture/rings/" >Architecture</a>
+                <a href="../architecture/rings/" >Architecture</a>
 
-                <a href="../../architecture/internals/" >Internals</a>
+                <a href="../architecture/internals/" >Internals</a>
 
-                <a href="../../architecture/schema/" >Schema</a>
+                <a href="../architecture/schema/" >Schema</a>
 
-                <a href="../../architecture/sinex/" >Polylogue on Sinex</a>
+                <a href="../architecture/sinex/" >Polylogue on Sinex</a>
 
-                <a href="../../architecture/security/" >Security</a>
+                <a href="../architecture/security/" >Security</a>
 
             </section>
 
             <section class="nav-section">
                 <div class="nav-section-title">Project</div>
 
-                <a href="../../beads/" >Roadmap</a>
+                <a href="../beads/" >Roadmap</a>
 
-                <a href="../../proof/" >Proof Artifacts</a>
+                <a href="../proof/" >Proof Artifacts</a>
 
-                <a href="../../verifiability/coverage/" >Verification</a>
+                <a href="../verifiability/coverage/" >Verification</a>
 
-                <a href="../maintenance/" >Maintenance</a>
+                <a href="maintenance/" >Maintenance</a>
 
-                <a href="../../architecture/contributing/" >Contributing</a>
+                <a href="../architecture/contributing/" >Contributing</a>
 
-                <a href="../audits/" >Historical Records</a>
+                <a href="audits/" >Historical Records</a>
 
             </section>
 
         </nav>
         <main class="content" id="main-content">
 
-<article class="doc"><p><a href="../">← Back to Docs</a></p>
-<h1 id="export">Export</h1>
-<p>Polylogue does not have a separate export command. Export is query selection
-plus a <code>read</code> projection plus a renderer. Use <code>read</code> for one selected session
-and <code>read --all</code> when the query result set itself is the export target.</p>
-<h2 id="single-session">Single Session</h2>
-<p>Read one session by ID with a root filter that narrows the archive to a single
-match:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read
-</code></pre>
-<p>Specify format:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read --format json
-polylogue --id claude-ai:abc123 read --format yaml
-</code></pre>
-<h2 id="query-set-reads">Query-Set Reads</h2>
-<p>Read every session matching a filter chain with <code>read --all</code>:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session --since 2026-01 find 'origin:claude-code-session' then read --all
-polylogue --tag important find 'tag:important' then read --all --format markdown
-polylogue --has-tool-use find &quot;refactor&quot; then read --all --format ndjson
-</code></pre>
-<h3 id="piping">Piping</h3>
-<p><code>read --all --format ndjson</code> emits one JSON line per session, suitable for
-piping:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session find 'origin:claude-code-session' then read --all --format ndjson | jq '.title'
-polylogue --since &quot;last month&quot; find 'since:&quot;last month&quot;' then read --all --format ndjson | wc -l
-</code></pre>
-<h2 id="export-formats">Export Formats</h2>
+<article class="doc"><!-- Generated by `devtools render docs-surface`. Edit devtools/docs_surface.py instead. -->
+<h1 id="polylogue-docs-map">Polylogue Docs Map</h1>
+<p>Start with <strong>Guides</strong> for a task, <strong>Reference</strong> for a surface contract, and <strong>Architecture and Internals</strong> for the substrate. The remaining tiers preserve operational, evidence, design, and historical material without presenting it as a first-read path.</p>
+<h2 id="guides">Guides</h2>
 <table>
 <thead>
 <tr>
-<th>Format</th>
+<th>Document</th>
 <th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>markdown</code></td>
-<td>Human-readable query-set output</td>
+<td><a href="getting-started/">Getting Started</a></td>
+<td>First archive, first query, and the next documentation steps.</td>
 </tr>
 <tr>
-<td><code>json</code></td>
-<td>Query-set envelope as structured JSON</td>
+<td><a href="installation/">Installation</a></td>
+<td>Source checkout, Nix flake, and managed NixOS/Home Manager install paths.</td>
 </tr>
 <tr>
-<td><code>ndjson</code></td>
-<td>One JSON object per line</td>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/onboarding.md">Onboarding</a></td>
+<td>First-run source detection, configuration, daemon startup, and recovery.</td>
 </tr>
 <tr>
-<td><code>yaml</code></td>
-<td>Query-set envelope as YAML</td>
+<td><a href="search/">Search &amp; Query</a></td>
+<td>Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract.</td>
 </tr>
 <tr>
-<td><code>plaintext</code></td>
-<td>Unformatted query-set rows</td>
+<td><a href="insights/">Insights</a></td>
+<td>Available derived views and their evidence boundaries.</td>
 </tr>
 <tr>
-<td><code>csv</code></td>
-<td>Comma-separated query-set rows</td>
+<td><a href="export/">Export</a></td>
+<td>Query-set reads and renderer formats for local export packages.</td>
+</tr>
+<tr>
+<td><a href="browser-capture/">Browser Capture</a></td>
+<td>Local browser extension capture for ChatGPT and Claude.ai sessions.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/hooks.md">Hooks</a></td>
+<td>Hook-event capture, configuration, and event catalog.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/cloud-agents.md">Cloud Agents</a></td>
+<td>Privacy and setup boundaries for cloud-agent work.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/generate.md">Generate</a></td>
+<td>Synthetic archive generation, seed mode, and demo workflows.</td>
+</tr>
+<tr>
+<td><a href="maintenance/">Maintenance</a></td>
+<td>Operator guide for preview, plan, run, resume, and incident recovery.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/providers/README.md">Providers</a></td>
+<td>Provider-specific parsing and export-format notes.</td>
+</tr>
+<tr>
+<td><a href="providers/">Provider Index</a></td>
+<td>Concise provider guide entrypoint.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/providers/chatgpt.md">ChatGPT Provider</a></td>
+<td>ChatGPT export detection and parser notes.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/providers/claude-ai.md">Claude.ai Provider</a></td>
+<td>Claude web export detection and parser notes.</td>
+</tr>
+<tr>
+<td><a href="providers/claude-code/">Claude Code Provider</a></td>
+<td>Claude Code session detection and parser notes.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/providers/gemini.md">Gemini Provider</a></td>
+<td>Gemini/Drive acquisition and parser notes.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/providers/openai-codex.md">Codex Provider</a></td>
+<td>Codex session detection and parser notes.</td>
 </tr>
 </tbody>
 </table>
-<p>These are the formats supported by the standard query-set export path. Default
-output varies by view and cardinality, so specify a format in automation. Other
-views have their own contracts; use <code>polylogue read --views --format json</code> to
-inspect the current view-specific formats before relying on one.</p>
-<p>Set format with <code>--format</code> / <code>-f</code>:</p>
-<pre><code class="language-bash">polylogue --id &lt;id&gt; read --format json
-polylogue --since yesterday find 'since:yesterday' then read --all --format yaml
-</code></pre>
-<h2 id="content-blocks">Content Blocks</h2>
-<p>Reads include all selected content blocks: text, thinking blocks, tool use, tool
-results, images, code blocks, and document references. Use query-unit
-expressions or explicit read views to narrow what is selected before rendering.</p>
-<h2 id="repeatable-local-packages">Repeatable Local Packages</h2>
-<p>For repeatable local demo/export bundles, describe ordinary <code>read</code> artifacts in
-a JSON/YAML package and render it through <code>devtools workspace read-package</code>.
-Artifact-level projection policy lives under <code>projection</code>, and renderer/layout
-policy lives under <code>render</code>. Both map to ordinary <code>polylogue read</code> flags:</p>
-<pre><code class="language-json">{
-  &quot;version&quot;: 1,
-  &quot;artifacts&quot;: [
-    {
-      &quot;name&quot;: &quot;dialogue-json&quot;,
-      &quot;view&quot;: &quot;dialogue&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;dialogue.json&quot;,
-      &quot;projection&quot;: {
-        &quot;max_tokens&quot;: 120
-      }
-    },
-    {
-      &quot;name&quot;: &quot;spec-json&quot;,
-      &quot;view&quot;: &quot;temporal,chronicle&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;spec.json&quot;,
-      &quot;spec&quot;: true,
-      &quot;render&quot;: {
-        &quot;fields&quot;: &quot;selection,projection,render&quot;
-      }
-    }
-  ]
-}
-</code></pre>
-<p>This is still composition over <code>polylogue read</code>: the package renderer plans
-normal read commands such as <code>--view dialogue --format json --max-tokens 120</code>
-or <code>--spec --fields selection,projection,render</code>.</p>
-<h2 id="sharing-considerations">Sharing Considerations</h2>
-<ul>
-<li>Rendered output can contain full message content including tool inputs/outputs and
-thinking blocks. Review before sharing.</li>
-<li>Cost estimates are approximate; API-reported token counts are exact where
-available.</li>
-<li>Attachment references are preserved but binary blobs are not rendered.</li>
-<li>Use query-unit filters or a narrower read view to produce cleaner output for
-non-technical audiences.</li>
-</ul>
+<h2 id="reference">Reference</h2>
+<table>
+<thead>
+<tr>
+<th>Document</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="../reference/cli/">CLI Reference</a></td>
+<td>Generated command reference from live help output.</td>
+</tr>
+<tr>
+<td><a href="../reference/mcp/">MCP Reference</a></td>
+<td>Generated MCP tool and contract reference.</td>
+</tr>
+<tr>
+<td><a href="../reference/api/">Library API</a></td>
+<td>Async archive API, filters, and query patterns.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/mcp-integration.md">MCP Integration</a></td>
+<td>Model Context Protocol server setup and usage.</td>
+</tr>
+<tr>
+<td><a href="../reference/config/">Configuration</a></td>
+<td>XDG paths, environment variables, and runtime configuration.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/glossary.md">Glossary</a></td>
+<td>Plain-language translation of the internal taxonomy.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/provider-origin-identity.md">Provider, Origin, and Source Identity</a></td>
+<td>Vocabulary map for provider-wire family, public origin, material source, and parser binding.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/provider-completeness.md">Provider Package Completeness</a></td>
+<td>Readiness report for provider/importer package modes by origin and capture mode.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/material-protocol-v1.md">Material Protocol v1</a></td>
+<td>Normalized-session interchange wire format.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/schema-annotations.md">Schema Annotations</a></td>
+<td>Versioned annotation schemas and batch provenance.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/query-identity.md">Query Identity</a></td>
+<td>Canonical query, query-run, and result-set reference identities.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/schemas/cli-output/README.md">CLI Output Schemas</a></td>
+<td>Machine-readable CLI output schema catalog.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/projection-render-spec.md">Projection Render Specification</a></td>
+<td>Projection and renderer contract for archive reads.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/web-route-readiness-states.md">Web Route Readiness States</a></td>
+<td>Readiness-state semantics for web routes.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="architecture-and-internals">Architecture and Internals</h2>
+<table>
+<thead>
+<tr>
+<th>Document</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="../architecture/rings/">Architecture</a></td>
+<td>System rings, ownership boundaries, and data flow.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/architecture-spine.md">Architecture Spine</a></td>
+<td>Target shape, guardrails, and major decisions with rejected alternatives.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/data-model.md">Data Model</a></td>
+<td>Archive entities, storage shape, and metadata rules.</td>
+</tr>
+<tr>
+<td><a href="../architecture/schema/">Schema</a></td>
+<td>Index and durable tier schema, FTS, vectors, and versioning.</td>
+</tr>
+<tr>
+<td><a href="../architecture/internals/">Internals</a></td>
+<td>Working implementation reference and debugging landmarks.</td>
+</tr>
+<tr>
+<td><a href="daemon/">Daemon</a></td>
+<td>Daemon ownership, convergence, HTTP serving, and service operation.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/daemon-threat-model.md">Daemon Threat Model</a></td>
+<td>Local API assets, threats, mitigations, and roles.</td>
+</tr>
+<tr>
+<td><a href="../architecture/security/">Security</a></td>
+<td>Security boundaries for local archives and readers.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/archive-backup.md">Archive Backup</a></td>
+<td>Archive-tier backup profiles, restore boundaries, and blob-GC safety rules.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/cost-model.md">Cost Model</a></td>
+<td>Cost, usage, cache, and subscription-credit accounting semantics.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/agent-forensics.md">Agent Forensics</a></td>
+<td>Forensic investigation methods over agent work.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/repo-layout.md">Repository Layout</a></td>
+<td>Every top-level entry and its purpose.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operations-and-contributor-workflow">Operations and Contributor Workflow</h2>
+<table>
+<thead>
+<tr>
+<th>Document</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/devtools.md">Developer Tools</a></td>
+<td>Generated surfaces, validation, and repo hygiene.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/dev-loop.md">Branch-Local Development Loop</a></td>
+<td>Daemon, web-shell, browser-capture, and extension debugging workflow.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/test-economics.md">Test Economics</a></td>
+<td>Test-selection and verification cost model.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/test-quality-workflows.md">Test Quality Workflows</a></td>
+<td>Executable mutation-campaign and benchmark registries.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/visual-evidence.md">Visual Evidence</a></td>
+<td>Synthetic reader DOM/media evidence lanes and local screenshot boundaries.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/release.md">Release Checklist</a></td>
+<td>Cut-time packaging, installed-artifact, and publish checks.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="demos-evidence-and-product">Demos, Evidence, and Product</h2>
+<table>
+<thead>
+<tr>
+<th>Document</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="../demos/">Demos and Proofs</a></td>
+<td>Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations.</td>
+</tr>
+<tr>
+<td><a href="../proof/">Proof Artifacts</a></td>
+<td>Claim-to-proof map for public-facing demo and evidence claims.</td>
+</tr>
+<tr>
+<td><a href="../findings/claim-vs-evidence/">Structured Failure Follow-Up</a></td>
+<td>Bounded field finding with oracle, sample frame, calibration, and caveats.</td>
+</tr>
+<tr>
+<td><a href="../architecture/sinex/">Polylogue on Sinex</a></td>
+<td>Current bridge, target authority split, and rebuild proof.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/insights-rigor-matrix.md">Insights Rigor Matrix</a></td>
+<td>Evidence strengths and limitations for insight families.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/product/workflows.md">Query-Action Workflows</a></td>
+<td>Executable product contract for workflows, affordances, completions, and golden paths.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/plans/demo-corpus-construct-audit.md">Demo Corpus Construct Audit</a></td>
+<td>Generated construct-coverage audit for the demo fixture world.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/plans/release-readiness-gate.md">Release Readiness Gate</a></td>
+<td>Externally presentable release gate and required proof contract.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/examples/demo-packet-v2/README.md">Demo Packet v2</a></td>
+<td>Worked private-data-free evidence packet.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/examples/demo-tour/report.md">Demo Tour Report</a></td>
+<td>Recorded output and receipts from the demo tour.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/examples/demo-tour/uvx-proof.md">UVX Installation Proof</a></td>
+<td>Recorded installation proof for the uvx distribution path.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/examples/visual-tapes/README.md">Visual Tape Examples</a></td>
+<td>Reader-evidence and visual-tape artifact catalog.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/examples/README.md">Example and Proof Index</a></td>
+<td>Index of recorded proof artifacts and worked examples.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="design-notes">Design Notes</h2>
+<table>
+<thead>
+<tr>
+<th>Document</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/design/README.md">Design Direction</a></td>
+<td>Beads-first design doctrine and standing domain-model references.</td>
+</tr>
+<tr>
+<td><a href="../design/agent-first-mcp/">Agent-First MCP</a></td>
+<td>Agent-facing MCP surface doctrine.</td>
+</tr>
+<tr>
+<td><a href="../design/archive-storytelling/">Archive Storytelling</a></td>
+<td>Narrative and artifact design for archives.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/design/browser-capture-redesign/README.md">Browser Capture Redesign</a></td>
+<td>Browser-capture redesign rationale and verification artifacts.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/design/incident-1432-proof-world.md">Incident 14:32 Proof World</a></td>
+<td>Deterministic demo corpus and anti-circularity rules.</td>
+</tr>
+<tr>
+<td><a href="../design/project-memory/">Project Memory</a></td>
+<td>Long-term memory model and product intent.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/design/query-action-workflows.md">Query-Action Workflows Design</a></td>
+<td>Historical design pointer for the workflow contract.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/design/query-set-algebra.md">Query Set Algebra</a></td>
+<td>Set-composition semantics over query results.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/design/session-lineage-model.md">Session Lineage Model</a></td>
+<td>Fork, resume, compaction, and composition semantics.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/design/analysis-rigor.md">Analysis Rigor</a></td>
+<td>Rigor mechanisms for agent claims: population validity and comparative judgment.</td>
+</tr>
+<tr>
+<td><a href="../design/second-brain/">Second Brain</a></td>
+<td>Vision note for remembered work.</td>
+</tr>
+<tr>
+<td><a href="../design/time-machine/">Time Machine</a></td>
+<td>Vision note for reconstructing work over time.</td>
+</tr>
+<tr>
+<td><a href="../design/whole-product/">Whole Product</a></td>
+<td>Product vision and system relationships.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="historical-records-and-generated-artifacts">Historical Records and Generated Artifacts</h2>
+<table>
+<thead>
+<tr>
+<th>Document</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-05-19-closed-issue-workload-audit.md">Closed-Issue Workload Audit</a></td>
+<td>Historical audit of closed-issue workload.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-05-20-cross-surface-coherence-audit.md">Cross-Surface Coherence Audit</a></td>
+<td>Historical cross-surface coherence audit.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-05-25-api-bypass-audit.md">API Bypass Audit</a></td>
+<td>Historical audit of API bypasses.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-07-09-daemon-loop-lock-starvation-map.md">Daemon Loop Lock-Starvation Map</a></td>
+<td>Lock-starvation investigation record.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-07-09-hash-boundary-census.md">Hash Boundary Census</a></td>
+<td>Hash-boundary investigation record.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-07-09-race-window-audit.md">Race Window Audit</a></td>
+<td>Race-window investigation record.</td>
+</tr>
+<tr>
+<td><a href="audits/">Audit Record Index</a></td>
+<td>Index of dated investigation records.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/retro/2026-05-24-1498-cascade.md">1498 Cascade Retrospective</a></td>
+<td>Historical cascade incident retrospective.</td>
+</tr>
+<tr>
+<td><a href="retrospectives/">Retrospective Index</a></td>
+<td>Index of historical incident retrospectives.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/plans/query-pipeline-substrate.md">Query Pipeline Substrate Plan</a></td>
+<td>Historical/active query pipeline design plan.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/generated/semantic-card-tool-map.md">Semantic Card Tool Map</a></td>
+<td>Generated map from semantic cards to tools.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/docs/topology-status.md">Topology Status</a></td>
+<td>Generated module-topology status dashboard.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="contributor-workflow">Contributor Workflow</h2>
+<table>
+<thead>
+<tr>
+<th>Document</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="../architecture/contributing/">Contributing</a></td>
+<td>Branching, issues, PRs, squash-merge history, and repo policy.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/TESTING.md">Testing</a></td>
+<td>Baseline test matrix, protected surfaces, and verification entrypoints.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/Sinity/polylogue/blob/master/CLAUDE.md">Agent Guide</a></td>
+<td>Agent memory and working rules.</td>
+</tr>
+</tbody>
+</table>
 </article>
 <nav class="doc-pager" aria-label="Adjacent documentation">
-    <a href="../insights/">← Insights</a>
-    <a href="../daemon/">Daemon →</a>
+    <a href="installation/">← Installation</a>
+    <a href="search/">Search →</a>
 </nav>
 
         </main>
@@ -552,7 +891,7 @@ non-technical audiences.</li>
     <footer class="site-footer">
         <div class="footer-inner">
             <span>Polylogue · local evidence for AI work</span>
-            <span><a href="../">Documentation</a> · <a href="../../beads/">Roadmap</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
+            <span><a href="./">Documentation</a> · <a href="../beads/">Roadmap</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
         </div>
     </footer>
     <script>

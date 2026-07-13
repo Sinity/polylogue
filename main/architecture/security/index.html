@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Polylogue documentation — local, evidence-addressable archives for AI work.">
-    <title>Export — Polylogue</title>
+    <title>Security — Polylogue</title>
     <style>
 
         :root {
@@ -336,8 +336,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <button class="nav-toggle" type="button" aria-label="Open documentation navigation" aria-expanded="false" onclick="toggleNav(this)">☰</button>
             <a href="../../" class="logo">poly<span class="logo-mark">logue</span></a>
             <nav class="primary-nav" aria-label="Primary navigation">
-                <a class="nav-essential" href="../getting-started/">Get started</a>
-                <a href="../">Documentation</a>
+                <a class="nav-essential" href="../../docs/getting-started/">Get started</a>
+                <a href="../../docs/">Documentation</a>
                 <a class="nav-essential" href="../../beads/">Roadmap</a>
                 <a href="https://github.com/Sinity/polylogue">GitHub</a>
             </nav>
@@ -350,30 +350,30 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <section class="nav-section">
                 <div class="nav-section-title">Start</div>
 
-                <a href="../getting-started/" >Getting Started</a>
+                <a href="../../docs/getting-started/" >Getting Started</a>
 
-                <a href="../installation/" >Installation</a>
+                <a href="../../docs/installation/" >Installation</a>
 
                 <a href="../../demos/" >Demos and Proofs</a>
 
-                <a href="../" >Documentation Map</a>
+                <a href="../../docs/" >Documentation Map</a>
 
             </section>
 
             <section class="nav-section">
                 <div class="nav-section-title">Use Polylogue</div>
 
-                <a href="../search/" >Search and Query</a>
+                <a href="../../docs/search/" >Search and Query</a>
 
-                <a href="../providers/" >Providers</a>
+                <a href="../../docs/providers/" >Providers</a>
 
-                <a href="../insights/" >Insights</a>
+                <a href="../../docs/insights/" >Insights</a>
 
-                <a href="./" class="active" aria-current="page">Export</a>
+                <a href="../../docs/export/" >Export</a>
 
-                <a href="../daemon/" >Daemon</a>
+                <a href="../../docs/daemon/" >Daemon</a>
 
-                <a href="../browser-capture/" >Browser Capture</a>
+                <a href="../../docs/browser-capture/" >Browser Capture</a>
 
             </section>
 
@@ -393,15 +393,15 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <section class="nav-section">
                 <div class="nav-section-title">Understand</div>
 
-                <a href="../../architecture/rings/" >Architecture</a>
+                <a href="../rings/" >Architecture</a>
 
-                <a href="../../architecture/internals/" >Internals</a>
+                <a href="../internals/" >Internals</a>
 
-                <a href="../../architecture/schema/" >Schema</a>
+                <a href="../schema/" >Schema</a>
 
-                <a href="../../architecture/sinex/" >Polylogue on Sinex</a>
+                <a href="../sinex/" >Polylogue on Sinex</a>
 
-                <a href="../../architecture/security/" >Security</a>
+                <a href="./" class="active" aria-current="page">Security</a>
 
             </section>
 
@@ -414,137 +414,265 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
                 <a href="../../verifiability/coverage/" >Verification</a>
 
-                <a href="../maintenance/" >Maintenance</a>
+                <a href="../../docs/maintenance/" >Maintenance</a>
 
-                <a href="../../architecture/contributing/" >Contributing</a>
+                <a href="../contributing/" >Contributing</a>
 
-                <a href="../audits/" >Historical Records</a>
+                <a href="../../docs/audits/" >Historical Records</a>
 
             </section>
 
         </nav>
         <main class="content" id="main-content">
 
-<article class="doc"><p><a href="../">← Back to Docs</a></p>
-<h1 id="export">Export</h1>
-<p>Polylogue does not have a separate export command. Export is query selection
-plus a <code>read</code> projection plus a renderer. Use <code>read</code> for one selected session
-and <code>read --all</code> when the query result set itself is the export target.</p>
-<h2 id="single-session">Single Session</h2>
-<p>Read one session by ID with a root filter that narrows the archive to a single
-match:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read
-</code></pre>
-<p>Specify format:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read --format json
-polylogue --id claude-ai:abc123 read --format yaml
-</code></pre>
-<h2 id="query-set-reads">Query-Set Reads</h2>
-<p>Read every session matching a filter chain with <code>read --all</code>:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session --since 2026-01 find 'origin:claude-code-session' then read --all
-polylogue --tag important find 'tag:important' then read --all --format markdown
-polylogue --has-tool-use find &quot;refactor&quot; then read --all --format ndjson
-</code></pre>
-<h3 id="piping">Piping</h3>
-<p><code>read --all --format ndjson</code> emits one JSON line per session, suitable for
-piping:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session find 'origin:claude-code-session' then read --all --format ndjson | jq '.title'
-polylogue --since &quot;last month&quot; find 'since:&quot;last month&quot;' then read --all --format ndjson | wc -l
-</code></pre>
-<h2 id="export-formats">Export Formats</h2>
+<article class="doc"><h1 id="security-model">Security Model</h1>
+<p>Polylogue is a local-first archive. The daemon API is designed for
+loopback access by the CLI, TUI, web reader, and browser extension.</p>
+<h2 id="threat-model">Threat Model</h2>
+<p>The primary threat is a malicious web page loaded in a local browser
+making requests to the daemon API. Browsers allow localhost requests
+from any origin by default, so any page the user visits can reach
+loopback ports.</p>
+<h3 id="trust-boundaries">Trust Boundaries</h3>
 <table>
 <thead>
 <tr>
-<th>Format</th>
-<th>Description</th>
+<th>Boundary</th>
+<th>Inside</th>
+<th>Outside</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>markdown</code></td>
-<td>Human-readable query-set output</td>
+<td>Loopback network trust</td>
+<td>Same-machine processes (CLI, hooks, daemon)</td>
+<td>Browser tabs the user happens to open</td>
 </tr>
 <tr>
-<td><code>json</code></td>
-<td>Query-set envelope as structured JSON</td>
+<td>Browser-origin trust</td>
+<td>The same-origin web shell served by the daemon itself</td>
+<td>Every other tab, extension, iframe</td>
 </tr>
 <tr>
-<td><code>ndjson</code></td>
-<td>One JSON object per line</td>
+<td>Remote bind trust</td>
+<td>Operator-acknowledged via <code>--insecure-allow-remote</code> + token</td>
+<td>Default: refused at startup</td>
 </tr>
 <tr>
-<td><code>yaml</code></td>
-<td>Query-set envelope as YAML</td>
-</tr>
-<tr>
-<td><code>plaintext</code></td>
-<td>Unformatted query-set rows</td>
-</tr>
-<tr>
-<td><code>csv</code></td>
-<td>Comma-separated query-set rows</td>
+<td>Process trust</td>
+<td>The user's own processes (same UID)</td>
+<td>Other users on a multi-user box</td>
 </tr>
 </tbody>
 </table>
-<p>These are the formats supported by the standard query-set export path. Default
-output varies by view and cardinality, so specify a format in automation. Other
-views have their own contracts; use <code>polylogue read --views --format json</code> to
-inspect the current view-specific formats before relying on one.</p>
-<p>Set format with <code>--format</code> / <code>-f</code>:</p>
-<pre><code class="language-bash">polylogue --id &lt;id&gt; read --format json
-polylogue --since yesterday find 'since:yesterday' then read --all --format yaml
-</code></pre>
-<h2 id="content-blocks">Content Blocks</h2>
-<p>Reads include all selected content blocks: text, thinking blocks, tool use, tool
-results, images, code blocks, and document references. Use query-unit
-expressions or explicit read views to narrow what is selected before rendering.</p>
-<h2 id="repeatable-local-packages">Repeatable Local Packages</h2>
-<p>For repeatable local demo/export bundles, describe ordinary <code>read</code> artifacts in
-a JSON/YAML package and render it through <code>devtools workspace read-package</code>.
-Artifact-level projection policy lives under <code>projection</code>, and renderer/layout
-policy lives under <code>render</code>. Both map to ordinary <code>polylogue read</code> flags:</p>
-<pre><code class="language-json">{
-  &quot;version&quot;: 1,
-  &quot;artifacts&quot;: [
-    {
-      &quot;name&quot;: &quot;dialogue-json&quot;,
-      &quot;view&quot;: &quot;dialogue&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;dialogue.json&quot;,
-      &quot;projection&quot;: {
-        &quot;max_tokens&quot;: 120
-      }
-    },
-    {
-      &quot;name&quot;: &quot;spec-json&quot;,
-      &quot;view&quot;: &quot;temporal,chronicle&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;spec.json&quot;,
-      &quot;spec&quot;: true,
-      &quot;render&quot;: {
-        &quot;fields&quot;: &quot;selection,projection,render&quot;
-      }
-    }
-  ]
-}
-</code></pre>
-<p>This is still composition over <code>polylogue read</code>: the package renderer plans
-normal read commands such as <code>--view dialogue --format json --max-tokens 120</code>
-or <code>--spec --fields selection,projection,render</code>.</p>
-<h2 id="sharing-considerations">Sharing Considerations</h2>
+<h3 id="actors">Actors</h3>
 <ul>
-<li>Rendered output can contain full message content including tool inputs/outputs and
-thinking blocks. Review before sharing.</li>
-<li>Cost estimates are approximate; API-reported token counts are exact where
-available.</li>
-<li>Attachment references are preserved but binary blobs are not rendered.</li>
-<li>Use query-unit filters or a narrower read view to produce cleaner output for
-non-technical audiences.</li>
+<li><strong>Same-user local process</strong> — CLI, hooks, scripts. Trusted: can read the SQLite archive directly anyway.</li>
+<li><strong>Hostile browser origin</strong> — A page loaded in any browser tab the user has open. Untrusted: must be blocked from POSTing to mutating endpoints regardless of how it reaches the daemon.</li>
+<li><strong>Browser extension</strong> — The Polylogue browser-capture extension uses a <em>separate</em> receiver with its own token (see <code>polylogue/browser_capture/server.py</code>). Aligned by design — different threat surface.</li>
+<li><strong>LAN neighbor</strong> — Reachable only on <code>--insecure-allow-remote</code> with token. Default: refused at startup.</li>
+</ul>
+<h3 id="assets">Assets</h3>
+<ul>
+<li>Raw archive data (session content, raw artifacts, blob store)</li>
+<li>Local filesystem paths surfaced via <code>/api/sources</code></li>
+<li>Daemon control operations (<code>/api/reset</code>, <code>/api/ingest</code>, <code>/api/maintenance/*</code>)</li>
+</ul>
+<h3 id="attack-surface">Attack Surface</h3>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Method</th>
+<th>Risk</th>
+<th>Auth</th>
+<th>Origin</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/api/web-auth/session</code></td>
+<td>POST/DELETE</td>
+<td>Mint/rotate or revoke a browser credential</td>
+<td>Exact-origin bootstrap; current web credential for revoke</td>
+<td>Exact origin</td>
+</tr>
+<tr>
+<td><code>/api/status</code></td>
+<td>GET</td>
+<td>Read-only metadata</td>
+<td>Bearer or web credential (when configured)</td>
+<td>Credential-bound</td>
+</tr>
+<tr>
+<td><code>/api/health</code>, <code>/api/health/check</code></td>
+<td>GET</td>
+<td>Health probe</td>
+<td>Bearer or web credential (when configured)</td>
+<td>Credential-bound</td>
+</tr>
+<tr>
+<td><code>/api/sessions</code>, <code>/api/sessions/:id</code>, <code>/.../messages</code>, <code>/.../raw</code></td>
+<td>GET</td>
+<td>Read session data</td>
+<td>Bearer or web credential</td>
+<td>Credential-bound</td>
+</tr>
+<tr>
+<td><code>/api/facets</code></td>
+<td>GET</td>
+<td>Read-only aggregations</td>
+<td>Bearer or web credential</td>
+<td>Credential-bound</td>
+</tr>
+<tr>
+<td><code>/api/sources</code></td>
+<td>GET</td>
+<td>Returns absolute filesystem paths to authenticated callers</td>
+<td>Bearer or web credential</td>
+<td>Credential-bound</td>
+</tr>
+<tr>
+<td><code>/api/raw_artifacts/:id</code></td>
+<td>GET</td>
+<td>Returns raw session payload</td>
+<td>Bearer or web credential</td>
+<td>Credential-bound</td>
+</tr>
+<tr>
+<td><code>/api/reset</code></td>
+<td>POST</td>
+<td><strong>Destructive</strong> — resets archive state</td>
+<td>Bearer only when auth is configured</td>
+<td>Exact origin</td>
+</tr>
+<tr>
+<td><code>/api/ingest</code></td>
+<td>POST</td>
+<td><strong>Mutating</strong> — schedules ingestion</td>
+<td>Bearer only when auth is configured</td>
+<td>Exact origin</td>
+</tr>
+<tr>
+<td><code>/api/maintenance/plan</code>, <code>/api/maintenance/run</code></td>
+<td>POST</td>
+<td><strong>Mutating</strong> — runs maintenance backfills</td>
+<td>Bearer only when auth is configured</td>
+<td>Exact origin</td>
+</tr>
+</tbody>
+</table>
+<h2 id="mitigations">Mitigations</h2>
+<ol>
+<li>
+<p><strong>Separate machine and browser credentials.</strong> When <code>--api-auth-token</code>
+is configured, machine clients present <code>Authorization: Bearer &lt;token&gt;</code>.
+The first-party shell instead rotates a short-lived <code>read</code>/<code>user_state</code>/
+<code>events</code> credential through <code>POST /api/web-auth/session</code>. It can update
+marks, annotations, saved views, recall packs, and workspaces, but archive
+reset, ingest, and maintenance operations remain machine-bearer capabilities.
+The opaque value
+is stored in an <code>HttpOnly; SameSite=Strict; Path=/</code> cookie; the daemon keeps
+only its SHA-256 digest. It is never returned in JSON or accepted in a URL.
+Credential-shaped query parameters are rejected with <code>400 credential_in_query</code>; route metadata and disconnect logs omit query strings
+entirely, including values under unrecognized parameter names.
+Missing, invalid, expired, revoked, wrong-origin, and insufficient-scope
+decisions use explicit response codes. The lifecycle lives in
+<code>polylogue/daemon/web_auth.py</code>; fetch and EventSource consume the same cookie.
+The digest registry prunes on issue/validate/revoke and enforces hard global
+and per-origin record bounds, so rotation cannot create unbounded retention.</p>
+</li>
+<li>
+<p><strong>Loopback-only by default.</strong> The daemon binds to <code>127.0.0.1</code> by
+default. The &quot;loopback&quot; predicate is the shared
+<code>polylogue/core/loopback.py:is_loopback_host</code> (RFC 5735: full
+<code>127.0.0.0/8</code>, <code>::1</code>, and <code>localhost</code>). Non-loopback bind
+(<code>--api-host 0.0.0.0</code> etc.) requires <em>both</em> <code>--insecure-allow-remote</code>
+(operator opts into the risk) <em>and</em> <code>--api-auth-token</code>; the
+enforcement lives in <code>polylogue/daemon/cli.py</code> and rejects either
+missing flag at startup.</p>
+</li>
+<li>
+<p><strong>Exact origin for browser credentials and mutations.</strong> A loopback origin
+on a different port is still a different origin. Bootstrap therefore
+requires the browser <code>Origin</code> authority to match <code>Host</code> exactly, credentials
+are bound to that canonical origin, and mutation requests repeat the exact
+authority check. Missing <code>Origin</code> remains valid for trusted non-browser
+bearer clients. The checks live in <code>polylogue/daemon/web_auth.py</code> and
+<code>polylogue/daemon/http.py:_check_cross_origin</code>.</p>
+</li>
+<li>
+<p><strong>No CORS preflight.</strong> <code>OPTIONS</code> requests return <code>405 Method Not Allowed</code> by design. The daemon does not advertise <code>Access-Control-Allow-*</code>
+headers. Cross-origin browsers cannot meaningfully use the API even
+on read endpoints because the response lacks the CORS headers
+browsers require.</p>
+</li>
+</ol>
+<h2 id="explicit-decisions">Explicit Decisions</h2>
+<p>These decisions are documented here so a regression that quietly
+flips one of them is recognized as a security policy change rather
+than an implementation tweak.</p>
+<h3 id="raw-artifacts-are-not-content-redacted">Raw artifacts are not content-redacted</h3>
+<p><code>/api/raw_artifacts/:id</code> returns the full raw payload (JSONL or other
+provider artifact). The bearer token implies operator-level trust:
+the same operator can read the blob store directly. Redacting at the
+API surface would create a false sense of isolation while leaving the
+filesystem unguarded.</p>
+<h3 id="apisources-returns-absolute-paths"><code>/api/sources</code> returns absolute paths</h3>
+<p><code>/api/sources</code> returns absolute filesystem paths in the <code>root</code> field
+to authenticated callers. The operator needs them for source diagnosis
+(why didn't this directory ingest?). Same trust argument as raw
+artifacts: same-user filesystem access already exposes these paths.</p>
+<h3 id="options-returns-405"><code>OPTIONS</code> returns 405</h3>
+<p>No CORS preflight is offered. The web shell and browser extension are
+same-origin or use a dedicated receiver, both of which avoid the
+preflight path. Adding CORS to the daemon API would be a deliberate
+architectural change.</p>
+<h3 id="browser-capture-has-its-own-token">Browser capture has its own token</h3>
+<p>The browser-capture receiver (<code>polylogue/browser_capture/server.py</code>)
+is intentionally a separate component with its own
+<code>--browser-capture-auth-token</code>, <code>--browser-capture-origin</code>, and
+<code>--browser-capture-allow-remote</code> flags. The daemon HTTP API and the
+browser-capture receiver have different trust models — extension
+talking to receiver vs. CLI/hooks/web-shell talking to daemon — and
+sharing a single token would conflate them.</p>
+<p>Unlike the daemon HTTP API, the receiver requires a bearer token by
+default even on plain loopback: without an explicit
+<code>--browser-capture-auth-token</code>, one is auto-minted into a 0600 file
+(<code>polylogued browser-capture token show</code> prints it for pairing) so that
+no local process other than the paired extension can read receiver
+state or post captures. <code>--browser-capture-allow-no-auth</code> is the
+explicit, logged opt-out (polylogue-gnie).</p>
+<h2 id="non-threats">Non-Threats</h2>
+<p>Out of scope:</p>
+<ul>
+<li><strong>Multi-user access.</strong> Polylogue is single-user; no user isolation.</li>
+<li><strong>TLS / HTTPS.</strong> Loopback-only by default; remote bind is operator
+opt-in and out of scope for built-in TLS.</li>
+<li><strong>Encryption at rest.</strong> SQLite is plaintext; disk encryption is the
+OS's responsibility.</li>
+<li><strong>CSRF tokens (in addition to Origin check).</strong> The Origin allowlist
+is the CSRF boundary; we don't issue per-request CSRF tokens.</li>
+<li><strong>User accounts / RBAC / multi-user auth.</strong> Single-user model.</li>
+<li><strong>Token-leak prevention beyond our own logs.</strong> We do not log the
+token; we do not put it in URLs. Operators that paste it into shell
+history, ticket trackers, or screenshots own that risk.</li>
+</ul>
+<h2 id="see-also">See Also</h2>
+<ul>
+<li><code>docs/daemon-threat-model.md</code> — finer-grained asset/threat tables.</li>
+<li><code>polylogue/daemon/http.py</code> — auth and origin-check implementation.</li>
+<li><code>polylogue/daemon/cli.py:309-319</code> — remote-bind enforcement.</li>
+<li><code>polylogue/browser_capture/server.py</code> — separate receiver auth.</li>
+<li><code>tests/unit/daemon/test_daemon_http_security.py</code> — per-endpoint
+security matrix.</li>
+<li><code>tests/unit/daemon/test_daemon_cli_remote_bind.py</code> — remote-bind
+refusal coverage.</li>
 </ul>
 </article>
 <nav class="doc-pager" aria-label="Adjacent documentation">
-    <a href="../insights/">← Insights</a>
-    <a href="../daemon/">Daemon →</a>
+    <a href="../contributing/">← Contributing</a>
+    <a href="../../design/second-brain/">Second Brain →</a>
 </nav>
 
         </main>
@@ -552,7 +680,7 @@ non-technical audiences.</li>
     <footer class="site-footer">
         <div class="footer-inner">
             <span>Polylogue · local evidence for AI work</span>
-            <span><a href="../">Documentation</a> · <a href="../../beads/">Roadmap</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
+            <span><a href="../../docs/">Documentation</a> · <a href="../../beads/">Roadmap</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
         </div>
     </footer>
     <script>

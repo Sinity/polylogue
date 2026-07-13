@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Polylogue documentation — local, evidence-addressable archives for AI work.">
-    <title>Export — Polylogue</title>
+    <title>Audit Records — Polylogue</title>
     <style>
 
         :root {
@@ -369,7 +369,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
                 <a href="../insights/" >Insights</a>
 
-                <a href="./" class="active" aria-current="page">Export</a>
+                <a href="../export/" >Export</a>
 
                 <a href="../daemon/" >Daemon</a>
 
@@ -418,133 +418,29 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
                 <a href="../../architecture/contributing/" >Contributing</a>
 
-                <a href="../audits/" >Historical Records</a>
+                <a href="./" class="active" aria-current="page">Historical Records</a>
 
             </section>
 
         </nav>
         <main class="content" id="main-content">
 
-<article class="doc"><p><a href="../">← Back to Docs</a></p>
-<h1 id="export">Export</h1>
-<p>Polylogue does not have a separate export command. Export is query selection
-plus a <code>read</code> projection plus a renderer. Use <code>read</code> for one selected session
-and <code>read --all</code> when the query result set itself is the export target.</p>
-<h2 id="single-session">Single Session</h2>
-<p>Read one session by ID with a root filter that narrows the archive to a single
-match:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read
-</code></pre>
-<p>Specify format:</p>
-<pre><code class="language-bash">polylogue --id claude-ai:abc123 read --format json
-polylogue --id claude-ai:abc123 read --format yaml
-</code></pre>
-<h2 id="query-set-reads">Query-Set Reads</h2>
-<p>Read every session matching a filter chain with <code>read --all</code>:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session --since 2026-01 find 'origin:claude-code-session' then read --all
-polylogue --tag important find 'tag:important' then read --all --format markdown
-polylogue --has-tool-use find &quot;refactor&quot; then read --all --format ndjson
-</code></pre>
-<h3 id="piping">Piping</h3>
-<p><code>read --all --format ndjson</code> emits one JSON line per session, suitable for
-piping:</p>
-<pre><code class="language-bash">polylogue --origin claude-code-session find 'origin:claude-code-session' then read --all --format ndjson | jq '.title'
-polylogue --since &quot;last month&quot; find 'since:&quot;last month&quot;' then read --all --format ndjson | wc -l
-</code></pre>
-<h2 id="export-formats">Export Formats</h2>
-<table>
-<thead>
-<tr>
-<th>Format</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>markdown</code></td>
-<td>Human-readable query-set output</td>
-</tr>
-<tr>
-<td><code>json</code></td>
-<td>Query-set envelope as structured JSON</td>
-</tr>
-<tr>
-<td><code>ndjson</code></td>
-<td>One JSON object per line</td>
-</tr>
-<tr>
-<td><code>yaml</code></td>
-<td>Query-set envelope as YAML</td>
-</tr>
-<tr>
-<td><code>plaintext</code></td>
-<td>Unformatted query-set rows</td>
-</tr>
-<tr>
-<td><code>csv</code></td>
-<td>Comma-separated query-set rows</td>
-</tr>
-</tbody>
-</table>
-<p>These are the formats supported by the standard query-set export path. Default
-output varies by view and cardinality, so specify a format in automation. Other
-views have their own contracts; use <code>polylogue read --views --format json</code> to
-inspect the current view-specific formats before relying on one.</p>
-<p>Set format with <code>--format</code> / <code>-f</code>:</p>
-<pre><code class="language-bash">polylogue --id &lt;id&gt; read --format json
-polylogue --since yesterday find 'since:yesterday' then read --all --format yaml
-</code></pre>
-<h2 id="content-blocks">Content Blocks</h2>
-<p>Reads include all selected content blocks: text, thinking blocks, tool use, tool
-results, images, code blocks, and document references. Use query-unit
-expressions or explicit read views to narrow what is selected before rendering.</p>
-<h2 id="repeatable-local-packages">Repeatable Local Packages</h2>
-<p>For repeatable local demo/export bundles, describe ordinary <code>read</code> artifacts in
-a JSON/YAML package and render it through <code>devtools workspace read-package</code>.
-Artifact-level projection policy lives under <code>projection</code>, and renderer/layout
-policy lives under <code>render</code>. Both map to ordinary <code>polylogue read</code> flags:</p>
-<pre><code class="language-json">{
-  &quot;version&quot;: 1,
-  &quot;artifacts&quot;: [
-    {
-      &quot;name&quot;: &quot;dialogue-json&quot;,
-      &quot;view&quot;: &quot;dialogue&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;dialogue.json&quot;,
-      &quot;projection&quot;: {
-        &quot;max_tokens&quot;: 120
-      }
-    },
-    {
-      &quot;name&quot;: &quot;spec-json&quot;,
-      &quot;view&quot;: &quot;temporal,chronicle&quot;,
-      &quot;format&quot;: &quot;json&quot;,
-      &quot;path&quot;: &quot;spec.json&quot;,
-      &quot;spec&quot;: true,
-      &quot;render&quot;: {
-        &quot;fields&quot;: &quot;selection,projection,render&quot;
-      }
-    }
-  ]
-}
-</code></pre>
-<p>This is still composition over <code>polylogue read</code>: the package renderer plans
-normal read commands such as <code>--view dialogue --format json --max-tokens 120</code>
-or <code>--spec --fields selection,projection,render</code>.</p>
-<h2 id="sharing-considerations">Sharing Considerations</h2>
+<article class="doc"><h1 id="audit-records">Audit Records</h1>
+<p>These are dated investigation records, not current product or operator guides.
+Use the current <a href="../../architecture/rings/">Architecture</a>, <a href="../../architecture/internals/">Internals</a>,
+and <a href="https://github.com/Sinity/polylogue/blob/master/docs/devtools.md">Developer Tools</a> references for present-tense behavior.</p>
 <ul>
-<li>Rendered output can contain full message content including tool inputs/outputs and
-thinking blocks. Review before sharing.</li>
-<li>Cost estimates are approximate; API-reported token counts are exact where
-available.</li>
-<li>Attachment references are preserved but binary blobs are not rendered.</li>
-<li>Use query-unit filters or a narrower read view to produce cleaner output for
-non-technical audiences.</li>
+<li><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-05-19-closed-issue-workload-audit.md">Closed issue workload audit</a></li>
+<li><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-05-20-cross-surface-coherence-audit.md">Cross-surface coherence audit</a></li>
+<li><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-05-25-api-bypass-audit.md">API bypass audit</a></li>
+<li><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-07-09-daemon-loop-lock-starvation-map.md">Daemon loop lock-starvation map</a></li>
+<li><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-07-09-hash-boundary-census.md">Hash boundary census</a></li>
+<li><a href="https://github.com/Sinity/polylogue/blob/master/docs/audits/2026-07-09-race-window-audit.md">Race window audit</a></li>
 </ul>
 </article>
 <nav class="doc-pager" aria-label="Adjacent documentation">
-    <a href="../insights/">← Insights</a>
-    <a href="../daemon/">Daemon →</a>
+    <a href="../maintenance/">← Maintenance</a>
+    <a href="../retrospectives/">Retrospectives →</a>
 </nav>
 
         </main>

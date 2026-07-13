@@ -3,139 +3,240 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Polylogue documentation — local, evidence-addressable archives for AI work.">
     <title>Search — Polylogue</title>
     <style>
 
         :root {
-            --bg-primary: #0B0E14;
-            --bg-secondary: #13171F;
-            --bg-tertiary: #1A1F2A;
-            --text-primary: #E6E8EC;
-            --text-secondary: #8B919A;
-            --text-tertiary: #555B63;
-            --accent: #3B82F6;
-            --accent-hover: #2563EB;
-            --border: #1E2430;
-            --shadow: rgba(0, 0, 0, 0.4);
-            --green: #22C55E;
-            --yellow: #EAB308;
-            --red: #EF4444;
-            --provider-claude-code: #D97706;
-            --provider-codex: #3B82F6;
-            --provider-chatgpt: #10B981;
-            --provider-gemini: #8B5CF6;
-            --provider-claude-ai: #F59E0B;
-            --header-height: 56px;
-            --nav-width: 240px;
-            --content-max-width: 720px;
-            --footer-height: 40px;
-            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
-            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+            color-scheme: dark;
+            --bg: #071018;
+            --bg-elevated: #0d1822;
+            --bg-soft: #12212d;
+            --bg-code: #08131c;
+            --text: #eef7f7;
+            --text-muted: #9bb0b5;
+            --text-faint: #657b82;
+            --accent: #60e6cc;
+            --accent-strong: #26c7ae;
+            --accent-soft: rgba(96, 230, 204, 0.11);
+            --violet: #a89cff;
+            --border: rgba(172, 205, 210, 0.15);
+            --border-strong: rgba(96, 230, 204, 0.32);
+            --shadow: rgba(0, 0, 0, 0.34);
+            --green: #62dc92;
+            --yellow: #f3c969;
+            --red: #ff7a86;
+            --header-height: 68px;
+            --nav-width: 270px;
+            --content-max-width: 920px;
+            --wide-max-width: 1180px;
+            --font-body: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --font-code: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
         }
-        @media (prefers-color-scheme: light) {
-            :root {
-                --bg-primary: #FAFAFA;
-                --bg-secondary: #FFFFFF;
-                --bg-tertiary: #F3F4F6;
-                --text-primary: #111827;
-                --text-secondary: #6B7280;
-                --text-tertiary: #9CA3AF;
-                --border: #E5E7EB;
-                --shadow: rgba(0, 0, 0, 0.08);
-            }
+        :root[data-theme="light"] {
+            color-scheme: light;
+            --bg: #f6faf9;
+            --bg-elevated: #ffffff;
+            --bg-soft: #eaf2f0;
+            --bg-code: #edf5f3;
+            --text: #122126;
+            --text-muted: #526970;
+            --text-faint: #789096;
+            --accent: #087d70;
+            --accent-strong: #05685e;
+            --accent-soft: rgba(8, 125, 112, 0.09);
+            --violet: #6558b5;
+            --border: rgba(24, 63, 70, 0.14);
+            --border-strong: rgba(8, 125, 112, 0.32);
+            --shadow: rgba(25, 56, 60, 0.10);
+            --green: #16864a;
+            --yellow: #966713;
+            --red: #b63847;
         }
 
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        html { font-size: 15px; }
+        *, *::before, *::after { box-sizing: border-box; }
+        html { scroll-behavior: smooth; font-size: 16px; }
         body {
+            margin: 0;
             font-family: var(--font-body);
-            background-color: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.6;
+            background:
+                radial-gradient(circle at 76% -8%, rgba(96, 230, 204, 0.09), transparent 31rem),
+                var(--bg);
+            color: var(--text);
+            line-height: 1.68;
             -webkit-font-smoothing: antialiased;
         }
+        a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
+        a:hover { color: var(--accent-strong); }
+        button, input, select { font: inherit; }
+        .skip-link { position: fixed; top: -5rem; left: 1rem; z-index: 100; padding: .6rem .9rem; background: var(--accent); color: #06211d; border-radius: .5rem; }
+        .skip-link:focus { top: .75rem; }
         .site-header {
-            position: sticky; top: 0; z-index: 10;
-            height: var(--header-height);
-            background-color: var(--bg-secondary);
-            border-bottom: 1px solid var(--border);
-            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+            position: sticky; top: 0; z-index: 30; min-height: var(--header-height);
+            background: color-mix(in srgb, var(--bg) 88%, transparent);
+            border-bottom: 1px solid var(--border); backdrop-filter: blur(18px);
         }
-        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
-        .site-header .logo span { color: var(--accent); }
-        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
-        .site-header .search-bar input {
-            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
-            border: 1px solid var(--border); background-color: var(--bg-tertiary);
-            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        .header-inner { max-width: 1500px; min-height: var(--header-height); margin: 0 auto; padding: 0 1.35rem; display: flex; align-items: center; gap: 1.25rem; }
+        .logo { color: var(--text); text-decoration: none; font-weight: 780; font-size: 1.08rem; letter-spacing: -.025em; }
+        .logo-mark { color: var(--accent); }
+        .primary-nav { display: flex; align-items: center; gap: .25rem; margin-left: auto; }
+        .primary-nav a { color: var(--text-muted); text-decoration: none; padding: .45rem .7rem; border-radius: .5rem; font-size: .9rem; }
+        .primary-nav a:hover, .primary-nav a[aria-current="page"] { color: var(--text); background: var(--bg-soft); }
+        .theme-toggle, .nav-toggle {
+            border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-muted);
+            min-width: 2.35rem; min-height: 2.35rem; border-radius: .65rem; cursor: pointer;
         }
-        .site-header .theme-toggle {
-            background: none; border: 1px solid var(--border); border-radius: 6px;
-            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
-        }
-        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .theme-toggle:hover, .nav-toggle:hover { color: var(--text); border-color: var(--border-strong); }
+        .nav-toggle { display: none; }
+        .page-layout { display: grid; grid-template-columns: var(--nav-width) minmax(0, 1fr); min-height: calc(100vh - var(--header-height)); max-width: 1500px; margin: 0 auto; }
         .site-nav {
-            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
-            background-color: var(--bg-primary); border-right: 1px solid var(--border);
-            overflow-y: auto; position: sticky; top: var(--header-height);
-            height: calc(100vh - var(--header-height));
+            position: sticky; top: var(--header-height); align-self: start; height: calc(100vh - var(--header-height)); overflow-y: auto;
+            padding: 1.8rem 1.3rem 3rem; border-right: 1px solid var(--border); scrollbar-width: thin;
         }
-        .site-nav .nav-section { margin-bottom: 1.5rem; }
-        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
-        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
-        .site-nav a:hover { color: var(--text-primary); }
-        .site-nav a.active { color: var(--accent); font-weight: 500; }
-        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
-        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
-        h1:first-child { margin-top: 0; }
-        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
-        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
-        p { margin-bottom: 1rem; }
-        a { color: var(--accent); text-decoration: none; }
-        a:hover { color: var(--accent-hover); }
-        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
-        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
-        pre code { background: none; padding: 0; font-size: inherit; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
-        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
-        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
-        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
-        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
-        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
-        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
-        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
-        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
-        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
-        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
-        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
-        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
-        .site-footer a { color: var(--text-secondary); }
-        .home-hero { text-align: center; padding: 4rem 0 3rem; }
-        .home-hero .eyebrow { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); margin-bottom: 0.8rem; }
-        .home-hero h1 { font-size: clamp(2.4rem, 7vw, 4.5rem); line-height: 1.03; max-width: 820px; margin: 0 auto 1rem; letter-spacing: -0.04em; }
-        .home-hero .tagline { font-size: 1.18rem; color: var(--text-secondary); max-width: 760px; margin: 0 auto 1.3rem; }
-        .hero-command { margin: 0 auto 1rem; }
-        .hero-command code { display: inline-block; padding: 0.65rem 0.9rem; border: 1px solid var(--border); background: var(--bg-secondary); box-shadow: 0 10px 30px var(--shadow); }
-        .hero-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 0.45rem 1.2rem; margin: 0 auto 1.7rem; color: var(--text-tertiary); font-size: 0.8rem; }
-        .hero-stats strong { color: var(--text-primary); font-size: 0.92rem; margin-right: 0.18rem; }
-        .proof-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0 2rem; text-align: left; }
-        .proof-card { background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary)); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem; min-height: 155px; }
-        .proof-card strong { display: block; font-size: 1rem; margin: 0.35rem 0 0.5rem; }
-        .proof-card p { color: var(--text-secondary); font-size: 0.9rem; margin: 0; }
-        .proof-label { color: var(--accent); font-size: 0.73rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
-        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
-        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
-        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
-        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
-        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
-        @media (max-width: 768px) {
-            .site-nav { display: none; }
-            .content { padding: 1.5rem 1rem; }
-            .home-hero h1 { font-size: 2.35rem; }
-            .proof-grid { grid-template-columns: 1fr; }
+        .nav-section { margin-bottom: 1.45rem; }
+        .nav-section-title { color: var(--text-faint); font-size: .68rem; font-weight: 760; letter-spacing: .12em; text-transform: uppercase; margin: 0 .55rem .45rem; }
+        .site-nav a { display: block; color: var(--text-muted); text-decoration: none; font-size: .875rem; line-height: 1.35; padding: .42rem .55rem; border-radius: .45rem; }
+        .site-nav a:hover { color: var(--text); background: var(--bg-soft); }
+        .site-nav a.active { color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+        .content { width: 100%; max-width: var(--content-max-width); margin: 0 auto; padding: 3.4rem 2.8rem 5rem; min-width: 0; }
+        .page-home .page-layout { display: block; }
+        .page-home .site-nav { display: none; }
+        .page-home .content, .page-board .content { max-width: var(--wide-max-width); }
+        .page-board .page-layout { display: block; }
+        .page-board .site-nav { display: none; }
+        .doc { min-width: 0; }
+        h1, h2, h3, h4 { color: var(--text); line-height: 1.18; letter-spacing: -.025em; scroll-margin-top: calc(var(--header-height) + 1rem); }
+        h1 { font-size: clamp(2.15rem, 5vw, 3.45rem); margin: 0 0 1.2rem; font-weight: 790; }
+        h2 { font-size: 1.62rem; margin: 2.8rem 0 .9rem; font-weight: 730; }
+        h3 { font-size: 1.22rem; margin: 2rem 0 .65rem; font-weight: 700; }
+        h4 { font-size: 1rem; margin: 1.5rem 0 .5rem; }
+        p, ul, ol, blockquote, table, pre { margin-top: 0; margin-bottom: 1.2rem; }
+        ul, ol { padding-left: 1.35rem; }
+        li + li { margin-top: .32rem; }
+        strong { color: var(--text); }
+        blockquote { border-left: 3px solid var(--accent); margin-left: 0; padding: .25rem 1rem; color: var(--text-muted); background: var(--accent-soft); border-radius: 0 .5rem .5rem 0; }
+        code { font-family: var(--font-code); font-size: .86em; background: var(--bg-code); border: 1px solid var(--border); padding: .12em .34em; border-radius: .32rem; }
+        pre { background: var(--bg-code); border: 1px solid var(--border); border-radius: .8rem; padding: 1.05rem 1.2rem; overflow-x: auto; box-shadow: 0 14px 32px -28px var(--shadow); }
+        pre code { padding: 0; border: 0; background: none; font-size: .84rem; line-height: 1.58; }
+        table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; font-size: .9rem; }
+        th, td { padding: .7rem .8rem; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+        th { color: var(--text-muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; }
+        hr { border: 0; border-top: 1px solid var(--border); margin: 3rem 0; }
+        .card, .stat-card { background: linear-gradient(145deg, var(--bg-elevated), color-mix(in srgb, var(--bg-elevated) 82%, var(--accent-soft))); border: 1px solid var(--border); border-radius: 1rem; padding: 1.25rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin: 1.3rem 0 2rem; }
+        .stat-card { text-align: center; }
+        .stat-value { color: var(--accent); font-size: 2rem; font-weight: 780; }
+        .stat-label { color: var(--text-muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .1em; }
+        .badge { display: inline-flex; align-items: center; gap: .25rem; padding: .16rem .48rem; border: 1px solid var(--border); border-radius: 99px; color: var(--text-muted); font-size: .72rem; font-weight: 650; }
+        .badge-green { color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); }
+        .badge-yellow { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 9%, transparent); }
+        .badge-red { color: var(--red); background: color-mix(in srgb, var(--red) 9%, transparent); }
+        .site-footer { border-top: 1px solid var(--border); color: var(--text-faint); }
+        .footer-inner { max-width: 1500px; margin: 0 auto; padding: 1.3rem; display: flex; justify-content: space-between; gap: 1rem; font-size: .82rem; }
+        .footer-inner a { color: var(--text-muted); }
+
+        .home-hero { padding: 6.5rem 0 4rem; text-align: left; }
+        .eyebrow { color: var(--accent); font-size: .75rem; font-weight: 780; letter-spacing: .14em; text-transform: uppercase; }
+        .home-hero h1 { max-width: 900px; font-size: clamp(3rem, 8vw, 6rem); line-height: .98; letter-spacing: -.055em; margin: .9rem 0 1.5rem; }
+        .tagline { max-width: 790px; color: var(--text-muted); font-size: clamp(1.08rem, 2vw, 1.34rem); line-height: 1.55; }
+        .hero-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 2rem 0; }
+        .button { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; min-height: 2.8rem; padding: .65rem 1rem; border: 1px solid var(--border); border-radius: .65rem; text-decoration: none; color: var(--text); background: var(--bg-elevated); font-weight: 680; }
+        .button:hover { color: var(--text); border-color: var(--border-strong); transform: translateY(-1px); }
+        .button-primary { color: #04231e; background: var(--accent); border-color: var(--accent); }
+        .button-primary:hover { color: #031a17; background: var(--accent-strong); }
+        .hero-command { max-width: 620px; }
+        .hero-command pre { margin-bottom: 0; }
+        .section-kicker { color: var(--accent); font-size: .72rem; font-weight: 760; letter-spacing: .12em; text-transform: uppercase; }
+        .home-section { padding: 3.5rem 0; border-top: 1px solid var(--border); }
+        .home-section h2 { max-width: 760px; font-size: clamp(2rem, 4vw, 3.2rem); margin-top: .55rem; }
+        .section-intro { max-width: 740px; color: var(--text-muted); font-size: 1.04rem; }
+        .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: .7rem; margin: 2rem 0; }
+        .pipeline-step { position: relative; padding: 1.1rem; border: 1px solid var(--border); border-radius: .85rem; background: var(--bg-elevated); }
+        .pipeline-step:not(:last-child)::after { content: "→"; position: absolute; right: -.68rem; top: 50%; z-index: 2; color: var(--accent); background: var(--bg); padding: .15rem; transform: translateY(-50%); }
+        .pipeline-step span { display: block; color: var(--text-faint); font-size: .68rem; font-weight: 760; letter-spacing: .1em; text-transform: uppercase; }
+        .pipeline-step strong { display: block; margin: .3rem 0; }
+        .pipeline-step p { margin: 0; color: var(--text-muted); font-size: .85rem; }
+        .capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 2rem; }
+        .capability-card { border: 1px solid var(--border); border-radius: 1rem; padding: 1.35rem; background: var(--bg-elevated); }
+        .capability-card .cap-index { color: var(--accent); font-family: var(--font-code); font-size: .72rem; }
+        .capability-card h3 { margin: .55rem 0 .55rem; }
+        .capability-card p { margin: 0; color: var(--text-muted); }
+        .surface-row { display: flex; flex-wrap: wrap; gap: .55rem; margin: 1.4rem 0; }
+        .surface-pill { padding: .45rem .7rem; border: 1px solid var(--border); border-radius: 99px; background: var(--bg-elevated); color: var(--text-muted); font-size: .82rem; }
+        .home-callout { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2rem; margin: 3rem 0 1rem; padding: 1.6rem; border: 1px solid var(--border-strong); border-radius: 1rem; background: var(--accent-soft); }
+        .home-callout h2 { margin: 0 0 .4rem; font-size: 1.45rem; }
+        .home-callout p { color: var(--text-muted); margin: 0; }
+        .doc-pager { display: flex; justify-content: space-between; gap: 1rem; margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--border); font-size: .9rem; }
+
+        .board-hero { display: flex; align-items: end; justify-content: space-between; gap: 2rem; margin-bottom: 1.6rem; }
+        .board-hero h1 { margin-bottom: .5rem; }
+        .board-hero p { color: var(--text-muted); margin: 0; max-width: 720px; }
+        .board-meta { color: var(--text-faint); font-size: .8rem; white-space: nowrap; }
+        .board-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .7rem; margin: 1.2rem 0; }
+        .board-stat { border: 1px solid var(--border); background: var(--bg-elevated); border-radius: .8rem; padding: .75rem .9rem; }
+        .board-stat strong { display: block; font-size: 1.35rem; }
+        .board-stat span { color: var(--text-faint); font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; }
+        .board-toolbar { position: sticky; top: calc(var(--header-height) + .7rem); z-index: 10; display: grid; grid-template-columns: minmax(240px, 1fr) repeat(3, minmax(120px, .2fr)); gap: .65rem; margin: 1.3rem 0; padding: .75rem; border: 1px solid var(--border); border-radius: .9rem; background: color-mix(in srgb, var(--bg) 91%, transparent); backdrop-filter: blur(14px); }
+        .board-toolbar input, .board-toolbar select { width: 100%; min-height: 2.55rem; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: .55rem; padding: .48rem .7rem; }
+        .board-toolbar input:focus, .board-toolbar select:focus { outline: 2px solid var(--border-strong); outline-offset: 1px; }
+        .board-results-meta { display: flex; justify-content: space-between; gap: 1rem; color: var(--text-faint); font-size: .82rem; margin-bottom: .65rem; }
+        .issue-list { display: grid; gap: .72rem; }
+        .issue-card { border: 1px solid var(--border); border-radius: .85rem; background: var(--bg-elevated); overflow: clip; scroll-margin-top: calc(var(--header-height) + 6rem); }
+        .issue-card[open] { border-color: var(--border-strong); box-shadow: 0 16px 38px -32px var(--shadow); }
+        .issue-summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .85rem; align-items: start; padding: 1rem; }
+        .issue-summary::-webkit-details-marker { display: none; }
+        .priority { width: 2rem; height: 2rem; display: inline-grid; place-items: center; border-radius: .5rem; background: var(--bg-soft); color: var(--text-muted); font-family: var(--font-code); font-size: .74rem; font-weight: 700; }
+        .priority-0 { color: var(--red); }
+        .priority-1 { color: var(--yellow); }
+        .issue-title { display: block; color: var(--text); font-weight: 690; line-height: 1.35; }
+        .issue-id { color: var(--text-faint); font-family: var(--font-code); font-size: .73rem; margin-right: .5rem; }
+        .issue-subline { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .55rem; }
+        .issue-updated { color: var(--text-faint); font-size: .75rem; white-space: nowrap; }
+        .issue-body { border-top: 1px solid var(--border); padding: 1.1rem 1.2rem 1.35rem 4rem; }
+        .issue-section + .issue-section { margin-top: 1.25rem; }
+        .issue-section h3 { color: var(--text-faint); font-size: .7rem; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .45rem; }
+        .issue-prose { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-muted); font-size: .9rem; margin: 0; font-family: var(--font-body); }
+        .issue-links { display: flex; flex-wrap: wrap; gap: .4rem; }
+        .issue-link { border: 1px solid var(--border); border-radius: .45rem; padding: .25rem .45rem; color: var(--accent); background: var(--bg-soft); cursor: pointer; font-family: var(--font-code); font-size: .73rem; }
+        .empty-state { text-align: center; color: var(--text-muted); padding: 4rem 1rem; border: 1px dashed var(--border); border-radius: .9rem; }
+        .load-more { display: block; margin: 1.2rem auto 0; }
+
+        @media (max-width: 900px) {
+            .primary-nav a:not(.nav-essential) { display: none; }
+            .nav-toggle { display: inline-grid; place-items: center; }
+            .page-layout { display: block; }
+            .site-nav { display: none; position: fixed; inset: var(--header-height) 0 0 0; z-index: 25; width: min(320px, 88vw); height: calc(100vh - var(--header-height)); background: var(--bg); box-shadow: 25px 0 60px var(--shadow); }
+            body.nav-open { overflow: hidden; }
+            body.nav-open .site-nav { display: block; }
+            .content { padding: 2.5rem 1.25rem 4rem; }
+            .home-hero { padding: 4.2rem 0 3rem; }
+            .pipeline { grid-template-columns: repeat(2, 1fr); }
+            .pipeline-step:nth-child(2)::after { display: none; }
+            .board-toolbar { position: static; grid-template-columns: 1fr 1fr; }
+            .board-toolbar input { grid-column: 1 / -1; }
+            .board-stats { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (max-width: 620px) {
+            .header-inner { padding: 0 .8rem; gap: .55rem; }
+            .primary-nav { gap: .1rem; }
+            .primary-nav a { padding: .4rem .5rem; }
+            .home-hero h1 { font-size: 3rem; }
+            .capability-grid, .pipeline { grid-template-columns: 1fr; }
+            .pipeline-step::after { display: none; }
+            .home-callout { grid-template-columns: 1fr; }
+            .board-hero { display: block; }
+            .board-meta { margin-top: .7rem; white-space: normal; }
+            .board-stats { grid-template-columns: repeat(2, 1fr); }
+            .board-toolbar { grid-template-columns: 1fr; }
+            .board-toolbar input { grid-column: auto; }
+            .issue-summary { grid-template-columns: auto minmax(0, 1fr); }
+            .issue-updated { display: none; }
+            .issue-body { padding-left: 1.1rem; }
+            .footer-inner { display: block; }
         }
         @media print {
-            .site-header, .site-nav, .site-footer { display: none; }
+            .site-header, .site-nav, .site-footer, .board-toolbar { display: none !important; }
+            .page-layout { display: block; }
             .content { max-width: none; padding: 0; }
             body { background: white; color: black; }
         }
@@ -226,172 +327,109 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 .highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
 .highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
     </style>
-    
+
 </head>
-<body>
+<body class="page-doc">
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header">
-        <a href="../../" class="logo">poly<span>logue</span></a>
-        <div class="search-bar">
-            <input type="search" placeholder="Search docs..." id="search-input">
+        <div class="header-inner">
+            <button class="nav-toggle" type="button" aria-label="Open documentation navigation" aria-expanded="false" onclick="toggleNav(this)">☰</button>
+            <a href="../../" class="logo">poly<span class="logo-mark">logue</span></a>
+            <nav class="primary-nav" aria-label="Primary navigation">
+                <a class="nav-essential" href="../getting-started/">Get started</a>
+                <a href="../">Documentation</a>
+                <a class="nav-essential" href="../../beads/">Roadmap</a>
+                <a href="https://github.com/Sinity/polylogue">GitHub</a>
+            </nav>
+            <button class="theme-toggle" type="button" onclick="toggleTheme(this)" title="Toggle color theme" aria-label="Toggle color theme">◐</button>
         </div>
-        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
-            <span class="light-icon">☀</span>
-            <span class="dark-icon">☾</span>
-        </button>
     </header>
     <div class="page-layout">
-        <nav class="site-nav" id="site-nav">
-            
-            <div class="nav-section">
-                <div class="nav-section-title">Start Here</div>
-                
-                <a href="../../demos/" >
-                    Demos
-                </a>
-                
-                <a href="../../findings/claim-vs-evidence/" >
-                    Finding: Structured Failure
-                </a>
-                
-                <a href="../../proof/" >
-                    Proof Artifacts
-                </a>
-                
-                <a href="../../architecture/sinex/" >
-                    Polylogue on Sinex
-                </a>
-                
-            </div>
-            
-            <div class="nav-section">
-                <div class="nav-section-title">Documentation</div>
-                
-                <a href="../getting-started/" >
-                    Getting Started
-                </a>
-                
-                <a href="./" class="active">
-                    Search
-                </a>
-                
-                <a href="../providers/" >
-                    Providers
-                </a>
-                
-                <a href="../insights/" >
-                    Insights
-                </a>
-                
-                <a href="../export/" >
-                    Export
-                </a>
-                
-                <a href="../daemon/" >
-                    Daemon
-                </a>
-                
-            </div>
-            
-            <div class="nav-section">
+        <nav class="site-nav" id="site-nav" aria-label="Documentation navigation">
+
+            <section class="nav-section">
+                <div class="nav-section-title">Start</div>
+
+                <a href="../getting-started/" >Getting Started</a>
+
+                <a href="../installation/" >Installation</a>
+
+                <a href="../../demos/" >Demos and Proofs</a>
+
+                <a href="../" >Documentation Map</a>
+
+            </section>
+
+            <section class="nav-section">
+                <div class="nav-section-title">Use Polylogue</div>
+
+                <a href="./" class="active" aria-current="page">Search and Query</a>
+
+                <a href="../providers/" >Providers</a>
+
+                <a href="../insights/" >Insights</a>
+
+                <a href="../export/" >Export</a>
+
+                <a href="../daemon/" >Daemon</a>
+
+                <a href="../browser-capture/" >Browser Capture</a>
+
+            </section>
+
+            <section class="nav-section">
                 <div class="nav-section-title">Reference</div>
-                
-                <a href="../../reference/cli/" >
-                    CLI
-                </a>
-                
-                <a href="../../reference/mcp/" >
-                    MCP
-                </a>
-                
-                <a href="../../reference/api/" >
-                    API
-                </a>
-                
-                <a href="../../reference/config/" >
-                    Config
-                </a>
-                
-            </div>
-            
-            <div class="nav-section">
-                <div class="nav-section-title">Architecture</div>
-                
-                <a href="../../architecture/rings/" >
-                    Rings
-                </a>
-                
-                <a href="../../architecture/internals/" >
-                    Internals
-                </a>
-                
-                <a href="../../architecture/schema/" >
-                    Schema
-                </a>
-                
-                <a href="../../architecture/contributing/" >
-                    Contributing
-                </a>
-                
-            </div>
-            
-            <div class="nav-section">
-                <div class="nav-section-title">Verifiability</div>
-                
-                <a href="../../verifiability/coverage/" >
-                    Coverage
-                </a>
-                
-                <a href="../../verifiability/mutation/" >
-                    Mutation
-                </a>
-                
-                <a href="../../verifiability/freshness/" >
-                    Freshness
-                </a>
-                
-                <a href="../../verifiability/drift/" >
-                    Drift
-                </a>
-                
-            </div>
-            
-            <div class="nav-section">
-                <div class="nav-section-title">Design</div>
-                
-                <a href="../../design/second-brain/" >
-                    Second Brain
-                </a>
-                
-                <a href="../../design/time-machine/" >
-                    Time Machine
-                </a>
-                
-                <a href="../../design/project-memory/" >
-                    Project Memory
-                </a>
-                
-                <a href="../../design/agent-first-mcp/" >
-                    Agent-First MCP
-                </a>
-                
-                <a href="../../design/archive-storytelling/" >
-                    Archive Storytelling
-                </a>
-                
-                <a href="../../design/whole-product/" >
-                    Whole Product
-                </a>
-                
-            </div>
-            
+
+                <a href="../../reference/cli/" >CLI</a>
+
+                <a href="../../reference/mcp/" >MCP</a>
+
+                <a href="../../reference/api/" >Python API</a>
+
+                <a href="../../reference/config/" >Configuration</a>
+
+            </section>
+
+            <section class="nav-section">
+                <div class="nav-section-title">Understand</div>
+
+                <a href="../../architecture/rings/" >Architecture</a>
+
+                <a href="../../architecture/internals/" >Internals</a>
+
+                <a href="../../architecture/schema/" >Schema</a>
+
+                <a href="../../architecture/sinex/" >Polylogue on Sinex</a>
+
+                <a href="../../architecture/security/" >Security</a>
+
+            </section>
+
+            <section class="nav-section">
+                <div class="nav-section-title">Project</div>
+
+                <a href="../../beads/" >Roadmap</a>
+
+                <a href="../../proof/" >Proof Artifacts</a>
+
+                <a href="../../verifiability/coverage/" >Verification</a>
+
+                <a href="../maintenance/" >Maintenance</a>
+
+                <a href="../../architecture/contributing/" >Contributing</a>
+
+                <a href="../audits/" >Historical Records</a>
+
+            </section>
+
         </nav>
-        <main class="content">
-            
-<p><a href="https://github.com/Sinity/polylogue/blob/master/docs/README.md">← Back to Docs</a></p>
-<h1>Search &amp; Query Reference</h1>
+        <main class="content" id="main-content">
+
+<article class="doc"><p><a href="../">← Back to Docs</a></p>
+<h1 id="search-query-reference">Search &amp; Query Reference</h1>
 <p>Polylogue uses a query-first grammar over archive units. Bare tokens are
 full-text terms, field clauses narrow the selected unit, explicit
-<code>sessions/messages/actions/blocks/files/assertions/runs/observed-events/context-snapshots where ...</code>
+<code>sessions/messages/actions/blocks/files/assertions/runs/observed-events/context-snapshots/delegations where ...</code>
 forms opt into Boolean predicates,
 and trailing CLI verbs render or mutate the selected session set. The same
 query semantics — filters, retrieval lanes, ranking policy, and typed response
@@ -400,23 +438,26 @@ payloads — apply across the CLI, MCP, Python API, and daemon HTTP surfaces.</p
 <ul>
 <li><a href="#retrieval-lanes">Retrieval Lanes</a> — <code>dialogue</code>, <code>actions</code>, <code>hybrid</code>,
 <code>semantic</code>, and the default lexical <code>auto</code> lane.</li>
-<li><a href="#terminal-unit-queries">Terminal Unit Queries</a> — <code>messages/actions/blocks/ files/assertions/runs/observed-events/context-snapshots where ...</code> row
+<li><a href="#terminal-unit-queries">Terminal Unit Queries</a> — <code>messages/actions/blocks/ files/assertions/runs/observed-events/context-snapshots/delegations where ...</code> row
 results.</li>
 <li><a href="#ranking-policy">Ranking Policy</a> — current <code>mixed-bm25-rrf-vector</code>
 policy and version contract.</li>
 <li><a href="#searchenvelope-contract">SearchEnvelope Contract</a> — the typed
 response shape shared across surfaces (<a href="https://github.com/Sinity/polylogue/issues/1266">#1266</a>).</li>
 <li><a href="#fts5-syntax">FTS5 Syntax</a> — boolean, phrase, and prefix queries.</li>
+<li><a href="#searchable-content-coverage">Searchable Content Coverage</a> — exactly
+which block fields FTS indexes, and which (e.g. <code>Write</code>/<code>Edit</code> tool
+file bodies) it does not.</li>
 <li><a href="#facets-scoped-vs-global">Facets (Scoped vs Global)</a> — aggregate
 counts with both views (<a href="https://github.com/Sinity/polylogue/issues/1269">#1269</a>).</li>
 </ul>
-<h2>Grammar</h2>
+<h2 id="grammar">Grammar</h2>
 <p>The canonical parser is the Lark grammar in
 <code>polylogue/archive/query/expression.py</code>. It has two entry shapes that lower
 through the same typed AST and query planner:</p>
 <pre><code class="language-text">compact-query      ::= compact-clause*
 boolean-query      ::= [&quot;sessions&quot; &quot;where&quot;] predicate
-unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot; | &quot;files&quot; | &quot;assertions&quot; | &quot;runs&quot; | &quot;observed-events&quot; | &quot;context-snapshots&quot;) &quot;where&quot; predicate
+unit-query         ::= (&quot;messages&quot; | &quot;actions&quot; | &quot;blocks&quot; | &quot;files&quot; | &quot;assertions&quot; | &quot;runs&quot; | &quot;observed-events&quot; | &quot;context-snapshots&quot; | &quot;delegations&quot;) &quot;where&quot; predicate
 pipeline-query     ::= unit-query (&quot;|&quot; pipeline-stage)+
                      | &quot;sessions&quot; &quot;where&quot; predicate &quot;|&quot; unit-query (&quot;|&quot; pipeline-stage)*
 
@@ -480,6 +521,7 @@ polylogue assertions where 'kind:decision AND status:active AND text:review'
 polylogue runs where 'role:subagent AND status:completed AND agent:Explore'
 polylogue observed-events where 'delivery_state:acted_on AND text:#2100'
 polylogue context-snapshots where 'boundary:session_start AND session.repo:polylogue'
+polylogue delegations where 'mapping_state:resolved AND instruction:review'
 </code></pre>
 <p>Pipeline stages can either decorate a direct terminal row query or scope one
 through a session source stage:</p>
@@ -508,7 +550,7 @@ currently support <code>sort by time [asc|desc]</code>,
 and <code>offset N</code> for SQL-backed terminal rows (<code>messages</code>, <code>actions</code>, <code>blocks</code>,
 <code>files</code>, <code>assertions</code>). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
-<code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are SQL-backed terminal rows
+<code>runs</code>, <code>observed-events</code>, <code>context-snapshots</code>, and <code>delegations</code> are SQL-backed terminal rows
 over source-derived archive relations plus any non-duplicate materialized
 projection enrichments. Main runs, <code>session_started</code> events, tool-finished
 events, and session-start context snapshots are computed directly from
@@ -532,7 +574,7 @@ fields.</p>
 into looser full-text search. In particular, reserved unit prefixes such as
 <code>messages where</code> are errors when malformed; they are not treated as ordinary
 text terms.</p>
-<h3>DSL Fields</h3>
+<h3 id="dsl-fields">DSL Fields</h3>
 <table>
 <thead>
 <tr>
@@ -630,7 +672,7 @@ polylogue 'tool:bash AND NOT tag:stale'
 </code></pre>
 <p>Negation is supported for fields that are semantically safe to negate, such as
 <code>origin</code>, <code>tag</code>, <code>tool</code>, and <code>action</code>.</p>
-<h3>Comparisons And Ranges</h3>
+<h3 id="comparisons-and-ranges">Comparisons And Ranges</h3>
 <p>Readable comparisons are supported for message counts, word counts, numeric
 durations/tokens, and dates:</p>
 <pre><code class="language-bash">polylogue 'messages &gt;= 5 AND messages &lt;= 20'
@@ -668,7 +710,7 @@ numeric fields are accepted in <code>messages where ...</code> terminal queries 
 <p>Compact count syntax is equivalent where available:</p>
 <pre><code class="language-bash">polylogue messages:&gt;=5 words:&lt;=500
 </code></pre>
-<h3>Structural Predicates</h3>
+<h3 id="structural-predicates">Structural Predicates</h3>
 <p><code>exists &lt;unit&gt;(...)</code> keeps the selected unit as <code>sessions</code> but requires at least
 one child row matching the nested predicate.</p>
 <table>
@@ -716,7 +758,7 @@ one child row matching the nested predicate.</p>
 <p>Structural units also accept <code>session.&lt;field&gt;</code> predicates for the owning
 session fields that their lowerer can evaluate. SQL-backed units can use the
 full session filter surface, including action/tool/path/feature predicates.
-<code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are SQL-backed over the
+<code>runs</code>, <code>observed-events</code>, <code>context-snapshots</code>, and <code>delegations</code> are SQL-backed over the
 materialized run-projection tables, so they too accept the full session filter
 surface (e.g. <code>session.repo</code>, <code>session.tool</code>, <code>session.path</code>) alongside their
 own fields above. Count and date session
@@ -735,7 +777,7 @@ exclusive-bound fields.</p>
 polylogue sessions where 'exists file(session.repo:polylogue AND action:file_edit AND path:archive/query)'
 polylogue sessions where 'exists block(type:code AND text:timeout)'
 </code></pre>
-<h3>FTS And Semantic Leaves</h3>
+<h3 id="fts-and-semantic-leaves">FTS And Semantic Leaves</h3>
 <p>Inside Boolean predicates, <code>~</code> marks an explicit FTS leaf and <code>semantic:</code> /
 <code>near:text:</code> mark semantic-vector leaves:</p>
 <pre><code class="language-bash">polylogue sessions where '~&quot;null pointer&quot; AND repo:polylogue'
@@ -745,7 +787,7 @@ polylogue sessions where 'near:text:timeout'
 <p>Semantic leaves require embeddings to be configured and available. When vectors
 are unavailable, the query fails with a typed semantic/vector availability
 error instead of falling back to broad lexical search.</p>
-<h2>Terminal Unit Queries</h2>
+<h2 id="terminal-unit-queries">Terminal Unit Queries</h2>
 <p>Most query expressions select sessions. Explicit unit sources select terminal
 rows instead:</p>
 <pre><code class="language-bash">polylogue --format json messages where role:assistant AND text:timeout
@@ -756,6 +798,7 @@ polylogue --format json assertions where kind:decision AND status:active AND tex
 polylogue --format json runs where role:subagent AND status:completed AND agent:Explore
 polylogue --format json observed-events where delivery_state:acted_on AND text:#2100
 polylogue --format json context-snapshots where boundary:session_start AND session.repo:polylogue
+polylogue --format json delegations where mapping_state:resolved AND instruction:review
 polylogue --format json messages where text:timeout | group by role | count
 </code></pre>
 <p>The row shape is the shared <code>QueryUnitEnvelope</code> used by CLI JSON/NDJSON/YAML,
@@ -789,7 +832,7 @@ polylogue context-snapshots where session.messages:&gt;=2 AND session.date:&gt;=
 non-empty <code>tool_path</code>. It returns one row per owning session and normalized path,
 with action counts and first/last tool-use refs. It is not a global filesystem
 inventory and does not claim that a file still exists on disk.</p>
-<p><code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are SQL-backed row sources
+<p><code>runs</code>, <code>observed-events</code>, <code>context-snapshots</code>, and <code>delegations</code> are SQL-backed row sources
 over source-derived archive relations, with materialized projection tables used
 only for richer non-duplicate rows that are not cheap local projections of
 <code>sessions</code> and <code>blocks</code>. They are both terminal unit sources (<code>runs where ...</code>)
@@ -804,7 +847,7 @@ still narrow the owning sessions before rows are returned. Session-only actions
 and result-shaping modes that do not have row semantics yet, such as
 <code>delete</code>, <code>open</code>, <code>stats</code>, <code>count</code>, <code>--cursor</code>, and custom sort/reverse modes,
 are rejected instead of silently coercing row queries back to session queries.</p>
-<h2>Assertion Candidate Judgment</h2>
+<h2 id="assertion-candidate-judgment">Assertion Candidate Judgment</h2>
 <p>Any non-user-authored assertion write (agent, transform, detector, blackboard
 post, or any future automated writer) lands with <code>status:candidate</code> by
 default -- enforced once, inside <code>upsert_assertion</code> itself, not per-writer
@@ -845,7 +888,7 @@ explicitly.</p>
 <p>Pending candidate judgments also appear in the operator debt cockpit:</p>
 <pre><code class="language-bash">polylogue ops debt list --kind assertion-candidate --only-actionable --format json
 </code></pre>
-<h2>Public Ref Resolution</h2>
+<h2 id="public-ref-resolution">Public Ref Resolution</h2>
 <p>Query/read payloads carry public object and evidence refs so agents and the web
 shell can jump from a row, context image, or assertion back to the exact archive
 object it cites. Resolve refs through the shared resolver rather than turning
@@ -854,15 +897,23 @@ them into broad text search:</p>
 polylogue read message:codex-session:abc123:m1 --format json
 polylogue read block:codex-session:abc123:m1:0 --format json
 polylogue read assertion:assertion-id --format json
+polylogue read delegation:claude-code-session:parent:message:0 --format json
 </code></pre>
 <p>The same <code>PublicRefResolutionPayload</code> is exposed by
 <code>Polylogue.resolve_ref()</code>, MCP <code>resolve_ref</code>, and daemon
 <code>GET /api/refs/resolve?ref=...</code>. The resolver supports session, message,
-block, assertion, and runtime projection refs (<code>run</code>, <code>observed-event</code>,
+block, assertion, delegation, and runtime projection refs (<code>run</code>, <code>observed-event</code>,
 <code>context-snapshot</code>) when the addressed object exists. Unsupported or missing
 refs return a bounded unresolved payload with caveats; they never widen into a
 session search.</p>
-<h2>Outbound OTel Projection</h2>
+<p>Delegation refs resolve to an explicit evidence card. The card preserves the
+complete recorded instruction while separately bounding the parent-side
+dispatch result, actual child-session excerpt, parent context, and parent
+follow-up with per-window/per-excerpt truncation markers. Ordinary
+<code>delegations where ...</code> rows expose only previews, SHA-256 hashes, structural
+mapping/result states, and evidence refs; they do not claim child success,
+utility, or parent use.</p>
+<h2 id="outbound-otel-projection">Outbound OTel Projection</h2>
 <p>Polylogue has two telemetry directions that should not be confused:</p>
 <ul>
 <li>inbound OTLP receiver routes store external telemetry in <code>ops.db</code> for local
@@ -890,8 +941,8 @@ messages, observed events, and context snapshots become log/event records.
 Tool outputs and absolute local paths are omitted by default; the payload
 instead carries output length/presence, redaction flags, and refs that clients
 can resolve deliberately when the operator wants to inspect source evidence.</p>
-<h2>Filters</h2>
-<h3>Identity and content</h3>
+<h2 id="filters">Filters</h2>
+<h3 id="identity-and-content">Identity and content</h3>
 <table>
 <thead>
 <tr>
@@ -938,7 +989,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 </tbody>
 </table>
-<h3>Content type</h3>
+<h3 id="content-type">Content type</h3>
 <table>
 <thead>
 <tr>
@@ -969,7 +1020,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 </tbody>
 </table>
-<h3>Message stats</h3>
+<h3 id="message-stats">Message stats</h3>
 <table>
 <thead>
 <tr>
@@ -992,7 +1043,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 </tbody>
 </table>
-<h3>Semantic actions</h3>
+<h3 id="semantic-actions">Semantic actions</h3>
 <table>
 <thead>
 <tr>
@@ -1027,7 +1078,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 </tbody>
 </table>
-<h3>Time and scope</h3>
+<h3 id="time-and-scope">Time and scope</h3>
 <table>
 <thead>
 <tr>
@@ -1070,7 +1121,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 </tbody>
 </table>
-<h3>Tags</h3>
+<h3 id="tags">Tags</h3>
 <table>
 <thead>
 <tr>
@@ -1089,7 +1140,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 </tbody>
 </table>
-<h3>Retrieval</h3>
+<h3 id="retrieval">Retrieval</h3>
 <table>
 <thead>
 <tr>
@@ -1108,7 +1159,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 </tbody>
 </table>
-<h2>Verbs</h2>
+<h2 id="verbs">Verbs</h2>
 <p>Verbs determine the action applied to the matched session set.</p>
 <table>
 <thead>
@@ -1160,7 +1211,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 </tbody>
 </table>
-<h2>Retrieval Lanes</h2>
+<h2 id="retrieval-lanes">Retrieval Lanes</h2>
 <p>Lane selection lives on the query as <code>retrieval_lane</code>. The resolved value
 appears in the <code>SearchEnvelope.retrieval_lane</code> field on every response so
 consumers can tell what actually ran (which matters because <code>auto</code> resolves to
@@ -1204,20 +1255,34 @@ a concrete lane — see below).</p>
 <p>Implementation: <code>polylogue/storage/search_providers/fts5.py</code>,
 <code>polylogue/storage/search_providers/hybrid.py</code>,
 <code>polylogue/storage/search_providers/sqlite_vec_support.py</code>.</p>
-<h3>Lane Semantics</h3>
-<h4><code>dialogue</code> (FTS5 lexical)</h4>
+<h3 id="lane-semantics">Lane Semantics</h3>
+<h4 id="dialogue-fts5-lexical"><code>dialogue</code> (FTS5 lexical)</h4>
 <ul>
 <li>Backed by SQLite FTS5's BM25 implementation against <code>messages_fts</code>.</li>
-<li>Tokenizer is <code>unicode61</code> — case-insensitive for ASCII, Unicode-aware
-tokenization. <strong>Porter stemming is not available</strong> in this SQLite build,
-so <code>refactor</code> and <code>refactoring</code> are distinct tokens. Use prefix queries
-(<code>refactor*</code>) when you want morphological breadth.</li>
+<li>Tokenizer is <code>unicode61 remove_diacritics 2</code> — case-insensitive for ASCII,
+Unicode-aware tokenization, and folds ordinary combining-mark diacritics
+(<code>ó</code>-&gt;<code>o</code>, <code>ż</code>-&gt;<code>z</code>, <code>ą</code>-&gt;<code>a</code>, ...) so a plain-ASCII query finds accented
+content and vice versa. <strong>Porter stemming is not available</strong> in this
+SQLite build, so <code>refactor</code> and <code>refactoring</code> are distinct tokens. Use
+prefix queries (<code>refactor*</code>) when you want morphological breadth.</li>
+<li><code>ł</code>/<code>Ł</code> (Latin L with stroke) has no Unicode decomposition, so
+<code>remove_diacritics</code> cannot reach it. <code>pl_fold</code>
+(<code>polylogue/storage/fts/pl_fold.py</code>) closes that specific gap: it folds
+<code>ł</code>/<code>Ł</code> into indexed text before FTS insertion and into <code>MATCH</code> query text
+in <code>escape_fts5_query</code>, so <code>latwo</code>/<code>zrobilem</code> finds seeded
+<code>łatwo</code>/<code>zrobiłem</code> (polylogue-9jsi). The same tokenizer and fold apply to
+the <code>threads_fts</code> and <code>session_work_events_fts</code> insight-search surfaces,
+including full rebuild, missing-row repair, and dangling-row repair paths.
+A trigram fallback lane for further recall (beyond word-boundary tokens)
+is deliberately not part of this fold — see polylogue-xul7 (tracked
+follow-up) for a measured, benchmarked trigram lane before any such lane
+ships or is defaulted on.</li>
 <li>Raw score is <strong>BM25</strong>: lower is better in SQLite FTS5, values are
 typically negative, and they are <strong>not comparable across queries</strong>.</li>
 <li>Match evidence: <code>matched_terms</code>, <code>snippet</code>, <code>match_surface=&quot;message&quot;</code>,
 <code>message_id</code>, and <code>target_ref</code> point at the hit message.</li>
 </ul>
-<h4><code>actions</code> (FTS5 over action blocks)</h4>
+<h4 id="actions-fts5-over-action-blocks"><code>actions</code> (FTS5 over action blocks)</h4>
 <ul>
 <li>Same FTS5 mechanics as <code>dialogue</code>, but the query is restricted to
 <code>tool_use</code> and <code>tool_result</code> blocks inside <code>messages_fts</code>. The normalized
@@ -1230,7 +1295,7 @@ contract for action-only hits until the action evidence path is widened.</li>
 <li>Useful when you remember an action (&quot;the session where I edited
 <code>connection_profile.py</code>&quot;) rather than its prose.</li>
 </ul>
-<h4><code>hybrid</code> (RRF fusion)</h4>
+<h4 id="hybrid-rrf-fusion"><code>hybrid</code> (RRF fusion)</h4>
 <ul>
 <li>Runs both <code>dialogue</code> (FTS5) and <code>semantic</code> (vector) lanes, then fuses
 with <strong>Reciprocal Rank Fusion</strong> at <code>k=60</code>:
@@ -1253,7 +1318,7 @@ nothing else; a hit that survived both lanes carries the full
 high in both lexical and semantic lanes&quot; without re-running the
 search.</li>
 </ul>
-<h4><code>semantic</code> (vector-only)</h4>
+<h4 id="semantic-vector-only"><code>semantic</code> (vector-only)</h4>
 <ul>
 <li>Pure k-nearest-neighbor over Voyage-4 1024-dim embeddings via
 sqlite-vec's <code>vec0</code> virtual table.</li>
@@ -1270,7 +1335,7 @@ missing an API key, pending backlog catch-up, partially usable, or complete.
 retrieval-band accounting; the default status path stays cheap and reports
 the latest persisted catch-up run.</li>
 </ul>
-<h3>Embedding Activation And Catch-Up</h3>
+<h3 id="embedding-activation-and-catch-up">Embedding Activation And Catch-Up</h3>
 <p>Semantic search stays unavailable until embeddings are both enabled and
 materialized. The activation path is deliberately bounded:</p>
 <ol>
@@ -1301,7 +1366,7 @@ actually usable.</p>
 <p>Python API clients use the same contracts through
 <code>Polylogue.embedding_status(detail=False)</code> and
 <code>Polylogue.embedding_preflight(...)</code>.</p>
-<h3>Auto Lane</h3>
+<h3 id="auto-lane">Auto Lane</h3>
 <p>When <code>retrieval_lane=auto</code> (the default), ordinary text queries run on the
 lexical <code>dialogue</code> lane. The planner does not inspect <code>embeddings.db</code> before a
 default search, so keyword lookup stays fast and predictable on large archives.</p>
@@ -1340,7 +1405,7 @@ deterministic keyword matches regardless of embedding state.</li>
 <li><code>--semantic</code> — promote the query string into a vector-only similarity
 probe; no FTS leg, no boolean operators applied.</li>
 </ul>
-<h2>Ranking Policy</h2>
+<h2 id="ranking-policy">Ranking Policy</h2>
 <p>Every <code>SearchEnvelope</code> declares its <code>ranking_policy</code> and
 <code>ranking_policy_version</code>. The current policy identifier is
 <code>mixed-bm25-rrf-vector</code> (version <code>1</code>):</p>
@@ -1359,7 +1424,7 @@ and treat any change as a contract event. The version is intentionally
 exposed so external pipelines can detect ordering shifts without diffing
 raw scores. See <code>docs/openapi/search.yaml</code> (<code>x-polylogue-ranking-policy</code>)
 for the machine-readable declaration.</p>
-<h2>SearchEnvelope Contract</h2>
+<h2 id="searchenvelope-contract">SearchEnvelope Contract</h2>
 <p>All ranked surfaces (CLI <code>--format json</code>, MCP <code>search</code>/<code>list_sessions</code>,
 daemon <code>GET /api/sessions?query=…</code>, Python API) return the typed
 <code>SearchEnvelope</code> defined in <code>polylogue/surfaces/payloads.py</code> and emitted
@@ -1474,7 +1539,7 @@ via the daemon under
 </tr>
 </tbody>
 </table>
-<h3>Score-kind cheatsheet</h3>
+<h3 id="score-kind-cheatsheet">Score-kind cheatsheet</h3>
 <ul>
 <li><code>bm25</code> — lower = better match in SQLite FTS5. Values are typically negative.
 <strong>Never display raw BM25 as a percent or compare across queries</strong>;
@@ -1489,7 +1554,7 @@ across different query embeddings.</li>
 <li><code>null</code> — identity-bearing match (e.g. attachment identity lane); no
 numeric score, only rank.</li>
 </ul>
-<h3>Per-hit explanations (<a href="https://github.com/Sinity/polylogue/issues/1267">#1267</a>)</h3>
+<h3 id="per-hit-explanations-1267httpsgithubcomsinitypolylogueissues1267">Per-hit explanations (<a href="https://github.com/Sinity/polylogue/issues/1267">#1267</a>)</h3>
 <p>Every ranked hit carries deterministic why-this-matched evidence on its
 <code>match</code> payload. The exact field set depends on the lane that produced
 the hit:</p>
@@ -1554,7 +1619,7 @@ score. For example, a hit at lexical rank 1 and vector rank 2 carries:</p>
 <p>Consumers can read <code>score_components</code> directly to render a &quot;matched in
 both lanes&quot; badge or to debug ranking drift without re-running the
 search.</p>
-<h3>Pagination</h3>
+<h3 id="pagination">Pagination</h3>
 <p>For ranked queries, prefer <code>next_cursor</code> over <code>offset</code>. Cursor
 pagination encodes the rank tie-breaker
 (<code>(rank, score, session_id, retrieval_lane)</code>) and is stable under
@@ -1584,7 +1649,7 @@ vector distance lower-is-better) survives the cursor trim.</li>
 <li><strong>Restart-stable</strong>: cursors are self-contained tokens with no
 server-side state; they survive daemon restart.</li>
 </ul>
-<h2>FTS5 Syntax</h2>
+<h2 id="fts5-syntax">FTS5 Syntax</h2>
 <p>The <code>messages_fts</code> virtual table uses SQLite's FTS5 with the <code>unicode61</code>
 tokenizer. Prefix queries use <code>*</code>:</p>
 <pre><code class="language-bash">polylogue &quot;refactor*&quot;
@@ -1598,7 +1663,94 @@ tokenizer. Prefix queries use <code>*</code>:</p>
 <p>Column filters restrict matches:</p>
 <pre><code class="language-bash">polylogue 'text:css {session_id claude-code}: refactor'
 </code></pre>
-<h2>Output Formats</h2>
+<h2 id="searchable-content-coverage">Searchable Content Coverage</h2>
+<p><code>blocks.search_text</code> — the generated column FTS5 indexes — concatenates a
+<strong>fixed subset</strong> of block fields, not the whole block. Anything outside that
+subset is invisible to the ranked <code>dialogue</code>/<code>actions</code>/<code>hybrid</code> lanes,
+<code>--contains</code>, <code>contains:</code>, and bare-text queries, even though the underlying
+data is stored and readable through other surfaces (<code>read</code>, <code>select</code>, direct
+block/action reads). The live definition lives in
+<code>polylogue/storage/sqlite/archive_tiers/index.py</code> (<code>blocks.search_text GENERATED ALWAYS AS (...)</code>); this table is drift-checked against that
+expression by
+<code>tests/unit/pipeline/test_search_text_coverage_contract.py</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>In <code>search_text</code> (FTS-searchable)</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>blocks.text</code> — message prose, <code>thinking</code>/<code>reasoning</code> block content, <code>tool_result</code> output</td>
+<td>Yes</td>
+<td>Every text-bearing block type stores its content in this column, so thinking/reasoning text and tool-result stdout/stderr/output are all searchable today.</td>
+</tr>
+<tr>
+<td><code>blocks.tool_name</code></td>
+<td>Yes</td>
+<td>Tool identifier string (<code>Write</code>, <code>Bash</code>, <code>Edit</code>, ...).</td>
+</tr>
+<tr>
+<td><code>tool_input.$.command</code></td>
+<td>Yes</td>
+<td>Shell/exec command lines (<code>Bash</code>, <code>exec_command</code>-style tools).</td>
+</tr>
+<tr>
+<td><code>tool_input.$.file_path</code></td>
+<td>Yes</td>
+<td>Primary path argument for file-oriented tools.</td>
+</tr>
+<tr>
+<td><code>tool_input.$.path</code></td>
+<td>Yes</td>
+<td>Alternate path key used by some tools (<code>Grep</code>, <code>Glob</code>).</td>
+</tr>
+<tr>
+<td><code>tool_input.$.content</code> — file bodies a <strong><code>Write</code></strong> tool call authored</td>
+<td><strong>No</strong></td>
+<td>The full text an agent wrote into a new/overwritten file is excluded from <code>search_text</code>. A distinctive string that only appears inside a Write body returns zero FTS hits.</td>
+</tr>
+<tr>
+<td><code>tool_input.$.old_string</code> / <code>tool_input.$.new_string</code> — <strong><code>Edit</code></strong> tool bodies</td>
+<td><strong>No</strong></td>
+<td>Same gap as Write: edited code is excluded unless it also happens to appear in prose, a <code>tool_result</code> echo, or one of the indexed fields above.</td>
+</tr>
+<tr>
+<td>Any other <code>tool_input</code> key (<code>pattern</code>, <code>description</code>, <code>url</code>, ...)</td>
+<td><strong>No</strong></td>
+<td>Only the three <code>json_extract</code> paths above are concatenated into <code>search_text</code>; every other key is excluded regardless of tool.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Dedicated action-evidence lane:</strong> when you know an agent wrote or edited a
+specific string into a file body, use the query DSL's action <code>text</code> predicate.
+It searches the action's raw <code>tool_input</code> JSON (as well as normalized action
+fields and output), so it covers <code>Write</code>'s <code>content</code> and <code>Edit</code>'s
+<code>old_string</code>/<code>new_string</code> without putting those bodies in FTS:</p>
+<pre><code class="language-bash">polylogue 'actions where tool:write AND text:&quot;needle&quot;'
+polylogue 'sessions where exists action(tool:edit AND text:&quot;needle&quot;)'
+</code></pre>
+<p>This is an unindexed <code>LIKE</code> filter, not FTS; constrain it by action, path,
+session scope, or time on large archives. For direct <code>index.db</code> inspection,
+the equivalent JSON-aware SQL probe is:</p>
+<pre><code class="language-sql">SELECT block_id, session_id, tool_name,
+       json_extract(tool_input, '$.file_path') AS file_path
+FROM blocks
+WHERE tool_name IN ('Write', 'Edit')
+  AND (
+    json_extract(tool_input, '$.content') LIKE '%needle%'
+    OR json_extract(tool_input, '$.old_string') LIKE '%needle%'
+    OR json_extract(tool_input, '$.new_string') LIKE '%needle%'
+  );
+</code></pre>
+<p>Extending <code>search_text</code> itself to cover <code>$.content</code> was considered and
+deliberately deferred (see polylogue-013x) because Write bodies can be large
+enough to meaningfully bloat the FTS index, and that tradeoff needs a size
+probe against a live archive plus a derived-tier index rebuild before it is
+decided, not a silent schema bump.</p>
+<h2 id="output-formats">Output Formats</h2>
 <table>
 <thead>
 <tr>
@@ -1649,7 +1801,7 @@ tokenizer. Prefix queries use <code>*</code>:</p>
 <pre><code class="language-bash">polylogue &quot;sqlite locking&quot; read --all --format json
 polylogue --since yesterday read --all --format ndjson
 </code></pre>
-<h2>Facets (Scoped vs Global)</h2>
+<h2 id="facets-scoped-vs-global">Facets (Scoped vs Global)</h2>
 <p>Facets summarize the archive as aggregate counts. Polylogue exposes the
 same shape across daemon HTTP (<code>GET /api/facets</code>), MCP (<code>facets</code>), CLI
 (<code>polylogue facets</code>), and the Python API (<code>Polylogue.facets</code>); see
@@ -1691,7 +1843,7 @@ polylogue facets -o chatgpt-export   # scoped to ChatGPT exports + global side-b
 polylogue facets -q &quot;vector store&quot;   # scoped to FTS hits
 polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
 </code></pre>
-<h2>Empty Result Diagnostics</h2>
+<h2 id="empty-result-diagnostics">Empty Result Diagnostics</h2>
 <p>When a query returns no results:</p>
 <ol>
 <li>Check origin spelling: <code>polylogue --origin claude-code-session read --all</code> (not <code>claude_code</code>)</li>
@@ -1700,32 +1852,51 @@ polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
 <li>Check FTS index health: <code>polylogued status</code> shows <code>fts_readiness</code></li>
 <li>Run <code>polylogue ops doctor</code> for schema and index integrity</li>
 <li>If using <code>--similar</code>, ensure embeddings are built (check <code>polylogue ops embed status --detail</code> for embedding readiness/coverage)</li>
+<li>If you know an agent wrote or edited a specific string into a file (a
+<code>Write</code>/<code>Edit</code> tool body), FTS will not find it. Use the action-evidence
+query path documented in
+<a href="#searchable-content-coverage">Searchable Content Coverage</a>, such as
+<code>actions where tool:write AND text:&quot;needle&quot;</code>.</li>
 </ol>
-
-<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
-<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-    <a href="../getting-started/">← Getting Started</a>
+</article>
+<nav class="doc-pager" aria-label="Adjacent documentation">
+    <a href="../">← Documentation Map</a>
     <a href="../providers/">Providers →</a>
 </nav>
 
         </main>
     </div>
     <footer class="site-footer">
-        <span>Polylogue — local evidence for AI work</span>
-        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+        <div class="footer-inner">
+            <span>Polylogue · local evidence for AI work</span>
+            <span><a href="../">Documentation</a> · <a href="../../beads/">Roadmap</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
+        </div>
     </footer>
     <script>
+        (function () {
+            var saved = localStorage.getItem('polylogue-theme');
+            var preferred = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', saved || preferred);
+        })();
         function toggleTheme() {
             var html = document.documentElement;
-            var current = html.getAttribute('data-theme');
-            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
-            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+            var next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', next);
+            localStorage.setItem('polylogue-theme', next);
         }
-        (function() {
-            var saved = localStorage.getItem('theme');
-            if (saved) document.documentElement.setAttribute('data-theme', saved);
-        })();
+        function toggleNav(button) {
+            var open = document.body.classList.toggle('nav-open');
+            button.setAttribute('aria-expanded', String(open));
+            button.setAttribute('aria-label', open ? 'Close documentation navigation' : 'Open documentation navigation');
+        }
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') {
+                document.body.classList.remove('nav-open');
+                var button = document.querySelector('.nav-toggle');
+                if (button) button.setAttribute('aria-expanded', 'false');
+            }
+        });
     </script>
-    
+
 </body>
 </html>
