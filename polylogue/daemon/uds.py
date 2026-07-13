@@ -6,6 +6,7 @@ import os
 import socketserver
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,7 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         self.socket_path = socket_path
         self.auth_token = auth_token
         self.api_host = "127.0.0.1"
+        self.started_at = datetime.now(UTC).isoformat()
         self.web_credentials = WebCredentialRegistry()
         self._owned_write_runtime: _StandaloneWriteRuntime | None = None
         if write_bridge is None:

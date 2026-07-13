@@ -10,6 +10,7 @@ import http.client
 import json
 import socket
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 
@@ -28,12 +29,14 @@ class DaemonClient:
     def __init__(self, socket_path: Path, *, timeout_s: float = 0.1) -> None:
         self.socket_path = socket_path
         self.timeout_s = timeout_s
+        self.last_elapsed_ms: int | None = None
 
     def request_json(self, method: str, path: str, body: dict[str, object] | None = None) -> dict[str, Any] | None:
         if not self.socket_path.exists():
             return None
         connection = _UnixHTTPConnection(self.socket_path, self.timeout_s)
         raw = json.dumps(body, separators=(",", ":")).encode() if body is not None else None
+        started_at = perf_counter()
         try:
             connection.request(
                 method, path, body=raw, headers={"Host": "127.0.0.1", "Content-Type": "application/json"}
@@ -42,11 +45,17 @@ class DaemonClient:
             if response.status != 200:
                 return None
             payload = json.loads(response.read().decode())
+            self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
             return payload if isinstance(payload, dict) else None
         except (OSError, TimeoutError, ValueError, http.client.HTTPException):
             return None
         finally:
             connection.close()
+
+    def cli_query(self, params: dict[str, object]) -> dict[str, Any] | None:
+        """Run one root-request parameter dictionary through the daemon."""
+
+        return self.request_json("POST", "/api/cli/query", {"params": params})
 
     def probe(self, *, archive_root: str, index_schema_version: int, daemon_version: str) -> dict[str, Any] | None:
         health = self.request_json("GET", "/api/health")

@@ -185,6 +185,34 @@ def _archive_state_hash(archive_root: Path) -> str:
     return h.hexdigest()
 
 
+def test_cli_query_post_forwards_root_request_to_daemon_compiler() -> None:
+    """The UDS-only envelope carries raw root flags, not a client-built SQL query."""
+
+    body = json.dumps(
+        {
+            "params": {
+                "query": ["repo:polylogue", "sqlite locking"],
+                "origin": "codex-session",
+                "limit": 3,
+            }
+        }
+    ).encode()
+    handler = _make_handler("POST", "/api/cli/query", body=body)
+    observed: dict[str, dict[str, list[str]]] = {}
+
+    def capture(params: dict[str, list[str]]) -> None:
+        observed["params"] = params
+
+    handler._handle_list_sessions = capture  # type: ignore[method-assign]
+    handler._handle_cli_query()
+
+    assert observed["params"] == {
+        "origin": ["codex-session"],
+        "limit": ["3"],
+        "query": ['repo:polylogue "sqlite locking"'],
+    }
+
+
 # ---------------------------------------------------------------------------
 # 1. Status envelope contracts
 # ---------------------------------------------------------------------------

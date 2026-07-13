@@ -926,7 +926,9 @@ def _try_emit_daemon_session_page(
     ):
         return False
     daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
-    payload = _fetch_daemon_sessions_payload(config, daemon_params)
+    daemon_request_params = request.query_params()
+    daemon_request_params.update({key: value for key, value in daemon_params.items() if key != "query"})
+    payload = _fetch_daemon_sessions_payload(config, daemon_request_params, disabled=bool(params.get("no_daemon")))
     if payload is None:
         return False
     if isinstance(payload.get("hits"), list):
@@ -1058,8 +1060,21 @@ def _daemon_session_query_params(
     return query_params
 
 
-def _fetch_daemon_sessions_payload(config: Config, query_params: Mapping[str, object]) -> dict[str, object] | None:
-    if os.environ.get("POLYLOGUE_NO_DAEMON", "").lower() in {"1", "true", "yes", "on", "off"}:
+def _daemon_disabled(*, flag: bool = False) -> bool:
+    if flag:
+        return True
+    if os.environ.get("POLYLOGUE_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
+        return True
+    return os.environ.get("POLYLOGUE_DAEMON", "").lower() == "off"
+
+
+def _fetch_daemon_sessions_payload(
+    config: Config,
+    query_params: Mapping[str, object],
+    *,
+    disabled: bool = False,
+) -> dict[str, object] | None:
+    if _daemon_disabled(flag=disabled):
         return None
     from polylogue.cli.daemon_client import DaemonClient
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -1077,9 +1092,7 @@ def _fetch_daemon_sessions_payload(config: Config, query_params: Mapping[str, ob
         is None
     ):
         return None
-    payload = client.request_json(
-        "GET", "/api/sessions?" + urlencode(tuple(_daemon_query_pairs(query_params)), doseq=True)
-    )
+    payload = client.cli_query(dict(query_params))
     if payload is not None:
         return payload
     # Keep the direct archive path as the safe degraded-mode fallback.  Do not

@@ -314,6 +314,7 @@ def cli(
     add_tag: tuple[str, ...],
     # Global
     plain: bool,
+    no_daemon: bool,
     verbose: bool,
     diagnose: bool,
 ) -> None:
