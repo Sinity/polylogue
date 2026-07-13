@@ -243,6 +243,18 @@ class BrowserCaptureAcceptedPayload(BaseModel):
     capture_instance_id: str | None = None
 
 
+class BrowserCaptureCapabilitiesPayload(BaseModel):
+    """Receiver-declared browser-capture contract required before backfill."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    durable_ack_fields: tuple[Literal["receiver_request_id"], Literal["content_hash"]] = (
+        "receiver_request_id",
+        "content_hash",
+    )
+
+
 class BrowserCaptureErrorPayload(BaseModel):
     """Safe receiver error payload with no paths or stack traces."""
 
@@ -373,6 +385,7 @@ __all__ = [
     "BROWSER_CAPTURE_SCHEMA_VERSION",
     "BROWSER_CAPTURE_TRANSPORT_SOURCE",
     "BrowserCaptureAcceptedPayload",
+    "BrowserCaptureCapabilitiesPayload",
     "BrowserCaptureArchiveLifecycle",
     "BrowserCaptureArchiveStatePayload",
     "BrowserCaptureAttachment",

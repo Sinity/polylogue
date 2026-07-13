@@ -10,10 +10,11 @@ let stored;
 let fetchCalls;
 let tabs;
 
-function installChromeMock() {
+function installChromeMock(storagePatch = {}) {
   stored = {
     receiverAuthToken: "token-1",
     receiverBaseUrl: "http://127.0.0.1:8875",
+    ...storagePatch,
   };
   messageListener = null;
   installedListener = null;
@@ -115,10 +116,10 @@ function installChromeMock() {
   });
 }
 
-async function loadBackground() {
+async function loadBackground(storagePatch = {}) {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
-  installChromeMock();
+  installChromeMock(storagePatch);
   await import("../src/background.js");
   expect(messageListener).toBeTypeOf("function");
 }
@@ -554,6 +555,30 @@ describe("background receiver diagnostics", () => {
     expect(fetchCalls[0].url).toContain("/v1/browser-captures/capabilities");
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("restores a packaged recovery checkpoint as an actionable paused job and ignores its alarm", async () => {
+    await loadBackground({
+      polylogueBackfillRecoveryCheckpoint: {
+        version: 1,
+        jobs: [{
+          id: "recovered-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
+          inventory_cursor: "17", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+          learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
+        }],
+        queue: [{ id: "recovered-item", job_id: "recovered-job", provider: "chatgpt", native_id: "one", state: "captured_waiting_receiver", content_hash: "hash-1" }],
+        revisions: [],
+      },
+    });
+    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+    expect(status.jobs[0]).toMatchObject({
+      id: "recovered-job", status: "paused", cooldown_reason: "browser_profile_recovery_required",
+      inventory_cursor: "17", daily_requests: 7, last_ack: { receiver_request_id: "ack-1" },
+      progress: { operator_action: 1 },
+    });
+    alarmListener({ name: "polylogueBackfillWake:recovered-job" });
+    await Promise.resolve();
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
   });
 
   it("does not reuse unsupported provider subdomains as authenticated transport roots", async () => {

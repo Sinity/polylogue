@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { indexedDB } from "fake-indexeddb";
+import { IDBFactory, indexedDB } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -218,6 +218,33 @@ describe("build.mjs full archive emission", () => {
     expect(JSON.stringify(pageRequests)).not.toContain(pageAccount);
     expect(tabs.sendMessage).not.toHaveBeenCalled();
     expect(fetchCalls.every((call) => String(call.url).includes("127.0.0.1"))).toBe(true);
+
+    globalThis.indexedDB = new IDBFactory();
+    stored = {
+      receiverBaseUrl: "http://127.0.0.1:8765",
+      receiverAuthToken: "token",
+      polylogueBackfillRecoveryCheckpoint: {
+        version: 1,
+        jobs: [{
+          id: "packaged-recovered", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
+          inventory_cursor: "17", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+          learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
+        }],
+        queue: [{ id: "packaged-recovered-item", job_id: "packaged-recovered", provider: "chatgpt", native_id: "one", state: "captured_waiting_receiver", content_hash: "hash-1" }],
+        revisions: [],
+      },
+    };
+    const pageRequestCount = pageRequests.length;
+    const recoveredWorkerUrl = `${pathToFileURL(join(unpacked, "src", "background.js")).href}?recovery=${Date.now()}`;
+    await import(/* @vite-ignore */ recoveredWorkerUrl);
+    const recoveredStatus = await send({ type: "polylogue.backfill.status" });
+    expect(recoveredStatus.jobs[0]).toMatchObject({
+      id: "packaged-recovered", status: "paused", cooldown_reason: "browser_profile_recovery_required",
+      progress: { operator_action: 1 },
+    });
+    alarmListener({ name: "polylogueBackfillWake:packaged-recovered" });
+    await Promise.resolve();
+    expect(pageRequests).toHaveLength(pageRequestCount);
     rmSync(smokeRoot, { recursive: true, force: true });
   });
 });

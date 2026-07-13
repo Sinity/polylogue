@@ -259,6 +259,33 @@ describe("background backfill coordinator", () => {
     expect(receiver).not.toHaveBeenCalled();
   });
 
+  it("preserves terminal jobs and releases stripped leases when restoring a profile-loss checkpoint", async () => {
+    const store = new MemoryBackfillStore();
+    const checkpoint = {
+      version: 1,
+      jobs: [
+        { id: "complete", provider: "chatgpt", status: "complete", policy: { maxDailyRequests: 10 } },
+        { id: "cancelled", provider: "claude-ai", status: "cancelled", policy: { maxDailyRequests: 10 } },
+        { id: "running", provider: "chatgpt", status: "running", policy: { maxDailyRequests: 10 } },
+      ],
+      queue: [
+        { id: "leased-eligible", job_id: "running", provider: "chatgpt", native_id: "one", state: "leased", resume_state: "eligible", next_eligible_at_ms: 0 },
+        { id: "leased-envelope", job_id: "running", provider: "chatgpt", native_id: "two", state: "leased", resume_state: "captured_waiting_receiver", next_eligible_at_ms: 0 },
+      ],
+      revisions: [],
+    };
+    await store.restoreRecoveryCheckpoint(checkpoint);
+    expect(await store.getJob("complete")).toMatchObject({ status: "complete" });
+    expect(await store.getJob("cancelled")).toMatchObject({ status: "cancelled" });
+    expect(await store.getJob("running")).toMatchObject({ status: "paused", cooldown_reason: "browser_profile_recovery_required" });
+    expect(await store.listQueue("running")).toMatchObject([
+      { id: "leased-eligible", state: "eligible" },
+      { id: "leased-envelope", state: "recovery_required" },
+    ]);
+    const coordinator = new BackfillCoordinator({ store, adapters: { chatgpt: new FixtureAdapter(["one"]) }, receiver: vi.fn(), alarms: { create: vi.fn() }, clock: () => 100000 });
+    await expect(coordinator.control("running", "resume")).rejects.toThrow("browser_profile_recovery_required");
+  });
+
   it("honors Retry-After exactly and opens a circuit after repeated 429s", async () => {
     const adapter = new FixtureAdapter(["one"]);
     adapter.responses = [response({}, { status: 429, retryAfter: "60" }), response({}, { status: 429, retryAfter: "60" })];

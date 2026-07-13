@@ -241,6 +241,7 @@ describe("popup capture", () => {
       : { ok: true });
     await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("profile recovery required"));
     expect(document.getElementById("backfill-last").textContent).toContain("profile was replaced");
+    expect(document.getElementById("backfill-resume").disabled).toBe(true);
   });
 
   it("renders mission-control status, open tabs, and the active decision timeline", async () => {

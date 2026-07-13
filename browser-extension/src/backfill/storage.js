@@ -29,7 +29,8 @@ function checkpointQueueItem(item) {
   delete safe.receiver_receipt;
   delete safe.lease_owner;
   delete safe.lease_expires_at_ms;
-  return structuredClone(safe);
+  if (safe.state === "leased") safe.state = safe.resume_state || "recovery_required";
+  return structuredClone(recoveryRequiredItem(safe));
 }
 
 function checkpointRevision(revision) {
@@ -37,6 +38,7 @@ function checkpointRevision(revision) {
 }
 
 function recoveryRequiredItem(item) {
+  if (item.state === "leased") item = { ...item, state: item.resume_state || "recovery_required" };
   if (item.state !== "captured_waiting_receiver") return item;
   return {
     ...item,
@@ -46,6 +48,18 @@ function recoveryRequiredItem(item) {
     last_error: "captured_envelope_not_present_in_recovery_checkpoint",
     lease_owner: null,
     lease_expires_at_ms: null,
+  };
+}
+
+function recoveryCheckpointJob(job) {
+  const wasRunning = job.status === "running";
+  return {
+    ...structuredClone(job),
+    status: wasRunning ? "paused" : job.status,
+    cooldown_reason: wasRunning ? "browser_profile_recovery_required" : job.cooldown_reason,
+    last_error: wasRunning ? "browser_profile_recovery_required" : job.last_error,
+    execution_owner: null,
+    execution_expires_at_ms: null,
   };
 }
 
@@ -353,9 +367,7 @@ export class IndexedDbBackfillStore {
       await transactionDone(tx);
       return { restored: 0, reason: "indexeddb_present" };
     }
-    for (const job of checkpoint.jobs || []) {
-      jobs.put({ ...structuredClone(job), status: "paused", cooldown_reason: "browser_profile_recovery_required", last_error: "browser_profile_recovery_required", execution_owner: null, execution_expires_at_ms: null });
-    }
+    for (const job of checkpoint.jobs || []) jobs.put(recoveryCheckpointJob(job));
     const queue = tx.objectStore("queue");
     for (const item of checkpoint.queue || []) queue.put(recoveryRequiredItem(structuredClone(item)));
     const revisions = tx.objectStore("revisions");
@@ -537,7 +549,7 @@ export class MemoryBackfillStore {
   async restoreRecoveryCheckpoint(checkpoint) {
     if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) return { restored: 0, reason: "checkpoint_unavailable" };
     if (this.jobs.size) return { restored: 0, reason: "indexeddb_present" };
-    for (const job of checkpoint.jobs || []) this.jobs.set(job.id, structuredClone({ ...job, status: "paused", cooldown_reason: "browser_profile_recovery_required", last_error: "browser_profile_recovery_required", execution_owner: null, execution_expires_at_ms: null }));
+    for (const job of checkpoint.jobs || []) this.jobs.set(job.id, recoveryCheckpointJob(job));
     for (const item of checkpoint.queue || []) this.queue.set(item.id, structuredClone(recoveryRequiredItem(item)));
     for (const revision of checkpoint.revisions || []) this.revisions.set(revision.id, structuredClone(revision));
     return { restored: (checkpoint.jobs || []).length, reason: "browser_profile_recovery_required" };

@@ -75,6 +75,9 @@ export class BackfillCoordinator {
     const now = this.clock();
     const status = action === "start" || action === "resume" ? "running" : action === "pause" ? "paused" : action === "cancel" ? "cancelled" : null;
     if (!status) throw new Error(`unknown_backfill_action:${action}`);
+    if (action === "resume" && (await this.store.listQueue(jobId)).some((item) => item.state === "recovery_required")) {
+      throw new Error("browser_profile_recovery_required");
+    }
     const resumed = await this.store.controlJob(jobId, status, nowIso(now), action === "resume" ? {
       cooldown_until_ms: null,
       cooldown_reason: null,

@@ -390,6 +390,8 @@ function renderBackfill(jobs) {
     : recoveryBlocked
       ? "Browser profile was replaced. Inspect exported ledger before starting a new job."
       : job.last_ack?.receiver_request_id || job.last_error || "--";
+  const resumeButton = document.getElementById("backfill-resume");
+  if (resumeButton) resumeButton.disabled = recoveryBlocked;
 }
 
 async function refreshBackfills() {
