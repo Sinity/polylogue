@@ -1626,6 +1626,7 @@ class LiveBatchProcessor:
                                 source_raw_id,
                                 sessions,
                                 acquired_at_ms=acquired_at_ms,
+                                allow_current_complete_raw=is_browser_capture_snapshot,
                             )
                         else:
                             archive.bind_raw_revision(
@@ -1712,6 +1713,7 @@ class LiveBatchProcessor:
         sessions: list[Any],
         *,
         acquired_at_ms: int,
+        allow_current_complete_raw: bool = False,
     ) -> tuple[list[str], int, int, bool]:
         session_ids: list[str] = []
         session_count = 0
@@ -1744,7 +1746,12 @@ class LiveBatchProcessor:
             member_sessions: dict[str, Any] = {}
             projections: dict[str, Any] = {}
             revisions: list[MembershipRevision] = []
-            member_raw_ids = list(archive.raw_membership_raw_ids(logical_source_key))
+            member_raw_ids = list(
+                archive.raw_membership_raw_ids(
+                    logical_source_key,
+                    include_complete_raw_id=source_raw_id if allow_current_complete_raw else None,
+                )
+            )
             accepted_head_raw_id = archive.raw_revision_head_raw_id(logical_source_key)
             if accepted_head_raw_id is not None and accepted_head_raw_id not in member_raw_ids:
                 member_raw_ids.append(accepted_head_raw_id)

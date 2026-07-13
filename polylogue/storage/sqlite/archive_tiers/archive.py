@@ -2223,17 +2223,39 @@ class ArchiveStore:
         )
         return tuple(sorted(selected)), logical_keys
 
-    def raw_membership_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
-        """Return only byte-proven membership candidates for live classification."""
+    def raw_membership_raw_ids(
+        self,
+        logical_source_key: str,
+        *,
+        include_complete_raw_id: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return byte-proven candidates plus the complete raw being classified.
+
+        A newly censused live snapshot has not received a membership decision
+        yet, so it is deliberately quarantined until this classification
+        completes. Admit only that caller-owned complete census alongside
+        established byte-proven evidence; do not reopen unrelated quarantined
+        members from a prior failed or ambiguous replay.
+        """
         rows = (
             self._ensure_source_conn()
             .execute(
                 """
-                SELECT raw_id FROM raw_session_memberships
-                WHERE logical_source_key = ? AND revision_authority = 'byte_proven'
-                ORDER BY raw_id
+                SELECT m.raw_id
+                FROM raw_session_memberships AS m
+                LEFT JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
+                WHERE m.logical_source_key = ?
+                  AND (
+                    m.revision_authority = 'byte_proven'
+                    OR (
+                        m.raw_id = ?
+                        AND c.status = 'complete'
+                        AND m.decision IS NULL
+                    )
+                  )
+                ORDER BY m.raw_id
                 """,
-                (logical_source_key,),
+                (logical_source_key, include_complete_raw_id),
             )
             .fetchall()
         )

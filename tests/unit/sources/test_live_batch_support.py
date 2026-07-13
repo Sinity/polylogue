@@ -990,14 +990,18 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
     asset_bytes = b"browser-capture-asset" * 37
     asset_hash = sha256(asset_bytes).digest()
 
-    def capture(turns: list[dict[str, object]]) -> dict[str, object]:
+    def capture(
+        turns: list[dict[str, object]],
+        *,
+        captured_at: str = "2026-07-12T00:00:00+00:00",
+    ) -> dict[str, object]:
         return {
             "polylogue_capture_kind": "browser_llm_session",
             "schema_version": 1,
             "capture_id": "chatgpt:browser-replacement",
             "provenance": {
                 "source_url": "https://chatgpt.com/c/browser-replacement",
-                "captured_at": "2026-07-12T00:00:00+00:00",
+                "captured_at": captured_at,
                 "adapter_name": "chatgpt-native-v1",
                 "capture_mode": "snapshot",
             },
@@ -1043,6 +1047,44 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
 
     try:
         first = await processor.ingest_files([path], emit_event=False)
+        with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
+            first_raw_id = source_conn.execute(
+                "SELECT raw_id FROM raw_sessions WHERE source_path = ?", (str(path),)
+            ).fetchone()[0]
+        with sqlite3.connect(archive.archive_root / "index.db") as index_conn:
+            assert (
+                index_conn.execute(
+                    "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:browser-replacement'"
+                ).fetchone()[0]
+                == first_raw_id
+            )
+        assert first.succeeded_file_count == 1
+
+        foreign_path = root / "foreign-quarantined.json"
+        foreign_payload = json.dumps(
+            capture([first_turn, divergent_turn], captured_at="2026-07-12T00:00:03+00:00")
+        ).encode("utf-8")
+        foreign_sessions = parse_payload(
+            Provider.CHATGPT,
+            [json.loads(foreign_payload)],
+            foreign_path.stem,
+            source_path=str(foreign_path),
+        )
+        assert len(foreign_sessions) == 1
+        with ArchiveStore.open_existing(archive.archive_root, read_only=False) as foreign_archive:
+            foreign_raw_id = foreign_archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=foreign_payload,
+                source_path=str(foreign_path),
+                acquired_at_ms=1,
+            )
+            foreign_archive.replace_raw_membership_census(
+                foreign_raw_id,
+                foreign_sessions,
+                parser_fingerprint="foreign-quarantined-test",
+                censused_at_ms=1,
+            )
+
         path.write_text(json.dumps(capture([first_turn, acquired_turn])), encoding="utf-8")
         replacement = await processor.ingest_files([path], emit_event=False)
         with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
@@ -1069,12 +1111,42 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
         assert first.full_file_count == replacement.full_file_count == 1
         assert len(raw_ids) == 2
         assert accepted_raw_id in raw_ids
-        assert {decision for _raw_id, decision in decisions} == {"superseded_prefix", "applied"}
-        assert dict(decisions)[accepted_raw_id] == "applied"
+        live_decisions = {raw_id: decision for raw_id, decision in decisions if raw_id in raw_ids}
+        assert set(live_decisions.values()) == {"superseded_prefix", "applied"}
+        assert live_decisions[accepted_raw_id] == "applied"
         assert attachment == ("acquired", len(asset_bytes), asset_hash)
+        with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
+            assert source_conn.execute(
+                """
+                SELECT decision FROM raw_session_memberships
+                WHERE raw_id = ? AND logical_source_key = 'chatgpt:browser-replacement'
+                """,
+                (foreign_raw_id,),
+            ).fetchone() == (None,)
 
-        path.write_text(json.dumps(capture([first_turn])), encoding="utf-8")
+        with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
+            raw_ids_before_reverse = {
+                str(row[0])
+                for row in source_conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path = ?", (str(path),))
+            }
+        path.write_text(
+            json.dumps(capture([first_turn], captured_at="2026-07-12T00:00:02+00:00")),
+            encoding="utf-8",
+        )
         reverse = await processor.ingest_files([path], emit_event=False)
+        with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
+            raw_ids_after_reverse = {
+                str(row[0])
+                for row in source_conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path = ?", (str(path),))
+            }
+            reverse_raw_id = (raw_ids_after_reverse - raw_ids_before_reverse).pop()
+            reverse_decision = source_conn.execute(
+                """
+                SELECT decision FROM raw_session_memberships
+                WHERE raw_id = ? AND logical_source_key = 'chatgpt:browser-replacement'
+                """,
+                (reverse_raw_id,),
+            ).fetchone()[0]
         with sqlite3.connect(archive.archive_root / "index.db") as index_conn:
             assert (
                 index_conn.execute(
@@ -1083,6 +1155,10 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
                 == accepted_raw_id
             )
         assert reverse.full_file_count == 1
+        # Equivalent parser snapshots may elect either retained raw as the
+        # canonical prefix representative; both are terminal receipts and
+        # neither may displace the newer accepted head.
+        assert reverse_decision in {"superseded_equivalent", "superseded_prefix"}
 
         with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
             raw_ids_before_divergence = {
