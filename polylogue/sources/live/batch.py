@@ -989,8 +989,7 @@ class LiveBatchProcessor:
     def _defer_full_cursor_retry(self, path: Path, *, source_name: str, stat: os.stat_result) -> None:
         """Back off a busy full-prefix handoff without discarding its raw evidence."""
 
-        if self._cursor.get_record(path) is None:
-            self._invalidate_cursor_for_full_retry(path, source_name=source_name, stat=stat)
+        self._invalidate_cursor_for_full_retry(path, source_name=source_name, stat=stat)
         self._cursor.defer_full_cursor_reconciliation(path)
 
     def _invalidate_cursor_for_full_retry(

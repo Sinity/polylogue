@@ -1795,6 +1795,19 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    cursor.set(
+        path,
+        len(captured),
+        byte_offset=len(captured),
+        last_complete_newline=len(captured),
+        parser_fingerprint="previous-parser",
+        content_fingerprint=sha256(captured).hexdigest(),
+        tail_hash=_cursor_hash_authority(captured),
+        source_name="codex",
+        st_dev=captured_stat.st_dev,
+        st_ino=captured_stat.st_ino,
+        mtime_ns=captured_stat.st_mtime_ns,
+    )
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
