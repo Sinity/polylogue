@@ -320,6 +320,22 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         retrieval_lane=retrieval_lane,
     ):
         return
+    if _try_emit_daemon_unit_page(
+        config=config,
+        request=request,
+        params=params,
+        source=unit_source,
+        expression=unit_source_query,
+        limit=limit,
+        offset=page_offset,
+        output_format=output_format,
+        fields=fields,
+        stream=stream,
+        tags_to_add=tags_to_add,
+        metadata_to_set=metadata_to_set,
+        delete_matched=delete_matched,
+    ):
+        return
     if not index_db_path.exists():
         if _emit_missing_archive_empty_read(
             params,
@@ -925,10 +941,10 @@ def _try_emit_daemon_session_page(
         retrieval_lane=retrieval_lane,
     ):
         return False
+    if bool(params.get("no_daemon")):
+        return False
     daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
-    daemon_request_params = request.query_params()
-    daemon_request_params.update({key: value for key, value in daemon_params.items() if key != "query"})
-    payload = _fetch_daemon_sessions_payload(config, daemon_request_params, disabled=bool(params.get("no_daemon")))
+    payload = _fetch_daemon_sessions_payload(config, daemon_params)
     if payload is None:
         return False
     if isinstance(payload.get("hits"), list):
@@ -954,6 +970,48 @@ def _try_emit_daemon_session_page(
         )
         return True
     return False
+
+
+def _try_emit_daemon_unit_page(
+    *,
+    config: Config,
+    request: RootModeRequest,
+    params: dict[str, object],
+    source: QueryUnitSource | None,
+    expression: str,
+    limit: int,
+    offset: int,
+    output_format: str,
+    fields: str | None,
+    stream: bool,
+    tags_to_add: tuple[str, ...],
+    metadata_to_set: tuple[tuple[str, str], ...],
+    delete_matched: bool,
+) -> bool:
+    """Render daemon query-unit envelopes with the existing CLI renderer."""
+
+    if source is None or stream or tags_to_add or metadata_to_set or delete_matched:
+        return False
+    daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
+    daemon_params["expression"] = expression
+    payload = _fetch_daemon_payload(
+        config,
+        "/api/query-units?" + urlencode(tuple(_daemon_query_pairs(daemon_params)), doseq=True),
+        disabled=bool(params.get("no_daemon")),
+    )
+    if payload is None:
+        return False
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        return False
+    items = [item for item in raw_items if isinstance(item, dict)]
+    if not items:
+        _emit_unit_no_results(payload, unit=source.unit, output_format=output_format)
+    text_line = (
+        _aggregate_query_line if payload.get("mode") == "query-unit-aggregate" else _query_unit_text_line(source.unit)
+    )
+    _emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields)
+    return True
 
 
 def _resolve_single_query_ref(archive: ArchiveStore, query: str) -> str | None:
@@ -1074,13 +1132,22 @@ def _fetch_daemon_sessions_payload(
     *,
     disabled: bool = False,
 ) -> dict[str, object] | None:
+    return _fetch_daemon_payload(config, "/api/cli/query", body={"params": dict(query_params)}, disabled=disabled)
+
+
+def _fetch_daemon_payload(
+    config: Config,
+    path: str,
+    *,
+    body: dict[str, object] | None = None,
+    disabled: bool = False,
+) -> dict[str, object] | None:
     if _daemon_disabled(flag=disabled):
         return None
     from polylogue.cli.daemon_client import DaemonClient
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.version import POLYLOGUE_VERSION
 
-    archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     socket_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock"
     client = DaemonClient(socket_path)
     if (
@@ -1092,12 +1159,9 @@ def _fetch_daemon_sessions_payload(
         is None
     ):
         return None
-    payload = client.cli_query(dict(query_params))
+    payload = client.request_json("POST" if body is not None else "GET", path, body)
     if payload is not None:
         return payload
-    # Keep the direct archive path as the safe degraded-mode fallback.  Do not
-    # fall back to the legacy TCP/fork shortcut: it defeats the hot-process goal.
-    _ = archive_root
     return None
 
 
