@@ -128,6 +128,16 @@ export async function executeProviderPageRequest(request) {
     return projected;
   }
 
+  function assertScriptingResultBound(response) {
+    // executeScript returns this exact result shape. JSON encoding is a
+    // conservative byte model for the browser bridge because escaped content
+    // can be larger than the compact conversation string alone.
+    const bytes = new globalThis.TextEncoder().encode(JSON.stringify({ ok: true, response })).length;
+    if (bytes > compactChatGptBridgeMaxBytes) {
+      throw sizeError("backfill_bridge_projection_too_large", bytes, compactChatGptBridgeMaxBytes);
+    }
+  }
+
   async function chatGptRequest() {
     let url;
     if (request.operation === "inventory") {
@@ -164,7 +174,10 @@ export async function executeProviderPageRequest(request) {
       headers: { Authorization: `Bearer ${accessToken}`, "ChatGPT-Account-Id": accountId },
     }, request.operation === "conversation" ? compactChatGptSourceMaxBytes : maxResponseBytes,
     request.operation === "conversation" ? "backfill_bridge_source_response_too_large" : "backfill_bridge_response_too_large");
-    if (request.operation === "conversation" && response.ok) response.body = compactChatGptConversation(response.body);
+    if (request.operation === "conversation" && response.ok) {
+      response.body = compactChatGptConversation(response.body);
+      assertScriptingResultBound(response);
+    }
     return response;
   }
 

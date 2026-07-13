@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import TypeGuard
 
 from polylogue.archive.ingest_flags import (
+    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
@@ -37,7 +38,18 @@ def looks_like(payload: object) -> bool:
 
 
 def _has_chatgpt_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
-    return isinstance(payload, dict) and isinstance(payload.get("mapping"), dict)
+    return (
+        isinstance(payload, dict)
+        and payload.get("polylogue_bridge_projection") != "chatgpt-native-compact-v1"
+        and isinstance(payload.get("mapping"), dict)
+    )
+
+
+def _is_compact_native_capture(envelope: BrowserCaptureEnvelope) -> bool:
+    return (
+        envelope.provider_meta.get("capture_fidelity") == "native_compact"
+        or envelope.session.provider_meta.get("capture_fidelity") == "native_compact"
+    )
 
 
 def _has_claude_ai_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
@@ -319,7 +331,9 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             *dict.fromkeys(
                 [
                     *_ingest_flags_for_browser_capture(envelope, provider_session_id),
-                    DOM_FALLBACK_INGEST_FLAG,
+                    COMPACT_BROWSER_CAPTURE_INGEST_FLAG
+                    if _is_compact_native_capture(envelope)
+                    else DOM_FALLBACK_INGEST_FLAG,
                 ]
             )
         ],

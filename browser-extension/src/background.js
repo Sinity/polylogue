@@ -863,6 +863,11 @@ function pageContextResponse(response) {
   };
 }
 
+function scriptingResultTooLarge(error) {
+  const message = String(error?.message || error).toLowerCase();
+  return /(?:result|response|message|script).{0,100}(?:too large|exceed(?:s|ed)?|maximum).{0,100}(?:size|limit|length)/.test(message);
+}
+
 async function providerPageFetch(url, options = {}) {
   if (options.method && options.method !== "GET") throw new Error("backfill_provider_method_not_allowed");
   const request = providerRequestFromUrl(url);
@@ -885,6 +890,9 @@ async function providerPageFetch(url, options = {}) {
     if (transport.owned) {
       await chrome.tabs.remove(transport.tab.id).catch(() => undefined);
       if (transport.cleanupAlarm) await chrome.alarms.clear(transport.cleanupAlarm);
+    }
+    if (scriptingResultTooLarge(error)) {
+      throw new Error("backfill_bridge_projection_too_large:observed_bytes=unavailable;limit_bytes=25165824");
     }
     throw error;
   }

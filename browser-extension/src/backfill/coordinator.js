@@ -452,6 +452,13 @@ export class BackfillCoordinator {
   }
 
   async handleJobTransport(job, error, now) {
+    if (bridgeOversizeError(error)) {
+      return this.pauseJob(
+        { ...job, last_error: String(error?.message || error) },
+        "backfill_bridge_response_too_large",
+        now,
+      );
+    }
     const failures = (job.transport_failures || 0) + 1;
     const next = { ...job, transport_failures: failures, last_error: String(error.message || error) };
     if (failures >= job.policy.breakerThreshold) return this.pauseJob(next, "repeated_transport_failures", now);
