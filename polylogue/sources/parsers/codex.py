@@ -29,6 +29,20 @@ from .base import (
 
 logger = get_logger(__name__)
 _TimestampPair = tuple[datetime, str]
+_EXECUTION_TOOL_NAMES = frozenset(
+    {
+        "bash",
+        "exec",
+        "exec_command",
+        "functions.exec",
+        "functions.exec_command",
+        "local_shell_call",
+        "run",
+        "shell",
+        "shell_command",
+        "terminal",
+    }
+)
 
 
 def _iso_or_none(value: str | int | float | None) -> str | None:
@@ -327,16 +341,31 @@ def _extract_cwd(payload: dict[str, object] | None) -> str | None:
     return None
 
 
-def _tool_input_from_arguments(value: object) -> dict[str, object]:
+def _tool_input_from_arguments(value: object, *, tool_name: str) -> dict[str, object]:
     if isinstance(value, dict):
-        return dict(value)
-    if isinstance(value, str) and value.strip():
+        tool_input = dict(value)
+    elif isinstance(value, str) and value.strip():
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
-            return {"arguments": value}
-        return dict(parsed) if isinstance(parsed, dict) else {"arguments": value}
-    return {}
+            tool_input = {"arguments": value}
+        else:
+            tool_input = dict(parsed) if isinstance(parsed, dict) else {"arguments": value}
+    else:
+        return {}
+
+    command = tool_input.get("command")
+    if isinstance(command, str) and command.strip():
+        return tool_input
+
+    cmd = tool_input.get("cmd")
+    if isinstance(cmd, str) and cmd.strip():
+        return {**tool_input, "command": cmd}
+
+    arguments = tool_input.get("arguments")
+    if tool_name.lower() in _EXECUTION_TOOL_NAMES and isinstance(arguments, str) and arguments.strip():
+        return {**tool_input, "command": arguments}
+    return tool_input
 
 
 def _codex_material_origin(role: Role, message_type: MessageType, text: str | None) -> MaterialOrigin:
@@ -373,7 +402,7 @@ def _codex_tool_message(
                 type=BlockType.TOOL_USE,
                 tool_name=tool_name,
                 tool_id=str(tool_id) if tool_id else None,
-                tool_input=_tool_input_from_arguments(raw_arguments),
+                tool_input=_tool_input_from_arguments(raw_arguments, tool_name=tool_name),
             )
         ]
         return ParsedMessage(

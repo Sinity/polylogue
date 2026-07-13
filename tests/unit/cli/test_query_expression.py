@@ -2960,6 +2960,50 @@ class TestBooleanQueryExpression:
             )
         ]
 
+    def test_codex_exec_freeform_arguments_are_queryable_as_commands(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.sources.parsers.codex import parse as parse_codex
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        script = 'const result = await tools.exec_command({"cmd":"polylogue find repo:polylogue"});'
+        parsed = parse_codex(
+            [
+                {
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "dogfood-command-query",
+                        "cwd": "/realm/project/polylogue",
+                        "git": {"repository_url": "https://example.test/polylogue.git"},
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "call_id": "call-exec",
+                        "name": "exec",
+                        "arguments": script,
+                    },
+                },
+            ],
+            "dogfood-command-query",
+        )
+
+        archive_root = workspace_env["archive_root"]
+        with ArchiveStore(archive_root) as archive:
+            session_id = archive.write_parsed(parsed)
+
+        source = parse_unit_source_expression("actions where command:polylogue")
+        assert source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            rows = archive.query_actions(source.predicate, limit=100)
+
+        assert [(row.session_id, row.semantic_type, row.tool_command) for row in rows] == [
+            (session_id, "shell", script)
+        ]
+
     def test_file_unit_source_parses_terminal_and_exists_forms(self) -> None:
         terminal = parse_unit_source_expression("files where action:file_edit AND path:archive/query")
         assert terminal is not None
