@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from heapq import heappush, heappushpop
 from typing import TYPE_CHECKING
 
-from polylogue.archive.query.support import _origins_as_provider_tokens
+from polylogue.archive.query.support import _canonical_origins
 from polylogue.logging import get_logger
 from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 
@@ -120,11 +120,11 @@ async def search_action_results(
     from polylogue.errors import DatabaseError
 
     query = search_query_text(plan)
-    source_names = _origins_as_provider_tokens(plan.origins)
+    origins = _canonical_origins(plan.origins)
     if not await action_search_ready(plan, repository):
         raise DatabaseError("Action search index is not fresh; daemon repair must complete before search.")
     try:
-        return await repository.search_actions(query, limit=limit, origins=source_names)
+        return await repository.search_actions(query, limit=limit, origins=origins)
     except Exception as exc:
         logger.warning(
             "action search failed",
@@ -147,8 +147,8 @@ async def search_hybrid_results(
     lane_ranks maps session_id -> {"text": rank_or_None, "action": rank_or_None, "vector": rank_or_None}.
     """
     query = search_query_text(plan)
-    source_names = _origins_as_provider_tokens(plan.origins)
-    text_results = await repository.search(query, limit=limit * 3, origins=source_names)
+    origins = _canonical_origins(plan.origins)
+    text_results = await repository.search(query, limit=limit * 3, origins=origins)
     action_results = await search_action_results(plan, repository, limit=limit * 3)
     vector_results: list[Session] = []
     if plan.vector_provider is not None:

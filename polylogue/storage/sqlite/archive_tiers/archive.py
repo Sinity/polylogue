@@ -4534,7 +4534,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": str(row["origin"]),
+                "source_name": str(row["origin"] or "unknown-export"),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "tool_use"),
@@ -4618,7 +4618,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": str(row["origin"]),
+                "source_name": str(row["origin"] or "unknown-export"),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "unknown"),
@@ -4729,7 +4729,7 @@ class ArchiveStore:
         buckets: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
         sessions: dict[tuple[str, str, str, str, str], set[str]] = {}
         for row in rows:
-            source_name = _provider_for_origin(str(row["origin"])).value
+            source_name = str(row["origin"] or "unknown-export")
             public_row = {
                 "tool_name": str(row["tool_name"] or ""),
                 "match_detail": str(row["match_detail"] or ""),
@@ -4846,7 +4846,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": str(row["origin"]),
+                "source_name": str(row["origin"] or "unknown-export"),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": f"{family}/command-detail",
                 "action_kind": str(row["action_kind"] or "tool_use"),
@@ -8693,9 +8693,7 @@ def _origin_value(origin: str | None) -> str | None:
 
 
 def _origin_for_tool_usage_filter(origin: str | None) -> str | None:
-    if origin is None:
-        return None
-    return Origin.from_string(origin).value
+    return _origin_value(origin)
 
 
 def _tool_usage_builder_query(query: ToolUsageInsightQuery) -> ToolUsageInsightQuery:

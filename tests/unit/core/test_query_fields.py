@@ -112,7 +112,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
     ]
 
     assert plan.sql_pushdown_params() == {
-        "provider": "codex",
+        "origin": "codex-session",
         "referenced_path": ["polylogue/storage"],
         "tool_terms": ["bash"],
         "repo_names": ["thoughtspace"],
@@ -127,7 +127,7 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
     )
 
     record_query = plan.record_query
-    assert record_query.origin == "codex"
+    assert record_query.origin == "codex-session"
     assert record_query.referenced_path == ("polylogue/storage",)
     assert record_query.tool_terms == ("bash",)
     assert record_query.repo_names == ("thoughtspace",)

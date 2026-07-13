@@ -146,7 +146,7 @@ async def test_search_action_results_uses_ready_path_and_raises_on_error(monkeyp
     )
 
     assert [str(session.id) for session in ready_results] == ["conv-direct"]
-    repository.search_actions.assert_awaited_once_with("needle", limit=3, providers=["chatgpt"])
+    repository.search_actions.assert_awaited_once_with("needle", limit=3, origins=["chatgpt-export"])
 
     repository.search_actions.reset_mock(side_effect=True, return_value=True)
     repository.search_actions.side_effect = RuntimeError("boom")

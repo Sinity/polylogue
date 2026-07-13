@@ -117,9 +117,7 @@ def _make_callback(pt: InsightType) -> Callable[..., None]:
     """
     # Pre-resolve accepted fields so we only inject keys the query class understands.
     accepted_query_fields = query_model_field_names(pt)
-    accepted_root_keys = tuple(
-        key for key in _ROOT_FILTER_KEYS if ("origin" if key == "origin" else key) in accepted_query_fields
-    )
+    accepted_root_keys = tuple(key for key in _ROOT_FILTER_KEYS if key in accepted_query_fields)
 
     @click.pass_context
     def callback(

@@ -345,7 +345,7 @@ async def _table_columns(conn: aiosqlite.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in rows}
 
 
-def _provider_filter_origin(origin: str | None) -> str | None:
+def _normalize_origin_filter(origin: str | None) -> str | None:
     if not origin:
         return None
     return _origin_value(origin)
@@ -363,7 +363,7 @@ def _where_clause(
     """
     clauses: list[str] = []
     params: list[object] = []
-    origin = _provider_filter_origin(query.origin)
+    origin = _normalize_origin_filter(query.origin)
     if origin is not None:
         clauses.append("s.origin = ?")
         params.append(origin)

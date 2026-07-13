@@ -31,7 +31,7 @@ def _counts() -> dict[str, int]:
 
 
 def test_origin_filter_selects_one_rollup() -> None:
-    """A canonical origin filter preserves the public origin-tag payload."""
+    """A canonical origin filter selects its public origin-tag payload."""
     rollups = synthesize_origin_tag_rollups(
         _FakeArchive(_counts()),  # type: ignore[arg-type]
         origin="aistudio-drive",

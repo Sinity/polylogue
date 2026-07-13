@@ -45,7 +45,7 @@ def synthesize_origin_tag_rollups(
         until_ms=until_ms,
     )
     needle = query.strip().lower() if query else None
-    origin_filter = Origin.from_string(origin).value if origin is not None else None
+    origin_filter = Origin(origin).value if origin is not None else None
     rollups: list[SessionTagRollupInsight] = []
     for origin_value, count in counts.items():
         if origin_filter is not None and origin_value != origin_filter:

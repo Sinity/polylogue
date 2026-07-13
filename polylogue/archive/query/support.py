@@ -5,22 +5,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Origin
-from polylogue.core.sources import provider_from_origin
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
 
 
-def _origins_as_provider_tokens(origins: tuple[str, ...]) -> list[str] | None:
-    """Project origin tokens back to provider tokens for the archive repository
-    search leg, which still filters the ``sessions.source_name`` provider column.
-
-    Removed once the source_name→origin reconciliation (#1743 Phase 2) moves that
-    SQL onto the ``origin`` column.
-    """
+def _canonical_origins(origins: tuple[str, ...]) -> list[str] | None:
+    """Normalize an optional origin scope for archive search queries."""
     if not origins:
         return None
-    return [provider_from_origin(Origin.from_string(token)).value for token in origins]
+    return [Origin(token).value for token in origins]
 
 
 def session_has_branches(session: Session) -> bool:
@@ -51,5 +45,5 @@ def session_to_summary(session: Session) -> SessionSummary:
 __all__ = [
     "session_has_branches",
     "session_to_summary",
-    "_origins_as_provider_tokens",
+    "_canonical_origins",
 ]
