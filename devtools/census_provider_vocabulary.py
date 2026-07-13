@@ -21,6 +21,11 @@ own Step 0): it enumerates, per run:
 - ``literal`` -- CLI-option-shaped (``--...provider...``) or HTTP-route-shaped
                  (``/...provider...``) string literals.
 
+Explicitly deprecated Click option declarations are compatibility aliases,
+not active public-contract vocabulary. Their option spelling is therefore
+excluded from the literal category while the alias remains implemented and
+visible to users as deprecated.
+
 Enum-literal usage (Axis 1, ``Provider.<MEMBER>``) is intentionally out of
 scope here -- the 2026-07-09 census already tiered it correctly (see the
 Appendix in polylogue-9e5.8's design field) and it is not the axis the
@@ -170,12 +175,45 @@ class _Visitor(ast.NodeVisitor):
                 self._record(node.lineno, "key", elt.value)
         self.generic_visit(node)
 
+    def visit_Call(self, node: ast.Call) -> None:
+        if _is_deprecated_click_option(node):
+            # A one-release Click compatibility alias still needs to be
+            # accepted, but it is not an active public-contract token. Visit
+            # its keyword values in case they contain independently relevant
+            # expressions, while intentionally omitting its positional flag
+            # spellings from the literal census.
+            self.visit(node.func)
+            for keyword in node.keywords:
+                self.visit(keyword.value)
+            return
+        self.generic_visit(node)
+
     def visit_Constant(self, node: ast.Constant) -> None:
         if isinstance(node.value, str):
             value = node.value
             if _CLI_FLAG_RE.match(value) or _ROUTE_RE.match(value):
                 self._record(node.lineno, "literal", value)
         self.generic_visit(node)
+
+
+def _is_deprecated_click_option(node: ast.Call) -> bool:
+    """Whether ``node`` declares an explicitly deprecated ``click.option``."""
+
+    func = node.func
+    if not (
+        isinstance(func, ast.Attribute)
+        and func.attr == "option"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "click"
+    ):
+        return False
+    for keyword in node.keywords:
+        if keyword.arg != "deprecated":
+            continue
+        if isinstance(keyword.value, ast.Constant):
+            return bool(keyword.value.value)
+        return True
+    return False
 
 
 def _scan_file(path: Path, *, root: Path) -> list[Site]:

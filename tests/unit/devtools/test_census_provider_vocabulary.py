@@ -117,6 +117,26 @@ def test_flags_cli_flag_and_http_route_literals(tmp_path: Path, capsys: pytest.C
     assert {s["identifier"] for s in literals} == {"--schema-provider", "/api/some-provider-scoped-thing"}
 
 
+def test_ignores_explicitly_deprecated_click_option_aliases(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Deprecated compatibility aliases do not keep the active CLI count high."""
+    _write(
+        tmp_path,
+        "polylogue/cli/example_check_options.py",
+        """
+        import click
+
+
+        ACTIVE = click.option("--schema-origin")
+        LEGACY = click.option("--schema-provider", deprecated="Use --schema-origin instead.")
+        """,
+    )
+
+    payload = _run_json(tmp_path, capsys)
+
+    assert payload["counts_by_category"]["literal"] == 0
+    assert payload["unallowlisted"] == []
+
+
 def test_compound_provider_identifiers_are_not_flagged(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """VectorProvider/vector_provider/create_vector_provider-style compound
     names are exact-match excluded by construction (polylogue-9e5.8 Axis-2
