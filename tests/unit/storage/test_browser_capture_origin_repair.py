@@ -366,3 +366,26 @@ def test_browser_capture_origin_repair_restores_equivalent_canonical_head(tmp_pa
             canonical_raw_id,
             f"browser_capture_origin_supersession:{mismatched_raw_id}",
         )
+
+
+def test_browser_capture_origin_copy_forward_resumes_after_source_stage_interrupt(tmp_path: Path) -> None:
+    import polylogue.storage.repair as repair_module
+
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    item = dry_run.items[0]
+    assert item.repair_strategy == "copy_forward"
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        repair_module._stage_browser_origin_copy_forward_source(source, item)
+
+    resumed = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=tmp_path / "resume-receipt.jsonl",
+        proof_digest=dry_run.proof_digest,
+    )
+
+    assert resumed.repaired_count == 1
+    assert resumed.items[0].status == "already_repaired"
+    assert resumed.items[0].copy_forward_source_complete is True

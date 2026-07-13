@@ -184,6 +184,7 @@ class BrowserCaptureOriginRepairItem:
     replacement_frontier: int | None = None
     copy_forward_raw_id: str | None = None
     copy_forward_source_path: str | None = None
+    copy_forward_source_complete: bool = False
     evidence_digest: str | None = None
     proof_digest: str | None = None
     repaired: bool = False
@@ -1055,7 +1056,7 @@ def _browser_origin_item_payload(item: BrowserCaptureOriginRepairItem) -> dict[s
     return {
         key: value
         for key, value in dataclasses.asdict(item).items()
-        if key not in {"status", "reason", "proof_digest", "repaired"}
+        if key not in {"status", "reason", "proof_digest", "repaired", "copy_forward_source_complete"}
     }
 
 
@@ -1311,13 +1312,8 @@ def _inspect_browser_capture_origin_mismatch(
         0,
         RawRevisionAuthority.BYTE_PROVEN.value,
     )
-    copy_forward_terminal = (
+    copy_forward_source_complete = (
         copy_raw_exact
-        and canonical_head is not None
-        and str(canonical_head["session_id"]) == session_id
-        and str(canonical_head["accepted_raw_id"]) == copy_raw_id
-        and _bytes_value(canonical_head["accepted_content_hash"]) == accepted_hash
-        and str(indexed["raw_id"]) == copy_raw_id
         and copy_membership is not None
         and str(copy_membership["provider_session_id"]) == session.provider_session_id
         and str(copy_membership["source_revision"]) == accepted_hash.hex()
@@ -1328,6 +1324,14 @@ def _inspect_browser_capture_origin_mismatch(
         and str(copy_membership["decision"]) == "applied"
         and copy_census is not None
         and tuple(copy_census) == ("complete", 1)
+    )
+    copy_forward_terminal = (
+        copy_forward_source_complete
+        and canonical_head is not None
+        and str(canonical_head["session_id"]) == session_id
+        and str(canonical_head["accepted_raw_id"]) == copy_raw_id
+        and _bytes_value(canonical_head["accepted_content_hash"]) == accepted_hash
+        and str(indexed["raw_id"]) == copy_raw_id
         and copy_application is not None
         and tuple(copy_application)
         == (
@@ -1385,9 +1389,9 @@ def _inspect_browser_capture_origin_mismatch(
                 f"browser_capture_origin_supersession:{raw_id}",
             )
         )
-    if copy_raw is not None and repair_strategy == "copy_forward" and not already_repaired:
+    if copy_raw is not None and repair_strategy == "copy_forward" and not copy_forward_source_complete:
         return _browser_origin_ineligible(
-            raw_id, "copy-forward raw id already exists without the terminal canonical head"
+            raw_id, "copy-forward raw id exists but its durable source stage is not exact"
         )
     if str(indexed["raw_id"]) not in {raw_id, replacement_raw_id}:
         return _browser_origin_ineligible(raw_id, "indexed session points at unrelated raw evidence")
@@ -1428,6 +1432,7 @@ def _inspect_browser_capture_origin_mismatch(
         replacement_frontier=replacement_frontier,
         copy_forward_raw_id=copy_raw_id if repair_strategy == "copy_forward" else None,
         copy_forward_source_path=copy_path if repair_strategy == "copy_forward" else None,
+        copy_forward_source_complete=copy_forward_source_complete,
         evidence_digest=evidence_digest,
     )
     return dataclasses.replace(item, proof_digest=_browser_origin_item_digest(item))
@@ -1547,12 +1552,7 @@ def _finish_browser_origin_receipt(
     _fsync_parent(receipt.path)
 
 
-def _insert_browser_origin_copy_forward(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
-    from polylogue.storage.sqlite.archive_tiers.revision_application import (
-        RevisionApplicationReceipt,
-        record_revision_application_sync,
-    )
-
+def _stage_browser_origin_copy_forward_source(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
     assert item.copy_forward_raw_id is not None
     assert item.copy_forward_source_path is not None
     assert item.canonical_origin is not None
@@ -1566,7 +1566,7 @@ def _insert_browser_origin_copy_forward(conn: sqlite3.Connection, item: BrowserC
     assert item.accepted_frontier is not None
     native_id = item.session_id.split(":", 1)[1]
     blob_hash = bytes.fromhex(item.blob_hash)
-    columns = {str(row[1]) for row in conn.execute("PRAGMA source.table_info(raw_sessions)")}
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_sessions)")}
     names = [
         "raw_id",
         "origin",
@@ -1603,26 +1603,26 @@ def _insert_browser_origin_copy_forward(conn: sqlite3.Connection, item: BrowserC
         names.insert(2, "capture_mode")
         values.insert(2, item.canonical_provider)
     conn.execute(
-        f"INSERT INTO source.raw_sessions ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+        f"INSERT INTO raw_sessions ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
         values,
     )
     acquired_at_ms = int(time.time() * 1000)
     conn.execute(
         """
-        INSERT INTO source.blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+        INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
         VALUES (?, ?, 'raw_payload', ?, ?, ?)
         """,
         (blob_hash, item.copy_forward_raw_id, item.copy_forward_source_path, item.blob_size, acquired_at_ms),
     )
     conn.execute(
         """
-        INSERT INTO source.raw_session_memberships (
+        INSERT INTO raw_session_memberships (
             raw_id, logical_source_key, provider_session_id, source_revision,
             normalized_content_hash, message_count, acquisition_generation,
             revision_authority, decision, decided_at_ms
         )
         SELECT ?, ?, ?, ?, ?, message_count, 0, 'byte_proven', 'applied', ?
-        FROM source.raw_session_memberships
+        FROM raw_session_memberships
         WHERE raw_id = ? AND logical_source_key = ?
         """,
         (
@@ -1638,7 +1638,7 @@ def _insert_browser_origin_copy_forward(conn: sqlite3.Connection, item: BrowserC
     )
     conn.execute(
         """
-        INSERT INTO source.raw_membership_census (
+        INSERT INTO raw_membership_census (
             raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
         ) VALUES (?, 'browser-origin-copy-forward-v1', 'complete', 1, ?, ?)
         """,
@@ -1648,6 +1648,21 @@ def _insert_browser_origin_copy_forward(conn: sqlite3.Connection, item: BrowserC
             f"origin copy-forward from immutable raw {item.raw_id}",
         ),
     )
+
+
+def _finalize_browser_origin_copy_forward_index(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
+    from polylogue.storage.sqlite.archive_tiers.revision_application import (
+        RevisionApplicationReceipt,
+        record_revision_application_sync,
+    )
+
+    assert item.copy_forward_raw_id is not None
+    assert item.canonical_logical_source_key is not None
+    assert item.session_id is not None
+    assert item.blob_hash is not None
+    assert item.accepted_content_hash is not None
+    assert item.accepted_frontier is not None
+    acquired_at_ms = int(time.time() * 1000)
     cursor = conn.execute(
         "UPDATE sessions SET raw_id = ? WHERE session_id = ? AND raw_id = ?",
         (item.copy_forward_raw_id, item.session_id, item.raw_id),
@@ -1718,7 +1733,7 @@ def _restore_browser_origin_canonical_head(conn: sqlite3.Connection, item: Brows
 
 def _apply_browser_origin_repair_item(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
     if item.repair_strategy == "copy_forward":
-        _insert_browser_origin_copy_forward(conn, item)
+        _finalize_browser_origin_copy_forward_index(conn, item)
         return
     if item.repair_strategy == "restore_canonical_head":
         _restore_browser_origin_canonical_head(conn, item)
@@ -1771,6 +1786,21 @@ def repair_browser_capture_origin_mismatches(
         with RebuildLease(archive_root):
             receipt = _lock_browser_origin_receipt(receipt_path, items)
             try:
+                with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
+                    source_conn.execute("PRAGMA foreign_keys = ON")
+                    source_conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        for item in items:
+                            if (
+                                item.status == "eligible"
+                                and item.repair_strategy == "copy_forward"
+                                and not item.copy_forward_source_complete
+                            ):
+                                _stage_browser_origin_copy_forward_source(source_conn, item)
+                        source_conn.commit()
+                    except Exception:
+                        source_conn.rollback()
+                        raise
                 with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
                     conn.execute("PRAGMA foreign_keys = ON")
                     conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
