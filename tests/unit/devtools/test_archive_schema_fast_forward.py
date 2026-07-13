@@ -16,6 +16,7 @@ from devtools.archive_schema_fast_forward import (
     beads_evidence,
     fast_forward_embeddings_clone,
     fast_forward_index_clone,
+    reuse_index_clone,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
@@ -189,6 +190,22 @@ def test_embedding_clone_preserves_vectors_and_installs_failure_lifecycle(tmp_pa
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
+def test_reuse_index_clone_reproves_v36_staging_before_atomic_move(tmp_path: Path) -> None:
+    source = tmp_path / "index-v35.db"
+    staged = tmp_path / "completed-index-v36.db"
+    destination = tmp_path / "new-run" / "index.db"
+    _create_v35_index(source)
+    expected = fast_forward_index_clone(source, staged)
+
+    result = reuse_index_clone(source, staged, destination)
+
+    assert result.source == expected.source
+    assert result.clone == expected.clone
+    assert not staged.exists()
+    assert destination.exists()
+    assert not any(Path(f"{destination}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal"))
+
+
 def test_atomic_promote_keeps_a_named_rollback(tmp_path: Path) -> None:
     active = tmp_path / "index.db"
     clone = tmp_path / "prepared-index.db"
@@ -251,6 +268,21 @@ def test_activation_receipt_rejects_any_active_tier_identity_drift(tmp_path: Pat
 
 def test_operator_cli_exposes_only_prepare_and_existing_manifest_activation() -> None:
     parser = _parser()
+    prepare = parser.parse_args(
+        [
+            "prepare",
+            "--archive-root",
+            "/tmp/archive",
+            "--staging-root",
+            "/tmp/staging",
+            "--receipt",
+            "/tmp/receipt.json",
+            "--backup-manifest",
+            "/tmp/manifest.json",
+            "--reuse-index-clone",
+            "/tmp/completed-index.db",
+        ]
+    )
     activate = parser.parse_args(
         [
             "activate",
@@ -261,6 +293,7 @@ def test_operator_cli_exposes_only_prepare_and_existing_manifest_activation() ->
         ]
     )
 
+    assert str(prepare.reuse_index_clone) == "/tmp/completed-index.db"
     assert activate.command == "activate"
     assert str(activate.backup_manifest) == "/tmp/manifest.json"
     assert activate.service == "polylogued.service"
