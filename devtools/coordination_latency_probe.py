@@ -26,6 +26,7 @@ def measure(*, samples: int, cwd: Path | None = None) -> dict[str, Any]:
     """Return raw compact samples and an honest distribution summary."""
 
     from polylogue.coordination.envelope import build_coordination_envelope
+    from polylogue.paths import archive_root
 
     root = (cwd or Path.cwd()).resolve()
     raw: list[dict[str, object]] = []
@@ -49,10 +50,22 @@ def measure(*, samples: int, cwd: Path | None = None) -> dict[str, Any]:
         "generated_at": datetime.now(UTC).isoformat(),
         "git_head": _git_head(root),
         "cwd": str(root),
+        "archive_state": _archive_state(archive_root()),
         "mode": "warm-in-process-core",
         "samples": raw,
         "distribution_ms": {"p50": _percentile(latencies, 50), "p95": _percentile(latencies, 95)},
     }
+
+
+def _archive_state(root: Path) -> dict[str, object]:
+    """Record non-content archive facts needed to compare local samples."""
+
+    index = root / "index.db"
+    try:
+        index_bytes: int | None = index.stat().st_size
+    except OSError:
+        index_bytes = None
+    return {"root": str(root), "index_exists": index.exists(), "index_bytes": index_bytes}
 
 
 def _git_head(cwd: Path) -> str | None:
