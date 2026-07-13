@@ -8,14 +8,19 @@ completion protocol.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from tests.infra.pty_cli import grid_to_text, run_in_pty
 from tests.infra.storage_records import DbFactory
+
+pytestmark = pytest.mark.load_sensitive
 
 
 def _interactive_env(
@@ -26,7 +31,7 @@ def _interactive_env(
 ) -> dict[str, str]:
     """Return a process-isolated environment that keeps the CLI interactive."""
     home = tmp_path / "interactive-home"
-    home.mkdir()
+    home.mkdir(exist_ok=True)
     env = {
         "HOME": str(home),
         "XDG_DATA_HOME": str(cli_workspace["data_root"]),
@@ -167,3 +172,29 @@ def test_select_propagates_requested_pty_size_to_fzf(
     # fzf receives its size through the controlling TTY, not through pyte's
     # renderer; the stand-in reads that terminal directly.
     assert size_path.read_text(encoding="utf-8").strip() == "41 137"
+
+
+def test_select_returns_fzf_choice_in_json_in_a_real_pty(
+    cli_workspace: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The real selector preserves the external pick through its JSON renderer."""
+    _seed_picker_sessions(cli_workspace)
+    picker_dir = tmp_path / "json-bin"
+    picker_dir.mkdir()
+    trace_path = tmp_path / "json-fzf-options.txt"
+    _install_first_row_fzf(picker_dir, trace_path)
+
+    result = run_in_pty(
+        ["--sort", "date", "--reverse", "find", "title:Interactive", "then", "select", "--json"],
+        cols=200,
+        env=_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir),
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(grid_to_text(result.grid).strip()) == {
+        "date": "2026-07-11",
+        "id": "chatgpt-export:ext-older",
+        "origin": "chatgpt-export",
+        "title": "Interactive picker candidate older",
+    }

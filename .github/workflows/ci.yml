@@ -34,6 +34,20 @@ jobs:
       - run: uv run ruff check polylogue/ tests/ devtools/
       - run: uv run ruff format --check polylogue/ tests/ devtools/
 
+  interactive-pty:
+    # PTY tests need a controlling terminal and must not share xdist workers.
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.0
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev --frozen
+      - run: uv run pytest -q -n 0 tests/unit/cli/test_interactive_cli.py
+        env:
+          POLYLOGUE_PYTEST_BASETEMP_ROOT: ${{ runner.temp }}/polylogue-pytest
+
   test:
     # The full non-integration suite runs single-process under coverage
     # instrumentation across three Python versions; 45 min was on the edge and
