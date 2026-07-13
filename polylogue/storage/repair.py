@@ -2543,7 +2543,12 @@ def _inspect_browser_capture_origin_mismatch(
         and not copy_forward_terminal
     ):
         return _browser_origin_ineligible(raw_id, "copy-forward terminal byte authority is not exact")
-    if allow_legacy_null_native_id and canonical_head is not None and not copy_forward_terminal:
+    if (
+        allow_legacy_null_native_id
+        and canonical_head is not None
+        and not copy_forward_terminal
+        and str(canonical_head["accepted_frontier_kind"]) != "semantic"
+    ):
         return _browser_origin_ineligible(
             raw_id,
             "legacy-native-id copy-forward refuses pre-existing canonical head authority",
