@@ -64,6 +64,13 @@ _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT = 100
 _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.quarantined-accepted-raw-repair.v1"
+_LEGACY_YLA_AUTHORITY_RAW_IDS = frozenset(
+    {
+        "a7d004c9aa943f6a10211851904105ee1c647c331552646e1b9cbe268940ed11",
+        "f19944c8fe19cd59aab2e67d2c8dc04569834d1557a7441c5dc628a117a15176",
+        "fa0574f82a49e6ba58a3abdfd0a49c81189d81c4217f888ffe18ff909dacbd01",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +215,10 @@ def _proof_digest(item: QuarantinedAcceptedRawRepairItem) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _raw_sessions_capture_mode_available(conn: sqlite3.Connection) -> bool:
+    return any(str(row[1]) == "capture_mode" for row in conn.execute("PRAGMA main.table_info(raw_sessions)").fetchall())
+
+
 def _inspect_quarantined_accepted_raw(
     archive_root: Path,
     raw_id: str,
@@ -215,16 +226,20 @@ def _inspect_quarantined_accepted_raw(
     conn: sqlite3.Connection,
 ) -> QuarantinedAcceptedRawRepairItem:
     """Prove one accepted head against source main + attached read-only index."""
+    capture_mode_available = _raw_sessions_capture_mode_available(conn)
+    if not capture_mode_available and raw_id not in _LEGACY_YLA_AUTHORITY_RAW_IDS:
+        return _quarantined_raw_item(raw_id, "legacy source tier authorizes only the fixed yla8.10 repair cohort")
+    capture_mode_projection = "capture_mode" if capture_mode_available else "NULL AS capture_mode"
     try:
         raw = conn.execute(
-            """
-            SELECT raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash, blob_size,
+            f"""
+            SELECT raw_id, origin, {capture_mode_projection}, native_id, source_path, source_index, blob_hash, blob_size,
                    file_mtime_ms, logical_source_key, revision_kind, source_revision,
                    predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
                    append_start_offset, append_end_offset, acquisition_generation,
                    revision_authority
             FROM raw_sessions WHERE raw_id = ?
-            """,
+            """,  # nosec B608 - projection is selected from two fixed identifiers above
             (raw_id,),
         ).fetchone()
         if raw is None:

@@ -403,6 +403,19 @@ def test_quarantined_accepted_raw_repair_preserves_parallel_provenance_context(t
     assert report.items[0].authority_context_digest
 
 
+def test_quarantined_accepted_raw_repair_legacy_source_refuses_arbitrary_raw_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    from polylogue.storage import repair as repair_module
+
+    monkeypatch.setattr(repair_module, "_raw_sessions_capture_mode_available", lambda conn: False)
+    report = repair_module.repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "legacy source tier authorizes only the fixed yla8.10 repair cohort"
+
+
 def test_quarantined_accepted_raw_repair_rejects_duplicates_and_rolls_back_batch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
