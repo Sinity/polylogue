@@ -1661,8 +1661,9 @@ def quarantined_accepted_raws_command(
         f"already_repaired={report.already_repaired_count} repaired={report.repaired_count} "
         f"ineligible={report.ineligible_count}"
     )
+    click.echo(f"Proof digest: {report.proof_digest}")
     for item in report.items:
-        click.echo(f"  {item.raw_id} {item.status}: {item.reason}")
+        click.echo(f"  {item.raw_id} {item.status} proof={item.proof_digest or 'unavailable'}: {item.reason}")
     if report.receipt_path is not None:
         click.echo(f"Receipt: {report.receipt_path}")
 

@@ -15,6 +15,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.index_generation import RebuildLease
 from polylogue.storage.repair import repair_quarantined_accepted_raws
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -269,6 +270,7 @@ def test_quarantined_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(
         "frontier",
         "session_hash",
         "origin",
+        "capture_mode",
         "application",
         "receipt_time",
         "typed_competitor",
@@ -308,6 +310,10 @@ def test_quarantined_accepted_raw_repair_mutations_fail_closed(tmp_path: Path, m
             index.execute("UPDATE sessions SET content_hash = zeroblob(32)")
         elif mutation == "origin":
             source.execute("UPDATE raw_sessions SET origin = 'claude-ai-export' WHERE raw_id = ?", (raw_id,))
+        elif mutation == "capture_mode":
+            source.execute(
+                "UPDATE raw_sessions SET origin = 'aistudio-drive', capture_mode = NULL WHERE raw_id = ?", (raw_id,)
+            )
         elif mutation == "application":
             index.execute(
                 """
@@ -473,7 +479,53 @@ def test_quarantined_accepted_raw_repair_resumes_planned_receipt_after_committed
     assert resumed.already_repaired_count == 1
     records = [json.loads(line) for line in receipt.read_text().splitlines()]
     assert [record["state"] for record in records] == ["planned", "applied"]
-    assert records[1]["repaired_raw_ids"] == [raw_id]
+    assert records[1]["repaired_raw_ids"] == []
+
+
+def test_quarantined_accepted_raw_repair_does_not_claim_a_competing_receipt_commit(tmp_path: Path) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
+    interrupted_receipt = tmp_path / "interrupted.jsonl"
+    competing_receipt = tmp_path / "competing.jsonl"
+    from polylogue.storage import repair as repair_module
+
+    planned = repair_module._lock_quarantined_raw_repair_receipt(interrupted_receipt, list(dry_run.items))
+    planned.close()
+    competing = repair_quarantined_accepted_raws(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=competing_receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    resumed = repair_quarantined_accepted_raws(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=interrupted_receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+
+    assert competing.repaired_count == 1
+    assert resumed.repaired_count == 0
+    assert json.loads(competing_receipt.read_text().splitlines()[-1])["repaired_raw_ids"] == [raw_id]
+    assert json.loads(interrupted_receipt.read_text().splitlines()[-1])["repaired_raw_ids"] == []
+
+
+def test_quarantined_accepted_raw_repair_acquires_exclusive_archive_lock_before_receipt(tmp_path: Path) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
+    receipt = tmp_path / "blocked.jsonl"
+
+    with RebuildLease(tmp_path), pytest.raises(RuntimeError, match="rebuild lease is already held"):
+        repair_quarantined_accepted_raws(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=receipt,
+            proof_digest=dry_run.proof_digest,
+        )
+    assert not receipt.exists()
 
 
 def test_quarantined_accepted_raw_repair_writes_every_receipt_record_in_full(
@@ -609,7 +661,7 @@ def test_quarantined_accepted_raw_repair_rejects_torn_terminal_without_source_co
         (1, "schema", "wrong"),
         (1, "target_hash", "0" * 64),
         (1, "proven_raw_ids", []),
-        (1, "repaired_raw_ids", []),
+        (1, "repaired_raw_ids", ["0" * 64]),
     ],
 )
 def test_quarantined_accepted_raw_repair_rejects_corrupt_receipt_records(

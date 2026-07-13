@@ -1354,6 +1354,15 @@ def test_quarantined_accepted_raw_repair_cli_dry_run_is_bounded_json(
     assert len(payload["proof_digest"]) == 64
     assert payload["items"][0]["raw_id"] == raw_id
 
+    plain = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "quarantined-accepted-raws", "--raw-id", raw_id],
+        catch_exceptions=False,
+    )
+    assert plain.exit_code == 0
+    assert f"Proof digest: {payload['proof_digest']}" in plain.output
+    assert f"{raw_id} ineligible proof=unavailable" in plain.output
+
 
 def test_quarantined_accepted_raw_repair_cli_apply_requires_receipt_and_proof(
     cli_workspace: dict[str, Path],

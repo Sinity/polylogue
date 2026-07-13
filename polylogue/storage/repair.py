@@ -26,7 +26,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.sources import origin_from_provider, origin_provider_fiber, provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
@@ -113,6 +113,7 @@ class QuarantinedAcceptedRawRepairItem:
     logical_source_key: str | None = None
     session_id: str | None = None
     origin: str | None = None
+    capture_mode: str | None = None
     source_path: str | None = None
     source_index: int | None = None
     blob_hash: str | None = None
@@ -217,7 +218,7 @@ def _inspect_quarantined_accepted_raw(
     try:
         raw = conn.execute(
             """
-            SELECT raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+            SELECT raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash, blob_size,
                    file_mtime_ms, logical_source_key, revision_kind, source_revision,
                    predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
                    append_start_offset, append_end_offset, acquisition_generation,
@@ -494,7 +495,14 @@ def _inspect_quarantined_accepted_raw(
         return _quarantined_raw_item(raw_id, "retained bytes do not prove the accepted source revision")
     try:
         origin = Origin.from_string(str(raw["origin"]))
-        provider = provider_from_origin(origin)
+        capture_mode = str(raw["capture_mode"]) if raw["capture_mode"] is not None else None
+        fiber = origin_provider_fiber(origin)
+        if len(fiber) > 1 and capture_mode is None:
+            return _quarantined_raw_item(raw_id, "non-injective origin lacks durable capture-mode authority")
+        capture_provider = Provider.from_string(capture_mode) if capture_mode is not None else None
+        if capture_provider is not None and capture_provider not in fiber:
+            return _quarantined_raw_item(raw_id, "capture mode falls outside the raw origin provider fiber")
+        provider = provider_from_origin(origin, family_hint=capture_provider)
         from polylogue.pipeline.services.ingest_worker import _normalized_session
         from polylogue.sources.revision_backfill import _parse_one
 
@@ -544,6 +552,7 @@ def _inspect_quarantined_accepted_raw(
         logical_source_key=logical_source_key,
         session_id=session_id,
         origin=str(raw["origin"]),
+        capture_mode=capture_mode,
         source_path=str(raw["source_path"]),
         source_index=int(raw["source_index"]),
         blob_hash=blob_hash,
@@ -738,7 +747,14 @@ def _validate_repair_receipt_records(
     applied_at_ms = applied.get("applied_at_ms")
     if not isinstance(applied_at_ms, int) or applied_at_ms < 0:
         raise RuntimeError("existing repair receipt applied timestamp is invalid")
-    if applied.get("proven_raw_ids") != list(raw_ids) or applied.get("repaired_raw_ids") != list(intent_ids):
+    repaired_ids = applied.get("repaired_raw_ids")
+    if (
+        applied.get("proven_raw_ids") != list(raw_ids)
+        or not isinstance(repaired_ids, list)
+        or any(not isinstance(raw_id, str) for raw_id in repaired_ids)
+        or len(set(cast(list[str], repaired_ids))) != len(repaired_ids)
+        or any(raw_id not in intent_ids for raw_id in cast(list[str], repaired_ids))
+    ):
         raise RuntimeError("existing repair receipt applied ids do not match the planned targets")
     expected_torn_witnesses = [
         {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()} for fragment in torn_terminals
@@ -824,7 +840,7 @@ def _finish_quarantined_raw_repair_receipt(
         "state": "applied",
         "target_hash": receipt.target_hash,
         "applied_at_ms": int(time.time() * 1000),
-        "repaired_raw_ids": list(receipt.repair_intent_raw_ids),
+        "repaired_raw_ids": [item.raw_id for item in items if item.repaired],
         "proven_raw_ids": [item.raw_id for item in items],
     }
     if preserved_torn_terminals:
@@ -914,13 +930,11 @@ def repair_quarantined_accepted_raws(
     if apply and proof_digest != aggregate_proof:
         raise RuntimeError("apply proof digest does not match the exact dry-run target list")
     if apply:
-        from polylogue.storage.index_generation import ActiveWriterLease
+        from polylogue.storage.index_generation import RebuildLease
 
         assert receipt_path is not None
-        receipt = _lock_quarantined_raw_repair_receipt(receipt_path, items)
-        try:
-            lease = ActiveWriterLease(archive_root)
-            lease.acquire()
+        with RebuildLease(archive_root):
+            receipt = _lock_quarantined_raw_repair_receipt(receipt_path, items)
             try:
                 with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
                     source_conn.execute("PRAGMA foreign_keys = ON")
@@ -957,12 +971,10 @@ def repair_quarantined_accepted_raws(
                     dataclasses.replace(after, repaired=before.status == "eligible")
                     for before, after in zip(items, after_items, strict=True)
                 ]
+                if not receipt.terminal:
+                    _finish_quarantined_raw_repair_receipt(receipt, items=items)
             finally:
-                lease.close()
-            if not receipt.terminal:
-                _finish_quarantined_raw_repair_receipt(receipt, items=items)
-        finally:
-            receipt.close()
+                receipt.close()
     return QuarantinedAcceptedRawRepairReport(
         mode="apply" if apply else "dry-run",
         requested_count=len(items),
