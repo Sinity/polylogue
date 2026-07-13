@@ -659,7 +659,7 @@ def test_browser_origin_repair_accepts_exact_semantic_superseded_sibling(tmp_pat
     assert receipt.read_text().count("\n") == 2
 
 
-@pytest.mark.parametrize("mutation", ["receipt", "membership"])
+@pytest.mark.parametrize("mutation", ["receipt", "membership", "selected"])
 def test_browser_origin_repair_rejects_underproven_semantic_supersession(tmp_path: Path, mutation: str) -> None:
     mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
     semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
@@ -670,10 +670,16 @@ def test_browser_origin_repair_rejects_underproven_semantic_supersession(tmp_pat
                 "UPDATE raw_revision_applications SET accepted_raw_id = ? WHERE raw_id = ?",
                 (sibling_raw_id, sibling_raw_id),
             )
-    else:
+    elif mutation == "membership":
         with sqlite3.connect(tmp_path / "source.db") as source:
             source.execute(
                 "UPDATE raw_session_memberships SET decision = 'ambiguous', decided_at_ms = 4 WHERE raw_id = ?",
+                (sibling_raw_id,),
+            )
+    else:
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "UPDATE raw_revision_applications SET decision = 'selected_baseline' WHERE raw_id = ?",
                 (sibling_raw_id,),
             )
 
