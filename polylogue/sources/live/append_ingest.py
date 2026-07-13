@@ -163,7 +163,18 @@ def _ingest_append_plans_archive(
                     if authority is RawRevisionAuthority.QUARANTINED:
                         deferred.append(plan)
                         continue
-                    replay_plan = archive.classify_raw_revision_cohort(logical_source_key)
+                    # The append parent above is a durable byte-contiguous
+                    # witness.  Once the prior full snapshot has been
+                    # classified, its baseline and every accepted append are
+                    # already represented in source-tier metadata.  Rebuild
+                    # the replay plan from that metadata instead of reopening
+                    # every retained historical full snapshot on each small
+                    # append.  The classifier remains the conservative
+                    # recovery path for a legacy/crash-interrupted cohort
+                    # whose accepted metadata has not yet been established.
+                    replay_plan = archive.raw_revision_replay_plan(logical_source_key)
+                    if not replay_plan.accepted_raw_ids:
+                        replay_plan = archive.classify_raw_revision_cohort(logical_source_key)
                     parsed_by_raw_id: dict[str, Any] = {}
                     for replay_raw_id in replay_plan.accepted_raw_ids:
                         replay_provider, replay_payload, replay_source_path, _kind = archive.raw_revision_material(
