@@ -510,6 +510,7 @@ describe("capture retry queue", () => {
         ok: true,
         provider: "chatgpt",
         provider_session_id: "conv-9",
+        state: "spooled_only",
         artifact_ref: "chatgpt/conv-9.json",
       });
     });
@@ -529,6 +530,10 @@ describe("capture retry queue", () => {
     expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
     expect(stored.polylogueCaptureQueue.entries[0].envelope.session.provider_session_id).toBe("conv-9");
     expect(stored.polylogueCaptureQueue.entries[0].attempts).toBe(0);
+    expect(stored.polylogueConversationTimeline["chatgpt:conv-9"][0]).toMatchObject({
+      event: "held_with_reason",
+      detail: "capture_queued_for_retry",
+    });
     expect(globalThis.chrome.alarms.create).toHaveBeenCalledWith(
       "polylogueCaptureRetry",
       expect.objectContaining({ periodInMinutes: 1 }),
@@ -548,6 +553,12 @@ describe("capture retry queue", () => {
     expect(stored.polylogueCaptureLog[0].reason).toBe("capture_retry_drained");
     expect(stored.polylogueState.captured).toBe(true);
     expect(stored.polylogueState.provider_session_id).toBe("conv-9");
+    expect(stored.polylogueState.archive_state).toEqual({ state: "spooled_only" });
+    expect(stored.polylogueConversationTimeline["chatgpt:conv-9"][0]).toMatchObject({
+      event: "captured",
+      reason: "capture_retry_drained",
+      detail: "spooled_only",
+    });
   });
 
   it("does not queue a capture rejected with a client error", async () => {

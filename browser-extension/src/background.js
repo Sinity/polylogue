@@ -320,10 +320,19 @@ async function drainCaptureQueue(trigger = "alarm") {
         queued_id: entry.id,
         attempts: entry.attempts,
       });
+      const archiveState = result.state ? { state: result.state } : null;
+      await appendConversationTimeline({
+        provider: summary.provider || result.provider,
+        providerSessionId: summary.providerSessionId || result.provider_session_id,
+        event: "captured",
+        reason: "capture_retry_drained",
+        detail: result.state || "capture_accepted",
+      });
       await setState({
         online: true,
         captured: true,
         last_capture: result,
+        archive_state: archiveState,
         provider: summary.provider || result.provider,
         provider_session_id: summary.providerSessionId || result.provider_session_id,
         capture_mode: summary.captureMode,
@@ -1278,6 +1287,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch (error) {
         if (isRetryableCaptureError(error)) {
           await enqueueCaptureForRetry({ envelope, reason: message.reason, error });
+          await appendConversationTimeline({
+            provider: summary.provider,
+            providerSessionId: summary.providerSessionId,
+            event: "held_with_reason",
+            reason: message.reason || "content_script_capture",
+            detail: "capture_queued_for_retry",
+            tabId: sender.tab?.id || null,
+          });
           await setState({
             online: false,
             captured: false,
