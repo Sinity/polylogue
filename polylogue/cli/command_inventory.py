@@ -35,7 +35,7 @@ class RootCommandRoleSection:
 ROOT_COMMAND_ROLE_SECTIONS: tuple[RootCommandRoleSection, ...] = (
     RootCommandRoleSection(
         title="Search, read, and action workflows",
-        commands=("find", "read", "select", "mark", "analyze", "facets", "delete", "continue"),
+        commands=("find", "read", "select", "mark", "note", "analyze", "facets", "delete", "continue"),
         footer="Use `find QUERY then ACTION`; `facets` is the direct archive aggregate command.",
     ),
     RootCommandRoleSection(

@@ -41,7 +41,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 5723
+    loc: 5815
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -825,6 +825,10 @@ files:
     loc: 2576
     target: polylogue/cli/commands/maintenance.py
     owner: stable
+  - path: polylogue/cli/commands/note.py
+    loc: 92
+    target: polylogue/cli/commands/note.py
+    owner: stable
   - path: polylogue/cli/commands/ops.py
     loc: 18
     target: polylogue/cli/commands/ops.py
@@ -1274,7 +1278,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 1877
+    loc: 1919
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1354,7 +1358,7 @@ files:
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/lifecycle.py
-    loc: 243
+    loc: 285
     target: polylogue/daemon/lifecycle.py
     owner: stable
   - path: polylogue/daemon/lineage_startup.py
@@ -1427,7 +1431,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 2695
+    loc: 2697
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
@@ -3516,7 +3520,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 1806
+    loc: 1822
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
@@ -3540,7 +3544,7 @@ files:
     target: polylogue/storage/sqlite/connection.py
     owner: stable
   - path: polylogue/storage/sqlite/connection_profile.py
-    loc: 282
+    loc: 289
     target: polylogue/storage/sqlite/connection_profile.py
     owner: stable
   - path: polylogue/storage/sqlite/maintenance.py

@@ -95,6 +95,41 @@ polylogued status
 | `polylogued status` | Daemon health check |
 | `polylogue --id <id> read --view transcript` | Display full session |
 
+## Optional terminal note widget (zsh)
+
+To turn the last shell command into an editable capture candidate, add this
+optional widget to `~/.zshrc`, after any other `precmd` hook registration. It
+has no Polylogue runtime dependency; it only prefills the command line, leaving
+you to edit and submit it normally.
+
+```zsh
+typeset -g POLYLOGUE_NOTE_LAST_STATUS=0
+
+_polylogue_note_remember_status() {
+  POLYLOGUE_NOTE_LAST_STATUS=$?
+}
+
+# Run first: later precmd hooks may themselves return a different status.
+precmd_functions=(
+  _polylogue_note_remember_status
+  ${precmd_functions:#_polylogue_note_remember_status}
+)
+
+_polylogue_note_prefill() {
+  local last_command note_text
+  last_command="$(fc -ln -1)"
+  note_text="${last_command} [exit ${POLYLOGUE_NOTE_LAST_STATUS}]"
+  BUFFER="polylogue note --ref last ${(qq)note_text}"
+  zle end-of-line
+}
+
+zle -N _polylogue_note_prefill
+bindkey '^Xn' _polylogue_note_prefill
+```
+
+Press `Ctrl-X`, then `n`, review the prefilled text, and press Enter to capture
+it as a candidate for later judgment.
+
 ## Configuration
 
 No config file is required. Sensible defaults cover everything.

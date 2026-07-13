@@ -156,6 +156,7 @@ Commands:
     read      Read matched sessions (route to view/destination).
     select    Select one matched session or print candidate identities.
     mark      Mark selected sessions; review candidates under mark candidates.
+    note      Capture a terminal memory candidate.
     analyze   Analyze matched sessions and named facet families.
     facets    Show global or scoped archive facet families.
     delete    Delete matched sessions.

@@ -82,6 +82,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     # ------- blackboard (#1697) -------
     "blackboard_list": ("envelope", frozenset({"items", "total"})),
     "blackboard_post": "operation_result",
+    "capture_assertion_candidate": "single_object",
     # ------- mutation list -------
     "list_tags": "stats_map",  # RootModel[dict[tag, count]]; small, by design
     "list_marks": ("envelope", frozenset({"items", "total"})),

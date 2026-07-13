@@ -23,6 +23,7 @@ EXPECTED_TOOL_NAMES = {
     "build_context_image",
     "blackboard_list",
     "blackboard_post",
+    "capture_assertion_candidate",
     "import_annotation_batch",
     "join_typed_annotations",
     "list_assertion_claims",
