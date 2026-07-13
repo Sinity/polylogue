@@ -1155,8 +1155,14 @@ class CursorStore:
             ).fetchall()
         return [str(row[0]) for row in rows]
 
-    def list_failed_records(self) -> list[CursorRecord]:
-        """Return all failed, non-excluded cursor records."""
+    def list_retry_records(self) -> list[CursorRecord]:
+        """Return non-excluded cursor records with a scheduled retry.
+
+        Most records here represent ordinary failed ingestion.  A neutral
+        full-cursor handoff is also deliberately included: it has no failure
+        count because a source that is still appending is healthy, but it does
+        need a timed archive-reconciliation wakeup if filesystem events stop.
+        """
         with self._connect_ops() as conn:
             rows = conn.execute(
                 """
@@ -1179,7 +1185,11 @@ class CursorStore:
                         updated_at_ms,
                     excluded
                 FROM ingest_cursor
-                WHERE failure_count > 0 AND excluded = 0
+                WHERE excluded = 0
+                  AND (
+                      failure_count > 0
+                      OR (content_fingerprint IS NULL AND next_retry_at IS NOT NULL)
+                  )
                 ORDER BY next_retry_at IS NULL DESC, next_retry_at ASC, source_path ASC
                 """
             ).fetchall()

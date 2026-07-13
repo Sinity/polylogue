@@ -20,6 +20,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +53,14 @@ _CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 _PERIODIC_CATCH_UP_INTERVAL_S = 15.0
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
+
+
+class _ArchivedCursorReconciliation(str, Enum):
+    """Whether archive evidence can safely restore a live cursor."""
+
+    RECONCILED = "reconciled"
+    UNAVAILABLE = "unavailable"
+    INCOMPATIBLE = "incompatible"
 
 
 def _stage_timing_summary(stage_timings_s: dict[str, float], *, limit: int = 8) -> str:
@@ -453,7 +462,7 @@ class LiveWatcher:
             return
         due_paths: list[Path] = []
         next_retry_at: datetime | None = None
-        for record in self._cursor.list_failed_records():
+        for record in self._cursor.list_retry_records():
             path = Path(record.source_path)
             if not self._source_accepts(path):
                 continue
@@ -627,11 +636,15 @@ class LiveWatcher:
         if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
             if not _retry_due(cursor.next_retry_at):
                 return False
-            if self._reconcile_archived_cursor(path, stat=stat):
+            reconciliation = self._reconcile_archived_cursor_outcome(path, stat=stat)
+            if reconciliation is _ArchivedCursorReconciliation.RECONCILED:
                 reconciled = self._cursor.get_record(path)
                 return reconciled is not None and size > reconciled.byte_offset
-            self._cursor.defer_full_cursor_reconciliation(path)
-            return False
+            if reconciliation is _ArchivedCursorReconciliation.UNAVAILABLE:
+                self._cursor.defer_full_cursor_reconciliation(path)
+                return False
+            self._invalidate_deferred_full_cursor(path, stat=stat)
+            return True
         if cursor.failure_count > 0:
             if self._reconcile_archived_cursor(path, stat=stat):
                 cursor = self._cursor.get_record(path)
@@ -721,7 +734,40 @@ class LiveWatcher:
         )
         return True
 
+    def _invalidate_deferred_full_cursor(self, path: Path, *, stat: os.stat_result) -> None:
+        """Clear a busy-handoff defer when current bytes reject archive authority."""
+
+        updated = self._cursor.set(
+            path,
+            stat.st_size,
+            byte_offset=0,
+            last_complete_newline=0,
+            parser_fingerprint=_PARSER_FINGERPRINT,
+            content_fingerprint=None,
+            tail_hash=None,
+            source_name=self._source_name_for(path),
+            st_dev=stat.st_dev,
+            st_ino=stat.st_ino,
+            mtime_ns=stat.st_mtime_ns,
+            failure_count=0,
+            next_retry_at=None,
+            excluded=False,
+            allow_backward=True,
+        )
+        if not updated:
+            raise sqlite3.OperationalError(f"failed to invalidate deferred cursor for {path}")
+
     def _reconcile_archived_cursor(self, path: Path, *, stat: os.stat_result) -> bool:
+        """Restore a missing/stale cursor from proven archive raw state."""
+
+        return self._reconcile_archived_cursor_outcome(path, stat=stat) is _ArchivedCursorReconciliation.RECONCILED
+
+    def _reconcile_archived_cursor_outcome(
+        self,
+        path: Path,
+        *,
+        stat: os.stat_result,
+    ) -> _ArchivedCursorReconciliation:
         """Restore a missing/stale cursor from proven archive raw state.
 
         A daemon interruption can leave the archive source tier populated but
@@ -736,7 +782,7 @@ class LiveWatcher:
         source_db = archive_root / "source.db"
         index_db = archive_root / "index.db"
         if not source_db.exists() or not index_db.exists():
-            return False
+            return _ArchivedCursorReconciliation.UNAVAILABLE
         try:
             with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0) as conn:
                 rows = conn.execute(
@@ -765,22 +811,22 @@ class LiveWatcher:
                     None,
                 )
         except sqlite3.Error:
-            return False
+            return _ArchivedCursorReconciliation.UNAVAILABLE
         if row is None:
-            return False
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         _raw_id, origin, blob_hash, blob_size = row
         archived_size = int(blob_size or 0)
         current_size = int(stat.st_size)
         if archived_size <= 0 or archived_size > current_size:
-            return False
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         if isinstance(blob_hash, bytes):
             content_fingerprint = blob_hash.hex()
         elif isinstance(blob_hash, str):
             content_fingerprint = blob_hash.lower()
         else:
-            return False
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         if not _archive_blob_exists(archive_root, content_fingerprint):
-            return False
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         try:
             current_fingerprint, _fingerprint_bytes = sha256_range_from_path(
                 path,
@@ -788,7 +834,7 @@ class LiveWatcher:
                 end_offset=archived_size,
             )
             if current_fingerprint != content_fingerprint:
-                return False
+                return _ArchivedCursorReconciliation.INCOMPATIBLE
             if archived_size == current_size:
                 tail_hash, last_complete_newline, _bytes_read = tail_hash_and_last_complete_newline_from_path(
                     path, current_size
@@ -800,7 +846,7 @@ class LiveWatcher:
                 last_complete_newline = archived_size
             post_read_stat = path.stat()
         except OSError:
-            return False
+            return _ArchivedCursorReconciliation.UNAVAILABLE
         if (
             post_read_stat.st_dev,
             post_read_stat.st_ino,
@@ -808,7 +854,7 @@ class LiveWatcher:
             post_read_stat.st_mtime_ns,
             post_read_stat.st_ctime_ns,
         ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
-            return False
+            return _ArchivedCursorReconciliation.UNAVAILABLE
         self._cursor.set(
             path,
             archived_size,
@@ -830,7 +876,7 @@ class LiveWatcher:
         )
         self._cursor.reset_failures(path)
         logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
-        return True
+        return _ArchivedCursorReconciliation.RECONCILED
 
     async def _ingest_files(
         self,

@@ -1870,8 +1870,17 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
 
     monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", original_hash)
     watcher = LiveWatcher(polylogue, (WatchSource(name="codex", root=root),), cursor=cursor)
-    original_reconcile = watcher._reconcile_archived_cursor
-    monkeypatch.setattr(watcher, "_reconcile_archived_cursor", lambda _path, *, stat: False)
+    scheduled_retries: list[object] = []
+    monkeypatch.setattr(watcher, "_schedule_failed_retry_wakeup", scheduled_retries.append)
+    watcher._schedule_failed_retry_scan()
+    assert len(scheduled_retries) == 1
+
+    original_reconcile = watcher._reconcile_archived_cursor_outcome
+    monkeypatch.setattr(
+        watcher,
+        "_reconcile_archived_cursor_outcome",
+        lambda _path, *, stat: live_watcher._ArchivedCursorReconciliation.UNAVAILABLE,
+    )
     monkeypatch.setattr(live_watcher, "_retry_due", lambda _retry_at: True)
     for _ in range(5):
         assert not watcher._needs_work(path)
@@ -1880,7 +1889,7 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
     assert unavailable.failure_count == 0
     assert not unavailable.excluded
 
-    monkeypatch.setattr(watcher, "_reconcile_archived_cursor", original_reconcile)
+    monkeypatch.setattr(watcher, "_reconcile_archived_cursor_outcome", original_reconcile)
     assert watcher._needs_work(path)
     reconciled = cursor.get_record(path)
     assert reconciled is not None
@@ -1892,6 +1901,22 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
     assert second.full_file_count == 0
     assert second.append_file_count == 1
     assert second.succeeded_file_count == 1
+
+    processor._defer_full_cursor_retry(path, source_name="codex", stat=path.stat())
+    replacement = b'{"type":"session_meta","payload":{"id":"busy-replacement"}}\n'
+    path.write_bytes(replacement)
+
+    assert watcher._needs_work(path)
+    invalidated = cursor.get_record(path)
+    assert invalidated is not None
+    assert invalidated.byte_offset == 0
+    assert invalidated.content_fingerprint is None
+    assert invalidated.next_retry_at is None
+
+    third = asyncio.run(processor.ingest_files([path]))
+    assert third.full_file_count == 1
+    assert third.append_file_count == 0
+    assert third.succeeded_file_count == 1
 
 
 @pytest.mark.parametrize("replacement_mode", ["atomic", "in-place"])
