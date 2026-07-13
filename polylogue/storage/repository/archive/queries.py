@@ -197,7 +197,7 @@ class RepositoryArchiveQueryMixin:
     ) -> AggregateMessageStats:
         return await self.queries.aggregate_message_stats(session_ids)
 
-    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
+    async def get_stats_by(self, group_by: str = "origin") -> dict[str, int]:
         return await self.queries.get_stats_by(group_by)
 
     async def count(

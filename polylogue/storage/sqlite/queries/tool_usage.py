@@ -14,7 +14,7 @@ import aiosqlite
 from typing_extensions import TypedDict
 
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
 
 __all__ = [
@@ -122,7 +122,7 @@ async def get_tool_usage_rows(
     rows = await cursor.fetchall()
     return [
         {
-            "source_name": _provider_for_origin(str(row["origin"] or "unknown-export")).value,
+            "source_name": str(row["origin"] or "unknown-export"),
             "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
             "action_kind": str(row["action_kind"] or "unknown"),
             "call_count": int(row["call_count"] or 0),
@@ -178,10 +178,10 @@ async def get_tool_usage_provider_coverage_rows(
     ]
 
 
-def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
-    if provider_or_origin is None:
+def _origin_for_tool_usage_filter(origin: str | None) -> str | None:
+    if origin is None:
         return None
-    return origin_from_provider(provider_or_origin).value
+    return Origin.from_string(origin).value
 
 
 def _provider_for_origin(origin: str) -> Provider:

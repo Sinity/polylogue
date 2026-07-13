@@ -3183,7 +3183,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         unit_envelope = await archive.query_units("messages where text:needle", limit=5)
         normal_neighbors = await archive.neighbor_candidates(
             query="needle",
-            provider="codex-session",
+            origin="codex-session",
             limit=3,
         )
         paged_messages, total_messages = await archive.get_messages_paginated(
@@ -3727,8 +3727,8 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
 
         assert insight.total_call_count == 1
         assert insight.total_distinct_tools == 1
-        assert insight.providers_with_data == 1
-        assert insight.providers_without_data == 1
+        assert insight.origins_with_data == 1
+        assert insight.origins_without_data == 1
         assert insight.has_coverage_gaps is True
         assert len(insight.entries) == 1
         entry = insight.entries[0]
@@ -3741,7 +3741,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
         assert entry.distinct_tool_ids == 1
         assert entry.affected_path_calls == 1
         assert entry.output_text_calls == 1
-        coverage = {item.source_name: item for item in insight.provider_coverage}
+        coverage = {item.source_name: item for item in insight.origin_coverage}
         assert coverage[Provider.CODEX.value].data_available is True
         assert coverage[Provider.CODEX.value].action_count == 1
         assert coverage[Provider.CHATGPT.value].data_available is False

@@ -14,8 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin
 from polylogue.insights.archive import SessionTagRollupInsight
 from polylogue.insights.archive_models import ArchiveInsightProvenance
 
@@ -25,7 +24,7 @@ if TYPE_CHECKING:
 _ORIGIN_TAG_PREFIX = "origin:"
 
 
-def synthesize_provider_tag_rollups(
+def synthesize_origin_tag_rollups(
     archive: ArchiveStore,
     *,
     origin: str | None = None,
@@ -46,21 +45,7 @@ def synthesize_provider_tag_rollups(
         until_ms=until_ms,
     )
     needle = query.strip().lower() if query else None
-    # Provider -> Origin, not the reverse: this direction is total and
-    # well-defined even for the non-injective Origin.AISTUDIO_DRIVE fiber --
-    # both "gemini" and "drive" forward-map to the same "aistudio-drive"
-    # origin_filter (polylogue-9e5.8 Step 5 investigation / polylogue-4rrv).
-    # There is nothing here for a Source-family disambiguator to recover:
-    # disambiguation only matters for the *reverse* Origin -> Provider
-    # lookup (see core/sources.py's provider_from_origin family_hint), which
-    # this function never performs. What *is* coarse is the resulting
-    # rollup: origin_filter can only select the whole "aistudio-drive"
-    # bucket, so origin="gemini" and origin="drive" return identical
-    # counts today (both fold into one origin-tag rollup, and per-origin
-    # ArchiveStore.stats_by("origin", ...) has no finer axis to group on --
-    # see polylogue-4rrv's follow-up bead for the durable capture-mode field
-    # that would be needed to split them).
-    origin_filter = origin_from_provider(Provider.from_string(origin)).value if origin is not None else None
+    origin_filter = Origin.from_string(origin).value if origin is not None else None
     rollups: list[SessionTagRollupInsight] = []
     for origin_value, count in counts.items():
         if origin_filter is not None and origin_value != origin_filter:

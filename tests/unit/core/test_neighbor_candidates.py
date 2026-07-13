@@ -24,7 +24,7 @@ async def _discover(
         candidates = await archive.neighbor_candidates(
             session_id=request.session_id,
             query=request.query,
-            provider=request.origin,
+            origin=request.origin,
             limit=request.limit,
             window_hours=request.window_hours,
         )
@@ -39,7 +39,7 @@ async def _discover_candidates(db_path: Path, request: NeighborDiscoveryRequest)
         return await archive.neighbor_candidates(
             session_id=request.session_id,
             query=request.query,
-            provider=request.origin,
+            origin=request.origin,
             limit=request.limit,
             window_hours=request.window_hours,
         )

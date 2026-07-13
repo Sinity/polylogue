@@ -26,9 +26,9 @@ from polylogue.insights.registry import (
 
 def _archive_coverage_insight() -> ArchiveCoverageInsight:
     return ArchiveCoverageInsight(
-        group_by="provider",
-        bucket="claude-code",
-        source_name="claude-code",
+        group_by="origin",
+        bucket="claude-code-session",
+        source_name="claude-code-session",
         session_count=1,
         message_count=2,
         user_message_count=1,

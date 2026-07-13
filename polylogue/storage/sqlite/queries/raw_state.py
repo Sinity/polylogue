@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import aiosqlite
 
 from polylogue.core.enums import Origin, Provider, ValidationMode, ValidationStatus
+from polylogue.core.sources import origin_from_provider
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
@@ -17,8 +18,16 @@ RAW_ORIGIN_FILTER_SQL = "origin"
 
 
 def origin_filter_value(token: str) -> str:
-    """Validate and return a canonical ``origin`` value."""
-    return Origin(token).value
+    """Normalize a raw-wire token to the origin stored in ``raw_sessions``.
+
+    Raw acquisition remains a Provider-wire boundary, so historical callers
+    may provide either a canonical origin or a provider token. Unknown input
+    safely maps to ``unknown-export`` rather than reaching SQL as a value.
+    """
+    try:
+        return Origin(token).value
+    except ValueError:
+        return origin_from_provider(Provider.from_string(token)).value
 
 
 def _now_ms() -> int:

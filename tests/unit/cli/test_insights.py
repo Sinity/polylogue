@@ -69,9 +69,9 @@ def _exception_message(result: Result) -> str:
 
 def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     product = ArchiveCoverageInsight(
-        group_by="provider",
-        bucket="claude-code",
-        source_name="claude-code",
+        group_by="origin",
+        bucket="claude-code-session",
+        source_name="claude-code-session",
         session_count=1,
         message_count=2,
         user_message_count=1,

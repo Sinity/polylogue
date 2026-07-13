@@ -596,8 +596,8 @@ register(
         ),
         mcp_default_limit=200,
         fields=(
-            InsightField("origins_with_data", _attr("providers_with_data", "0"), group=0),
-            InsightField("origins_without_data", _attr("providers_without_data", "0"), group=0),
+            InsightField("origins_with_data", _attr("origins_with_data", "0"), group=0),
+            InsightField("origins_without_data", _attr("origins_without_data", "0"), group=0),
             InsightField("total_calls", _attr("total_call_count", "0"), group=0),
             InsightField("distinct_tools", _attr("total_distinct_tools", "0"), group=0),
             InsightField("coverage_gaps", _attr("has_coverage_gaps"), group=0),

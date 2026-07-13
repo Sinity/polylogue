@@ -10,7 +10,7 @@ Covers four shapes:
    actions surface as ``data_available=False`` rather than silent
    zeros.
 4. MCP envelope shape: ``list_tool_usage_insights`` returns a single
-   ``ToolUsageInsight`` whose ``provider_coverage`` is always exhaustive,
+   ``ToolUsageInsight`` whose ``origin_coverage`` is always exhaustive,
    even when ``entries`` are narrowed by a query filter.
 """
 
@@ -58,7 +58,7 @@ class TestExtractMcpServer:
 
 def _row(
     *,
-    provider: str,
+    origin: str,
     tool: str,
     action_kind: str = "tool_use",
     calls: int = 1,
@@ -69,7 +69,7 @@ def _row(
     outputs: int = 0,
 ) -> ToolUsageRow:
     return {
-        "source_name": provider,
+        "source_name": origin,
         "normalized_tool_name": tool,
         "action_kind": action_kind,
         "call_count": calls,
@@ -83,7 +83,7 @@ def _row(
 
 def _coverage(
     *,
-    provider: str,
+    origin: str,
     sessions: int,
     events: int = 0,
     tools: int = 0,
@@ -93,7 +93,7 @@ def _coverage(
     outputs: int = 0,
 ) -> ToolUsageProviderCoverageRow:
     return {
-        "source_name": provider,
+        "source_name": origin,
         "session_count": sessions,
         "action_count": events,
         "distinct_tool_count": tools,
@@ -109,11 +109,11 @@ class TestBuildToolUsageInsight:
 
     def test_basic_aggregation(self) -> None:
         rows = [
-            _row(provider="claude-code", tool="Read", calls=10, sessions=3, messages=8),
-            _row(provider="claude-code", tool="Bash", calls=4, sessions=2),
+            _row(origin="claude-code-session", tool="Read", calls=10, sessions=3, messages=8),
+            _row(origin="claude-code-session", tool="Bash", calls=4, sessions=2),
         ]
         coverage = [
-            _coverage(provider="claude-code", sessions=3, events=14, tools=2, kinds=1, paths=14),
+            _coverage(origin="claude-code-session", sessions=3, events=14, tools=2, kinds=1, paths=14),
         ]
         insight = build_tool_usage_insight(
             rows=rows,
@@ -126,51 +126,51 @@ class TestBuildToolUsageInsight:
         assert [entry.normalized_tool_name for entry in insight.entries] == ["Read", "Bash"]
         assert insight.total_call_count == 14
         assert insight.total_distinct_tools == 2
-        assert insight.providers_with_data == 1
-        assert insight.providers_without_data == 0
+        assert insight.origins_with_data == 1
+        assert insight.origins_without_data == 0
         assert insight.has_coverage_gaps is False
-        assert insight.provider_coverage[0].data_available is True
-        assert insight.provider_coverage[0].has_affected_paths_signal is True
+        assert insight.origin_coverage[0].data_available is True
+        assert insight.origin_coverage[0].has_affected_paths_signal is True
 
-    def test_filter_by_provider_does_not_hide_coverage_gaps(self) -> None:
+    def test_filter_by_origin_does_not_hide_coverage_gaps(self) -> None:
         rows = [
-            _row(provider="claude-code", tool="Read", calls=5),
-            _row(provider="codex", tool="apply_patch", calls=2),
+            _row(origin="claude-code-session", tool="Read", calls=5),
+            _row(origin="codex-session", tool="apply_patch", calls=2),
         ]
         coverage = [
-            _coverage(provider="claude-code", sessions=2, events=5, tools=1, kinds=1),
-            _coverage(provider="codex", sessions=1, events=2, tools=1, kinds=1),
+            _coverage(origin="claude-code-session", sessions=2, events=5, tools=1, kinds=1),
+            _coverage(origin="codex-session", sessions=1, events=2, tools=1, kinds=1),
             # ChatGPT has sessions but no tool data — this MUST stay
-            # visible even when the user narrows to a different provider.
-            _coverage(provider="chatgpt", sessions=4, events=0),
+            # visible even when the user narrows to a different origin.
+            _coverage(origin="chatgpt-export", sessions=4, events=0),
         ]
         insight = build_tool_usage_insight(
             rows=rows,
             coverage_rows=coverage,
-            query=ToolUsageInsightQuery(origin="claude-code"),
+            query=ToolUsageInsightQuery(origin="claude-code-session"),
             materialized_at="2026-05-17T00:00:00+00:00",
         )
-        assert [entry.source_name for entry in insight.entries] == ["claude-code"]
+        assert [entry.source_name for entry in insight.entries] == ["claude-code-session"]
         # Coverage is exhaustive even though entries are narrowed.
-        assert {entry.source_name for entry in insight.provider_coverage} == {
-            "claude-code",
-            "codex",
-            "chatgpt",
+        assert {entry.source_name for entry in insight.origin_coverage} == {
+            "claude-code-session",
+            "codex-session",
+            "chatgpt-export",
         }
-        assert insight.providers_with_data == 2
-        assert insight.providers_without_data == 1
+        assert insight.origins_with_data == 2
+        assert insight.origins_without_data == 1
         assert insight.has_coverage_gaps is True
-        chatgpt = next(entry for entry in insight.provider_coverage if entry.source_name == "chatgpt")
+        chatgpt = next(entry for entry in insight.origin_coverage if entry.source_name == "chatgpt-export")
         assert chatgpt.data_available is False
         assert chatgpt.action_count == 0
 
     def test_mcp_server_extracted_for_each_entry(self) -> None:
         rows = [
-            _row(provider="claude-code", tool="mcp__github__create_pull_request", calls=3),
-            _row(provider="claude-code", tool="mcp__polylogue__search", calls=2),
-            _row(provider="claude-code", tool="Read", calls=1),
+            _row(origin="claude-code-session", tool="mcp__github__create_pull_request", calls=3),
+            _row(origin="claude-code-session", tool="mcp__polylogue__search", calls=2),
+            _row(origin="claude-code-session", tool="Read", calls=1),
         ]
-        coverage = [_coverage(provider="claude-code", sessions=1, events=6, tools=3, kinds=1)]
+        coverage = [_coverage(origin="claude-code-session", sessions=1, events=6, tools=3, kinds=1)]
         insight = build_tool_usage_insight(
             rows=rows,
             coverage_rows=coverage,
@@ -184,10 +184,10 @@ class TestBuildToolUsageInsight:
 
     def test_filter_by_mcp_server_keeps_only_matching(self) -> None:
         rows = [
-            _row(provider="claude-code", tool="mcp__github__create_pull_request", calls=3),
-            _row(provider="claude-code", tool="mcp__polylogue__search", calls=2),
+            _row(origin="claude-code-session", tool="mcp__github__create_pull_request", calls=3),
+            _row(origin="claude-code-session", tool="mcp__polylogue__search", calls=2),
         ]
-        coverage = [_coverage(provider="claude-code", sessions=1, events=5)]
+        coverage = [_coverage(origin="claude-code-session", sessions=1, events=5)]
         insight = build_tool_usage_insight(
             rows=rows,
             coverage_rows=coverage,
@@ -197,28 +197,28 @@ class TestBuildToolUsageInsight:
         assert [entry.normalized_tool_name for entry in insight.entries] == ["mcp__github__create_pull_request"]
         assert insight.entries[0].mcp_server == "github"
 
-    def test_provider_without_sessions_not_counted_as_gap(self) -> None:
-        # A provider that has neither sessions nor actions still
+    def test_origin_without_sessions_not_counted_as_gap(self) -> None:
+        # An origin that has neither sessions nor actions still
         # appears in coverage with session_count=0, but it should not
-        # contribute to ``providers_without_data`` because there is nothing
+        # contribute to ``origins_without_data`` because there is nothing
         # to be missing.
         coverage = [
-            _coverage(provider="claude-code", sessions=2, events=4),
-            _coverage(provider="legacy-empty", sessions=0, events=0),
+            _coverage(origin="claude-code-session", sessions=2, events=4),
+            _coverage(origin="unknown-export", sessions=0, events=0),
         ]
         insight = build_tool_usage_insight(
-            rows=[_row(provider="claude-code", tool="Read", calls=4)],
+            rows=[_row(origin="claude-code-session", tool="Read", calls=4)],
             coverage_rows=coverage,
             query=ToolUsageInsightQuery(),
             materialized_at="2026-05-17T00:00:00+00:00",
         )
-        assert insight.providers_with_data == 1
-        assert insight.providers_without_data == 0
+        assert insight.origins_with_data == 1
+        assert insight.origins_without_data == 0
         assert insight.has_coverage_gaps is False
 
     def test_pagination_respects_offset_and_limit(self) -> None:
-        rows = [_row(provider="claude-code", tool=f"tool_{i:02d}", calls=100 - i) for i in range(10)]
-        coverage = [_coverage(provider="claude-code", sessions=1, events=10)]
+        rows = [_row(origin="claude-code-session", tool=f"tool_{i:02d}", calls=100 - i) for i in range(10)]
+        coverage = [_coverage(origin="claude-code-session", sessions=1, events=10)]
         insight = build_tool_usage_insight(
             rows=rows,
             coverage_rows=coverage,
@@ -242,13 +242,13 @@ class TestListToolUsageInsightsEndToEnd:
 
     The archive ``actions`` view derives tool calls from ``tool_use`` content
     blocks (paired with ``tool_result`` blocks by ``tool_id``), so the
-    per-(provider, tool) rollups are seeded by writing those blocks through the
+    per-(origin, tool) rollups are seeded by writing those blocks through the
     archive ``SessionBuilder``. The native ``_tool_usage_rows`` query
     lower-cases ``tool_name``, so the normalized tool names asserted below are
     lower-case (``read`` / ``bash`` / ``apply_patch``).
     """
 
-    async def test_aggregates_per_provider_and_tool(self, tmp_path: Path) -> None:
+    async def test_aggregates_per_origin_and_tool(self, tmp_path: Path) -> None:
         archive = _archive(tmp_path)
         db_path = archive.archive_root / "index.db"
         # claude-code: two `read` tool_use blocks with distinct tool_ids and
@@ -292,7 +292,7 @@ class TestListToolUsageInsightsEndToEnd:
         read = next(
             entry
             for entry in insight.entries
-            if entry.source_name == "claude-code" and entry.normalized_tool_name == "read"
+            if entry.source_name == "claude-code-session" and entry.normalized_tool_name == "read"
         )
         assert read.call_count == 2
         assert read.session_count == 1
@@ -301,19 +301,19 @@ class TestListToolUsageInsightsEndToEnd:
         bash = next(
             entry
             for entry in insight.entries
-            if entry.source_name == "claude-code" and entry.normalized_tool_name == "bash"
+            if entry.source_name == "claude-code-session" and entry.normalized_tool_name == "bash"
         )
         assert bash.output_text_calls == 1
         assert bash.affected_path_calls == 0
-        # Coverage covers both providers
-        providers = {entry.source_name for entry in insight.provider_coverage}
-        assert providers == {"claude-code", "codex"}
+        # Coverage covers both origins.
+        origins = {entry.source_name for entry in insight.origin_coverage}
+        assert origins == {"claude-code-session", "codex-session"}
 
-    async def test_coverage_reports_provider_without_actions(self, tmp_path: Path) -> None:
+    async def test_coverage_reports_origin_without_actions(self, tmp_path: Path) -> None:
         archive = _archive(tmp_path)
         db_path = archive.archive_root / "index.db"
         # ChatGPT session exists but carries no tool_use blocks — the
-        # substrate genuinely has no tool data for this provider.
+        # substrate genuinely has no tool data for this origin.
         (
             SessionBuilder(db_path, "gpt-1")
             .provider("chatgpt")
@@ -336,15 +336,15 @@ class TestListToolUsageInsightsEndToEnd:
 
         result = await archive.list_tool_usage_insights(ToolUsageInsightQuery())
         insight = result[0]
-        chatgpt = next(entry for entry in insight.provider_coverage if entry.source_name == "chatgpt")
+        chatgpt = next(entry for entry in insight.origin_coverage if entry.source_name == "chatgpt-export")
         assert chatgpt.session_count == 1
         assert chatgpt.action_count == 0
         assert chatgpt.data_available is False
-        cc = next(entry for entry in insight.provider_coverage if entry.source_name == "claude-code")
+        cc = next(entry for entry in insight.origin_coverage if entry.source_name == "claude-code-session")
         assert cc.data_available is True
         assert insight.has_coverage_gaps is True
-        assert insight.providers_without_data == 1
-        assert insight.providers_with_data == 1
+        assert insight.origins_without_data == 1
+        assert insight.origins_with_data == 1
 
     async def test_query_filters_entries_without_narrowing_coverage(self, tmp_path: Path) -> None:
         archive = _archive(tmp_path)
@@ -391,12 +391,12 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert [entry.normalized_tool_name for entry in insight.entries] == ["mcp__serena__find_symbol"]
         assert insight.entries[0].call_count == 2
-        assert insight.entries[0].source_name == "claude-code"
+        assert insight.entries[0].source_name == "claude-code-session"
         assert insight.entries[0].mcp_server == "serena"
-        assert {entry.source_name for entry in insight.provider_coverage} == {
-            "claude-code",
-            "codex",
-            "chatgpt",
+        assert {entry.source_name for entry in insight.origin_coverage} == {
+            "claude-code-session",
+            "codex-session",
+            "chatgpt-export",
         }
         assert insight.has_coverage_gaps is True
 
@@ -473,7 +473,7 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert rows == [
             {
-                "source_name": "claude-code",
+                "source_name": "claude-code-session",
                 "origin": "claude-code-session",
                 "normalized_tool_name": "mcp__serena__find_symbol",
                 "action_kind": "mcp",
@@ -481,7 +481,7 @@ class TestListToolUsageInsightsEndToEnd:
                 "event_count": 1,
             },
             {
-                "source_name": "claude-code",
+                "source_name": "claude-code-session",
                 "origin": "claude-code-session",
                 "normalized_tool_name": "mcp__serena__find_symbol",
                 "action_kind": "mcp",
@@ -565,7 +565,7 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert rows == [
             {
-                "source_name": "codex",
+                "source_name": "codex-session",
                 "origin": "codex-session",
                 "normalized_tool_name": "codebase-memory/command-detail",
                 "action_kind": "tool_use",
@@ -630,7 +630,7 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert rows == [
             {
-                "source_name": "codex",
+                "source_name": "codex-session",
                 "origin": "codex-session",
                 "normalized_tool_name": "codebase-memory/command-detail",
                 "action_kind": "tool_use",
@@ -697,7 +697,7 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert call_rows == [
             {
-                "source_name": "claude-code",
+                "source_name": "claude-code-session",
                 "origin": "claude-code-session",
                 "normalized_tool_name": "mcp__serena__find_symbol",
                 "action_kind": "tool_use",
@@ -706,7 +706,7 @@ class TestListToolUsageInsightsEndToEnd:
         ]
         assert event_rows == [
             {
-                "source_name": "claude-code",
+                "source_name": "claude-code-session",
                 "origin": "claude-code-session",
                 "normalized_tool_name": "mcp__serena__find_symbol",
                 "action_kind": "mcp",
@@ -720,7 +720,7 @@ class TestListToolUsageInsightsEndToEnd:
         assert len(result) == 1
         insight = result[0]
         assert insight.entries == ()
-        assert insight.provider_coverage == ()
+        assert insight.origin_coverage == ()
         assert insight.has_coverage_gaps is False
         assert insight.total_call_count == 0
 
@@ -729,10 +729,10 @@ def test_envelope_serializes_to_jsonable_dict() -> None:
     """MCP envelope shape: model dumps to a stable JSON-serializable dict."""
 
     insight = build_tool_usage_insight(
-        rows=[_row(provider="claude-code", tool="Read", calls=3)],
+        rows=[_row(origin="claude-code-session", tool="Read", calls=3)],
         coverage_rows=[
-            _coverage(provider="claude-code", sessions=1, events=3, tools=1, kinds=1),
-            _coverage(provider="chatgpt", sessions=2, events=0),
+            _coverage(origin="claude-code-session", sessions=1, events=3, tools=1, kinds=1),
+            _coverage(origin="chatgpt-export", sessions=2, events=0),
         ],
         query=ToolUsageInsightQuery(),
         materialized_at="2026-05-17T00:00:00+00:00",
@@ -741,9 +741,9 @@ def test_envelope_serializes_to_jsonable_dict() -> None:
     assert payload["insight_kind"] == "tool_usage"
     assert payload["materializer_version"] == TOOL_USAGE_INSIGHT_VERSION
     assert payload["has_coverage_gaps"] is True
-    assert {entry["source_name"] for entry in payload["provider_coverage"]} == {
-        "claude-code",
-        "chatgpt",
+    assert {entry["source_name"] for entry in payload["origin_coverage"]} == {
+        "claude-code-session",
+        "chatgpt-export",
     }
     entry = payload["entries"][0]
     assert entry["normalized_tool_name"] == "Read"

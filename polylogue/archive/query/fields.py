@@ -8,7 +8,6 @@ from datetime import datetime
 from typing import Literal, Protocol, TypeAlias, cast
 
 from polylogue.core.enums import Origin
-from polylogue.core.sources import provider_from_origin
 from polylogue.storage.query_models import SessionRecordQuery
 
 PresenceCheck = Callable[[object], bool]
@@ -890,18 +889,16 @@ def has_message_content_type_filter(plan: object) -> bool:
     return False
 
 
-def provider_scope_for_plan(plan: _ProviderScopedPlan) -> tuple[str | None, tuple[str, ...]]:
-    # The plan filters on origin tokens internally; the legacy record-query /
-    # source_name read path still keys on origin tokens, so project back here
-    # (#1743 — removed once that path moves onto the origin column in Phase 2).
-    values = tuple(provider_from_origin(Origin.from_string(token)).value for token in plan.origins)
+def origin_scope_for_plan(plan: _ProviderScopedPlan) -> tuple[str | None, tuple[str, ...]]:
+    """Return canonical values for the sessions.origin SQL column."""
+    values = tuple(Origin.from_string(token).value for token in plan.origins)
     origin = values[0] if len(values) == 1 else None
-    provider_group = values if len(values) > 1 else ()
-    return origin, provider_group
+    origin_group = values if len(values) > 1 else ()
+    return origin, origin_group
 
 
 def session_record_query_for_plan(plan: object) -> SessionRecordQuery:
-    origin, origins = provider_scope_for_plan(cast(_ProviderScopedPlan, plan))
+    origin, origins = origin_scope_for_plan(cast(_ProviderScopedPlan, plan))
     changes: dict[str, object] = {}
     for descriptor in QUERY_FIELD_DESCRIPTORS:
         if descriptor.record_attr is None or not descriptor.is_active_for_plan(plan):
@@ -915,7 +912,7 @@ def session_record_query_for_plan(plan: object) -> SessionRecordQuery:
 
 def sql_pushdown_params_for_plan(plan: object) -> SqlPushdownParams:
     params: SqlPushdownParams = {}
-    origin, origins = provider_scope_for_plan(cast(_ProviderScopedPlan, plan))
+    origin, origins = origin_scope_for_plan(cast(_ProviderScopedPlan, plan))
     if origin is not None:
         params["origin"] = origin
     elif origins:

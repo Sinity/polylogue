@@ -295,15 +295,15 @@ async def upsert_session_stats(
         await conn.commit()
 
 
-async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -> dict[str, int]:
-    """Get session counts grouped by provider, day, month, or year.
+async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "origin") -> dict[str, int]:
+    """Get session counts grouped by origin, day, month, or year.
 
     Raises ValueError on unknown ``group_by`` rather than silently returning
-    provider counts. Each branch is a literal SQL constant — the validated
+    origin counts. Each branch is a literal SQL constant — the validated
     input never reaches string interpolation — but the explicit reject closes
     the door on future branches that might.
 
-    These are the sessions-table calendar/provider dimensions. The CLI's
+    These are the sessions-table calendar/origin dimensions. The CLI's
     additional ``action``/``tool``/``repo``/``work-kind`` dimensions are not
     plain session counts — they are computed via insight-summary
     aggregation paths in ``cli/query.py:_handle_stats_by`` and are not exposed
@@ -336,7 +336,7 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
             GROUP BY period ORDER BY period DESC
             """
         )
-    elif group_by == "provider":
+    elif group_by == "origin":
         cursor = await conn.execute(
             """
             SELECT origin as period, COUNT(*) as count
@@ -345,7 +345,7 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
             """
         )
     else:
-        raise ValueError(f"Unknown group_by {group_by!r}; expected one of: provider, day, month, year")
+        raise ValueError(f"Unknown group_by {group_by!r}; expected one of: origin, day, month, year")
     rows = await cursor.fetchall()
     return {row["period"]: row["count"] for row in rows}
 

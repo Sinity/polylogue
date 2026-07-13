@@ -80,7 +80,7 @@ async def test_aggregate_sessions_maps_provider_filter_through(tmp_path: Path) -
 
     assert fetch_mock.await_args is not None
     query = fetch_mock.await_args.args[0]
-    assert query.provider == "claude-code"
+    assert query.origin == "claude-code"
 
 
 @pytest.mark.asyncio

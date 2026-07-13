@@ -295,8 +295,8 @@ class SQLiteArchiveMixin:
         """Get message counts for multiple sessions in a single query."""
         return await self.queries.get_message_counts_batch(session_ids)
 
-    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
-        """Get session counts grouped by provider, month, or year."""
+    async def get_stats_by(self, group_by: str = "origin") -> dict[str, int]:
+        """Get session counts grouped by origin, month, or year."""
         return await self.queries.get_stats_by(group_by)
 
     async def get_provider_session_counts(self) -> list[ProviderSessionCountRow]:

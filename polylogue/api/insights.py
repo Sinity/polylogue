@@ -37,7 +37,7 @@ from polylogue.insights.archive import (
     UsageTimelineInsightQuery,
 )
 from polylogue.insights.cost_enrichment import enrich_session_cost_insights
-from polylogue.insights.tag_rollups import synthesize_provider_tag_rollups
+from polylogue.insights.tag_rollups import synthesize_origin_tag_rollups
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.insights.topology import (
     LogicalSession,
@@ -329,7 +329,7 @@ class PolylogueInsightsMixin:
                 limit=None,
                 offset=0,
             )
-            provider_rollups = synthesize_provider_tag_rollups(
+            origin_rollups = synthesize_origin_tag_rollups(
                 archive,
                 origin=request.origin,
                 query=request.query,
@@ -338,7 +338,7 @@ class PolylogueInsightsMixin:
                 materialized_at=datetime.now(UTC).isoformat(),
             )
         rollups = sorted(
-            [*materialized, *provider_rollups],
+            [*materialized, *origin_rollups],
             key=lambda rollup: (-rollup.session_count, rollup.tag),
         )
         if request.offset:

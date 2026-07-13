@@ -4534,7 +4534,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": str(row["origin"]),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "tool_use"),
@@ -4618,7 +4618,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": str(row["origin"]),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "unknown"),
@@ -4846,7 +4846,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": str(row["origin"]),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": f"{family}/command-detail",
                 "action_kind": str(row["action_kind"] or "tool_use"),
@@ -4921,7 +4921,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "tool_use"),
                 "call_count": int(row["call_count"] or 0),
@@ -4954,7 +4954,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "source_name": str(row["origin"] or "unknown-export"),
                 "session_count": int(row["session_count"] or 0),
                 "action_count": int(row["action_count"] or 0),
                 "distinct_tool_count": int(row["distinct_tool_count"] or 0),
@@ -4969,7 +4969,7 @@ class ArchiveStore:
     def list_archive_coverage_insights(
         self,
         *,
-        group_by: str = "provider",
+        group_by: str = "origin",
         origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -4978,8 +4978,8 @@ class ArchiveStore:
     ) -> list[ArchiveCoverageInsight]:
         """Aggregate archive coverage from index tables."""
         origin = _origin_value(origin)
-        if group_by == "provider":
-            return self._provider_coverage_insights(origin=origin, limit=limit, offset=offset)
+        if group_by == "origin":
+            return self._origin_coverage_insights(origin=origin, limit=limit, offset=offset)
         if group_by == "day":
             return self._time_bucket_coverage_insights(
                 bucket_format="%Y-%m-%d",
@@ -5000,9 +5000,9 @@ class ArchiveStore:
                 limit=limit,
                 offset=offset,
             )
-        raise ValueError("archive coverage group_by must be one of: provider, day, week")
+        raise ValueError("archive coverage group_by must be one of: origin, day, week")
 
-    def _provider_coverage_insights(
+    def _origin_coverage_insights(
         self,
         *,
         origin: str | None,
@@ -5041,7 +5041,7 @@ class ArchiveStore:
             """,
             tuple(params),
         ).fetchall()
-        return [_provider_coverage_from_archive_row(row) for row in rows]
+        return [_origin_coverage_from_archive_row(row) for row in rows]
 
     def _time_bucket_coverage_insights(
         self,
@@ -8692,10 +8692,10 @@ def _origin_value(origin: str | None) -> str | None:
     return Origin(origin).value
 
 
-def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
-    if provider_or_origin is None:
+def _origin_for_tool_usage_filter(origin: str | None) -> str | None:
+    if origin is None:
         return None
-    return origin_from_provider(provider_or_origin).value
+    return Origin.from_string(origin).value
 
 
 def _tool_usage_builder_query(query: ToolUsageInsightQuery) -> ToolUsageInsightQuery:
@@ -8703,7 +8703,7 @@ def _tool_usage_builder_query(query: ToolUsageInsightQuery) -> ToolUsageInsightQ
     updates: dict[str, object] = {"limit": None, "offset": 0}
     if origin is None:
         return query.model_copy(update=updates)
-    updates["provider"] = _provider_for_origin(origin).value
+    updates["origin"] = origin
     return query.model_copy(update=updates)
 
 
@@ -10728,7 +10728,7 @@ def _archive_insight_readiness_evidence(
     return tuple(values)
 
 
-def _provider_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsight:
+def _origin_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsight:
     session_count = int(row["session_count"] or 0)
     message_count = int(row["message_count"] or 0)
     user_message_count = int(row["user_message_count"] or 0)
@@ -10740,11 +10740,10 @@ def _provider_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsi
     sessions_with_tools = int(row["sessions_with_tools"] or 0)
     sessions_with_thinking = int(row["sessions_with_thinking"] or 0)
     origin = str(row["origin"])
-    source_name = _provider_for_origin(origin).value
     return ArchiveCoverageInsight(
-        group_by="provider",
-        bucket=source_name,
-        source_name=source_name,
+        group_by="origin",
+        bucket=origin,
+        source_name=origin,
         session_count=session_count,
         message_count=message_count,
         user_message_count=user_message_count,

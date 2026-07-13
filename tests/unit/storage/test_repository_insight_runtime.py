@@ -67,7 +67,7 @@ async def test_repository_insight_profile_reads_build_typed_queries() -> None:
         assert await repo.list_session_enrichment_records(query="enrichment") == ["record-a", "record-b"]
 
     list_query = queries._list_session_profiles_query.await_args_list[0].args[0]
-    assert list_query.provider == "claude-code"
+    assert list_query.origin == "claude-code-session"
     assert list_query.first_message_since == "2026-01-01T00:00:00Z"
     assert list_query.session_date_until == "2026-01-02"
     assert list_query.min_wallclock_seconds == 300
@@ -158,7 +158,7 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
 
     timeline_query = queries._list_session_work_events_query.await_args_list[0].args[0]
     assert timeline_query.session_id == "conv-1"
-    assert timeline_query.provider == "claude-code"
+    assert timeline_query.origin == "claude-code-session"
     assert timeline_query.heuristic_label == "implementation"
     assert timeline_query.session_date_since == "2026-01-01"
     assert timeline_query.session_date_until == "2026-01-02"
@@ -185,7 +185,7 @@ async def test_repository_insight_summary_reads_build_typed_queries() -> None:
     ) == ["tag-row"]
 
     tag_query = queries._list_session_tag_rollup_rows_query.await_args.args[0]
-    assert tag_query.provider == "claude-code"
+    assert tag_query.origin == "claude-code-session"
     assert tag_query.query == "tag"
 
 

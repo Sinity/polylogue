@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin
 from polylogue.errors import PolylogueError
 from polylogue.storage.query_models import SessionRecordQuery
 
@@ -120,14 +120,14 @@ def _normalized_title(value: str | None) -> str:
     return " ".join(value.casefold().split())
 
 
-def _canonical_provider(value: str | None) -> str | None:
+def _canonical_origin(value: str | None) -> str | None:
     if value is None:
         return None
-    return str(Provider.from_string(value))
+    return Origin.from_string(value).value
 
 
-def _provider_list(value: str | None) -> list[str] | None:
-    origin = _canonical_provider(value)
+def _origin_list(value: str | None) -> list[str] | None:
+    origin = _canonical_origin(value)
     return [origin] if origin else None
 
 
@@ -501,8 +501,8 @@ async def discover_neighbor_candidates(
 
     target = await _load_target(store, request.session_id)
     source_id = str(target.id) if target is not None else None
-    origin = _canonical_provider(request.origin)
-    origins = _provider_list(origin)
+    origin = _canonical_origin(request.origin)
+    origins = _origin_list(origin)
     pool_limit = max(request.candidate_pool_limit, request.limit)
     drafts: dict[str, _CandidateDraft] = {}
 
