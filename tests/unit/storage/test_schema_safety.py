@@ -384,6 +384,8 @@ class TestSessionFilterSQL:
         where_clause, params = _build_session_filters(origin="")
         assert isinstance(where_clause, str)
         assert isinstance(params, list)
+        assert "origin = ?" in where_clause
+        assert params == ["unknown-export"]
 
     def test_build_filters_with_no_args(self) -> None:
         """No filters should produce empty/trivial WHERE clause."""

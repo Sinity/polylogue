@@ -24,6 +24,7 @@ from typing import cast
 import pytest
 
 from polylogue import Polylogue
+from polylogue.insights.archive import ArchiveCoverageInsightQuery
 from polylogue.insights.tool_usage import (
     TOOL_USAGE_INSIGHT_VERSION,
     ToolUsageInsight,
@@ -308,6 +309,41 @@ class TestListToolUsageInsightsEndToEnd:
         # Coverage covers both origins.
         origins = {entry.source_name for entry in insight.origin_coverage}
         assert origins == {"claude-code-session", "codex-session"}
+
+    async def test_empty_origin_selects_unknown_export_in_tool_and_coverage_routes(self, tmp_path: Path) -> None:
+        """An empty public filter is the explicit unknown-origin scope, not an error or unfiltered read."""
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+        (
+            SessionBuilder(db_path, "unknown-1")
+            .provider("unknown")
+            .add_message(
+                "unknown-msg",
+                role="assistant",
+                text="Unknown provenance tool call",
+                blocks=[{"type": "tool_use", "name": "Inspect", "id": "unknown-tool"}],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(db_path, "codex-1")
+            .provider("codex")
+            .add_message(
+                "codex-msg",
+                role="assistant",
+                text="Codex tool call",
+                blocks=[{"type": "tool_use", "name": "ApplyPatch", "id": "codex-tool"}],
+            )
+            .save()
+        )
+
+        [tool_usage] = await archive.list_tool_usage_insights(ToolUsageInsightQuery(origin=""))
+        coverage = await archive.list_archive_coverage_insights(ArchiveCoverageInsightQuery(origin=""))
+
+        assert [(entry.source_name, entry.normalized_tool_name) for entry in tool_usage.entries] == [
+            ("unknown-export", "inspect")
+        ]
+        assert [(entry.bucket, entry.session_count) for entry in coverage] == [("unknown-export", 1)]
 
     async def test_coverage_reports_origin_without_actions(self, tmp_path: Path) -> None:
         archive = _archive(tmp_path)

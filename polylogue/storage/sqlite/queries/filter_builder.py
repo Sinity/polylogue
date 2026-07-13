@@ -30,6 +30,8 @@ def _iso_to_epoch(iso_str: str) -> float:
 
 
 def _origin_value(value: str) -> str:
+    if value == "":
+        return Origin.UNKNOWN_EXPORT.value
     return Origin(value).value
 
 

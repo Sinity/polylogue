@@ -8711,6 +8711,8 @@ def _learning_correction_from_archive_row(row: sqlite3.Row | tuple[object, ...])
 def _origin_value(origin: str | None) -> str | None:
     if origin is None:
         return None
+    if origin == "":
+        return Origin.UNKNOWN_EXPORT.value
     return Origin(origin).value
 
 
