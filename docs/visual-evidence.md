@@ -38,8 +38,9 @@ The default specs are deliberately self-contained and private-data-free:
 
 - `demo-tour` runs `polylogue demo tour --out-dir demo-tour --force`, then
   shows the compact evidence transcript followed by the bounded proof report.
-- `query-tour` seeds `query-tour/archive`, runs the query/read drilldown, and
-  summarizes facets for the same query.
+- `evidence-receipt` prepares a deterministic archive off-camera, then shows
+  one assistant success claim resolved against a failed test receipt, its later
+  successful rerun, and a prose-only negative control.
 - `reader-evidence-tour` runs the browserless reader smoke lane and renders the
   JSON report header.
 - `browser-capture-tour` runs `devtools workspace dev-loop
@@ -56,7 +57,8 @@ hand.
 Current example renders:
 
 - [`demo-tour.gif`](examples/demo-tour/demo-tour.gif)
-- [`query-tour.gif`](examples/visual-tapes/query-tour.gif)
+- [`evidence-receipt.png`](examples/visual-tapes/evidence-receipt.png) — the
+  static README frame; regenerate the tape when the underlying flow changes.
 - [`reader-evidence-tour.gif`](examples/visual-tapes/reader-evidence-tour.gif)
 - [`browser-capture-tour.gif`](examples/visual-tapes/browser-capture-tour.gif)
 

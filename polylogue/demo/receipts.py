@@ -573,14 +573,19 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
     )
 
 
-def render_demo_receipts(result: DemoReceiptsResult) -> str:
+def render_demo_receipts(
+    result: DemoReceiptsResult,
+    *,
+    archive_label: str | None = None,
+    compact: bool = False,
+) -> str:
     """Render the proof as a compact human-readable receipt."""
 
     failed = result.failed
     recovery = result.recovery
     lines = [
         "Polylogue evidence receipt",
-        f"archive: {result.archive_root}",
+        f"archive: {archive_label or result.archive_root}",
         f"verdict: {result.verdict}",
         "",
         f"assistant claim: {result.claim_text}",
@@ -620,6 +625,15 @@ def render_demo_receipts(result: DemoReceiptsResult) -> str:
             f"  prose hits for 'error': {result.anti_grep_text_hits}",
             f"  structurally failed actions: {result.anti_grep_failed_actions}",
             f"  control session: {result.anti_grep_session_ref}",
+        ]
+    )
+    if compact:
+        if result.problems:
+            lines.extend(["", "problems:", *(f"  - {problem}" for problem in result.problems)])
+        return "\n".join(lines) + "\n"
+
+    lines.extend(
+        [
             "",
             "source material:",
             f"  raw_id: {result.raw_id or 'unavailable'}",

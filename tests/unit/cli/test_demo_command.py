@@ -96,6 +96,25 @@ def test_demo_receipts_is_self_contained_without_configured_archive(
     assert (tmp_path / "polylogue-receipts-demo" / "archive" / "index.db").exists()
 
 
+def test_demo_receipts_plain_output_redacts_self_contained_archive_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["demo", "receipts", "--compact"])
+
+    assert result.exit_code == 0, result.output
+    assert "archive: <demo-archive>" in result.output
+    assert "verdict: contradicted_at_claim_time_then_repaired" in result.output
+    assert "source material:" not in result.output
+    assert "completion-claim experiment:" not in result.output
+    assert str(tmp_path.resolve()) not in result.output
+
+
 def test_demo_receipts_uses_configured_archive_without_reseeding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
