@@ -49,6 +49,10 @@ def test_checked_in_segment_sha256_matches_manifest() -> None:
         actual = hashlib.sha256(segments[descriptor.index]).hexdigest()
         assert actual == descriptor.sha256
 
-    joined = b"".join(segments[d.index] for d in sorted(manifest.segments, key=lambda d: d.index))
+    head = manifest.head_segment
+    assert hashlib.sha256(segments[head.index]).hexdigest() == head.sha256
+    joined = segments[head.index] + b"".join(
+        segments[d.index] for d in sorted(manifest.segments, key=lambda d: d.index)
+    )
     assert hashlib.sha256(joined).hexdigest() == manifest.content_digest.polylogue_sha256
     assert manifest.revision_id == manifest.content_digest.polylogue_sha256

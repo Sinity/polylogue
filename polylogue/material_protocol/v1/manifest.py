@@ -147,6 +147,7 @@ class RevisionManifest:
     revision_id: str
     superseded_revision_id: str | None
     content_digest: ContentDigest
+    head_segment: SegmentDescriptor
     segments: tuple[SegmentDescriptor, ...]
     expected_record_counts: dict[str, int]
     anchors: dict[str, AnchorEntry]
@@ -167,6 +168,7 @@ class RevisionManifest:
             "revision_id": self.revision_id,
             "superseded_revision_id": self.superseded_revision_id,
             "content_digest": self.content_digest.to_dict(),
+            "head_segment": self.head_segment.to_dict(),
             "segments": [segment.to_dict() for segment in self.segments],
             "expected_record_counts": dict(self.expected_record_counts),
             "anchors": {record_id: anchor.to_dict() for record_id, anchor in self.anchors.items()},
@@ -199,6 +201,7 @@ class RevisionManifest:
                 str(payload["superseded_revision_id"]) if payload.get("superseded_revision_id") is not None else None
             ),
             content_digest=ContentDigest.from_dict(payload["content_digest"]),  # type: ignore[arg-type]
+            head_segment=SegmentDescriptor.from_dict(payload["head_segment"]),  # type: ignore[arg-type]
             segments=tuple(SegmentDescriptor.from_dict(item) for item in segments_payload),  # type: ignore[arg-type]
             expected_record_counts={str(k): int(v) for k, v in expected_counts_payload.items()},  # type: ignore[arg-type]
             anchors={str(k): AnchorEntry.from_dict(v) for k, v in anchors_payload.items()},  # type: ignore[arg-type]

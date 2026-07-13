@@ -16,10 +16,12 @@ from polylogue.material_protocol.v1.manifest import RevisionManifest
 
 
 def write_revision(encoded: EncodedRevision, base_dir: Path) -> None:
-    """Write manifest.json + segments/*.ndjson under *base_dir* (created if missing)."""
+    """Write manifest.json + segments/head.ndjson + segments/*.ndjson under *base_dir*."""
     base_dir.mkdir(parents=True, exist_ok=True)
     segments_dir = base_dir / "segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
+    head = encoded.manifest.head_segment
+    (segments_dir / head.filename).write_bytes(encoded.segments[head.index])
     for descriptor in encoded.manifest.segments:
         (segments_dir / descriptor.filename).write_bytes(encoded.segments[descriptor.index])
     manifest_bytes = canonical_bytes(encoded.manifest.to_dict()) + b"\n"
@@ -34,7 +36,10 @@ def read_manifest(base_dir: Path) -> RevisionManifest:
 
 def read_segments(base_dir: Path, manifest: RevisionManifest) -> dict[int, bytes]:
     segments_dir = base_dir / "segments"
-    return {descriptor.index: (segments_dir / descriptor.filename).read_bytes() for descriptor in manifest.segments}
+    segments = {descriptor.index: (segments_dir / descriptor.filename).read_bytes() for descriptor in manifest.segments}
+    head = manifest.head_segment
+    segments[head.index] = (segments_dir / head.filename).read_bytes()
+    return segments
 
 
 def read_revision(base_dir: Path) -> tuple[RevisionManifest, dict[int, bytes]]:

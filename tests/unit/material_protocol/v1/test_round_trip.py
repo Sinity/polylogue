@@ -178,7 +178,7 @@ def test_decode_then_reencode_each_record_is_byte_identical_to_source_line() -> 
     for record in records:
         reencoded.extend(canonical_line(record))
 
-    original = bytearray()
+    original = bytearray(encoded.segments[encoded.manifest.head_segment.index])
     for descriptor in sorted(encoded.manifest.segments, key=lambda d: d.index):
         original.extend(encoded.segments[descriptor.index])
 

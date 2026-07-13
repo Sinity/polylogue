@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from polylogue.core.json import JSONValue
 from polylogue.material_protocol.v1.canonical import parse_json_value
 from polylogue.material_protocol.v1.errors import SegmentMissingError, SequenceOrderError
-from polylogue.material_protocol.v1.manifest import RevisionManifest
+from polylogue.material_protocol.v1.manifest import RevisionManifest, SegmentDescriptor
 
 
 @dataclass
@@ -44,26 +44,38 @@ class DecodedSession:
     trailing_session_events: list[dict[str, JSONValue]] = field(default_factory=list)
 
 
-def iter_records(manifest: RevisionManifest, segment_bytes: dict[int, bytes]) -> list[dict[str, JSONValue]]:
-    """Return every record in the revision, in strict seq order, from raw segment bytes."""
+def _read_space_records(
+    descriptors: list[SegmentDescriptor], segment_bytes: dict[int, bytes]
+) -> list[dict[str, JSONValue]]:
+    """Read one seq space (head or transcript) in strict seq order."""
     records: list[dict[str, JSONValue]] = []
     expected_seq = 0
-    for descriptor in sorted(manifest.segments, key=lambda d: d.index):
-        raw = segment_bytes.get(descriptor.index)
+    for descriptor in descriptors:
+        index = descriptor.index
+        filename = descriptor.filename
+        raw = segment_bytes.get(index)
         if raw is None:
-            raise SegmentMissingError(f"segment {descriptor.index} ({descriptor.filename}) not supplied")
+            raise SegmentMissingError(f"segment {index} ({filename}) not supplied")
         for raw_line in raw.split(b"\n"):
             if not raw_line:
                 continue
             parsed = parse_json_value(raw_line)
             if not isinstance(parsed, dict):
-                raise SequenceOrderError(f"segment {descriptor.index} contains a non-object record")
+                raise SequenceOrderError(f"segment {index} contains a non-object record")
             seq = parsed.get("seq")
             if seq != expected_seq:
-                raise SequenceOrderError(f"expected seq={expected_seq}, got seq={seq!r} in segment {descriptor.index}")
+                raise SequenceOrderError(f"expected seq={expected_seq}, got seq={seq!r} in segment {index}")
             records.append(parsed)
             expected_seq += 1
     return records
+
+
+def iter_records(manifest: RevisionManifest, segment_bytes: dict[int, bytes]) -> list[dict[str, JSONValue]]:
+    """Return every record in the revision — head records first (their own
+    seq space), then transcript records in strict transcript-seq order."""
+    head = _read_space_records([manifest.head_segment], segment_bytes)
+    transcript = _read_space_records(sorted(manifest.segments, key=lambda d: d.index), segment_bytes)
+    return head + transcript
 
 
 def decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int, bytes]) -> DecodedSession:
