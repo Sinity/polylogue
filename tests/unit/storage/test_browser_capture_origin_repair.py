@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+import subprocess
+import sys
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -19,6 +23,7 @@ from polylogue.sources.revision_backfill import _parse_one, backfill_historical_
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repair import (
     repair_browser_capture_origin_mismatches,
+    repair_legacy_browser_capture_missing_native_ids,
     repair_quarantined_accepted_raws,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -153,6 +158,13 @@ def _seed_mismatched_browser_head(root: Path) -> str:
             """,
             (raw_id,),
         )
+    return raw_id
+
+
+def _seed_legacy_browser_head_without_native_id(root: Path) -> str:
+    raw_id = _seed_mismatched_browser_head(root)
+    with sqlite3.connect(root / "source.db") as source:
+        source.execute("UPDATE raw_sessions SET native_id = NULL WHERE raw_id = ?", (raw_id,))
     return raw_id
 
 
@@ -366,8 +378,19 @@ def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
 
 
 def _rows(root: Path, tier: str, table: str, where: str, params: tuple[object, ...]) -> list[tuple[object, ...]]:
-    with sqlite3.connect(root / f"{tier}.db") as conn:
+    # sqlite3.Connection's context manager commits/rolls back, but does not
+    # close the handle.  Legacy repair deliberately changes journal posture,
+    # which requires every reader to have released its SQLite lock first.
+    with closing(sqlite3.connect(root / f"{tier}.db")) as conn:
         return [tuple(row) for row in conn.execute(f"SELECT * FROM {table} WHERE {where} ORDER BY 1", params)]
+
+
+def _journal_modes(root: Path) -> dict[str, str]:
+    modes: dict[str, str] = {}
+    for name in ("source", "index"):
+        with closing(sqlite3.connect(root / f"{name}.db")) as conn:
+            modes[name] = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    return modes
 
 
 def test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idempotent(tmp_path: Path) -> None:
@@ -448,6 +471,43 @@ def test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idemp
     assert receipt.read_text().count("\n") == 2
 
 
+def test_browser_origin_repair_resumes_prelegacy_planned_receipt(tmp_path: Path) -> None:
+    import polylogue.storage.repair as repair_module
+
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    historical_target = repair_module._browser_origin_item_payload(dry_run.items[0])
+    # Emulate the exact v1 ordinary target shape written before the legacy
+    # actuator added its provenance-only fields.
+    historical_target.pop("legacy_null_native_id", None)
+    historical_target.pop("parser_derived_native_id", None)
+    target_hash = hashlib.sha256(
+        json.dumps([historical_target], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    receipt = tmp_path / "prelegacy-planned.jsonl"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": "polylogue.browser-capture-origin-copy-forward.v1",
+                "state": "planned",
+                "target_hash": target_hash,
+                "targets": [historical_target],
+                "planned_at_ms": 1,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+
+    assert applied.repaired_count == 1
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
+
+
 def test_browser_capture_origin_rejects_decided_quarantined_membership(tmp_path: Path) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
@@ -509,7 +569,10 @@ def test_browser_capture_origin_rebuild_keeps_copy_forward_head(tmp_path: Path) 
 )
 def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Path, mutation: str) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
-    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+    with (
+        closing(sqlite3.connect(tmp_path / "source.db")) as source,
+        closing(sqlite3.connect(tmp_path / "index.db")) as index,
+    ):
         if mutation == "blob":
             source.execute("UPDATE blob_refs SET size_bytes = size_bytes + 1 WHERE ref_id = ?", (raw_id,))
         elif mutation == "head":
@@ -593,6 +656,300 @@ def test_browser_capture_origin_rejects_legacy_raw_without_native_id(tmp_path: P
 
     assert report.ineligible_count == 1
     assert report.items[0].reason == "source envelope does not exactly bind the normalized session"
+
+
+def test_legacy_browser_native_id_copy_forward_preserves_evidence_and_is_idempotent(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    ordinary = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    assert ordinary.ineligible_count == 1
+    with (
+        closing(sqlite3.connect(tmp_path / "source.db")) as source,
+        closing(sqlite3.connect(tmp_path / "index.db")) as index,
+    ):
+        old_source = source.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+        old_refs = source.execute("SELECT * FROM blob_refs WHERE ref_id = ? ORDER BY ref_type", (raw_id,)).fetchall()
+        old_memberships = source.execute(
+            "SELECT * FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key", (raw_id,)
+        ).fetchall()
+        old_head = index.execute(
+            "SELECT * FROM raw_revision_heads WHERE logical_source_key = 'unknown:browser-origin-one'"
+        ).fetchone()
+        old_applications = index.execute(
+            "SELECT * FROM raw_revision_applications WHERE raw_id = ? ORDER BY decision_id", (raw_id,)
+        ).fetchall()
+    dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+    item = dry_run.items[0]
+    assert item.status == "eligible"
+    assert item.legacy_null_native_id is True
+    assert item.parser_derived_native_id == "browser-origin-one"
+    receipt = tmp_path / "legacy-native-id.jsonl"
+    applied = repair_legacy_browser_capture_missing_native_ids(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+    assert applied.repaired_count == 1
+    copy_raw_id = applied.items[0].copy_forward_raw_id
+    assert copy_raw_id is not None
+    lines = [json.loads(line) for line in receipt.read_text().splitlines()]
+    assert lines[0]["schema"] == "polylogue.browser-capture-legacy-native-id-copy-forward.v1"
+    assert lines[0]["transaction_protocol"] == "rollback-superjournal-v1"
+    assert lines[0]["targets"][0]["legacy_null_native_id"] is True
+    assert lines[0]["targets"][0]["parser_derived_native_id"] == "browser-origin-one"
+    assert lines[-1]["legacy_native_witness_bindings"] == [
+        {"raw_id": raw_id, "legacy_null_native_id": True, "parser_derived_native_id": "browser-origin-one"}
+    ]
+    assert lines[-1]["transaction_protocol"] == "rollback-superjournal-v1"
+    assert lines[-1]["legacy_journal_modes"]["after_restore"] == {"source": "wal", "index": "wal"}
+    assert _journal_modes(tmp_path) == {"source": "wal", "index": "wal"}
+    with (
+        closing(sqlite3.connect(tmp_path / "source.db")) as source,
+        closing(sqlite3.connect(tmp_path / "index.db")) as index,
+    ):
+        assert source.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == old_source
+        assert (
+            source.execute("SELECT * FROM blob_refs WHERE ref_id = ? ORDER BY ref_type", (raw_id,)).fetchall()
+            == old_refs
+        )
+        assert (
+            source.execute(
+                "SELECT * FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key", (raw_id,)
+            ).fetchall()
+            == old_memberships
+        )
+        assert (
+            index.execute(
+                "SELECT * FROM raw_revision_heads WHERE logical_source_key = 'unknown:browser-origin-one'"
+            ).fetchone()
+            == old_head
+        )
+        assert (
+            index.execute(
+                "SELECT * FROM raw_revision_applications WHERE raw_id = ? ORDER BY decision_id", (raw_id,)
+            ).fetchall()
+            == old_applications
+        )
+        assert source.execute(
+            "SELECT origin, native_id FROM raw_sessions WHERE raw_id = ?", (copy_raw_id,)
+        ).fetchone() == (
+            "chatgpt-export",
+            "browser-origin-one",
+        )
+    reapplied = repair_legacy_browser_capture_missing_native_ids(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+    assert reapplied.already_repaired_count == 1
+
+
+@pytest.mark.parametrize("checkpoint", ["before_commit", "after_commit"])
+def test_legacy_browser_native_id_crash_boundary_recovers_planned_receipt(tmp_path: Path, checkpoint: str) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+    before = {
+        (tier, table): _rows(tmp_path, tier, table, "1 = 1", ())
+        for tier, tables in {
+            "source": ("raw_sessions", "blob_refs", "raw_session_memberships", "raw_membership_census"),
+            "index": ("sessions", "raw_revision_heads", "raw_revision_applications"),
+        }.items()
+        for table in tables
+    }
+
+    receipt = tmp_path / f"legacy-crash-{checkpoint}.jsonl"
+    program = f"""
+import os
+from pathlib import Path
+
+from polylogue.config import Config
+import polylogue.storage.repair as repair
+
+root = Path({str(tmp_path)!r})
+
+def crash_at_selected_boundary(stage: str) -> None:
+    if stage == {checkpoint!r}:
+        os._exit(87)
+
+repair._legacy_browser_copy_forward_checkpoint = crash_at_selected_boundary
+repair.repair_legacy_browser_capture_missing_native_ids(
+    Config(archive_root=root, render_root=root / 'render', sources=[], db_path=root / 'index.db'),
+    [{raw_id!r}],
+    apply=True,
+    receipt_path=Path({str(receipt)!r}),
+    proof_digest={dry_run.proof_digest!r},
+)
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", program],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert child.returncode == 87, child.stderr
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
+    assert _journal_modes(tmp_path) == {"source": "delete", "index": "delete"}
+    if checkpoint == "before_commit":
+        for (tier, table), rows in before.items():
+            assert _rows(tmp_path, tier, table, "1 = 1", ()) == rows
+    else:
+        assert _rows(tmp_path, "source", "raw_sessions", "raw_id != ?", (raw_id,))
+        assert _rows(tmp_path, "index", "raw_revision_heads", "logical_source_key LIKE ?", ("chatgpt:%",))
+
+    resumed = repair_legacy_browser_capture_missing_native_ids(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+
+    assert resumed.already_repaired_count == 1
+    assert _journal_modes(tmp_path) == {"source": "wal", "index": "wal"}
+    lines = [json.loads(line) for line in receipt.read_text().splitlines()]
+    assert [line["state"] for line in lines] == ["planned", "applied"]
+    assert lines[-1]["transaction_protocol"] == "rollback-superjournal-v1"
+
+
+@pytest.mark.parametrize("mutation", ["native", "path", "blob_ref", "census", "head", "application"])
+def test_legacy_browser_native_id_copy_forward_rejects_any_witness_drift(tmp_path: Path, mutation: str) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    if mutation == "native":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute("UPDATE raw_sessions SET native_id = 'wrong-native' WHERE raw_id = ?", (raw_id,))
+    elif mutation == "path":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute(
+                "UPDATE raw_sessions SET source_path = 'browser-capture/chatgpt/wrong.json' WHERE raw_id = ?", (raw_id,)
+            )
+    elif mutation == "blob_ref":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute("DELETE FROM blob_refs WHERE ref_id = ?", (raw_id,))
+    elif mutation == "census":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute("UPDATE raw_membership_census SET member_count = 2 WHERE raw_id = ?", (raw_id,))
+    elif mutation == "head":
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1 WHERE logical_source_key = 'unknown:browser-origin-one'"
+            )
+    else:
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute("UPDATE raw_revision_applications SET decision = 'superseded' WHERE raw_id = ?", (raw_id,))
+
+    report = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+
+
+def test_legacy_browser_native_id_copy_forward_accepts_source_v7(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        source.execute("ALTER TABLE raw_sessions DROP COLUMN capture_mode")
+        source.execute("PRAGMA user_version = 7")
+    dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+    applied = repair_legacy_browser_capture_missing_native_ids(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=tmp_path / "legacy-source-v7.jsonl",
+        proof_digest=dry_run.proof_digest,
+    )
+    assert applied.repaired_count == 1
+
+
+def test_legacy_browser_native_id_copy_forward_rejects_stale_proof_before_writing(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        before = source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+    with pytest.raises(RuntimeError, match="proof digest"):
+        repair_legacy_browser_capture_missing_native_ids(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=tmp_path / "stale-proof.jsonl",
+            proof_digest="0" * 64,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == before
+
+
+def test_legacy_browser_native_id_copy_forward_refuses_preexisting_canonical_head(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    _seed_equivalent_canonical_head(tmp_path, raw_id)
+
+    report = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "legacy-native-id copy-forward refuses pre-existing canonical head authority"
+
+
+def test_legacy_browser_native_id_copy_forward_requires_single_membership_key(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority, decision, decided_at_ms
+            )
+            SELECT raw_id, 'chatgpt:competing-membership', provider_session_id,
+                   source_revision, normalized_content_hash, message_count,
+                   acquisition_generation, revision_authority, decision, decided_at_ms
+            FROM raw_session_memberships
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+
+    report = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "membership census does not exactly reproduce the accepted session"
+
+
+def test_legacy_browser_native_id_copy_forward_requires_single_payload_blob_ref(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            SELECT x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF',
+                   ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+            FROM blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'
+            """,
+            (raw_id,),
+        )
+
+    report = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "source envelope does not exactly bind the normalized session"
+
+
+def test_legacy_browser_native_id_atomic_apply_rolls_back_after_source_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.storage.repair as repair_module
+
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+    tables = {
+        "source": ("raw_sessions", "blob_refs", "raw_session_memberships", "raw_membership_census"),
+        "index": ("sessions", "raw_revision_heads", "raw_revision_applications"),
+    }
+    before = {
+        (tier, table): _rows(tmp_path, tier, table, "1 = 1", ())
+        for tier, tier_tables in tables.items()
+        for table in tier_tables
+    }
+
+    def fail_after_source_stage(conn: sqlite3.Connection, item: object) -> None:
+        raise RuntimeError("injected index transition failure")
+
+    monkeypatch.setattr(repair_module, "_apply_browser_origin_repair_item", fail_after_source_stage)
+    receipt = tmp_path / "legacy-atomic-rollback.jsonl"
+    with pytest.raises(RuntimeError, match="injected index transition failure"):
+        repair_legacy_browser_capture_missing_native_ids(
+            _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+        )
+
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
+    for (tier, table), rows in before.items():
+        assert _rows(tmp_path, tier, table, "1 = 1", ()) == rows
 
 
 def test_browser_capture_origin_copy_forward_accepts_source_v7_without_capture_mode(tmp_path: Path) -> None:

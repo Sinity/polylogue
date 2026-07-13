@@ -1453,6 +1453,44 @@ def test_browser_capture_origin_repair_cli_is_bounded_and_requires_receipt_proof
     assert "--proof-digest" in missing_proof.output
 
 
+def test_legacy_browser_native_id_repair_cli_is_bounded_and_requires_receipt_proof(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    del cli_workspace
+    raw_id = "c" * 64
+    dry_run = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "legacy-browser-capture-missing-native-id",
+            "--raw-id",
+            raw_id,
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert dry_run.exit_code == 0
+    assert json.loads(dry_run.output)["ineligible_count"] == 1
+    missing_receipt = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "legacy-browser-capture-missing-native-id",
+            "--raw-id",
+            raw_id,
+            "--apply",
+        ],
+    )
+    assert missing_receipt.exit_code == 2
+    assert "--receipt" in missing_receipt.output
+
+
 def test_archive_read_cli_lists_archive_sessions(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
