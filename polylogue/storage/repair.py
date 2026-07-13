@@ -168,7 +168,7 @@ def _authority_rows_digest(*row_sets: list[sqlite3.Row]) -> str:
             return {"blob_hex": bytes(value).hex()}
         return value
 
-    payload = [[{key: value_payload(row[key]) for key in row} for row in rows] for rows in row_sets]
+    payload = [[{key: value_payload(value) for key, value in dict(row).items()} for row in rows] for rows in row_sets]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
