@@ -78,15 +78,24 @@ export class BackfillCoordinator {
     if (action === "resume" && (await this.store.listQueue(jobId)).some((item) => item.state === "recovery_required")) {
       throw new Error("browser_profile_recovery_required");
     }
-    const resumed = await this.store.controlJob(jobId, status, nowIso(now), action === "resume" ? {
+    // Preflight while the job is still paused.  Marking it running first would
+    // let an alarm acquire its next execution generation while an older worker
+    // is still deciding whether this receiver is safe to use.
+    const contractError = status === "running" ? await this.preflightReceiverContract() : null;
+    if (contractError) {
+      await this.store.controlJob(jobId, "paused", nowIso(now), this.receiverContractFailurePatch(contractError));
+      return this.status(jobId);
+    }
+    const resumed = await this.store.controlJob(jobId, status, nowIso(now), status === "running" ? {
       cooldown_until_ms: null,
       cooldown_reason: null,
       throttle_count: 0,
+      receiver_contract_epoch: this.receiverContractEpoch,
+      receiver_contract_checked_at: nowIso(now),
       last_error: null,
     } : {}, action === "resume" ? now : null);
     if (status === "running") {
-      const checked = await this.ensureReceiverContract(resumed, now, true);
-      if (checked.status === "running") await this.schedule(jobId, now);
+      await this.schedule(resumed.id, now);
     }
     return this.status(jobId);
   }
@@ -94,9 +103,12 @@ export class BackfillCoordinator {
   async status(jobId) {
     const job = await this.requireJob(jobId);
     const queue = await this.store.listQueue(jobId);
-    const status = { ...job, progress: progressBuckets(queue) };
-    await this.persistCheckpoint();
-    return status;
+    const checkpointError = await this.persistCheckpoint();
+    return {
+      ...job,
+      progress: progressBuckets(queue),
+      recovery_checkpoint_error: checkpointError,
+    };
   }
 
   async listStatus() {
@@ -415,14 +427,9 @@ export class BackfillCoordinator {
   async ensureReceiverContract(job, now, force = false) {
     if (!this.receiverPreflight) return job;
     if (!force && job.receiver_contract_epoch === this.receiverContractEpoch) return job;
-    try {
-      await this.receiverPreflight();
-    } catch (error) {
-      const message = String(error?.message || error);
-      const reason = message.startsWith("receiver_contract_incompatible:")
-        ? "receiver_contract_incompatible"
-        : "receiver_preflight_unavailable";
-      const next = { ...job, status: "paused", cooldown_reason: reason, last_error: message, updated_at: nowIso(now) };
+    const contractError = await this.preflightReceiverContract();
+    if (contractError) {
+      const next = { ...job, ...this.receiverContractFailurePatch(contractError), updated_at: nowIso(now) };
       if (job.execution_owner === this.instanceId) await this.saveJob(next);
       else await this.store.putJob(next);
       return next;
@@ -433,9 +440,36 @@ export class BackfillCoordinator {
     return next;
   }
 
+  async preflightReceiverContract() {
+    if (!this.receiverPreflight) return null;
+    try {
+      await this.receiverPreflight();
+      return null;
+    } catch (error) {
+      return String(error?.message || error);
+    }
+  }
+
+  receiverContractFailurePatch(message) {
+    return {
+      status: "paused",
+      cooldown_reason: message.startsWith("receiver_contract_incompatible:")
+        ? "receiver_contract_incompatible"
+        : "receiver_preflight_unavailable",
+      last_error: message,
+    };
+  }
+
   async persistCheckpoint() {
-    if (!this.checkpoint) return;
-    await this.checkpoint(await this.store.exportRecoveryCheckpoint());
+    if (!this.checkpoint) return null;
+    try {
+      await this.checkpoint(await this.store.exportRecoveryCheckpoint());
+      return null;
+    } catch (error) {
+      // IndexedDB remains authoritative. A best-effort profile-recovery copy
+      // must never turn an otherwise durable backfill action into a failure.
+      return String(error?.message || error);
+    }
   }
 
   async saveJob(job) {

@@ -89,6 +89,7 @@ async function backfillCoordinator() {
           envelope,
           serialized,
           PROVIDER_REQUEST_TIMEOUT_MS,
+          true,
         ),
         receiverPreflight: backfillReceiverPreflight,
         checkpoint: async (checkpoint) => chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint }),
@@ -620,7 +621,7 @@ async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
   return headers;
 }
 
-async function postJson(path, payload, serializedBody = null, timeoutMs = null) {
+async function postJson(path, payload, serializedBody = null, timeoutMs = null, requireReceiverRequestId = false) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
@@ -633,7 +634,8 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null) 
       body: serializedBody || JSON.stringify(payload),
       signal: controller?.signal,
     });
-    const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
+    const acknowledgedRequestId = response.headers.get("X-Request-ID");
+    const receiverRequestId = acknowledgedRequestId || requestId;
     const body = await response.json().catch(() => ({}));
     await appendDebugLog({
       stage: "receiver_response",
@@ -651,6 +653,12 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null) 
     if (!response.ok) {
       const error = new Error(body.error || `HTTP ${response.status}`);
       error.receiverRequestId = receiverRequestId;
+      error.status = response.status;
+      throw error;
+    }
+    if (requireReceiverRequestId && !acknowledgedRequestId) {
+      const error = new Error("receiver_contract_incompatible:missing_receiver_request_id");
+      error.receiverRequestId = null;
       error.status = response.status;
       throw error;
     }

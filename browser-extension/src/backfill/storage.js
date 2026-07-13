@@ -51,13 +51,14 @@ function recoveryRequiredItem(item) {
   };
 }
 
-function recoveryCheckpointJob(job) {
+function recoveryCheckpointJob(job, hasRecoveryRequiredQueueItem = false) {
   const wasRunning = job.status === "running";
+  const needsProfileRecovery = wasRunning || (job.status === "paused" && hasRecoveryRequiredQueueItem);
   return {
     ...structuredClone(job),
-    status: wasRunning ? "paused" : job.status,
-    cooldown_reason: wasRunning ? "browser_profile_recovery_required" : job.cooldown_reason,
-    last_error: wasRunning ? "browser_profile_recovery_required" : job.last_error,
+    status: needsProfileRecovery ? "paused" : job.status,
+    cooldown_reason: needsProfileRecovery ? "browser_profile_recovery_required" : job.cooldown_reason,
+    last_error: needsProfileRecovery ? "browser_profile_recovery_required" : job.last_error,
     execution_owner: null,
     execution_expires_at_ms: null,
   };
@@ -367,9 +368,11 @@ export class IndexedDbBackfillStore {
       await transactionDone(tx);
       return { restored: 0, reason: "indexeddb_present" };
     }
-    for (const job of checkpoint.jobs || []) jobs.put(recoveryCheckpointJob(job));
     const queue = tx.objectStore("queue");
-    for (const item of checkpoint.queue || []) queue.put(recoveryRequiredItem(structuredClone(item)));
+    const restoredQueue = (checkpoint.queue || []).map((item) => recoveryRequiredItem(structuredClone(item)));
+    const recoveryRequiredJobs = new Set(restoredQueue.filter((item) => item.state === "recovery_required").map((item) => item.job_id));
+    for (const job of checkpoint.jobs || []) jobs.put(recoveryCheckpointJob(job, recoveryRequiredJobs.has(job.id)));
+    for (const item of restoredQueue) queue.put(item);
     const revisions = tx.objectStore("revisions");
     for (const revision of checkpoint.revisions || []) revisions.put(structuredClone(revision));
     await transactionDone(tx);
@@ -549,8 +552,10 @@ export class MemoryBackfillStore {
   async restoreRecoveryCheckpoint(checkpoint) {
     if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) return { restored: 0, reason: "checkpoint_unavailable" };
     if (this.jobs.size) return { restored: 0, reason: "indexeddb_present" };
-    for (const job of checkpoint.jobs || []) this.jobs.set(job.id, recoveryCheckpointJob(job));
-    for (const item of checkpoint.queue || []) this.queue.set(item.id, structuredClone(recoveryRequiredItem(item)));
+    const restoredQueue = (checkpoint.queue || []).map((item) => recoveryRequiredItem(structuredClone(item)));
+    const recoveryRequiredJobs = new Set(restoredQueue.filter((item) => item.state === "recovery_required").map((item) => item.job_id));
+    for (const job of checkpoint.jobs || []) this.jobs.set(job.id, recoveryCheckpointJob(job, recoveryRequiredJobs.has(job.id)));
+    for (const item of restoredQueue) this.queue.set(item.id, structuredClone(item));
     for (const revision of checkpoint.revisions || []) this.revisions.set(revision.id, structuredClone(revision));
     return { restored: (checkpoint.jobs || []).length, reason: "browser_profile_recovery_required" };
   }

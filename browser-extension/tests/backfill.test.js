@@ -59,7 +59,7 @@ class FixtureAdapter {
   }
 }
 
-function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPreflight = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
+function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPreflight = null, checkpoint = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
   let now = start;
   const alarms = { create: vi.fn(async () => undefined) };
   const durableReceiver = receiver || vi.fn(async (envelope, serialized) => ({ receiver_request_id: `ack-${envelope.session.provider_session_id}`, content_hash: await serializedContentHash(serialized) }));
@@ -68,6 +68,7 @@ function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPref
     adapters: { chatgpt: adapter },
     receiver: durableReceiver,
     receiverPreflight,
+    checkpoint,
     alarms,
     clock: () => now,
     random: () => 0,
@@ -179,6 +180,35 @@ describe("background backfill coordinator", () => {
     expect(h.receiver).not.toHaveBeenCalled();
   });
 
+  it("keeps a paused job non-runnable until its resume preflight succeeds", async () => {
+    let releasePreflight;
+    const receiverPreflight = vi.fn(async () => new Promise((resolve) => { releasePreflight = resolve; }));
+    receiverPreflight.mockResolvedValueOnce(undefined);
+    const h = harness({ receiverPreflight });
+    const job = await startJob(h);
+    await h.coordinator.control(job.id, "pause");
+
+    const resuming = h.coordinator.control(job.id, "resume");
+    await vi.waitFor(() => expect(receiverPreflight).toHaveBeenCalledTimes(2));
+    expect((await h.store.getJob(job.id)).status).toBe("paused");
+    await h.coordinator.wake(job.id);
+    expect(h.adapter.enumerateCalls).toBe(0);
+
+    releasePreflight();
+    await resuming;
+    expect(await h.store.getJob(job.id)).toMatchObject({ status: "running", receiver_contract_epoch: "instance-a" });
+  });
+
+  it("reports a recovery-checkpoint write failure without failing durable backfill work", async () => {
+    const checkpoint = vi.fn(async () => { throw new Error("storage_local_quota"); });
+    const h = harness({ checkpoint });
+    const job = await startJob(h);
+    expect(job).toMatchObject({ status: "running", recovery_checkpoint_error: "storage_local_quota" });
+    await h.coordinator.wake(job.id);
+    expect(h.adapter.enumerateCalls).toBe(1);
+    expect((await h.coordinator.status(job.id)).recovery_checkpoint_error).toBe("storage_local_quota");
+  });
+
   it("pauses exactly once on a 202-shaped ACK missing durable fields, then explicitly drains its stored envelope", async () => {
     let compatible = false;
     const receiver = vi.fn(async (_envelope, serialized) => compatible
@@ -267,10 +297,12 @@ describe("background backfill coordinator", () => {
         { id: "complete", provider: "chatgpt", status: "complete", policy: { maxDailyRequests: 10 } },
         { id: "cancelled", provider: "claude-ai", status: "cancelled", policy: { maxDailyRequests: 10 } },
         { id: "running", provider: "chatgpt", status: "running", policy: { maxDailyRequests: 10 } },
+        { id: "paused-recovery", provider: "chatgpt", status: "paused", cooldown_reason: "receiver_contract_incompatible", policy: { maxDailyRequests: 10 } },
       ],
       queue: [
         { id: "leased-eligible", job_id: "running", provider: "chatgpt", native_id: "one", state: "leased", resume_state: "eligible", next_eligible_at_ms: 0 },
         { id: "leased-envelope", job_id: "running", provider: "chatgpt", native_id: "two", state: "leased", resume_state: "captured_waiting_receiver", next_eligible_at_ms: 0 },
+        { id: "paused-envelope", job_id: "paused-recovery", provider: "chatgpt", native_id: "three", state: "captured_waiting_receiver", next_eligible_at_ms: 0 },
       ],
       revisions: [],
     };
@@ -278,12 +310,14 @@ describe("background backfill coordinator", () => {
     expect(await store.getJob("complete")).toMatchObject({ status: "complete" });
     expect(await store.getJob("cancelled")).toMatchObject({ status: "cancelled" });
     expect(await store.getJob("running")).toMatchObject({ status: "paused", cooldown_reason: "browser_profile_recovery_required" });
+    expect(await store.getJob("paused-recovery")).toMatchObject({ status: "paused", cooldown_reason: "browser_profile_recovery_required" });
     expect(await store.listQueue("running")).toMatchObject([
       { id: "leased-eligible", state: "eligible" },
       { id: "leased-envelope", state: "recovery_required" },
     ]);
     const coordinator = new BackfillCoordinator({ store, adapters: { chatgpt: new FixtureAdapter(["one"]) }, receiver: vi.fn(), alarms: { create: vi.fn() }, clock: () => 100000 });
     await expect(coordinator.control("running", "resume")).rejects.toThrow("browser_profile_recovery_required");
+    await expect(coordinator.control("paused-recovery", "resume")).rejects.toThrow("browser_profile_recovery_required");
   });
 
   it("honors Retry-After exactly and opens a circuit after repeated 429s", async () => {

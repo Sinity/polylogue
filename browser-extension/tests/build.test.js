@@ -186,9 +186,9 @@ describe("build.mjs full archive emission", () => {
       const contentHash = createHash("sha256").update(options.body, "utf8").digest("hex");
       receiverPosts += 1;
       body = receiverPosts === 1
-        ? { ok: true, provider: "chatgpt", provider_session_id: "fixture-1" }
+        ? { ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: contentHash }
         : { ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: contentHash };
-      return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-ack" : null }, json: async () => body };
+      return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" && receiverPosts > 1 ? "packaged-ack" : null }, json: async () => body };
     });
     const packagedWorkerUrl = `${pathToFileURL(join(unpacked, "src", "background.js")).href}?smoke=${Date.now()}`;
     await import(/* @vite-ignore */ packagedWorkerUrl);
@@ -202,7 +202,11 @@ describe("build.mjs full archive emission", () => {
     alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
     await vi.waitFor(() => expect(receiverPosts).toBe(1));
     const paused = await send({ type: "polylogue.backfill.status" });
-    expect(paused.jobs[0]).toMatchObject({ status: "paused", cooldown_reason: "receiver_contract_incompatible" });
+    expect(paused.jobs[0]).toMatchObject({
+      status: "paused",
+      cooldown_reason: "receiver_contract_incompatible",
+      last_error: "receiver_contract_incompatible:missing_receiver_request_id",
+    });
     expect(receiverPosts).toBe(1);
     await send({ type: "polylogue.backfill.control", job_id: started.job.id, action: "resume" });
     alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });

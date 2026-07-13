@@ -389,6 +389,8 @@ function renderBackfill(jobs) {
     ? "Receiver ACK contract is stale. Upgrade/restart receiver, then Resume."
     : recoveryBlocked
       ? "Browser profile was replaced. Inspect exported ledger before starting a new job."
+      : job.recovery_checkpoint_error
+        ? `Profile recovery checkpoint failed: ${job.recovery_checkpoint_error}`
       : job.last_ack?.receiver_request_id || job.last_error || "--";
   const resumeButton = document.getElementById("backfill-resume");
   if (resumeButton) resumeButton.disabled = recoveryBlocked;
