@@ -6,8 +6,7 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
-from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
@@ -18,8 +17,8 @@ RAW_ORIGIN_FILTER_SQL = "origin"
 
 
 def origin_filter_value(token: str) -> str:
-    """Translate a provider-wire token into its canonical ``origin`` value."""
-    return origin_from_provider(Provider.from_string(token)).value
+    """Validate and return a canonical ``origin`` value."""
+    return Origin(token).value
 
 
 def _now_ms() -> int:
@@ -146,15 +145,15 @@ async def mark_raw_validated(
 async def reset_parse_status(
     conn: aiosqlite.Connection,
     *,
-    provider: str | None = None,
+    origin: str | None = None,
     source_names: list[str] | None = None,
     transaction_depth: int,
 ) -> int:
     where_clauses = ["(parsed_at_ms IS NOT NULL OR parse_error IS NOT NULL)"]
     params: list[str] = []
-    if provider is not None:
+    if origin is not None:
         where_clauses.append(f"{RAW_ORIGIN_FILTER_SQL} = ?")
-        params.append(origin_filter_value(provider))
+        params.append(origin_filter_value(origin))
     predicate, scope_params = _build_source_scope_filter(
         source_names,
         source_column="origin",
@@ -174,15 +173,15 @@ async def reset_parse_status(
 async def reset_validation_status(
     conn: aiosqlite.Connection,
     *,
-    provider: str | None = None,
+    origin: str | None = None,
     source_names: list[str] | None = None,
     transaction_depth: int,
 ) -> int:
     where_clauses = ["(validated_at_ms IS NOT NULL OR validation_status IS NOT NULL OR validation_error IS NOT NULL)"]
     params: list[str] = []
-    if provider is not None:
+    if origin is not None:
         where_clauses.append(f"{RAW_ORIGIN_FILTER_SQL} = ?")
-        params.append(origin_filter_value(provider))
+        params.append(origin_filter_value(origin))
     predicate, scope_params = _build_source_scope_filter(
         source_names,
         source_column="origin",

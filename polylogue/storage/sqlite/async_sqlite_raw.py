@@ -248,14 +248,14 @@ class SQLiteRawMixin:
     async def reset_parse_status(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         source_names: list[str] | None = None,
     ) -> int:
         """Clear parsed_at/parse_error to force re-parsing on next run."""
         async with self._get_connection() as conn:
             return await raw_queries.reset_parse_status(
                 conn,
-                provider=provider,
+                origin=origin,
                 source_names=source_names,
                 transaction_depth=self._transaction_depth,
             )
@@ -263,14 +263,14 @@ class SQLiteRawMixin:
     async def reset_validation_status(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         source_names: list[str] | None = None,
     ) -> int:
         """Clear validation tracking to force re-validation on next run."""
         async with self._get_connection() as conn:
             return await raw_queries.reset_validation_status(
                 conn,
-                provider=provider,
+                origin=origin,
                 source_names=source_names,
                 transaction_depth=self._transaction_depth,
             )
@@ -301,18 +301,18 @@ class SQLiteRawMixin:
 
     async def iter_raw_sessions(
         self,
-        provider: str | None = None,
+        origin: str | None = None,
         limit: int | None = None,
     ) -> AsyncIterator[RawSessionRecord]:
         """Iterate over raw session records."""
         async with self._get_connection() as conn:
-            async for record in raw_queries.iter_raw_sessions(conn, provider, limit):
+            async for record in raw_queries.iter_raw_sessions(conn, origin, limit):
                 yield record
 
-    async def get_raw_session_count(self, provider: str | None = None) -> int:
+    async def get_raw_session_count(self, origin: str | None = None) -> int:
         """Get count of raw sessions."""
         async with self._get_connection() as conn:
-            return await raw_queries.get_raw_session_count(conn, provider)
+            return await raw_queries.get_raw_session_count(conn, origin)
 
     async def get_raw_records_for_session(
         self,

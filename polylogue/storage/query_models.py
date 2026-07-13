@@ -9,8 +9,8 @@ from typing_extensions import TypedDict
 
 class SessionListQueryKwargs(TypedDict):
     source: str | None
-    provider: str | None
-    providers: list[str] | None
+    origin: str | None
+    origins: list[str] | None
     parent_id: str | None
     since: str | None
     until: str | None
@@ -38,8 +38,8 @@ class SessionListQueryKwargs(TypedDict):
 
 class SessionCountQueryKwargs(TypedDict):
     source: str | None
-    provider: str | None
-    providers: list[str] | None
+    origin: str | None
+    origins: list[str] | None
     since: str | None
     until: str | None
     title_contains: str | None
@@ -67,8 +67,8 @@ class SessionRecordQuery:
     """Canonical record-level session selection for storage reads."""
 
     source: str | None = None
-    provider: str | None = None
-    providers: tuple[str, ...] = ()
+    origin: str | None = None
+    origins: tuple[str, ...] = ()
     parent_id: str | None = None
     since: str | None = None
     until: str | None = None
@@ -112,17 +112,17 @@ class SessionRecordQuery:
         )
 
     def for_search(self) -> tuple[str | None, list[str] | None]:
-        if self.provider:
-            return self.provider, None
-        if self.providers:
-            return None, list(self.providers)
+        if self.origin:
+            return self.origin, None
+        if self.origins:
+            return None, list(self.origins)
         return None, None
 
     def to_list_kwargs(self) -> SessionListQueryKwargs:
         return {
             "source": self.source,
-            "provider": self.provider,
-            "providers": list(self.providers) or None,
+            "origin": self.origin,
+            "origins": list(self.origins) or None,
             "parent_id": self.parent_id,
             "since": self.since,
             "until": self.until,
@@ -151,8 +151,8 @@ class SessionRecordQuery:
     def to_count_kwargs(self) -> SessionCountQueryKwargs:
         return {
             "source": self.source,
-            "provider": self.provider,
-            "providers": list(self.providers) or None,
+            "origin": self.origin,
+            "origins": list(self.origins) or None,
             "since": self.since,
             "until": self.until,
             "title_contains": self.title_contains,
@@ -180,7 +180,7 @@ class SessionRecordQuery:
 class SessionProfileListQuery:
     """Canonical session-profile read selection for storage/runtime boundaries."""
 
-    provider: str | None = None
+    origin: str | None = None
     since: str | None = None
     until: str | None = None
     first_message_since: str | None = None
@@ -203,7 +203,7 @@ class SessionTimelineListQuery:
     """Canonical session timeline selection for work-event and phase reads."""
 
     session_id: str | None = None
-    provider: str | None = None
+    origin: str | None = None
     since: str | None = None
     until: str | None = None
     session_date_since: str | None = None
@@ -230,7 +230,7 @@ class ThreadListQuery:
 class SessionTagRollupListQuery:
     """Canonical tag-rollup selection for durable insight aggregate reads."""
 
-    provider: str | None = None
+    origin: str | None = None
     since: str | None = None
     until: str | None = None
     query: str | None = None
@@ -240,7 +240,7 @@ class SessionTagRollupListQuery:
 class ArtifactObservationListQuery:
     """Canonical durable-artifact observation selection for storage reads."""
 
-    providers: tuple[str, ...] = ()
+    origins: tuple[str, ...] = ()
     support_statuses: tuple[str, ...] = ()
     artifact_kinds: tuple[str, ...] = ()
     limit: int | None = None

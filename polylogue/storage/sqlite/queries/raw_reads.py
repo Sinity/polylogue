@@ -245,7 +245,7 @@ async def get_raw_session_states(conn: aiosqlite.Connection, raw_ids: list[str])
 
 async def iter_raw_sessions(
     conn: aiosqlite.Connection,
-    provider: str | None = None,
+    origin: str | None = None,
     limit: int | None = None,
 ) -> AsyncIterator[RawSessionRecord]:
     offset = 0
@@ -254,9 +254,9 @@ async def iter_raw_sessions(
     while True:
         query = "SELECT * FROM raw_sessions"
         params: list[str | int] = []
-        if provider is not None:
+        if origin is not None:
             query += f" WHERE {RAW_ORIGIN_FILTER_SQL} = ?"
-            params.append(origin_filter_value(provider))
+            params.append(origin_filter_value(origin))
         query += " ORDER BY acquired_at_ms DESC"
         chunk_size = 100
         query_with_limit = query + " LIMIT ? OFFSET ?"
@@ -314,12 +314,12 @@ async def get_raw_records_for_session(
     return records, total
 
 
-async def get_raw_session_count(conn: aiosqlite.Connection, provider: str | None = None) -> int:
+async def get_raw_session_count(conn: aiosqlite.Connection, origin: str | None = None) -> int:
     query = "SELECT COUNT(*) as cnt FROM raw_sessions"
     params: tuple[str, ...] = ()
-    if provider is not None:
+    if origin is not None:
         query += f" WHERE {RAW_ORIGIN_FILTER_SQL} = ?"
-        params = (origin_filter_value(provider),)
+        params = (origin_filter_value(origin),)
     cursor = await conn.execute(query, params)
     row = await cursor.fetchone()
     return int(row["cnt"]) if row is not None else 0

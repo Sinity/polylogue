@@ -6,8 +6,7 @@ from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.fields import storage_filters_require_stats_join
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.viewport.viewports import ToolCategory
-from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin
 from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
 
 _SEMANTIC_ACTION_TYPES = tuple(category.value for category in ToolCategory)
@@ -31,14 +30,14 @@ def _iso_to_epoch(iso_str: str) -> float:
 
 
 def _origin_value(value: str) -> str:
-    return origin_from_provider(Provider.from_string(value)).value
+    return Origin(value).value
 
 
 def _build_session_filters(
     *,
     source: str | None = None,
-    provider: str | None = None,
-    providers: list[str] | None = None,
+    origin: str | None = None,
+    origins: list[str] | None = None,
     parent_id: str | None = None,
     since: str | None = None,
     until: str | None = None,
@@ -73,11 +72,11 @@ def _build_session_filters(
     if source is not None:
         where_clauses.append("c.origin = ?" if needs_stats_alias else "origin = ?")
         params.append(_origin_value(source))
-    if provider is not None:
+    if origin is not None:
         where_clauses.append("c.origin = ?" if needs_stats_alias else "origin = ?")
-        params.append(_origin_value(provider))
-    if providers:
-        source_scope_params = [_origin_value(provider_name) for provider_name in providers]
+        params.append(_origin_value(origin))
+    if origins:
+        source_scope_params = [_origin_value(origin_name) for origin_name in origins]
         placeholders = ",".join("?" for _ in source_scope_params)
         origin_column = "c.origin" if needs_stats_alias else "origin"
         source_scope_sql = f"{origin_column} IN ({placeholders})"
