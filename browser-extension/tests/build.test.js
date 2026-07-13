@@ -176,11 +176,18 @@ describe("build.mjs full archive emission", () => {
       tabs: { ...tabs, get: vi.fn(), onActivated: { addListener: vi.fn() }, onUpdated: { addListener: vi.fn() } },
     };
     const fetchCalls = [];
+    let receiverPosts = 0;
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       let body;
+      if (String(url).endsWith("/v1/browser-captures/capabilities")) {
+        return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-capability" : null }, json: async () => ({ durable_ack_fields: ["receiver_request_id", "content_hash"] }) };
+      }
       const contentHash = createHash("sha256").update(options.body, "utf8").digest("hex");
-      body = { ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: contentHash };
+      receiverPosts += 1;
+      body = receiverPosts === 1
+        ? { ok: true, provider: "chatgpt", provider_session_id: "fixture-1" }
+        : { ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: contentHash };
       return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-ack" : null }, json: async () => body };
     });
     const packagedWorkerUrl = `${pathToFileURL(join(unpacked, "src", "background.js")).href}?smoke=${Date.now()}`;
@@ -193,7 +200,16 @@ describe("build.mjs full archive emission", () => {
       await vi.waitFor(() => expect(pageRequests.filter((message) => message.operation === "inventory")).toHaveLength(inventoryCount));
     }
     alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
-    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).includes("/v1/browser-captures"))).toBe(true));
+    await vi.waitFor(() => expect(receiverPosts).toBe(1));
+    const paused = await send({ type: "polylogue.backfill.status" });
+    expect(paused.jobs[0]).toMatchObject({ status: "paused", cooldown_reason: "receiver_contract_incompatible" });
+    expect(receiverPosts).toBe(1);
+    await send({ type: "polylogue.backfill.control", job_id: started.job.id, action: "resume" });
+    alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
+    await vi.waitFor(() => expect(receiverPosts).toBe(2));
+    const recovered = await send({ type: "polylogue.backfill.status" });
+    expect(recovered.jobs[0].progress.complete).toBe(1);
+    expect(pageRequests.filter((message) => message.operation === "conversation")).toHaveLength(1);
     expect(tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false });
     expect(tabs.update).not.toHaveBeenCalled();
     expect(pageRequests.map((message) => message.operation)).toEqual(["inventory", "inventory", "inventory", "inventory", "conversation"]);

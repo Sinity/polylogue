@@ -59,7 +59,7 @@ class FixtureAdapter {
   }
 }
 
-function harness({ adapter = new FixtureAdapter(), receiver = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
+function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPreflight = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
   let now = start;
   const alarms = { create: vi.fn(async () => undefined) };
   const durableReceiver = receiver || vi.fn(async (envelope, serialized) => ({ receiver_request_id: `ack-${envelope.session.provider_session_id}`, content_hash: await serializedContentHash(serialized) }));
@@ -67,6 +67,7 @@ function harness({ adapter = new FixtureAdapter(), receiver = null, start = 1000
     store,
     adapters: { chatgpt: adapter },
     receiver: durableReceiver,
+    receiverPreflight,
     alarms,
     clock: () => now,
     random: () => 0,
@@ -105,6 +106,45 @@ describe("background backfill coordinator", () => {
     expect(h.receiver).toHaveBeenCalledTimes(2);
   });
 
+  it("recovers the durable job, queue, revision, and ACK ledgers from real IndexedDB after a worker restart", async () => {
+    const databaseName = `polylogue-restart-${globalThis.crypto.randomUUID()}`;
+    const adapter = new FixtureAdapter(["one", "two"]);
+    const store = new IndexedDbBackfillStore(indexedDB, databaseName);
+    const h = harness({ adapter, store });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+    const before = await h.coordinator.status(job.id);
+    const restarted = new BackfillCoordinator({
+      store: new IndexedDbBackfillStore(indexedDB, databaseName),
+      adapters: { chatgpt: adapter }, receiver: h.receiver, alarms: h.alarms,
+      clock: h.now, random: () => 0, instanceId: "instance-after-restart",
+    });
+    h.advance(h.policy.baseCadenceMs);
+    await restarted.wake(job.id);
+    const after = await restarted.status(job.id);
+    expect(after).toMatchObject({ id: job.id, inventory_cursor: before.inventory_cursor, last_ack: expect.objectContaining({ content_hash: expect.any(String) }) });
+    expect(after.progress.complete).toBe(2);
+    expect(adapter.fetchCalls).toEqual(["one", "two"]);
+    expect(h.receiver).toHaveBeenCalledTimes(2);
+    indexedDB.deleteDatabase(databaseName);
+  });
+
+  it("rechecks the receiver contract after a worker restart even when its durable extension identity is unchanged", async () => {
+    const receiverPreflight = vi.fn(async () => undefined);
+    const h = harness({ receiverPreflight, instanceId: "stable-extension-id" });
+    const job = await startJob(h);
+    const restarted = new BackfillCoordinator({
+      store: h.store, adapters: { chatgpt: h.adapter }, receiver: h.receiver, receiverPreflight,
+      alarms: h.alarms, clock: h.now, random: () => 0, instanceId: "stable-extension-id", receiverContractEpoch: "new-worker-epoch",
+    });
+    receiverPreflight.mockRejectedValueOnce(new Error("receiver_contract_incompatible:durable_ack_fields_missing"));
+    await restarted.wake(job.id);
+    expect(await restarted.status(job.id)).toMatchObject({ status: "paused", cooldown_reason: "receiver_contract_incompatible" });
+    expect(receiverPreflight).toHaveBeenCalledTimes(2);
+    expect(h.adapter.enumerateCalls).toBe(0);
+  });
+
   it("keeps a receiver-down capture durable and retries the ACK without refetching provider data", async () => {
     let calls = 0;
     const receiver = vi.fn(async (_envelope, serialized) => {
@@ -127,6 +167,96 @@ describe("background backfill coordinator", () => {
     expect(item.receiver_receipt.content_hash).toBe(item.content_hash);
     expect(h.adapter.fetchCalls).toHaveLength(1);
     expect((await h.coordinator.status(job.id)).daily_requests).toBe(providerRequests);
+  });
+
+  it("preflights the receiver contract before any provider request", async () => {
+    const receiverPreflight = vi.fn(async () => { throw new Error("receiver_contract_incompatible:durable_ack_fields_missing"); });
+    const h = harness({ receiverPreflight });
+    const job = await startJob(h);
+    const status = await h.coordinator.status(job.id);
+    expect(status).toMatchObject({ status: "paused", cooldown_reason: "receiver_contract_incompatible" });
+    expect(h.adapter.enumerateCalls).toBe(0);
+    expect(h.receiver).not.toHaveBeenCalled();
+  });
+
+  it("pauses exactly once on a 202-shaped ACK missing durable fields, then explicitly drains its stored envelope", async () => {
+    let compatible = false;
+    const receiver = vi.fn(async (_envelope, serialized) => compatible
+      ? { receiver_request_id: "ack-after-upgrade", content_hash: await serializedContentHash(serialized) }
+      : { receiver_request_id: "accepted-but-stale" });
+    const receiverPreflight = vi.fn(async () => undefined);
+    const h = harness({ adapter: new FixtureAdapter(["one"]), receiver, receiverPreflight });
+    const job = await startJob(h);
+    await h.coordinator.wake(job.id);
+    h.advance(h.policy.baseCadenceMs);
+    await h.coordinator.wake(job.id);
+    expect((await h.coordinator.status(job.id)).cooldown_reason).toBe("receiver_contract_incompatible");
+    expect(h.receiver).toHaveBeenCalledTimes(1);
+    expect(h.adapter.fetchCalls).toEqual(["one"]);
+
+    h.advance(60000);
+    await h.coordinator.wake(job.id);
+    expect(h.receiver).toHaveBeenCalledTimes(1);
+    expect(h.adapter.fetchCalls).toEqual(["one"]);
+
+    compatible = true;
+    await h.coordinator.control(job.id, "resume");
+    await h.coordinator.wake(job.id);
+    const resumed = await h.coordinator.status(job.id);
+    expect(resumed.progress.complete).toBe(1);
+    expect(h.adapter.fetchCalls).toEqual(["one"]);
+    expect(h.receiver).toHaveBeenCalledTimes(2);
+  });
+
+  it("turns a stale accepted ACK into a receiver-contract pause without retrying or refetching", async () => {
+    const receiver = vi.fn(async () => ({ receiver_request_id: "accepted-but-no-hash" }));
+    const h = harness({ adapter: new FixtureAdapter(["one"]), receiver });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+    const first = await h.coordinator.status(job.id);
+    const item = (await h.store.listQueue(job.id))[0];
+    expect(first).toMatchObject({ status: "paused", cooldown_reason: "receiver_contract_incompatible" });
+    expect(item).toMatchObject({ state: "captured_waiting_receiver", attempt_count: 0, last_response_class: "receiver_contract_incompatible" });
+    expect(h.adapter.fetchCalls).toEqual(["one"]);
+    expect(receiver).toHaveBeenCalledTimes(1);
+
+    h.advance(60000);
+    await h.coordinator.wake(job.id);
+    expect(h.adapter.fetchCalls).toEqual(["one"]);
+    expect(receiver).toHaveBeenCalledTimes(1);
+  });
+
+  it("exports no credentials and restores profile-loss evidence without replaying a missing envelope", async () => {
+    const store = new MemoryBackfillStore();
+    await store.createJob({
+      id: "checkpoint-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", provider_options: { claudeOrganizationId: "account-should-not-survive" },
+      status: "running", policy: { maxDailyRequests: 10 }, learned_cadence_ms: 40000, daily_requests: 7,
+      last_ack: { receiver_request_id: "ack-1", content_hash: "abc" }, execution_generation: 0,
+    });
+    await store.putQueue({
+      id: "checkpoint-q", job_id: "checkpoint-job", provider: "chatgpt", native_id: "conversation-1", state: "captured_waiting_receiver",
+      envelope: { raw_provider_payload: { authorization: "Bearer secret", account_id: "account-should-not-survive" } },
+      receiver_receipt: { cookie: "secret" }, content_hash: "abc", attempt_count: 2,
+    });
+    const checkpoint = await store.exportRecoveryCheckpoint();
+    const encoded = JSON.stringify(checkpoint);
+    expect(encoded).not.toContain("Bearer secret");
+    expect(encoded).not.toContain("account-should-not-survive");
+    expect(encoded).not.toContain("cookie");
+    expect(checkpoint.jobs[0]).toMatchObject({ learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1" } });
+
+    const restoredStore = new MemoryBackfillStore();
+    expect(await restoredStore.restoreRecoveryCheckpoint(checkpoint)).toEqual({ restored: 1, reason: "browser_profile_recovery_required" });
+    const restored = await restoredStore.getJob("checkpoint-job");
+    expect(restored).toMatchObject({ status: "paused", cooldown_reason: "browser_profile_recovery_required", last_ack: { receiver_request_id: "ack-1" } });
+    const restoredQueue = await restoredStore.listQueue("checkpoint-job");
+    expect(restoredQueue).toMatchObject([{ state: "recovery_required" }]);
+    expect(restoredQueue[0]).not.toHaveProperty("envelope");
+    const receiver = vi.fn();
+    const coordinator = new BackfillCoordinator({ store: restoredStore, adapters: { chatgpt: new FixtureAdapter(["one"]) }, receiver, alarms: { create: vi.fn() }, clock: () => 200000 });
+    await coordinator.wake("checkpoint-job");
+    expect(receiver).not.toHaveBeenCalled();
   });
 
   it("honors Retry-After exactly and opens a circuit after repeated 429s", async () => {

@@ -1,4 +1,4 @@
-import { BACKFILL_DB_NAME, BACKFILL_DB_VERSION, TERMINAL_QUEUE_STATES } from "./models.js";
+import { BACKFILL_DB_NAME, BACKFILL_DB_VERSION, BACKFILL_RECOVERY_CHECKPOINT_VERSION, TERMINAL_QUEUE_STATES } from "./models.js";
 
 function requestResult(request) {
   return new Promise((resolve, reject) => {
@@ -13,6 +13,40 @@ function transactionDone(transaction) {
     transaction.onabort = () => reject(transaction.error || new Error("indexeddb_transaction_aborted"));
     transaction.onerror = () => reject(transaction.error || new Error("indexeddb_transaction_failed"));
   });
+}
+
+function checkpointJob(job) {
+  const safe = { ...job };
+  delete safe.provider_options;
+  delete safe.execution_owner;
+  delete safe.execution_expires_at_ms;
+  return structuredClone(safe);
+}
+
+function checkpointQueueItem(item) {
+  const safe = { ...item };
+  delete safe.envelope;
+  delete safe.receiver_receipt;
+  delete safe.lease_owner;
+  delete safe.lease_expires_at_ms;
+  return structuredClone(safe);
+}
+
+function checkpointRevision(revision) {
+  return structuredClone(revision);
+}
+
+function recoveryRequiredItem(item) {
+  if (item.state !== "captured_waiting_receiver") return item;
+  return {
+    ...item,
+    state: "recovery_required",
+    resume_state: "recovery_required",
+    last_response_class: "browser_profile_recovery_required",
+    last_error: "captured_envelope_not_present_in_recovery_checkpoint",
+    lease_owner: null,
+    lease_expires_at_ms: null,
+  };
 }
 
 export class IndexedDbBackfillStore {
@@ -294,6 +328,42 @@ export class IndexedDbBackfillStore {
     return new TextEncoder().encode(JSON.stringify(items)).length;
   }
 
+  async exportRecoveryCheckpoint() {
+    const db = await this.database();
+    const tx = db.transaction(["jobs", "queue", "revisions"], "readonly");
+    const [jobs, queue, revisions] = await Promise.all([
+      requestResult(tx.objectStore("jobs").getAll()),
+      requestResult(tx.objectStore("queue").getAll()),
+      requestResult(tx.objectStore("revisions").getAll()),
+    ]);
+    return {
+      version: BACKFILL_RECOVERY_CHECKPOINT_VERSION,
+      jobs: jobs.map(checkpointJob),
+      queue: queue.map(checkpointQueueItem),
+      revisions: revisions.map(checkpointRevision),
+    };
+  }
+
+  async restoreRecoveryCheckpoint(checkpoint) {
+    if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) return { restored: 0, reason: "checkpoint_unavailable" };
+    const db = await this.database();
+    const tx = db.transaction(["jobs", "queue", "revisions"], "readwrite");
+    const jobs = tx.objectStore("jobs");
+    if ((await requestResult(jobs.count())) > 0) {
+      await transactionDone(tx);
+      return { restored: 0, reason: "indexeddb_present" };
+    }
+    for (const job of checkpoint.jobs || []) {
+      jobs.put({ ...structuredClone(job), status: "paused", cooldown_reason: "browser_profile_recovery_required", last_error: "browser_profile_recovery_required", execution_owner: null, execution_expires_at_ms: null });
+    }
+    const queue = tx.objectStore("queue");
+    for (const item of checkpoint.queue || []) queue.put(recoveryRequiredItem(structuredClone(item)));
+    const revisions = tx.objectStore("revisions");
+    for (const revision of checkpoint.revisions || []) revisions.put(structuredClone(revision));
+    await transactionDone(tx);
+    return { restored: (checkpoint.jobs || []).length, reason: "browser_profile_recovery_required" };
+  }
+
   async recoverExpiredLeases(jobId, nowMs) {
     const db = await this.database();
     const tx = db.transaction("queue", "readwrite");
@@ -456,6 +526,22 @@ export class MemoryBackfillStore {
   async getRevision(provider, nativeId) { return structuredClone(this.revisions.get(`${provider}:${nativeId}`)); }
   async putRevision(revision) { this.revisions.set(revision.id, structuredClone(revision)); return revision; }
   async storedBytes(jobId) { return new TextEncoder().encode(JSON.stringify(await this.listQueue(jobId))).length; }
+  async exportRecoveryCheckpoint() {
+    return {
+      version: BACKFILL_RECOVERY_CHECKPOINT_VERSION,
+      jobs: [...this.jobs.values()].map(checkpointJob),
+      queue: [...this.queue.values()].map(checkpointQueueItem),
+      revisions: [...this.revisions.values()].map(checkpointRevision),
+    };
+  }
+  async restoreRecoveryCheckpoint(checkpoint) {
+    if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) return { restored: 0, reason: "checkpoint_unavailable" };
+    if (this.jobs.size) return { restored: 0, reason: "indexeddb_present" };
+    for (const job of checkpoint.jobs || []) this.jobs.set(job.id, structuredClone({ ...job, status: "paused", cooldown_reason: "browser_profile_recovery_required", last_error: "browser_profile_recovery_required", execution_owner: null, execution_expires_at_ms: null }));
+    for (const item of checkpoint.queue || []) this.queue.set(item.id, structuredClone(recoveryRequiredItem(item)));
+    for (const revision of checkpoint.revisions || []) this.revisions.set(revision.id, structuredClone(revision));
+    return { restored: (checkpoint.jobs || []).length, reason: "browser_profile_recovery_required" };
+  }
   async recoverExpiredLeases(jobId, nowMs) {
     let recovered = 0;
     for (const item of this.queue.values()) {
@@ -492,7 +578,7 @@ export function progressBuckets(items) {
     if (["complete", "unchanged"].includes(item.state)) buckets.complete += 1;
     if (item.state === "no_turns") buckets.no_turns += 1;
     if (["retry_wait", "captured_waiting_receiver"].includes(item.state)) buckets.retry += 1;
-    if (item.state === "auth_required") buckets.operator_action += 1;
+    if (["auth_required", "recovery_required"].includes(item.state)) buckets.operator_action += 1;
     if (item.state === "failed") buckets.error += 1;
   }
   return buckets;

@@ -75,7 +75,7 @@ function installDom() {
   dom.window.HTMLAnchorElement.prototype.click = vi.fn();
 }
 
-function installChromeMock(storagePatch = {}, tabs = [CHATGPT_TAB]) {
+function installChromeMock(storagePatch = {}, tabs = [CHATGPT_TAB], sendMessage = null) {
   let captureAttempts = 0;
   const defaults = {
     polylogueCaptureLog: [],
@@ -87,7 +87,7 @@ function installChromeMock(storagePatch = {}, tabs = [CHATGPT_TAB]) {
   };
   globalThis.chrome = {
     runtime: {
-      sendMessage: vi.fn(async () => ({ ok: true })),
+      sendMessage: vi.fn(async (message) => sendMessage ? sendMessage(message) : ({ ok: true })),
     },
     scripting: {
       executeScript: vi.fn(async () => undefined),
@@ -115,10 +115,10 @@ function installChromeMock(storagePatch = {}, tabs = [CHATGPT_TAB]) {
   };
 }
 
-async function loadPopup(storagePatch = {}, tabs = [CHATGPT_TAB]) {
+async function loadPopup(storagePatch = {}, tabs = [CHATGPT_TAB], sendMessage = null) {
   vi.resetModules();
   installDom();
-  installChromeMock(storagePatch, tabs);
+  installChromeMock(storagePatch, tabs, sendMessage);
   await import("../src/operator_status.js");
   await import("../src/popup.js");
   await vi.waitFor(() => expect(globalThis.document.getElementById("page").textContent).not.toContain("Unknown"));
@@ -218,6 +218,29 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("badge").textContent).toBe("missing");
     expect(globalThis.document.getElementById("archive").textContent).toBe("Not archived");
     expect(globalThis.document.getElementById("state").textContent).toContain("not been saved");
+  });
+
+  it("names a stale receiver ACK contract and recovery loss as actionable backfill states", async () => {
+    const job = (cooldown_reason) => ({
+      id: `job-${cooldown_reason}`,
+      provider: "chatgpt",
+      status: "paused",
+      cooldown_reason,
+      inventory_cursor: "17",
+      learned_cadence_ms: 40000,
+      progress: { total: 1, complete: 0, retry: 1, no_turns: 0, error: 0, operator_action: 0 },
+    });
+    await loadPopup({}, [CHATGPT_TAB], async (message) => message.type === "polylogue.backfill.status"
+      ? { ok: true, jobs: [job("receiver_contract_incompatible")] }
+      : { ok: true });
+    await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("receiver upgrade required"));
+    expect(document.getElementById("backfill-last").textContent).toContain("Upgrade/restart receiver");
+
+    await loadPopup({}, [CHATGPT_TAB], async (message) => message.type === "polylogue.backfill.status"
+      ? { ok: true, jobs: [job("browser_profile_recovery_required")] }
+      : { ok: true });
+    await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("profile recovery required"));
+    expect(document.getElementById("backfill-last").textContent).toContain("profile was replaced");
   });
 
   it("renders mission-control status, open tabs, and the active decision timeline", async () => {

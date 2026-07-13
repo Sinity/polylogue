@@ -106,6 +106,13 @@ function installChromeMock() {
       }),
     },
   };
+  globalThis.fetch = vi.fn(async (url, options = {}) => {
+    fetchCalls.push({ url, options });
+    if (String(url).endsWith("/v1/browser-captures/capabilities")) {
+      return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
+    }
+    return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+  });
 }
 
 async function loadBackground() {
@@ -521,7 +528,13 @@ describe("background receiver diagnostics", () => {
   });
 
   it("routes backfill inventory through an existing provider page instead of service-worker fetch", async () => {
-    globalThis.fetch = vi.fn(async () => responseJson({ error: "unexpected_service_worker_provider_fetch" }, { ok: false, status: 500 }));
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      if (String(url).endsWith("/v1/browser-captures/capabilities")) {
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
+      }
+      return responseJson({ error: "unexpected_service_worker_provider_fetch" }, { ok: false, status: 500 });
+    });
 
     const started = await sendRuntimeMessage({
       type: "polylogue.backfill.start",
@@ -537,7 +550,8 @@ describe("background receiver diagnostics", () => {
       func: expect.any(Function),
       args: [expect.objectContaining({ provider: "chatgpt", operation: "inventory" })],
     })));
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(fetchCalls[0].url).toContain("/v1/browser-captures/capabilities");
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });

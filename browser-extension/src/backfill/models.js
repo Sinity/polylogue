@@ -1,7 +1,9 @@
 export const BACKFILL_ALARM = "polylogueBackfillWake";
 export const BACKFILL_DB_NAME = "polylogue-browser-backfill";
 export const BACKFILL_DB_VERSION = 2;
+export const BACKFILL_RECOVERY_CHECKPOINT_VERSION = 1;
 export const PROVIDER_REQUEST_TIMEOUT_MS = 60000;
+export const DURABLE_RECEIVER_ACK_FIELDS = Object.freeze(["receiver_request_id", "content_hash"]);
 
 export const DEFAULT_BACKFILL_POLICY = Object.freeze({
   maxQueueSize: 10000,
@@ -24,6 +26,18 @@ export function backfillAlarmName(jobId) {
 
 export function serializedJson(value) {
   return JSON.stringify(value);
+}
+
+export function receiverAckContractError(receipt, expectedContentHash) {
+  const missing = DURABLE_RECEIVER_ACK_FIELDS.filter((field) => {
+    const value = receipt?.[field];
+    return typeof value !== "string" || !value;
+  });
+  if (!missing.length && receipt.content_hash === expectedContentHash) return null;
+  const detail = missing.length ? `missing_${missing.join("_")}` : "content_hash_mismatch";
+  const error = new Error(`receiver_contract_incompatible:${detail}`);
+  error.code = "receiver_contract_incompatible";
+  return error;
 }
 
 export async function serializedContentHash(serialized) {

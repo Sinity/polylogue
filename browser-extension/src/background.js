@@ -1,5 +1,5 @@
 import { BackfillCoordinator } from "./backfill/coordinator.js";
-import { BACKFILL_ALARM, PROVIDER_REQUEST_TIMEOUT_MS } from "./backfill/models.js";
+import { BACKFILL_ALARM, DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS } from "./backfill/models.js";
 import { providerAdapters } from "./backfill/providers.js";
 import { executeProviderPageRequest } from "./backfill/page_transport.js";
 import { IndexedDbBackfillStore } from "./backfill/storage.js";
@@ -11,6 +11,8 @@ const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
 const CONVERSATION_TIMELINE_KEY = "polylogueConversationTimeline";
 const CONVERSATION_TIMELINE_EVENT_LIMIT = 24;
+const BACKFILL_RECOVERY_CHECKPOINT_KEY = "polylogueBackfillRecoveryCheckpoint";
+const BACKFILL_WORKER_EPOCH = globalThis.crypto?.randomUUID?.() || `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const CONVERSATION_TIMELINE_CONVERSATION_LIMIT = 80;
 const POST_POLL_INTERVAL_MS = 5000;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
@@ -74,18 +76,27 @@ async function withExtensionInstanceAttribution(envelope) {
 
 async function backfillCoordinator() {
   if (!backfillCoordinatorPromise) {
-    backfillCoordinatorPromise = extensionInstanceId().then((instanceId) => new BackfillCoordinator({
-      store: new IndexedDbBackfillStore(),
-      adapters: providerAdapters(providerPageFetch, { requirePageContext: true }),
-      receiver: (envelope, serialized) => postJson(
-        "/v1/browser-captures",
-        envelope,
-        serialized,
-        PROVIDER_REQUEST_TIMEOUT_MS,
-      ),
-      alarms: chrome.alarms,
-      instanceId,
-    }));
+    backfillCoordinatorPromise = (async () => {
+      const store = new IndexedDbBackfillStore();
+      const stored = await chrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
+      await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
+      const instanceId = await extensionInstanceId();
+      return new BackfillCoordinator({
+        store,
+        adapters: providerAdapters(providerPageFetch, { requirePageContext: true }),
+        receiver: (envelope, serialized) => postJson(
+          "/v1/browser-captures",
+          envelope,
+          serialized,
+          PROVIDER_REQUEST_TIMEOUT_MS,
+        ),
+        receiverPreflight: backfillReceiverPreflight,
+        checkpoint: async (checkpoint) => chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint }),
+        alarms: chrome.alarms,
+        instanceId,
+        receiverContractEpoch: BACKFILL_WORKER_EPOCH,
+      });
+    })();
   }
   return backfillCoordinatorPromise;
 }
@@ -694,6 +705,15 @@ async function getJson(path) {
     });
     throw error;
   }
+}
+
+async function backfillReceiverPreflight() {
+  const capability = await getJson("/v1/browser-captures/capabilities");
+  const fields = capability?.durable_ack_fields;
+  if (!Array.isArray(fields) || DURABLE_RECEIVER_ACK_FIELDS.some((field) => !fields.includes(field))) {
+    throw new Error("receiver_contract_incompatible:durable_ack_fields_missing");
+  }
+  return capability;
 }
 
 async function refreshReceiverState() {

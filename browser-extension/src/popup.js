@@ -373,13 +373,23 @@ function renderBackfill(jobs) {
   }
   selectedBackfillJobId = job.id;
   if (selector) selector.value = job.id;
-  statusNode.textContent = `${job.provider} · ${job.status}`;
+  const contractBlocked = job.cooldown_reason === "receiver_contract_incompatible";
+  const recoveryBlocked = job.cooldown_reason === "browser_profile_recovery_required";
+  statusNode.textContent = contractBlocked
+    ? `${job.provider} · receiver upgrade required`
+    : recoveryBlocked
+      ? `${job.provider} · profile recovery required`
+      : `${job.provider} · ${job.status}`;
   document.getElementById("backfill-cursor").textContent = job.inventory_complete ? `${job.inventory_cursor} · complete` : job.inventory_cursor || "--";
   const progress = job.progress || {};
   document.getElementById("backfill-progress").textContent = `${progress.complete || 0}/${progress.total || 0} · ${progress.retry || 0} retry · ${progress.no_turns || 0} empty · ${(progress.error || 0) + (progress.operator_action || 0)} attention`;
   const cooldown = job.cooldown_until_ms ? new Date(job.cooldown_until_ms).toLocaleTimeString() : "none";
   document.getElementById("backfill-rate").textContent = `${Math.round((job.learned_cadence_ms || 0) / 1000)}s · ${cooldown}`;
-  document.getElementById("backfill-last").textContent = job.last_ack?.receiver_request_id || job.last_error || "--";
+  document.getElementById("backfill-last").textContent = contractBlocked
+    ? "Receiver ACK contract is stale. Upgrade/restart receiver, then Resume."
+    : recoveryBlocked
+      ? "Browser profile was replaced. Inspect exported ledger before starting a new job."
+      : job.last_ack?.receiver_request_id || job.last_error || "--";
 }
 
 async function refreshBackfills() {
