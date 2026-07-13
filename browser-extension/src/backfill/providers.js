@@ -72,7 +72,7 @@ function claudeText(message) {
   }).filter(Boolean).join("\n");
 }
 
-function envelope({ provider, nativeId, title, createdAt, updatedAt, turns, rawPayload, adapterName, sourceUrl, attribution }) {
+function envelope({ provider, nativeId, title, createdAt, updatedAt, turns, rawPayload, adapterName, sourceUrl, attribution, captureFidelity = "native_full" }) {
   return {
     polylogue_capture_kind: "browser_llm_session",
     schema_version: 1,
@@ -94,10 +94,10 @@ function envelope({ provider, nativeId, title, createdAt, updatedAt, turns, rawP
       title: title || nativeId,
       created_at: createdAt,
       updated_at: updatedAt,
-      provider_meta: { capture_fidelity: "native_full", backfill: attribution },
+      provider_meta: { capture_fidelity: captureFidelity, backfill: attribution },
       turns: turns.map((turn, ordinal) => ({ ...turn, ordinal })),
     },
-    provider_meta: { backfill: attribution },
+    provider_meta: { capture_fidelity: captureFidelity, backfill: attribution },
     raw_provider_payload: rawPayload,
   };
 }
@@ -182,7 +182,8 @@ export class ChatGptBackfillAdapter {
         },
       }];
     });
-    return envelope({ provider: "chatgpt", nativeId: item.native_id, title: body.title || item.title, createdAt: isoTimestamp(body.create_time), updatedAt: isoTimestamp(body.update_time) || item.updated_at, turns, rawPayload: body, adapterName: "chatgpt-backfill-native-v1", sourceUrl: `https://chatgpt.com/c/${item.native_id}`, attribution });
+    const compact = body.polylogue_bridge_projection === "chatgpt-native-compact-v1";
+    return envelope({ provider: "chatgpt", nativeId: item.native_id, title: body.title || item.title, createdAt: isoTimestamp(body.create_time), updatedAt: isoTimestamp(body.update_time) || item.updated_at, turns, rawPayload: body, adapterName: compact ? "chatgpt-backfill-compact-v1" : "chatgpt-backfill-native-v1", sourceUrl: `https://chatgpt.com/c/${item.native_id}`, attribution, captureFidelity: compact ? "native_compact" : "native_full" });
   }
 }
 

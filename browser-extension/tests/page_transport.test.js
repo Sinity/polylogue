@@ -76,9 +76,54 @@ describe("first-party provider page transport", () => {
 
     const result = await executeProviderPageRequest({ provider: "claude-ai", operation: "organizations", params: {}, maxResponseBytes: 8 });
 
-    expect(result).toEqual({ ok: false, error: "backfill_bridge_response_too_large" });
+    expect(result.error).toMatch(/^backfill_bridge_response_too_large:observed_bytes=12;limit_bytes=8$/);
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(reads).toBe(2);
+  });
+
+  it("projects a declared-over-32-MiB ChatGPT conversation before crossing the bridge", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      return new Response(JSON.stringify({
+        id: "conversation-1",
+        title: "Compact fixture",
+        mapping: {
+          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ["kept"] }, metadata: { model_slug: "fixture" }, create_time: 1 } },
+        },
+        ignored_large_provider_metadata: "x".repeat(4096),
+      }), { headers: { "Content-Length": String(32 * 1024 * 1024 + 1) } });
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
+
+    expect(result).toMatchObject({ ok: true, response: { ok: true } });
+    const body = JSON.parse(result.response.body);
+    expect(body).toMatchObject({ polylogue_bridge_projection: "chatgpt-native-compact-v1", mapping: { node: { message: { content: { parts: ["kept"] } } } } });
+    expect(JSON.stringify(body)).not.toContain("ignored_large_provider_metadata");
+  });
+
+  it("fails closed when a compact ChatGPT projection still exceeds its bridge limit", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      return new Response(JSON.stringify({
+        id: "conversation-1",
+        mapping: {
+          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ["x".repeat(8 * 1024 * 1024)] } } },
+        },
+      }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
+
+    expect(result.error).toMatch(/^backfill_bridge_projection_too_large:observed_bytes=.+;limit_bytes=8388608$/);
   });
 
   it("uses the exact Claude UI selector despite ambiguous per-organization keys", async () => {

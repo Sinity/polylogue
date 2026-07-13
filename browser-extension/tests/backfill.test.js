@@ -45,6 +45,7 @@ class FixtureAdapter {
   }
   async fetchNative(nativeId) {
     this.fetchCalls.push(nativeId);
+    if (this.fetchError) throw this.fetchError;
     return this.responses.shift() || response(chatGptNative(nativeId));
   }
   classifyResponse(result) {
@@ -260,6 +261,36 @@ describe("background backfill coordinator", () => {
     expect(receiver).toHaveBeenCalledTimes(1);
   });
 
+  it("consumes the bounded ChatGPT bridge projection as an honest compact capture", async () => {
+    const adapter = new ChatGptBackfillAdapter();
+    const capture = await adapter.normalizeCapture(response({
+      polylogue_bridge_projection: "chatgpt-native-compact-v1",
+      id: "compact-one",
+      title: "Compact one",
+      create_time: 1710000000,
+      update_time: 1710000100,
+      mapping: {
+        node: {
+          id: "node",
+          parent: null,
+          message: {
+            id: "message",
+            author: { role: "assistant" },
+            content: { parts: ["retained text"] },
+            metadata: { model_slug: "fixture" },
+            create_time: 1710000001,
+          },
+        },
+      },
+    }), { native_id: "compact-one", title: "Compact one", updated_at: "2026-07-01T00:00:00Z" }, { job_id: "job", queue_id: "queue", instance_id: "worker" });
+
+    expect(capture).toMatchObject({
+      raw_provider_payload: { polylogue_bridge_projection: "chatgpt-native-compact-v1" },
+      provider_meta: { capture_fidelity: "native_compact" },
+      session: { provider_meta: { capture_fidelity: "native_compact" }, turns: [{ text: "retained text" }] },
+    });
+  });
+
   it("exports no credentials and restores profile-loss evidence without replaying a missing envelope", async () => {
     const store = new MemoryBackfillStore();
     await store.createJob({
@@ -366,6 +397,26 @@ describe("background backfill coordinator", () => {
     }
   });
 
+  it("holds an oversized bridge response without consuming retry budget, then requeues it only on resume", async () => {
+    const adapter = new FixtureAdapter(["one"]);
+    adapter.fetchError = new Error("backfill_bridge_projection_too_large:observed_bytes=8388609;limit_bytes=8388608");
+    const h = harness({ adapter });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+
+    expect(await h.coordinator.status(job.id)).toMatchObject({ status: "paused", cooldown_reason: "backfill_bridge_response_too_large" });
+    expect(await h.store.listQueue(job.id)).toMatchObject([{
+      state: "bridge_oversize",
+      attempt_count: 0,
+      last_response_class: "bridge_response_too_large",
+      last_error: "backfill_bridge_projection_too_large:observed_bytes=8388609;limit_bytes=8388608",
+    }]);
+
+    await h.coordinator.control(job.id, "resume");
+    expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "eligible", attempt_count: 0, last_error: null }]);
+  });
+
   it.each([
     ["memory storage", () => new MemoryBackfillStore()],
     ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],
@@ -400,6 +451,20 @@ describe("background backfill coordinator", () => {
     expect(status.progress).toMatchObject({ complete: 1, operator_action: 0 });
     expect(adapter.fetchCalls).toEqual(["one", "one"]);
     expect(h.receiver).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["memory storage", () => new MemoryBackfillStore()],
+    ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],
+  ])("atomically requeues held bridge work when resuming with %s", async (_label, makeStore) => {
+    const store = makeStore();
+    const h = harness({ store });
+    const job = await startJob(h);
+    await store.putQueue({ id: "bridge-held", job_id: job.id, provider: "chatgpt", native_id: "one", state: "bridge_oversize", attempt_count: 0, next_eligible_at_ms: null });
+
+    await h.coordinator.control(job.id, "resume");
+
+    expect(await store.listQueue(job.id)).toMatchObject([{ state: "eligible", resume_state: "eligible", next_eligible_at_ms: h.now(), last_error: null }]);
   });
 
   it("grants only one lease across simultaneous extension instances", async () => {

@@ -221,7 +221,7 @@ export class IndexedDbBackfillStore {
     if (status === "running" && resumeQueueAtMs !== null) {
       const items = await requestResult(queueStore.getAll());
       for (const item of items) {
-        if (item.job_id === jobId && item.state === "auth_required") {
+        if (item.job_id === jobId && ["auth_required", "bridge_oversize"].includes(item.state)) {
           queueStore.put({
             ...item,
             state: "eligible",
@@ -487,7 +487,7 @@ export class MemoryBackfillStore {
     this.jobs.set(jobId, structuredClone(next));
     if (status === "running" && resumeQueueAtMs !== null) {
       for (const item of this.queue.values()) {
-        if (item.job_id === jobId && item.state === "auth_required") {
+        if (item.job_id === jobId && ["auth_required", "bridge_oversize"].includes(item.state)) {
           this.queue.set(item.id, {
             ...item,
             state: "eligible",
@@ -595,7 +595,7 @@ export function progressBuckets(items) {
     if (["complete", "unchanged"].includes(item.state)) buckets.complete += 1;
     if (item.state === "no_turns") buckets.no_turns += 1;
     if (["retry_wait", "captured_waiting_receiver"].includes(item.state)) buckets.retry += 1;
-    if (["auth_required", "recovery_required"].includes(item.state)) buckets.operator_action += 1;
+    if (["auth_required", "recovery_required", "bridge_oversize"].includes(item.state)) buckets.operator_action += 1;
     if (item.state === "failed") buckets.error += 1;
   }
   return buckets;
