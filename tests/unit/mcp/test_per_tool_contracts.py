@@ -28,6 +28,7 @@ import json
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -52,7 +53,7 @@ from tests.infra.mcp import (
 # ---------------------------------------------------------------------------
 
 
-def _mutation_registration_modules() -> tuple[object, ...]:
+def _mutation_registration_modules() -> tuple[ModuleType, ...]:
     """Return every module reached by the mutation registration seam."""
     from polylogue.mcp import server_mutation_tools, server_personal_state_tools
 
