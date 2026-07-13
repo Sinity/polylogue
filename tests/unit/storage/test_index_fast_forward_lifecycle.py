@@ -19,7 +19,7 @@ from polylogue.storage.sqlite.lifecycle import (
     index_fast_forward_plan,
 )
 
-_DEPLOYED_FAST_FORWARD_TARGET = 35
+_DEPLOYED_FAST_FORWARD_TARGET = 36
 
 
 def test_v32_to_current_plan_declares_ma2_as_an_index_only_delta() -> None:
@@ -54,6 +54,16 @@ def test_semantic_delta_routes_a_plan_away_from_sql_fast_forward(monkeypatch: py
     assert lifecycle.index_fast_forward_plan(35, 36) is None
 
 
+def test_v36_origin_check_is_a_clone_safe_constraint_copy_forward() -> None:
+    """The v36 Origin widening does not require raw parser semantics."""
+    plan = index_fast_forward_plan(35, 36)
+
+    assert plan is not None
+    declaration = plan.declarations[0]
+    assert declaration.classes == (DerivedDeltaClass.CONSTRAINT_ONLY,)
+    assert declaration.operations[0].objects == (("table", "sessions"), ("table", "session_links"))
+
+
 def test_current_index_schema_has_a_complete_delta_declaration() -> None:
     """Exercise the exact declaration report consumed by the schema policy lint."""
     report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)
@@ -69,7 +79,7 @@ def test_plan_orders_declarations_before_validating_contiguity(monkeypatch: pyte
     plan = lifecycle.index_fast_forward_plan(32, _DEPLOYED_FAST_FORWARD_TARGET)
 
     assert plan is not None
-    assert tuple(declaration.version for declaration in plan.declarations) == (33, 34, 35)
+    assert tuple(declaration.version for declaration in plan.declarations) == (33, 34, 35, 36)
 
 
 def test_nonsemantic_delta_without_operations_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

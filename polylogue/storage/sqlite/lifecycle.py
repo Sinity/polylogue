@@ -171,7 +171,22 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
     ),
     IndexDeltaDeclaration(
         version=36,
-        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+        # Origin gained the internal ``beads-issue`` token.  This is a
+        # constraint-only widening: existing parsed rows do not change, but
+        # the two tables that embed Origin CHECKs must be copy-forwarded on a
+        # clone.  The archive schema-forward actuator owns that exact
+        # operation; it never reparses raw evidence or rebuilds FTS.
+        classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v36-origin-checks",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(
+                    ("table", "sessions"),
+                    ("table", "session_links"),
+                ),
+            ),
+        ),
     ),
 )
 

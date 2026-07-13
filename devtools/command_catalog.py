@@ -423,6 +423,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace archive-schema-fast-forward",
+        "workspace",
+        "Clone-forward the v35 archive tiers without raw replay.",
+        "devtools.archive_schema_fast_forward",
+        use_when=(
+            "Advance a stopped, verified v35 archive through the declared source/user durable migrations "
+            "and derived v36/index plus v2/embeddings clones. The existing verified backup remains valid: "
+            "the durable runner verifies active path plus bytes/version rather than inode identity."
+        ),
+        examples=(
+            "devtools workspace archive-schema-fast-forward prepare --archive-root /realm/db/polylogue --staging-root /realm/staging/polylogue-schema-forward --receipt /realm/staging/polylogue-schema-forward/receipt.json --backup-manifest /realm/staging/verified/manifest.json",
+            "devtools workspace archive-schema-fast-forward activate --receipt /realm/staging/polylogue-schema-forward/receipt.json --backup-manifest /realm/staging/verified/manifest.json",
+        ),
+    ),
+    CommandSpec(
         "workspace worktree-gc",
         "workspace",
         "Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees.",
