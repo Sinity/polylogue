@@ -175,6 +175,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools bench campaign` | Run or compare benchmark campaigns. |
+| `devtools bench coordination-latency` | Measure compact coordination status p50/p95 with raw stage samples. |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
