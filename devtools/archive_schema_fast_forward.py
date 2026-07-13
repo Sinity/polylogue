@@ -515,9 +515,21 @@ def _promote_index_generation(clone: Path, active_link: Path) -> dict[str, str]:
     generation = generations_root / f"gen-v{INDEX_SCHEMA_VERSION}-schema-forward-{uuid.uuid4().hex}"
     generation.mkdir(mode=0o700)
     target = generation / "index.db"
-    os.replace(clone, target)
-    _fsync_directory(generation)
-    _swap_active_symlink(active_link, target, label="schema-forward")
+    local_clone = generation / f".index.db.schema-forward-{uuid.uuid4().hex}.tmp"
+    try:
+        # The prepared clone lives under staging, which can be a separate
+        # subvolume.  Populate the new generation first, then make the only
+        # file replacement local to that generation before the symlink swap.
+        reflink_clone(clone, local_clone)
+        os.replace(local_clone, target)
+        _fsync_directory(generation)
+        _swap_active_symlink(active_link, target, label="schema-forward")
+    except Exception:
+        local_clone.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+        generation.rmdir()
+        raise
+    clone.unlink(missing_ok=True)
     return {
         "kind": "symlink",
         "active": str(active_link),
