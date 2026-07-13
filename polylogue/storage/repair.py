@@ -1186,6 +1186,7 @@ def _verify_browser_origin_copy_forward_source_stage(
 def _canonical_browser_origin_head_is_exact(
     conn: sqlite3.Connection,
     *,
+    archive_root: Path,
     canonical_head: sqlite3.Row,
     canonical_key: str,
     canonical_origin: Origin,
@@ -1200,7 +1201,7 @@ def _canonical_browser_origin_head_is_exact(
     generation = int(canonical_head["acquisition_generation"])
     raw = conn.execute(
         """
-        SELECT origin, blob_hash, blob_size, logical_source_key, revision_kind,
+        SELECT origin, source_path, blob_hash, blob_size, logical_source_key, revision_kind,
                source_revision, baseline_raw_id, acquisition_generation, revision_authority
         FROM source.raw_sessions WHERE raw_id = ?
         """,
@@ -1242,10 +1243,34 @@ def _canonical_browser_origin_head_is_exact(
         or str(canonical_head["accepted_frontier_kind"]) != "byte"
     ):
         return False
+    try:
+        blob_hash = bytes.fromhex(source_revision)
+        store = BlobStore(archive_root / "blob")
+        blob_path = store.blob_path(source_revision)
+        if not blob_path.is_file() or blob_path.stat().st_size != frontier:
+            return False
+        payload = store.read_all(source_revision)
+        provider = detect_provider(json.loads(payload))
+        if provider is None or origin_from_provider(provider) is not canonical_origin:
+            return False
+        from polylogue.sources.revision_backfill import _parse_one
+
+        sessions = _parse_one(provider, payload, str(raw["source_path"]))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    if (
+        hashlib.sha256(payload).digest() != blob_hash
+        or len(sessions) != 1
+        or str(make_session_id(provider, sessions[0].provider_session_id)) != session_id
+        or f"{provider.value}:{sessions[0].provider_session_id}" != canonical_key
+        or bytes.fromhex(session_content_hash(sessions[0])) != accepted_hash
+    ):
+        return False
     return (
         tuple(raw)
         == (
             canonical_origin.value,
+            str(raw["source_path"]),
             bytes.fromhex(source_revision),
             frontier,
             canonical_key,
@@ -1423,10 +1448,12 @@ def _inspect_browser_capture_origin_mismatch(
         membership is None
         or census is None
         or str(membership["provider_session_id"]) != session.provider_session_id
+        or str(membership["source_revision"]) != accepted_hash.hex()
         or _bytes_value(membership["normalized_content_hash"]) != projection.session_hash
         or int(membership["message_count"]) != len(projection.message_hashes)
         or int(membership["acquisition_generation"]) != int(raw["acquisition_generation"])
         or str(membership["revision_authority"]) != RawRevisionAuthority.QUARANTINED.value
+        or str(membership["decision"]) != "applied"
         or str(census["status"]) != "complete"
         or int(census["member_count"]) != 1
     ):
@@ -1454,6 +1481,13 @@ def _inspect_browser_capture_origin_mismatch(
                logical_source_key, revision_kind, source_revision, baseline_raw_id,
                acquisition_generation, revision_authority
         FROM source.raw_sessions WHERE raw_id = ?
+        """,
+        (copy_raw_id,),
+    ).fetchone()
+    copy_blob_ref = conn.execute(
+        """
+        SELECT blob_hash, source_path, size_bytes FROM source.blob_refs
+        WHERE ref_id = ? AND ref_type = 'raw_payload'
         """,
         (copy_raw_id,),
     ).fetchone()
@@ -1509,6 +1543,8 @@ def _inspect_browser_capture_origin_mismatch(
     )
     copy_forward_source_complete = (
         copy_raw_exact
+        and copy_blob_ref is not None
+        and tuple(copy_blob_ref) == (blob_hash, copy_path, blob_size)
         and copy_membership is not None
         and str(copy_membership["provider_session_id"]) == session.provider_session_id
         and str(copy_membership["source_revision"]) == accepted_hash.hex()
@@ -1555,6 +1591,7 @@ def _inspect_browser_capture_origin_mismatch(
         replacement_frontier = int(canonical_head["accepted_frontier"])
         if not _canonical_browser_origin_head_is_exact(
             conn,
+            archive_root=archive_root,
             canonical_head=canonical_head,
             canonical_key=canonical_key,
             canonical_origin=canonical_origin,

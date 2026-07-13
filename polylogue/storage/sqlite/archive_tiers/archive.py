@@ -2224,10 +2224,15 @@ class ArchiveStore:
         return tuple(sorted(selected)), logical_keys
 
     def raw_membership_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
+        """Return only byte-proven membership candidates for replay classification."""
         rows = (
             self._ensure_source_conn()
             .execute(
-                "SELECT raw_id FROM raw_session_memberships WHERE logical_source_key = ? ORDER BY raw_id",
+                """
+                SELECT raw_id FROM raw_session_memberships
+                WHERE logical_source_key = ? AND revision_authority = 'byte_proven'
+                ORDER BY raw_id
+                """,
                 (logical_source_key,),
             )
             .fetchall()

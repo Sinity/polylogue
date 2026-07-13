@@ -11,6 +11,7 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.revision_backfill import _parse_one
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repair import (
     repair_browser_capture_origin_mismatches,
     repair_quarantined_accepted_raws,
@@ -302,6 +303,8 @@ def test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idemp
             WHERE r.origin = 'unknown-export'
             """
         ).fetchone() == (0,)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        assert archive.raw_membership_raw_ids("chatgpt:browser-origin-one") == (copy_raw_id,)
 
     reapplied = repair_browser_capture_origin_mismatches(
         _config(tmp_path),
@@ -339,6 +342,16 @@ def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Pat
             )
 
     report = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    assert report.ineligible_count == 1
+
+
+def test_browser_capture_origin_rejects_unresolved_source_membership(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("UPDATE raw_session_memberships SET decision = 'ambiguous' WHERE raw_id = ?", (raw_id,))
+
+    report = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+
     assert report.ineligible_count == 1
 
 
@@ -425,6 +438,20 @@ def test_browser_capture_origin_repair_rejects_underproven_canonical_head(tmp_pa
     assert report.ineligible_count == 1
 
 
+def test_browser_capture_origin_repair_rejects_missing_canonical_blob(tmp_path: Path) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        blob_hash = source.execute(
+            "SELECT hex(blob_hash) FROM raw_sessions WHERE raw_id = ?", (canonical_raw_id,)
+        ).fetchone()[0]
+    BlobStore(tmp_path / "blob").blob_path(blob_hash.lower()).unlink()
+
+    report = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+
+    assert report.ineligible_count == 1
+
+
 def test_browser_capture_origin_copy_forward_reproves_before_source_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -479,3 +506,28 @@ def test_browser_capture_origin_copy_forward_resumes_after_source_stage_interrup
     assert resumed.repaired_count == 1
     assert resumed.items[0].status == "already_repaired"
     assert resumed.items[0].copy_forward_source_complete is True
+
+
+def test_browser_capture_origin_copy_forward_refuses_incomplete_blob_reference(tmp_path: Path) -> None:
+    import polylogue.storage.repair as repair_module
+
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    item = dry_run.items[0]
+    assert item.copy_forward_raw_id is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        repair_module._stage_browser_origin_copy_forward_source(source, item)
+        source.execute("DELETE FROM blob_refs WHERE ref_id = ?", (item.copy_forward_raw_id,))
+
+    with pytest.raises(RuntimeError, match="ineligible"):
+        repair_browser_capture_origin_mismatches(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=tmp_path / "incomplete-copy-receipt.jsonl",
+            proof_digest=dry_run.proof_digest,
+        )
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
+        ).fetchone() == (raw_id,)
