@@ -470,6 +470,10 @@ files:
     target: polylogue/archive/raw_payload/streams.py
     owner: archive-raw-payload
     reason: archive-domain semantics
+  - path: polylogue/archive/resume_routing.py
+    loc: 70
+    target: polylogue/archive/resume_routing.py
+    owner: stable
   - path: polylogue/archive/revision_authority.py
     loc: 158
     target: polylogue/archive/revision_authority.py
@@ -922,7 +926,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 2691
+    loc: 2718
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py

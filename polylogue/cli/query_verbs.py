@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import subprocess
 from collections.abc import Awaitable, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -1319,6 +1320,9 @@ def read_verb(
 
 @click.command("continue")
 @click.option(
+    "--exec", "execute", is_flag=True, help="Run the verified interactive resume command instead of printing it."
+)
+@click.option(
     "--to",
     "destination",
     type=click.Choice(_READ_DESTINATIONS),
@@ -1371,15 +1375,15 @@ def continue_verb(
     recent_files: tuple[str, ...],
     candidate_limit: int,
     output_format: str | None,
+    execute: bool,
 ) -> None:
-    """Compile a successor-agent continuation report for one matched session.
+    """Print or explicitly execute a verified harness-resume command.
 
     \b
     Examples:
         polylogue find id:abc then continue
-        polylogue find id:abc then continue --format json
-        polylogue --latest continue --to clipboard
-        polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+        polylogue find id:abc then continue
+        polylogue find id:abc then continue --exec
         polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
     """
     env: AppEnv = ctx.obj
@@ -1390,9 +1394,12 @@ def continue_verb(
         destination=destination,
         format=output_format or request.params.get("output_format") or "default",
         candidates=candidates,
+        execute=execute,
     ):
         return
     if candidates:
+        if execute:
+            raise click.UsageError("continue --exec cannot be combined with --candidates.")
         if destination not in ("terminal", "stdout") or out_path is not None:
             raise click.UsageError("continue --candidates writes to terminal/stdout; omit --to/--out.")
         if not repo_path:
@@ -1417,51 +1424,19 @@ def continue_verb(
     session = run_coroutine_sync(env.polylogue.get_session(session_id))
     if session is None:
         raise click.UsageError(f"Session not found: {session_id}")
-    root_format = request.params.get("output_format")
-    effective_format = (
-        output_format if output_format is not None else root_format if isinstance(root_format, str) else None
-    )
-    if effective_format == "json":
-        if destination not in ("terminal", "stdout", "file"):
-            raise click.UsageError("continue --format json supports terminal, stdout, or file destinations only.")
-        if destination == "file" and not out_path:
-            raise click.UsageError("continue --format json --to file requires --out.")
-        from pathlib import Path
+    from polylogue.archive.resume_routing import route_resume
 
-        from polylogue.context.compiler import ContextSpec
-
-        image = run_coroutine_sync(
-            env.polylogue.compile_context(
-                ContextSpec(
-                    purpose="continue",
-                    seed_refs=(f"session:{session_id}",),
-                    read_views=("messages",),
-                    unit_queries=_successor_context_unit_queries(session_id),
-                )
-            )
-        )
-        rendered = serialize_surface_payload(image, exclude_none=True)
-        if destination == "file":
-            assert out_path is not None
-            Path(out_path).write_text(rendered + "\n", encoding="utf-8")
-        else:
-            click.echo(rendered)
+    route = route_resume(session)
+    if route.status != "supported" or route.command is None:
+        raise click.UsageError(route.detail or "This session cannot be resumed by a verified local harness command.")
+    if execute:
+        subprocess.run(route.argv, cwd=route.cwd, check=False)
         return
-    if effective_format not in (None, "markdown"):
-        raise click.UsageError("continue supports markdown output by default or --format json.")
-    from polylogue.context.compiler import ContextSpec
-
-    image = run_coroutine_sync(
-        env.polylogue.compile_context(
-            ContextSpec(
-                purpose="continue",
-                seed_refs=(f"session:{session_id}",),
-                read_views=("messages",),
-                unit_queries=_successor_context_unit_queries(session_id),
-            )
-        )
-    )
-    _deliver_content(env, _render_context_image_markdown(image), destination=destination, out_path=out_path)
+    if destination not in ("terminal", "stdout") or out_path is not None:
+        raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
+    if output_format is not None or request.params.get("output_format") is not None:
+        raise click.UsageError("continue emits a shell command; --format/--json are not supported.")
+    click.echo(route.command)
 
 
 @click.command("delete")

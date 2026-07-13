@@ -474,16 +474,17 @@ Commands:
 ```text
 Usage: polylogue continue [OPTIONS]
 
-  Compile a successor-agent continuation report for one matched session.
+  Print or explicitly execute a verified harness-resume command.
 
   Examples:
       polylogue find id:abc then continue
-      polylogue find id:abc then continue --format json
-      polylogue --latest continue --to clipboard
-      polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+      polylogue find id:abc then continue
+      polylogue find id:abc then continue --exec
       polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
 
 Options:
+  --exec                          Run the verified interactive resume command
+                                  instead of printing it.
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   --out PATH                      File path for --to file.
