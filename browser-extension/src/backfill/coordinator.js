@@ -20,6 +20,10 @@ function bridgeOversizeError(error) {
     || String(error?.message || error).startsWith("backfill_bridge_projection_too_large:");
 }
 
+function providerContractDriftError(error) {
+  return String(error?.message || error).startsWith("provider_contract_drift:");
+}
+
 function mergePolicy(patch = {}) {
   const policy = { ...DEFAULT_BACKFILL_POLICY, ...patch };
   if (policy.leaseMs <= PROVIDER_REQUEST_TIMEOUT_MS * 2) throw new Error("backfill_lease_must_exceed_request_timeout");
@@ -299,6 +303,17 @@ export class BackfillCoordinator {
     } catch (error) {
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
       if (bridgeOversizeError(error)) return this.holdBridgeOversize(job, item, error, now);
+      if (providerContractDriftError(error)) {
+        await this.saveQueue(job, {
+          ...item,
+          state: "failed",
+          lease_owner: null,
+          lease_expires_at_ms: null,
+          last_response_class: "contract_drift",
+          last_error: String(error?.message || error),
+        });
+        return job;
+      }
       return this.retryTransport(job, item, error, now);
     }
     job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);

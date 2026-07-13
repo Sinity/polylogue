@@ -92,7 +92,7 @@ export async function executeProviderPageRequest(request) {
   function compactChatGptConversation(body) {
     let source;
     try { source = JSON.parse(body); } catch { throw new Error("provider_contract_drift:chatgpt_conversation_not_json_object"); }
-    if (!source || typeof source !== "object" || !source.mapping || typeof source.mapping !== "object") {
+    if (!source || typeof source !== "object" || !source.mapping || typeof source.mapping !== "object" || Array.isArray(source.mapping)) {
       throw new Error("provider_contract_drift:chatgpt_conversation.mapping_must_be_object");
     }
     const mapping = {};

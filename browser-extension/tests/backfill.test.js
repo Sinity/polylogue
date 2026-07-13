@@ -434,6 +434,32 @@ describe("background backfill coordinator", () => {
     expect(h.adapter.fetchCalls).toEqual([]);
   });
 
+  it("fails compact provider-contract drift per item and continues the job", async () => {
+    const adapter = new FixtureAdapter(["bad", "good"]);
+    adapter.fetchNative = async (nativeId) => {
+      adapter.fetchCalls.push(nativeId);
+      if (nativeId === "bad") throw new Error("provider_contract_drift:chatgpt_conversation.mapping_must_be_object");
+      return response(chatGptNative(nativeId));
+    };
+    const h = harness({ adapter });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+
+    expect((await h.store.listQueue(job.id)).find((item) => item.native_id === "bad")).toMatchObject({
+      native_id: "bad",
+      state: "failed",
+      attempt_count: 0,
+      last_response_class: "contract_drift",
+    });
+    expect((await h.coordinator.status(job.id)).transport_failures).toBe(0);
+
+    h.advance(h.policy.baseCadenceMs);
+    await h.coordinator.wake(job.id);
+    expect(await h.coordinator.status(job.id)).toMatchObject({ status: "complete" });
+    expect(h.adapter.fetchCalls).toEqual(["bad", "good"]);
+  });
+
   it.each([
     ["memory storage", () => new MemoryBackfillStore()],
     ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],
