@@ -126,7 +126,7 @@ def _seed_mismatched_browser_head(root: Path) -> str:
             decided_at_ms=2,
         )
         archive.commit()
-    with sqlite3.connect(root / "source.db") as source:
+    with closing(sqlite3.connect(root / "source.db")) as source, source:
         source.execute(
             """
             UPDATE raw_sessions
@@ -163,7 +163,7 @@ def _seed_mismatched_browser_head(root: Path) -> str:
 
 def _seed_legacy_browser_head_without_native_id(root: Path) -> str:
     raw_id = _seed_mismatched_browser_head(root)
-    with sqlite3.connect(root / "source.db") as source:
+    with closing(sqlite3.connect(root / "source.db")) as source, source:
         source.execute("UPDATE raw_sessions SET native_id = NULL WHERE raw_id = ?", (raw_id,))
     return raw_id
 
@@ -217,7 +217,7 @@ def _seed_equivalent_canonical_head(root: Path, mismatched_raw_id: str) -> str:
             (mismatched_raw_id, session_id),
         )
         archive.commit()
-    with sqlite3.connect(root / "source.db") as source:
+    with closing(sqlite3.connect(root / "source.db")) as source, source:
         source.execute(
             """
             UPDATE raw_sessions
@@ -252,7 +252,12 @@ def _seed_equivalent_canonical_head(root: Path, mismatched_raw_id: str) -> str:
 
 def _seed_semantic_canonical_head(root: Path, mismatched_raw_id: str) -> str:
     raw_id = _seed_equivalent_canonical_head(root, mismatched_raw_id)
-    with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
+    with (
+        closing(sqlite3.connect(root / "source.db")) as source,
+        source,
+        closing(sqlite3.connect(root / "index.db")) as index,
+        index,
+    ):
         source.execute(
             """
             UPDATE raw_sessions
@@ -319,7 +324,7 @@ def _seed_semantic_canonical_head(root: Path, mismatched_raw_id: str) -> str:
 
 def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
     sibling_raw_id = "a" * 64
-    with sqlite3.connect(root / "source.db") as source:
+    with closing(sqlite3.connect(root / "source.db")) as source, source:
         for table, identity in (
             ("raw_sessions", "raw_id"),
             ("blob_refs", "ref_id"),
@@ -352,7 +357,7 @@ def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
             (bytes.fromhex(sibling_blob_hash), sibling_blob_size, sibling_raw_id),
         )
         source.commit()
-    with sqlite3.connect(root / "index.db") as index:
+    with closing(sqlite3.connect(root / "index.db")) as index, index:
         accepted_hash = index.execute(
             "SELECT accepted_content_hash FROM raw_revision_heads WHERE accepted_raw_id = ?",
             (semantic_raw_id,),
@@ -874,6 +879,86 @@ def test_legacy_browser_native_id_copy_forward_refuses_preexisting_canonical_hea
 
     assert report.ineligible_count == 1
     assert report.items[0].reason == "legacy-native-id copy-forward refuses pre-existing canonical head authority"
+
+
+def test_legacy_browser_native_id_copy_forwards_from_semantic_canonical_witness(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
+    sibling_raw_id = _seed_semantic_superseded_sibling(tmp_path, semantic_raw_id)
+    historical_before = _rows(
+        tmp_path,
+        "source",
+        "raw_sessions",
+        "raw_id IN (?, ?)",
+        (semantic_raw_id, sibling_raw_id),
+    )
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        source_count = source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+
+    dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+
+    assert dry_run.eligible_count == 1, dry_run.items[0].reason
+    assert dry_run.items[0].legacy_null_native_id is True
+    assert dry_run.items[0].repair_strategy == "copy_forward"
+    assert dry_run.items[0].semantic_canonical_raw_id == semantic_raw_id
+    assert dry_run.items[0].semantic_historical_raw_ids == (sibling_raw_id,)
+    assert dry_run.items[0].semantic_witness_digest is not None
+    receipt = tmp_path / "legacy-semantic-copy-receipt.jsonl"
+    applied = repair_legacy_browser_capture_missing_native_ids(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+
+    copy_raw_id = applied.items[0].copy_forward_raw_id
+    assert copy_raw_id is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (source_count + 1,)
+        assert source.execute("SELECT native_id FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
+    assert (
+        _rows(tmp_path, "source", "raw_sessions", "raw_id IN (?, ?)", (semantic_raw_id, sibling_raw_id))
+        == historical_before
+    )
+    lines = [json.loads(line) for line in receipt.read_text().splitlines()]
+    assert lines[-1]["transaction_protocol"] == "rollback-superjournal-v1"
+    assert lines[-1]["semantic_witness_bindings"][0]["semantic_canonical_raw_id"] == semantic_raw_id
+    assert lines[-1]["semantic_witness_bindings"][0]["semantic_historical_raw_ids"] == [sibling_raw_id]
+    with closing(sqlite3.connect(tmp_path / "index.db")) as index:
+        assert index.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
+        ).fetchone() == (copy_raw_id,)
+
+
+def test_legacy_browser_native_id_rejects_changed_semantic_witness_before_writing(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
+    dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+    with closing(sqlite3.connect(tmp_path / "index.db")) as index, index:
+        index.execute(
+            "UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1 WHERE accepted_raw_id = ?",
+            (semantic_raw_id,),
+        )
+
+    with pytest.raises(RuntimeError, match="proof digest"):
+        repair_legacy_browser_capture_missing_native_ids(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=tmp_path / "legacy-semantic-stale-proof.jsonl",
+            proof_digest=dry_run.proof_digest,
+        )
+    assert (
+        _rows(
+            tmp_path,
+            "source",
+            "raw_sessions",
+            "source_path LIKE ?",
+            ("browser-capture-origin-copy-forward/%",),
+        )
+        == []
+    )
 
 
 def test_legacy_browser_native_id_copy_forward_requires_single_membership_key(tmp_path: Path) -> None:
