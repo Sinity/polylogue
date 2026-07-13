@@ -1542,7 +1542,8 @@ def _browser_origin_semantic_head_from_copy_detail(
         "semantic_head",
     }
     legacy = (
-        payload.get("kind") == "browser_capture_legacy_native_id_copy_forward_v1"
+        parser_derived_native_id is not None
+        and payload.get("kind") == "browser_capture_legacy_native_id_copy_forward_v1"
         and set(payload) == {"kind", "raw_id", "legacy_null_native_id", "parser_derived_native_id", "semantic_head"}
         and payload.get("legacy_null_native_id") is True
         and payload.get("parser_derived_native_id") == parser_derived_native_id
