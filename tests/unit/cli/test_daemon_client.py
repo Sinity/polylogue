@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -39,3 +40,29 @@ def test_daemon_escape_environment_is_explicit(
         monkeypatch.setenv(key, value)
 
     assert _daemon_disabled() is expected
+
+
+def test_daemon_probe_rejects_the_tmp_archive_config_trap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A socket from a different resolved archive must never answer this CLI."""
+
+    from polylogue.cli.daemon_client import DaemonClient
+
+    client = DaemonClient(tmp_path / "daemon.sock")
+    monkeypatch.setattr(
+        client,
+        "request_json",
+        lambda _method, _path: {
+            "archive_root": "/tmp",
+            "index_schema_version": 24,
+            "daemon_version": "0.1.0",
+        },
+    )
+
+    assert (
+        client.probe(
+            archive_root="/realm/archive",
+            index_schema_version=24,
+            daemon_version="0.1.0",
+        )
+        is None
+    )
