@@ -500,8 +500,8 @@ def test_interrupted_activation_leaves_rollbackable_receipt(
 
     real_swap = iff._swap_active_symlink
 
-    def _swap_then_crash(*args: object, **kwargs: object) -> None:
-        real_swap(*args, **kwargs)
+    def _swap_then_crash(source_link: Path, target: Path, *, label: str) -> None:
+        real_swap(source_link, target, label=label)
         raise RuntimeError("simulated crash after swap, before receipt write")
 
     monkeypatch.setattr(iff, "_swap_active_symlink", _swap_then_crash)
