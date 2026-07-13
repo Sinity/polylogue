@@ -1,10 +1,11 @@
 """Phase-level evidence collection for watcher append/cohort investigations.
 
 The live incident was in ``_ingest_append_plans_archive`` while
-``classify_raw_revision_cohort`` read historical full snapshots.  This helper
-wraps exactly those production boundaries.  It deliberately does not serialize
-parsed object graphs: the observer records kernel-visible process/cgroup/I/O
-state and deterministic route, payload, and batch counts instead.
+``classify_raw_revision_cohort`` reread historical full snapshots.  This
+helper distinguishes the durable metadata replay-plan hot path from that
+conservative classifier fallback.  It deliberately does not serialize parsed
+object graphs: the observer records kernel-visible process/cgroup/I/O state and
+deterministic route, payload, and batch counts instead.
 """
 
 from __future__ import annotations
@@ -149,7 +150,7 @@ def _format_bytes(value: int | None) -> str:
 
 @contextmanager
 def append_cohort_memory_counter() -> Iterator[AppendCohortMemoryCounter]:
-    """Instrument real watcher append ingestion and full-snapshot classification."""
+    """Instrument append ingestion, replay metadata, and classifier fallback."""
     from polylogue.sources.live import append_ingest
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -157,6 +158,7 @@ def append_cohort_memory_counter() -> Iterator[AppendCohortMemoryCounter]:
     counter = AppendCohortMemoryCounter()
     real_append_ingest = append_ingest._ingest_append_plans_archive
     real_classify = ArchiveStore.classify_raw_revision_cohort
+    real_replay_plan = ArchiveStore.raw_revision_replay_plan
     real_read_all = ArchiveBlobPublisher.read_all
     in_cohort_classification = False
 
@@ -182,6 +184,14 @@ def append_cohort_memory_counter() -> Iterator[AppendCohortMemoryCounter]:
         counter.snapshot("classify_raw_revision_cohort:after")
         return result
 
+    def counted_replay_plan(archive: ArchiveStore, logical_source_key: str) -> Any:
+        counter.record("raw_revision_replay_plan")
+        counter.snapshot("raw_revision_replay_plan:before")
+        result = real_replay_plan(archive, logical_source_key)
+        counter.record("accepted_raw_ids", len(result.accepted_raw_ids))
+        counter.snapshot("raw_revision_replay_plan:after")
+        return result
+
     def counted_read_all(publisher: ArchiveBlobPublisher, hash_hex: str) -> bytes:
         payload = real_read_all(publisher, hash_hex)
         counter.record(
@@ -192,6 +202,7 @@ def append_cohort_memory_counter() -> Iterator[AppendCohortMemoryCounter]:
     with (
         patch.object(append_ingest, "_ingest_append_plans_archive", counted_append_ingest),
         patch.object(ArchiveStore, "classify_raw_revision_cohort", counted_classify),
+        patch.object(ArchiveStore, "raw_revision_replay_plan", counted_replay_plan),
         patch.object(ArchiveBlobPublisher, "read_all", counted_read_all),
     ):
         yield counter
