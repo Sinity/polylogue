@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+import subprocess
+import sys
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -374,8 +378,19 @@ def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
 
 
 def _rows(root: Path, tier: str, table: str, where: str, params: tuple[object, ...]) -> list[tuple[object, ...]]:
-    with sqlite3.connect(root / f"{tier}.db") as conn:
+    # sqlite3.Connection's context manager commits/rolls back, but does not
+    # close the handle.  Legacy repair deliberately changes journal posture,
+    # which requires every reader to have released its SQLite lock first.
+    with closing(sqlite3.connect(root / f"{tier}.db")) as conn:
         return [tuple(row) for row in conn.execute(f"SELECT * FROM {table} WHERE {where} ORDER BY 1", params)]
+
+
+def _journal_modes(root: Path) -> dict[str, str]:
+    modes: dict[str, str] = {}
+    for name in ("source", "index"):
+        with closing(sqlite3.connect(root / f"{name}.db")) as conn:
+            modes[name] = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    return modes
 
 
 def test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idempotent(tmp_path: Path) -> None:
@@ -456,6 +471,43 @@ def test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idemp
     assert receipt.read_text().count("\n") == 2
 
 
+def test_browser_origin_repair_resumes_prelegacy_planned_receipt(tmp_path: Path) -> None:
+    import polylogue.storage.repair as repair_module
+
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    historical_target = repair_module._browser_origin_item_payload(dry_run.items[0])
+    # Emulate the exact v1 ordinary target shape written before the legacy
+    # actuator added its provenance-only fields.
+    historical_target.pop("legacy_null_native_id", None)
+    historical_target.pop("parser_derived_native_id", None)
+    target_hash = hashlib.sha256(
+        json.dumps([historical_target], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    receipt = tmp_path / "prelegacy-planned.jsonl"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": "polylogue.browser-capture-origin-copy-forward.v1",
+                "state": "planned",
+                "target_hash": target_hash,
+                "targets": [historical_target],
+                "planned_at_ms": 1,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+
+    assert applied.repaired_count == 1
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
+
+
 def test_browser_capture_origin_rejects_decided_quarantined_membership(tmp_path: Path) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
@@ -517,7 +569,10 @@ def test_browser_capture_origin_rebuild_keeps_copy_forward_head(tmp_path: Path) 
 )
 def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Path, mutation: str) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
-    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+    with (
+        closing(sqlite3.connect(tmp_path / "source.db")) as source,
+        closing(sqlite3.connect(tmp_path / "index.db")) as index,
+    ):
         if mutation == "blob":
             source.execute("UPDATE blob_refs SET size_bytes = size_bytes + 1 WHERE ref_id = ?", (raw_id,))
         elif mutation == "head":
@@ -607,7 +662,10 @@ def test_legacy_browser_native_id_copy_forward_preserves_evidence_and_is_idempot
     raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
     ordinary = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
     assert ordinary.ineligible_count == 1
-    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+    with (
+        closing(sqlite3.connect(tmp_path / "source.db")) as source,
+        closing(sqlite3.connect(tmp_path / "index.db")) as index,
+    ):
         old_source = source.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
         old_refs = source.execute("SELECT * FROM blob_refs WHERE ref_id = ? ORDER BY ref_type", (raw_id,)).fetchall()
         old_memberships = source.execute(
@@ -633,12 +691,19 @@ def test_legacy_browser_native_id_copy_forward_preserves_evidence_and_is_idempot
     assert copy_raw_id is not None
     lines = [json.loads(line) for line in receipt.read_text().splitlines()]
     assert lines[0]["schema"] == "polylogue.browser-capture-legacy-native-id-copy-forward.v1"
+    assert lines[0]["transaction_protocol"] == "rollback-superjournal-v1"
     assert lines[0]["targets"][0]["legacy_null_native_id"] is True
     assert lines[0]["targets"][0]["parser_derived_native_id"] == "browser-origin-one"
     assert lines[-1]["legacy_native_witness_bindings"] == [
         {"raw_id": raw_id, "legacy_null_native_id": True, "parser_derived_native_id": "browser-origin-one"}
     ]
-    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+    assert lines[-1]["transaction_protocol"] == "rollback-superjournal-v1"
+    assert lines[-1]["legacy_journal_modes"]["after_restore"] == {"source": "wal", "index": "wal"}
+    assert _journal_modes(tmp_path) == {"source": "wal", "index": "wal"}
+    with (
+        closing(sqlite3.connect(tmp_path / "source.db")) as source,
+        closing(sqlite3.connect(tmp_path / "index.db")) as index,
+    ):
         assert source.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == old_source
         assert (
             source.execute("SELECT * FROM blob_refs WHERE ref_id = ? ORDER BY ref_type", (raw_id,)).fetchall()
@@ -674,6 +739,70 @@ def test_legacy_browser_native_id_copy_forward_preserves_evidence_and_is_idempot
     assert reapplied.already_repaired_count == 1
 
 
+@pytest.mark.parametrize("checkpoint", ["before_commit", "after_commit"])
+def test_legacy_browser_native_id_crash_boundary_recovers_planned_receipt(tmp_path: Path, checkpoint: str) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+    before = {
+        (tier, table): _rows(tmp_path, tier, table, "1 = 1", ())
+        for tier, tables in {
+            "source": ("raw_sessions", "blob_refs", "raw_session_memberships", "raw_membership_census"),
+            "index": ("sessions", "raw_revision_heads", "raw_revision_applications"),
+        }.items()
+        for table in tables
+    }
+
+    receipt = tmp_path / f"legacy-crash-{checkpoint}.jsonl"
+    program = f"""
+import os
+from pathlib import Path
+
+from polylogue.config import Config
+import polylogue.storage.repair as repair
+
+root = Path({str(tmp_path)!r})
+
+def crash_at_selected_boundary(stage: str) -> None:
+    if stage == {checkpoint!r}:
+        os._exit(87)
+
+repair._legacy_browser_copy_forward_checkpoint = crash_at_selected_boundary
+repair.repair_legacy_browser_capture_missing_native_ids(
+    Config(archive_root=root, render_root=root / 'render', sources=[], db_path=root / 'index.db'),
+    [{raw_id!r}],
+    apply=True,
+    receipt_path=Path({str(receipt)!r}),
+    proof_digest={dry_run.proof_digest!r},
+)
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", program],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert child.returncode == 87, child.stderr
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
+    assert _journal_modes(tmp_path) == {"source": "delete", "index": "delete"}
+    if checkpoint == "before_commit":
+        for (tier, table), rows in before.items():
+            assert _rows(tmp_path, tier, table, "1 = 1", ()) == rows
+    else:
+        assert _rows(tmp_path, "source", "raw_sessions", "raw_id != ?", (raw_id,))
+        assert _rows(tmp_path, "index", "raw_revision_heads", "logical_source_key LIKE ?", ("chatgpt:%",))
+
+    resumed = repair_legacy_browser_capture_missing_native_ids(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+
+    assert resumed.already_repaired_count == 1
+    assert _journal_modes(tmp_path) == {"source": "wal", "index": "wal"}
+    lines = [json.loads(line) for line in receipt.read_text().splitlines()]
+    assert [line["state"] for line in lines] == ["planned", "applied"]
+    assert lines[-1]["transaction_protocol"] == "rollback-superjournal-v1"
+
+
 @pytest.mark.parametrize("mutation", ["native", "path", "blob_ref", "census", "head", "application"])
 def test_legacy_browser_native_id_copy_forward_rejects_any_witness_drift(tmp_path: Path, mutation: str) -> None:
     raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
@@ -707,7 +836,7 @@ def test_legacy_browser_native_id_copy_forward_rejects_any_witness_drift(tmp_pat
 
 def test_legacy_browser_native_id_copy_forward_accepts_source_v7(tmp_path: Path) -> None:
     raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
-    with sqlite3.connect(tmp_path / "source.db") as source:
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
         source.execute("ALTER TABLE raw_sessions DROP COLUMN capture_mode")
         source.execute("PRAGMA user_version = 7")
     dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])

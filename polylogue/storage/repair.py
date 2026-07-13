@@ -10,8 +10,8 @@ import os
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import closing, suppress
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,6 +67,7 @@ _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.quarantined-accepted-raw-repair.v1"
 _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-origin-copy-forward.v1"
 _LEGACY_BROWSER_CAPTURE_NATIVE_ID_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-legacy-native-id-copy-forward.v1"
+_LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL = "rollback-superjournal-v1"
 _QUARANTINED_CENSUS_STAGE_FINGERPRINT = "repair-quarantined-accepted-raw-v1"
 _QUARANTINED_CENSUS_STAGE_DETAIL = "census-only evidence staged before accepted-head authority refinement"
 _BROWSER_ORIGIN_SEMANTIC_HISTORICAL_WITNESS_LIMIT = 8
@@ -1432,19 +1433,20 @@ def _browser_origin_ineligible(raw_id: str, reason: str) -> BrowserCaptureOrigin
 
 
 def _browser_origin_item_payload(item: BrowserCaptureOriginRepairItem) -> dict[str, object]:
-    payload = {
-        key: value
-        for key, value in dataclasses.asdict(item).items()
-        if key
-        not in {
-            "status",
-            "reason",
-            "proof_digest",
-            "repaired",
-            "copy_forward_source_complete",
-            "terminal_byte_witness_digest",
-        }
+    excluded = {
+        "status",
+        "reason",
+        "proof_digest",
+        "repaired",
+        "copy_forward_source_complete",
+        "terminal_byte_witness_digest",
     }
+    # These fields belong solely to the separately versioned legacy actuator.
+    # Keeping them out of ordinary payloads preserves pre-legacy v1 receipt
+    # targets exactly, so a planned ordinary repair can still resume.
+    if not item.legacy_null_native_id:
+        excluded.update({"legacy_null_native_id", "parser_derived_native_id"})
+    payload = {key: value for key, value in dataclasses.asdict(item).items() if key not in excluded}
     # Receipts are JSONL.  Normalize tuples now so an in-memory item has the
     # identical shape when it is compared to a re-read planned record.
     return cast(dict[str, object], json.loads(json.dumps(payload, sort_keys=True, separators=(",", ":"))))
@@ -2690,6 +2692,119 @@ class _BrowserOriginReceipt:
         os.close(self.descriptor)
 
 
+def _browser_origin_requires_legacy_transaction(items: list[BrowserCaptureOriginRepairItem]) -> bool:
+    return any(item.legacy_null_native_id for item in items)
+
+
+def _legacy_browser_journal_modes(source_db: Path, index_db: Path) -> dict[str, str]:
+    modes: dict[str, str] = {}
+    for name, db in (("source", source_db), ("index", index_db)):
+        with closing(sqlite3.connect(f"file:{db}?mode=rw", uri=True, timeout=30.0)) as conn:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            row = conn.execute("PRAGMA journal_mode").fetchone()
+        if row is None:
+            raise RuntimeError(f"legacy browser repair could not read {name} journal mode")
+        modes[name] = str(row[0]).lower()
+    return modes
+
+
+def _legacy_browser_set_journal_mode(db: Path, *, name: str, mode: str) -> None:
+    if mode not in {"delete", "wal"}:
+        raise ValueError(f"unsupported legacy browser journal mode: {mode}")
+    with closing(sqlite3.connect(f"file:{db}?mode=rw", uri=True, timeout=30.0)) as conn:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        row = conn.execute(f"PRAGMA journal_mode = {mode.upper()}").fetchone()
+    if row is None or str(row[0]).lower() != mode:
+        raise RuntimeError(f"legacy browser repair could not set {name} journal_mode={mode}")
+
+
+def _legacy_browser_checkpoint_wal(db: Path, *, name: str) -> None:
+    with closing(sqlite3.connect(f"file:{db}?mode=rw", uri=True, timeout=30.0)) as conn:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    if row is None or tuple(int(value) for value in row) != (0, 0, 0):
+        raise RuntimeError(f"legacy browser repair requires an idle {name} WAL checkpoint: {row!r}")
+
+
+def _legacy_browser_validate_atomic_file_set(source_db: Path, index_db: Path) -> None:
+    source = source_db.resolve(strict=True)
+    index = index_db.resolve(strict=True)
+    if source.parent != index.parent or source.stat().st_dev != index.stat().st_dev:
+        raise RuntimeError("legacy browser repair requires source.db and index.db in one archive filesystem")
+
+
+def _legacy_browser_normalize_journal_posture(source_db: Path, index_db: Path) -> dict[str, str]:
+    """Recover any prior legacy interruption to the normal WAL serving posture."""
+    before = _legacy_browser_journal_modes(source_db, index_db)
+    unsupported = {name: mode for name, mode in before.items() if mode not in {"wal", "delete"}}
+    if unsupported:
+        raise RuntimeError(f"legacy browser repair found unsupported journal posture: {unsupported!r}")
+    for name, db in (("source", source_db), ("index", index_db)):
+        if before[name] != "wal":
+            _legacy_browser_set_journal_mode(db, name=name, mode="wal")
+    after = _legacy_browser_journal_modes(source_db, index_db)
+    if after != {"source": "wal", "index": "wal"}:
+        raise RuntimeError(f"legacy browser repair could not restore WAL posture: {after!r}")
+    return before
+
+
+def _legacy_browser_copy_forward_checkpoint(stage: str) -> None:
+    """Test seam for a process death at an exact crash boundary."""
+    del stage
+
+
+@contextmanager
+def _legacy_browser_rollback_superjournal_window(
+    source_db: Path, index_db: Path
+) -> Iterator[tuple[sqlite3.Connection, dict[str, dict[str, str]]]]:
+    """Yield the legacy-only crash-atomic cross-tier maintenance transaction."""
+    _legacy_browser_validate_atomic_file_set(source_db, index_db)
+    observation: dict[str, dict[str, str]] = {"before_transport": _legacy_browser_journal_modes(source_db, index_db)}
+    conn: sqlite3.Connection | None = None
+    failed = False
+    try:
+        _legacy_browser_checkpoint_wal(index_db, name="index")
+        _legacy_browser_checkpoint_wal(source_db, name="source")
+        _legacy_browser_set_journal_mode(index_db, name="index", mode="delete")
+        _legacy_browser_set_journal_mode(source_db, name="source", mode="delete")
+        if _legacy_browser_journal_modes(source_db, index_db) != {"source": "delete", "index": "delete"}:
+            raise RuntimeError("legacy browser repair could not enter rollback-journal posture")
+        conn = sqlite3.connect(f"file:{index_db}?mode=rw", uri=True, timeout=30.0)
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+        conn.execute("PRAGMA main.synchronous = EXTRA")
+        conn.execute("PRAGMA source.synchronous = EXTRA")
+        if int(conn.execute("PRAGMA main.synchronous").fetchone()[0]) != 3:
+            raise RuntimeError("legacy browser repair could not set index synchronous=EXTRA")
+        if int(conn.execute("PRAGMA source.synchronous").fetchone()[0]) != 3:
+            raise RuntimeError("legacy browser repair could not set source synchronous=EXTRA")
+        conn.execute("BEGIN EXCLUSIVE")
+        yield conn, observation
+    except BaseException:
+        failed = True
+        if conn is not None and conn.in_transaction:
+            with suppress(sqlite3.Error):
+                conn.rollback()
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+        try:
+            # A completed or rolled-back transport always returns the daemon's
+            # normal WAL posture before its receipt can become terminal.
+            _legacy_browser_set_journal_mode(source_db, name="source", mode="wal")
+            _legacy_browser_set_journal_mode(index_db, name="index", mode="wal")
+            observation["after_restore"] = _legacy_browser_journal_modes(source_db, index_db)
+            if observation["after_restore"] != {"source": "wal", "index": "wal"}:
+                raise RuntimeError("legacy browser repair did not restore WAL posture")
+        except Exception:
+            if failed:
+                logger.exception("legacy browser repair could not restore WAL after a failed transport")
+            else:
+                raise
+
+
 def _lock_browser_origin_receipt(
     path: Path,
     items: list[BrowserCaptureOriginRepairItem],
@@ -2699,6 +2814,7 @@ def _lock_browser_origin_receipt(
     if path.is_symlink():
         raise RuntimeError("repair receipt path must not be a symbolic link")
     targets = [_browser_origin_item_payload(item) for item in items]
+    requires_legacy_transaction = _browser_origin_requires_legacy_transaction(items)
     target_hash = hashlib.sha256(json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
@@ -2731,6 +2847,8 @@ def _lock_browser_origin_receipt(
                 "target_hash": target_hash,
                 "targets": targets,
             }
+            if requires_legacy_transaction:
+                expected["transaction_protocol"] = _LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL
             if {key: planned.get(key) for key in expected} != expected:
                 raise RuntimeError("existing repair receipt targets do not match the exact proof")
             terminal = False
@@ -2742,7 +2860,7 @@ def _lock_browser_origin_receipt(
                 except (ValueError, json.JSONDecodeError):
                     applied = None
                 if isinstance(applied, dict) and applied.get("state") == "applied":
-                    requires_legacy_witness = any(item.legacy_null_native_id for item in items)
+                    requires_legacy_witness = requires_legacy_transaction
                     legacy_witness_matches = applied.get(
                         "legacy_native_witness_bindings"
                     ) == _browser_origin_legacy_native_witness_bindings(items)
@@ -2754,6 +2872,10 @@ def _lock_browser_origin_receipt(
                         or applied.get("terminal_byte_witness_bindings")
                         != _browser_origin_terminal_byte_witness_bindings(items)
                         or (requires_legacy_witness and not legacy_witness_matches)
+                        or (
+                            requires_legacy_witness
+                            and applied.get("transaction_protocol") != _LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL
+                        )
                         or (
                             not requires_legacy_witness
                             and applied.get("legacy_native_witness_bindings") is not None
@@ -2771,6 +2893,8 @@ def _lock_browser_origin_receipt(
             "targets": targets,
             "planned_at_ms": int(time.time() * 1000),
         }
+        if requires_legacy_transaction:
+            planned["transaction_protocol"] = _LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL
         _write_receipt_all(descriptor, (json.dumps(planned, sort_keys=True, separators=(",", ":")) + "\n").encode())
         os.fsync(descriptor)
         _fsync_parent(path)
@@ -2787,6 +2911,7 @@ def _finish_browser_origin_receipt(
     items: list[BrowserCaptureOriginRepairItem],
     *,
     schema: str,
+    legacy_journal_modes: Mapping[str, object] | None = None,
 ) -> None:
     os.lseek(receipt.descriptor, 0, os.SEEK_END)
     terminal: dict[str, object] = {
@@ -2799,6 +2924,11 @@ def _finish_browser_origin_receipt(
         "terminal_byte_witness_bindings": _browser_origin_terminal_byte_witness_bindings(items),
         "legacy_native_witness_bindings": _browser_origin_legacy_native_witness_bindings(items),
     }
+    if _browser_origin_requires_legacy_transaction(items):
+        if legacy_journal_modes is None:
+            raise RuntimeError("legacy browser repair cannot finalize without journal protocol evidence")
+        terminal["transaction_protocol"] = _LEGACY_BROWSER_NATIVE_ID_TRANSACTION_PROTOCOL
+        terminal["legacy_journal_modes"] = dict(legacy_journal_modes)
     if receipt.torn:
         if not receipt.torn.endswith(b"\n"):
             _write_receipt_all(receipt.descriptor, b"\xff\n")
@@ -3082,13 +3212,23 @@ def _repair_browser_capture_origin_mismatches(
     if apply and proof_digest != aggregate:
         raise RuntimeError("apply proof digest does not match the exact dry-run target list")
     if apply:
+        from polylogue.storage.blob_publication import exclude_archive_blob_publishers
         from polylogue.storage.index_generation import RebuildLease
 
         assert receipt_path is not None
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        with RebuildLease(archive_root):
+        with RebuildLease(archive_root), exclude_archive_blob_publishers(source_db):
             receipt = _lock_browser_origin_receipt(receipt_path, items, schema=receipt_schema)
             try:
+                legacy_journal_modes: Mapping[str, object] | None = None
+                if allow_legacy_null_native_id:
+                    # A previous process may have died after its crash-atomic
+                    # commit and before WAL restoration/receipt finalization.
+                    # Normalize that safe mixed posture before inspecting any
+                    # terminal state or issuing another legacy transaction.
+                    legacy_journal_modes = {
+                        "before_normalization": _legacy_browser_normalize_journal_posture(source_db, index_db)
+                    }
                 with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
                     proof_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
                     pre_source_items = inspect(proof_conn)
@@ -3097,14 +3237,23 @@ def _repair_browser_capture_origin_mismatches(
                 if any(item.status == "ineligible" for item in pre_source_items):
                     raise RuntimeError("a browser-capture origin target became ineligible before source staging")
                 if allow_legacy_null_native_id:
-                    # The legacy route must never leave a resumable source-only
-                    # stage: source copy-forward and index authority transition
-                    # are one attached-database transaction.
-                    with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
-                        conn.execute("PRAGMA foreign_keys = ON")
-                        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
-                        conn.execute("BEGIN IMMEDIATE")
-                        try:
+                    if all(item.status == "already_repaired" for item in pre_source_items):
+                        locked = pre_source_items
+                        after = pre_source_items
+                        assert legacy_journal_modes is not None
+                        legacy_journal_modes = {
+                            **legacy_journal_modes,
+                            "after_restore": _legacy_browser_journal_modes(source_db, index_db),
+                        }
+                    else:
+                        # The legacy route must never leave a source-only
+                        # stage. DELETE rollback journals plus an attached
+                        # non-memory index main database let SQLite use its
+                        # crash-atomic multi-file super-journal protocol.
+                        with _legacy_browser_rollback_superjournal_window(source_db, index_db) as (
+                            conn,
+                            transport_journal_modes,
+                        ):
                             locked = inspect(conn)
                             if _browser_origin_proof_digest(locked) != proof_digest:
                                 raise RuntimeError("authority proof changed after acquiring the repair transaction")
@@ -3130,10 +3279,21 @@ def _repair_browser_capture_origin_mismatches(
                             after = inspect(conn)
                             if any(item.status != "already_repaired" for item in after):
                                 raise RuntimeError("legacy browser copy-forward did not reach terminal state")
+                            _legacy_browser_copy_forward_checkpoint("before_commit")
                             conn.commit()
-                        except Exception:
-                            conn.rollback()
-                            raise
+                            _legacy_browser_copy_forward_checkpoint("after_commit")
+                        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as postflight_conn:
+                            postflight_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+                            after = inspect(postflight_conn)
+                        if any(item.status != "already_repaired" for item in after):
+                            raise RuntimeError("legacy browser copy-forward did not survive WAL restoration")
+                        assert legacy_journal_modes is not None
+                        legacy_journal_modes = {
+                            **legacy_journal_modes,
+                            **transport_journal_modes,
+                        }
+                    if receipt.terminal and any(item.status != "already_repaired" for item in after):
+                        raise RuntimeError("terminal operator receipt disagrees with durable copy-forward state")
                 else:
                     with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
                         source_conn.execute("PRAGMA foreign_keys = ON")
@@ -3180,7 +3340,12 @@ def _repair_browser_capture_origin_mismatches(
                     for before, after_item in zip(locked, after, strict=True)
                 ]
                 if not receipt.terminal:
-                    _finish_browser_origin_receipt(receipt, items, schema=receipt_schema)
+                    _finish_browser_origin_receipt(
+                        receipt,
+                        items,
+                        schema=receipt_schema,
+                        legacy_journal_modes=legacy_journal_modes,
+                    )
             finally:
                 receipt.close()
     return BrowserCaptureOriginRepairReport(
