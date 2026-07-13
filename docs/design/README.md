@@ -14,6 +14,7 @@ domain models rather than plans:
 | Doc | Purpose |
 |-----|---------|
 | [Session lineage model](session-lineage-model.md) | Fork/resume/compaction storage + composition semantics (polylogue-4ts) |
+| [Analysis rigor](analysis-rigor.md) | Rigor mechanisms for agent claims: population-validity (metric hashes, pre-registration, holdouts) + comparative judgment (Bradley-Terry rankings, agent judges, cascades) (polylogue-rxdo.9) |
 | [Query set algebra](query-set-algebra.md) | Set-composition semantics over query results (polylogue-fnm.13) |
 | [Agent-first MCP](agent-first-mcp.md) | MCP surface doctrine (polylogue-t46.8, polylogue-rsad) |
 | [Incident 14:32 proof world](incident-1432-proof-world.md) | Shared deterministic demo corpus model + anti-circularity/anti-vacuity rules (polylogue-212.11, polylogue-212.12) |

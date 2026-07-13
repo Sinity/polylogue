@@ -304,6 +304,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Fork, resume, compaction, and composition semantics.",
         "design",
     ),
+    _entry(
+        "Analysis Rigor",
+        "design/analysis-rigor.md",
+        "Rigor mechanisms for agent claims: population validity and comparative judgment.",
+        "design",
+    ),
     _entry("Second Brain", "design/second-brain.md", "Vision note for remembered work.", "design"),
     _entry("Time Machine", "design/time-machine.md", "Vision note for reconstructing work over time.", "design"),
     _entry("Whole Product", "design/whole-product.md", "Product vision and system relationships.", "design"),

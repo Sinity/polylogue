@@ -104,6 +104,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Query-Action Workflows Design](design/query-action-workflows.md) | Historical design pointer for the workflow contract. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
 | [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
+| [Analysis Rigor](design/analysis-rigor.md) | Rigor mechanisms for agent claims: population validity and comparative judgment. |
 | [Second Brain](design/second-brain.md) | Vision note for remembered work. |
 | [Time Machine](design/time-machine.md) | Vision note for reconstructing work over time. |
 | [Whole Product](design/whole-product.md) | Product vision and system relationships. |
