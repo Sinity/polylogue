@@ -11,10 +11,6 @@
 
 **Polylogue is a local evidence system for AI work.** It turns ChatGPT, Claude, Codex, Gemini, Antigravity, Hermes, and coding-agent histories into one evidence-addressable archive: search what happened, read tool activity as work rather than chat, audit claims against structural outcomes, understand cost and lineage, and give the next agent reviewed context.
 
-<p align="center">
-  <img src="docs/examples/visual-tapes/evidence-receipt.png" alt="Polylogue checks an assistant claim against failed and successful test receipts" width="900">
-</p>
-
 Polylogue answers questions that transcript folders and vendor chat history do not:
 
 - **What did the agent actually do?** Read prompts, tool calls, tool results, file operations, subagents, and context boundaries through one provider-independent model.
