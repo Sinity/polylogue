@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import pytest
 
+from polylogue.archive.semantic.pricing import CostEstimatePayload
 from polylogue.insights.archive import (
     ArchiveInferenceProvenance,
     ArchiveInsightProvenance,
+    SessionCostInsight,
     SessionLatencyProfileInsight,
     SessionProfileInsight,
 )
@@ -26,6 +28,7 @@ from polylogue.insights.archive_models import (
 from polylogue.insights.archive_rollups import (
     ABANDONMENT_SEVERITY_RANK,
     abandoned_session_items,
+    aggregate_cost_rollup_insights,
     aggregate_session_profiles_by_dimension,
     iso_week_bucket_key,
     tool_call_latency_distribution_payload,
@@ -165,6 +168,20 @@ def test_aggregate_rejects_unknown_group_by() -> None:
 
 def test_aggregate_empty_profiles_returns_empty_buckets() -> None:
     assert aggregate_session_profiles_by_dimension([], "workflow_shape") == {}
+
+
+def test_cost_rollup_confidence_is_none_without_priced_sessions() -> None:
+    unavailable = SessionCostInsight(
+        session_id="c1",
+        source_name="claude-code",
+        estimate=CostEstimatePayload(source_name="claude-code", status="unavailable"),
+        provenance=_provenance(),
+    )
+
+    [rollup] = aggregate_cost_rollup_insights([unavailable], materialized_at="2026-05-01T00:00:00+00:00")
+
+    assert rollup.priced_session_count == 0
+    assert rollup.confidence is None
 
 
 # ── workflow_shape_distribution_buckets ──────────────────────────────

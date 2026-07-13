@@ -295,7 +295,7 @@ def aggregate_cost_rollup_insights(
                 unavailable_reason_counts=dict(sorted(unavailable_reason_counts.items())),
                 per_model_breakdown=per_model_breakdown,
                 usage=usage,
-                confidence=(confidence_total / priced_count if priced_count else 0.0),
+                confidence=(confidence_total / priced_count if priced_count else None),
                 provenance=ArchiveInsightProvenance(
                     materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
                     materialized_at=materialized_at,

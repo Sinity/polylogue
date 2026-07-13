@@ -26,19 +26,29 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
+    ArchiveCoverageInsight,
     ArchiveCoverageInsightQuery,
+    ArchiveDebtInsight,
     ArchiveDebtInsightQuery,
     ArchiveInsightModel,
+    CostRollupInsight,
     CostRollupInsightQuery,
+    SessionCostInsight,
     SessionCostInsightQuery,
+    SessionPhaseInsight,
     SessionPhaseInsightQuery,
+    SessionProfileInsight,
     SessionProfileInsightQuery,
+    SessionTagRollupInsight,
     SessionTagRollupQuery,
+    SessionWorkEventInsight,
     SessionWorkEventInsightQuery,
+    ThreadInsight,
     ThreadInsightQuery,
+    UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
-from polylogue.insights.tool_usage import ToolUsageInsightQuery
+from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 
 InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
 
@@ -74,6 +84,7 @@ class InsightType:
     display_name: str
     json_key: str
     fields: tuple[InsightField, ...] = ()
+    item_model: type[ArchiveInsightModel] | None = None
     empty_message: str = "No items matched."
     query_model: type[ArchiveInsightModel] | None = None
     operations_method_name: str = ""
@@ -367,6 +378,7 @@ register(
         name="session_profiles",
         display_name="Session Profiles",
         json_key="session_profiles",
+        item_model=SessionProfileInsight,
         empty_message="No session profiles matched.",
         query_model=SessionProfileInsightQuery,
         operations_method_name="list_session_profile_insights",
@@ -415,6 +427,7 @@ register(
         name="session_work_events",
         display_name="Work Events",
         json_key="session_work_events",
+        item_model=SessionWorkEventInsight,
         empty_message="No work events matched.",
         query_model=SessionWorkEventInsightQuery,
         operations_method_name="list_session_work_event_insights",
@@ -456,6 +469,7 @@ register(
         name="session_phases",
         display_name="Session Phases",
         json_key="session_phases",
+        item_model=SessionPhaseInsight,
         empty_message="No session phases matched.",
         query_model=SessionPhaseInsightQuery,
         operations_method_name="list_session_phase_insights",
@@ -478,6 +492,7 @@ register(
         name="threads",
         display_name="Work Threads",
         json_key="threads",
+        item_model=ThreadInsight,
         empty_message="No work threads matched.",
         query_model=ThreadInsightQuery,
         operations_method_name="list_thread_insights",
@@ -500,6 +515,7 @@ register(
         name="session_tag_rollups",
         display_name="Session Tag Rollups",
         json_key="session_tag_rollups",
+        item_model=SessionTagRollupInsight,
         empty_message="No session tag rollups matched.",
         query_model=SessionTagRollupQuery,
         operations_method_name="list_session_tag_rollup_insights",
@@ -521,6 +537,7 @@ register(
         name="archive_coverage",
         display_name="Archive Coverage",
         json_key="archive_coverage",
+        item_model=ArchiveCoverageInsight,
         empty_message="No archive coverage buckets matched.",
         query_model=ArchiveCoverageInsightQuery,
         operations_method_name="list_archive_coverage_insights",
@@ -561,6 +578,7 @@ register(
         name="tool_usage",
         display_name="Tool Usage",
         json_key="tool_usage",
+        item_model=ToolUsageInsight,
         empty_message="No tool usage data available.",
         query_model=ToolUsageInsightQuery,
         operations_method_name="list_tool_usage_insights",
@@ -592,6 +610,7 @@ register(
         name="session_costs",
         display_name="Session Costs",
         json_key="session_costs",
+        item_model=SessionCostInsight,
         empty_message="No session cost estimates matched.",
         query_model=SessionCostInsightQuery,
         operations_method_name="list_session_cost_insights",
@@ -618,6 +637,7 @@ register(
         name="cost_rollups",
         display_name="Cost Rollups",
         json_key="cost_rollups",
+        item_model=CostRollupInsight,
         empty_message="No cost rollups matched.",
         query_model=CostRollupInsightQuery,
         operations_method_name="list_cost_rollup_insights",
@@ -636,7 +656,7 @@ register(
             InsightField("api_usd", _nested("basis", "api_equivalent_usd", "0"), group=1),
             InsightField("sub_usd", _nested("basis", "subscription_equivalent_usd", "0"), group=1),
             InsightField("catalog_usd", _nested("basis", "catalog_priced_usd", "0"), group=1),
-            InsightField("confidence", _attr("confidence", "0"), group=1),
+            InsightField("confidence", _attr("confidence", "uncovered"), group=1),
         ),
     )
 )
@@ -646,6 +666,7 @@ register(
         name="usage_timeline",
         display_name="Usage Timeline",
         json_key="usage_timeline",
+        item_model=UsageTimelineInsight,
         empty_message="No usage timeline rows matched.",
         query_model=UsageTimelineInsightQuery,
         operations_method_name="list_usage_timeline_insights",
@@ -683,6 +704,7 @@ register(
         name="archive_debt",
         display_name="Archive Debt",
         json_key="archive_debt",
+        item_model=ArchiveDebtInsight,
         empty_message="No archive debt entries matched.",
         query_model=ArchiveDebtInsightQuery,
         operations_method_name="list_archive_debt_insights",

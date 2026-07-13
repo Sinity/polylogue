@@ -41,6 +41,24 @@ def _uncovered_insight_names() -> tuple[str, ...]:
     return tuple(sorted(registered - covered))
 
 
+def _missing_numeric_field_coverage() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    from polylogue.insights.rigor import missing_numeric_field_coverage
+
+    return missing_numeric_field_coverage()
+
+
+def _missing_numeric_item_models() -> tuple[str, ...]:
+    from polylogue.insights.rigor import missing_numeric_item_models
+
+    return missing_numeric_item_models()
+
+
+def _invalid_nullable_field_contracts() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    from polylogue.insights.rigor import invalid_nullable_field_contracts
+
+    return invalid_nullable_field_contracts()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -50,22 +68,54 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     uncovered = _uncovered_insight_names()
+    missing_fields = _missing_numeric_field_coverage()
+    missing_item_models = _missing_numeric_item_models()
+    invalid_contracts = _invalid_nullable_field_contracts()
 
     if args.json:
-        print(json.dumps({"uncovered_insight_names": list(uncovered), "ok": not uncovered}, indent=2))
-    elif uncovered:
-        print(f"insight rigor honesty: {len(uncovered)} registered insight(s) uncovered")
-        for name in uncovered:
-            print(f"  {name}")
+        print(
+            json.dumps(
+                {
+                    "uncovered_insight_names": list(uncovered),
+                    "missing_numeric_field_coverage": [
+                        {"insight_name": name, "field_path": list(field_path)} for name, field_path in missing_fields
+                    ],
+                    "missing_numeric_item_models": list(missing_item_models),
+                    "invalid_nullable_field_contracts": [
+                        {"insight_name": name, "field_path": list(field_path)} for name, field_path in invalid_contracts
+                    ],
+                    "ok": not uncovered and not missing_fields and not missing_item_models and not invalid_contracts,
+                },
+                indent=2,
+            )
+        )
+    elif uncovered or missing_fields or missing_item_models or invalid_contracts:
+        if uncovered:
+            print(f"insight rigor honesty: {len(uncovered)} registered insight(s) uncovered")
+            for name in uncovered:
+                print(f"  {name}")
+        if missing_fields:
+            print(f"insight rigor honesty: {len(missing_fields)} numeric field coverage declaration(s) missing")
+            for name, field_path in missing_fields:
+                print(f"  {name}.{'.'.join(field_path)}")
+        if missing_item_models:
+            print(f"insight rigor honesty: {len(missing_item_models)} registered insight item model(s) missing")
+            for name in missing_item_models:
+                print(f"  {name}")
+        if invalid_contracts:
+            print(f"insight rigor honesty: {len(invalid_contracts)} nullable field contract(s) invalid")
+            for name, field_path in invalid_contracts:
+                print(f"  {name}.{'.'.join(field_path)}")
         print("")
         print(
             "Policy violation: every registered insight needs a RigorContract row "
-            "(polylogue/insights/rigor.py _RIGOR_MATRIX) or a justified RIGOR_EXEMPT entry."
+            "(polylogue/insights/rigor.py _RIGOR_MATRIX) or a justified RIGOR_EXEMPT entry, "
+            "and every public numeric field needs a RigorFieldContract or explicit field exemption."
         )
     else:
-        print("insight rigor honesty: every registered insight is contracted or exempt.")
+        print("insight rigor honesty: every registered insight and public numeric field is contracted or exempt.")
 
-    return 0 if not uncovered else 1
+    return 0 if not uncovered and not missing_fields and not missing_item_models and not invalid_contracts else 1
 
 
 if __name__ == "__main__":

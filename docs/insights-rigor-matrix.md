@@ -246,10 +246,15 @@ API.
 - Readiness: session/priced/unavailable counts, `status_counts`,
   `total_usd`, `basis`, and `usage` are grounded SQL sums/counts.
   `confidence` is the one probabilistic signal — a session-count-weighted
-  average of the same per-row confidence heuristic `session_costs` uses.
+  average of the same per-row confidence heuristic `session_costs` uses. It
+  renders `None` (plain output: `uncovered`) when `priced_session_count` is
+  zero, rather than fabricating a `0.0` confidence.
 - Notes: `provenance.materializer_version` is a hardcoded literal `0`, a
   sentinel for "computed live at query time", not a stored materialized
   artifact — not declared as a version field.
+- Field contract: `confidence` is `derived` from priced-session confidence
+  values with `priced_session_count` as its denominator; an empty denominator
+  is not applicable, not a measured zero.
 - Consumer-facing fields: `source_name`, `model_name`,
   `normalized_model`, `session_count`, `priced_session_count`,
   `unavailable_session_count`, `status_counts`, `total_usd`, `basis`,
@@ -302,6 +307,12 @@ Every insight product registered in
 insight-honesty` enforces this statically; the audit runner reports an
 uncovered product's `coverage_status` as `"uncovered"` rather than
 silently omitting it (9e5.28).
+
+The same policy recursively inspects each registered descriptor's item
+model. Every public numeric leaf must have a `RigorFieldContract` or an
+explicitly justified field exemption; a registry descriptor without an item
+model is itself a policy failure. This keeps newly exposed nested quantitative
+fields from bypassing the rigor matrix.
 
 ## Audit CLI
 

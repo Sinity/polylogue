@@ -49,6 +49,7 @@ _CALIBRATION_LABELS_FILE = "ack-marker-calibration.labels.csv"
 _PUBLIC_SUMMARY_FILE = "public-summary.json"
 _PUBLIC_REPRODUCTION_FILE = "PUBLIC_REPRODUCTION.md"
 _COLD_READER_GATE_FILE = "COLD_READER_GATE.md"
+_DEFAULT_N_MIN = 30
 _CALIBRATION_FIELDS = (
     "sample_id",
     "human_label",
@@ -78,6 +79,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path, default=None, help="Write report.json, summary.json, and README.md.")
     parser.add_argument("--limit", type=int, default=5000, help="Maximum structured failed outcomes to classify.")
     parser.add_argument("--sample-limit", type=int, default=30, help="Maximum evidence samples per class.")
+    parser.add_argument(
+        "--n-min",
+        type=int,
+        default=_DEFAULT_N_MIN,
+        help="Minimum failures required before a split-cell rate is supported.",
+    )
     parser.add_argument(
         "--calibration-size",
         type=int,
@@ -142,19 +149,26 @@ def _object_str_list(value: object) -> list[str]:
     return []
 
 
-def _ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, object]]:
+def _ranked(mapping: dict[str, dict[str, int]], *, n_min: int) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for name, counts in mapping.items():
         failed = counts["failed_outcomes"]
         silent = counts["silent_proceed"]
         classified = counts["acknowledged"] + silent
+        supported = failed >= n_min
+        classified_supported = classified >= n_min
         rows.append(
             {
                 "name": name,
                 **counts,
                 "classified_outcomes": classified,
-                "silent_rate_lower_bound": (silent / failed) if failed else 0.0,
-                "silent_rate_among_classified": (silent / classified) if classified else 0.0,
+                "n_min": n_min,
+                "coverage_status": "supported" if supported else "insufficient_n",
+                "publication_status": "supported" if supported else "not_supported",
+                "classified_coverage_status": "supported" if classified_supported else "insufficient_n",
+                "classified_publication_status": "supported" if classified_supported else "not_supported",
+                "silent_rate_lower_bound": (silent / failed) if supported else None,
+                "silent_rate_among_classified": (silent / classified) if classified_supported else None,
             }
         )
 
@@ -775,6 +789,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--limit must be positive")
     if args.sample_limit < 1:
         raise ValueError("--sample-limit must be positive")
+    if args.n_min < 1:
+        raise ValueError("--n-min must be positive")
     if args.calibration_size < 0:
         raise ValueError("--calibration-size must be non-negative")
     config = _config_with_archive_root(get_config(), args.archive_root)
@@ -902,6 +918,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     silent = totals["silent_proceed"]
     failed = totals["failed_outcomes"]
     classified = totals["classified_outcomes"]
+    aggregate_supported = failed >= args.n_min
     window3_silent = window3_totals["silent_proceed"]
     window3_classified = window3_totals["classified_outcomes"]
     calibration_sample = _calibration_sample(
@@ -947,6 +964,12 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
             "classification_scope": "immediately following assistant message only",
             "sensitivity_scope": "next 3 assistant messages after the failed result, stopping before the next user message",
+            "n_min": args.n_min,
+            "thin_cell_policy": (
+                "Split cells below n_min are retained for coverage accounting but publish no rates: "
+                "coverage_status=insufficient_n and publication_status=not_supported; "
+                "classified-denominator rates independently require classified_outcomes >= n_min."
+            ),
             "total_by_origin": total_by_origin,
             "sampled_by_origin": sampled_by_origin,
         },
@@ -958,18 +981,27 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "totals": totals,
         "window3_totals": window3_totals,
         "rates": {
-            "silent_rate_lower_bound": (silent / failed) if failed else 0.0,
-            "silent_rate_among_classified": (silent / classified) if classified else 0.0,
-            "window3_silent_rate_lower_bound": (window3_silent / failed) if failed else 0.0,
+            "coverage_status": "supported" if aggregate_supported else "insufficient_n",
+            "publication_status": "supported" if aggregate_supported else "not_supported",
+            "classified_coverage_status": "supported" if classified >= args.n_min else "insufficient_n",
+            "classified_publication_status": "supported" if classified >= args.n_min else "not_supported",
+            "window3_classified_coverage_status": "supported" if window3_classified >= args.n_min else "insufficient_n",
+            "window3_classified_publication_status": "supported"
+            if window3_classified >= args.n_min
+            else "not_supported",
+            "n_min": args.n_min,
+            "silent_rate_lower_bound": (silent / failed) if aggregate_supported else None,
+            "silent_rate_among_classified": (silent / classified) if classified >= args.n_min else None,
+            "window3_silent_rate_lower_bound": (window3_silent / failed) if aggregate_supported else None,
             "window3_silent_rate_among_classified": (
-                (window3_silent / window3_classified) if window3_classified else 0.0
+                (window3_silent / window3_classified) if window3_classified >= args.n_min else None
             ),
             "ack_later_within_3": max(0, window3_totals["acknowledged"] - totals["acknowledged"]),
         },
-        "by_tool": _ranked(by_tool),
-        "by_model": _ranked(by_model),
-        "by_origin": _ranked(by_origin),
-        "by_handler_class": _ranked(by_handler_class),
+        "by_tool": _ranked(by_tool, n_min=args.n_min),
+        "by_model": _ranked(by_model, n_min=args.n_min),
+        "by_origin": _ranked(by_origin, n_min=args.n_min),
+        "by_handler_class": _ranked(by_handler_class, n_min=args.n_min),
         "handler_class_definition": {
             "benign_recovery": sorted(_BENIGN_RECOVERY_TOOLS),
             "consequential": sorted(_CONSEQUENTIAL_TOOLS),
@@ -1023,19 +1055,33 @@ def _public_summary(report: dict[str, Any]) -> dict[str, Any]:
                 "unpaired_structured_failures": frame["unpaired_structured_failures"],
                 "selection_strategy": frame["selection_strategy"],
                 "selection_order": frame["selection_order"],
+                "n_min": frame["n_min"],
+                "thin_cell_policy": frame["thin_cell_policy"],
             },
             {
                 "name": "next_turn_classification",
                 "acknowledged": totals["acknowledged"],
                 "silent_proceed": totals["silent_proceed"],
                 "ambiguous": totals["ambiguous"],
+                "n_min": rates["n_min"],
                 "silent_rate_lower_bound": rates["silent_rate_lower_bound"],
+                "silent_rate_lower_bound_coverage_status": rates["coverage_status"],
+                "silent_rate_lower_bound_publication_status": rates["publication_status"],
                 "silent_rate_among_classified": rates["silent_rate_among_classified"],
+                "silent_rate_among_classified_coverage_status": rates["classified_coverage_status"],
+                "silent_rate_among_classified_publication_status": rates["classified_publication_status"],
             },
             {
                 "name": "sensitivity_and_calibration",
                 "ack_later_within_3": rates["ack_later_within_3"],
                 "window3_silent_rate_lower_bound": rates["window3_silent_rate_lower_bound"],
+                "window3_silent_rate_lower_bound_coverage_status": rates["coverage_status"],
+                "window3_silent_rate_lower_bound_publication_status": rates["publication_status"],
+                "window3_silent_rate_among_classified": rates["window3_silent_rate_among_classified"],
+                "window3_silent_rate_among_classified_coverage_status": rates["window3_classified_coverage_status"],
+                "window3_silent_rate_among_classified_publication_status": rates[
+                    "window3_classified_publication_status"
+                ],
                 "calibration_labeled_rows": calibration_metrics["labeled_rows"],
                 "ack_marker_precision": calibration_metrics["ack_marker_precision"],
                 "ack_marker_recall": calibration_metrics["ack_marker_recall"],
@@ -1046,6 +1092,7 @@ def _public_summary(report: dict[str, Any]) -> dict[str, Any]:
             "Deterministic demo reproduction validates the method and renderer, not the private rate estimates.",
             "The classifier is an explicit marker detector; ambiguous rows remain in the denominator.",
             "The report is bounded by --limit unless the limit exceeds the full structured-failure frame.",
+            "Split cells below n_min are coverage-only and explicitly not supported for rate publication.",
         ],
         "reproduction": {
             "demo_archive_root": "/realm/tmp/polylogue-claim-vs-evidence-demo",
@@ -1103,8 +1150,28 @@ def _write_public_reproduction(path: Path, report: dict[str, Any]) -> None:
                 f"- acknowledged next turn: {int(classification['acknowledged']):,}",
                 f"- silent-proceed next turn: {int(classification['silent_proceed']):,}",
                 f"- ambiguous next turn: {int(classification['ambiguous']):,}",
-                f"- silent lower bound: {float(classification['silent_rate_lower_bound']):.1%}",
-                f"- next-3 silent lower bound: {float(sensitivity['window3_silent_rate_lower_bound']):.1%}",
+                (
+                    f"- silent lower bound: {_format_rate_percent(classification['silent_rate_lower_bound'])} "
+                    f"({classification['silent_rate_lower_bound_coverage_status']} / "
+                    f"{classification['silent_rate_lower_bound_publication_status']})"
+                ),
+                (
+                    f"- silent among classified: {_format_rate_percent(classification['silent_rate_among_classified'])} "
+                    f"({classification['silent_rate_among_classified_coverage_status']} / "
+                    f"{classification['silent_rate_among_classified_publication_status']})"
+                ),
+                (
+                    f"- next-3 silent lower bound: "
+                    f"{_format_rate_percent(sensitivity['window3_silent_rate_lower_bound'])} "
+                    f"({sensitivity['window3_silent_rate_lower_bound_coverage_status']} / "
+                    f"{sensitivity['window3_silent_rate_lower_bound_publication_status']})"
+                ),
+                (
+                    f"- next-3 silent among classified: "
+                    f"{_format_rate_percent(sensitivity['window3_silent_rate_among_classified'])} "
+                    f"({sensitivity['window3_silent_rate_among_classified_coverage_status']} / "
+                    f"{sensitivity['window3_silent_rate_among_classified_publication_status']})"
+                ),
                 f"- calibration labeled rows: {int(sensitivity['calibration_labeled_rows']):,}",
                 f"- acknowledged-marker precision: {_format_rate_percent(sensitivity['ack_marker_precision'])}",
                 f"- acknowledged-marker recall: {_format_rate_percent(sensitivity['ack_marker_recall'])}",
@@ -1218,7 +1285,18 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
             "ambiguous_wordless_continuation": totals["ambiguous_wordless_continuation"],
             "ambiguous_prose_no_marker": totals["ambiguous_prose_no_marker"],
             "silent_rate_lower_bound": rates["silent_rate_lower_bound"],
+            "silent_rate_lower_bound_coverage_status": rates["coverage_status"],
+            "silent_rate_lower_bound_publication_status": rates["publication_status"],
+            "silent_rate_among_classified": rates["silent_rate_among_classified"],
+            "silent_rate_among_classified_coverage_status": rates["classified_coverage_status"],
+            "silent_rate_among_classified_publication_status": rates["classified_publication_status"],
             "window3_silent_rate_lower_bound": rates["window3_silent_rate_lower_bound"],
+            "window3_silent_rate_lower_bound_coverage_status": rates["coverage_status"],
+            "window3_silent_rate_lower_bound_publication_status": rates["publication_status"],
+            "window3_silent_rate_among_classified": rates["window3_silent_rate_among_classified"],
+            "window3_silent_rate_among_classified_coverage_status": rates["window3_classified_coverage_status"],
+            "window3_silent_rate_among_classified_publication_status": rates["window3_classified_publication_status"],
+            "n_min": rates["n_min"],
             "by_handler_class": report["by_handler_class"],
             "handler_class_definition": report["handler_class_definition"],
             "limit": report["limit"],
@@ -1275,7 +1353,11 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
             f"- {row['name']}: failed {int(row['failed_outcomes']):,}; "
             f"silent {int(row['silent_proceed']):,}; "
             f"ambiguous {int(row['ambiguous']):,}; "
-            f"silent lower bound {float(row['silent_rate_lower_bound']):.1%}"
+            + (
+                f"silent lower bound {float(row['silent_rate_lower_bound']):.1%}"
+                if row["silent_rate_lower_bound"] is not None
+                else f"not supported (n < {int(row['n_min'])})"
+            )
         )
         for row in report["by_handler_class"]
     ]
@@ -1304,12 +1386,29 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         f"- ambiguous: {totals['ambiguous']:,}",
         f"- ambiguous wordless tool continuations: {totals['ambiguous_wordless_continuation']:,}",
         f"- ambiguous prose without markers: {totals['ambiguous_prose_no_marker']:,}",
-        f"- silent lower bound: {rates['silent_rate_lower_bound']:.1%}",
-        f"- silent among classified: {rates['silent_rate_among_classified']:.1%}",
+        (
+            f"- silent lower bound: {_format_rate_percent(rates['silent_rate_lower_bound'])} "
+            f"({rates['coverage_status']} / {rates['publication_status']})"
+        ),
+        (
+            f"- silent among classified: {_format_rate_percent(rates['silent_rate_among_classified'])} "
+            f"({rates['classified_coverage_status']} / {rates['classified_publication_status']})"
+        ),
         f"- acknowledged within next 3 assistant turns: {window3_totals['acknowledged']:,}",
         f"- acknowledgments appearing only after the next turn: {rates['ack_later_within_3']:,}",
-        f"- silent lower bound after next-3 sensitivity: {rates['window3_silent_rate_lower_bound']:.1%}",
+        (
+            f"- silent lower bound after next-3 sensitivity: "
+            f"{_format_rate_percent(rates['window3_silent_rate_lower_bound'])} "
+            f"({rates['coverage_status']} / {rates['publication_status']})"
+        ),
+        (
+            f"- silent among classified after next-3 sensitivity: "
+            f"{_format_rate_percent(rates['window3_silent_rate_among_classified'])} "
+            f"({rates['window3_classified_coverage_status']} / "
+            f"{rates['window3_classified_publication_status']})"
+        ),
         f"- configured limit: {report['limit']:,}",
+        f"- split-cell minimum n: {frame['n_min']:,} (below this, rates are not supported)",
         f"- selection order: {frame['selection_order']}",
         f"- selection strategy: {frame['selection_strategy']}",
         "",

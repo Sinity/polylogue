@@ -3559,7 +3559,7 @@ class ArchiveStore:
                     ),
                     usage=entry.usage,
                     confidence=(
-                        entry.confidence_total / entry.priced_session_count if entry.priced_session_count else 0.0
+                        entry.confidence_total / entry.priced_session_count if entry.priced_session_count else None
                     ),
                     provenance=ArchiveInsightProvenance(
                         materializer_version=0,

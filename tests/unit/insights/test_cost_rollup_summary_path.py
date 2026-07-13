@@ -112,3 +112,6 @@ async def test_cost_rollups_aggregate_typed_cost_rows_without_message_load(
             merged_status_counts[key] = merged_status_counts.get(key, 0) + value
     assert merged_status_counts.get("exact", 0) == 1
     assert merged_status_counts.get("unavailable", 0) == 1
+    unavailable = next(rollup for rollup in rollups if rollup.unavailable_session_count)
+    assert unavailable.priced_session_count == 0
+    assert unavailable.confidence is None
